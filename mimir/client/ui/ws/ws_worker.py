@@ -9,6 +9,30 @@ protocol.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import difflib
+import json
+import logging
+import os
+import queue as _queue
+import threading
+from typing import Any, Callable
+
+from ....servers._shared.embed import verify_ssl
+from ...agent_core import MimirAgent, build_base_system_content
+from ...config import TEMPERATURE_BACKENDS
+from ...config.models import thinking_can_disable, thinking_profile
+from ...config.preferences import load_temperature
+from ...context.capabilities import panel_sections as _declared
+from ...context.todo import load_todo_items
+from ...core.settings import read_setting
+from ...extensions import all_servers
+from ...protocol.tool_result import normalize_tool_content
+from ...query_engine import token_calibration
+from ...query_engine.backends.factory import get_backend
+from ...tool_execution.direct import call_tool_directly
+
 # Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
 from ._ws_runtime import (
@@ -17,23 +41,10 @@ from ._ws_runtime import (
     _todo_file_for_session,
     augment_query_with_resources,
 )
+
 # After the runtime: it reads the workspace root that the bootstrap above pins.
 from .human_bridge import HumanBridge
 from .job_watcher import JobWatcher
-
-import asyncio
-import concurrent.futures
-import json
-import logging
-import os
-import queue as _queue
-import threading
-from typing import Any, Callable
-
-from ...context.todo import load_todo_items
-from ...core.settings import read_setting
-from ...protocol.tool_result import normalize_tool_content
-from ...tool_execution.direct import call_tool_directly
 
 logger = logging.getLogger(__name__)
 
@@ -230,9 +241,7 @@ class _AgentWorker:
         """
         import httpx
 
-        from ....servers._shared.embed import verify_ssl
 
-        from ...query_engine.backends.factory import get_backend
 
         # Which endpoint, and what to ask it, is the backend's to say: a hosted API has
         # nothing to wait on, a self-hosted server names what to poll.
@@ -274,6 +283,7 @@ class _AgentWorker:
                     )
                 return False, ""
             except Exception:
+                logger.debug("_get: a best-effort step failed and was skipped", exc_info=True)
                 return False, ""
             if resp.status_code == 200:
                 return True, ""
@@ -326,15 +336,6 @@ class _AgentWorker:
             if not _backend_seen_up:
                 await self._wait_for_backend()
                 _backend_seen_up = True
-            try:
-                from ...agent_core import MimirAgent
-            except ImportError:
-                from mimir.client.agent_core import MimirAgent
-            try:
-                from ...extensions import all_servers
-            except ImportError:
-                from mimir.client.extensions import all_servers
-
             agent = building = MimirAgent(model=self.model, session_id=self.session_id)
             await agent.connect_servers(all_servers())
             agent.seed_classification_from_caps()
@@ -372,13 +373,13 @@ class _AgentWorker:
 
     async def _prewarm_model(self) -> None:
         """Ask the backend to load the model now, off the first query's clock."""
-        from ...query_engine.backends.factory import get_backend
 
         model = self.model
         try:
             await asyncio.get_running_loop().run_in_executor(
                 None, lambda: get_backend().prewarm(model))
         except Exception:
+            logger.debug("_prewarm_model: a best-effort step failed and was skipped", exc_info=True)
             pass  # Non-fatal — first real query will trigger load.
 
     async def _query_loop(self) -> None:
@@ -558,7 +559,6 @@ class _AgentWorker:
         snapshotted file.  Returns a list of diff entries suitable for the
         ``batch_status`` WebSocket message.
         """
-        import difflib as _difflib
 
         agent = self._agent
         if agent is None:
@@ -580,7 +580,7 @@ class _AgentWorker:
             if before_lines == after_lines:
                 continue
             rel = os.path.relpath(path)
-            diff_lines = list(_difflib.unified_diff(
+            diff_lines = list(difflib.unified_diff(
                 before_lines, after_lines,
                 fromfile="a/" + rel, tofile="b/" + rel, n=3,
             ))
@@ -604,7 +604,7 @@ class _AgentWorker:
             if items:
                 self.out_q.put({"type": "todo", "items": items})
         except Exception:
-            pass
+            logger.debug("_push_todos: a best-effort step failed and was skipped", exc_info=True)
 
     def _own_session(self) -> str | None:
         """The conversation this worker works for — never the one on screen.
@@ -620,6 +620,7 @@ class _AgentWorker:
         try:
             return load_todo_items(_todo_file_for_session(self._own_session()))
         except Exception:
+            logger.debug("_load_todos: a best-effort step failed and was skipped", exc_info=True)
             return []
 
     def _clear_todos(self) -> None:
@@ -629,7 +630,7 @@ class _AgentWorker:
             if os.path.exists(todo_file):
                 open(todo_file, "w").close()
         except Exception:
-            pass
+            logger.debug("_clear_todos: a best-effort step failed and was skipped", exc_info=True)
 
     def emit_assistant_text(self, text: str) -> bool:
         """Record one streamed prose block. True when it was worth recording.
@@ -843,9 +844,9 @@ class _AgentWorker:
         if self._agent is None:
             return []
         try:
-            from ...query_engine.backends.factory import get_backend
             return [m for m in get_backend().served_models() if isinstance(m, str) and m.strip()]
         except Exception:
+            logger.debug("served_models: a best-effort step failed and was skipped", exc_info=True)
             return []
 
     def get_temperature_state(self) -> dict:
@@ -855,12 +856,10 @@ class _AgentWorker:
         sent while the backend is still coming up) it is read from the stored
         preference, which is exactly what the agent will load.
         """
-        from ...config import TEMPERATURE_BACKENDS
         backend = os.environ.get("LLM_BACKEND", "vllm").lower()
         if self._agent is not None:
             value = getattr(self._agent, "temperature", None)
         else:
-            from ...config.preferences import load_temperature
             value = load_temperature(self.model)
         return {"supported": backend in TEMPERATURE_BACKENDS, "value": value}
 
@@ -879,7 +878,6 @@ class _AgentWorker:
             # here: its router drives vLLM engines, so the same per-family profiles
             # describe how those models are told to reason.
             return {"mechanism": "kwarg", "levels": [], "can_disable": True}
-        from ...config.models import thinking_profile, thinking_can_disable
         profile = thinking_profile(self.model)
         return {
             "mechanism": profile["mechanism"],
@@ -972,7 +970,6 @@ class _AgentWorker:
         user opening a drawer, not the model taking a step, and routing it through the
         guardrail pipeline would scatter tool cards through their transcript.
         """
-        from ...context.capabilities import panel_sections as _declared
 
         if self._agent is None or self._loop is None:
             fut: Any = concurrent.futures.Future()
@@ -1082,9 +1079,9 @@ class _AgentWorker:
         if not text:
             return 0
         try:
-            from ...query_engine.backends.factory import get_backend
             return get_backend().count_text_tokens(self.model, text, allow_network=False)
         except Exception:
+            logger.debug("_count_tokens: a best-effort step failed and was skipped", exc_info=True)
             return 0
 
     def context_overhead_is_measured(self) -> bool:
@@ -1142,9 +1139,6 @@ class _AgentWorker:
         if agent is None:
             return 0
         try:
-            from ...query_engine.backends.factory import get_backend
-            from ...query_engine import token_calibration
-            from ...agent_core import build_base_system_content
             backend = get_backend()
             # getattr, not a direct call: a backend stub without the calibration
             # should fall through to the estimate, not lose the overhead entirely
@@ -1180,6 +1174,7 @@ class _AgentWorker:
                 )
             return total
         except Exception:
+            logger.debug("context_overhead_tokens: a best-effort step failed and was skipped", exc_info=True)
             return 0
 
     def cancel(self) -> bool:

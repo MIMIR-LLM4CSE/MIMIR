@@ -20,7 +20,10 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
+import logging
 from typing import Any, Callable, Iterator
+
+logger = logging.getLogger(__name__)
 
 # The active event sink for the current context. None -> print to stdout.
 _current_sink: contextvars.ContextVar[Callable[[dict], None] | None] = (
@@ -64,7 +67,7 @@ def captured_emitter() -> Callable[[dict], None] | None:
         try:
             sink(event)
         except Exception:
-            pass
+            logger.debug("_emit: a best-effort step failed and was skipped", exc_info=True)
 
     return _emit
 

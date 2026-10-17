@@ -104,11 +104,11 @@ def release() -> None:
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except Exception:
-        pass
+        logger.debug("release: a best-effort step failed and was skipped", exc_info=True)
     try:
         handle.close()
     except Exception:
-        pass
+        logger.debug("release: a best-effort step failed and was skipped", exc_info=True)
 
 
 def registry_path() -> str:
@@ -209,6 +209,7 @@ def port_answers(host: str, port: int, timeout: float = _PROBE_TIMEOUT) -> bool:
         infos = socket.getaddrinfo(host or "localhost", int(port),
                                    type=socket.SOCK_STREAM)
     except Exception:
+        logger.debug("port_answers: a best-effort step failed and was skipped", exc_info=True)
         return False
     for family, socktype, proto, _canon, addr in infos:
         try:
@@ -217,6 +218,7 @@ def port_answers(host: str, port: int, timeout: float = _PROBE_TIMEOUT) -> bool:
                 sock.connect(addr)
                 return True
         except Exception:
+            logger.debug("port_answers: a best-effort step failed and was skipped", exc_info=True)
             continue
     return False
 

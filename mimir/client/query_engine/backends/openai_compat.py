@@ -221,7 +221,7 @@ def _log_cache_usage(usage: Any) -> None:
             getattr(usage, "completion_tokens", 0) or 0,
         )
     except Exception:
-        pass
+        logger.debug("_log_cache_usage: a best-effort step failed and was skipped", exc_info=True)
 
 
 # Servers that 400 on `stream_options`. Like `_NO_TEMPLATE_KWARGS`: absorb the one

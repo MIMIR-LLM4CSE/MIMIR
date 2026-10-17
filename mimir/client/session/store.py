@@ -300,6 +300,7 @@ def _stored_rev(path: str) -> int:
         with open(path, "r", encoding="utf-8") as f:
             return int(json.load(f).get("rev") or 0)
     except Exception:
+        logger.debug("_stored_rev: a best-effort step failed and was skipped", exc_info=True)
         return 0
 
 

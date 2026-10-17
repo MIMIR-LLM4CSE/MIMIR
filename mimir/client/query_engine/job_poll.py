@@ -274,4 +274,5 @@ async def read_summary(
                        label, tool, call_timeout or 0)
         return {}
     except Exception:
+        logger.debug("read_summary: a best-effort step failed and was skipped", exc_info=True)
         return {}

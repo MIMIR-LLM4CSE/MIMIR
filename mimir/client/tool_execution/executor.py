@@ -2,37 +2,44 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 from typing import Any
 
-
+from ...servers._shared.state_paths import scratch_dir
+from ..config import paths
+from ..config.models import (
+    CALLER_MODE_META,
+    CALLER_MODEL_META,
+    GRANTABLE_TOOLS_META,
+    GRANTABLE_WRITERS_META,
+    SUBAGENT_LEVEL_META,
+)
+from ..config.settings import DEFAULT_SUBAGENT_LEVEL
+from ..context.capabilities import (
+    CACHEABLE,
+    CODE_NAV,
+    DELEGATE,
+    EDIT,
+    JUDGE,
+    has_cap,
+    names_with_cap,
+    target_path_arg,
+)
+from ..context.execution_context import ExecutionContext, failed_runs, unsettled_runs
+from ..core.ports import AgentPort
 from ..event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.approval import APPROVAL_MODE_META
-from ..config.settings import DEFAULT_SUBAGENT_LEVEL
-from ..config.models import (
-    CALLER_MODE_META, CALLER_MODEL_META, GRANTABLE_TOOLS_META,
-    GRANTABLE_WRITERS_META, SUBAGENT_LEVEL_META,
-)
 from ..guardrails.policy.engine import evaluate_tool_preconditions
-from ..context.execution_context import failed_runs, unsettled_runs
-from ..context.capabilities import (
-    CACHEABLE, CODE_NAV, DELEGATE, EDIT, JUDGE,
-    has_cap, names_with_cap,
-    target_path_arg,
-)
+from ..guardrails.toollist import grantable_tools, grantable_writers
+from ..protocol.tool_result import json_error_payload, normalize_tool_content, parse_tool_payload
 from . import bash_effect
-from ..protocol.tool_result import json_error_payload
+from .normalizer import _make_hashable
 from .plugins import PostToolRegistry
 from .validation import absolute_workspace_path, is_scratch_path
-from .normalizer import _make_hashable
-from ..config import paths
-from ...servers._shared.state_paths import scratch_dir
-from ..guardrails.toollist import grantable_tools, grantable_writers
-from ..context.execution_context import ExecutionContext
-from ..protocol.tool_result import parse_tool_payload
-from ..protocol.tool_result import normalize_tool_content
-from ..core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 _CONTINUATION_CHUNK = 120
 _OUTLINE_HINT_MAX_SYMBOLS = 40
@@ -111,6 +118,7 @@ async def _build_outline_hint(
         result = await agent.run_tool(outline_tools[0], {"path": path}, execution_context=None)
         symbols = (parse_tool_payload(result) or {}).get("symbols") or []
     except Exception:
+        logger.debug("_build_outline_hint: a best-effort step failed and was skipped", exc_info=True)
         return ""
     if not symbols:
         return ""
@@ -266,6 +274,7 @@ def _build_fork_hint(
     try:
         payload = json.loads(result)
     except Exception:
+        logger.debug("_build_fork_hint: a best-effort step failed and was skipped", exc_info=True)
         return ""
     # Only a *new* file can be a fork; rewriting one in place is the behaviour we want.
     if not isinstance(payload, dict) or payload.get("operation") != "created":
@@ -328,6 +337,7 @@ async def run_post_write_validation(
     try:
         auto_validation = await agent.auto_validate_written_file(target_path, execution_context)
     except Exception:
+        logger.debug("run_post_write_validation: a best-effort step failed and was skipped", exc_info=True)
         return ""
     if auto_validation:
         return "\n\nAUTO_VALIDATION\n" + auto_validation
@@ -355,6 +365,7 @@ async def run_post_tool_annotations(
             if inspect.isawaitable(produced):
                 produced = await produced
         except Exception:
+            logger.debug("run_post_tool_annotations: a best-effort step failed and was skipped", exc_info=True)
             continue
         if produced:
             text += str(produced)
@@ -386,6 +397,7 @@ def _make_subagent_progress_cb(call_id: str):
         try:
             payload = json.loads(message or "")
         except Exception:
+            logger.debug("_on_progress: a best-effort step failed and was skipped", exc_info=True)
             return
         if not isinstance(payload, dict) or payload.get("v") != 1:
             return

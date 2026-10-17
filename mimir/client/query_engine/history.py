@@ -10,22 +10,31 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from typing import Any
 
+from ..config.limits import (
+    INTRA_QUERY_COMPACT_CHARS as _INTRA_QUERY_COMPACT_CHARS,
+)
+from ..config.limits import (
+    INTRA_QUERY_COMPACT_TOKENS as _INTRA_QUERY_COMPACT_TOKENS,
+)
+from ..config.limits import (
+    TOOL_HISTORY_CHAR_BUDGET as _TOOL_HISTORY_CHAR_BUDGET,
+)
+from ..config.limits import (
+    TOOL_HISTORY_TOKEN_BUDGET as _TOOL_HISTORY_TOKEN_BUDGET,
+)
+from ..context.execution_context import ExecutionContext
 from ..event_sink import emit
 from ..protocol.messages import (
     message_wire_form,
     reconcile_tool_pairs,
 )
-from ..config.limits import (
-    TOOL_HISTORY_CHAR_BUDGET as _TOOL_HISTORY_CHAR_BUDGET,
-    TOOL_HISTORY_TOKEN_BUDGET as _TOOL_HISTORY_TOKEN_BUDGET,
-    INTRA_QUERY_COMPACT_TOKENS as _INTRA_QUERY_COMPACT_TOKENS,
-    INTRA_QUERY_COMPACT_CHARS as _INTRA_QUERY_COMPACT_CHARS,
-)
 from .context_budget import context_budget_for
-from ..context.execution_context import ExecutionContext
+
+logger = logging.getLogger(__name__)
 
 
 class ContextOverflowError(RuntimeError):
@@ -384,6 +393,7 @@ def _maybe_compact_intra_query(
     try:
         summary_messages = compact_fn(middle)
     except Exception:
+        logger.debug("_maybe_compact_intra_query: a best-effort step failed and was skipped", exc_info=True)
         return  # compaction failed — silently continue without it
 
     # Kept pairs go after the summary: they are the methodology the following steps

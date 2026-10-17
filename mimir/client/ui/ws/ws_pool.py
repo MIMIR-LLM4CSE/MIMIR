@@ -491,7 +491,7 @@ class _AgentPool:
             try:
                 on_wait()
             except Exception:
-                pass
+                logger.debug("worker_for: a best-effort step failed and was skipped", exc_info=True)
         try:
             worker = await self._build(session_id)
         except BaseException as exc:
@@ -642,6 +642,7 @@ class _AgentPool:
             if worker.has_work_pending():
                 return False
         except Exception:
+            logger.debug("releasable: a best-effort step failed and was skipped", exc_info=True)
             return False
         if worker.watched_job_keys():
             return False
@@ -658,6 +659,7 @@ class _AgentPool:
                 if not out_q.empty():
                     return False
             except Exception:
+                logger.debug("releasable: a best-effort step failed and was skipped", exc_info=True)
                 return False
         return True
 
@@ -914,6 +916,7 @@ class _AgentPool:
         try:
             return worker.is_busy()
         except Exception:
+            logger.debug("is_busy: a best-effort step failed and was skipped", exc_info=True)
             return False
 
     def is_parked(self, session_id: str | None) -> bool:

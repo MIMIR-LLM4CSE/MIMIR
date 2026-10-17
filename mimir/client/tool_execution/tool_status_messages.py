@@ -5,12 +5,15 @@ Status message formatting for MCP agent tool calls.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
 
-from ..context.capabilities import READ, SEARCH_WITH_PATH, has_cap, CONVENTIONAL_PATH_ARGS
-from ..context.capabilities import arg_role
+from ..context.capabilities import CONVENTIONAL_PATH_ARGS, READ, SEARCH_WITH_PATH, arg_role, has_cap
+
+logger = logging.getLogger(__name__)
 
 def _relpath(path: str) -> str:
     """The file name alone — what a tool-activity row should show.
@@ -333,7 +336,6 @@ def _url_preview(url: str) -> str:
     names the thing, the middle is navigation.
     """
     try:
-        from urllib.parse import urlparse
         parsed = urlparse(url)
         # `hostname`, never `netloc`: a url may carry `user:password@`, and a row is
         # read over a shoulder and saved into a transcript. The port is added back
@@ -342,6 +344,7 @@ def _url_preview(url: str) -> str:
         if host and parsed.port:
             host = f"{host}:{parsed.port}"
     except Exception:
+        logger.debug("_url_preview: a best-effort step failed and was skipped", exc_info=True)
         return _clip(_bare_authority(url), _PREVIEW_LIMIT)
     if not host:
         return _clip(_bare_authority(url), _PREVIEW_LIMIT)

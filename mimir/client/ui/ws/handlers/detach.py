@@ -195,6 +195,7 @@ class DetachHandlers:
                 f"stops them")
             await self._command_reply("detach", title, tone="quiet", transient=True)
         except Exception:
+            logger.debug("_restore_detached_autonomy: the client went away mid-send", exc_info=True)
             return
         logger.info("reattach: %d claim(s) taken back; autonomy restored to %s from "
                     "the detached run", len(held), level)
@@ -220,7 +221,7 @@ class DetachHandlers:
                     "reasons": report["reasons"],
                 }))
             except Exception:
-                pass
+                logger.debug("_handle_shutdown: the client went away mid-send", exc_info=True)
             return
         try:
             await self.ws.send(json.dumps({
@@ -229,7 +230,7 @@ class DetachHandlers:
                 "reasons": report["reasons"],
             }))
         except Exception:
-            pass
+            logger.debug("_handle_shutdown: the client went away mid-send", exc_info=True)
         logger.info("shutdown: requested by the client (forced=%s; %s)", force,
                     "; ".join(report["reasons"]) or "nothing was running")
         self.pool.request_stop()
@@ -312,6 +313,7 @@ class DetachHandlers:
                      f"other conversation(s) still keep it alive"),
                     tone="quiet", transient=True)
             except Exception:
+                logger.debug("_handle_detach: the client went away mid-send", exc_info=True)
                 return
             logger.info("detach: taken back for %s; %d claim(s) left",
                         ", ".join(str(s) for s in named) if isinstance(named, list)
@@ -327,7 +329,7 @@ class DetachHandlers:
                              "Use manual, auto, or auto_all."),
                 }))
             except Exception:
-                pass
+                logger.debug("_handle_detach: the client went away mid-send", exc_info=True)
             return
 
         # A claim is a *conversation's* request to be left running, so the set is the
@@ -445,6 +447,7 @@ class DetachHandlers:
             await self._command_reply("detach", title, items=items, note=note,
                                       tone="quiet", transient=True)
         except Exception:
+            logger.debug("_handle_detach: the client went away mid-send", exc_info=True)
             return
         logger.info("detach: this server is now survivable (autonomy %s over %d "
                     "conversation(s))", autonomy, len(targeted))

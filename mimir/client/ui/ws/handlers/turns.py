@@ -83,7 +83,7 @@ class TurnHandlers:
                 "history_messages_full": len(self.conv.history_full),
             }))
         except Exception:
-            pass
+            logger.debug("_emit_context_usage: the client went away mid-send", exc_info=True)
 
     async def _announce_steer_turns(self, texts: list[str]) -> None:
         """Tell the client its unread steering is being answered by a turn of its own:
@@ -95,6 +95,7 @@ class TurnHandlers:
                     "starts_turn": i == len(texts) - 1,
                 }))
             except Exception:
+                logger.debug("_announce_steer_turns: the client went away mid-send", exc_info=True)
                 return
 
     async def _announce_detached_answer(self, extras: dict) -> None:
@@ -132,6 +133,7 @@ class TurnHandlers:
         try:
             summary = await asyncio.wrap_future(self.worker.compact_middle(list(middle)))
         except Exception:
+            logger.debug("_compact_history: a best-effort step failed and was skipped", exc_info=True)
             return False
         # compact_messages returns its input unchanged when summarization failed.
         if not summary or len(summary) >= len(middle):
@@ -381,7 +383,7 @@ class TurnHandlers:
             await self.ws.send(json.dumps(
                 {"type": "transcript_resync", "session_id": session_id}))
         except Exception:
-            pass
+            logger.debug("_send_transcript_resync: the client went away mid-send", exc_info=True)
 
     async def _handle_steer(self, msg: dict) -> None:
         """A message typed while the agent is busy — inject it into the running run.
@@ -439,7 +441,7 @@ class TurnHandlers:
         try:
             await self.ws.send(json.dumps(ev))
         except Exception:
-            pass
+            logger.debug("_announce_steer_turn: the client went away mid-send", exc_info=True)
 
     def _rows_for(self, session_id: str | None) -> dict[str, str]:
         """The divertible tool rows of one conversation's running turn."""

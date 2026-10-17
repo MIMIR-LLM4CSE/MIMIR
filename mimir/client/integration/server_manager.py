@@ -138,6 +138,7 @@ def _description_without_args_block(doc: str, parameters: dict) -> str:
         kept = [line for k, line in enumerate(lines) if k not in drop]
         return "\n".join(kept).rstrip()
     except Exception:  # pragma: no cover - a docstring must never break registration
+        logger.debug("_description_without_args_block: a best-effort step failed and was skipped", exc_info=True)
         return doc
 
 
@@ -199,6 +200,7 @@ def _schema_for_model(tool: Any) -> dict:
     try:
         described = _args_block_descriptions(getattr(tool, "description", "") or "")
     except Exception:  # pragma: no cover - a docstring must never break registration
+        logger.debug("_schema_for_model: a best-effort step failed and was skipped", exc_info=True)
         return schema
     for name, prop in props.items():
         if isinstance(prop, dict) and not prop.get("description") and described.get(name):
@@ -298,6 +300,7 @@ def _make_elicitation_callback(agent: AgentPort):
                     timeout_secs,
                 )
         except Exception:
+            logger.debug("_callback: a best-effort step failed and was skipped", exc_info=True)
             return types.ElicitResult(action="cancel")
 
         result = result or {}
@@ -516,6 +519,7 @@ async def register_resources(*, agent: AgentPort, name: str, session: Any) -> in
     try:
         res_listing = await session.list_resources()
     except Exception:
+        logger.debug("register_resources: a best-effort step failed and was skipped", exc_info=True)
         return 0
     for resource in res_listing.resources:
         uri = str(resource.uri)

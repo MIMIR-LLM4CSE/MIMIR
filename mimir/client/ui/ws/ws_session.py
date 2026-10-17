@@ -156,6 +156,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
             try:
                 await self.ws.send(json.dumps(greeting))
             except Exception:
+                logger.debug("run: the client went away mid-send", exc_info=True)
                 return
 
             # ── Session initialisation ────────────────────────────────────────────
@@ -195,6 +196,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
                 try:
                     await self.ws.send(json.dumps(self._greeting()))
                 except Exception:
+                    logger.debug("run: the client went away mid-send", exc_info=True)
                     return
 
             drain_task = asyncio.create_task(self._drain_loop())
@@ -209,7 +211,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
                 async for raw in self.ws:
                     await self._handle(raw)
             except Exception:
-                pass
+                logger.debug("run: a best-effort step failed and was skipped", exc_info=True)
         finally:
             # Asked for rather than read: this block runs on every way out, including
             # a greeting that never reached the socket, and cleanup that raises here
@@ -266,7 +268,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
                     "type": "error",
                     "text": f"  ✗ {msg.get('type')} failed: {type(exc).__name__}: {exc}\n"}))
             except Exception:
-                pass
+                logger.debug("_handle: the client went away mid-send", exc_info=True)
 
     async def _send_replay(self) -> None:
         """Send what this session produced past the client's watermark, then go live.
@@ -330,6 +332,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
                     "truncated": truncated and start == 0,
                 }, default=str))
             except Exception:
+                logger.debug("_send_replay: the client went away mid-send", exc_info=True)
                 return
         # Only now: a gate raised before the frames were sent would have discarded the
         # live events that arrived between the read and the send.
@@ -342,7 +345,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
         try:
             await self.ws.send(json.dumps({"type": "output", "text": f"  {text}\n"}))
         except Exception:
-            pass
+            logger.debug("_notify: the client went away mid-send", exc_info=True)
 
     def _apply_setting(self, name: str, value: Any) -> str:
         """Apply a UI knob to every live conversation, and to the next agent built.

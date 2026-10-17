@@ -3,77 +3,94 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession
 
-from .guardrails.policy.approval import ApprovalManager, denial_kind
+from ..servers._shared.state_paths import ensure_scratch_home, scratch_home, session_state_dir
 from .config import (
-    DEFAULT_MODEL,
-    DEFAULT_THINKING_DEPTH,
-    THINKING_DEPTH_BUDGETS,
-    GLOBAL_STATE_DIR,
-    STATE_DIR,
-    WORKSPACE_ROOT,
-    SERVER_BASE,
-    SKILL_BASE,
-    SERVERS,
-    READONLY_MODES,
+        DEFAULT_MODEL,
+        DEFAULT_THINKING_DEPTH,
+        GLOBAL_STATE_DIR,
+        READONLY_MODES,
+        SERVER_BASE,
+        SERVERS,
+        SKILL_BASE,
+        STATE_DIR,
+        THINKING_DEPTH_BUDGETS,
+        WORKSPACE_ROOT,
 )
 from .config.models import enforcement_level
+from .config.preferences import load_disabled, load_subagent_level, load_temperature, save_disabled
 from .context import (
-    CARRY,
-    SOURCE_FILE_EXTENSIONS,
-    build_execution_context,
-    carry_context_from_json,
-    carry_context_to_json,
-    carry_path_fields,
-    fields_with,
-    validate_execution_context,
+        CARRY,
+        SOURCE_FILE_EXTENSIONS,
+        build_execution_context,
+        carry_context_from_json,
+        carry_context_to_json,
+        carry_path_fields,
+        fields_with,
+        validate_execution_context,
 )
 from .context.capabilities import (
-    DELEGATE,
-    NON_BATCH,
-    SENSITIVE,
-    TASK_PLANNING,
-    ToolCaps,
-    fallbacks,
-    is_write,
-    names_with_cap,
-    path_args,
-    unannotated_live_tools,
-    target_path_arg,
+        DELEGATE,
+        NON_BATCH,
+        SENSITIVE,
+        TASK_PLANNING,
+        ToolCaps,
+        fallbacks,
+        is_write,
+        names_with_cap,
+        path_args,
+        target_path_arg,
+        unannotated_live_tools,
 )
-from .prompt.system_prompt import (
-    build_base_system_content,
-    build_system_content,
-)
-from .tool_execution.validation import (
-    absolute_workspace_path,
-    auto_validate_written_file,
-)
-from .integration.server_manager import connect_server as connect_server_runtime
-from .integration.server_manager import connect_servers as connect_servers_runtime
-from .query_engine import run_agent_query
-from .guardrails.toollist import tools_for_readonly_mode
-from .event_sink import set_event_sink, reset_event_sink
+from .context.execution_context import ExecutionContext
 from .core.human import TerminalHuman
 from .core.ports import HumanIO
 from .core.settings import apply_setting
-from .protocol.tool_result import (
-    json_error_payload,
+from .event_sink import reset_event_sink, set_event_sink
+from .extensions import all_server_descriptions, all_servers, load_plugins, resolve_skills_dir
+from .guardrails.nudges.plugins import NudgeRegistry
+from .guardrails.policy.approval import ApprovalManager, denial_kind
+from .guardrails.toollist import tools_for_readonly_mode
+from .guardrails.workflow import (
+        STAGE_DROP_OR_STOP,
+        STAGE_HANDBACK,
+        denial_scope_count,
+        denial_stage,
 )
-from .tool_execution.normalizer import (
-    normalize_tool_arguments,
-    normalize_tool_path_argument,
-    normalize_workspace_path,
-    rewrite_tool_for_context,
+from .integration.server_manager import connect_server as connect_server_runtime
+from .integration.server_manager import connect_servers as connect_servers_runtime
+from .prompt.system_prompt import (
+        build_base_system_content,
+        build_system_content,
+)
+from .protocol.tool_result import (
+        json_error_payload,
+)
+from .query_engine import run_agent_query
+from .query_engine.backends.factory import get_backend
+from .query_engine.history import (
+        _force_fit_to_window,
+        compacted_exchanges,
+        compaction_summary_message,
+        served_compaction_instruction,
 )
 from .tool_execution.executor import execute_tool_call
-from .context.execution_context import ExecutionContext
-
+from .tool_execution.normalizer import (
+        normalize_tool_arguments,
+        normalize_tool_path_argument,
+        normalize_workspace_path,
+        rewrite_tool_for_context,
+)
+from .tool_execution.validation import (
+        absolute_workspace_path,
+        auto_validate_written_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +178,6 @@ class MimirAgent:
         # Note what does NOT follow it: STATE_DIR and MIMIR_DIR stay the real
         # workspace's, so memory, preferences and .mimir extensions are shared.
         self.workspace_root: str = WORKSPACE_ROOT
-        import os
         # The conversation this agent works for, for its whole life. Several agents run
         # in this one process — one per concurrent session, plus every sub-agent — sharing
         # one `os.environ`, so an id in the environment could only ever name one of them.
@@ -180,7 +196,6 @@ class MimirAgent:
         # environment instead of re-deriving (and re-vetting) the path per call.
         # A refused /tmp (symlink, foreign owner) falls back to the private state dir,
         # which is where the scratchpad used to live — degraded, never absent.
-        from ..servers._shared.state_paths import ensure_scratch_home, scratch_home
         resolved = ensure_scratch_home()
         if not resolved:
             resolved = os.path.join(STATE_DIR, "scratch")
@@ -209,7 +224,6 @@ class MimirAgent:
         # Sampling temperature the user chose for this model, or None for the model's
         # own (nothing sent). Persisted per model, so a sub-agent of the same model
         # starts from it too.
-        from .config.preferences import load_temperature
         self.temperature: float | None = load_temperature(model)
         self.sessions: dict[str, ClientSession] = {}
         self.tool_owner: dict[str, str] = {}
@@ -258,24 +272,23 @@ class MimirAgent:
         self.context_mode: str = "full"
         # Cancellation flag: set by ws_server when the user presses Stop.
         # _stream_chat checks this on every LLM chunk so streaming aborts immediately.
-        import threading as _threading
-        self._cancel_flag = _threading.Event()
+        self._cancel_flag = threading.Event()
 
         self.skills: dict[str, dict[str, Any]] = {}
         self.load_skills(SKILL_BASE)
         # Layer user-provided skills from .mimir/skills on top (a same-named user skill
         # overrides the bundled one). See extensions.resolve_skills_dir.
-        from .extensions import resolve_skills_dir
         self.load_skills(resolve_skills_dir(), merge=True)
 
         # Application extension packs: import custom policy/nudge modules from the
         # plugins dir so their descriptors register before the first query. Locked
         # policies + toggleable nudges; see client/extensions/plugins.py.
         try:
-            from .extensions import load_plugins
             load_plugins()
         except Exception:
-            pass
+            # An extension pack that fails to load must not stop the agent; it must
+            # not go unnoticed either.
+            logger.warning("extension packs could not all be loaded", exc_info=True)
 
         # Operator toggles (soft-hide): servers/skills/nudges the user switched off in
         # the panel. Only *disabled* names are persisted (.mimir/preferences.json);
@@ -285,7 +298,6 @@ class MimirAgent:
         # from; disabled nudges are skipped by
         # the nudge dispatcher. Application policies are locked (no toggle). See
         # config/preferences.py.
-        from .config.preferences import load_disabled, load_subagent_level
         self.disabled_servers, self.disabled_skills, self.disabled_nudges = load_disabled()
         # How far a sub-agent of this agent may go (config.settings.SUBAGENT_LEVELS).
         # The user's call, persisted like the toggles above; the weakest rung when they
@@ -346,6 +358,7 @@ class MimirAgent:
                 tool_name, self.tool_owner.get(tool_name, "unknown"), arguments
             )
         except Exception:
+            logger.debug("approval_scope: a best-effort step failed and was skipped", exc_info=True)
             return ""
 
     def record_denied_tool_call(
@@ -427,7 +440,6 @@ class MimirAgent:
         """
         if not names_with_cap(TASK_PLANNING, self.tool_caps):
             return ""
-        from ..servers._shared.state_paths import session_state_dir
         return os.path.join(
             session_state_dir(STATE_DIR, self.session_id), "todo_list.md"
         )
@@ -646,12 +658,6 @@ class MimirAgent:
         readings it can carry so the model picks one instead of retrying. The stage
         (see guardrails.workflow) narrows that choice as refusals accumulate.
         """
-        from .guardrails.workflow import (
-            STAGE_DROP_OR_STOP,
-            STAGE_HANDBACK,
-            denial_scope_count,
-            denial_stage,
-        )
 
         scope = self.approval_scope(tool_name, arguments)
         context = execution_context if execution_context is not None else build_execution_context()
@@ -733,6 +739,7 @@ class MimirAgent:
         try:
             result = await session.read_resource(uri)
         except Exception:
+            logger.debug("read_resource: a best-effort step failed and was skipped", exc_info=True)
             return ""
         parts = [
             c.text for c in getattr(result, "contents", [])
@@ -834,7 +841,6 @@ class MimirAgent:
         self._save_toggles()
 
     def _save_toggles(self) -> None:
-        from .config.preferences import save_disabled
         save_disabled(self.disabled_servers, self.disabled_skills, self.disabled_nudges)
 
     def toggles_state(self) -> dict:
@@ -845,7 +851,6 @@ class MimirAgent:
         connect; skills from the loaded ``self.skills`` map (which already includes user
         skills). Each row carries a one-line ``description`` for the hover tooltip.
         """
-        from .extensions import all_servers, all_server_descriptions
         server_descriptions = all_server_descriptions()
         servers = [
             {
@@ -872,7 +877,6 @@ class MimirAgent:
         ]
         # Application nudges from registered extension packs. Locked application
         # policies are intentionally NOT listed — they cannot be toggled off.
-        from .guardrails.nudges.plugins import NudgeRegistry
         nudges = [
             {
                 "name": name,
@@ -955,7 +959,6 @@ class MimirAgent:
                 ),
             },
         ]
-        from .query_engine.backends.factory import get_backend
 
         try:
             msg = get_backend().chat(
@@ -963,6 +966,7 @@ class MimirAgent:
                 token_callback=_discard_token,
             )
         except Exception:
+            logger.debug("compact_history: a best-effort step failed and was skipped", exc_info=True)
             return ""
         return (msg or {}).get("content") or "" if isinstance(msg, dict) else ""
 
@@ -983,11 +987,6 @@ class MimirAgent:
         """
         if not middle:
             return middle
-        from .query_engine.backends.factory import get_backend
-        from .query_engine.history import (
-            _force_fit_to_window, compacted_exchanges, compaction_summary_message,
-            served_compaction_instruction,
-        )
 
         backend = get_backend()
         tok = lambda t: backend.count_text_tokens(self.model, t)  # noqa: E731
@@ -1007,6 +1006,7 @@ class MimirAgent:
                 token_callback=_discard_token,
             )
         except Exception:
+            logger.debug("compact_messages: a best-effort step failed and was skipped", exc_info=True)
             return middle
         summary = (msg or {}).get("content", "") if isinstance(msg, dict) else ""
         if not summary:
@@ -1111,12 +1111,6 @@ class MimirAgent:
         finally:
             if token is not None:
                 reset_event_sink(token)
-
-    async def chat_loop(self) -> None:
-        # Lazy import: the CLI chat frontend lives in ``ui``; the core does not
-        # depend on a frontend at load time.
-        from .ui.cli.chat_session import run_chat_session
-        await run_chat_session(self)
 
     async def cleanup(self) -> None:
         await self.exit_stack.aclose()

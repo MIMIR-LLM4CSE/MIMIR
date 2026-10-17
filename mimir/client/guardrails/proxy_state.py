@@ -7,6 +7,10 @@ and needed only by a conversation that runs an optimisation at all.
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def active_proxy_source(session_id: str | None = None) -> str:
     """The source file of the currently active proxy optimization session, or "".
@@ -33,4 +37,5 @@ def active_proxy_source(session_id: str | None = None) -> str:
         src = cfg.get("proxy_source_path") if isinstance(cfg, dict) else None
         return src if isinstance(src, str) else ""
     except Exception:
+        logger.debug("active_proxy_source: a best-effort step failed and was skipped", exc_info=True)
         return ""

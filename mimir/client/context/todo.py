@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+
+logger = logging.getLogger(__name__)
 
 # A step the plan itself marked aspirational ("(optional) convergence study").
 # Without this, such a step is stored as a plain `- [ ]` like any other and, since
@@ -53,6 +56,7 @@ def load_todo_items(todo_file: str) -> list[dict]:
                     items[d]["done"] for d in step_deps if d < len(items)
                 )
         except Exception:
+            logger.debug("load_todo_items: a best-effort step failed and was skipped", exc_info=True)
             pass  # deps annotation is best-effort
 
     return items

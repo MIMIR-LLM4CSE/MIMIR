@@ -55,6 +55,7 @@ def _is_interactive_session(agent: AgentPort) -> bool:
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()
     except Exception:
+        logger.debug("_is_interactive_session: a best-effort step failed and was skipped", exc_info=True)
         return False
 
 
@@ -244,6 +245,7 @@ def _enrich_violation_payload(
     try:
         payload = json.loads(violation)
     except Exception:
+        logger.debug("_enrich_violation_payload: a best-effort step failed and was skipped", exc_info=True)
         return violation
 
     if not isinstance(payload, dict):

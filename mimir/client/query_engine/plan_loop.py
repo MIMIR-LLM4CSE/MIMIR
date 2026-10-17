@@ -7,41 +7,46 @@ switches mode mid-draft — it hands the turn to the agent loop.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
-from ..event_sink import emit
-from ..context.execution_context import plan_evidence_ready
-from ..context.capabilities import DELEGATE, arg_role, names_with_cap
-from ..context.signals import query_requires_repo_discovery
 from ..config.limits import PLAN_EXPLORE_MAX_TURNS
 from ..config.models import resolve_enforcement
+from ..context.capabilities import DELEGATE, arg_role, names_with_cap
+from ..context.execution_context import ExecutionContext, plan_evidence_ready
+from ..context.signals import query_requires_repo_discovery
+from ..core.ports import AgentPort
+from ..event_sink import emit
+from ..guardrails.nudges import inject_reminder
+from ..guardrails.toollist import tools_for_plan_mode
 from ..guardrails.workflow import (
-    PLAN_TODO_NUDGE_EARLY,
-    PLAN_TODO_NUDGE_LATE,
+    PLAN_ALREADY_RECORDED_ERROR,
+    PLAN_APPROVED_EXECUTE,
     PLAN_DELIVER_ANSWER,
     PLAN_DELIVER_ANSWER_FIRM,
-    PLAN_ALREADY_RECORDED_ERROR,
+    PLAN_EXPLORE_BUDGET_SPENT,
     PLAN_EXPLORE_DELEGATE,
     PLAN_EXPLORE_FIRST,
-    PLAN_EXPLORE_BUDGET_SPENT,
-    PLAN_APPROVED_EXECUTE,
-    PLAN_REWORK_NUDGE,
-    PLAN_REJECTED_STOP,
     PLAN_REJECTED_ANSWER,
+    PLAN_REJECTED_STOP,
+    PLAN_REWORK_NUDGE,
+    PLAN_TODO_NUDGE_EARLY,
+    PLAN_TODO_NUDGE_LATE,
     plan_revision_nudge,
 )
-from ..guardrails.nudges import inject_reminder
-from ..protocol.tool_call import normalize_arguments
-from ..protocol.tool_call import as_dict
+from ..protocol.tool_call import as_dict, normalize_arguments
 from .deferral import KIND_PLAN_DECISION, deferred_prompts, mark_deferred
 from .loop_base import (
-    ModeSwitch, StepLoop, TurnContext, _advertised_tools, _drain_steer,
+    ModeSwitch,
+    StepLoop,
+    TurnContext,
+    _advertised_tools,
+    _drain_steer,
     _rebuild_system_content,
 )
 from .readonly_guard import filter_readonly_tool_calls, refusal_reply
-from ..guardrails.toollist import tools_for_plan_mode
-from ..context.execution_context import ExecutionContext
-from ..core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 
 _PLAN_ACCEPT = "Accept & start"
@@ -159,6 +164,7 @@ async def _request_plan_decision(agent: AgentPort) -> tuple[str, str]:
             }],
         )
     except Exception:
+        logger.debug("_request_plan_decision: a best-effort step failed and was skipped", exc_info=True)
         return "none", ""
     answers = (resp or {}).get("answers") or []
     answer = answers[0] if answers else {}
@@ -398,7 +404,7 @@ class PlanLoop(StepLoop):
                 try:
                     apply("mode", "agent")
                 except Exception:
-                    pass
+                    logger.debug("decide: a best-effort step failed and was skipped", exc_info=True)
             emit({"type": "mode", "mode": "agent"})
             # Through the shared rule: the agent-mode prompt renders the checklist this
             # plan just wrote, and the skill block survives the handoff.

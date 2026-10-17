@@ -3,16 +3,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from abc import ABC
 from typing import Any, Callable
 
 from ...config.limits import CHARS_PER_TOKEN
-from ...protocol.messages import message_wire_form
+from ...protocol.messages import (
+    merge_consecutive_user_messages,
+    message_wire_form,
+    reconcile_tool_pairs,
+)
 from .. import token_calibration
-from ...protocol.messages import merge_consecutive_user_messages, reconcile_tool_pairs
 from .tag_parser import ThinkTagParser
+
+logger = logging.getLogger(__name__)
 
 class PromptTooLongError(ValueError):
     """The prompt does not fit the model's window, as the provider counted it.
@@ -273,7 +279,7 @@ class LLMBackend(ABC):
             if overhead > 0:
                 self._prompt_overhead[model] = overhead
         except Exception:
-            pass
+            logger.debug("note_prompt_usage: a best-effort step failed and was skipped", exc_info=True)
 
     def measured_prompt_overhead(self, model: str) -> int | None:
         """The calibrated overhead for *model*, or None before any call reported one."""
@@ -392,6 +398,7 @@ class LLMBackend(ABC):
         try:
             count = self._tokenize_text(model, text)
         except Exception:
+            logger.debug("count_text_tokens: a best-effort step failed and was skipped", exc_info=True)
             return self._heuristic_tokens(model, text)  # transient failure: don't cache
         if len(self._token_cache) >= _TOKEN_CACHE_CAP:
             self._token_cache.clear()

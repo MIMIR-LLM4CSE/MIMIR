@@ -28,13 +28,16 @@ where we already were.
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import re
 from dataclasses import dataclass
+from xml.etree import ElementTree
+
+from ..context.execution_context import ExecutionContext
 from .observations import _mark_file_validated, _register_validation_failure
 from .workflow import pending_validation_paths
-from ..context.execution_context import ExecutionContext
 
 # Anything larger is not read: the floor is a cheap check, and a multi-megabyte source
 # file is not what it was built for.
@@ -419,7 +422,6 @@ _INI_SECTION_RE = re.compile(r"^[ \t]*\[[^]\n]+\][ \t]*$", re.MULTILINE)
 def _check_xml(text: str, path: str) -> str | None:
     if _XML_ENTITY_RE.search(text):
         return None
-    from xml.etree import ElementTree
     try:
         ElementTree.fromstring(text)
     except ElementTree.ParseError as exc:
@@ -433,7 +435,6 @@ def _check_xml(text: str, path: str) -> str | None:
 def _check_ini(text: str, path: str) -> str | None:
     if not _INI_SECTION_RE.search(text):
         return None
-    import configparser
     # Raw: interpolation would raise on a legitimate `%(name)s` whose key lives in a
     # section this parser never reads, which is a defect report about nothing.
     parser = configparser.RawConfigParser(strict=True)

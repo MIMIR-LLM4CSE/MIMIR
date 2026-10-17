@@ -327,6 +327,7 @@ class _EventBus:
         try:
             return self._log_for(session_id).seq
         except Exception:
+            logger.debug("last_seq: a best-effort step failed and was skipped", exc_info=True)
             return 0
 
     # ── The pump ──────────────────────────────────────────────────────────────
@@ -352,7 +353,7 @@ class _EventBus:
         try:
             self._wake.set()
         except Exception:
-            pass
+            logger.debug("nudge: a best-effort step failed and was skipped", exc_info=True)
 
     async def _pump_loop(self) -> None:
         while True:
@@ -391,12 +392,13 @@ class _EventBus:
         try:
             workers = list(self._pool.items())
         except Exception:
+            logger.debug("_publish_attachment: a best-effort step failed and was skipped", exc_info=True)
             return
         for _sid, worker in workers:
             try:
                 worker.human.unattended_since = self._unattended_since
             except Exception:
-                pass
+                logger.debug("_publish_attachment: a best-effort step failed and was skipped", exc_info=True)
 
     def pump_once(self) -> int:
         """Drain, journal and fan out one round. Returns how many events moved.
@@ -464,6 +466,7 @@ class _EventBus:
         try:
             workers = list(self._pool.items())
         except Exception:
+            logger.debug("_collect: a best-effort step failed and was skipped", exc_info=True)
             return events
         for _sid, worker in workers:
             try:

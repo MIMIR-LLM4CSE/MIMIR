@@ -114,8 +114,10 @@ def _last_seq(session_id: str | None) -> int:
                 try:
                     last = max(last, int(json.loads(line).get("seq", 0)))
                 except Exception:
+                    logger.debug("_last_seq: a best-effort step failed and was skipped", exc_info=True)
                     continue
     except Exception:
+        logger.debug("_last_seq: a best-effort step failed and was skipped", exc_info=True)
         return 0
     return last
 

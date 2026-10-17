@@ -6,21 +6,24 @@ the loop of its mode, then through whichever loop the mode is switched to.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from ..context import validate_execution_context
+from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
+from ..core.settings import normalize_mode
 from ..event_sink import emit
 from ..protocol.messages import reconcile_tool_pairs
-from ..core.settings import normalize_mode
 from .agent_loop import AgentLoop
 from .deferral import KIND_CALLS, KIND_PLAN_DECISION, take_deferred_calls
 from .finalize import _record_turn
 from .loop_base import ModeSwitch, StepLoop, TurnContext
 from .plan_loop import PlanLoop
 from .verification import build_ledger
-from ..context.execution_context import ExecutionContext
-from ..core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 
 def _loop_for(turn: TurnContext, mode: str, system_content: str, *,
@@ -67,7 +70,7 @@ def _emit_interrupted_state(execution_context: ExecutionContext) -> None:
         for row in ledger["rows"]:
             emit({"type": "status", "text": f"    · {row}"})
     except Exception:  # noqa: BLE001 — never mask the failure being reported
-        pass
+        logger.debug("_emit_interrupted_state: a best-effort step failed and was skipped", exc_info=True)
 
 
 

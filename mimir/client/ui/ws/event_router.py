@@ -298,6 +298,7 @@ class EventRouter:
             try:
                 run = run_channel.current_run(name, sid)
             except Exception:
+                logger.debug("_push_run_progress: a best-effort step failed and was skipped", exc_info=True)
                 continue
             if not run:
                 continue

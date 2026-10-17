@@ -32,6 +32,7 @@ binary file costs the annotation, never the tool call.
 from __future__ import annotations
 
 import difflib
+import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -44,11 +45,13 @@ from ..config.limits import (
     BASH_EFFECT_SNAPSHOT_MAX_BYTES,
     BASH_EFFECT_SNAPSHOT_MAX_FILES,
 )
-from ..context.signals import SOURCE_FILE_EXTENSIONS
 from ..context.bash_classify import bash_command_is_readonly, classify_bash_command
 from ..context.capabilities import shell_command_of
 from ..context.execution_context import ExecutionContext
+from ..context.signals import SOURCE_FILE_EXTENSIONS
 from ..core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT_SECS = 10
 
@@ -64,6 +67,7 @@ def _git(root: str, *args: str) -> str | None:
             stdin=subprocess.DEVNULL,
         )
     except Exception:
+        logger.debug("_git: a best-effort step failed and was skipped", exc_info=True)
         return None
     return proc.stdout if proc.returncode == 0 else None
 
@@ -94,6 +98,7 @@ def _read_lines(path: str) -> list[str] | None:
         with open(path, "r", encoding="utf-8", errors="strict") as handle:
             return handle.read().splitlines()
     except Exception:
+        logger.debug("_read_lines: a best-effort step failed and was skipped", exc_info=True)
         return None
 
 
@@ -169,6 +174,7 @@ def _scan(dirs: list[str]) -> dict[str, list[str] | None]:
         try:
             entries = list(os.scandir(directory))
         except Exception:
+            logger.debug("_scan: a best-effort step failed and was skipped", exc_info=True)
             continue
         for entry in entries:
             if len(out) >= BASH_EFFECT_SNAPSHOT_MAX_FILES:
@@ -194,6 +200,7 @@ def capture(
             probe.snapshots = _scan(_candidate_dirs(agent, command, root, execution_context))
         return probe
     except Exception:
+        logger.debug("capture: a best-effort step failed and was skipped", exc_info=True)
         return None
 
 
@@ -328,6 +335,7 @@ def report(probe: _Probe | None, root_display: str = "") -> str:
             text += "\n" + "\n".join(warnings)
         return text
     except Exception:
+        logger.debug("report: a best-effort step failed and was skipped", exc_info=True)
         return ""
 
 
@@ -355,4 +363,5 @@ def created_paths(probe: _Probe | None) -> list[str]:
             if status.strip() == "??" and path not in before_status
         ]
     except Exception:
+        logger.debug("created_paths: a best-effort step failed and was skipped", exc_info=True)
         return []

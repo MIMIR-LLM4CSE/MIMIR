@@ -21,10 +21,10 @@ from ...protocol.events import DURABLE_EVENTS
 from ...session.conversation import Conversation
 from .job_scan import mark_wakes_reported, wake_reported
 from .job_wakes import checkin_text, wake_text
+from .ws_worker import _AgentWorker
 
 if TYPE_CHECKING:
     from .ws_pool import _AgentPool
-    from .ws_worker import _AgentWorker
 
 logger = logging.getLogger(__name__)
 

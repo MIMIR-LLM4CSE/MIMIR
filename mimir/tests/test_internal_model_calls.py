@@ -69,14 +69,17 @@ class _BackendPatch:
         self._originals: list = []
 
     def __enter__(self) -> LLMBackend:
+        from mimir.client import agent_core
         from mimir.client.query_engine.backends import factory
-        self._original = factory.get_backend
-        factory.get_backend = lambda: self._backend
+        # Where it is defined, and where the agent looks it up.
+        for module in (factory, agent_core):
+            self._originals.append((module, module.get_backend))
+            module.get_backend = lambda: self._backend
         return self._backend
 
     def __exit__(self, *exc: object) -> None:
-        from mimir.client.query_engine.backends import factory
-        factory.get_backend = self._original
+        for module, original in self._originals:
+            module.get_backend = original
 
 
 _HISTORY = [

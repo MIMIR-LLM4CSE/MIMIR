@@ -194,7 +194,7 @@ class AnthropicBackend(LLMBackend):
             if isinstance(win, int) and win > 0:
                 return win
         except Exception:
-            pass
+            logger.debug("_fetch_context_window: a best-effort step failed and was skipped", exc_info=True)
         low = model.lower()
         for needle, win in _FALLBACK_WINDOWS:
             if needle in low:

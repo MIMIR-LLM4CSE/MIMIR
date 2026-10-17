@@ -155,6 +155,7 @@ def _read_json(path: str) -> dict | None:
             data = json.load(fh)
         return data if isinstance(data, dict) else None
     except Exception:
+        logger.debug("_read_json: a best-effort step failed and was skipped", exc_info=True)
         return None
 
 
@@ -232,6 +233,7 @@ def _read_exit_code(job_dir: str) -> int | None:
         with open(path, encoding="utf-8") as fh:
             return int(fh.read().strip())
     except Exception:
+        logger.debug("_read_exit_code: a best-effort step failed and was skipped", exc_info=True)
         return None
 
 
@@ -299,6 +301,7 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
             with open(id_path, encoding="utf-8") as fh:
                 job_id = fh.read().strip()
         except Exception:
+            logger.debug("_scan_slurm_jobs: a best-effort step failed and was skipped", exc_info=True)
             continue
         if not job_id:
             continue
@@ -537,6 +540,7 @@ def wake_reported(ev: dict) -> bool:
             kind={"hpc": "slurm", "proxy": "proxy"}.get(ev.get("server") or "", "shell"),
             live=False, exit_code=None))
     except Exception:
+        logger.debug("wake_reported: a best-effort step failed and was skipped", exc_info=True)
         return False
 
 
@@ -575,6 +579,7 @@ def subagent_sessions(session_id: str) -> list[str]:
     try:
         names = sorted(os.listdir(root))
     except Exception:
+        logger.debug("subagent_sessions: a best-effort step failed and was skipped", exc_info=True)
         return []
     return [f"{session_id}/subagents/{name}" for name in names
             if os.path.isdir(os.path.join(root, name))]
@@ -596,6 +601,7 @@ def scan_all_sessions() -> dict[str, list[DetachedJob]]:
     try:
         names = sorted(os.listdir(root))
     except Exception:
+        logger.debug("scan_all_sessions: a best-effort step failed and was skipped", exc_info=True)
         return {}
     for name in names:
         if not os.path.isdir(os.path.join(root, name)):

@@ -59,7 +59,7 @@ def _redirect_output(path: str) -> bool:
             try:
                 stream.flush()
             except Exception:
-                pass
+                logger.debug("_redirect_output: a best-effort step failed and was skipped", exc_info=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except Exception:
         logger.warning("detach: could not open %s", path, exc_info=True)
@@ -74,7 +74,7 @@ def _redirect_output(path: str) -> bool:
         try:
             os.close(fd)
         except Exception:
-            pass
+            logger.debug("_redirect_output: a best-effort step failed and was skipped", exc_info=True)
     return True
 
 

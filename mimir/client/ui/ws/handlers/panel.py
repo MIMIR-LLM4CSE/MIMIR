@@ -11,6 +11,7 @@ import json
 import logging
 from typing import Any
 
+from ....config import paths
 from ....session.commands import CommandResult
 from ....session.store import list_subagents as _list_subagents
 from ....session.store import read_subagent as _read_subagent
@@ -183,7 +184,6 @@ class PanelHandlers:
         sections = await asyncio.wrap_future(worker.panel_sections(force=refresh))
         agent_ready = worker.agent_ready()
         if not agent_ready:
-            from ...config import paths
             sections = recorded_hosts_sections(paths.STATE_DIR)
         # The one place both halves exist: what a cluster is made of came from a
         # server, what is running on it is this client's own watcher state. A run that
@@ -270,13 +270,14 @@ class PanelHandlers:
             models = await asyncio.get_event_loop().run_in_executor(
                 None, self.worker.served_models)
         except Exception:
+            logger.debug("_send_served_models: a best-effort step failed and was skipped", exc_info=True)
             return
         if not models:
             return
         try:
             await self.ws.send(json.dumps({"type": "served_models", "models": models}))
         except Exception:
-            pass
+            logger.debug("_send_served_models: the client went away mid-send", exc_info=True)
 
     async def _handle_set_model(self, msg: dict) -> None:
         """Switch the served model mid-session.

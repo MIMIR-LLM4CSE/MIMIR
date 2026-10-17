@@ -104,6 +104,8 @@ def _store_subagent_level(agent: Any, level: str) -> None:
 
 
 def _store_backend(agent: Any, name: str) -> None:
+    # At call time: the query engine reads the mode through this module, so importing
+    # its backend factory here at load would be a cycle.
     from ..query_engine.backends.factory import switch_backend
     switch_backend(name)
     agent.backend = name

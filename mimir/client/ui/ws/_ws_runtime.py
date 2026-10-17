@@ -9,6 +9,7 @@ this is imported.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
@@ -19,6 +20,8 @@ from ...config.paths import STATE_DIR
 from ...context.resource_context import augment_query_with_resources
 from ...query_engine.backends.factory import get_backend
 from ...query_engine.context_budget import context_budget_for
+
+logger = logging.getLogger(__name__)
 
 
 # ── Thread-aware stdout router ─────────────────────────────────────────────────
@@ -90,7 +93,7 @@ def _write_active_session(session_id: str | None) -> None:
         with open(sidecar, "w", encoding="utf-8") as f:
             f.write(session_id or "")
     except Exception:
-        pass
+        logger.debug("_write_active_session: a best-effort step failed and was skipped", exc_info=True)
 
 
 # Public surface pulled by the sibling ws modules, re-exports included.

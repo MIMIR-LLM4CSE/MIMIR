@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import logging
 import os
 import time
 
 from ... import human_pause
 from ...config.limits import AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS
 from ...context.capabilities import timeout_for
+from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 from ...event_sink import emit
 from ...protocol.tool_result import json_error_payload
 from ...tool_execution.exec_preview import extract_exec_preview
@@ -26,8 +29,8 @@ from ..background import (
 )
 from ..deferral import CURRENT_CALL_ID
 from .admission import Call, _reads_progress_of_a_watched_run, _watched_progress_note
-from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 
 async def _await_tool(coro, timeout: float):
@@ -199,7 +202,7 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
                     timeout=_AUTO_VALIDATION_TIMEOUT_SECS,
                 )
             except Exception:
-                pass
+                logger.debug("_emit_result: a best-effort step failed and was skipped", exc_info=True)
 
         # ── POST-EXECUTION DIFF EMIT ──
         if ok and targets:

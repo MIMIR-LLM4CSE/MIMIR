@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime
 
 from .._ws_runtime import (
     _MIMIR_DIR_WS,
@@ -17,6 +18,7 @@ from .._ws_runtime import (
     _write_active_session,
 )
 from ..job_scan import is_settled
+from ..session_summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +43,9 @@ class ConversationHandlers:
                     if not full.display_messages and not full.llm_history:
                         self.pool.conversations.delete(meta.id)
                 except Exception:
-                    pass
+                    logger.debug("_purge_empty_sessions: a best-effort step failed and was skipped", exc_info=True)
         except Exception:
-            pass
+            logger.debug("_purge_empty_sessions: a best-effort step failed and was skipped", exc_info=True)
 
     async def _send_sessions_list(self) -> None:
         sessions = self.store.list_sessions()
@@ -58,7 +60,7 @@ class ConversationHandlers:
                              for s in sessions],
             }))
         except Exception:
-            pass
+            logger.debug("_send_sessions_list: the client went away mid-send", exc_info=True)
 
     def _session_activity(self, session_id: str) -> dict:
         """What a conversation is doing right now, for its row in the panel.
@@ -90,6 +92,7 @@ class ConversationHandlers:
                 "runs": runs,
             }
         except Exception:
+            logger.debug("_session_activity: a best-effort step failed and was skipped", exc_info=True)
             return {}
 
     async def _create_new_session(self) -> None:
@@ -120,7 +123,7 @@ class ConversationHandlers:
                 "agent_ready": self.pool.ui_state(session.id)["agent_ready"],
             }))
         except Exception:
-            pass
+            logger.debug("_create_new_session: the client went away mid-send", exc_info=True)
         self._last_context_usage = None  # client cleared its bar on session_loaded
         await self._emit_context_usage()
 
@@ -171,7 +174,7 @@ class ConversationHandlers:
                                  "than this session's saved copy."),
                     }))
                 except Exception:
-                    pass
+                    logger.debug("_load_session: the client went away mid-send", exc_info=True)
         try:
             await self.ws.send(json.dumps({
                 "type": "session_loaded",
@@ -188,7 +191,7 @@ class ConversationHandlers:
                 "agent_ready": self.pool.ui_state(session.id)["agent_ready"],
             }))
         except Exception:
-            pass
+            logger.debug("_load_session: the client went away mid-send", exc_info=True)
         await self._resend_deferred_prompt()
         await self._remind_untracked_jobs(session.id)
         self._last_context_usage = None  # client cleared its bar on session_loaded
@@ -258,9 +261,8 @@ class ConversationHandlers:
             # Restore deps sidecar.
             deps_file = os.path.join(os.path.dirname(todo_file), "todo_deps.json")
             if todo_deps:
-                import json as _json
                 with open(deps_file, "w", encoding="utf-8") as f:
-                    _json.dump(todo_deps, f)
+                    json.dump(todo_deps, f)
             else:
                 try:
                     os.remove(deps_file)
@@ -268,6 +270,7 @@ class ConversationHandlers:
                     pass
             return True
         except Exception:
+            logger.debug("_restore_todos: a best-effort step failed and was skipped", exc_info=True)
             return False
 
     @staticmethod
@@ -283,9 +286,9 @@ class ConversationHandlers:
         if not snapshot_at:
             return True
         try:
-            from datetime import datetime
             snapshot_ts = datetime.fromisoformat(snapshot_at).timestamp()
         except Exception:
+            logger.debug("_snapshot_is_current: a best-effort step failed and was skipped", exc_info=True)
             return True
         try:
             return os.path.getmtime(todo_file) <= snapshot_ts
@@ -319,17 +322,9 @@ class ConversationHandlers:
                 self._refresh_session_summary(self._active_session_id)
             )
         except Exception:
-            pass
+            logger.debug("_schedule_summary_refresh: a best-effort step failed and was skipped", exc_info=True)
 
     async def _refresh_session_summary(self, session_id: str) -> None:
-        try:
-            from .session_summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
-        except ImportError:
-            from mimir.client.ui.ws.session_summary import (
-                PROVISIONAL_VERSION,
-                SUMMARY_VERSION,
-                generate_summary,
-            )
         try:
             conv = self.pool.conversations.get(session_id)
             if conv is None or not conv.saved:
@@ -364,6 +359,7 @@ class ConversationHandlers:
             self.pool.conversations.save(conv)
             await self._send_sessions_list()
         except Exception:
+            logger.debug("_refresh_session_summary: a best-effort step failed and was skipped", exc_info=True)
             pass  # Descriptions are cosmetic — never disturb the session.
 
     def _session_title(self, session_id: str) -> str:

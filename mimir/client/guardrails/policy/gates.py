@@ -13,33 +13,45 @@ one-policy module. Behaviour is unchanged for the three original gates.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
-from ....servers._shared.shell_paths import allocates_cluster
-from ..proxy_state import active_proxy_source
-from ...context.bash_classify import segment_program, shell_segments
-
-from ...config.servers import SKILL_LOAD_TOOL
-from ...config.limits import SKILL_PULL_MAX
-from ...context.capabilities import (
-    CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, PLAN_READONLY, READ,
-    arg_role, has_cap, shell_command_args,
-)
-from ...config import paths
 from ....servers._shared.shell_paths import (
-    cd_destination, normalize_path_arg, parse_segments, segment_path_operands,
+    allocates_cluster,
+    cd_destination,
+    normalize_path_arg,
+    parse_segments,
+    segment_path_operands,
 )
 from ....servers._shared.trusted_read_roots import trusted_read_roots
-from ...context.capabilities import label_for
+from ...config import paths
+from ...config.limits import SKILL_PULL_MAX
+from ...config.servers import SKILL_LOAD_TOOL
+from ...context.bash_classify import segment_program, shell_segments
+from ...context.capabilities import (
+    CLUSTER_SUBMIT,
+    EDIT,
+    PLAN_BLOCKED,
+    PLAN_READONLY,
+    READ,
+    arg_role,
+    has_cap,
+    label_for,
+    shell_command_args,
+)
+from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
+from ...protocol.tool_result import json_error_payload
 from ...tool_execution.tool_status_messages import (
-    shorten_display_args, tool_arg_preview, tool_status_message,
+    shorten_display_args,
+    tool_arg_preview,
+    tool_status_message,
 )
 from ...tool_execution.validation import absolute_workspace_path, scratch_roots
-from ...context.execution_context import ExecutionContext
-from ...protocol.tool_result import json_error_payload
-from ...core.ports import AgentPort
+from ..proxy_state import active_proxy_source
 
+logger = logging.getLogger(__name__)
 
 # ── unattended agents ─────────────────────────────────────────────────────────
 
@@ -205,7 +217,7 @@ def _out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict)
     try:
         raw.extend(agent.get_tool_file_targets(tool_name, arguments) or [])
     except Exception:
-        pass
+        logger.debug("_out_of_workspace_targets: a best-effort step failed and was skipped", exc_info=True)
     # A declared cwd is itself a place the call goes.
     for a in arg_role(tool_name, "cwd", getattr(agent, "tool_caps", None)):
         v = arguments.get(a)
@@ -398,6 +410,8 @@ def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
     conversation's active proxy and either block a program that is none of this
     conversation's business, or wave through this conversation's own.
     """
+    # Imported here, as in ``proxy_state``: the proxy server's library is heavy, and
+    # only a conversation running an optimisation ever needs it.
     from ....servers.proxy._lib import store
 
     name = store._resolve_proxy_name("", session_id)
@@ -455,6 +469,7 @@ def _check_proxy_exec(
         if not (executed & targets):
             return None
     except Exception:
+        logger.debug("_check_proxy_exec: a best-effort step failed and was skipped", exc_info=True)
         return None
     return json_error_payload(
         f"Direct execution of the proxy under optimization is blocked ('{tool_name}').",

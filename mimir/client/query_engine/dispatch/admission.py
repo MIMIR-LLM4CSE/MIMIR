@@ -8,21 +8,23 @@ on a run a watcher already holds.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from ...config.limits import HARD_REPEAT_LIMIT
-from ...context.capabilities import EDIT, has_cap, shell_command_args
-from ...event_sink import emit
 from ...context.bash_classify import segment_program, shell_segments
-from ...protocol.tool_call import DOING_ARG, UNPARSED_ARGUMENTS, as_dict
+from ...context.capabilities import EDIT, has_cap, shell_command_args
+from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
+from ...event_sink import emit
+from ...protocol.tool_call import DOING_ARG, UNPARSED_ARGUMENTS, as_dict, normalize_arguments
 from ...protocol.tool_result import json_error_payload
 from ...tool_execution.normalizer import _make_hashable
 from ...tool_execution.tool_status_messages import clip_doing
-from ...context.execution_context import ExecutionContext
-from ...protocol.tool_call import normalize_arguments
-from ...core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -151,6 +153,7 @@ def _watched_jobs(agent: AgentPort) -> list[dict]:
     try:
         jobs = hook() or []
     except Exception:
+        logger.debug("_watched_jobs: a best-effort step failed and was skipped", exc_info=True)
         return []
     return [d for d in jobs if isinstance(d, dict)]
 

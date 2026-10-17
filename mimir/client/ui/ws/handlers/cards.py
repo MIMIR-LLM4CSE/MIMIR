@@ -47,6 +47,7 @@ class CardHandlers:
             try:
                 await self.ws.send(json.dumps(prompt))
             except Exception:
+                logger.debug("_resend_parked_prompt: the client went away mid-send", exc_info=True)
                 return
 
     def _worker_for_answer(self, msg: dict) -> _AgentWorker | None:
@@ -99,7 +100,7 @@ class CardHandlers:
         try:
             await self.ws.send(json.dumps(prompt, default=str))
         except Exception:
-            pass
+            logger.debug("_resend_deferred_prompt: the client went away mid-send", exc_info=True)
 
     async def _answer_deferred(self, msg: dict, answer: dict) -> bool:
         """Route an answer to a deferred card into a resume turn. True when handled.
@@ -185,7 +186,7 @@ class CardHandlers:
                          "reverting would discard that too: " + ", ".join(sorted(moved))),
             }))
         except Exception:
-            pass
+            logger.debug("_report_unreverted: the client went away mid-send", exc_info=True)
 
     async def _handle_batch_review_accept_file(self, msg: dict) -> None:
         # Accept a single file — remove its snapshot, keep file on disk.

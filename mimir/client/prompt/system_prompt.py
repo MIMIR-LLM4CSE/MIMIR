@@ -700,6 +700,7 @@ def _scratch_dir_for_prompt(session_id: str | None = None) -> str:
     try:
         return scratch_dir(paths.STATE_DIR, session_id)
     except Exception:
+        logger.debug("_scratch_dir_for_prompt: a best-effort step failed and was skipped", exc_info=True)
         return ""
 
 

@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from typing import Any
 
-from .. import streaming as _streaming
 from ...config.limits import IDENTICAL_REPEAT_THRESHOLD, SOFT_REPEAT_THRESHOLD
 from ...config.servers import SKILL_LOAD_TOOL
 from ...context.capabilities import CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
+from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 from ...event_sink import emit
 from ...tool_execution.exec_preview import exec_input_preview
 from ...tool_execution.tool_status_messages import (
@@ -25,12 +27,13 @@ from ...tool_execution.tool_status_messages import (
     tool_arg_preview,
     tool_status_message,
 )
+from .. import streaming as _streaming
 from ..history import bound_step_results
 from .admission import Call, admit, is_write
 from .execution import run_call
 from .inject import _post_dispatch_inject
-from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["ToolDispatcher", "_dispatch_tool_calls", "_post_dispatch_inject"]
 
@@ -248,6 +251,7 @@ def _bound_results(results: list[str], agent: AgentPort) -> list[str]:
             context_ceiling=int(getattr(agent, "max_context_tokens", 0) or 0) or None,
         )
     except Exception:  # noqa: BLE001 — a budget failure must not drop the evidence
+        logger.debug("_bound_results: a best-effort step failed and was skipped", exc_info=True)
         return results
     for before, after in cut:
         emit({"type": "status", "text": (

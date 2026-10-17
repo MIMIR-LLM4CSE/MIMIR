@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
 from typing import Any, Awaitable, Callable
-from ..config import paths
+
 from ...servers._shared.state_paths import standing_roots
+from ..config import paths
 from ..context.execution_context import ExecutionContext
+
+logger = logging.getLogger(__name__)
 
 def is_python_test_filepath(path: str) -> bool:
     basename = os.path.basename(path)
@@ -197,6 +201,7 @@ async def _check_cross_file_references(
     try:
         grep_result_str = await run_tool("bash_run", {"command": command}, execution_context)
     except Exception:
+        logger.debug("_check_cross_file_references: a best-effort step failed and was skipped", exc_info=True)
         return ""
 
     try:

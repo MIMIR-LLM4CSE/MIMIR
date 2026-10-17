@@ -21,6 +21,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ... import human_pause
+from ...context.capabilities import (
+    IRREVERSIBLE,
+    kind_for,
+    label_for,
+    preview_spec,
+    reversibility_of,
+)
+from ...query_engine.deferral import CURRENT_CALL_ID
+from ...tool_execution.tool_status_messages import shorten_display_args
+from .file_preview import build_preview_diffs
 
 if TYPE_CHECKING:
     from .ws_worker import _AgentWorker
@@ -366,7 +376,6 @@ class HumanBridge:
         Takes the card rather than reading the one on screen: they are the same for a
         turn's own prompt, and for a card still queued behind another they are not.
         """
-        from ...query_engine.deferral import CURRENT_CALL_ID
 
         agent = self.worker._agent
         if agent is None:
@@ -389,11 +398,6 @@ class HumanBridge:
         The WS event loop (main thread) is unaffected; it forwards the approval
         prompt to the client and answers this card's own slot (see _deliver).
         """
-        from ...context.capabilities import (
-            kind_for, label_for, preview_spec, reversibility_of,
-        )
-        from ...tool_execution.tool_status_messages import shorten_display_args
-        from .file_preview import build_preview_diffs
 
         server_name = agent.tool_owner.get(tool_name, "unknown")
         risk = agent.approvals.describe_risk(tool_name)
@@ -469,8 +473,6 @@ class HumanBridge:
         per-path loop this replaced parked the agent on one queue behind several
         identical questions.
         """
-        from ...context.capabilities import IRREVERSIBLE, kind_for, label_for
-        from ...tool_execution.tool_status_messages import shorten_display_args
 
         arguments = arguments or {}
         scope = (f"this path ({os.path.basename(paths[0])})" if len(paths) == 1

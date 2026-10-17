@@ -7,11 +7,14 @@ documented there.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import sys
 from typing import Any
 
+from ...config import DEFAULT_MODEL
+from ...query_engine.backends.openai_compat import OpenAICompatBackend
 from . import server_registry
 from ._ws_runtime import (
     _CTX_DEFAULT_FULL,
@@ -19,10 +22,10 @@ from ._ws_runtime import (
     _ensure_router_installed,
     get_backend,
 )
-from ...config import DEFAULT_MODEL
-from ...query_engine.backends.openai_compat import OpenAICompatBackend
 from .ws_pool import _AgentPool
 from .ws_session import _Session
+
+logger = logging.getLogger(__name__)
 
 try:
     import websockets
