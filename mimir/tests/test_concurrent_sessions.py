@@ -57,7 +57,6 @@ def _worker(session_id: str, title: str = "") -> _AgentWorker:
     w._steer_q = _queue.Queue()
     w.session_id = session_id
     w.session_title = title
-    w.active_session_id = None
     w._query_session_id = None
     w.answered: list = []
     w.human.resolve_approval = (

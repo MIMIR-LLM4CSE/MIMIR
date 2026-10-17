@@ -69,7 +69,6 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     w.session_id = session_id
     w.session_title = "a conversation"
     w._query_session_id = None
-    w.active_session_id = session_id
     w.model = "m"
     # A stand-in agent with the surface the worker actually calls on it. `_approvals`
     # is what the policy engine reads afresh at each gate, so setting the mode is a

@@ -526,7 +526,6 @@ class _AgentPool:
         # Every event the worker emits wakes the pump, from whichever thread emits it.
         # Anything it said while being built is picked up by the pump's own tick.
         worker.out_q.on_put = lambda: loop.call_soon_threadsafe(self.bus.nudge)
-        worker.active_session_id = self.active_session_id
         self.settings.replay(worker)
         # What the last agent of this conversation had learned and set aside. A panel
         # reopening a conversation restores this; a rebuild driven by anything else —
@@ -923,10 +922,12 @@ class _AgentPool:
         return worker is not None and worker.human.awaiting_user()
 
     def set_active(self, session_id: str | None) -> None:
-        """Point the pool at the conversation on screen, and tell every worker."""
+        """Point the pool at the conversation on screen — what it must never release.
+
+        The one holder of that pointer besides the connection showing it: a worker
+        works for its own conversation and has no business knowing which one is read.
+        """
         self.active_session_id = session_id
-        for _sid, worker in self.items():
-            worker.active_session_id = session_id
 
     def set_model(self, model: str) -> list[str]:
         """Switch the served model for every conversation, and for the next one built.

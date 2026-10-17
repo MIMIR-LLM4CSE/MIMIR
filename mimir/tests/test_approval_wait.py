@@ -31,7 +31,6 @@ def _make_worker() -> _AgentWorker:
     w.human = HumanBridge(w)
     w._agent = _StubAgent()
     w.out_q = _queue.Queue()
-    w.active_session_id = None
     w._query_session_id = None
     w.session_id = None
     w.session_title = ""

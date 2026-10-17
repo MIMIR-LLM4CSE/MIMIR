@@ -53,7 +53,6 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
     w.human = HumanBridge(w)
     w.jobs = JobWatcher(w)
     w.session_id = "s1"
-    w.active_session_id = None
     w._query_session_id = None
     w._agent = agent
     w.jobs._bg_jobs = {}
@@ -102,24 +101,22 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
 
 
 class OwnSessionTests(unittest.TestCase):
-    def _bare(self, session_id=None, active=None) -> _AgentWorker:
+    def _bare(self, session_id=None) -> _AgentWorker:
         w = object.__new__(_AgentWorker)
         w.human = HumanBridge(w)
         w.jobs = JobWatcher(w)
         w.session_id = session_id
-        w.active_session_id = active
         return w
 
-    def test_its_own_session_wins_over_the_one_on_screen(self):
-        """The whole point: the user looking elsewhere changes nothing for this worker."""
-        self.assertEqual(self._bare("mine", active="someone-else")._own_session(), "mine")
+    def test_it_works_for_its_own_session(self):
+        self.assertEqual(self._bare("mine")._own_session(), "mine")
 
-    def test_a_worker_without_one_falls_back_to_the_screen(self):
-        """How a worker with no conversation of its own resolves: tests, standalone use."""
-        self.assertEqual(self._bare(None, active="on-screen")._own_session(), "on-screen")
+    def test_it_does_not_even_know_which_one_is_on_screen(self):
+        """The user looking elsewhere can change nothing for this worker."""
+        self.assertFalse(hasattr(self._bare("mine"), "active_session_id"))
 
-    def test_neither_is_no_session(self):
-        self.assertIsNone(self._bare(None, None)._own_session())
+    def test_without_one_it_has_none(self):
+        self.assertIsNone(self._bare(None)._own_session())
 
 
 class ACloseTests(unittest.TestCase):

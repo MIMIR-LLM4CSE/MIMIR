@@ -24,7 +24,6 @@ def _bare_worker(session_id: str | None = None) -> _AgentWorker:
     w._steer_q = _queue.Queue()
     w.session_id = session_id
     w.session_title = ""
-    w.active_session_id = None
     w._query_session_id = None
     return w
 

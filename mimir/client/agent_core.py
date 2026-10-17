@@ -150,7 +150,7 @@ def _mirrored_carry_fields() -> tuple[str, ...]:
 
 
 class MimirAgent:
-    """Multi-server MCP agent backed by a local Ollama model."""
+    """Multi-server MCP agent."""
 
     def __init__(self, model: str = DEFAULT_MODEL, session_id: str | None = None):
         self.model = model

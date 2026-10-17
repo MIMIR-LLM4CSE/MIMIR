@@ -129,8 +129,6 @@ class FakePool:
 
     def set_active(self, session_id: str | None) -> None:
         self.active_session_id = session_id
-        if self.worker is not None:
-            self.worker.active_session_id = session_id
 
     def queued_position(self, session_id: str) -> int | None:
         return None

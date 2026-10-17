@@ -38,7 +38,6 @@ class _StubWorker:
         type(self).built += 1
         self.model = model
         self.session_id = session_id
-        self.active_session_id: str | None = None
         self.closed = False
         self.busy = False
         self.queued = False
@@ -399,12 +398,13 @@ class SettingsTests(_PoolCase):
         worker.agent_ready = lambda: False
         self.assertFalse(pool.ui_state("s1")["agent_ready"])
 
-    async def test_the_screen_pointer_reaches_every_worker(self) -> None:
+    async def test_the_screen_pointer_is_the_pools_alone(self) -> None:
         pool = self._pool(cap=2)
-        a, b = await pool.worker_for("s1"), await pool.worker_for("s2")
+        a = await pool.worker_for("s1")
         pool.set_active("s2")
-        self.assertEqual(a.active_session_id, "s2")
-        self.assertEqual(b.active_session_id, "s2")
+        self.assertEqual(pool.active_session_id, "s2")
+        self.assertFalse(hasattr(a, "active_session_id"),
+                         "a worker was told what is on screen")
 
 
 class AddressingASessionTests(_PoolCase):

@@ -147,10 +147,6 @@ class _AgentWorker:
         self._query_wake: asyncio.Event | None = None
 
         self._current_task: asyncio.Task | None = None
-        # The session the front-end is currently showing. Not the same question as
-        # ``session_id``: this worker always works for its own session, and this says
-        # whether that session is the one on screen. Kept in sync by _Session.
-        self.active_session_id: str | None = None
         # Session a running query belongs to, captured when it starts. Events carry the
         # session they were produced for, so a turn running in a conversation that is not
         # on screen can be told apart from the one that is — and routed to its own
@@ -611,16 +607,14 @@ class _AgentWorker:
             pass
 
     def _own_session(self) -> str | None:
-        """The conversation this worker works for.
+        """The conversation this worker works for — never the one on screen.
 
-        ``session_id`` when it has one, else the session on screen. The fallback is for
-        a worker built before any session was known — which is how the single shared
-        worker was built, and is still how a bare one in a test is. Reading the on-screen
-        session is only ever right for such a worker: one with a session of its own must
-        use it, or it writes another conversation's checklist the moment the user looks
-        somewhere else.
+        It fell back to the session on screen once, for a worker built before any
+        session was known; one with a session of its own reading the screen instead
+        wrote another conversation's checklist the moment the user looked elsewhere.
+        A worker with no session (the pre-agent stand-in) has none.
         """
-        return self.session_id or self.active_session_id
+        return self.session_id
 
     def _load_todos(self) -> list:
         try:

@@ -37,7 +37,6 @@ def _worker(session_id: str = "s1") -> _AgentWorker:
     w.session_id = session_id
     w.session_title = ""
     w._query_session_id = session_id
-    w.active_session_id = None
     w._agent = types.SimpleNamespace(
         _cancel_flag=threading.Event(), _deferred_prompts=None, _deferred_turn=None,
         non_interactive=False,

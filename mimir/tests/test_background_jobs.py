@@ -871,7 +871,6 @@ class RegisterBgJobTests(unittest.TestCase):
         w.jobs = JobWatcher(w)
         w.session_id = None
         w._query_session_id = None
-        w.active_session_id = None
         w._loop = None
         return w
 

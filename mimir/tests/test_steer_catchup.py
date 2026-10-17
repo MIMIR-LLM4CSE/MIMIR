@@ -58,7 +58,6 @@ def _worker() -> _AgentWorker:
     w = object.__new__(_AgentWorker)
     w.human = HumanBridge(w)
     w.session_id = "s1"
-    w.active_session_id = None
     w._query_session_id = "s1"
     w._agent = _FakeAgent()
     w._steer_q = _queue.Queue()
