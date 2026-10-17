@@ -29,6 +29,7 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
 
 from _lib import execute, metrics, procs, ratchet, report, store  # noqa: E402
 from mimir.tests._proxy_fixtures import _TmpStorageTest, pin_local_scheduler  # noqa: E402
+from mimir.servers._shared.atomic import write_json  # noqa: E402
 
 try:
     import numpy as _np
@@ -254,9 +255,9 @@ class PostRunFinalizeTests(_TmpStorageTest):
         rd = store._ref_dir("ref1")
         os.makedirs(rd, exist_ok=True)
         np.savez(os.path.join(rd, "output.npz"), field=np.arange(16, dtype=np.float64))
-        store._write_json_atomic(os.path.join(rd, "metrics.json"),
+        write_json(os.path.join(rd, "metrics.json"),
                                  {"mass": 120.0, "time_s": 1.0})
-        store._write_json_atomic(store.registry_path(), {"tiny": {
+        write_json(store.registry_path(), {"tiny": {
             "name": "tiny", "executable_path": "/bin/true",
             "run_cmd_template": "true", "output_format": "npz",
             "conserved_metric": "mass",

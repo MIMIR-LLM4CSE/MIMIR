@@ -32,7 +32,8 @@ def main() -> None:
     job_dir = os.path.abspath(parser.parse_args().job_dir)
 
     from responses import err
-    from _lib.store import _read_json, _write_json_atomic
+    from atomic import write_json
+    from _lib.store import _read_json
     from _ops import references, suites
     from _ops.exec_jobs import JOB_FILE, RESULT_FILE
 
@@ -55,7 +56,7 @@ def main() -> None:
     except Exception as exc:
         traceback.print_exc()
         result = err(f"proxy_exec(op='{op}') failed: {type(exc).__name__}: {exc}")
-    _write_json_atomic(os.path.join(job_dir, RESULT_FILE), result)
+    write_json(os.path.join(job_dir, RESULT_FILE), result, indent=2)
     print(f"[proxy_job] status={result.get('status')}", flush=True)
 
 

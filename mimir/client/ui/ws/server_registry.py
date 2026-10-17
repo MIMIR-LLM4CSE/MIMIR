@@ -31,7 +31,7 @@ import time
 
 from ._ws_runtime import _MIMIR_DIR_WS
 from .job_scan import _is_running, _proc_starttime
-from ...util.files import write_json_atomic
+from ....servers._shared.atomic import write_json
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def publish(*, url: str, host: str, port: int, **extra) -> dict | None:
     }
     path = registry_path()
     try:
-        write_json_atomic(path, entry, indent=2, default=str)
+        write_json(path, entry, indent=2, default=str)
     except Exception:
         logger.warning("registry: could not publish %s", path, exc_info=True)
         return None

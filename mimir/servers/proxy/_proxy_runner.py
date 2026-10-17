@@ -84,9 +84,9 @@ def _write_phase(run_dir: str, kind: str, text: str, **fields) -> None:
     a run must never die because it could not describe itself.
     """
     try:
-        from _lib.store import _write_json_atomic
-        _write_json_atomic(os.path.join(run_dir, "phase.json"),
-                           {"kind": kind, "text": text, **fields})
+        from atomic import write_json
+        write_json(os.path.join(run_dir, "phase.json"),
+                           {"kind": kind, "text": text, **fields}, indent=2)
     except Exception:
         pass
 

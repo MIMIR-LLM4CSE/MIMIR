@@ -32,13 +32,14 @@ from _ops._eval_validate import (
 import build_progress
 import run_channel
 from _lib import build, procs, tree_snapshot
+from atomic import write_json
 from _lib.store import (
     cache_dir, opt_git_dir, workspace_root,
     _entry_or_err, _load_registry, _load_suite,
     _load_opt_config, _save_opt_config,
     _opt_session_runs_dir, _opt_ledger_file, _opt_best_file,
     _resolve_proxy_name, _write_active_session, _clear_active_session,
-    _read_json, _write_json_atomic, _run_dir_names,
+    _read_json, _run_dir_names,
 )
 
 _OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
@@ -441,12 +442,12 @@ def _prepare_run(
         f"launch: {name} {os.path.basename(run_dir)}",
     ) if paths else None
     if launch_id:
-        _write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
+        write_json(os.path.join(run_dir, "tree_at_launch.json"), {
             "snapshot_id": launch_id,
             "paths":       paths,
             "fingerprint": tree_snapshot.fingerprint(workspace_root(), paths),
             "is_baseline": launch_id == cfg.get("baseline_id", ""),
-        })
+        }, indent=2)
     return cfg, None, run_dir, notice
 
 

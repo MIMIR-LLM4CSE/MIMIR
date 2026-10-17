@@ -19,9 +19,9 @@ from _lib.ratchet import (
     _NOISY_METRICS, _append_ledger, _effective_min_improvement, _load_best,
     _ratchet_verdict, _run_primary_value, _save_best,
 )
+from atomic import write_json
 from _lib.store import (
     _file_lock, _opt_session_runs_dir, _read_json, _save_opt_config,
-    _write_json_atomic,
 )
 
 def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:
@@ -190,7 +190,7 @@ def _ratchet_settle_locked(
     # unwritable run dir must not turn a completed measurement into a crashed
     # tool call — it only costs the replay.
     try:
-        _write_json_atomic(outcome_path, outcome)
+        write_json(outcome_path, outcome, indent=2)
     except OSError:
         pass
     outcome["best"] = best
@@ -231,7 +231,7 @@ def _settle_incomparable(
     # Best-effort for the same reason the settled outcome is: the verdict is already in
     # the ledger, so an unwritable run dir costs the replay and nothing else.
     try:
-        _write_json_atomic(outcome_path, outcome)
+        write_json(outcome_path, outcome, indent=2)
     except OSError:
         pass
     outcome["best"] = best

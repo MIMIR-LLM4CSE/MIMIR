@@ -775,8 +775,8 @@ class NodeProfileTests(unittest.TestCase):
     def test_a_remote_result_is_read_back_over_one_round_trip(self) -> None:
         """Four files, one connection: a call per file would be four ssh handshakes
         per probe, per panel refresh."""
-        res = server_hpc.slurm_probe_node(partition="cpu", scheduler="hpc1",
-                                          confirm=True)
+        server_hpc.slurm_probe_node(partition="cpu", scheduler="hpc1",
+                               confirm=True)
         far_side = {"mode": "partial", "node": "cpu001",
                     "fallback.txt": "==uname\nx86_64\n==nproc\n64\n"}
 

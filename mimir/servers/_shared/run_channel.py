@@ -40,6 +40,8 @@ import json
 import os
 import time
 
+from atomic import write_text
+
 # How long a divert request stays meaningful. Past this it names a run that has
 # almost certainly ended, and consuming it would detach the *next* command instead.
 _STALE_S = 60.0
@@ -48,13 +50,6 @@ _STALE_S = 60.0
 def _dir(channel: str) -> str:
     from state_paths import session_state_dir
     return os.path.join(session_state_dir(), "runs", channel)
-
-
-def _write_atomic(path: str, text: str) -> None:
-    tmp = f"{path}.tmp{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
 
 
 def _read_current(channel: str) -> dict | None:
@@ -87,7 +82,7 @@ def publish(channel: str, job_key: str, pid: int, command: str, cwd: str,
                 os.unlink(stale)
         except OSError:
             pass
-        _write_atomic(os.path.join(base, "current.json"), json.dumps({
+        write_text(os.path.join(base, "current.json"), json.dumps({
             "job_key": job_key,
             "pid": pid,
             "server_pid": os.getpid(),
@@ -118,7 +113,7 @@ def update(channel: str, job_key: str, phase: str | None = None,
         run["phase"] = phase
     run["percent"] = percent
     try:
-        _write_atomic(os.path.join(_dir(channel), "current.json"), json.dumps(run))
+        write_text(os.path.join(_dir(channel), "current.json"), json.dumps(run))
     except OSError:
         pass
 

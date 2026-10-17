@@ -19,6 +19,7 @@ from mimir.client.guardrails.policy import gates
 from mimir.client.context.capabilities import ToolCaps, CODE_EXEC, READ
 # Same module object the guard imports via `from ...servers.proxy._lib import store`.
 from mimir.servers.proxy._lib import store
+from mimir.servers._shared.atomic import write_json  # noqa: E402
 
 
 class _FakeAgent:
@@ -61,11 +62,11 @@ class ProxyExecGuardTests(unittest.TestCase):
 
     def _init_session(self, name: str = "tiny") -> None:
         os.makedirs(store._opt_session_runs_dir(name), exist_ok=True)
-        store._write_json_atomic(
+        write_json(
             store._opt_config_file(name),
             {"proxy_name": name, "proxy_source_path": self.src},
         )
-        store._write_json_atomic(store.registry_path(), {name: {"executable_path": self.exe}})
+        write_json(store.registry_path(), {name: {"executable_path": self.exe}})
         store._write_active_session(name)
 
     def _check(self, tool: str, **args) -> str | None:

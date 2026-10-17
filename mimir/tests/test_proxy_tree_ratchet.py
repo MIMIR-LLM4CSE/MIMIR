@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.abspath(_PROXY))
 sys.path.insert(0, os.path.abspath(os.path.join(_PROXY, "..", "_shared")))
 
 from _lib import ratchet, store, tree_snapshot  # noqa: E402
+from mimir.servers._shared.atomic import write_json  # noqa: E402
 
 
 class _Workspace(unittest.TestCase):
@@ -224,7 +225,7 @@ class RebaselineTests(_Workspace):
         with open(store._opt_ledger_file("p"), "w", encoding="utf-8") as fh:
             fh.write('{"run_id": "r0", "primary_value": 0.0894}\n')
             fh.write('{"run_id": "r1", "primary_value": 0.0538}\n')
-        store._write_json_atomic(store._opt_best_file("p"),
+        write_json(store._opt_best_file("p"),
                                  {"run_id": "r1", "primary_value": 0.0538})
         return eval_session, store
 
@@ -406,7 +407,7 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
             "proxy_source_path": self.harness, "optimize_paths": [self.a, self.b],
             "baseline_id": snap, "baseline_run_id": "r0", "primary_metric": "time_s",
             "primary_goal": "min", "min_improvement": 0.02, "max_stall": 5, "stall": 0})
-        store._write_json_atomic(store._opt_best_file(name),
+        write_json(store._opt_best_file(name),
                                  {"run_id": "r1", "primary_value": 0.1,
                                   "tree_snapshot": snap})
 
@@ -490,7 +491,7 @@ class ResumeNoticeTests(_Workspace):
             "min_improvement": 0.02, "max_stall": 5, "stall": 0})
         run_dir = os.path.join(store._opt_session_runs_dir("bench"), "20240101T000000Z")
         os.makedirs(run_dir, exist_ok=True)
-        store._write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
+        write_json(os.path.join(run_dir, "tree_at_launch.json"), {
             "snapshot_id": snap, "paths": [self.a],
             "fingerprint": tree_snapshot.fingerprint(self.wt, [self.a])})
         procs._update_opt_active_link("bench", run_dir)

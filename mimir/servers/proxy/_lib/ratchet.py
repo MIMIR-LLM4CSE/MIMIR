@@ -16,6 +16,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+from atomic import write_json
 from _lib import store
 
 
@@ -143,7 +144,7 @@ def _save_best(proxy_name: str, run_id: str, primary_value: float | None,
         "updated_at":    datetime.now(timezone.utc).isoformat(),
     }
     try:
-        store._write_json_atomic(store._opt_best_file(proxy_name), record)
+        write_json(store._opt_best_file(proxy_name), record, indent=2)
     except OSError:
         pass
     return snapped

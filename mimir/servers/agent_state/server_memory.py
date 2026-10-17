@@ -42,6 +42,7 @@ from typing import NamedTuple
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
+from atomic import write_text
 from capabilities import tool_caps, MAIN_ONLY, PLAN_BLOCKED, RECOVERABLE
 from responses import err, ok
 from state_paths import global_state_dir, state_dir
@@ -66,7 +67,7 @@ EMBEDDINGS_FILE = os.path.join(MEMORY_DIR, "embeddings.json")
 # Global memory: the same three files under the machine-wide state tier
 # (MIMIR_GLOBAL_STATE_DIR, resolved by the client and published to the servers).
 # One cache file per scope rather than one shared: agents in different workspaces
-# read-modify-write it concurrently, and _write_text_atomic gives atomic replacement,
+# read-modify-write it concurrently, and write_text gives atomic replacement,
 # not lost-update protection.
 GLOBAL_MEMORY_DIR = os.path.join(global_state_dir(), "memory")
 GLOBAL_INDEX_FILE = os.path.join(GLOBAL_MEMORY_DIR, "MEMORY.md")
@@ -247,22 +248,6 @@ def _load_scopes(scopes) -> list:
     return entries
 
 
-def _write_text_atomic(path: str, text: str) -> None:
-    """Write *text* to *path* via a temp file and one rename.
-
-    The memory stores are shared — the workspace one by every session of the workspace,
-    the global one by every session on the machine — and several write to them at the
-    same time. A plain ``open(..., "w")`` truncates first, so a concurrent reader would
-    see a half-written index or note, and two writers could interleave into one file.
-    The rename makes a reader see either the old file or the new one; the temp name
-    carries the pid so two writers do not share it.
-    """
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = f"{path}.tmp{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
-
 
 def _write_index(store: _Store) -> None:
     """Rewrite one scope's MEMORY.md — the human/agent-scannable index, newest first.
@@ -278,7 +263,7 @@ def _write_index(store: _Store) -> None:
         desc = e.get("description") or e.get("name", "")
         date = (e.get("date") or "")[:10]
         lines.append(f"- [{desc}]({e['name']}.md) — {date}")
-    _write_text_atomic(store.index, "\n".join(lines) + "\n")
+    write_text(store.index, "\n".join(lines) + "\n")
 
 
 def _word_set(text: str) -> set[str]:
@@ -349,7 +334,7 @@ def _load_embeddings(store: _Store) -> dict:
 
 def _save_embeddings(store: _Store, cache: dict) -> None:
     try:
-        _write_text_atomic(store.embeddings, json.dumps(cache))
+        write_text(store.embeddings, json.dumps(cache))
     except OSError:
         pass
 
@@ -524,7 +509,7 @@ def memory_add(text: str, scope: str = "", description: str = None, tags: list =
     }
 
     path = os.path.join(store.dir, f"{name}.md")
-    _write_text_atomic(path, _serialize(entry))
+    write_text(path, _serialize(entry))
     memory.append(entry)
 
     # Aging: trim oldest memories beyond the cap, where the scope allows it.
@@ -660,7 +645,7 @@ def memory_update(
 
     store = _store(entry["scope"])
     path = os.path.join(store.dir, f"{name}.md")
-    _write_text_atomic(path, _serialize(entry))
+    write_text(path, _serialize(entry))
     _write_index(store)
     _upsert_embedding(store, name, entry)
     return ok({"name": name, "scope": entry["scope"], "path": path, "updated": entry})

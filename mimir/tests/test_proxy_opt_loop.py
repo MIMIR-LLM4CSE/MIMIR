@@ -16,6 +16,7 @@ from mimir.tests._proxy_fixtures import (
     _TmpStorageTest, _call, _eval, eval_session, pin_local_scheduler, procs, ratchet,
     server_proxy, store,
 )
+from mimir.servers._shared.atomic import write_json  # noqa: E402
 
 
 
@@ -101,7 +102,7 @@ class _RatchetFixture(_TmpStorageTest):
             return
         sid = tree_snapshot.snapshot(_es.opt_git_dir(), _es.workspace_root(),
                                      paths, f"launch: {os.path.basename(run_dir)}")
-        store._write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
+        write_json(os.path.join(run_dir, "tree_at_launch.json"), {
             "snapshot_id": sid,
             "paths":       paths,
             "is_baseline": bool(cfg.get("baseline_id")) and sid == cfg.get("baseline_id"),

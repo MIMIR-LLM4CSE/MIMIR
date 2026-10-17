@@ -33,6 +33,7 @@ from mimir.client.context.bash_classify import opaque_command_executes
 from mimir.client.guardrails.verdict import apply_verdict  # noqa: E402
 from mimir.servers._shared.capabilities import build_descriptor  # noqa: E402
 from mimir.servers.proxy._lib import store  # noqa: E402
+from mimir.servers._shared.atomic import write_json  # noqa: E402
 
 # The shape server_proxy declares, restated here so a change to it fails a test rather
 # than silently redefining what these assertions mean.
@@ -161,7 +162,7 @@ class MeasuredTierTests(unittest.TestCase):
         with open(self.source, "w") as fh:
             fh.write("x = 1\n")
         os.makedirs(store._opt_session_runs_dir("p"), exist_ok=True)
-        store._write_json_atomic(
+        write_json(
             store._opt_config_file("p"),
             {"proxy_name": "p", "proxy_source_path": self.source})
         store._write_active_session("p")

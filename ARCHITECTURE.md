@@ -7,7 +7,7 @@ higher layers depend on lower ones. Solid edges are import-time; **dotted edges 
 lazy** — imported inside a function, so they never run at load time.
 
 The graph shows the layering, not every edge: every unit also imports the foundational
-ones (`config`, `protocol`, `util`, `event_sink`, `human_pause`) and
+ones (`config`, `protocol`, `event_sink`, `human_pause`) and
 `mimir/servers/_shared` freely, and those edges are omitted to keep it readable.
 
 ```mermaid
@@ -37,7 +37,7 @@ graph TD
     end
     subgraph FND["🧱 Foundational"]
         ctx["context/<br/><small>execution_context · capabilities · signals</small>"]
-        cfg["config/ · protocol/ · util/<br/><small>paths · limits · settings · models<br/>events · messages · errors</small>"]
+        cfg["config/ · protocol/<br/><small>paths · limits · settings · models<br/>events · messages · errors</small>"]
     end
 
     cli --> session
@@ -100,7 +100,7 @@ graph TD
 
 ## How to read it
 
-- **Foundational** (`config`, `protocol`, `util`, `context`, `event_sink`) depend on
+- **Foundational** (`config`, `protocol`, `context`, `event_sink`) depend on
   nothing above them. `config` is the vocabulary (paths, limits, the closed sets of each
   setting, the model catalogue); `protocol` the shapes that cross a boundary (event
   types, chat messages and their invariants, error payloads); `context` the

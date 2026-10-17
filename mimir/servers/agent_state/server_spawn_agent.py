@@ -52,6 +52,7 @@ if os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) no
 
 import _child_jobs
 from approved_roots import approved_roots
+from atomic import write_json, write_text
 from capabilities import BACKGROUNDABLE, DELEGATE, MAIN_ONLY, PLAN_READONLY, REVERSIBLE, tool_caps
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
@@ -201,12 +202,8 @@ def _write_record(session: str, record: dict) -> None:
         return
     try:
         from state_paths import session_dir
-        directory = session_dir(session)
-        os.makedirs(directory, exist_ok=True)
-        tmp = os.path.join(directory, "subagent.json.tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(record, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, os.path.join(directory, "subagent.json"))
+        write_json(os.path.join(session_dir(session), "subagent.json"), record,
+                   ensure_ascii=False, indent=2)
     except Exception as exc:
         print(f"spawn_agent: could not record sub-session {session}: {exc}", file=sys.stderr)
 
@@ -506,10 +503,7 @@ def _append_activity(session: str, event: dict) -> None:
         if trim:
             with open(path, "r", encoding="utf-8") as fh:
                 lines = fh.readlines()[-_ACTIVITY_KEEP_LINES:]
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.writelines(lines)
-            os.replace(tmp, path)
+            write_text(path, "".join(lines))
     except Exception:
         pass
 
@@ -1035,10 +1029,7 @@ def _marker_path(repo: str, child_key: str) -> str:
 def _write_marker(path: str, marker: dict) -> None:
     """Record who a copy belongs to, before it can be used. Best effort."""
     try:
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(marker, fh)
-        os.replace(tmp, path)
+        write_json(path, marker)
     except OSError:
         pass
 

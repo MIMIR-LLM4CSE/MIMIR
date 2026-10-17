@@ -160,13 +160,6 @@ class PreferencesConcurrencyTests(unittest.TestCase):
 class AtomicWriteTests(unittest.TestCase):
     """A reader must see the old file or the new one, never half of either."""
 
-    def test_the_memory_store_writes_through_a_rename(self) -> None:
-        import inspect
-        from mimir.servers.agent_state import server_memory
-        for fn in (server_memory._write_index, server_memory._save_embeddings):
-            self.assertIn("_write_text_atomic", inspect.getsource(fn), fn.__name__)
-        self.assertIn("os.replace", inspect.getsource(server_memory._write_text_atomic))
-
     def test_the_vector_cache_writes_through_a_rename(self) -> None:
         import json as _json
         import vector_cache

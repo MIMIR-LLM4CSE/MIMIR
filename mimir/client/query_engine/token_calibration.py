@@ -34,7 +34,7 @@ import os
 import threading
 
 from ..config import paths
-from ..util.files import write_json_atomic
+from ...servers._shared.atomic import write_json
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def _save_locked() -> None:
     if _cache is None:
         return
     try:
-        write_json_atomic(_path(), _cache)
+        write_json(_path(), _cache)
     except Exception:
         logger.debug("token calibration: could not write cache", exc_info=True)
 

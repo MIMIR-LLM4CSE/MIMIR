@@ -17,6 +17,7 @@ import os
 import shutil
 import threading
 
+from atomic import write_json, write_text
 from responses import err
 
 # ── storage root ──────────────────────────────────────────────────────────────
@@ -124,30 +125,6 @@ def _read_json(path: str, default=None):
             return json.load(fh)
     except (json.JSONDecodeError, OSError):
         return default
-
-
-def _write_json_atomic(path: str, obj) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(obj, fh, indent=2)
-    os.replace(tmp, path)
-
-
-def _write_text_atomic(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
-
-
-def _atomic_symlink(link: str, target: str) -> None:
-    tmp = link + ".tmp"
-    if os.path.lexists(tmp):
-        os.unlink(tmp)
-    os.symlink(target, tmp)
-    os.replace(tmp, link)
 
 
 def _run_dir_names(parent: str) -> list[str]:
@@ -258,7 +235,7 @@ def _save_registry(reg: dict) -> None:
     # on an entry that was found, which means the store is already there. The atomic
     # write creates the directory itself in any case.
     with _registry_lock():
-        _write_json_atomic(registry_path(), reg)
+        write_json(registry_path(), reg, indent=2)
 
 
 # ── run / reference layout ────────────────────────────────────────────────────
@@ -299,7 +276,7 @@ def _load_suite(name: str) -> dict | None:
 
 
 def _save_suite(name: str, suite: dict) -> None:
-    _write_json_atomic(_suite_path(name), suite)
+    write_json(_suite_path(name), suite, indent=2)
 
 
 def _suite_results_dir(name: str) -> str:
@@ -359,7 +336,7 @@ def _save_opt_config(cfg: dict, proxy_name: str = "") -> None:
     name = proxy_name or cfg.get("proxy_name", "")
     if not name:
         return
-    _write_json_atomic(_opt_config_file(name), cfg)
+    write_json(_opt_config_file(name), cfg, indent=2)
 
 
 def _entry_or_err(proxy_name: str) -> tuple[dict | None, dict | None]:
@@ -398,7 +375,7 @@ def _resolve_proxy_name(arg: str, session_id: str | None = None) -> str | None:
 
 def _write_active_session(proxy_name: str, session_id: str | None = None) -> None:
     """Persist *proxy_name* as this MIMIR session's most-recently initialized proxy."""
-    _write_text_atomic(active_session_file(session_id), proxy_name)
+    write_text(active_session_file(session_id), proxy_name)
 
 
 def _clear_active_session(session_id: str | None = None) -> None:

@@ -243,7 +243,7 @@ class StaleWriteTests(_CommitCase):
 
     def test_a_failed_write_does_not_consume_the_revision(self):
         s = self._session()
-        with mock.patch("json.dump", side_effect=OSError("disk full")):
+        with mock.patch("os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.store.save_session(s)
         s.title = "after the failure"

@@ -15,10 +15,10 @@ read-only state dir or an unreachable embedding endpoint costs a fallback, not a
 """
 
 import json
-import os
 from typing import Any, Callable, Iterable
 
 import embed as _embed
+from atomic import write_json
 
 
 def load_vectors(path: str) -> dict:
@@ -32,19 +32,9 @@ def load_vectors(path: str) -> dict:
 
 
 def save_vectors(path: str, store: dict) -> None:
-    """Replace the cache at *path* atomically.
-
-    Via a temp file and one rename: these caches are workspace-global and several sessions
-    write them at once, and a truncating write lets a concurrent reader load a half-written
-    file — which, being JSON, reads as a corrupt cache rather than a short one. The pid in
-    the temp name keeps two writers from sharing it.
-    """
+    """Replace the cache at *path* atomically: several sessions write it at once."""
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp = f"{path}.tmp{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(store, f)
-        os.replace(tmp, path)
+        write_json(path, store)
     except OSError:
         pass
 

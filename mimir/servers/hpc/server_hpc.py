@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import (tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE,
                           IRREVERSIBLE, PANEL_REPORT)
+from atomic import write_json
 from responses import err, ok
 from state_paths import sessions_root, state_dir
 from slurm_site import (
@@ -1649,12 +1650,8 @@ def _read_json(path: str) -> dict | None:
 
 
 def _write_node_profile(node: str, record: dict, host: str = _LOCAL_HOST) -> None:
-    host_dir = _profile_host_dir(host)
-    os.makedirs(host_dir, exist_ok=True)
-    tmp = os.path.join(host_dir, f".{node}.json.tmp")
-    with open(tmp, "w") as fh:
-        json.dump(record, fh, indent=2, ensure_ascii=False)
-    os.replace(tmp, os.path.join(host_dir, f"{node}.json"))
+    write_json(os.path.join(_profile_host_dir(host), f"{node}.json"), record,
+               indent=2, ensure_ascii=False)
 
 
 def _harvest_probes(nodes_by_name: dict[str, dict],
@@ -2300,8 +2297,8 @@ def _host_tree() -> list[dict]:
         for kind in digest["node_types"]:
             profiled, detail = _profiled_kind_lines(kind, host)
             # GPU memory sits with the other memory line, not among the probe's lines.
-            gpu_mem = next((l["value"] for l in profiled if l["label"] == "gpu mem"), "")
-            profiled = [l for l in profiled if l["label"] != "gpu mem"]
+            gpu_mem = next((line["value"] for line in profiled if line["label"] == "gpu mem"), "")
+            profiled = [line for line in profiled if line["label"] != "gpu mem"]
             entry = {
                 "id": _kind_id(host, kind),
                 "label": _node_names_label(kind),

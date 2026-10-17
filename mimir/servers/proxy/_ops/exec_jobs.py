@@ -21,7 +21,8 @@ from _lib.procs import (
     _launch_detached, _log_path, _new_run_dir, _read_log, _run_state,
     background_descriptor,
 )
-from _lib.store import _read_json, _write_json_atomic
+from _lib.store import _read_json
+from atomic import write_json
 
 _JOB_WORKER = os.path.join(_PROXY_DIR, "_proxy_job.py")
 JOB_FILE = "job.json"
@@ -85,7 +86,7 @@ async def run_awaited(op: str, args: dict, background: bool = False,
                       wait_s: float = _RUN_WAIT_BUDGET_S) -> dict:
     """Launch *op* with *args* in a worker; answer with its reply, or detach."""
     job_dir = _new_run_dir(jobs_dir(), tag_suffix=op)
-    _write_json_atomic(os.path.join(job_dir, JOB_FILE), {"op": op, "args": args})
+    write_json(os.path.join(job_dir, JOB_FILE), {"op": op, "args": args}, indent=2)
     # The tests (and any embedder) repoint the store in-process; the worker must follow.
     env = {**os.environ, "MIMIR_PROXY_BENCH_DIR": store.cache_dir()}
     pid = _launch_detached([sys.executable, _JOB_WORKER, "--job-dir", job_dir],

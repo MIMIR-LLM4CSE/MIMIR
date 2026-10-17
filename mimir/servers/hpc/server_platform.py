@@ -41,6 +41,7 @@ from functools import lru_cache
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
+from atomic import write_json
 from module_env import module_probe_script
 from capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY, PANEL_REPORT
 from cpu_facts import (GPU_FIELDS, GPU_FIELDS_BASE, GPU_PROBES, GPU_QUERY, GPU_QUERY_BASE,
@@ -740,19 +741,11 @@ def _load_catalogue() -> dict | None:
 
 
 def _save_catalogue(catalogue: dict) -> None:
-    """Atomic: a killed build leaves the previous file, never half a JSON document.
-    A read-only state dir degrades to rebuilding each session, not to an error."""
-    tmp = _CATALOGUE_FILE + ".tmp"
+    """A read-only state dir means rebuilding each session, not an error."""
     try:
-        os.makedirs(_MODULES_DIR, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(catalogue, f, ensure_ascii=False)
-        os.replace(tmp, _CATALOGUE_FILE)
+        write_json(_CATALOGUE_FILE, catalogue, ensure_ascii=False)
     except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        pass
 
 
 def _empty_catalogue(flavour: str) -> dict:

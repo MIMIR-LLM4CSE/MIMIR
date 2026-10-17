@@ -43,7 +43,7 @@ import threading
 from typing import Any
 
 from .paths import STATE_DIR
-from ..util.files import write_json_atomic
+from ...servers._shared.atomic import write_json
 from .settings import DEFAULT_SUBAGENT_LEVEL, clamp_subagent_level
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ def _write_preferences(payload: dict[str, Any]) -> None:
     """Write the whole preferences dict atomically. Callers merge into what is there."""
     path = _preferences_path()
     try:
-        write_json_atomic(path, payload, indent=2, trailing_newline=True)
+        write_json(path, payload, indent=2, trailing_newline=True)
     except Exception as exc:
         logger.warning("Could not write %s: %s", path, exc)
 

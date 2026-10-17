@@ -4,11 +4,11 @@ import difflib
 import os
 import re
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
+from atomic import write_text
 from responses import err, ok
 from root_paths import require_absolute, resolve_path_in_root
 from approved_roots import approved_roots
@@ -165,29 +165,11 @@ def _validate_python_content(path: str, content: str) -> str | None:
         )
 
 
-def _atomic_write_text(fp: str, content: str) -> None:
-    """Atomically replace a file's content."""
-    dir_name = os.path.dirname(fp) or "."
-    os.makedirs(dir_name, exist_ok=True)
-
-    fd, tmp_path = tempfile.mkstemp(prefix=".mcp_tmp_", suffix=".tmp", dir=dir_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:
-            tmp.write(content)
-        os.replace(tmp_path, fp)
-    except Exception:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        finally:
-            raise
-
-
 def _write_validated_text(fp: str, path: str, content: str) -> None:
     syntax_error = _validate_python_content(path, content)
     if syntax_error:
         raise ValueError(syntax_error)
-    _atomic_write_text(fp, content)
+    write_text(fp, content, newline="")
 
 
 def _apply_replace_lines_to_text(content: str, start_line: int, end_line: int, new_content: str) -> tuple[str | None, str | None]:
@@ -626,7 +608,7 @@ def write_file(path: str, content: str, overwrite: bool = False) -> dict:
                 ),
             )
 
-        _atomic_write_text(fp, content)
+        write_text(fp, content, newline="")
         operation = "updated" if is_existing else "created"
 
         return ok({
@@ -677,7 +659,7 @@ def append_file(path: str, content: str) -> dict:
                 hint="The append would make the Python file invalid. Inspect the appended text and try again.",
             )
 
-        _atomic_write_text(fp, updated)
+        write_text(fp, updated, newline="")
         size_kb = round(os.path.getsize(fp) / 1024, 2)
 
         return ok({
@@ -794,7 +776,7 @@ def replace_in_file(path: str, old_text: str, new_text: str) -> dict:
         old_lines = content.splitlines(True)
         new_lines = updated.splitlines(True)
         diff = _unified_diff(old_lines, new_lines, path)
-        _atomic_write_text(fp, updated)
+        write_text(fp, updated, newline="")
         result = {
             "operation": "replaced",
             "path": path,
@@ -886,7 +868,7 @@ def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -
 
         new_lines = updated.splitlines(True)
         diff = _unified_diff(old_lines, new_lines, path)
-        _atomic_write_text(fp, updated)
+        write_text(fp, updated, newline="")
 
         return ok({
             "operation": "replace_lines",
@@ -1008,7 +990,7 @@ def replace_all_in_file(
         if syntax_error:
             return err(syntax_error)
 
-        _atomic_write_text(fp, updated)
+        write_text(fp, updated, newline="")
         return ok({
             "operation": "replace_all",
             "path": path,

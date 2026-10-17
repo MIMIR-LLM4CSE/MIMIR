@@ -32,6 +32,7 @@ from slurm_site import (
 )
 from state_paths import active_session_id, session_owns
 
+from atomic import replace_symlink
 from _lib import store
 
 _MAX_LOG = 256 * 1024   # bytes
@@ -734,11 +735,11 @@ def _validate_slurm_comment(value: str, field: str = "comment") -> str | None:
 # ── active-run symlinks ───────────────────────────────────────────────────────
 
 def _update_active_link(proxy_name: str, run_dir: str) -> None:
-    store._atomic_symlink(store._active_link(proxy_name), run_dir)
+    replace_symlink(store._active_link(proxy_name), run_dir)
 
 
 def _update_opt_active_link(proxy_name: str, run_dir: str) -> None:
-    store._atomic_symlink(store._opt_active_link(proxy_name), run_dir)
+    replace_symlink(store._opt_active_link(proxy_name), run_dir)
 
 
 def _opt_active_run_dir(proxy_name: str) -> str | None:

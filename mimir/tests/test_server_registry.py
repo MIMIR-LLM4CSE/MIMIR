@@ -93,7 +93,7 @@ class PublishAndReadTests(_RegistryCase):
         self.assertEqual(server_registry.read()["port"], 2)
 
     def test_a_write_that_fails_leaves_no_half_file(self):
-        with mock.patch("json.dump", side_effect=OSError("disk full")):
+        with mock.patch("os.replace", side_effect=OSError("disk full")):
             self.assertIsNone(
                 server_registry.publish(url="ws://x", host="h", port=1))
         self.assertFalse(os.path.exists(server_registry.registry_path() + ".tmp"))

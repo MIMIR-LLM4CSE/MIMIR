@@ -33,6 +33,7 @@ import json
 import os
 
 from ..config.paths import STATE_DIR
+from ...servers._shared.atomic import write_text
 from ...servers._shared.state_paths import session_state_dir
 
 
@@ -81,13 +82,7 @@ def request_divert(channel: str, session_id: str | None = None) -> dict | None:
     if run is None:
         return None
     try:
-        base = _dir(channel, session_id)
-        os.makedirs(base, exist_ok=True)
-        path = os.path.join(base, "divert")
-        tmp = f"{path}.tmp{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(str(run["job_key"]))
-        os.replace(tmp, path)
+        write_text(os.path.join(_dir(channel, session_id), "divert"), str(run["job_key"]))
     except OSError:
         return None
     return run

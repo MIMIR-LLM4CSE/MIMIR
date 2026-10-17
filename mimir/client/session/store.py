@@ -39,7 +39,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
 from ..config.paths import STATE_DIR
-from ..util.files import write_json_atomic
+from ...servers._shared.atomic import write_json
 from ...servers._shared.state_paths import ACTIVITY_FILENAME, SUBAGENTS_DIRNAME, TODO_FILENAME, sessions_root
 
 logger = logging.getLogger(__name__)
@@ -383,7 +383,7 @@ class SessionStore:
                 f"session {session.id} moved on (disk rev {on_disk} > {session.rev})")
         session.rev = on_disk + 1
         try:
-            write_json_atomic(target, session.to_dict(), ensure_ascii=False, indent=2,
+            write_json(target, session.to_dict(), ensure_ascii=False, indent=2,
                               default=str)
         except Exception:
             session.rev = on_disk

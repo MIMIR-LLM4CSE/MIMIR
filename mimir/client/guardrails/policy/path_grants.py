@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from ...config import paths
-from ...util.files import write_json_atomic
+from ....servers._shared.atomic import write_json
 from ....servers._shared.state_paths import session_state_dir
 
 
@@ -76,6 +76,6 @@ class PathGrants:
 
     def _flush(self) -> None:
         try:
-            write_json_atomic(self.sidecar_file(), sorted(self.allowed))
+            write_json(self.sidecar_file(), sorted(self.allowed))
         except OSError:
             pass  # best-effort; a failed write simply keeps the server strict
