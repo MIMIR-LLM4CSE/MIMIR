@@ -42,7 +42,7 @@ import os
 import threading
 from typing import Any
 
-from .paths import STATE_DIR
+from . import paths
 from ...servers._shared.atomic import write_json
 from .settings import DEFAULT_SUBAGENT_LEVEL, clamp_subagent_level
 
@@ -59,7 +59,7 @@ _WRITE_LOCK = threading.Lock()
 
 
 def _preferences_path() -> str:
-    return os.path.join(STATE_DIR, PREFERENCES_FILENAME)
+    return os.path.join(paths.STATE_DIR, PREFERENCES_FILENAME)
 
 
 def load_preferences() -> dict[str, Any]:

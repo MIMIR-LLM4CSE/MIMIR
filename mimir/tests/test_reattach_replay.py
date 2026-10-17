@@ -15,10 +15,12 @@ from unittest import mock
 
 import os
 
-from mimir.client.ui.ws import job_scan, transcript_log
+from mimir.servers._shared.processes import proc_starttime
+from mimir.client.session import jobs_on_disk
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
 from mimir.tests._session import bare_session
+from mimir.tests.support.state import pin_state_dir
 
 
 class _FakeWS:
@@ -40,9 +42,7 @@ def _bare_worker(session_id: str = "s1") -> _AgentWorker:
 class _ReplayCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        patcher = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
         self.worker = _bare_worker("s1")
@@ -316,9 +316,7 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        patcher = mock.patch.object(job_scan, "_MIMIR_DIR_WS", self._tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
         self.handled: list[dict] = []
@@ -360,7 +358,7 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         with open(os.path.join(job_dir, "meta.json"), "w") as fh:
             json.dump({"job_key": job_key, "command": "sleep 9999",
                        "pid": os.getpid(),
-                       "pid_starttime": job_scan._proc_starttime(os.getpid())}, fh)
+                       "pid_starttime": proc_starttime(os.getpid())}, fh)
 
     async def test_a_run_that_ended_while_away_is_handed_to_the_wake_routing(self):
         self._ended_job("s1", "j1", 0)
@@ -398,7 +396,7 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         self._ended_job("s1", "j1", 0)
         await self.sess._report_ended_jobs()
         # What a consumer does once the turn carrying the wake is submitted.
-        job_scan.mark_wakes_reported(self.handled)
+        jobs_on_disk.mark_wakes_reported(self.handled)
         self.handled.clear()
         await self.sess._report_ended_jobs()
         self.assertEqual(self.handled, [])
@@ -432,7 +430,7 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
 
         await self.sess._report_ended_jobs()
         self.assertEqual(self.handled, [])
-        self.assertTrue(job_scan.has_baseline("s1"))
+        self.assertTrue(jobs_on_disk.has_baseline("s1"))
 
     async def test_a_job_that_ends_after_the_first_look_is_reported(self):
         await self.sess._report_ended_jobs()      # establishes the baseline
@@ -441,7 +439,7 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e["job_key"] for e in self.handled], ["j1"])
 
     async def test_an_unreadable_state_dir_is_not_fatal(self):
-        with mock.patch.object(job_scan, "scan_all_sessions",
+        with mock.patch.object(jobs_on_disk, "scan_all_sessions",
                                side_effect=OSError("gone")):
             await self.sess._report_ended_jobs()   # must not raise
         self.assertEqual(self.handled, [])

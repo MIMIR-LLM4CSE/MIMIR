@@ -30,6 +30,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from mimir.client.config import paths
+
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "proxy" / "_lib",
            SERVERS_DIR / "hpc"]:
@@ -128,7 +130,7 @@ class PreferencesConcurrencyTests(unittest.TestCase):
         self.preferences = preferences
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        patcher = patch.object(preferences, "STATE_DIR", self._tmp.name)
+        patcher = patch.object(paths, "STATE_DIR", self._tmp.name)
         patcher.start()
         self.addCleanup(patcher.stop)
 

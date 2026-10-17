@@ -14,10 +14,12 @@ import time
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import job_scan
-from mimir.client.ui.ws.job_scan import DetachedJob, scan_all_sessions, scan_session
+from mimir.servers._shared.processes import proc_starttime
+from mimir.client.session import jobs_on_disk
+from mimir.client.session.jobs_on_disk import DetachedJob, scan_all_sessions, scan_session
 from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.tests.support.state import pin_state_dir
 
 
 def _hpc_tool_names() -> set[str]:
@@ -45,9 +47,7 @@ def _hpc_tool_names() -> set[str]:
 class _ScanCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        patcher = mock.patch.object(job_scan, "_MIMIR_DIR_WS", self._tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
     def _events(self, worker) -> list[dict]:
@@ -131,7 +131,7 @@ class ScanTests(_ScanCase):
     def test_a_running_job_is_reported_live(self):
         # Our own pid, with its real start time: alive, and the start time matches.
         self._job("s1", "j1", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
+                  starttime=proc_starttime(os.getpid()))
         jobs = scan_session("s1")
         self.assertEqual([(j.job_key, j.live, j.state) for j in jobs],
                          [("j1", True, "running")])
@@ -139,7 +139,7 @@ class ScanTests(_ScanCase):
     def test_a_recorded_exit_code_wins_over_whatever_the_pid_looks_like(self):
         # The trap writes it as the shell leaves, so a run that got there is finished.
         self._job("s1", "j1", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()), exit_code=0)
+                  starttime=proc_starttime(os.getpid()), exit_code=0)
         job = scan_session("s1")[0]
         self.assertFalse(job.live)
         self.assertEqual(job.state, "done")
@@ -239,7 +239,7 @@ class ScanTests(_ScanCase):
         # A Slurm key is an id, not a directory name, so marking has to resolve it back
         # to the descriptor that holds it.
         self._slurm_job("s1", "run-1", "12345", state="done")
-        job_scan.mark_job_reported("s1", "12345", "hpc")
+        jobs_on_disk.mark_job_reported("s1", "12345", "hpc")
         self.assertTrue(os.path.exists(os.path.join(
             self._tmp.name, "sessions", "s1", "hpc_jobs", "run-1", "reported")))
         self.assertEqual([j for j in scan_session("s1") if j.kind == "slurm"], [])
@@ -270,7 +270,7 @@ class ScanTests(_ScanCase):
         # call it for. The directory travels with them because a key alone resolves
         # against the reading session, and a sub-agent's run is not under it.
         self._job("s1", "j1", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
+                  starttime=proc_starttime(os.getpid()))
         job = scan_session("s1")[0]
         d = job.descriptor()
         self.assertEqual(d["status_op"],
@@ -341,9 +341,9 @@ class ASubAgentsRunsAreFoundTests(_ScanCase):
         self._job("s1/subagents/sub-1a2b", "j2", exit_code=0)
         ev = {"job_key": "j2", "server": "bash", "session_id": "s1",
               "run_session": "s1/subagents/sub-1a2b"}
-        self.assertFalse(job_scan.wake_reported(ev))
-        job_scan.mark_wakes_reported([ev])
-        self.assertTrue(job_scan.wake_reported(ev))
+        self.assertFalse(jobs_on_disk.wake_reported(ev))
+        jobs_on_disk.mark_wakes_reported([ev])
+        self.assertTrue(jobs_on_disk.wake_reported(ev))
         self.assertEqual(scan_session("s1/subagents/sub-1a2b"), [])
 
     def test_a_run_of_its_own_is_owned_by_the_session_that_holds_it(self):
@@ -358,7 +358,7 @@ class ASubAgentsRunsAreFoundTests(_ScanCase):
         announce a healthy build as lost on its first poll.
         """
         self._job("s1/subagents/sub-1a2b", "j2", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
+                  starttime=proc_starttime(os.getpid()))
         d = scan_session("s1/subagents/sub-1a2b")[0].descriptor()
         self.assertTrue(
             d["status_op"]["args"]["run_dir"].endswith("/subagents/sub-1a2b/jobs/j2"))
@@ -369,25 +369,25 @@ class AChildsBaselineIsItsOwnTests(_ScanCase):
 
     def _job_unbaselined(self, session_id: str, job_key: str, **kw) -> str:
         job_dir = self._job(session_id, job_key, **kw)
-        os.remove(job_scan._baseline_path(session_id))
+        os.remove(jobs_on_disk._baseline_path(session_id))
         return job_dir
 
     def test_the_first_scan_of_a_child_wakes_nobody_for_its_history(self):
         self._job_unbaselined("s1/subagents/sub-1a2b", "j2", exit_code=0)
         sid = "s1/subagents/sub-1a2b"
-        self.assertFalse(job_scan.has_baseline(sid))
+        self.assertFalse(jobs_on_disk.has_baseline(sid))
         jobs = scan_session(sid)
-        job_scan.establish_baseline(sid, jobs)
+        jobs_on_disk.establish_baseline(sid, jobs)
         # Marked where the scan will look again — under the child, not the parent.
-        self.assertTrue(job_scan.has_baseline(sid))
-        self.assertFalse(job_scan.has_baseline("s1"))
+        self.assertTrue(jobs_on_disk.has_baseline(sid))
+        self.assertFalse(jobs_on_disk.has_baseline("s1"))
         self.assertEqual(scan_session(sid), [])
 
     def test_a_child_job_ending_after_its_baseline_is_reported(self):
         sid = "s1/subagents/sub-1a2b"
         self._job_unbaselined(sid, "j2", pid=os.getpid(),
-                              starttime=job_scan._proc_starttime(os.getpid()))
-        job_scan.establish_baseline(sid, scan_session(sid))
+                              starttime=proc_starttime(os.getpid()))
+        jobs_on_disk.establish_baseline(sid, scan_session(sid))
         self._job(sid, "j3", exit_code=0)
         self.assertEqual([j.job_key for j in scan_session(sid)], ["j2", "j3"])
 
@@ -398,7 +398,7 @@ class RearmTests(_ScanCase):
 
     def test_a_live_run_gets_its_watcher_back(self):
         self._job("s1", "j1", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
+                  starttime=proc_starttime(os.getpid()))
         w = self._worker()
         result = w.rearm_detached_jobs()
         self.assertEqual(result["rearmed"], ["j1"])
@@ -426,7 +426,7 @@ class RearmTests(_ScanCase):
         child's own, or the first poll resolves to nothing.
         """
         self._job("s1/subagents/sub-1a2b", "j2", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
+                  starttime=proc_starttime(os.getpid()))
         w = self._worker()
         result = w.rearm_detached_jobs()
         self.assertEqual(result["rearmed"], ["j2"])
@@ -460,7 +460,7 @@ class RearmTests(_ScanCase):
         # The ordinary case of a server that simply stayed up: re-arming anything would
         # put a second watcher on a run and wake the conversation twice.
         self._job("s1", "j1", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
+                  starttime=proc_starttime(os.getpid()))
         w = self._worker()
         w.jobs._bg_jobs["j1"] = mock.Mock(task=mock.Mock(done=lambda: False))
         result = w.rearm_detached_jobs()
@@ -475,7 +475,7 @@ class RearmTests(_ScanCase):
 
     def test_several_runs_are_sorted_into_the_two_piles(self):
         self._job("s1", "live", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
+                  starttime=proc_starttime(os.getpid()))
         self._job("s1", "ended", exit_code=0)
         w = self._worker()
         result = w.rearm_detached_jobs()
@@ -510,14 +510,14 @@ class ReportedOnceTests(_ScanCase):
     def test_a_reported_run_is_left_out_of_the_next_scan(self):
         self._job("s1", "j1", exit_code=0)
         job = scan_session("s1")[0]
-        self.assertFalse(job_scan.was_reported(job))
-        job_scan.mark_reported(job)
-        self.assertTrue(job_scan.was_reported(job))
+        self.assertFalse(jobs_on_disk.was_reported(job))
+        jobs_on_disk.mark_reported(job)
+        self.assertTrue(jobs_on_disk.was_reported(job))
         self.assertEqual(scan_session("s1"), [])
 
     def test_the_marker_can_be_asked_for_anyway(self):
         self._job("s1", "j1", exit_code=0)
-        job_scan.mark_reported(scan_session("s1")[0])
+        jobs_on_disk.mark_reported(scan_session("s1")[0])
         self.assertEqual([j.job_key for j in
                           scan_session("s1", include_reported=True)], ["j1"])
 
@@ -525,8 +525,8 @@ class ReportedOnceTests(_ScanCase):
         # Re-arming a run already held costs nothing — the worker dedups — whereas
         # filtering one out would leave it unwatched for good.
         self._job("s1", "j1", pid=os.getpid(),
-                  starttime=job_scan._proc_starttime(os.getpid()))
-        job_scan.mark_reported(scan_session("s1")[0])
+                  starttime=proc_starttime(os.getpid()))
+        jobs_on_disk.mark_reported(scan_session("s1")[0])
         self.assertEqual([j.job_key for j in scan_session("s1")], ["j1"])
 
     def test_the_worker_announces_a_run_until_something_takes_it_in(self):
@@ -544,7 +544,7 @@ class ReportedOnceTests(_ScanCase):
         self._job("s1", "j1", exit_code=0)
         w = _RearmWorker("s1")
         self.assertEqual(w.rearm_detached_jobs()["reported"], ["j1"])
-        job_scan.mark_wakes_reported(self._events(w))
+        jobs_on_disk.mark_wakes_reported(self._events(w))
         self.assertEqual(_RearmWorker("s1").rearm_detached_jobs()["reported"], [])
 
     def test_an_announced_run_carries_what_the_wake_text_needs(self):
@@ -564,7 +564,7 @@ class ReportedOnceTests(_ScanCase):
         w = _RearmWorker("s1")
         # Only the marker's write: patching `open` would break the scan that finds
         # the run in the first place, and then the test would pass for the wrong reason.
-        with mock.patch("mimir.client.ui.ws.job_scan.os.makedirs",
+        with mock.patch("mimir.client.session.jobs_on_disk.os.makedirs",
                         side_effect=OSError("read-only")):
             reported = w.rearm_detached_jobs()["reported"]
         self.assertEqual(reported, ["j1"])
@@ -591,10 +591,10 @@ class BaselineTests(_ScanCase):
     def test_the_first_scan_reports_nothing_and_records_that_it_looked(self):
         for i in range(5):
             self._unbaselined_job("s1", f"old-{i}", 0)
-        self.assertFalse(job_scan.has_baseline("s1"))
+        self.assertFalse(jobs_on_disk.has_baseline("s1"))
         w = _RearmWorker("s1")
         self.assertEqual(w.rearm_detached_jobs(), {"rearmed": [], "reported": []})
-        self.assertTrue(job_scan.has_baseline("s1"))
+        self.assertTrue(jobs_on_disk.has_baseline("s1"))
         self.assertTrue(w.out_q.empty(), "woke a conversation for a historical build")
 
     def test_a_job_that_ends_after_the_baseline_is_reported(self):
@@ -612,28 +612,28 @@ class BaselineTests(_ScanCase):
         with open(os.path.join(job_dir, "meta.json"), "w") as fh:
             json.dump({"job_key": "live", "command": "sleep 9999",
                        "pid": os.getpid(),
-                       "pid_starttime": job_scan._proc_starttime(os.getpid())}, fh)
+                       "pid_starttime": proc_starttime(os.getpid())}, fh)
         w = _RearmWorker("s1")
         self.assertEqual(w.rearm_detached_jobs()["rearmed"], ["live"])
-        self.assertTrue(job_scan.has_baseline("s1"))
+        self.assertTrue(jobs_on_disk.has_baseline("s1"))
 
     def test_the_baseline_marks_the_history_so_it_is_never_claimed_later(self):
         self._unbaselined_job("s1", "old", 0)
         _RearmWorker("s1").rearm_detached_jobs()
         jobs = scan_session("s1", include_reported=True)
-        self.assertTrue(all(job_scan.was_reported(j) for j in jobs))
+        self.assertTrue(all(jobs_on_disk.was_reported(j) for j in jobs))
 
     def test_a_watcher_reporting_a_run_marks_it_so_a_restart_does_not_repeat_it(self):
         # The common case and the worse one: a job whose own watcher reported it
         # normally must not be woken again on the next attach.
         self._baseline("s1")
         self._unbaselined_job("s1", "j1", 0)
-        job_scan.mark_job_reported("s1", "j1")
+        jobs_on_disk.mark_job_reported("s1", "j1")
         self.assertEqual(_RearmWorker("s1").rearm_detached_jobs()["reported"], [])
 
     def test_marking_by_key_needs_neither_a_session_nor_a_job(self):
-        job_scan.mark_job_reported(None, "j1")
-        job_scan.mark_job_reported("s1", "")
+        jobs_on_disk.mark_job_reported(None, "j1")
+        jobs_on_disk.mark_job_reported("s1", "")
 
 
 class StateWordingTests(unittest.TestCase):
@@ -701,13 +701,13 @@ class ARunWatchedByItsOwnServerTests(_ScanCase):
         """
         self._slurm_job("s1", "20260101T000000Z-dddd", "9004", state="done",
                         watcher=self._proxy_watcher("run-0004"))
-        job_scan.mark_job_reported("s1", "run-0004", "proxy")
+        jobs_on_disk.mark_job_reported("s1", "run-0004", "proxy")
         job, = scan_session("s1", include_reported=True)
-        self.assertTrue(job_scan.was_reported(job))
+        self.assertTrue(jobs_on_disk.was_reported(job))
 
     def test_a_local_proxy_run_keeps_its_own_tree(self):
         """One that submitted nothing has no descriptor, and its marker stays put."""
         self._job("s1", "run-local")
-        job_scan.mark_job_reported("s1", "run-local", "proxy")
+        jobs_on_disk.mark_job_reported("s1", "run-local", "proxy")
         self.assertTrue(os.path.exists(os.path.join(
             self._tmp.name, "sessions", "s1", "jobs", "run-local", "reported")))

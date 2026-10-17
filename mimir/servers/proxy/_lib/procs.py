@@ -33,6 +33,7 @@ from slurm_site import (
 from state_paths import active_session_id, session_owns
 
 from atomic import replace_symlink
+from processes import is_running, proc_starttime
 from _lib import store
 
 _MAX_LOG = 256 * 1024   # bytes
@@ -207,50 +208,6 @@ def _read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
 
 # ── process state ─────────────────────────────────────────────────────────────
 
-def _read_proc_starttime(pid: int) -> int | None:
-    """Return the starttime field from /proc/{pid}/stat (Linux only).
-
-    Returns None on non-Linux or any read/parse failure.
-    Used to detect PID recycling.
-    """
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            data = fh.read()
-        idx = data.rfind(")")
-        if idx < 0:
-            return None
-        fields = data[idx + 2:].split()
-        return int(fields[19])
-    except (OSError, IndexError, ValueError):
-        return None
-
-
-def _is_running(pid: int, expected_starttime: int | None = None) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    # A zombie has already exited — only its unreaped table entry remains
-    # (the launcher never wait()s on detached children), so it must count as
-    # finished or run states would stay "running" until the entry is reaped.
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            data = fh.read()
-        idx = data.rfind(")")
-        if idx >= 0 and data[idx + 2:].split()[0] == "Z":
-            return False
-    except (OSError, IndexError):
-        pass
-    # Always check starttime for PID validation (avoid PID reuse bugs)
-    current = _read_proc_starttime(pid)
-    if expected_starttime is not None:
-        if current is not None and current != expected_starttime:
-            return False
-    elif current is None:
-        return False
-    return True
-
-
 def _slurm_run(argv: list[str], timeout: int, stdin: str | None = None, *,
                host: str = _SLURM_LOCAL):
     """Run one Slurm command on *host*'s scheduler, and hand back the completed call.
@@ -381,7 +338,7 @@ def _run_state(run_dir: str) -> dict:
         pid = _read_pid(run_dir)
         if pid:
             expected_st = _read_int_file(_pid_starttime_path(run_dir))
-            if _is_running(pid, expected_st):
+            if is_running(pid, expected_st):
                 state = "running"
             elif os.path.isfile(metrics_path):
                 state = "done"
@@ -511,7 +468,7 @@ def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None,
     proc = subprocess.Popen(argv, **kwargs)
     with open(_pid_path(run_dir), "w") as fh:
         fh.write(str(proc.pid))
-    st = _read_proc_starttime(proc.pid)
+    st = proc_starttime(proc.pid)
     if st is not None:
         with open(_pid_starttime_path(run_dir), "w") as fh:
             fh.write(str(st))
@@ -668,7 +625,7 @@ def _cancel_run(run_dir: str) -> dict:
 
     for _ in range(10):
         time.sleep(0.5)
-        if not _is_running(pid):
+        if not is_running(pid):
             return {"cancelled": "sigterm", "pid": pid}
     try:
         os.kill(pid, signal.SIGKILL)

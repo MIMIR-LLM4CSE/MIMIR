@@ -41,7 +41,7 @@ from typing import Callable, Iterable
 from ...protocol.events import (
     CONCLUSIVE_EVENTS, DURABLE_EVENTS, REPLAY_ONLY_EVENTS, pop_answer_extras,
 )
-from .transcript_log import TranscriptLog
+from ...session.journal import TranscriptLog
 
 logger = logging.getLogger(__name__)
 

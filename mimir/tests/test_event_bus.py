@@ -10,11 +10,11 @@ import asyncio
 import queue as _queue
 import tempfile
 import unittest
-from unittest import mock
 
-from mimir.client.ui.ws import transcript_log
+from mimir.client.session import journal
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.tests.support.state import pin_state_dir
 
 
 def _bare_worker(session_id: str | None = None) -> _AgentWorker:
@@ -39,13 +39,11 @@ class _BusCase(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        patcher = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
     def _lines(self, session_id: str) -> list[dict]:
-        events, _truncated = transcript_log.read_since(session_id, 0)
+        events, _truncated = journal.read_since(session_id, 0)
         return events
 
 
@@ -260,7 +258,7 @@ class ReadSinceTests(_BusCase):
             w.out_q.put({"type": "output", "text": f"{i}\n"})
         bus.pump_once()
 
-        events, truncated = transcript_log.read_since("s1", 4)
+        events, truncated = journal.read_since("s1", 4)
         self.assertEqual([e["seq"] for e in events], [5, 6])
         self.assertFalse(truncated)
 
@@ -271,12 +269,12 @@ class ReadSinceTests(_BusCase):
             w.out_q.put({"type": "output", "text": f"{i}\n"})
         bus.pump_once()
 
-        events, truncated = transcript_log.read_since("s1", 0, limit=3)
+        events, truncated = journal.read_since("s1", 0, limit=3)
         self.assertEqual([e["seq"] for e in events], [8, 9, 10])
         self.assertTrue(truncated)
 
     def test_no_journal_reads_as_empty_rather_than_raising(self):
-        events, truncated = transcript_log.read_since("never-existed", 0)
+        events, truncated = journal.read_since("never-existed", 0)
         self.assertEqual(events, [])
         self.assertFalse(truncated)
 

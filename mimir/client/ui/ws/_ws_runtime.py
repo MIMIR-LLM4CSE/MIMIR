@@ -16,7 +16,7 @@ import threading
 from typing import Any, Callable
 
 from ...config.limits import CTX_TOTAL_FULL as _CTX_DEFAULT_FULL
-from ...config.paths import STATE_DIR
+from ...config import paths
 from ...context.resource_context import augment_query_with_resources
 from ...query_engine.backends.factory import get_backend
 from ...query_engine.context_budget import context_budget_for
@@ -76,19 +76,16 @@ def _ensure_router_installed() -> None:
 
 # ── Session-scoped todo helpers (module-level so both classes can use them) ───
 
-_MIMIR_DIR_WS = STATE_DIR
-
-
 def _todo_file_for_session(session_id: str | None) -> str:
     """The todo file of *session_id*, or the state root's without one."""
-    return session_file(TODO_FILENAME, session_id, _MIMIR_DIR_WS)
+    return session_file(TODO_FILENAME, session_id, paths.STATE_DIR)
 
 
 def _write_active_session(session_id: str | None) -> None:
     """Write the active session ID to .mimir/active_session (sidecar)."""
     try:
-        os.makedirs(_MIMIR_DIR_WS, exist_ok=True)
-        sidecar = os.path.join(_MIMIR_DIR_WS, "active_session")
+        os.makedirs(paths.STATE_DIR, exist_ok=True)
+        sidecar = os.path.join(paths.STATE_DIR, "active_session")
         with open(sidecar, "w", encoding="utf-8") as f:
             f.write(session_id or "")
     except Exception:
@@ -100,7 +97,6 @@ __all__ = [
     "_ORIGINAL_STDOUT",
     "_ROUTER",
     "_ensure_router_installed",
-    "_MIMIR_DIR_WS",
     "_todo_file_for_session",
     "_write_active_session",
     "get_backend",

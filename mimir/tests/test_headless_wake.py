@@ -22,17 +22,16 @@ import os
 import queue as _queue
 import tempfile
 import unittest
-from unittest import mock
 
-from mimir.client.session import store as session_store
 from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws import job_scan, transcript_log
+from mimir.client.session import journal
 from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.job_scan import scan_session
+from mimir.client.session.jobs_on_disk import scan_session
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.wake_router import WakeRouter
 from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.tests.support.state import pin_state_dir
 
 
 class _Worker:
@@ -72,12 +71,7 @@ class _Worker:
 class _HeadlessCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS"),
-                             (job_scan, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.store = SessionStore()
 
@@ -188,7 +182,7 @@ class AWakeStartsATurnTests(_HeadlessCase):
         pool = self._pool({s.id: _Worker(s.id)})
         pool.wakes.consume(self._complete(s.id))
 
-        events = transcript_log.read_since(s.id, 0)[0]
+        events = journal.read_since(s.id, 0)[0]
         self.assertEqual([e["type"] for e in events], ["job_wake"])
         self.assertEqual(events[0]["job"], "j1")
 

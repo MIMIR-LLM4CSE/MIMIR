@@ -17,7 +17,7 @@ graph TD
         ws["ui/ws/<br/><small>serving · ws_session + handlers/ · event_router<br/>event_bus · ws_pool · wake_router<br/>ws_worker · human_bridge · job_watcher</small>"]
     end
     subgraph SES["💬 Conversations"]
-        session["session/<br/><small>conversation · store · commands/</small>"]
+        session["session/<br/><small>conversation · store · journal<br/>jobs_on_disk · summary · commands/</small>"]
     end
     subgraph ORCH["🎛️ Orchestrator"]
         agent["agent_core.py<br/><small>MimirAgent</small>"]
@@ -117,8 +117,9 @@ graph TD
   sub-agent server instantiate; it implements `AgentPort`.
 - **`session`** is what a conversation is, independent of the front-end showing it:
   `Conversation` (one in-memory object per conversation, handed to every writer by the
-  `Conversations` registry), the `SessionStore` on disk, and the session commands
-  (`Command`, `CommandRegistry`) both front-ends share.
+  `Conversations` registry), what it keeps on disk (the `SessionStore`, the `journal`,
+  the detached runs it left in `jobs_on_disk`, its one-line `summary`), and the session
+  commands (`Command`, `CommandRegistry`) both front-ends share.
 - **`ui/`** is only the front-ends. The CLI drives an agent in-process; the WebSocket
   server runs one worker per conversation in a pool, whose pump commits answers and
   routes finished runs before any socket renders them.

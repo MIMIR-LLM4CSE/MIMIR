@@ -19,7 +19,8 @@ from mcp.client.stdio import stdio_client
 from .. import human_pause
 from ..context.capabilities import infer_tool_caps
 from ..protocol.tool_call import DOING_ARG
-from ..config.paths import GLOBAL_STATE_DIR, STATE_DIR
+from ..config import paths
+from ..config.paths import GLOBAL_STATE_DIR
 from ..config.limits import USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 from ..core.ports import AgentPort
@@ -383,7 +384,7 @@ async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
         **os.environ,
         "MCP_FILES_ROOT": root,
         "SEARCH_ROOT": root,
-        "MIMIR_STATE_DIR": STATE_DIR,
+        "MIMIR_STATE_DIR": paths.STATE_DIR,
         "MIMIR_GLOBAL_STATE_DIR": GLOBAL_STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
         "MIMIR_SESSION_ID": getattr(agent, "session_id", "") or "",

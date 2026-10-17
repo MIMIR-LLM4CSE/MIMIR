@@ -12,7 +12,7 @@ import unittest
 from mimir.tests._fake_pool import FakePool
 from unittest.mock import patch
 
-from mimir.client.ui.ws import session_summary as ss
+from mimir.client.session import summary as ss
 from mimir.client.session.store import FullSession
 
 

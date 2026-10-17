@@ -1,16 +1,12 @@
 """Append-only JSONL log of everything a session exchanged.
 
-One file per session, ``<STATE_DIR>/sessions/<id>/transcript.jsonl``, next to the
-``todo_list.md`` / ``todo_deps.json`` sidecars. It exists because neither of the two
-lists the session JSON holds is a complete record: ``display_messages`` is what the UI
-renders, and ``llm_history`` is a *window* — the front-trim in ``_handle_query`` and
-``_enforce_context_budget`` mutate it in place, so the turns they drop leave no trace.
-Append-only means the budget can never reach back and shorten this, which is what makes
-it usable both to reconstruct the whole context and to profile a run offline.
+One file per session, ``<STATE_DIR>/sessions/<id>/transcript.jsonl``. The session JSON
+is not a complete record: ``display_messages`` is what the UI renders, and
+``llm_history`` is a window the context budget trims in place. The journal is never
+trimmed, so it can rebuild the whole context and profile a run offline.
 
-Each line is one JSON object with ``ts`` / ``seq`` / ``type`` plus the event's own
-payload. Token-level events (``token``, ``thinking`` deltas) are dropped — they would
-bury the file in noise and the aggregate lands anyway at ``thinking_end`` / ``answer``.
+Each line is one JSON object with ``ts`` / ``seq`` / ``type`` plus the event's payload.
+Token-level deltas are left out: their aggregate lands at ``thinking_end`` / ``answer``.
 """
 
 from __future__ import annotations
@@ -20,8 +16,8 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from ._ws_runtime import _MIMIR_DIR_WS
-from ....servers._shared.state_paths import JOURNAL_FILENAME, session_file
+from ...servers._shared.state_paths import JOURNAL_FILENAME, session_file
+from ..config import paths
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +30,7 @@ def transcript_path(session_id: str | None) -> str | None:
     """Path of a session's JSONL log, or None when there is no session to log to."""
     if not session_id:
         return None
-    return session_file(JOURNAL_FILENAME, session_id, _MIMIR_DIR_WS)
+    return session_file(JOURNAL_FILENAME, session_id, paths.STATE_DIR)
 
 
 class TranscriptLog:

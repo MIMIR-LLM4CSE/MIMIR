@@ -1,33 +1,15 @@
-"""What detached runs a session left behind, read off the disk.
+"""The detached runs a session left behind, read off the disk.
 
-Background runs already survive everything. ``bash_run`` launches them in their own
-session with ``start_new_session=True`` and a trap that writes the exit code, Slurm jobs
-belong to the controller, and both leave a descriptor under
-``<state>/sessions/<sid>/jobs/<key>/`` or ``.../hpc_jobs/<dir>/``. What does *not* survive
-is the promise to report them: a watcher is an ``asyncio.Task`` on the worker's loop, and
-``shutdown()`` cancels it. The run carries on, indifferent; only the promise has to be
-re-made.
+A background run outlives the worker that watched it: ``bash_run`` starts it in its own
+session with a trap that records the exit code, a Slurm job belongs to the controller,
+and both leave a descriptor under ``<state>/sessions/<sid>/jobs/<key>/`` or
+``.../hpc_jobs/<dir>/``. This module reads those descriptors to say which runs are
+still going and which ended while nothing was listening, so a watcher can be put back
+and a finished run reported once.
 
-``query_engine/background.py`` can already re-make it, but only when a status tool is
-called — so it needs a turn in which somebody asks "where is the job at?". This module is
-the half that lets it happen without asking: it inspects the descriptors directly and says
-which runs are still going and which ended while nothing was listening.
-
-**Why the liveness check is here rather than imported.** ``_bash_jobs._is_running`` is the
-same contract, and this is deliberately its twin rather than a call into it: the MCP
-servers resolve their imports against their own directory (``import state_paths``), so
-nothing in ``mimir.client`` can import that tree — the same reason
-``tool_execution/run_channel.py`` is a twin of ``servers/_shared/run_channel.py``. The
-contract that matters, and that must change in both places together: a pid is alive only
-if it exists, its start time matches the one recorded (a recycled pid wears the same
-number), and it is not a zombie (nothing reaps a detached child, so a finished job lingers
-in the process table and would otherwise never reach a terminal state).
-
-A Slurm submission settles by a second shared contract, with ``servers/hpc/server_hpc.py``:
-nothing here can inspect a job whose state lives in a controller, so the poll that finds
-Slurm has let it go writes that state into the submission's own directory, and this module
-reads it. The file name ``slurm_state`` and its three words are what the two agree on, the
-way ``exit_code`` is what this module and ``_bash_jobs`` agree on.
+Two files are contracts with the servers: ``exit_code``, written by ``_bash_jobs``'s
+trap, and ``slurm_state`` (done, crashed or unknown), written by ``server_hpc`` once
+Slurm has let a job go. Liveness comes from ``servers/_shared/processes``.
 """
 
 from __future__ import annotations
@@ -38,8 +20,9 @@ import os
 import time
 from dataclasses import dataclass
 
-from ._ws_runtime import _MIMIR_DIR_WS
-from ....servers._shared.state_paths import sessions_root, subagents_dir
+from ...servers._shared.processes import is_running
+from ...servers._shared.state_paths import sessions_root, subagents_dir
+from ..config import paths
 
 logger = logging.getLogger(__name__)
 
@@ -117,39 +100,6 @@ class DetachedJob:
                 "status_op": self.status_op()}
 
 
-def _proc_starttime(pid: int) -> int | None:
-    """Field 22 of ``/proc/<pid>/stat`` — the clock tick the process started at."""
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            data = fh.read()
-        # The comm field is parenthesized and may contain spaces: split after its close.
-        return int(data[data.rfind(")") + 2:].split()[19])
-    except (OSError, IndexError, ValueError):
-        return None
-
-
-def _is_running(pid: int, expected_starttime: int | None) -> bool:
-    """Twin of ``_bash_jobs._is_running`` — see the module docstring."""
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    except OSError:
-        return False
-    if expected_starttime is not None:
-        actual = _proc_starttime(pid)
-        if actual is not None and actual != expected_starttime:
-            return False  # pid recycled — a different process wears it now
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            data = fh.read()
-        return data[data.rfind(")") + 2:].split()[0] != "Z"
-    except (OSError, IndexError):
-        return True
-
-
 def _read_json(path: str) -> dict | None:
     try:
         with open(path, encoding="utf-8") as fh:
@@ -162,7 +112,7 @@ def _read_json(path: str) -> dict | None:
 
 # What ``server_hpc`` writes into a submission's directory once Slurm has let the job go:
 # one of done|crashed|unknown. The name is shared with that module by convention, the way
-# ``exit_code`` is shared with ``_bash_jobs`` — see this module's docstring on twins.
+# ``exit_code`` is shared with ``_bash_jobs`` (see the module docstring).
 _SLURM_STATE = "slurm_state"
 
 # How long an unsettled Slurm submission is read as still running. A job's state lives in
@@ -239,7 +189,7 @@ def _read_exit_code(job_dir: str) -> int | None:
 
 
 def _sessions_root() -> str:
-    return sessions_root(_MIMIR_DIR_WS)
+    return sessions_root(paths.STATE_DIR)
 
 
 def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
@@ -259,7 +209,7 @@ def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
         code = _read_exit_code(job_dir)
         # The recorded status wins: the trap writes it as the shell leaves, so a run
         # that got there is finished whatever its pid now looks like.
-        live = code is None and _is_running(meta.get("pid"), meta.get("pid_starttime"))
+        live = code is None and is_running(meta.get("pid"), meta.get("pid_starttime"))
         found.append(DetachedJob(
             session_id=session_id,
             job_key=str(meta.get("job_key") or name),
@@ -574,7 +524,7 @@ def subagent_sessions(session_id: str) -> list[str]:
     is never a third level to walk, and walking arbitrary depth would make the scan's
     cost a property of someone's directory tree.
     """
-    root = subagents_dir(session_id, _MIMIR_DIR_WS)
+    root = subagents_dir(session_id, paths.STATE_DIR)
     if not os.path.isdir(root):
         return []
     try:

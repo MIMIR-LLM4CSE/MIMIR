@@ -27,13 +27,13 @@ import tempfile
 import threading
 import types
 import unittest
-from unittest import mock
 
 from mimir.client.protocol.events import pop_answer_extras
 from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 from mimir.tests._fake_pool import FakePool
+from mimir.tests.support.state import pin_state_dir
 
 
 class _FakeAgent:
@@ -160,17 +160,11 @@ class TheCatchUpTurnTests(unittest.TestCase):
     """What becomes of steering the run handed back unread."""
 
     def setUp(self) -> None:
-        from mimir.client.session import store as session_store
-        from mimir.client.ui.ws import transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-steer-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
         self.session = _Session(self.ws, FakePool(self.worker))
@@ -284,17 +278,11 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from mimir.client.session import store as session_store
-        from mimir.client.ui.ws import transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-steer-late-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
         self.worker.out_q = _queue.Queue()

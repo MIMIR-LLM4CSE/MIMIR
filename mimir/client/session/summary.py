@@ -1,21 +1,17 @@
 """One-sentence session descriptions for the chat-history panel.
 
-The panel used to show the first user query verbatim, which says what was
-*asked* but not what the session actually did. This module asks the backend for
-a short descriptive sentence built from the session transcript. When the model is
-unreachable or unhelpful the first user query stands in, stored as *provisional*
-(``PROVISIONAL_VERSION``) so the panel has something to show while the next turn
-still retries the real generation — a failed call never freezes a non-description
-into the session.
+The backend writes a short sentence from the transcript, saying what the session did
+rather than what was first asked. When the model is unreachable or unhelpful, the first
+user query stands in, stamped ``PROVISIONAL_VERSION`` so the next turn tries again.
 
-The call is blocking (backend ``chat``) — callers run it off the event loop.
+The call is blocking (backend ``chat``): callers run it off the event loop.
 """
 
 from __future__ import annotations
 
 import logging
 
-from ._ws_runtime import get_backend
+from ..query_engine.backends.factory import get_backend
 
 logger = logging.getLogger(__name__)
 

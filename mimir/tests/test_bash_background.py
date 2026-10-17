@@ -645,12 +645,12 @@ class AdoptingARunningProcessTests(unittest.TestCase):
         # The whole point: the client's scan reads descriptors off disk, and this is
         # what makes an outside process appear in it — live, so a watcher is armed and
         # the process stays alive for it.
-        from mimir.client.ui.ws import job_scan
+        from mimir.client.session import jobs_on_disk
         proc = self._sleeper()
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-adopt"}):
             res = server_bash.bash_watch(pid=proc.pid, what="solver")
-        with patch.object(job_scan, "_MIMIR_DIR_WS", self._tmp):
-            jobs = job_scan.scan_session("s-adopt")
+        with patch("mimir.client.config.paths.STATE_DIR", self._tmp):
+            jobs = jobs_on_disk.scan_session("s-adopt")
         self.assertEqual([(j.job_key, j.kind, j.live) for j in jobs],
                          [(res["job_key"], "shell", True)])
 

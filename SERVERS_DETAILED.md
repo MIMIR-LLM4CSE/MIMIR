@@ -1364,7 +1364,7 @@ Tools:
     announce a healthy build as lost seconds after adopting it. The alternative,
     `bash_watch(pid)`, works but loses the exit code: the trap belongs to the launch and
     cannot be added to a running process. A child killed outright publishes nothing, and
-    is picked up instead by `job_scan`, which walks `subagents/` for exactly this.
+    is picked up instead by `session/jobs_on_disk`, which walks `subagents/` for exactly this.
   - **A child that outlives its caller is stopped.** The child runs on a thread of its
     own that nothing can kill, so a budget that expires used to return to the caller and
     leave the thread working: it went on spending model calls on an answer nobody would

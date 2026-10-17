@@ -17,13 +17,16 @@ import time
 import unittest
 from unittest import mock
 
+from mimir.servers._shared.processes import proc_starttime
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws import job_scan, server_registry, transcript_log, ws_pool
+from mimir.client.ui.ws import server_registry, ws_pool
+from mimir.client.session import jobs_on_disk
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.wake_router import WakeRouter
 from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.tests.support.state import pin_state_dir
 
 
 class _Worker:
@@ -58,10 +61,7 @@ class _IdleCase(unittest.TestCase):
         # concludes a turn writes a transcript — and unpatched it writes it into the
         # developer's own workspace, inventing sessions there that no conversation ever
         # had.
-        for target in (job_scan, transcript_log, server_registry):
-            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
     def _pool(self, workers: dict | None = None) -> _AgentPool:
@@ -90,7 +90,7 @@ class _IdleCase(unittest.TestCase):
         os.makedirs(job_dir, exist_ok=True)
         with open(os.path.join(job_dir, "meta.json"), "w") as fh:
             json.dump({"job_key": job_key, "command": "make -j8", "pid": os.getpid(),
-                       "pid_starttime": job_scan._proc_starttime(os.getpid())}, fh)
+                       "pid_starttime": proc_starttime(os.getpid())}, fh)
 
     def _ended_job(self, session_id: str, job_key: str) -> None:
         self._live_job(session_id, job_key)
@@ -120,7 +120,7 @@ class _IdleCase(unittest.TestCase):
 
     def _deliver(self, session_id: str, job_key: str) -> None:
         """What a consumer does once the turn carrying a wake is submitted."""
-        job_scan.mark_wakes_reported(
+        jobs_on_disk.mark_wakes_reported(
             [{"session_id": session_id, "job_key": job_key, "server": "bash"}])
 
 
@@ -191,7 +191,7 @@ class SlurmSubmissionsEndTests(_IdleCase):
         self._conclude(pool, "s1", w)
         self._baseline("s1")
         self._slurm_job("s1", "123456", state="done")
-        job_scan.mark_job_reported("s1", "123456", "hpc")
+        jobs_on_disk.mark_job_reported("s1", "123456", "hpc")
         self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
 
     def test_a_finished_job_still_owed_its_wake_keeps_holding(self):
@@ -215,7 +215,7 @@ class SlurmSubmissionsEndTests(_IdleCase):
         job_dir = self._slurm_job("s1", "123456")
         aged = time.time() - 30 * 24 * 3600
         os.utime(os.path.join(job_dir, "slurm_job_id"), (aged, aged))
-        job_scan.mark_job_reported("s1", "123456", "hpc")
+        jobs_on_disk.mark_job_reported("s1", "123456", "hpc")
         self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
 
 
@@ -276,7 +276,7 @@ class JobsHoldItOpenTests(_IdleCase):
         # Unknown must not read as "nothing is running": erring the other way stops a
         # server mid-build.
         pool = self._pool()
-        # The name bound in ws_pool, not the one in job_scan: the import is by value,
+        # The name bound in ws_pool, not the one in jobs_on_disk: the import is by value,
         # so patching the source module would leave the caller untouched and the test
         # would pass for the wrong reason.
         with mock.patch("mimir.client.ui.ws.ws_pool.scan_all_sessions",
@@ -480,7 +480,7 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
 
     def _pool(self, *, claims: dict, unattended: float | None, ever: bool = True):
         from unittest import mock
-        from mimir.client.ui.ws import server_registry, ws_pool
+        from mimir.client.ui.ws import ws_pool
         from mimir.client.ui.ws.ws_pool import _AgentPool
 
         pool = object.__new__(_AgentPool)
@@ -528,7 +528,6 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
 
     def test_claims_that_cannot_be_read_are_not_read_as_nobody(self):
         from unittest import mock
-        from mimir.client.ui.ws import server_registry
 
         pool = self._pool(claims={}, unattended=9999.0)
         with mock.patch.object(server_registry, "claims",

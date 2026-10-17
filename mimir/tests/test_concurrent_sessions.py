@@ -28,6 +28,7 @@ from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._session import bare_session
+from mimir.tests.support.state import pin_state_dir
 
 
 def _watch(*, done: bool = False):
@@ -239,14 +240,10 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         # The job dirs are read off disk: a real state dir with an "s1" of its own leaks in.
         import tempfile
-        from unittest import mock
-        from mimir.client.ui.ws.handlers import conversations as ws
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        patcher = mock.patch.object(ws, "_MIMIR_DIR_WS", tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        pin_state_dir(self, tmp.name)
 
     def _session(self) -> _Session:
         self.a = _worker("s1")
@@ -281,10 +278,9 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         import os
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws.handlers import conversations as ws
 
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(ws, "_MIMIR_DIR_WS", tmp):
+            with mock.patch("mimir.client.config.paths.STATE_DIR", tmp):
                 jobs = os.path.join(tmp, "sessions", "s1", "jobs")
                 os.makedirs(jobs)
                 with open(os.path.join(jobs, ".some-marker"), "w") as fh:

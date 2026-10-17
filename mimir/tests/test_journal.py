@@ -12,8 +12,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import transcript_log
-from mimir.client.ui.ws.transcript_log import TranscriptLog, read_transcript
+from mimir.client.session import journal
+from mimir.client.session.journal import TranscriptLog, read_transcript
 
 
 class _TmpState:
@@ -21,7 +21,7 @@ class _TmpState:
 
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._patch = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
+        self._patch = mock.patch("mimir.client.config.paths.STATE_DIR", self._tmp.name)
         self._patch.start()
         return self._tmp.name
 
@@ -74,7 +74,7 @@ class AppendTests(unittest.TestCase):
             log = TranscriptLog()
             log.append({"type": "query", "text": "hi"})  # never bound
         # Nothing to assert but the absence of a crash and of a path to write to.
-        self.assertIsNone(transcript_log.transcript_path(None))
+        self.assertIsNone(journal.transcript_path(None))
 
     def test_a_write_failure_is_survivable(self):
         """It is teed off the drain loop, which must keep serving the client."""
@@ -93,7 +93,7 @@ class AppendTests(unittest.TestCase):
 class ReadTests(unittest.TestCase):
     def test_a_torn_line_does_not_lose_the_rest_of_the_file(self):
         with _TmpState():
-            path = transcript_log.transcript_path("s1")
+            path = journal.transcript_path("s1")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(json.dumps({"seq": 1, "type": "query"}) + "\n")

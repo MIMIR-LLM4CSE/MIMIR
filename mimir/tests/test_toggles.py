@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 import mimir.client.config.preferences as preferences
+from mimir.client.config import paths
 from mimir.client.agent_core import MimirAgent
 from mimir.tests._commands import cli
 
@@ -36,8 +37,8 @@ def _tool(name: str) -> dict:
 class PreferencesPersistenceTests(unittest.TestCase):
     def test_round_trip_disabled_sets(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            orig = preferences.STATE_DIR
-            preferences.STATE_DIR = d
+            orig = paths.STATE_DIR
+            paths.STATE_DIR = d
             try:
                 preferences.save_disabled({"strings", "datetime"}, {"proxy-optimize"}, {"authz_reminder"})
                 servers, skills, nudges = preferences.load_disabled()
@@ -46,29 +47,29 @@ class PreferencesPersistenceTests(unittest.TestCase):
                 self.assertEqual(nudges, {"authz_reminder"})
                 self.assertTrue((Path(d) / "preferences.json").is_file())
             finally:
-                preferences.STATE_DIR = orig
+                paths.STATE_DIR = orig
 
     def test_missing_file_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            orig = preferences.STATE_DIR
-            preferences.STATE_DIR = d
+            orig = paths.STATE_DIR
+            paths.STATE_DIR = d
             try:
                 servers, skills, nudges = preferences.load_disabled()
                 self.assertEqual(servers, set())
                 self.assertEqual(skills, set())
                 self.assertEqual(nudges, set())
             finally:
-                preferences.STATE_DIR = orig
+                paths.STATE_DIR = orig
 
     def test_corrupt_file_does_not_raise(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "preferences.json").write_text("{not json", encoding="utf-8")
-            orig = preferences.STATE_DIR
-            preferences.STATE_DIR = d
+            orig = paths.STATE_DIR
+            paths.STATE_DIR = d
             try:
                 self.assertEqual(preferences.load_disabled(), (set(), set(), set()))
             finally:
-                preferences.STATE_DIR = orig
+                paths.STATE_DIR = orig
 
 
 class AdvertisedToolsTests(unittest.TestCase):

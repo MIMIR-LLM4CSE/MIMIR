@@ -199,7 +199,7 @@ class RunChannelIsolationTests(_StateDirCase):
     def test_the_two_ends_agree_on_one_directory_per_session(self):
         from mimir.client.tool_execution import run_channel as client_side
         # STATE_DIR is bound into this module at import, so patch the name it holds.
-        with patch.object(client_side, "STATE_DIR", self.state):
+        with patch("mimir.client.config.paths.STATE_DIR", self.state):
             mine = client_side._dir("bash_run", "aaa")
             theirs = client_side._dir("bash_run", "bbb")
         self.assertNotEqual(mine, theirs)

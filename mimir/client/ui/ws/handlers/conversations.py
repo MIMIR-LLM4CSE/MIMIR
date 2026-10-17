@@ -13,13 +13,13 @@ import os
 from datetime import datetime
 
 from .._ws_runtime import (
-    _MIMIR_DIR_WS,
     _todo_file_for_session,
     _write_active_session,
 )
-from ..job_scan import is_settled
-from ..session_summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
+from ....session.jobs_on_disk import is_settled
+from ....session.summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
 from .....servers._shared.state_paths import session_dir
+from ....config import paths
 
 logger = logging.getLogger(__name__)
 
@@ -427,12 +427,12 @@ class ConversationHandlers:
         Read off the files rather than any in-memory registry: the job outlives the
         worker that launched it, and may outlive the server. A shell job is live when it
         wrote no ``exit_code``, a Slurm submission when no poll has recorded the state
-        Slurm last gave it — ``job_scan.is_settled`` holds both halves of that question,
+        Slurm last gave it — ``jobs_on_disk.is_settled`` holds both halves of that question,
         because a Slurm job records no exit code and asking only for one reads every job
         a conversation ever submitted as still running. Neither is a certainty, which is
         why this reports and does not act.
         """
-        base = session_dir(session_id, _MIMIR_DIR_WS)
+        base = session_dir(session_id, paths.STATE_DIR)
         live = []
         for kind in ("jobs", "hpc_jobs"):
             root = os.path.join(base, kind)

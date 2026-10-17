@@ -43,6 +43,7 @@ import time
 from datetime import datetime, timezone
 
 import build_progress
+from processes import is_running, proc_starttime
 
 def jobs_root() -> str:
     """This session's job directory root, resolved per call.
@@ -66,7 +67,7 @@ _TERM_GRACE_S = 5.0
 
 # Popen handles for children we deliberately stopped waiting on (a diverted run).
 # Held only so the garbage collector does not warn about a still-running child; the
-# zombie one of these leaves behind is the case ``_is_running`` already reads.
+# zombie one of these leaves behind is the case ``is_running`` already reads.
 _ABANDONED: list[subprocess.Popen] = []
 
 # Set once per server process, so the sweep below costs one listdir per process
@@ -144,43 +145,6 @@ def _new_job_key() -> str:
 
 def valid_key(job_key: str) -> bool:
     return bool(_JOB_KEY_RE.match(job_key or ""))
-
-
-def _proc_starttime(pid: int) -> int | None:
-    """Field 22 of /proc/<pid>/stat — pins a pid to *this* process.
-
-    A pid alone is ambiguous once it has been recycled, and a job directory outlives
-    the process it describes. Recording the start time makes "is it still running"
-    answerable without mistaking a stranger's pid for the job's.
-    """
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            data = fh.read()
-        # The comm field is parenthesized and may contain spaces: split after its close.
-        return int(data[data.rfind(")") + 2:].split()[19])
-    except (OSError, IndexError, ValueError):
-        return None
-
-
-def _is_running(pid: int, expected_starttime: int | None) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
-        return False
-    if expected_starttime is not None:
-        actual = _proc_starttime(pid)
-        if actual is not None and actual != expected_starttime:
-            return False  # pid recycled — a different process wears it now
-    # Nothing reaps a detached child, so its table entry lingers as a zombie after it
-    # exits. Left as "running", a finished job would never reach a terminal state.
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            data = fh.read()
-        return data[data.rfind(")") + 2:].split()[0] != "Z"
-    except (OSError, IndexError):
-        return True
 
 
 def _wrap(script: str, rc_path: str) -> str:
@@ -287,7 +251,7 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
         # reader must be able to see that the two differ and how.
         extra["effective_command"] = effective
     _write_meta(job_key, command=command, cwd=cwd, pid=proc.pid,
-                pid_starttime=_proc_starttime(proc.pid),
+                pid_starttime=proc_starttime(proc.pid),
                 output_targets=list(output_targets or ()), **extra)
     return {"job_key": job_key, "pid": proc.pid, "log": log,
             "job_dir": _job_dir(job_key), "proc": proc}
@@ -313,8 +277,8 @@ def adopt(pid: int, command: str, cwd: str, log: str = "") -> dict | None:
     a ``done`` nobody observed. *log* is recorded as an output target so a reader knows
     where its output actually went, since this job dir has none of its own.
     """
-    starttime = _proc_starttime(pid)
-    if starttime is None or not _is_running(pid, starttime):
+    starttime = proc_starttime(pid)
+    if starttime is None or not is_running(pid, starttime):
         return None
     _sweep_once()
     job_key = _new_job_key()
@@ -424,7 +388,7 @@ def _sweep_once() -> None:
             continue
         if time.time() - float(meta.get("started_at") or 0) < 3600:
             continue
-        if _is_running(int(meta.get("pid") or 0), meta.get("pid_starttime")):
+        if is_running(int(meta.get("pid") or 0), meta.get("pid_starttime")):
             continue
         discard(key)
 
@@ -453,7 +417,7 @@ def state(job_key: str, run_dir: str = "") -> dict:
         return {"state": "unknown", "job_key": job_key, "error": "No such job."}
 
     rc_raw = _read(job_key, "exit_code", run_dir=run_dir)
-    alive = _is_running(int(meta.get("pid") or 0), meta.get("pid_starttime"))
+    alive = is_running(int(meta.get("pid") or 0), meta.get("pid_starttime"))
 
     payload = {
         "job_key": job_key,

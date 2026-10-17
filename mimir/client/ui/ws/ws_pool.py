@@ -41,7 +41,7 @@ from typing import Any, Callable, Iterator
 from . import server_registry
 from ._ws_runtime import _todo_file_for_session
 from .event_bus import _EventBus
-from .job_scan import has_baseline, scan_all_sessions
+from ...session.jobs_on_disk import has_baseline, scan_all_sessions
 from .wake_router import WakeRouter
 from .human_bridge import _detach_grace
 from .ws_worker import _AgentWorker

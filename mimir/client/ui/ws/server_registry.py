@@ -12,7 +12,7 @@ resolve to the same file. Nothing new had to be invented to scope it.
 **Liveness is three questions, not one.** A pid exists; its start time matches the one
 recorded, because a recycled pid wears the same number; and the port actually answers,
 because a process can be alive with its listener already gone — mid-shutdown, or wedged.
-The first two come from :mod:`job_scan`, which holds that contract for detached runs; the
+The first two come from :mod:`session.jobs_on_disk`, which holds that contract for detached runs; the
 third is this module's own, and it is the one the other two cannot answer.
 
 The entry is advisory, never authoritative. A stale one costs a connection attempt that
@@ -29,9 +29,9 @@ import os
 import socket
 import time
 
-from ._ws_runtime import _MIMIR_DIR_WS
-from .job_scan import _is_running, _proc_starttime
+from ....servers._shared.processes import is_running, proc_starttime
 from ....servers._shared.atomic import write_json
+from ...config import paths
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ _LOCK_FH = None
 
 
 def lock_path() -> str:
-    return os.path.join(_MIMIR_DIR_WS, _LOCKNAME)
+    return os.path.join(paths.STATE_DIR, _LOCKNAME)
 
 
 def acquire() -> bool:
@@ -112,7 +112,7 @@ def release() -> None:
 
 
 def registry_path() -> str:
-    return os.path.join(_MIMIR_DIR_WS, _FILENAME)
+    return os.path.join(paths.STATE_DIR, _FILENAME)
 
 
 def publish(*, url: str, host: str, port: int, **extra) -> dict | None:
@@ -130,12 +130,12 @@ def publish(*, url: str, host: str, port: int, **extra) -> dict | None:
     entry = {
         "protocol": PROTOCOL,
         "pid": pid,
-        "pid_starttime": _proc_starttime(pid),
+        "pid_starttime": proc_starttime(pid),
         "url": url,
         "host": host,
         "port": int(port),
         "workspace": os.path.realpath(os.environ.get("MCP_FILES_ROOT") or os.getcwd()),
-        "state_dir": _MIMIR_DIR_WS,
+        "state_dir": paths.STATE_DIR,
         "started_at": time.time(),
         **extra,
     }
@@ -237,7 +237,7 @@ def alive(entry: dict | None, *, probe: bool = True) -> bool:
     except (TypeError, ValueError):
         return False
     starttime = entry.get("pid_starttime")
-    if not _is_running(pid, starttime if isinstance(starttime, int) else None):
+    if not is_running(pid, starttime if isinstance(starttime, int) else None):
         return False
     if not probe:
         return True

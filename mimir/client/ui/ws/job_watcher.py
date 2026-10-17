@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from itertools import chain, repeat
 from typing import TYPE_CHECKING
 
-from .job_scan import establish_baseline, has_baseline, scan_session, subagent_sessions
+from ...session.jobs_on_disk import establish_baseline, has_baseline, scan_session, subagent_sessions
 from ...query_engine.jobs import poll
 
 if TYPE_CHECKING:
@@ -209,7 +209,7 @@ class JobWatcher:
             # descriptor's own server and kind included — because a consumer must not be
             # able to tell a run reported late from one reported on time, and the wake
             # text names the kind. Settled by that consumer, not here: see
-            # ``job_scan.mark_wakes_reported``.
+            # ``jobs_on_disk.mark_wakes_reported``.
             descriptor = job.descriptor()
             self.worker.out_q.put({
                 "type": "job_complete",
@@ -450,7 +450,7 @@ class JobWatcher:
         # event still has to be folded into a turn by whatever consumes the bus, and a
         # run settled at the moment its event is queued is one every later scan takes
         # for already delivered — so a wake nobody has read is a wake nobody ever will.
-        # The consumer writes the marker — see ``job_scan.mark_wakes_reported``.
+        # The consumer writes the marker — see ``jobs_on_disk.mark_wakes_reported``.
 
     def watched_runs(self) -> list[dict]:
         """What is running outside the current turn: detached jobs the watcher holds.

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from mimir.client.config import paths
 from mimir.client.agent_core import MimirAgent
 from mimir.client.config import parse_temperature, preferences
 from mimir.tests._commands import cli
@@ -25,12 +26,12 @@ class _StateDir:
 
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._orig = preferences.STATE_DIR
-        preferences.STATE_DIR = self._tmp.name
+        self._orig = paths.STATE_DIR
+        paths.STATE_DIR = self._tmp.name
         return self._tmp.name
 
     def __exit__(self, *exc):
-        preferences.STATE_DIR = self._orig
+        paths.STATE_DIR = self._orig
         self._tmp.cleanup()
 
 

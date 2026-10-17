@@ -19,6 +19,7 @@ import types
 import unittest
 
 from mimir.client.ui.ws import detach as detach_mod
+from mimir.tests.support.state import pin_state_dir
 
 
 def _run_child(body: str, tmp: str) -> dict:
@@ -211,18 +212,12 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self) -> None:
-        from unittest import mock
-        from mimir.client.ui.ws import server_registry
-        from mimir.client.ui.ws.handlers import detach as ws_session
         from mimir.client.ui.ws.ws_session import _Session
         from mimir.tests._fake_pool import FakePool
 
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        for target in (ws_session, server_registry):
-            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
 
         self.sent: list[dict] = []
 
@@ -386,17 +381,13 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         from unittest import mock
-        from mimir.client.ui.ws import server_registry
         from mimir.client.ui.ws.handlers import detach as ws_session
         from mimir.client.ui.ws.ws_session import _Session
         from mimir.tests._fake_pool import FakePool
 
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        for target in (ws_session, server_registry):
-            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         # The process-level work is exercised for real in the tests above; here it must
         # not touch the test runner's own descriptors.
         patcher = mock.patch.object(

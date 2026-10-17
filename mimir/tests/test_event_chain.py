@@ -22,13 +22,13 @@ import unittest
 from unittest import mock
 
 from mimir.client.session import store as session_store
-from mimir.client.ui.ws import job_scan, transcript_log
-from mimir.client.ui.ws.handlers import conversations as ws_conversations
+from mimir.client.session import journal
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
+from mimir.tests.support.state import pin_state_dir
 
 # What a turn that runs one tool actually puts on the queue, in order.
 _TURN = [
@@ -118,13 +118,7 @@ class _ChainCase(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        for target, attr in ((transcript_log, "_MIMIR_DIR_WS"),
-                             (session_store, "STATE_DIR"),
-                             (ws_conversations, "_MIMIR_DIR_WS"),
-                             (job_scan, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         # The summary refresh calls the backend; nothing here has one.
         patcher = mock.patch.object(_Session, "_schedule_summary_refresh",
                                     lambda _self: None)
@@ -199,7 +193,7 @@ class ATurnReachesTheClientTests(_ChainCase):
 
         await self._run(sess, pool, ws)
 
-        logged, _truncated = transcript_log.read_since("s1", 0)
+        logged, _truncated = journal.read_since("s1", 0)
         kinds = [e["type"] for e in logged]
         self.assertEqual(kinds[0], "query", "the client's own line is not recorded")
         for expected in ("status", "tool_call", "tool_result", "answer"):
@@ -277,7 +271,7 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
 
         await self._run(sess, pool, ws)
 
-        logged, _truncated = transcript_log.read_since("s1", 0)
+        logged, _truncated = journal.read_since("s1", 0)
         kinds = [e["type"] for e in logged if e["type"] != "query"]
         self.assertEqual(
             kinds,
@@ -343,9 +337,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
     def setUp(self) -> None:
         super().setUp()
         from mimir.client.ui.ws import server_registry
-        patcher = mock.patch.object(server_registry, "_MIMIR_DIR_WS", self._tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.registry = server_registry
 
     def _detached_run(self, autonomy: str, session: str = "s1") -> None:
@@ -479,7 +471,7 @@ class WhenTheChatGoesQuietTests(_ChainCase):
         await self._run(sess, pool, ws)
 
         self.assertNotIn("tool_call", self._kinds(ws))
-        logged, _truncated = transcript_log.read_since("elsewhere", 0)
+        logged, _truncated = journal.read_since("elsewhere", 0)
         self.assertIn("tool_call", [e["type"] for e in logged],
                       "the other conversation's turn was not recorded either")
 

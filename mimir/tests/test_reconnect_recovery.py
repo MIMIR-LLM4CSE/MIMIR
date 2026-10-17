@@ -12,11 +12,11 @@ import asyncio
 import json
 import tempfile
 import unittest
-from unittest import mock
 
-from mimir.client.ui.ws import job_scan, transcript_log
+from mimir.client.session import journal
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFencingTests
+from mimir.tests.support.state import pin_state_dir
 
 
 def _parked_worker(prompt: dict | None = None, session_id: str = "s1",
@@ -116,10 +116,7 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         # disk, so these tests write both a transcript and job markers: give them their
         # own state dir rather than the real one.
         self._tmp = tempfile.TemporaryDirectory()
-        for target in (transcript_log, job_scan):
-            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
     def _session(self, worker):
@@ -163,7 +160,7 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(sess.pool.bus.attached(), 0)
                 sess.pool.bus.pump_once()
                 self.assertTrue(w.out_q.empty())
-                lines, _truncated = transcript_log.read_since(sid, 0)
+                lines, _truncated = journal.read_since(sid, 0)
                 self.assertEqual([e["type"] for e in lines], ["tool_call", "answer"])
 
 

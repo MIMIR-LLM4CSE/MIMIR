@@ -11,11 +11,9 @@ import logging
 import os
 
 from .. import server_registry
-from .._ws_runtime import (
-    _MIMIR_DIR_WS,
-)
+from ....config import paths
 from ..detach import detach as detach_process
-from ..job_scan import establish_baseline, has_baseline, scan_all_sessions
+from ....session.jobs_on_disk import establish_baseline, has_baseline, scan_all_sessions
 from ..ws_pool import idle_stop_reason
 
 logger = logging.getLogger(__name__)
@@ -386,7 +384,7 @@ class DetachHandlers:
         # file for the rest of the process's life.
         self.pool.set_non_interactive()
 
-        info = detach_process(_MIMIR_DIR_WS)
+        info = detach_process(paths.STATE_DIR)
         # The entry already holds the address; this only adds what has changed about
         # the process behind it, so a window that attaches later knows which
         # conversations were left running and under which level each.

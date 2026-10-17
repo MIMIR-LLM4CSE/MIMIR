@@ -16,17 +16,16 @@ import os
 import queue as _queue
 import tempfile
 import unittest
-from unittest import mock
 
-from mimir.client.session import store as session_store
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.job_watcher import JobWatcher
-from mimir.client.ui.ws import job_scan, transcript_log
+from mimir.client.session import jobs_on_disk, journal
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.wake_router import WakeRouter
 from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.tests.support.state import pin_state_dir
 
 
 class _Worker:
@@ -70,12 +69,7 @@ class _Worker:
 class _WakeCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS"),
-                             (job_scan, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.store = SessionStore()
 
@@ -177,12 +171,12 @@ class AnAttachedViewChangesNothingTests(_WakeCase):
         self._ended_job(s.id)
         pool = self._pool({s.id: _Worker(s.id)})
         pool.bus.subscribe()
-        self.assertEqual([j.job_key for j in job_scan.scan_session(s.id)], ["j1"])
+        self.assertEqual([j.job_key for j in jobs_on_disk.scan_session(s.id)], ["j1"])
         pool._workers[s.id].out_q.put(self._complete(s.id))
 
         pool.bus.pump_once()
 
-        self.assertEqual(job_scan.scan_session(s.id), [])
+        self.assertEqual(jobs_on_disk.scan_session(s.id), [])
 
     def test_a_run_announced_twice_starts_one_turn(self):
         # The watcher that held it and a scan that found it unspoken-for can both
@@ -264,7 +258,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
         pool.commit_turn(ev, extras)
 
         self.assertEqual(w.queries, [], "a run already dealt with was told again")
-        self.assertEqual(job_scan.scan_session(s.id), [],
+        self.assertEqual(jobs_on_disk.scan_session(s.id), [],
                          "a run the turn answered for was left owed")
 
     def test_several_runs_that_finished_during_the_turn_arrive_as_one_turn(self):
@@ -295,7 +289,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
 
         stored = self.store.load_session(s.id)
         self.assertTrue(stored.display_messages[-1]["text"].startswith("🔔"))
-        self.assertEqual([e["type"] for e in transcript_log.read_since(s.id, 0)[0]],
+        self.assertEqual([e["type"] for e in journal.read_since(s.id, 0)[0]],
                          ["job_wake"])
 
     def test_a_bulletin_held_back_is_delivered_when_the_turn_lands(self):
@@ -369,7 +363,7 @@ class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
         with self.assertLogs("mimir.client.ui.ws.wake_router", "WARNING") as caught:
             pool.wakes.consume(self._complete(s.id))
         self.assertIn("no agent", "".join(caught.output))
-        self.assertEqual([j.job_key for j in job_scan.scan_session(s.id)], ["j1"])
+        self.assertEqual([j.job_key for j in jobs_on_disk.scan_session(s.id)], ["j1"])
         # Kept for the conversation's next turn, not dropped.
         self.assertEqual(len(pool.conversations.get(s.id).pending_wakes), 1)
 

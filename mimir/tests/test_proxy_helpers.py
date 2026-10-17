@@ -325,7 +325,7 @@ class RunLifecycleTests(_TmpStorageTest):
         )
         self.assertEqual(procs._read_pid(d), pid)
         for _ in range(50):  # wait for the detached child to finish
-            if not procs._is_running(pid):
+            if not procs.is_running(pid):
                 break
             import time as _t
             _t.sleep(0.1)
@@ -372,7 +372,7 @@ class CancelOwnershipTests(_TmpStorageTest):
             d = procs._new_run_dir(os.path.join(self.root, "runs", "p"))
         pid = procs._launch_detached(
             [sys.executable, "-c", "import time; time.sleep(60)"], d)
-        self.addCleanup(lambda: procs._is_running(pid) and os.kill(pid, 9))
+        self.addCleanup(lambda: procs.is_running(pid) and os.kill(pid, 9))
         return d, pid
 
     def _slurm_run(self, session: str, job_id: int, build_id: int | None = None) -> str:
@@ -390,7 +390,7 @@ class CancelOwnershipTests(_TmpStorageTest):
         d, pid = self._local_run("s-b")
         result = procs._cancel_run(d)
         self.assertIn("error", result)
-        self.assertTrue(procs._is_running(pid))
+        self.assertTrue(procs.is_running(pid))
 
     def test_a_parent_stops_its_sub_agents_local_run(self) -> None:
         d, _pid = self._local_run("s-a/subagents/sub-1")
@@ -401,13 +401,13 @@ class CancelOwnershipTests(_TmpStorageTest):
         d, pid = self._local_run("s-a")
         with unittest.mock.patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-a/subagents/sub-1"}):
             self.assertIn("error", procs._cancel_run(d))
-        self.assertTrue(procs._is_running(pid))
+        self.assertTrue(procs.is_running(pid))
 
     def test_a_run_dir_without_an_owner_is_not_killed(self) -> None:
         d, pid = self._local_run("s-a")
         os.remove(os.path.join(d, procs._OWNER_FILE))
         self.assertIn("error", procs._cancel_run(d))
-        self.assertTrue(procs._is_running(pid))
+        self.assertTrue(procs.is_running(pid))
 
     def test_own_slurm_run_is_cancelled_build_first(self) -> None:
         d = self._slurm_run("s-a", 9001, build_id=9000)

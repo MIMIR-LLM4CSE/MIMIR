@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from ...protocol.events import DURABLE_EVENTS
 from ...session.conversation import Conversation
-from .job_scan import mark_wakes_reported, wake_reported
+from ...session.jobs_on_disk import mark_wakes_reported, wake_reported
 from ...query_engine.jobs.wakes import checkin_text, wake_text
 from .ws_worker import _AgentWorker
 

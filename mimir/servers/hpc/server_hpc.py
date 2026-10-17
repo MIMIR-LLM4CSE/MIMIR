@@ -266,7 +266,7 @@ def _record_terminal_state(job_dir: str, state: str) -> None:
     retention window has passed, and letting that overwrite a recorded ``crashed`` would
     turn every outcome into "the scheduler has forgotten it" given enough time.
 
-    Best-effort, like the markers in ``job_scan``: a status answer is worth more than the
+    Best-effort, like the markers in ``session.jobs_on_disk``: a status answer is worth more than the
     record of it, so a directory that cannot be written costs a settled descriptor, never
     the reply. Written for another conversation's job too — the record belongs to the job,
     not to whoever happened to look, and the reader that needs it most is scanning
@@ -285,7 +285,7 @@ def _recorded_terminal_state(job_dir: str) -> str:
     """The terminal state a poll wrote in *job_dir*, or "" while it has none.
 
     The counterpart of :func:`_record_terminal_state`, and the same question the client
-    scan asks of the same file (``job_scan.is_settled``). What it buys here is an answer
+    scan asks of the same file (``jobs_on_disk.is_settled``). What it buys here is an answer
     about a recorded job without asking Slurm: over ssh a sweep is two round trips per
     scheduler, and "has this one already ended?" is on disk.
     """

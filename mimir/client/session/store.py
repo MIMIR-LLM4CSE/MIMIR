@@ -11,7 +11,7 @@ Session JSON schema:
   "preview": "first 80 chars of first user message",
   "summary": "one-sentence description of what was done in the session",
   "summary_msgs": 0,          # display-message count the summary was generated from
-  "summary_version": 0,       # session_summary.SUMMARY_VERSION that produced it
+  "summary_version": 0,       # session.summary.SUMMARY_VERSION that produced it
   "title_custom": false,      # true once the user renamed the session by hand
   "llm_history": [{"role": "...", "content": "..."}],      # working window sent to the LLM
   "llm_history_full": [...],  # same, never trimmed — the archive a resume falls back to
@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
-from ..config.paths import STATE_DIR
+from ..config import paths
 from ...servers._shared.atomic import write_json
 from ...servers._shared.state_paths import ACTIVITY_FILENAME, SUBAGENTS_DIRNAME, TODO_FILENAME, sessions_root
 
@@ -52,7 +52,7 @@ def _now_iso() -> str:
 
 def _sessions_dir() -> str:
     """Return (and create if needed) the central <STATE_DIR>/sessions/ directory."""
-    base = sessions_root(STATE_DIR)
+    base = sessions_root(paths.STATE_DIR)
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -218,7 +218,7 @@ class FullSession:
     preview: str = ""
     summary: str = ""          # one-sentence description of what the session did
     summary_msgs: int = 0      # display-message count the summary was generated from
-    summary_version: int = 0   # session_summary.SUMMARY_VERSION that produced it
+    summary_version: int = 0   # session.summary.SUMMARY_VERSION that produced it
     title_custom: bool = False # True once the user renamed the session by hand
     llm_history: list[dict] = field(default_factory=list)
     # The working window, as trimmed by the context budget, and the untrimmed record it

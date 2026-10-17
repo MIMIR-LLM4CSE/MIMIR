@@ -15,16 +15,15 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import job_scan, server_registry
+from mimir.servers._shared.processes import proc_starttime
+from mimir.client.ui.ws import server_registry
+from mimir.tests.support.state import pin_state_dir
 
 
 class _RegistryCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        for target in (server_registry, job_scan):
-            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
     def _listening(self) -> socket.socket:
@@ -69,7 +68,7 @@ class PublishAndReadTests(_RegistryCase):
         # Without it a recycled pid reads as the same server.
         server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1)
         self.assertEqual(server_registry.read()["pid_starttime"],
-                         job_scan._proc_starttime(os.getpid()))
+                         proc_starttime(os.getpid()))
 
     def test_nothing_published_reads_as_nothing(self):
         self.assertIsNone(server_registry.read())
@@ -224,7 +223,7 @@ class OneServerPerWorkspaceTests(_RegistryCase):
             os.environ["MIMIR_STATE_DIR"] = {json.dumps(self._tmp.name)}
             from unittest import mock
             from mimir.client.ui.ws import server_registry as r
-            mock.patch.object(r, "_MIMIR_DIR_WS", {json.dumps(self._tmp.name)}).start()
+            mock.patch("mimir.client.config.paths.STATE_DIR", {json.dumps(self._tmp.name)}).start()
             print("HELD" if r.acquire() else "REFUSED", flush=True)
             time.sleep(10)
         """)
@@ -234,7 +233,7 @@ class OneServerPerWorkspaceTests(_RegistryCase):
             os.environ["MIMIR_STATE_DIR"] = {json.dumps(self._tmp.name)}
             from unittest import mock
             from mimir.client.ui.ws import server_registry as r
-            mock.patch.object(r, "_MIMIR_DIR_WS", {json.dumps(self._tmp.name)}).start()
+            mock.patch("mimir.client.config.paths.STATE_DIR", {json.dumps(self._tmp.name)}).start()
             print("HELD" if r.acquire() else "REFUSED", flush=True)
         """)
 
@@ -262,7 +261,7 @@ class OneServerPerWorkspaceTests(_RegistryCase):
             sys.path.insert(0, {json.dumps(os.getcwd())})
             from unittest import mock
             from mimir.client.ui.ws import server_registry as r
-            mock.patch.object(r, "_MIMIR_DIR_WS", {json.dumps(self._tmp.name)}).start()
+            mock.patch("mimir.client.config.paths.STATE_DIR", {json.dumps(self._tmp.name)}).start()
             print("HELD" if r.acquire() else "REFUSED", flush=True)
             time.sleep(30)
         """)
@@ -287,7 +286,7 @@ class OneServerPerWorkspaceTests(_RegistryCase):
         import tempfile as _tf
         self.assertTrue(server_registry.acquire())
         with _tf.TemporaryDirectory() as other:
-            with mock.patch.object(server_registry, "_MIMIR_DIR_WS", other):
+            with mock.patch("mimir.client.config.paths.STATE_DIR", other):
                 # A different workspace is a different lock file; the global handle is
                 # this process's own, so it is released first to make the test honest.
                 server_registry.release()
@@ -300,16 +299,16 @@ class WorkspaceScopeTests(unittest.TestCase):
 
     def test_the_path_sits_in_the_per_workspace_state_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(server_registry, "_MIMIR_DIR_WS", tmp):
+            with mock.patch("mimir.client.config.paths.STATE_DIR", tmp):
                 self.assertEqual(server_registry.registry_path(),
                                  os.path.join(tmp, "server.json"))
 
     def test_two_workspaces_do_not_share_an_entry(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
-            with mock.patch.object(server_registry, "_MIMIR_DIR_WS", a):
+            with mock.patch("mimir.client.config.paths.STATE_DIR", a):
                 server_registry.publish(url="ws://127.0.0.1:1",
                                         host="127.0.0.1", port=1)
-            with mock.patch.object(server_registry, "_MIMIR_DIR_WS", b):
+            with mock.patch("mimir.client.config.paths.STATE_DIR", b):
                 self.assertIsNone(server_registry.read())
 
 

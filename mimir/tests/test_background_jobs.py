@@ -29,6 +29,7 @@ from mimir.client.query_engine.jobs.background import (
     maybe_rewatch_background_jobs,
 )
 from mimir.tests._proxy_fixtures import (_TmpStorageTest, pin_local_scheduler, server_proxy)
+from mimir.tests.support.state import pin_state_dir
 
 
 def _eval(*args, **kwargs):
@@ -1417,19 +1418,11 @@ class DetachedSessionResumeTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from unittest import mock
-        from mimir.client.session import store as session_store
-        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-detached-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS"),
-                             (job_scan, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
         self.session = _Session(self.ws, FakePool(self.worker))
@@ -1552,19 +1545,11 @@ class WakeCoalescingTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from unittest import mock
-        from mimir.client.session import store as session_store
-        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-coalesce-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS"),
-                             (job_scan, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
         self.session = _Session(self.ws, FakePool(self.worker))
@@ -1708,13 +1693,13 @@ class WakeCoalescingTests(unittest.TestCase):
         # Seen on 2026-10-14: a Slurm job steered into a running turn and read there was
         # forgotten with no marker, and every later scan — each agent rebuild, each
         # attach — announced it again, one approval card after another.
-        from mimir.client.ui.ws import job_scan
+        from mimir.client.session import jobs_on_disk
         self._running(self.here.id)
         self._wake(self._event("j1"))
         self._wake(self._event("j2"))
         self._inject(self.worker.steered[0])   # j1 only
         reported = {key: os.path.exists(os.path.join(
-            job_scan._job_dir(self.here.id, key, "shell"), job_scan._REPORTED))
+            jobs_on_disk._job_dir(self.here.id, key, "shell"), jobs_on_disk._REPORTED))
             for key in ("j1", "j2")}
         self.assertEqual(reported, {"j1": True, "j2": False})
 
@@ -2047,19 +2032,11 @@ class CheckinDeliveryTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from unittest import mock
-        from mimir.client.session import store as session_store
-        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-checkin-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS"),
-                             (job_scan, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker(watching=["j1"])
         self.session = _Session(self.ws, FakePool(self.worker))
@@ -2175,9 +2152,9 @@ class CheckinDeliveryTests(unittest.TestCase):
 
     def test_the_transcript_tells_a_bulletin_from_a_wake(self) -> None:
         """``job_wake`` is counted against the jobs that recorded an exit code."""
-        from mimir.client.ui.ws import transcript_log
+        from mimir.client.session import journal
         self.session.pool.wakes.consume(self._event())
-        lines, _truncated = transcript_log.read_since(self.session._active_session_id, 0)
+        lines, _truncated = journal.read_since(self.session._active_session_id, 0)
         kinds = [e["type"] for e in lines if "type" in e]
         self.assertIn("job_checkin", kinds)
         self.assertNotIn("job_wake", kinds)
@@ -2196,19 +2173,11 @@ class WakeDeliveryLossTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from unittest import mock
-        from mimir.client.session import store as session_store
-        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-wakeloss-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS"),
-                             (job_scan, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp)
 
         self.ws = _FakeWS()
         # Two conversations, two agents — the shape production has, and the one a
@@ -2313,15 +2282,12 @@ class ReconnectLosesNothingTests(unittest.TestCase):
     def setUp(self) -> None:
         import queue as _q
         import tempfile
-        from unittest import mock
-        from mimir.client.ui.ws import transcript_log
+        from mimir.client.session import journal
 
         self._tmp = tempfile.TemporaryDirectory()
-        patcher = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
-        self.transcript_log = transcript_log
+        self.journal = journal
 
         self.worker = _FakeWorker()
         self.worker.out_q = _q.Queue()
@@ -2336,7 +2302,7 @@ class ReconnectLosesNothingTests(unittest.TestCase):
         self.assertEqual(self.pool.bus.attached(), 0)
         self.pool.bus.pump_once()
         self.assertTrue(self.worker.out_q.empty())
-        lines, _truncated = self.transcript_log.read_since("s1", 0)
+        lines, _truncated = self.journal.read_since("s1", 0)
         return lines
 
     def test_a_finished_job_survives_the_reconnect(self) -> None:

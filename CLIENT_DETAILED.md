@@ -45,7 +45,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `history.py` | context budgeting: trim → compact → force-fit → repair, plus the compaction marker |
 | `context_budget.py` | `context_budget_for(model, mode)` — the window a model actually has |
 | `streaming.py` | the model call (retry/backoff), `_process_response`, the single `get_backend` handle |
-| `background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
+| `jobs/background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
 | `jobs/poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
 | `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
@@ -1137,7 +1137,7 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 | `human_bridge.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
 | `job_watcher.py` | `JobWatcher`: a conversation's detached runs and the check-in cycle |
 | `ws_commands.py` | the socket's side of the slash commands: `WsCommandHost`, `/cancel`, `/diag` |
-| `job_scan.py`, `panel_runs.py`, `server_registry.py`, `detach.py`, `session_summary.py`, `transcript_log.py`, `file_preview.py`, `_ws_runtime.py` | runs on disk and their wakes, the panel, the registry of live servers, detachment, descriptions, the journal, diff previews, the stdout router |
+| `panel_runs.py`, `server_registry.py`, `detach.py`, `file_preview.py`, `_ws_runtime.py` | runs on disk and their wakes, the panel, the registry of live servers, detachment, descriptions, the journal, diff previews, the stdout router |
 
 What belongs here are the invariants that are not obvious from the protocol:
 
@@ -1496,7 +1496,7 @@ directory. The *watcher* does not — it is an `asyncio.Task` on a worker's loop
 already recoverable through a status tool returning `background_jobs`, but it needed a turn
 in which somebody asked where the job had got to.
 
-`job_scan.py` removes the asking. It reads the descriptors directly — `meta.json`, the
+`session/jobs_on_disk.py` removes the asking. It reads the descriptors directly — `meta.json`, the
 `exit_code` the trap wrote, and the pid liveness contract — and sorts what it finds into two
 piles. A run still going needs a watcher, which is put back when that session's worker is
 built (on the loop, not in the constructor's executor: a task created off a running loop
@@ -1562,7 +1562,7 @@ owed; settling it at that moment makes the only record of the debt say it was al
 and the run is then filtered out of every later scan. That is a conversation waiting for ever
 on a job that finished hours ago, which is precisely the failure this path exists to fix. So
 an announcement repeats until a consumer has taken the wake in, and the consumers dedup
-instead: a run whose marker is already on disk is dropped (`job_scan.wake_reported`), and a
+instead: a run whose marker is already on disk is dropped (`jobs_on_disk.wake_reported`), and a
 job already pending for a conversation is not added twice. Checking pending wakes alone
 missed a second announcement arriving after the first was delivered, and several emitters
 — the reconnect scan, the worker-build scan, the watcher — announce one run. A steered wake
@@ -1621,7 +1621,7 @@ to exist.
 Liveness is three questions, and the third is the one the other two cannot answer: the pid
 exists; its start time matches what was recorded, because a recycled pid wears the same
 number; and the port actually accepts a connection, because a process can be alive with its
-listener already gone. The first two come from `job_scan`, which holds that contract for
+listener already gone. The first two come from `session/jobs_on_disk`, which holds that contract for
 detached runs. The entry is advisory throughout — a stale one costs a connection attempt that
 fails and is then replaced, whereas trusting it is how a window ends up waiting on an address
 nothing is listening at. It is removed on a clean shutdown and deliberately left behind by a

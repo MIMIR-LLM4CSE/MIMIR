@@ -32,13 +32,13 @@ is what it does when nothing asks it to detach.
 import json
 import os
 
-from ..config.paths import STATE_DIR
+from ..config import paths
 from ...servers._shared.atomic import write_text
 from ...servers._shared.state_paths import session_state_dir
 
 
 def _dir(channel: str, session_id: str | None = None) -> str:
-    return os.path.join(session_state_dir(STATE_DIR, session_id), "runs", channel)
+    return os.path.join(session_state_dir(paths.STATE_DIR, session_id), "runs", channel)
 
 
 def _server_alive(run: dict) -> bool:

@@ -11,12 +11,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.client.session import store as session_store
 from mimir.client.session.conversation import Conversation, Conversations, turn_messages
 from mimir.client.session.store import SessionStore, StaleSessionWrite
-from mimir.client.ui.ws import transcript_log
 from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.tests.support.state import pin_state_dir
 
 
 def _bare_worker(session_id: str) -> _AgentWorker:
@@ -34,11 +33,7 @@ def _bare_worker(session_id: str) -> _AgentWorker:
 class _CommitCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        for target, attr in ((session_store, "STATE_DIR"),
-                             (transcript_log, "_MIMIR_DIR_WS")):
-            patcher = mock.patch.object(target, attr, self._tmp.name)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
         self.store = SessionStore()
         self.conversations = Conversations(self.store)

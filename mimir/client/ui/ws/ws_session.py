@@ -15,7 +15,7 @@ import logging
 from typing import Any
 
 from .event_router import EventRouter
-from .transcript_log import read_since
+from ...session.journal import read_since
 from .ws_pool import _AgentPool
 from .ws_worker import _AgentWorker
 from .handlers.cards import CardHandlers
