@@ -25,6 +25,7 @@ from mimir.client.session import store as session_store
 from mimir.client.ui.ws import job_scan, transcript_log, ws_session
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.human_bridge import HumanBridge
+from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
 
@@ -62,6 +63,7 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     """A worker with no agent and no loop, whose query emits *turn*."""
     w = object.__new__(_AgentWorker)
     w.human = HumanBridge(w)
+    w.jobs = JobWatcher(w)
     w.out_q = _queue.Queue()
     w.session_id = session_id
     w.session_title = "a conversation"
@@ -78,7 +80,7 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
         apply_setting=lambda name, mode: setattr(w._agent.approvals, name, mode),
         toggles_state=lambda: {"servers": [], "skills": [], "nudges": []})
     w._expired_prompt_ids = set()
-    w._bg_jobs = {}
+    w.jobs._bg_jobs = {}
     w.is_busy = lambda: w._query_session_id is not None
     w.has_work_pending = lambda: False
     w.agent_ready = lambda: True

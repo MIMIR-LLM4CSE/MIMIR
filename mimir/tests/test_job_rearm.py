@@ -16,6 +16,7 @@ from unittest import mock
 
 from mimir.client.ui.ws import job_scan
 from mimir.client.ui.ws.job_scan import DetachedJob, scan_all_sessions, scan_session
+from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
@@ -287,10 +288,11 @@ class _RearmWorker(_AgentWorker):
         self.session_id = session_id
         self.active_session_id = None
         self._query_session_id = None
-        self._bg_jobs = {}
+        self.jobs = JobWatcher(self)
         self.registered: list[tuple[dict, str | None]] = []
+        self.jobs.register = self._record
 
-    def _register_bg_job(self, descriptor, owner=None) -> bool:
+    def _record(self, descriptor, owner=None) -> bool:
         self.registered.append((descriptor, owner))
         return True
 
@@ -460,7 +462,7 @@ class RearmTests(_ScanCase):
         self._job("s1", "j1", pid=os.getpid(),
                   starttime=job_scan._proc_starttime(os.getpid()))
         w = self._worker()
-        w._bg_jobs["j1"] = mock.Mock(task=mock.Mock(done=lambda: False))
+        w.jobs._bg_jobs["j1"] = mock.Mock(task=mock.Mock(done=lambda: False))
         result = w.rearm_detached_jobs()
         self.assertEqual(result, {"rearmed": [], "reported": []})
         self.assertEqual(w.registered, [])
@@ -468,7 +470,7 @@ class RearmTests(_ScanCase):
     def test_a_watcher_that_has_finished_does_not_count_as_holding_the_run(self):
         self._job("s1", "j1", exit_code=0)
         w = self._worker()
-        w._bg_jobs["j1"] = mock.Mock(task=mock.Mock(done=lambda: True))
+        w.jobs._bg_jobs["j1"] = mock.Mock(task=mock.Mock(done=lambda: True))
         self.assertEqual(w.rearm_detached_jobs()["reported"], ["j1"])
 
     def test_several_runs_are_sorted_into_the_two_piles(self):

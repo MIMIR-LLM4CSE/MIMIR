@@ -22,6 +22,7 @@ from mimir.client.session import store as session_store
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.human_bridge import HumanBridge
+from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws import job_scan, transcript_log
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.wake_router import WakeRouter
@@ -33,6 +34,7 @@ class _Worker:
 
     def __init__(self, session_id: str, *, busy: bool = False) -> None:
         self.human = HumanBridge(self)
+        self.jobs = JobWatcher(self)
         self.out_q = _queue.Queue()
         self.session_id = session_id
         self.active_session_id = None
@@ -41,7 +43,7 @@ class _Worker:
         self.queries: list[dict] = []
         self.steers: list[str] = []
         self.watched: list[str] = []
-        self._bg_jobs: dict = {}
+        self.jobs._bg_jobs: dict = {}
 
     def is_busy(self) -> bool:
         return self._busy
@@ -351,7 +353,7 @@ class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
         pool._last_use[s.id] = 0.0
-        w._bg_jobs = {}                       # the watcher has just let go
+        w.jobs._bg_jobs = {}                       # the watcher has just let go
         w.out_q.put(self._complete(s.id))
         self.assertFalse(pool.releasable(s.id), "releasable with its news unread")
 
@@ -405,7 +407,7 @@ class AnAgentOwedAWakeIsNotIdleTests(_WakeCase):
     def test_an_agent_watching_a_run_is_never_released(self):
         s = self._session()
         w = _Worker(s.id)
-        w._bg_jobs = {"j1": object()}
+        w.watched = ["j1"]                    # a watcher is holding a run
         pool = self._pool({s.id: w})
         pool._last_use[s.id] = 0.0            # idle since the epoch
         self.assertFalse(pool.releasable(s.id))

@@ -27,6 +27,7 @@ import time
 import unittest
 
 from mimir.client.ui.ws.human_bridge import HumanBridge
+from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
@@ -50,12 +51,13 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
     """A worker whose loop really runs on its own thread, without building an agent."""
     w = object.__new__(_AgentWorker)
     w.human = HumanBridge(w)
+    w.jobs = JobWatcher(w)
     w.session_id = "s1"
     w.active_session_id = None
     w._query_session_id = None
     w._agent = agent
-    w._bg_jobs = {}
-    w._checkin_task = None
+    w.jobs._bg_jobs = {}
+    w.jobs._checkin_task = None
     w._query_q = _queue.Queue()
     w._query_wake = None
     w._closed = threading.Event()
@@ -103,6 +105,7 @@ class OwnSessionTests(unittest.TestCase):
     def _bare(self, session_id=None, active=None) -> _AgentWorker:
         w = object.__new__(_AgentWorker)
         w.human = HumanBridge(w)
+        w.jobs = JobWatcher(w)
         w.session_id = session_id
         w.active_session_id = active
         return w
@@ -179,6 +182,7 @@ class TheQueryLoopWaitsTests(unittest.TestCase):
     def test_a_turn_queued_from_another_thread_starts_at_once(self) -> None:
         w = object.__new__(_AgentWorker)
         w.human = HumanBridge(w)
+        w.jobs = JobWatcher(w)
         w.session_id = "s1"
         w._query_q = _queue.Queue()
         w._query_wake = None

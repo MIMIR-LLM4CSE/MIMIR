@@ -24,6 +24,7 @@ from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.human_bridge import HumanBridge, _detach_grace
+from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
@@ -31,6 +32,7 @@ def _worker(session_id: str = "s1") -> _AgentWorker:
     """A worker with only what the wait touches: no agent loop, no MCP servers."""
     w = object.__new__(_AgentWorker)
     w.human = HumanBridge(w)
+    w.jobs = JobWatcher(w)
     w.out_q = _queue.Queue()
     w.session_id = session_id
     w.session_title = ""
@@ -247,7 +249,7 @@ class TheReaperTests(unittest.TestCase):
     def _releasable_worker(self):
         w = _worker()
         w.has_work_pending = lambda: False
-        w._bg_jobs = {}
+        w.jobs._bg_jobs = {}
         return w
 
     def test_an_idle_worker_is_releasable(self):

@@ -644,7 +644,7 @@ class _AgentPool:
                 return False
         except Exception:
             return False
-        if getattr(worker, "_bg_jobs", None):
+        if worker.watched_job_keys():
             return False
         if worker.human.awaiting_user():
             return False

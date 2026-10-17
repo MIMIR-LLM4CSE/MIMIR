@@ -56,6 +56,9 @@ class _StubWorker:
     def is_busy(self) -> bool:
         return self.busy
 
+    def watched_job_keys(self) -> list:
+        return list(self._bg_jobs)
+
     def has_work_pending(self) -> bool:
         return self.busy or self.queued
 

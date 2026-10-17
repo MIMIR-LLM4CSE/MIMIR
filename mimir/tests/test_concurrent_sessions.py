@@ -25,6 +25,7 @@ from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.human_bridge import HumanBridge
+from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._session import bare_session
 
@@ -51,6 +52,7 @@ class _FakeWS:
 def _worker(session_id: str, title: str = "") -> _AgentWorker:
     w = object.__new__(_AgentWorker)
     w.human = HumanBridge(w)
+    w.jobs = JobWatcher(w)
     w.out_q = _queue.Queue()
     w._steer_q = _queue.Queue()
     w.session_id = session_id
@@ -204,7 +206,7 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         outside as MIMIR having decided to detach on its own.
         """
         self.a._query_session_id = None                  # nothing is answering
-        self.a._bg_jobs = {"j1": _watch(), "j2": _watch()}
+        self.a.jobs._bg_jobs = {"j1": _watch(), "j2": _watch()}
         activity = self.sess._session_activity("s1")
         self.assertFalse(activity["running"], "no turn is in flight")
         self.assertEqual(activity["runs"], 2)
@@ -213,7 +215,7 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         # Otherwise the row goes on claiming it and every later disconnect asks about
         # work that finished hours ago.
         self.a._query_session_id = None
-        self.a._bg_jobs = {"j1": _watch(done=True)}
+        self.a.jobs._bg_jobs = {"j1": _watch(done=True)}
         self.assertEqual(self.sess._session_activity("s1")["runs"], 0)
 
     def test_every_conversations_output_is_drained_busy_or_not(self) -> None:

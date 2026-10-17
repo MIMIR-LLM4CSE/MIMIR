@@ -17,6 +17,7 @@ import types
 import unittest
 
 from mimir.client.ui.ws.human_bridge import HumanBridge
+from mimir.client.ui.ws.job_watcher import JobWatcher, _Watch
 from unittest import mock
 
 from mimir.tests._fake_pool import FakePool
@@ -473,7 +474,7 @@ class WatchJobTests(unittest.TestCase):
         w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
         w._agent = agent
         w.out_q = _queue.Queue()
-        w._bg_jobs = {}
+        w.jobs = JobWatcher(w)
         return w
 
     def _descriptor(self) -> dict:
@@ -496,7 +497,7 @@ class WatchJobTests(unittest.TestCase):
                 await orig_sleep(0)
             ws.asyncio.sleep = _fast_sleep
             try:
-                await worker._watch_job("fast", descriptor, session_id)
+                await worker.jobs._watch_job("fast", descriptor, session_id)
             finally:
                 ws.asyncio.sleep = orig_sleep
         asyncio.run(_drive())
@@ -512,7 +513,7 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["type"], "job_complete")
         self.assertEqual(ev["state"], "done")
         self.assertEqual(ev["summary"]["verdict"], "accept")
-        self.assertNotIn("fast", worker._bg_jobs)  # cleaned up
+        self.assertNotIn("fast", worker.jobs._bg_jobs)  # cleaned up
         self.assertGreaterEqual(agent.status_calls, 3)
 
     def test_the_event_carries_the_launching_session_and_the_descriptor_ops(self) -> None:
@@ -563,19 +564,18 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["type"], "job_complete")
         self.assertEqual(ev["state"], "unknown")
         self.assertIn("did not answer", ev["reason"])
-        self.assertNotIn("fast", worker._bg_jobs)
+        self.assertNotIn("fast", worker.jobs._bg_jobs)
         self.assertLessEqual(agent.status_calls, 6)        # bounded, not forever
 
     def test_a_timed_out_probe_is_reported_as_unreadable_not_as_running(self) -> None:
         # What a check-in reads. A bulletin that keeps saying "running" from a status
         # frozen hours ago is worse than one that admits it cannot tell.
-        import mimir.client.ui.ws.ws_worker as ws
 
         agent = _HangingAgent(hang_on="status")
         worker = self._make_worker(agent)
         seen: list[dict] = []
-        watch = ws._Watch(task=mock.Mock(), descriptor=self._descriptor())
-        worker._bg_jobs["fast"] = watch
+        watch = _Watch(task=mock.Mock(), descriptor=self._descriptor())
+        worker.jobs._bg_jobs["fast"] = watch
         with mock.patch.object(job_poll, "STATUS_CALL_TIMEOUT", 0.01):
             self._run(worker, self._descriptor())
             seen.append(dict(watch.status))
@@ -596,7 +596,7 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["state"], "done")
         self.assertEqual(ev["summary"], {})
         self.assertEqual(agent.summary_calls, 1)
-        self.assertNotIn("fast", worker._bg_jobs)
+        self.assertNotIn("fast", worker.jobs._bg_jobs)
 
     def test_a_probe_that_raises_also_ends_as_unknown(self) -> None:
         agent = _MuteAgent(raises=True)
@@ -643,13 +643,13 @@ class WatchJobTests(unittest.TestCase):
             with self.subTest(states=states):
                 worker = self._make_worker(_ScriptedAgent(states=states, summary={}))
                 self._run(worker, self._descriptor())
-                self.assertEqual(worker._bg_jobs, {})
+                self.assertEqual(worker.jobs._bg_jobs, {})
 
     def test_a_run_nothing_can_poll_leaves_the_table(self) -> None:
         worker = self._make_worker(_ScriptedAgent(states=["done"], summary={}))
-        worker._bg_jobs["fast"] = object()
+        worker.jobs._bg_jobs["fast"] = object()
         self._run(worker, {"job_key": "fast", "status_op": {}})
-        self.assertEqual(worker._bg_jobs, {})
+        self.assertEqual(worker.jobs._bg_jobs, {})
 
     def test_a_watch_that_raises_leaves_the_table_too(self) -> None:
         """The one exit that used to leave an entry behind."""
@@ -660,7 +660,7 @@ class WatchJobTests(unittest.TestCase):
         worker = self._make_worker(_Exploding())
         with self.assertRaises(KeyboardInterrupt):
             self._run(worker, self._descriptor())
-        self.assertEqual(worker._bg_jobs, {})
+        self.assertEqual(worker.jobs._bg_jobs, {})
 
 
 class SharedPollLoopTests(unittest.TestCase):
@@ -868,7 +868,7 @@ class RegisterBgJobTests(unittest.TestCase):
     def _worker(self) -> object:
         from mimir.client.ui.ws.ws_worker import _AgentWorker
         w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
-        w._bg_jobs = {}
+        w.jobs = JobWatcher(w)
         w.session_id = None
         w._query_session_id = None
         w.active_session_id = None
@@ -877,24 +877,24 @@ class RegisterBgJobTests(unittest.TestCase):
 
     def test_descriptor_without_a_key_is_refused_out_loud(self) -> None:
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.ws_worker", "WARNING") as log:
-            self.assertFalse(w._register_bg_job({"server": "bash", "status_op": {}}))
+        with self.assertLogs("mimir.client.ui.ws.job_watcher", "WARNING") as log:
+            self.assertFalse(w.jobs.register({"server": "bash", "status_op": {}}))
         self.assertIn("job_key", "\n".join(log.output))
-        self.assertEqual(w._bg_jobs, {})
+        self.assertEqual(w.jobs._bg_jobs, {})
 
     def test_non_dict_descriptor_is_refused_out_loud(self) -> None:
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.ws_worker", "WARNING") as log:
-            self.assertFalse(w._register_bg_job("not a descriptor"))
+        with self.assertLogs("mimir.client.ui.ws.job_watcher", "WARNING") as log:
+            self.assertFalse(w.jobs.register("not a descriptor"))
         self.assertIn("not a dict", "\n".join(log.output))
 
     def test_no_running_loop_is_refused_out_loud(self) -> None:
         """Called off the worker loop there is nothing to host the watcher."""
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.ws_worker", "WARNING") as log:
-            self.assertFalse(w._register_bg_job({"job_key": "fast", "status_op": {}}))
+        with self.assertLogs("mimir.client.ui.ws.job_watcher", "WARNING") as log:
+            self.assertFalse(w.jobs.register({"job_key": "fast", "status_op": {}}))
         self.assertIn("event loop", "\n".join(log.output))
-        self.assertEqual(w._bg_jobs, {})
+        self.assertEqual(w.jobs._bg_jobs, {})
 
 
 # ── 3c. The dispatch guards: a watched run is neither polled nor waited on ─────
@@ -1056,7 +1056,7 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
                 self.assertNotIn(guard, src, f"{module.__name__} must not gate its own probes")
         # And every probe path reaches the tool through run_tool, not the dispatcher.
         for probe in (background._await_background_job,
-                      ws_worker._AgentWorker._poll_to_completion,
+                      JobWatcher._poll_to_completion,
                       _child_jobs.ChildWatcher._watch):
             src = inspect.getsource(probe)
             self.assertIn("run_tool", src)
@@ -1372,6 +1372,7 @@ class _FakeWorker:
         self.model = "test-model"
         self.watching = list(watching or [])
         self.human = HumanBridge(self)
+        self.jobs = JobWatcher(self)
 
     def submit_query(self, text, history, session_id=None) -> None:
         self.submitted.append((text, list(history), session_id))
@@ -1818,8 +1819,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         from mimir.client.ui.ws import ws_worker
         self.ws_worker = ws_worker
         self.worker = object.__new__(ws_worker._AgentWorker)
-        self.worker._bg_jobs = {}
-        self.worker._checkin_task = None
+        self.worker.jobs = JobWatcher(self.worker)
         self.worker.out_q = __import__("queue").Queue()
 
     def _watch(self, key: str, status: dict | None = None, done: bool = False):
@@ -1829,9 +1829,9 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
             task.set_result(None)
         else:
             self.addCleanup(task.cancel)
-        watch = self.ws_worker._Watch(task, {"job_key": key, "kind": "shell-command"},
+        watch = _Watch(task, {"job_key": key, "kind": "shell-command"},
                                       status or {"state": "running"})
-        self.worker._bg_jobs[key] = watch
+        self.worker.jobs._bg_jobs[key] = watch
         return watch
 
     def _emitted(self) -> list[dict]:
@@ -1852,11 +1852,11 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         async def _sleep(delay: float) -> None:
             slept.append(delay)
             if len(slept) >= ticks:
-                self.worker._bg_jobs.clear()
+                self.worker.jobs._bg_jobs.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
-            await self.worker._checkin_cycle(session_id)
+            await self.worker.jobs._checkin_cycle(session_id)
         return slept
 
     async def test_the_ramp_is_thirty_seconds_then_two_ten_and_thirty_minutes(self) -> None:
@@ -1879,11 +1879,11 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
                             "phase": "link" if n >= 3 else "compile",
                             "elapsed_s": 10 * n, "at": float(n)}
             if n >= 5:
-                self.worker._bg_jobs.clear()
+                self.worker.jobs._bg_jobs.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
-            await self.worker._checkin_cycle("s1")
+            await self.worker.jobs._checkin_cycle("s1")
         phases = [ev["jobs"][0]["phase"] for ev in self._emitted()]
         self.assertEqual(phases, ["compile", "link"])
 
@@ -1897,11 +1897,11 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
             if len(slept) == 2:
                 b.task.cancel()
             if len(slept) >= 3:
-                self.worker._bg_jobs.clear()
+                self.worker.jobs._bg_jobs.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
-            await self.worker._checkin_cycle("s1")
+            await self.worker.jobs._checkin_cycle("s1")
         keys = [{j["job_key"] for j in ev["jobs"]} for ev in self._emitted()]
         self.assertEqual(keys, [{"jA", "jB"}, {"jA"}])
 
@@ -1914,11 +1914,11 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
             watch.status = {"state": "running",
                             "log_tail": [f"it {len(slept)} res=0.{len(slept)}"]}
             if len(slept) >= 4:
-                self.worker._bg_jobs.clear()
+                self.worker.jobs._bg_jobs.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
-            await self.worker._checkin_cycle("s1")
+            await self.worker.jobs._checkin_cycle("s1")
         self.assertEqual(len(self._emitted()), 1)
 
     async def test_then_it_reports_hourly_for_as_long_as_the_run_lasts(self) -> None:
@@ -1947,7 +1947,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
     def _cycle_in_flight(self) -> asyncio.Task:
         task = asyncio.get_event_loop().create_task(asyncio.sleep(60))
         self.addCleanup(task.cancel)
-        self.worker._checkin_task = task
+        self.worker.jobs._checkin_task = task
         return task
 
     async def test_a_job_joining_a_live_wave_inherits_its_schedule(self) -> None:
@@ -1955,17 +1955,17 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         self._watch("jA")                      # already running
         running = self._cycle_in_flight()
         self._watch("jB")                      # joins it
-        self.worker._start_checkins("s1")
-        self.assertIs(self.worker._checkin_task, running, "the clock was restarted")
+        self.worker.jobs._start_checkins("s1")
+        self.assertIs(self.worker.jobs._checkin_task, running, "the clock was restarted")
 
     async def test_a_new_wave_replaces_a_cycle_left_over_from_the_last_one(self) -> None:
         """The tail is hourly, so a spent cycle can be asleep for an hour after its
         last job ended. A job launched into that gap must not wait out the remainder."""
         stale = self._cycle_in_flight()        # no live job: the wave is over
         self._watch("jNew")
-        self.worker._start_checkins("s1")
-        self.assertIsNot(self.worker._checkin_task, stale)
-        self.addCleanup(self.worker._checkin_task.cancel)
+        self.worker.jobs._start_checkins("s1")
+        self.assertIsNot(self.worker.jobs._checkin_task, stale)
+        self.addCleanup(self.worker.jobs._checkin_task.cancel)
         await asyncio.sleep(0)                 # let the cancellation be delivered
         self.assertTrue(stale.cancelled(), "the spent cycle was left running")
 
@@ -1973,12 +1973,12 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         """Cancellation lands after the new task is in the slot."""
         self._cycle_in_flight()
         self._watch("jNew")
-        self.worker._start_checkins("s1")
-        live = self.worker._checkin_task
+        self.worker.jobs._start_checkins("s1")
+        live = self.worker.jobs._checkin_task
         self.addCleanup(live.cancel)
         await asyncio.sleep(0)                 # let the cancellation be delivered
         await asyncio.sleep(0)
-        self.assertIs(self.worker._checkin_task, live,
+        self.assertIs(self.worker.jobs._checkin_task, live,
                       "the slot was emptied, so the next launch starts a second cycle")
 
     async def test_it_ends_early_once_nothing_is_running(self) -> None:
@@ -1992,7 +1992,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         """So the next wave of jobs starts a fresh schedule rather than none."""
         self._watch("j1")
         await self._run_cycle()
-        self.assertIsNone(self.worker._checkin_task)
+        self.assertIsNone(self.worker.jobs._checkin_task)
 
     async def test_it_reports_what_the_watcher_already_saw(self) -> None:
         """No second poll: the watcher is asking once a tick as it is."""
@@ -2008,7 +2008,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         from unittest import mock
         from mimir.client.query_engine import job_poll
         self._watch("j1")
-        self.worker._checkin_last = None
+        self.worker.jobs._checkin_last = None
         ticks = [["it 10 residual = 1.2e-3"], ["it 11 residual = inf"],
                  ["it 12 residual = inf"], ["it 13 residual = nan"]]
 
@@ -2023,7 +2023,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.worker._agent = type("A", (), {"run_tool": staticmethod(_status)})()
         with mock.patch.object(job_poll.asyncio, "sleep", _nosleep), \
              mock.patch.object(job_poll, "read_summary", mock.AsyncMock(return_value={})):
-            await self.worker._poll_to_completion("j1", {"status_op": {"tool": "x"}}, "s1")
+            await self.worker.jobs._poll_to_completion("j1", {"status_op": {"tool": "x"}}, "s1")
         checkins = [e for e in self._emitted() if e["type"] == "job_checkin"]
         self.assertEqual(len(checkins), 1, "one alert, reported once")
         alerts = checkins[0]["jobs"][0]["alerts"]

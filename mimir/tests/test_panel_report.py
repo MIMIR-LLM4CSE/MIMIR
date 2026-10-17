@@ -16,6 +16,8 @@ import types
 from pathlib import Path
 from unittest import mock
 
+from mimir.client.ui.ws.job_watcher import JobWatcher
+
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "hpc", SERVERS_DIR / "proxy"):
     if str(_p) not in sys.path:
@@ -130,6 +132,7 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
+    worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
 
@@ -171,6 +174,7 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
     loop = asyncio.new_event_loop()
     release.append(loop.create_future())
     worker = object.__new__(_AgentWorker)
+    worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
 
@@ -211,6 +215,7 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
+    worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
 
@@ -323,6 +328,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
+    worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
 
@@ -357,6 +363,7 @@ def test_a_section_that_only_has_groups_is_kept():
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
+    worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
     future = worker.panel_sections()
@@ -594,7 +601,8 @@ def test_the_worker_reports_what_its_poll_learned():
     Where a run is and how far it has got were read on every tick and then dropped on
     the way out, so the panel could only ever say that something was running.
     """
-    from mimir.client.ui.ws.ws_worker import _AgentWorker, _Watch
+    from mimir.client.ui.ws.job_watcher import _Watch
+    from mimir.client.ui.ws.ws_worker import _AgentWorker
 
     class _Task:
         @staticmethod
@@ -602,12 +610,14 @@ def test_the_worker_reports_what_its_poll_learned():
             return False
 
     worker = object.__new__(_AgentWorker)
-    worker._bg_jobs = {"15306620": _Watch(
+
+    worker.jobs = JobWatcher(worker)
+    worker.jobs._bg_jobs = {"15306620": _Watch(
         _Task(),
         {"job_key": "15306620", "kind": "slurm-batch", "server": "hpc",
          "origin": {"kind": "main", "label": "", "session": "s1"}},
     )}
-    worker._bg_jobs["15306620"].status = {
+    worker.jobs._bg_jobs["15306620"].status = {
         "state": "running", "phase": "linking", "percent": 62,
         "scheduler": "hpc1", "nodes": ["gpu007"], "at": 1234.5,
     }
