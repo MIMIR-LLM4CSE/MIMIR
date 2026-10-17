@@ -113,7 +113,7 @@ class EventRouter:
         # Already journaled — the bus records before it fans out — so a send that fails
         # loses the socket, never the record.
         await self._send(ev)
-        after = self._after.get(ev.get("type"))
+        after = self._after.get(ev.get("type", ""))
         if after is not None:
             await after(ev, extras, owner)
 

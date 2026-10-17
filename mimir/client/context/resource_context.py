@@ -42,7 +42,7 @@ _RANGE_RE = re.compile(r"^(?P<path>.+?):(?P<start>\d+)(?:-(?P<end>\d+))?$")
 _WHOLE_FILE_CHAR_CAP = 20_000
 
 
-def _resolve_token(token: str, registry: dict[str, dict]) -> str | None:
+def _resolve_token(token: str, registry: dict[str, dict[str, Any]]) -> str | None:
     """Resolve a mention token to a registered resource URI, or None.
 
     Matches an exact URI first, then falls back to a case-insensitive resource-name
@@ -65,7 +65,7 @@ def _resolve_token(token: str, registry: dict[str, dict]) -> str | None:
 
 
 def parse_resource_mentions(
-    text: str, registry: dict[str, dict]
+    text: str, registry: dict[str, dict[str, Any]]
 ) -> tuple[str, list[str]]:
     """Extract ``@<uri|name>`` mentions that resolve against ``registry``.
 

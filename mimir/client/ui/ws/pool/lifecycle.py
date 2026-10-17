@@ -76,6 +76,8 @@ def default_idle_ttl() -> float:
 
 
 class PoolLifecycle:
+    _reaper: asyncio.Task[None] | None
+
     # ── Is this process still needed ──────────────────────────────────────────
 
     def idle_report(self, *, excluding: Any = None) -> dict:

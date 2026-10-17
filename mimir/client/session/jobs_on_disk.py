@@ -439,7 +439,7 @@ def mark_reported(job: DetachedJob) -> None:
                        job.session_id, job.job_key, exc_info=True)
 
 
-def mark_job_reported(session_id: str | None, job_key: str,
+def mark_job_reported(session_id: str | None, job_key: str | None,
                       server: str | None = None) -> None:
     """Mark a run reported when all that is in hand is its key.
 

@@ -35,7 +35,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future
-from typing import Annotated, Callable
+from typing import Annotated, Any, Callable
 
 from . import _child_jobs
 from .._shared.approved_roots import approved_roots
@@ -283,7 +283,7 @@ def _partial_handoff(child: dict) -> dict:
     # these are runs to adopt rather than a run this call launched, and each descriptor
     # already names the directory the parent must read it through.
     watcher = child.get("watcher")
-    handed_over = []
+    handed_over: list[dict] = []
     try:
         handed_over = watcher.handover() if watcher is not None else []
     except Exception as exc:  # a child mid-teardown must not fail its caller
@@ -291,7 +291,7 @@ def _partial_handoff(child: dict) -> dict:
     if handed_over:
         keys = ", ".join(str(d.get("job_key") or "?") for d in handed_over)
         lines.append(f"Runs it left going, now watched here: {keys}.")
-    out = {
+    out: dict[str, Any] = {
         "answer": " ".join(lines),
         "files_read": files_read,
         "files_written": files_written,
@@ -1011,7 +1011,7 @@ async def _run_sub_agent(
             # Committed on a clean run, left staged when it did not finish: an
             # unfinished axis has its state nowhere else. The copy itself stays either
             # way — see finish_worktree.
-            clean = bool(result) and not result.get("error")
+            clean = bool(result and not result.get("error"))
             record["workspace"] = spawn_worktree.finish_worktree(worktree, task, clean)
             if result is not None:
                 result["workspace"] = record["workspace"]

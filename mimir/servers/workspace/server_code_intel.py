@@ -320,7 +320,7 @@ def _lsp_location_to_entry(loc: dict) -> dict | None:
     return {
         "path": _out_path(path_for(uri)),
         "line": (start.get("line", 0) or 0) + 1,
-        "kind": _LSP_KIND.get(loc.get("kind"), ""),
+        "kind": _LSP_KIND.get(loc.get("kind") or 0, ""),
         "name": loc.get("name", ""),
     }
 

@@ -16,7 +16,7 @@ async def auto_validate_written_file(
     path: str,
     execution_context: ExecutionContext | None,
     tool_owner: dict[str, str],
-    run_tool: Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[str]],
+    run_tool: Callable[[str, dict[str, Any], ExecutionContext | None], Awaitable[str]],
     is_code_filepath: Callable[[str], bool],
     absolute_workspace_path_fn: Callable[[str], str],
 ) -> str:
@@ -132,7 +132,7 @@ async def _check_cross_file_references(
     edited_path: str,
     execution_context: ExecutionContext | None,
     tool_owner: dict[str, str],
-    run_tool: Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[str]],
+    run_tool: Callable[[str, dict[str, Any], ExecutionContext | None], Awaitable[str]],
 ) -> str:
     """After replace_all_in_file, grep the workspace for the old symbol in OTHER files.
 

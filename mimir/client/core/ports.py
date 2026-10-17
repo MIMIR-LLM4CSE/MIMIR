@@ -7,7 +7,8 @@ by inheritance.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol
+from contextlib import AsyncExitStack
+from typing import Any, Callable, Protocol
 
 from ..context.execution_context import ExecutionContext
 from ..context.carry import CarryContext
@@ -23,10 +24,12 @@ class AgentPort(Protocol):
     # The live tool registry: name -> declared capabilities, and name -> its server.
     tool_caps: dict[str, Any]
     tool_owner: dict[str, str]
-    tools: list[dict]
+    tools: list[dict[str, Any]]
     sessions: dict[str, Any]
-    skills: dict[str, dict]
+    skills: dict[str, dict[str, Any]]
     resources: dict[str, Any]
+    # The MCP sessions' lifetimes, closed with the agent.
+    exit_stack: AsyncExitStack
     approvals: Any                       # guardrails.policy.approval.ApprovalManager
     extensions: Any                      # core.extension_set.ExtensionSet
 
@@ -54,28 +57,35 @@ class AgentPort(Protocol):
     # Hand a long run to the front-end, which watches it and wakes the turn after.
     register_background_job: Callable[..., bool] | None
     # The runs the front-end is already watching, so asking about one can be refused.
-    watched_background_jobs: Callable[[], list[dict]] | None
+    watched_background_jobs: Callable[[], list[dict[str, Any]]] | None
 
     # ── Paths and tool calls ───────────────────────────────────────────────────
     def normalize_workspace_path(self, path: str | None) -> str: ...
     def is_code_filepath(self, path: str) -> bool: ...
     def is_write_tool(self, tool_name: str) -> bool: ...
-    def normalize_tool_arguments(self, tool_name: str, arguments: dict) -> dict: ...
-    def rewrite_tool_for_context(self, tool_name: str, arguments: dict) -> tuple[str, dict]: ...
-    def get_tool_file_targets(self, tool_name: str, arguments: dict) -> list[str]: ...
-    def advertised_tools(self) -> list[dict]: ...
+    def normalize_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
+    def rewrite_tool_for_context(self, tool_name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]: ...
+    def get_tool_file_targets(self, tool_name: str, arguments: dict[str, Any]) -> list[str]: ...
+    def advertised_tools(self) -> list[dict[str, Any]]: ...
     def skill_enabled(self, name: str) -> bool: ...
-    run_tool: Callable[..., Awaitable[str]]
+    async def run_tool(self, tool_name: str, arguments: dict[str, Any],
+                       execution_context: ExecutionContext | None = None,
+                       run_auto_validation: bool = True, call_id: str = "",
+                       record_observations: bool = True) -> str: ...
+    async def auto_validate_written_file(self, path: str,
+                                         execution_context: ExecutionContext | None) -> str: ...
 
     # ── Approvals and the user ─────────────────────────────────────────────────
-    def approval_scope(self, tool_name: str, arguments: dict) -> str: ...
-    def request_tool_approval(self, tool_name: str, arguments: dict) -> tuple[bool, str]: ...
-    def request_path_approval(self, *args: Any, **kwargs: Any) -> Any: ...
-    def request_user_question(self, questions: list, *args: Any, **kwargs: Any) -> Any: ...
-    def record_denied_tool_call(self, tool_name: str, arguments: dict,
+    def approval_scope(self, tool_name: str, arguments: dict[str, Any]) -> str: ...
+    def request_tool_approval(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str]: ...
+    def request_path_approval(self, paths: list[str], tool_name: str,
+                              arguments: dict[str, Any] | None = None) -> tuple[bool, bool]: ...
+    def request_user_question(self, questions: list[Any], origin: dict[str, Any] | None = None,
+                              timeout_secs: float | None = None) -> dict[str, Any]: ...
+    def record_denied_tool_call(self, tool_name: str, arguments: dict[str, Any],
                                 execution_context: ExecutionContext | None,
                                 note: str = "") -> None: ...
-    def denied_tool_result(self, tool_name: str, arguments: dict, note: str = "",
+    def denied_tool_result(self, tool_name: str, arguments: dict[str, Any], note: str = "",
                            execution_context: ExecutionContext | None = None) -> str: ...
 
     # ── The query's state ──────────────────────────────────────────────────────
@@ -95,18 +105,18 @@ class HumanIO(Protocol):
     call (its label, its risk, its scope) is the agent's to say.
     """
 
-    def approve_tool(self, agent: AgentPort, tool_name: str, arguments: dict,
+    def approve_tool(self, agent: AgentPort, tool_name: str, arguments: dict[str, Any],
                      max_attempts: int = 3) -> tuple[bool, str]:
         """Whether *tool_name* may run with *arguments*, and the note to record."""
         ...
 
     def approve_paths(self, agent: AgentPort, paths: list[str], tool_name: str,
-                      arguments: dict | None = None) -> tuple[bool, bool]:
+                      arguments: dict[str, Any] | None = None) -> tuple[bool, bool]:
         """Whether a call may reach *paths* outside the workspace: (approved, always)."""
         ...
 
-    def ask(self, agent: AgentPort, questions: list, origin: dict | None = None,
-            timeout_secs: float | None = None) -> dict:
+    def ask(self, agent: AgentPort, questions: list[Any], origin: dict[str, Any] | None = None,
+            timeout_secs: float | None = None) -> dict[str, Any]:
         """The user's answers to *questions*: ``{"answers": [...]}``, flagged
         ``timed_out`` when the wait ran out with nothing answered."""
         ...

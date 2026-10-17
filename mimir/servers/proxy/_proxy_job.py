@@ -13,6 +13,7 @@ import argparse
 import os
 import signal
 import traceback
+from typing import Callable
 
 
 
@@ -32,7 +33,7 @@ def main() -> None:
     from ._ops import references, suites
     from ._ops.exec_jobs import JOB_FILE, RESULT_FILE
 
-    ops = {
+    ops: dict[str, Callable[..., dict]] = {
         "reference":        references.create,
         "suite":            suites.run_suite,
         "benchmark_create": suites.benchmark_create,

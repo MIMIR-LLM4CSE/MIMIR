@@ -51,7 +51,7 @@ def parse_scontrol_nodes(stdout: str) -> list[dict]:
             "partitions":       [p for p in raw.get("Partitions", "").split(",") if p],
             "cpus":             cpu_tot,
             "cpus_allocated":   cpu_alloc,
-            "cpus_free":        (cpu_tot - cpu_alloc) if None not in (cpu_tot, cpu_alloc) else None,
+            "cpus_free":        (cpu_tot - cpu_alloc) if cpu_tot is not None and cpu_alloc is not None else None,
             "cpu_load":         raw.get("CPULoad", ""),
             "sockets":          as_int(raw.get("Sockets", "")),
             "cores_per_socket": as_int(raw.get("CoresPerSocket", "")),

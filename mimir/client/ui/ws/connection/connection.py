@@ -16,6 +16,7 @@ from typing import Any
 
 from .router import EventRouter
 from ....session.journal import read_since
+from ..pool.bus import Subscription
 from ..pool.pool import AgentPool
 from ..worker.worker import AgentWorker
 from .handlers.cards import CardHandlers
@@ -64,13 +65,13 @@ class Connection(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandler
         self.store = pool.conversations.store
         self._active_session_id: str | None = None
         # In-flight session-summary refresh (one at a time per connection).
-        self._summary_task: asyncio.Task | None = None
+        self._summary_task = None
         # Last `used_tokens` pushed to the client, so the periodic mid-turn refresh
         # only sends a frame when the number actually moved.
-        self._last_context_usage: int | None = None
+        self._last_context_usage = None
         # This connection's view of the stream, opened in run(). The pump owns the
         # draining; this is only where our share of it arrives.
-        self._sub = None
+        self._sub: Subscription | None = None
         # Events withheld because they belong to another conversation, per session.
         # The one quiet-chat cause that is otherwise invisible — see _is_foreign_event.
         self._foreign_withheld: dict[str, int] = {}
@@ -228,7 +229,8 @@ class Connection(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandler
                 except (asyncio.CancelledError, Exception):
                     pass
             # The agents and the pump live on; only this view of them ends here.
-            self._sub.close()
+            if self._sub is not None:
+                self._sub.close()
 
     async def _drain_loop(self) -> None:
         """Forward this connection's share of the stream to the client (``EventRouter``).

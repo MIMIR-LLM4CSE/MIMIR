@@ -14,7 +14,7 @@ class Outbox(queue.Queue):
 
     def __init__(self) -> None:
         super().__init__()
-        self.on_put: Callable[[], None] | None = None
+        self.on_put: Callable[[], object] | None = None
 
     def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
         super().put(item, block, timeout)

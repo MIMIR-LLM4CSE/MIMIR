@@ -415,7 +415,7 @@ def submit_eval(
     _update_opt_active_link(name, run_dir)
 
     payload["slurm_job_id"] = job_id
-    if build_job_id is not None:
+    if build_job_id is not None and build_place is not None:
         payload["note"] = (
             f"Build job {build_job_id} submitted to '{build_place['partition']}'; "
             f"run job {job_id} submitted to '{partition}' and held until the build "

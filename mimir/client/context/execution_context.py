@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import MISSING, dataclass, field, fields
-from collections.abc import Iterable
+from collections.abc import Iterable, Set as AbstractSet
 from typing import Any, Callable
 
 from ..config.limits import (
@@ -19,11 +19,11 @@ from ..config import paths
 # own (``ExecutionContext.loop_control``) rather than spread over the context.
 @dataclass
 class LoopControlState:
-    write_calls: set = field(default_factory=set)          # (tool, args) writes already dispatched this query
-    call_fails: dict = field(default_factory=dict)         # (tool, args) -> identical-FAILED dispatch count
-    repeat_warned: set = field(default_factory=set)        # keys the soft repeated-call corrective fired for
-    call_results: dict = field(default_factory=dict)       # (tool, args) -> (result digest, identical-SUCCESS count)
-    repeat_noted: set = field(default_factory=set)         # keys the identical-success annotation fired for
+    write_calls: set[tuple[Any, ...]] = field(default_factory=set)          # (tool, args) writes already dispatched this query
+    call_fails: dict[tuple[Any, ...], int] = field(default_factory=dict)         # (tool, args) -> identical-FAILED dispatch count
+    repeat_warned: set[Any] = field(default_factory=set)        # keys the soft repeated-call corrective fired for
+    call_results: dict[tuple[Any, ...], tuple[str, int]] = field(default_factory=dict)       # (tool, args) -> (result digest, identical-SUCCESS count)
+    repeat_noted: set[Any] = field(default_factory=set)         # keys the identical-success annotation fired for
 
 
 # ── Recency-preserving sets ────────────────────────────────────────────────────
@@ -38,27 +38,27 @@ class LoopControlState:
 # check keeps working unchanged. Operators that build a new set return a plain one and
 # simply lose the order, which ``recent_first`` degrades to sorted order for — the
 # previous behaviour, never a crash.
-class RecencySet(set):
+class RecencySet(set[Any]):
     """A ``set`` that also remembers the order elements were first added."""
 
     __slots__ = ("_order",)
 
-    def __init__(self, iterable=()):
+    def __init__(self, iterable: Iterable[Any] = ()) -> None:
         super().__init__()
-        self._order: list = []
+        self._order: list[Any] = []
         self.update(iterable)
 
-    def add(self, item) -> None:
+    def add(self, item: Any) -> None:
         if item not in self:
             self._order.append(item)
         super().add(item)
 
-    def update(self, *iterables) -> None:  # type: ignore[override]
+    def update(self, *iterables: Iterable[Any]) -> None:
         for it in iterables:
             for item in it:
                 self.add(item)
 
-    def discard(self, item) -> None:
+    def discard(self, item: Any) -> None:
         if item in self:
             try:
                 self._order.remove(item)
@@ -66,28 +66,28 @@ class RecencySet(set):
                 pass
         super().discard(item)
 
-    def remove(self, item) -> None:
+    def remove(self, item: Any) -> None:
         self.discard(item)
 
     def clear(self) -> None:
         self._order.clear()
         super().clear()
 
-    def difference_update(self, *iterables) -> None:  # type: ignore[override]
+    def difference_update(self, *iterables: Iterable[Any]) -> None:
         for it in iterables:
             for item in list(it):
                 self.discard(item)
 
-    def __isub__(self, other):  # type: ignore[override]
+    def __isub__(self, other: AbstractSet[object]) -> RecencySet:
         self.difference_update(other)
         return self
 
-    def insertion_order(self) -> list:
+    def insertion_order(self) -> list[Any]:
         """Elements oldest-first. Filtered against the set so it cannot drift."""
         return [x for x in self._order if x in self]
 
 
-def recent_first(value) -> list:
+def recent_first(value: Any) -> list[Any]:
     """Elements of *value* most-recent-first, falling back to sorted order.
 
     The pin shows a bounded slice, so which elements it picks is a real decision. A
@@ -192,7 +192,7 @@ class ExecutionContext:
     # file the most recent tracked replacement targeted
     last_replace_file: str = _spec(lambda: "", (str,))
     # path -> (last_signature: str|None, identical consecutive failures: int); guards the identical-patch hard block
-    edit_loop_state: dict[str, tuple] = _spec(dict, (dict,))
+    edit_loop_state: dict[str, tuple[Any, ...]] = _spec(dict, (dict,))
     # path -> consecutive edit failures regardless of patch (force-re-read + error_recovery)
     edit_fail_streak_by_file: dict[str, int] = _spec(dict, (dict,))
     # agent-loop steps since the last successful edit (idle gating)
@@ -294,14 +294,14 @@ class ExecutionContext:
     # mtime of the checklist file the system message currently renders.
     checklist_stamp: int | None = None
     # One-shot correctives staged during a step and consumed by the next injection.
-    repeat_alert: tuple | None = None          # (tool, failures) of a repeated failing call
+    repeat_alert: tuple[Any, ...] | None = None          # (tool, failures) of a repeated failing call
     moving_test_alert: str | None = None        # a test file whose failing set keeps moving
-    moving_test_told: list = field(default_factory=list)   # test files already told about
+    moving_test_told: list[Any] = field(default_factory=list)   # test files already told about
     handback_told: bool = False                 # the end of the denial ladder was said
     last_todo_tick_path: str = ""               # the file the last "tick the step" was about
     # Reminders injected for the next call only, and the categories of the last call's.
-    transient_reminders: list = field(default_factory=list)
-    last_call_reminders: list = field(default_factory=list)
+    transient_reminders: list[Any] = field(default_factory=list)
+    last_call_reminders: list[Any] = field(default_factory=list)
 
     def take(self, name: str) -> Any:
         """Read a one-shot field and reset it to its default: the staged correctives

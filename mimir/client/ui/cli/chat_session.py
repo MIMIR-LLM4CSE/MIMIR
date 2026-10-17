@@ -273,7 +273,7 @@ async def run_chat_session(agent: Any) -> None:
             _, last_report = split_answer_completion(rest)
             if last_report:
                 print(format_completion_summary(last_report))
-            if ledger:
+            if ledger and last_ledger:
                 print(format_ledger_summary(last_ledger))
 
             # Written by the rule the WebSocket front-end uses: in full-context mode the

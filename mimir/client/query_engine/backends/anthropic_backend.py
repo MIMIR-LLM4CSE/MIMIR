@@ -289,7 +289,7 @@ class AnthropicBackend(LLMBackend):
                 if isinstance(text, str) and text.strip():
                     blocks.append({"type": "text", "text": text})
                 for tc in tool_calls:
-                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    fn = found if isinstance(found := tc.get("function"), dict) else {}
                     call_id = tc.get("id")
                     if not call_id:
                         continue

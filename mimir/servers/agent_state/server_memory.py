@@ -94,7 +94,7 @@ class _Store(NamedTuple):
     """Everything one scope's files and policy amount to."""
     scope: str
     dir: str
-    index: str
+    index_file: str
     embeddings: str
     max_entries: int
     prunes: bool  # True: age out the oldest past the cap. False: refuse the write.
@@ -255,7 +255,7 @@ def _write_index(store: _Store) -> None:
         desc = e.get("description") or e.get("name", "")
         date = (e.get("date") or "")[:10]
         lines.append(f"- [{desc}]({e['name']}.md) — {date}")
-    write_text(store.index, "\n".join(lines) + "\n")
+    write_text(store.index_file, "\n".join(lines) + "\n")
 
 
 def _word_set(text: str) -> set[str]:
@@ -282,10 +282,10 @@ def _is_near_duplicate(text: str, entries: list) -> dict | None:
     return None
 
 
-def _find(name: str, scope: str | None) -> tuple[dict | None, dict | None]:
+def _find(name: str, scope: str | None) -> tuple[dict, dict | None]:
     """Resolve a slug to one memory, or to the error explaining why it cannot be.
 
-    Returns ``(entry, error)`` with exactly one of the two set. *scope* names the store
+    Returns ``(entry, None)`` or ``({}, error)``. *scope* names the store
     outright; ``None`` searches both, and a name living in both is an error rather than
     a guess — deleting or rewriting the wrong one of two same-named memories is silent
     and unrecoverable.
@@ -294,12 +294,12 @@ def _find(name: str, scope: str | None) -> tuple[dict | None, dict | None]:
     matches = [e for e in _load_scopes(scopes) if e["name"] == name]
     if not matches:
         where = f"in the {scope} memory" if scope else "in either memory"
-        return None, err(
+        return {}, err(
             f"No memory named {name!r} {where}.",
             hint="Call memory_list_all() to see valid names and their scopes.",
         )
     if len(matches) > 1:
-        return None, err(
+        return {}, err(
             f"{name!r} exists in both the workspace and the global memory.",
             hint=f"Pass scope={WORKSPACE!r} or scope={GLOBAL!r} to say which one you mean.",
             scopes=[m["scope"] for m in matches],
@@ -417,7 +417,7 @@ def _semantic_search(query: str, candidates: list, limit: int) -> list | None:
 # what is worth keeping is the user's call made in front of them — not something a
 # child run decides on its own. Reading (search, list) stays grantable.
 @mcp.tool(**tool_caps(kind="memory", caps=[MAIN_ONLY]))
-def memory_add(text: str, scope: str = "", description: str = None, tags: list = None) -> dict:
+def memory_add(text: str, scope: str = "", description: str | None = None, tags: list | None = None) -> dict:
     """Store a fact as its own timestamped Markdown memory file.
 
     Each memory is written to <scope memory dir>/<slug>.md with a short frontmatter
@@ -521,7 +521,7 @@ def memory_add(text: str, scope: str = "", description: str = None, tags: list =
 
 
 @mcp.tool(**tool_caps(kind="memory"))
-def memory_search(query: str, tag: str = None, limit: int = 5, scope: str = "all") -> dict:
+def memory_search(query: str, tag: str | None = None, limit: int = 5, scope: str = "all") -> dict:
     """Search memories by meaning, ranked most-relevant first, across both scopes.
 
     When an embedding backend is available, memories are ranked by semantic
@@ -541,6 +541,7 @@ def memory_search(query: str, tag: str = None, limit: int = 5, scope: str = "all
         scope: "all" (default) searches this workspace's memory and the global one
             together; "workspace" or "global" restricts it to that store.
     """
+    scopes: tuple[str, ...]
     if scope == "all":
         scopes = _SCOPES
     elif scope in _SCOPES:
@@ -576,6 +577,7 @@ def memory_list_all(scope: str = "all") -> dict:
         scope: "all" (default) lists both this workspace's memory and the global one;
             "workspace" or "global" lists only that store.
     """
+    scopes: tuple[str, ...]
     if scope == "all":
         scopes = _SCOPES
     elif scope in _SCOPES:
@@ -589,10 +591,10 @@ def memory_list_all(scope: str = "all") -> dict:
 @mcp.tool(**tool_caps(kind="memory", caps=[MAIN_ONLY]))
 def memory_update(
     name: str,
-    text: str = None,
-    description: str = None,
-    tags: list = None,
-    scope: str = None,
+    text: str | None = None,
+    description: str | None = None,
+    tags: list | None = None,
+    scope: str | None = None,
 ) -> dict:
     """Edit an existing memory in place, keyed by its slug name.
 
@@ -647,7 +649,7 @@ def memory_update(
     caps=[PLAN_BLOCKED, MAIN_ONLY], reversibility=RECOVERABLE, non_batch=True,
     risk_note="deletes a persistent memory file",
 ))
-def memory_delete(name: str, scope: str = None) -> dict:
+def memory_delete(name: str, scope: str | None = None) -> dict:
     """Delete one memory by its slug name (the file's <name>.md).
 
     Call memory_list_all() to see available names and their scopes. To remove
@@ -723,7 +725,7 @@ def memory_all() -> str:
     for scope, heading in ((GLOBAL, "## Global memory (every workspace)"),
                            (WORKSPACE, "## Workspace memory (this project)")):
         try:
-            with open(_store(scope).index, "r", encoding="utf-8") as f:
+            with open(_store(scope).index_file, "r", encoding="utf-8") as f:
                 body = f.read().strip()
         except OSError:
             continue

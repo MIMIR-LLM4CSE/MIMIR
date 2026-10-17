@@ -250,7 +250,7 @@ def proxy_runs(
         return (_missing_args(op, run_id=run_id, reference_name=reference_name)
                 or runs.compare(run_id, reference_name))
     if op == "aggregate":
-        return _missing_args(op, run_ids=run_ids) or runs.aggregate(run_ids, metrics, reference_name)
+        return _missing_args(op, run_ids=run_ids) or runs.aggregate(run_ids or [], metrics, reference_name)
     return _unknown_op(op, _RUNS_OPS)
 
 
@@ -464,7 +464,7 @@ def proxy_manage(
         return _missing_args(op, name=name) or registry.clean(name)
     if op == "suite_define":
         return (_missing_args(op, name=name, cases=cases)
-                or suites.define(name, cases, description))
+                or suites.define(name, cases or [], description))
     if op == "suite_update":
         return _missing_args(op, name=name) or suites.update(name, cases, description)
     if op == "suite_delete":
@@ -751,7 +751,7 @@ async def proxy_eval(
                                 optimize_paths=optimize_paths)
         if missing:
             return missing
-        return eval_session.init(proxy_name, benchmark_name, requirements,
+        return eval_session.init(proxy_name, benchmark_name, requirements or [],
                                  proxy_source_path, optimize_paths,
                                  python_executable, max_hours,
                                  primary_metric, primary_goal, min_improvement,

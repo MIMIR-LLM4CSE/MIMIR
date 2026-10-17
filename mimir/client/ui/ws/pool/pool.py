@@ -89,7 +89,7 @@ class AgentPool(PoolWriter, PoolLifecycle):
         # Submissions waiting for a slot: (session_id, callable taking the worker).
         self._queue: deque[tuple[str, Callable[[AgentWorker], None]]] = deque()
         self._lock = asyncio.Lock()
-        self._reaper: asyncio.Task | None = None
+        self._reaper = None
 
         # The one pump for this process. It drains every worker, journals what they
         # emit and fans it out to whatever sockets are attached — zero included, which
@@ -365,8 +365,9 @@ class AgentPool(PoolWriter, PoolLifecycle):
             logger.warning("pool: final pump flush failed", exc_info=True)
         await self.bus.aclose()
         async with self._lock:
-            workers = [self._take_locked(sid, reason="shutting down")
-                       for sid in list(self._workers)]
+            taken = [self._take_locked(sid, reason="shutting down")
+                     for sid in list(self._workers)]
+        workers = [w for w in taken if w is not None]
         await self._close_workers(workers)
 
     # ── The reaper ────────────────────────────────────────────────────────────

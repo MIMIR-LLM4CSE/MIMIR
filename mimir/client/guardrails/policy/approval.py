@@ -499,7 +499,7 @@ class ApprovalManager:
         _ask = input if input_func is None else input_func
         output_func = print if output_func is None else output_func
 
-        def input_func(prompt: str) -> str:
+        def ask(prompt: str) -> str:
             # Blocking on the user, not on the tool: excluded from the tool-call
             # timeout budget this approval sits inside (see human_pause).
             with human_pause.human_pause():
@@ -511,7 +511,7 @@ class ApprovalManager:
         if tool_name in self.non_batch_tools and self.batch.has_pending:
             approved_batch = self.batch.flush(
                 output_fn=output_func,
-                input_fn=input_func,
+                input_fn=ask,
             )
             if not approved_batch:
                 return False, "denied because pending batch review was rejected"
@@ -527,7 +527,7 @@ class ApprovalManager:
             return True, "queued for batch review"
 
         for attempt in range(max_attempts):
-            choice = input_func(self.render_prompt(tool_name, server_name, arguments)).strip().lower()
+            choice = ask(self.render_prompt(tool_name, server_name, arguments)).strip().lower()
             if choice in {"y", "yes"}:
                 return True, "approved once"
             if choice in {"a", "always"}:

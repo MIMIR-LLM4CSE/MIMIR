@@ -20,17 +20,18 @@ class TerminalHuman:
     closed rather than proceeding unasked.
     """
 
-    def approve_tool(self, agent: Any, tool_name: str, arguments: dict,
+    def approve_tool(self, agent: Any, tool_name: str, arguments: dict[str, Any],
                      max_attempts: int = 3) -> tuple[bool, str]:
-        return agent.approvals.request(
+        verdict: tuple[bool, str] = agent.approvals.request(
             tool_name=tool_name,
             server_name=agent.tool_owner.get(tool_name, "unknown"),
             arguments=arguments,
             max_attempts=max_attempts,
         )
+        return verdict
 
     def approve_paths(self, agent: Any, paths: list[str], tool_name: str,
-                      arguments: dict | None = None) -> tuple[bool, bool]:
+                      arguments: dict[str, Any] | None = None) -> tuple[bool, bool]:
         """One prompt for the whole call: a command routinely names several outside
         paths, and asking about each is the same decision put to the user three times.
 
@@ -55,8 +56,8 @@ class TerminalHuman:
             return (True, False)
         return (False, False)
 
-    def ask(self, agent: Any, questions: list, origin: dict | None = None,
-            timeout_secs: float | None = None) -> dict:
+    def ask(self, agent: Any, questions: list[Any], origin: dict[str, Any] | None = None,
+            timeout_secs: float | None = None) -> dict[str, Any]:
         """No answers: the elicitation that asked maps this to a ``decline``, and the
         model proceeds with its best judgment."""
         return {"answers": []}
@@ -72,14 +73,14 @@ class Unattended:
     def __init__(self, note: str = "unattended") -> None:
         self.note = note
 
-    def approve_tool(self, agent: Any, tool_name: str, arguments: dict,
+    def approve_tool(self, agent: Any, tool_name: str, arguments: dict[str, Any],
                      max_attempts: int = 3) -> tuple[bool, str]:
         return True, self.note
 
     def approve_paths(self, agent: Any, paths: list[str], tool_name: str,
-                      arguments: dict | None = None) -> tuple[bool, bool]:
+                      arguments: dict[str, Any] | None = None) -> tuple[bool, bool]:
         return True, False
 
-    def ask(self, agent: Any, questions: list, origin: dict | None = None,
-            timeout_secs: float | None = None) -> dict:
+    def ask(self, agent: Any, questions: list[Any], origin: dict[str, Any] | None = None,
+            timeout_secs: float | None = None) -> dict[str, Any]:
         return {"answers": []}

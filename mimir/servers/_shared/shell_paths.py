@@ -34,6 +34,7 @@ import re
 import shlex
 import shutil
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 
 # The command taxonomy, split by *effect* — read, search, inspect, write, execute,
 # provision. It is a *classification*, not a gate: bash runs anything outside
@@ -297,7 +298,7 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 _ALLOCATING_TEXT_RE = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?srun(?:\s|$)")
 
 
-def allocates_cluster(command: str, env: dict | None = None) -> bool:
+def allocates_cluster(command: str, env: Mapping[str, str] | None = None) -> bool:
     """Whether running *command* here would request a new cluster allocation.
 
     A command the parser cannot read is scanned textually instead — erring toward

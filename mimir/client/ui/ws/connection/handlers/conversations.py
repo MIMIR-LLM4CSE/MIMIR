@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 class ConversationHandlers:
+    _summary_task: asyncio.Task[None] | None
+    _last_context_usage: int | None
+
     MESSAGES: dict[str, str] = {
         "clear_todos": "_handle_clear_todos",
         "create_session": "_handle_create_session",

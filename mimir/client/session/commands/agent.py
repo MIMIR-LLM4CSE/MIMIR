@@ -26,6 +26,7 @@ class HelpCommand(Command):
     surfaces = _CLI
 
     async def run(self, host: CommandHost, args: list[str]) -> CommandResult:
+        assert host.registry is not None, "a registry runs every command"
         return CommandResult(host.registry.help_text(), card=False)
 
 

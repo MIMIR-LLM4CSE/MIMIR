@@ -117,7 +117,7 @@ def wake_text(ev: dict) -> str:
     job_key = ev.get("job_key", "?")
     state   = ev.get("state", "done")
     kind    = ev.get("kind")
-    summary = ev.get("summary") if isinstance(ev.get("summary"), dict) else {}
+    summary = found if isinstance(found := ev.get("summary"), dict) else {}
 
     what = f"Background job '{job_key}'" + (f" ({kind})" if kind else "")
     if state == "crashed":

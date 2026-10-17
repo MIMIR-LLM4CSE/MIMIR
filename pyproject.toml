@@ -48,6 +48,7 @@ ray = ["openai>=1.0.0"]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.6.0",
+    "mypy>=1.10",
 ]
 
 [project.urls]
@@ -103,9 +104,35 @@ extend-exclude = ["mimir/vscode-extension", "build", "slides"]
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-# The servers and their tests reach _shared/ and _lib/ by inserting onto sys.path,
-# so their imports cannot sit at the top of the file (E402). Tests also line up
-# short assertions with semicolons and group scaffolding imports (E702/E401), which
-# reads better in a table of cases than one statement per line.
+# Tests line up short assertions with semicolons and group scaffolding imports
+# (E702/E401), which reads better in a table of cases than one statement per line.
 "mimir/tests/*" = ["E402", "E702", "E401"]
-"mimir/client/ui/ws/_ws_runtime.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["mimir/client", "mimir/servers"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+# The contracts and the vocabulary every layer reads: fully typed.
+[[tool.mypy.overrides]]
+module = ["mimir.client.core.*", "mimir.client.context.*", "mimir.client.config.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_any_generics = true
+check_untyped_defs = true
+warn_return_any = true
+strict_equality = true
+
+# Mixins that read their host's attributes, which mypy cannot follow.
+[[tool.mypy.overrides]]
+module = [
+    "mimir.client.ui.ws.connection.handlers.*",
+    "mimir.client.ui.ws.pool.lifecycle",
+    "mimir.client.ui.ws.pool.writer",
+    "mimir.client.ui.ws.worker.usage",
+    "mimir.client.ui.ws.worker.panel",
+    "mimir.client.ui.ws.worker.review",
+    "mimir.client.ui.ws.worker.backend_wait",
+]
+ignore_errors = true

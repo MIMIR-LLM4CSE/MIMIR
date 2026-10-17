@@ -47,7 +47,7 @@ class CliHost(CommandHost):
         return await call_tool_directly(self.agent, tool, arguments)
 
 
-class CompactCommand(Command):
+class CompactCommand(Command[CliHost]):
     name = "compact"
     surfaces = frozenset({"cli"})
     help = (("", "summarize and compress conversation history"),
@@ -69,7 +69,7 @@ class CompactCommand(Command):
         return CommandResult(card=False)
 
 
-class LedgerCommand(Command):
+class LedgerCommand(Command[CliHost]):
     name = "ledger"
     surfaces = frozenset({"cli"})
     help = (("", "expand the verification ledger of the last answer"),)

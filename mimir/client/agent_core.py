@@ -7,6 +7,7 @@ from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession
+from pydantic import AnyUrl
 
 from ..servers._shared.state_paths import (
     TODO_FILENAME,
@@ -538,7 +539,7 @@ class MimirAgent:
         if session is None:
             return ""
         try:
-            result = await session.read_resource(uri)
+            result = await session.read_resource(AnyUrl(uri))
         except Exception:
             logger.debug("read_resource: a best-effort step failed and was skipped", exc_info=True)
             return ""

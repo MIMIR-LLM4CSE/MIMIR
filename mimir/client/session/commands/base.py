@@ -9,7 +9,7 @@ state message, a result card or an error.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Generic, Iterable, TypeVar
 
 from ...config import TEMPERATURE_BACKENDS
 from ...core.settings import parse_setting
@@ -91,8 +91,14 @@ class CommandHost:
                 "value": self.read("temperature")}
 
 
-class Command:
-    """One session command. Subclasses set the class attributes and :meth:`run`."""
+HostT = TypeVar("HostT", bound=CommandHost)
+
+
+class Command(Generic[HostT]):
+    """One session command. Subclasses set the class attributes and :meth:`run`.
+
+    A command offered on one surface only names that front-end's host as *HostT*.
+    """
 
     name: str = ""
     aliases: tuple[str, ...] = ()
@@ -101,7 +107,7 @@ class Command:
     # ``/help`` lines: (usage after the name, what it does).
     help: tuple[tuple[str, str], ...] = ()
 
-    async def run(self, host: CommandHost, args: list[str]) -> CommandResult:
+    async def run(self, host: HostT, args: list[str]) -> CommandResult:
         raise NotImplementedError
 
     def usage(self) -> CommandResult:

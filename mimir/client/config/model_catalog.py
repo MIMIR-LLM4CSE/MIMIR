@@ -5,6 +5,7 @@ This module matches served ids to entries, estimates relative decode speed, and
 renders the table the orchestrating model reads before it picks.
 """
 from __future__ import annotations
+from typing import Any
 
 import json
 from functools import lru_cache
@@ -16,7 +17,7 @@ _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 
 
 @lru_cache(maxsize=1)
-def load_catalog() -> dict:
+def load_catalog() -> dict[str, Any]:
     """The whole JSON, ``{}`` when it is missing or unreadable."""
     try:
         with _CATALOG_PATH.open("r", encoding="utf-8") as f:
@@ -26,12 +27,12 @@ def load_catalog() -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _entries() -> dict[str, dict]:
+def _entries() -> dict[str, dict[str, Any]]:
     return {k: v for k, v in load_catalog().items()
             if not k.startswith("_") and isinstance(v, dict)}
 
 
-def catalog_entry(model: str, root: str = "") -> dict:
+def catalog_entry(model: str, root: str = "") -> dict[str, Any]:
     """The entry for a served model, matched on its id and then on its ``root``.
 
     ``root`` is the checkpoint vLLM reports behind a ``--served-model-name``; it lets
@@ -45,7 +46,7 @@ def catalog_entry(model: str, root: str = "") -> dict:
     return {}
 
 
-def decode_cost(entry: dict) -> float | None:
+def decode_cost(entry: dict[str, Any]) -> float | None:
     """Relative cost of decoding one token: active parameters × bytes per weight.
 
     Decoding is memory-bandwidth bound, so this orders models by speed on like
@@ -58,7 +59,7 @@ def decode_cost(entry: dict) -> float | None:
     return float(active) * float(weight_bytes.get(entry.get("weights"), 2))
 
 
-def is_delegable(entry: dict) -> bool:
+def is_delegable(entry: dict[str, Any]) -> bool:
     return entry.get("delegable", True) is not False
 
 
@@ -71,7 +72,7 @@ def _fmt_ctx(tokens: int) -> str:
         else f"{round(tokens / 1000)}k"
 
 
-def _fmt_scores(scores: dict, categories: list[str]) -> str:
+def _fmt_scores(scores: dict[str, Any], categories: list[str]) -> str:
     parts = []
     for cat in categories:
         values = scores.get(cat)
@@ -94,7 +95,7 @@ def _legend() -> str:
     return text
 
 
-def describe_served_models(served: list[dict]) -> str:
+def describe_served_models(served: list[dict[str, Any]]) -> str:
     """The description of a sub-agent's ``model`` argument, for these served models.
 
     *served* is what the endpoint's /v1/models lists: dicts with ``id`` and, where the
@@ -147,7 +148,7 @@ def describe_served_models(served: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def subagent_model_refusal(model: str, served: list[dict]) -> str | None:
+def subagent_model_refusal(model: str, served: list[dict[str, Any]]) -> str | None:
     """Why *model* cannot run a sub-agent here, or None when it can."""
     ids = [str(m.get("id")) for m in served if m.get("id")]
     if model not in ids:

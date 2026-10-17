@@ -83,7 +83,7 @@ _MATCH_WINDOW_CHARS = 600      # text kept around an occurrence
 _MAX_MATCHES = 10              # occurrences reported for one query
 
 
-def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     # Block IP classes commonly used for SSRF pivoting and non-routable targets.
     return (
         ip.is_private
@@ -96,10 +96,10 @@ def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
     )
 
 
-def _resolve_all_ips(host: str) -> list[ipaddress._BaseAddress]:
+def _resolve_all_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     # Resolve all A/AAAA records to avoid TOCTOU on single-record checks.
     infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    ips: dict[str, ipaddress._BaseAddress] = {}
+    ips: dict[str, ipaddress.IPv4Address | ipaddress.IPv6Address] = {}
     for info in infos:
         sockaddr = info[4]
         ip_text = sockaddr[0]
@@ -638,7 +638,7 @@ def _error_body(exc: urllib.error.HTTPError) -> tuple[str, dict]:
     return body, note
 
 
-def _http_request(method: str, url: str, headers: dict = None, data: bytes = None,
+def _http_request(method: str, url: str, headers: dict | None = None, data: bytes | None = None,
                   raw: bool = False, contains: str = "", offset: int = 0) -> dict:
     safe_url = _safe_url(url)
     req = urllib.request.Request(safe_url, headers=headers or {}, data=data, method=method)
@@ -689,7 +689,7 @@ def _http_request(method: str, url: str, headers: dict = None, data: bytes = Non
     risk_note="fetches from an authenticated or otherwise sensitive endpoint",
     label="Fetching {url}",
 ))
-def http_get(url: str, headers: dict = None, raw: bool = False,
+def http_get(url: str, headers: dict | None = None, raw: bool = False,
              contains: str = "", offset: int = 0) -> dict:
     """Perform an HTTP GET request and return the response body as readable text.
 
@@ -739,7 +739,7 @@ def http_get(url: str, headers: dict = None, raw: bool = False,
     risk_note="sends data to an external service",
     label="Posting to {url}",
 ))
-def http_post(url: str, payload: dict, headers: dict = None) -> dict:
+def http_post(url: str, payload: dict, headers: dict | None = None) -> dict:
     """Perform an HTTP POST request with a JSON payload and return the response body.
 
     Args:

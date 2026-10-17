@@ -256,7 +256,7 @@ async def read_summary(
         # blocks and any annotation appended after them, and a bare load reads that as
         # one broken document. A summary lost here reaches the model as "it recorded no
         # result of its own" — the wake still lands, emptied of what it was carrying.
-        return parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
+        return (parse_tool_payload(raw) or {}) if isinstance(raw, str) else (raw or {})
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:

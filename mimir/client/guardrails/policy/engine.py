@@ -145,8 +145,8 @@ def _write_gate(call: _PolicyCall) -> PolicyEvaluation | None:
     # already known from a prior read or check.
     write_path = call.agent.normalize_workspace_path(
         target_path_arg(call.tool_name, call.arguments, call.agent.tool_caps))
-    path_already_confirmed = bool(write_path) and is_known_to_exist(
-        call.execution_context, write_path)
+    path_already_confirmed = (bool(write_path) and call.execution_context is not None
+                              and is_known_to_exist(call.execution_context, write_path))
     if violation_kind(violation) == UNCONFIRMED_PATH and not path_already_confirmed:
         clarified_path = clarify_path(
             agent=call.agent, tool_name=call.tool_name,

@@ -125,13 +125,13 @@ def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
                 else:
                     leftovers.append(tmsg)
             for tmsg in leftovers:
-                slot = next((k for k, r in enumerate(responses) if r is None), None)
-                if slot is None:
+                free = next((k for k, r in enumerate(responses) if r is None), None)
+                if free is None:
                     break  # all calls answered — remaining tool messages are orphans
                 fixed = dict(tmsg)
-                if declared[slot] is not None:
-                    fixed["tool_call_id"] = declared[slot]
-                responses[slot] = fixed
+                if declared[free] is not None:
+                    fixed["tool_call_id"] = declared[free]
+                responses[free] = fixed
 
             out.append(m)
             for cid, resp in zip(declared, responses):

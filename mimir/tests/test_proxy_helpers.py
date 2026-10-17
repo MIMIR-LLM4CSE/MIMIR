@@ -228,7 +228,7 @@ class SealReferenceTests(_TmpStorageTest):
             "output_format": "npz",
         }
         result, error = execute._seal_reference(entry, "broken_ref")
-        self.assertIsNone(result)
+        self.assertEqual(result, {})
         self.assertIsNotNone(error)
         self.assertEqual(error.get("status"), "error")
         self.assertIn("error", error)

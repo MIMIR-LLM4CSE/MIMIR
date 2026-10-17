@@ -258,7 +258,7 @@ def _validate_redirections(segment, cwd: str) -> dict | None:
     return None
 
 
-def _resolve_cd_target(argv: list[str], cwd: str, call_cwd: str) -> tuple[str | None, dict | None]:
+def _resolve_cd_target(argv: list[str], cwd: str, call_cwd: str) -> tuple[str, dict | None]:
     """Resolve where a ``cd`` segment moves the shell, or reject it.
 
     ``cd``'s target is a path operand, confined like any other —
@@ -284,7 +284,7 @@ def _resolve_cd_target(argv: list[str], cwd: str, call_cwd: str) -> tuple[str | 
     if not is_within_workspace(resolved):
         # The *resolved* destination, not the token written, so the refusal and the
         # approval prompt name the same path ('..' and '/etc' do not).
-        return None, err(
+        return "", err(
             f"Path outside workspace is not approved: {resolved}",
             hint="Moving outside the workspace needs the user's approval for that "
                  "directory. Ask for it, or stay inside the workspace root.",

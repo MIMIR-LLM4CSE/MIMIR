@@ -139,11 +139,13 @@ class LSPClient:
     def _write(self, payload: dict) -> None:
         data = json.dumps(payload).encode("utf-8")
         header = f"Content-Length: {len(data)}\r\n\r\n".encode("ascii")
-        self._proc.stdin.write(header + data)  # type: ignore[union-attr]
-        self._proc.stdin.flush()  # type: ignore[union-attr]
+        assert self._proc is not None and self._proc.stdin is not None
+        self._proc.stdin.write(header + data)
+        self._proc.stdin.flush()
 
     def _read_message(self, deadline: float) -> dict | None:
-        out = self._proc.stdout  # type: ignore[union-attr]
+        assert self._proc is not None and self._proc.stdout is not None
+        out = self._proc.stdout
         headers: dict[bytes, bytes] = {}
         while True:
             if time.monotonic() > deadline:

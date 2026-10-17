@@ -180,7 +180,7 @@ def _load() -> list[dict]:
             lines = f.readlines()
     except OSError:
         return []
-    items = []
+    items: list[dict] = []
     for line in lines:
         m = _CHECKBOX_RE.match(line.rstrip("\n"))
         if m:
@@ -334,7 +334,7 @@ def todo_set_plan(text: str, title: str) -> dict:
 
 
 @mcp.tool(**tool_caps(kind="plan", label="Reading a saved plan", caps=[MAIN_ONLY]))
-def todo_read_plan(name: str = None) -> dict:
+def todo_read_plan(name: str | None = None) -> dict:
     """Return a prose plan written by todo_set_plan.
 
     Reads the currently active plan when no name is given, otherwise the named

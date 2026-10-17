@@ -36,6 +36,7 @@ import shlex
 import socket
 import threading
 import time
+from typing import Any
 
 
 from mcp.server.fastmcp import FastMCP
@@ -516,7 +517,7 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     # answer says when the job came from another one.
     job_dir, from_session = find_job_dir(job_id)
     host, state, raw, nodes = locate_job(job_id, scheduler, job_dir)
-    payload = {"job_id": job_id, "state": state, "raw_state": raw}
+    payload: dict[str, Any] = {"job_id": job_id, "state": state, "raw_state": raw}
     if host or state != "unknown":
         payload["scheduler"] = _host_name(host)
     # Which machines it got. Only ever present for a running job: a pending one has no
@@ -604,7 +605,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     existing, from_session = find_job_dir(job_id)
     if existing:
         settled = recorded_terminal_state(existing)
-        payload = {
+        payload: dict[str, Any] = {
             "job_id": job_id,
             "job_dir": existing,
             "recorded_by": from_session or "this conversation",
@@ -1151,7 +1152,8 @@ def slurm_node_profile(partition: str = "", node: str = "",
     out = []
     for t in types:
         group = members.get(_hardware_key(t), [])
-        fresh, stale = [], []
+        fresh: list[dict] = []
+        stale: list[dict] = []
         for n in group:
             rec = read_node_profile(n["node"], sched_host)
             if not rec:
@@ -1448,7 +1450,7 @@ def _host_tree() -> list[dict]:
     for host in hosts:
         name = _host_name(host)
         digest = _cluster_digest(host)
-        group = {"id": f"host:{name}", "label": name, "host": name,
+        group: dict[str, Any] = {"id": f"host:{name}", "label": name, "host": name,
                  "local": not host,
                  "lines": [{"label": "reached",
                             "value": "Slurm answers on this host" if not host
@@ -1476,7 +1478,7 @@ def _host_tree() -> list[dict]:
             # GPU memory sits with the other memory line, not among the probe's lines.
             gpu_mem = next((line["value"] for line in profiled if line["label"] == "gpu mem"), "")
             profiled = [line for line in profiled if line["label"] != "gpu mem"]
-            entry = {
+            entry: dict[str, Any] = {
                 "id": _kind_id(host, kind),
                 "label": _node_names_label(kind),
                 "lines": _kind_spec_lines(kind, gpu_mem) + profiled,

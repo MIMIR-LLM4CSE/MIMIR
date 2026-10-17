@@ -54,6 +54,8 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
     Thread-safe queues carry events to the WS layer and approval responses back.
     """
 
+    _thread: threading.Thread | None
+
     @classmethod
     def detached(cls, model: str) -> "AgentWorker":
         """The worker of a conversation that has no agent yet (:class:`NoAgentWorker`)."""
@@ -65,8 +67,9 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
         self._init_fields(model, session_id)
         if not start:
             return
-        self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
-        self._thread.start()
+        thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
+        self._thread = thread
+        thread.start()
         # Wait for server connections. The timeout is long to accommodate vLLM
         # cold-start (model load + torch.compile can exceed 3 min); a separate
         # backend-health poll runs first and surfaces progress to the client.
@@ -125,7 +128,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
         self._query_session_id: str | None = None
         # The runs this conversation left going, and the check-ins about them.
         self.jobs = JobWatcher(self)
-        self._thread: threading.Thread | None = None
+        self._thread = None
 
     # ── Background thread ─────────────────────────────────────────────────────
 

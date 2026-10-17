@@ -243,10 +243,10 @@ def _seal_reference(
     param_overrides: dict | None = None,
     max_output_mb: int = _DEFAULT_MAX_OUTPUT_MB,
     timeout_s: int = _REF_RUN_TIMEOUT,
-) -> tuple[dict | None, dict | None]:
+) -> tuple[dict, dict | None]:
     """Run a proxy synchronously and store its output as an immutable reference.
 
-    Blocking.  Returns ``(result, None)`` on success or ``(None, err_response)``
+    Blocking.  Returns ``(result, None)`` on success or ``({}, err_response)``
     on failure, where ``err_response`` is a ready-to-return ``err()`` dict
     (preserving hints and log tails).  ``result`` contains::
 
@@ -282,7 +282,7 @@ def _seal_reference(
     try:
         argv = command._build_run_cmd(entry, tmp_run_dir, extra_params, param_overrides)
     except Exception as exc:
-        return None, err(f"Failed to expand run_cmd_template: {exc}")
+        return {}, err(f"Failed to expand run_cmd_template: {exc}")
 
     log_file = procs._log_path(tmp_run_dir)
     t0 = time.time()
@@ -291,17 +291,17 @@ def _seal_reference(
             proc = proc_run.run(argv, stdout=log_fh, stderr=subprocess.STDOUT,
                                 timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        return None, err(f"Solver timed out after {timeout_s}s.",
+        return {}, err(f"Solver timed out after {timeout_s}s.",
                          hint="Increase timeout_s or use a smaller problem size "
                               "for the reference run.")
     except (FileNotFoundError, OSError) as exc:
-        return None, err(f"Failed to launch proxy: {exc}")
+        return {}, err(f"Failed to launch proxy: {exc}")
 
     elapsed = round(time.time() - t0, 2)
     stdout = procs._read_log(tmp_run_dir)
 
     if proc.returncode != 0:
-        return None, err(f"Solver exited with code {proc.returncode}.",
+        return {}, err(f"Solver exited with code {proc.returncode}.",
                          hint=f"Check stdout.log at {log_file}. Last output:\n"
                               + stdout[-500:])
 

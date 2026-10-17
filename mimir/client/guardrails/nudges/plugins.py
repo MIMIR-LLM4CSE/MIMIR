@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 from ...config.limits import CUSTOM_NUDGE_MAX_PER_QUERY
 from ...core.extension_set import registration_target
@@ -40,9 +40,9 @@ from ...core.ports import AgentPort
 logger = logging.getLogger(__name__)
 
 # (agent, query, active_mode, execution_context) -> should this nudge fire now?
-NudgePredicate = Callable[[Any, str, str, dict], bool]
+NudgePredicate = Callable[[AgentPort, str, str, ExecutionContext], bool]
 # (agent, execution_context) -> the message text (without the automated-reminder tag).
-NudgeRender = Callable[[Any, dict], str]
+NudgeRender = Callable[[AgentPort, ExecutionContext], str]
 
 VALID_NUDGE_LAYERS = ("verification", "guidance")
 

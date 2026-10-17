@@ -37,6 +37,7 @@ import shutil
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from typing import Any
 
 from ..config import paths
 from ...servers._shared.atomic import write_json
@@ -176,7 +177,7 @@ def read_subagent(session_id: str, sub_id: str) -> dict:
     directory = os.path.join(_subagents_dir(session_id), os.path.basename(sub_id))
     if not os.path.isdir(directory):
         return {}
-    card = {"id": os.path.basename(sub_id), "state": "unknown"}
+    card: dict[str, Any] = {"id": os.path.basename(sub_id), "state": "unknown"}
     try:
         with open(os.path.join(directory, "subagent.json"), "r", encoding="utf-8") as f:
             card.update(json.load(f))

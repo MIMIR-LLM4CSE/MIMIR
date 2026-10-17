@@ -92,6 +92,7 @@ def inspect_suite(name: str) -> dict:
 
 
 def report(suite_name: str, run_timestamp: str = "") -> dict:
+    results_dir: str | None
     if run_timestamp:
         results_dir = os.path.join(_suite_results_dir(suite_name), run_timestamp)
     else:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from typing import Any
 
 # The user system-prompt override lives in ``.mimir/`` — its resolution belongs with
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
@@ -591,7 +592,7 @@ def _load_recent_memories(memory_file: str, max_entries: int = _MAX_INDEXED_MEMO
             content = f.read()
     except OSError:
         return []
-    entries = []
+    entries: list[dict[str, Any]] = []
     for line in content.splitlines():
         m = _INDEX_LINE_RE.match(line.strip())
         if not m:

@@ -211,7 +211,7 @@ class ToolCaps:
 # Inference — resolve a live MCP Tool to a ToolCaps with 3-layer precedence
 # ===========================================================================
 
-def _meta_descriptor(tool: Any) -> dict | None:
+def _meta_descriptor(tool: Any) -> dict[str, Any] | None:
     """Return ``tool.meta["mimir"]`` if present (our authoritative descriptor)."""
     meta = getattr(tool, "meta", None)
     if isinstance(meta, dict):
@@ -279,7 +279,7 @@ def _kind(value: Any) -> str | None:
     return " ".join(value.lower().split())[:16]
 
 
-def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
+def _caps_from_meta(name: str, desc: dict[str, Any]) -> ToolCaps:
     caps = set(desc.get("capabilities", []) or [])
     # Derived for file mutations so a server can't forget to declare it alongside its
     # write caps. Non-file side effects (exec/db/web/cluster) still declare it.
@@ -411,7 +411,7 @@ def has_cap(name: str, cap: str, registry: dict[str, ToolCaps] | None = None) ->
     return bool(c and cap in c.capabilities)
 
 
-def panel_sections(registry: dict[str, ToolCaps] | None = None) -> list[tuple[str, dict]]:
+def panel_sections(registry: dict[str, ToolCaps] | None = None) -> list[tuple[str, dict[str, Any]]]:
     """The tools that fill a panel section, in the order they declared, as (name, spec).
 
     By capability, so the panel asks whoever can answer — a plugin server adds its own
@@ -568,7 +568,7 @@ def timeout_for(name: str, registry: dict[str, ToolCaps] | None = None) -> int:
     return c.timeout_secs if c and c.timeout_secs else TOOL_CALL_TIMEOUT_SECS
 
 
-def label_for(name: str, args: dict | None = None, registry: dict[str, ToolCaps] | None = None) -> str | None:
+def label_for(name: str, args: dict[str, Any] | None = None, registry: dict[str, ToolCaps] | None = None) -> str | None:
     """Render a tool's status label template, or ``None`` to fall back to the table.
 
     Returns ``None`` (rather than the raw template) when a referenced argument is

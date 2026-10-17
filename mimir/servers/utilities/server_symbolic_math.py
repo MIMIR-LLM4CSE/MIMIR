@@ -75,8 +75,8 @@ def symbolic(
     n: int = 6,
     equation: str = "",
     matrix_str: str = "",
-    equations: list = None,
-    variables: list = None,
+    equations: list | None = None,
+    variables: list | None = None,
 ) -> dict:
     """Apply a single symbolic-mathematics (SymPy) operation, selected by ``op``.
 
@@ -145,7 +145,7 @@ def symbolic(
         if op == "solve_equation":
             x = sp.Symbol(variable)
             sols = sp.solve(_equation_to_expr(sp, equation), x)
-            r = [str(s) for s in sols]
+            roots = [str(s) for s in sols]
 
             def build() -> str:
                 if not sols:
@@ -153,7 +153,7 @@ def symbolic(
                 else:
                     found = r",\quad ".join(f"{tex(x)} = {tex(v)}" for v in sols)
                 return rf"{equation_tex(equation)} \;\Longrightarrow\; {found}"
-            return done({"result": r, "equation": equation, "variable": variable, "solutions": r},
+            return done({"result": roots, "equation": equation, "variable": variable, "solutions": roots},
                         build)
         if op == "compute_limit":
             x = sp.Symbol(variable)

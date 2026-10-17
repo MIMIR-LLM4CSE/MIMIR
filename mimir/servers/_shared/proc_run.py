@@ -86,7 +86,7 @@ def run(argv: list[str], *, timeout: float | None = None, **kwargs: Any):
                 stdout, stderr = proc.communicate(timeout=_GRACE_S)
             except subprocess.TimeoutExpired:
                 stdout = stderr = None
-            raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr)
+            raise subprocess.TimeoutExpired(argv, timeout or 0, output=stdout, stderr=stderr)
         except BaseException:
             # Cancelled or interrupted: the same leak, by a different route.
             _terminate_group(proc)

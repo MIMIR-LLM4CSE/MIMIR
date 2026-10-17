@@ -1,6 +1,7 @@
 """The task checklist as the agent keeps it on disk: ``todo_list.md``, plus an optional
 ``todo_deps.json`` sidecar naming which step waits on which."""
 from __future__ import annotations
+from typing import Any
 
 import json
 import logging
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 _OPTIONAL_STEP_RE = re.compile(r"^\s*[\(\[]?optional[\)\]]?\s*[:\-–]?\s+", re.IGNORECASE)
 
 
-def load_todo_items(todo_file: str) -> list[dict]:
+def load_todo_items(todo_file: str) -> list[dict[str, Any]]:
     """Read the current todo list from todo_list.md, return [] on any error.
 
     If a todo_deps.json sidecar exists in the same directory, each item is
@@ -30,7 +31,7 @@ def load_todo_items(todo_file: str) -> list[dict]:
             lines = f.readlines()
     except OSError:
         return []
-    items = []
+    items: list[dict[str, Any]] = []
     for line in lines:
         m = _checkbox.match(line.rstrip("\n"))
         if m:
@@ -50,7 +51,7 @@ def load_todo_items(todo_file: str) -> list[dict]:
                 if item["done"]:
                     item["ready"] = False  # already done, not actionable
                     continue
-                idx = item["index"]
+                idx: int = item["index"]
                 step_deps = deps[idx] if idx < len(deps) else []
                 item["ready"] = all(
                     items[d]["done"] for d in step_deps if d < len(items)

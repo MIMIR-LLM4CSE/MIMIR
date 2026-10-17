@@ -82,8 +82,8 @@ def _check_reference_requirements(
     additionally needs the registration to name the conserved scalar. Failing
     fast here turns a dead-end session into an actionable setup error.
     """
-    needed = sorted({r.get("metric") for r in requirements}
-                    & set(_REFERENCE_METRICS))
+    needed = sorted(set(_REFERENCE_METRICS).intersection(
+        r.get("metric") for r in requirements))
     if not needed:
         return None
     cases = suite.get("cases") or []

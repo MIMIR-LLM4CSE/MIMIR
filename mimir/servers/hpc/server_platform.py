@@ -36,6 +36,7 @@ import threading
 import time
 import json
 from functools import lru_cache
+from typing import Any
 
 
 from mcp.server.fastmcp import FastMCP
@@ -115,7 +116,7 @@ def _run_shell(script: str, timeout: int = 10) -> dict:
 
 @lru_cache(maxsize=1)
 def _collect_cpu() -> dict:
-    data = {
+    data: dict[str, Any] = {
         "arch": platform.machine(),
         "logical_cpus": os.cpu_count(),
     }
@@ -174,7 +175,7 @@ def _collect_gpu() -> dict:
                     "parsed here. Ask Slurm (slurm_nodes) for GPU type and count.",
         }
     out = _run_shell(GPU_QUERY)
-    fields = GPU_FIELDS
+    fields: tuple[str, ...] = GPU_FIELDS
     if not out["ok"]:
         # An nvidia-smi too old to know a field rejects the whole query rather than
         # the field, which would cost us the enumeration entirely. Retry without the
@@ -760,6 +761,7 @@ def _rank_modules(modules: list[dict], query: str, limit: int) -> list[dict]:
         path=_EMBEDDINGS_FILE,
         limit=limit,
     )
+    ordered: list[tuple[Any, float | None, str]]
     if semantic is not None:
         ordered = [(entry, score, "semantic") for entry, score in semantic]
     else:

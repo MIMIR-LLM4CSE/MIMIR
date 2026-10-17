@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Iterator
+from typing import Any, TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:
     from ..guardrails.nudges.plugins import NudgeRule
@@ -41,7 +41,7 @@ class ExtensionSet:
     def add_post_tool(self, rule: PostToolRule) -> None:
         self._post_tool[rule.name] = rule
 
-    def _chain(self, attr: str) -> dict:
+    def _chain(self, attr: str) -> dict[str, Any]:
         """This set's entries over its parent's: a pack overrides a same-named one."""
         merged = self.parent._chain(attr) if self.parent is not None else {}
         merged.update(getattr(self, attr))

@@ -41,6 +41,7 @@ import signal
 import subprocess
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from .._shared import build_progress
 from .._shared.processes import is_running, proc_starttime
@@ -245,7 +246,7 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
         if err_fh is not None:
             err_fh.close()
 
-    extra = {"split_stderr": bool(split_stderr), "ephemeral": bool(ephemeral)}
+    extra: dict[str, Any] = {"split_stderr": bool(split_stderr), "ephemeral": bool(ephemeral)}
     if effective != command:
         # What bash was actually handed, kept next to what was asked for: a later
         # reader must be able to see that the two differ and how.

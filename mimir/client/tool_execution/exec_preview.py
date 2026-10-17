@@ -112,10 +112,10 @@ def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, 
     if "stdout" not in payload and "stderr" not in payload:
         return None
 
-    returncode = None
+    returncode: int | None = None
     if "returncode" in payload:
         try:
-            returncode = int(payload.get("returncode"))
+            returncode = int(payload["returncode"])
         except (TypeError, ValueError):
             return None
     elif not running:

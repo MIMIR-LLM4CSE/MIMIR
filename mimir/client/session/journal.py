@@ -86,6 +86,8 @@ class TranscriptLog:
             **event,
         }
         path = transcript_path(self._session_id)
+        if path is None:
+            return
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:

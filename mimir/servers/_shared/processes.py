@@ -29,7 +29,7 @@ def proc_starttime(pid: int) -> int | None:
         return None
 
 
-def is_running(pid: int, expected_starttime: int | None = None) -> bool:
+def is_running(pid: object, expected_starttime: int | None = None) -> bool:
     """Whether *pid* exists, is not a zombie, and started at *expected_starttime*.
 
     A zombie counts as finished: nothing reaps a detached child, so its table entry

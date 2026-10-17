@@ -9,7 +9,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from .capabilities import CONVENTIONAL_PATH_ARGS, READ, SEARCH_WITH_PATH, arg_role, has_cap
+from .capabilities import CONVENTIONAL_PATH_ARGS, READ, SEARCH_WITH_PATH, ToolCaps, arg_role, has_cap
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def _relpath(path: str) -> str:
     return os.path.basename(path.rstrip("/")) or path
 
 
-def shorten_display_args(name: str, args: dict, tool_caps=None) -> dict:
+def shorten_display_args(name: str, args: dict[str, Any], tool_caps: dict[str, ToolCaps] | None = None) -> dict[str, Any]:
     """*args* with path arguments reduced to their file name, for display.
 
     Capability-driven first: the ``path`` arg-role names which arguments are paths,
@@ -162,7 +162,7 @@ def _humanize_tool_name(name: str) -> str:
     return " ".join(tokens)[:1].upper() + " ".join(tokens)[1:]
 
 
-def tool_status_message(name: str, args: dict) -> str:
+def tool_status_message(name: str, args: dict[str, Any]) -> str:
     return _humanize_tool_name(name)
 
 
@@ -195,7 +195,7 @@ _SEARCH_RESULT_KEYS = {
 }
 
 
-def tool_arg_preview(name: str, args: dict) -> str:
+def tool_arg_preview(name: str, args: dict[str, Any]) -> str:
     """The salient argument of a call, as the row shows it beside the description.
 
     What the call is *on*, where the description says what it is *for*. Keyed on
@@ -452,7 +452,7 @@ def error_detail(result: str) -> str:
     return detail
 
 
-def summarize_tool_result(name: str, result: str, tool_caps=None) -> tuple[bool, str]:
+def summarize_tool_result(name: str, result: str, tool_caps: dict[str, ToolCaps] | None = None) -> tuple[bool, str]:
     """Return ``(ok, summary)`` for a finished tool call.
 
     Tolerant of non-JSON results (returns ``(True, "")``). A policy block renders a

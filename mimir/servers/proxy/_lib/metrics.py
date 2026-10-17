@@ -109,11 +109,10 @@ def _normalize_time_metrics(metrics: dict, wall_s: float) -> None:
     """
     metrics["wall_time_s"] = wall_s
     reported = metrics.get("time_s")
-    numeric = isinstance(reported, (int, float)) and not isinstance(reported, bool)
-    # 2% + 50 ms slack for timer granularity; wall time always includes startup.
-    if numeric and 0 < float(reported) <= wall_s * 1.02 + 0.05:
-        return
-    if numeric:
+    if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+        # 2% + 50 ms slack for timer granularity; wall time always includes startup.
+        if 0 < reported <= wall_s * 1.02 + 0.05:
+            return
         metrics["time_s_ignored"] = float(reported)
     metrics["time_s"] = wall_s
 
@@ -209,12 +208,10 @@ def _conservation_residual(run_metrics: dict, ref_metrics: dict, key: str) -> fl
     reference value is zero).  Returns ``None`` when either value is missing or
     non-numeric — the caller decides how to treat an uncomputable invariant.
     """
-    rv = run_metrics.get(key)
-    fv = (ref_metrics or {}).get(key)
     try:
-        rv = float(rv)
-        fv = float(fv)
-    except (TypeError, ValueError):
+        rv = float(run_metrics[key])
+        fv = float((ref_metrics or {})[key])
+    except (KeyError, TypeError, ValueError):
         return None
     denom = abs(fv)
     return abs(rv - fv) / denom if denom > 0 else abs(rv - fv)

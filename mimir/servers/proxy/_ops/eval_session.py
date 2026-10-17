@@ -385,10 +385,11 @@ def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
 def _prepare_run(
     proxy_name: str,
     axis: str = "",
-) -> tuple[dict | None, dict | None, str | None, str]:
+) -> tuple[dict, dict | None, str, str]:
     """Shared preamble for local/Slurm eval runs.
 
-    Returns ``(cfg, err_response, run_dir, notice)``: on failure *err_response* is set;
+    Returns ``(cfg, err_response, run_dir, notice)``: on failure *err_response* is set
+    and the others are empty;
     on success *cfg* holds the session config and *run_dir* the fresh run dir
     (config.json + start_time already written). *notice* is a caller-facing warning about
     the run being launched (see :func:`_resume_notice`), empty when there is nothing to
@@ -397,14 +398,14 @@ def _prepare_run(
     """
     cfg = _load_opt_config(proxy_name)
     if not cfg:
-        return None, err("No optimization session found.",
-                         hint="Call proxy_eval(op='init', ...) first."), None, ""
+        return {}, err("No optimization session found.",
+                         hint="Call proxy_eval(op='init', ...) first."), "", ""
 
     name           = cfg.get("proxy_name", "")
     benchmark_name = cfg.get("benchmark_name", "")
     if not name or not benchmark_name:
-        return None, err("proxy_name and benchmark_name must be set.",
-                         hint="Call proxy_eval(op='init', ...) first."), None, ""
+        return {}, err("proxy_name and benchmark_name must be set.",
+                         hint="Call proxy_eval(op='init', ...) first."), "", ""
 
     active = _opt_active_run_dir(name)
     if active:
@@ -413,8 +414,8 @@ def _prepare_run(
             pid = rs.get("pid")
             jid = rs.get("slurm_job_id")
             tag = f"slurm_job_id={jid}" if jid else f"pid={pid}"
-            return None, err(f"An optimization run is already active ({tag}).",
-                             hint="Use proxy_eval(op='stop', confirm=True) first."), None, ""
+            return {}, err(f"An optimization run is already active ({tag}).",
+                             hint="Use proxy_eval(op='stop', confirm=True) first."), "", ""
 
     # The first run must measure the UNTOUCHED code. Checked here, before the run is
     # spent, rather than at settle time: a run that cannot be compared to anything is
@@ -426,11 +427,11 @@ def _prepare_run(
     if paths and not cfg.get("baseline_run_id"):
         current = tree_snapshot.fingerprint(workspace_root(), paths)
         if current != cfg.get("baseline_fingerprint", current):
-            return None, err(
+            return {}, err(
                 "No baseline run on record, and the tracked files have already been "
                 "edited — this run would have nothing to be compared against.",
                 hint="Restore the original with proxy_eval(op='reset', confirm=True), "
-                     "run once to measure it, then optimize from there."), None, ""
+                     "run once to measure it, then optimize from there."), "", ""
 
     notice = _resume_notice(cfg, name, paths)
 
@@ -847,7 +848,7 @@ def end(proxy_name: str = "") -> dict:
     if not cfg:
         return err("No optimization session found.",
                    hint="Nothing to end. Call proxy_eval(op='init', ...) to start one.")
-    name = cfg.get("proxy_name", "") or _resolve_proxy_name(proxy_name)
+    name = cfg.get("proxy_name", "") or _resolve_proxy_name(proxy_name) or ""
 
     active = _opt_active_run_dir(name)
     if active and _run_state(active).get("state") in ("running", "pending"):

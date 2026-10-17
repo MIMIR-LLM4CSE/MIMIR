@@ -435,7 +435,7 @@ def _prepare_messages_for_openai(messages: list[dict]) -> list[dict]:
             normalized_calls: list[dict] = []
             for idx, tc in enumerate(m.get("tool_calls") or []):
                 tc_dict = tc if isinstance(tc, dict) else {}
-                fn = tc_dict.get("function") if isinstance(tc_dict.get("function"), dict) else {}
+                fn = found if isinstance(found := tc_dict.get("function"), dict) else {}
                 name = fn.get("name", "")
 
                 raw_args = fn.get("arguments", "{}")

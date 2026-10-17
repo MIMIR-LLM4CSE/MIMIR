@@ -34,7 +34,7 @@ class WsCommandHost(CommandHost):
 
     def apply(self, name: str, value: Any) -> str:
         error = self.session._apply_setting(name, value)
-        if not error and name == "context_mode":
+        if not error and name == "context_mode" and self.session.conv is not None:
             # Also what the budget assumes until an agent answers for itself, and what
             # the session is saved with: a mode chosen before the first query must not
             # be forgotten by the one piece of code that sizes the window.
@@ -55,7 +55,7 @@ class WsCommandHost(CommandHost):
         return self.session.worker.get_temperature_state()
 
 
-class CancelCommand(Command):
+class CancelCommand(Command[WsCommandHost]):
     name = "cancel"
     surfaces = frozenset({"ws"})
     help = (("", "stop the run in flight"),)
@@ -67,7 +67,7 @@ class CancelCommand(Command):
         return CommandResult("Nothing to cancel", tone="empty")
 
 
-class DiagCommand(Command):
+class DiagCommand(Command[WsCommandHost]):
     """The chain the events travel, asked rather than inferred.
 
     The pump is the only consumer of every worker's queue, so a chat that goes quiet has

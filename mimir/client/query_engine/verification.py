@@ -185,9 +185,9 @@ def build_ledger(execution_context: ExecutionContext) -> dict | None:
     blocked = [c for c, r in runs.items() if r.get("blocked")]
     if written and not unvalidated and not runs:
         notes.append(_UNCHECKED_OUTPUT_NOTE)
-        blocked = str(execution_context.exercise_blocked_reason or "").strip()
-        if blocked:
-            notes.append(_EXERCISE_BLOCKED_NOTE.format(reason=blocked))
+        reason = str(execution_context.exercise_blocked_reason or "").strip()
+        if reason:
+            notes.append(_EXERCISE_BLOCKED_NOTE.format(reason=reason))
     if any(f in unverifiable for f in unvalidated):
         notes.append(_UNVERIFIABLE_NOTE)
     if any(r.get("verdict") for r in runs.values()):

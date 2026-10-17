@@ -12,7 +12,7 @@ the tick that drained the event, before any socket sees it.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ....protocol.events import DURABLE_EVENTS
 from ....session.conversation import Conversation
@@ -192,7 +192,8 @@ class WakeRouter:
         conversation = self.pool.conversations.get(owner)
         if conversation is None or not conversation.pending_wakes:
             return
-        read, kept = [], []
+        read: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
         for item in conversation.pending_wakes:
             key = str(item["ev"].get("job_key") or "\x00")
             (read if key in text else kept).append(item)

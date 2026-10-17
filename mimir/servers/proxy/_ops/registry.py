@@ -434,7 +434,9 @@ def clean(name: str) -> dict:
     absence made "I deleted everything and it still remembers" possible to live through
     without ever seeing why.
     """
-    removed, kept_refs, kept_suites = [], [], []
+    removed: list[str] = []
+    kept_refs: list[str] = []
+    kept_suites: list[str] = []
     kept_snapshots = ""
     for path, label in (
         (os.path.join(store.runs_dir(), name), "runs"),

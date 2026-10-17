@@ -578,7 +578,7 @@ def _rejects_as_path(name: str) -> bool:
     so anything that could leave that component is refused before the join rather than
     normalised into something plausible.
     """
-    separators = {"/", "\\", os.sep, os.altsep} - {None, ""}
+    separators = {s for s in ("/", "\\", os.sep, os.altsep) if s}
     return (not name
             or name.startswith(".")
             or any(sep in name for sep in separators))

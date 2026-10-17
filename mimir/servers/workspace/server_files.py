@@ -3,6 +3,7 @@ import bisect
 import difflib
 import os
 import re
+from typing import Any
 
 
 from mcp.server.fastmcp import FastMCP
@@ -763,8 +764,8 @@ def replace_in_file(path: str, old_text: str, new_text: str) -> dict:
             # The excerpt rides as its own field: err() collapses whitespace in the
             # message, and collapsed whitespace is unusable as an anchor.
             excerpt = _nearest_context(content, old_text)
-            return err(error_msg, hint=_anchor_retry_hint(excerpt),
-                       **({"anchor_excerpt": excerpt} if excerpt else {}))
+            extra: dict[str, Any] = {"anchor_excerpt": excerpt} if excerpt else {}
+            return err(error_msg, hint=_anchor_retry_hint(excerpt), **extra)
 
         assert updated is not None  # for typing
         syntax_error = _validate_python_content(path, updated)

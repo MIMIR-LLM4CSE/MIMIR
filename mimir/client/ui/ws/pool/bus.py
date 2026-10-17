@@ -59,7 +59,7 @@ _PUMP_INTERVAL = 1.0
 # replaying from its watermark rather than by the pump stalling for it.
 _SUBSCRIBER_MAX = 2000
 
-class _Subscription:
+class Subscription:
     """One attached client's view of the stream.
 
     Bounded on purpose. The queue is a delivery buffer, not a record: the record is the
@@ -178,7 +178,7 @@ class EventBus:
         self._steered = steered
         self._interval = interval
         self._logs: dict[str, TranscriptLog] = {}
-        self._subs: list[_Subscription] = []
+        self._subs: list[Subscription] = []
         # When each session last *concluded* — delivered a final answer, or ended in an
         # error. Not "when it was last heard from": an idle-shutdown predicate built on
         # the absence of noise would stop a server whose turn merely paused, so the
@@ -210,19 +210,19 @@ class EventBus:
     # ── Subscribers ───────────────────────────────────────────────────────────
 
     def subscribe(self, session_filter: Callable[[dict], bool] | None = None
-                  ) -> _Subscription:
-        sub = _Subscription(self, session_filter)
+                  ) -> Subscription:
+        sub = Subscription(self, session_filter)
         self._subs.append(sub)
         self.ever_attached = True
         return sub
 
-    def unsubscribe(self, sub: _Subscription) -> None:
+    def unsubscribe(self, sub: Subscription) -> None:
         try:
             self._subs.remove(sub)
         except ValueError:
             pass
 
-    def attached(self, *, excluding: _Subscription | None = None) -> int:
+    def attached(self, *, excluding: Subscription | None = None) -> int:
         """How many clients are listening. Zero is the detached case.
 
         *excluding* leaves one subscription out, for the question a window asks about

@@ -18,6 +18,7 @@ import re
 import shutil
 import socket
 import subprocess
+from collections.abc import Mapping
 
 
 # ── lscpu ─────────────────────────────────────────────────────────────────────
@@ -186,7 +187,7 @@ def expand_hostlist(expr: str) -> list[str]:
     return [n for n in names if n]
 
 
-def execution_context(env: dict | None = None, hostname: str = "",
+def execution_context(env: Mapping[str, str] | None = None, hostname: str = "",
                       has_slurm: bool | None = None) -> dict:
     """Where this process sits relative to the scheduler, from deterministic signals.
 

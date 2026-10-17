@@ -209,7 +209,7 @@ def harvest_probes(nodes_by_name: dict[str, dict],
     one left by an earlier call is harvested for that scheduler rather than for
     whichever one this call is asking about.
     """
-    pending = []
+    pending: list[dict] = []
     try:
         entries = sorted(os.listdir(_hpc_jobs_dir()))
     except OSError:

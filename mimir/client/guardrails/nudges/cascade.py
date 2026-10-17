@@ -1,7 +1,6 @@
 """The nudge cascade: at most one reminder per step, verification before guidance."""
 from __future__ import annotations
 
-from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
@@ -182,8 +181,11 @@ class Nudge(Protocol):
     """What the cascade asks of a nudge, built-in (``CoreNudge``) or a pack's
     (``NudgeRule``)."""
 
-    name: str        # nudge_counts category and toggle key
-    layer: str       # "verification" | "guidance"
+    @property
+    def name(self) -> str: ...      # nudge_counts category and toggle key
+
+    @property
+    def layer(self) -> str: ...     # "verification" | "guidance"
 
     @property
     def budget_key(self) -> str: ...
@@ -258,8 +260,8 @@ def maybe_inject_env_resolution(
 class CoreNudge:
     name: str        # nudge_counts category / toggle key
     layer: str       # "verification" | "guidance"
-    should_fire: Callable[[Any, str, str, dict[str, Any], str], bool]  # (agent, query, mode, ec, level)
-    render: Callable[[Any, dict[str, Any]], str]                       # (agent, ec) -> text
+    should_fire: Callable[[AgentPort, str, str, ExecutionContext, str], bool]  # (agent, query, mode, ec, level)
+    render: Callable[[AgentPort, ExecutionContext], str]                       # (agent, ec) -> text
     budget_key: str = ""  # counter charged when rows ration a shared budget; default = name
 
     # Per-category caps and (for guidance) the enforcement/mode gate live inside each
@@ -284,7 +286,7 @@ CORE_NUDGES: tuple[CoreNudge, ...] = (
     CoreNudge(
         "error_recovery", "verification",
         lambda agent, query, mode, ec, level: should_nudge_error_recovery(ec),
-        lambda agent, ec: error_recovery_nudge_message(first_failing_edit_path(ec)),
+        lambda agent, ec: error_recovery_nudge_message(first_failing_edit_path(ec) or ""),
     ),
     # Ahead of the three advisory rows below, because it is the only one of the four
     # that is required: a file the model modified and never checked is the one gap

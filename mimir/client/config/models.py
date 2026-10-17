@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 DEFAULT_MODEL = os.environ.get("MIMIR_DEFAULT_MODEL", "")
 
@@ -44,7 +46,7 @@ VLLM_API_KEY  = os.environ.get("VLLM_API_KEY",   "EMPTY")
 RAY_BASE_URL  = os.environ.get("RAY_BASE_URL",   "http://127.0.0.1:8000")
 RAY_API_KEY   = os.environ.get("RAY_API_KEY",    "EMPTY")
 
-def _load_vllm_model_profiles() -> dict[str, dict]:
+def _load_vllm_model_profiles() -> dict[str, dict[str, Any]]:
     """Load shared vLLM model profiles from JSON.
 
     This file is consumed by both Python and the VS Code extension so new
@@ -63,7 +65,7 @@ def _load_vllm_model_profiles() -> dict[str, dict]:
 
 # Shared per-model settings used by both Python request-time logic and
 # extension-time vLLM launch command generation.
-VLLM_MODEL_PROFILES: dict[str, dict] = _load_vllm_model_profiles()
+VLLM_MODEL_PROFILES: dict[str, dict[str, Any]] = _load_vllm_model_profiles()
 
 
 def _normalize_model_key(name: str) -> str:
@@ -78,7 +80,7 @@ def _normalize_model_key(name: str) -> str:
     return (name or "").lower().replace("\\", "/").replace("_", ".").strip()
 
 
-def longest_prefix_key(model: str, keys) -> str | None:
+def longest_prefix_key(model: str, keys: Iterable[str]) -> str | None:
     """The longest of *keys* that prefixes *model*, or None.
 
     Matched against the whole name, its last path segment, and each segment, so a
@@ -98,7 +100,7 @@ def longest_prefix_key(model: str, keys) -> str | None:
     )
 
 
-def profile_for_model(model: str) -> dict:
+def profile_for_model(model: str) -> dict[str, Any]:
     """Return the matching profile for *model* (see ``longest_prefix_key``).
 
     Returns ``{}`` on no match, which is a normal outcome: every default is chosen so
@@ -124,7 +126,7 @@ DEFAULT_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 DEFAULT_EFFORT_PARAM = "reasoning_effort"
 
 
-def thinking_profile(model: str) -> dict:
+def thinking_profile(model: str) -> dict[str, Any]:
     """Everything needed to switch *model*'s reasoning, resolved from its family.
 
     One descriptor feeds both sides — the request builder and the panel's depth
@@ -174,7 +176,7 @@ def thinking_profile(model: str) -> dict:
 
 def thinking_mechanism(model: str) -> str:
     """Shorthand for ``thinking_profile(model)["mechanism"]``."""
-    return thinking_profile(model)["mechanism"]
+    return str(thinking_profile(model)["mechanism"])
 
 
 def thinking_can_disable(model: str) -> bool:
@@ -228,6 +230,6 @@ def resolve_enforcement(agent: object) -> str:
     that predate the attribute (e.g. lightweight test fakes).
     """
     level = getattr(agent, "enforcement", None)
-    if level in ("strict", "light", "off"):
+    if isinstance(level, str) and level in ("strict", "light", "off"):
         return level
     return enforcement_level(getattr(agent, "model", ""))

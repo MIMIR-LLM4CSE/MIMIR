@@ -218,12 +218,12 @@ def _load_registry() -> dict:
         return {}
 
 
-def _load_registry_or_err() -> tuple[dict | None, str | None]:
-    """Return (registry, None) on success or (None, error_message) on corruption."""
+def _load_registry_or_err() -> tuple[dict, str | None]:
+    """Return (registry, None) on success or ({}, error_message) on corruption."""
     try:
         return _load_registry(), None
     except RuntimeError as exc:
-        return None, str(exc)
+        return {}, str(exc)
 
 
 def _save_registry(reg: dict) -> None:
@@ -336,17 +336,17 @@ def _save_opt_config(cfg: dict, proxy_name: str = "") -> None:
     write_json(_opt_config_file(name), cfg, indent=2)
 
 
-def _entry_or_err(proxy_name: str) -> tuple[dict | None, dict | None]:
-    """A registered proxy's entry, or the ready-to-return error saying why not.
+def _entry_or_err(proxy_name: str) -> tuple[dict, dict | None]:
+    """A registered proxy's entry, or ``{}`` and the ready-to-return error saying why not.
 
     The same four lines stood in five ops with the same wording; a sixth caller
     would have copied them again.
     """
     reg, reg_err = _load_registry_or_err()
     if reg_err:
-        return None, err(reg_err)
+        return {}, err(reg_err)
     if proxy_name not in reg:
-        return None, err(f"Proxy '{proxy_name}' not registered.",
+        return {}, err(f"Proxy '{proxy_name}' not registered.",
                          hint="Call proxy_manage(op='register', ...) first.")
     return reg[proxy_name], None
 

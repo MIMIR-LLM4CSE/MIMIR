@@ -78,7 +78,7 @@ class CarryContext:
             carry["read_files"] = fresh_reads
 
         for field in _mirrored_fields():
-            prior: set = carry.get(field, set())
+            prior: set[Any] = carry.get(field, set())
             if isinstance(prior, set) and isinstance(getattr(execution_context, field), set):
                 # sorted(): carried entries seed a RecencySet's order, and a set iterates
                 # in a per-process hash order; a stable order keeps the pin byte-stable.
@@ -94,7 +94,7 @@ class CarryContext:
         """Fold what this query learnt into the carry."""
         carry = self.fields
         for field in _mirrored_fields():
-            current: set = getattr(execution_context, field)
+            current: set[Any] = getattr(execution_context, field)
             if isinstance(current, set):
                 carry[field] = carry.get(field, set()) | current
         if execution_context.searched:

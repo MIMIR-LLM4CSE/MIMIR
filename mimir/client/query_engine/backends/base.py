@@ -325,6 +325,10 @@ class LLMBackend(ABC):
         """
         return []
 
+    def served_model_info(self) -> list[dict[str, Any]]:
+        """The endpoint's own record of each served model, ``id`` first. Default: none."""
+        return []
+
     def chat(
         self,
         model: str,

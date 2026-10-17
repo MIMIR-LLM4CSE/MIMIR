@@ -7,6 +7,7 @@ import select
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parents[3]
@@ -20,6 +21,7 @@ if __package__ in {None, ""}:
     from mimir.client.config import DEFAULT_MODEL
     from mimir.client.extensions import all_servers
     from mimir.client import human_pause
+    from mimir.client.core.human import TerminalHuman
 else:
     from .... import __version__
     from ...agent_core import MimirAgent
@@ -27,6 +29,15 @@ else:
     from ...config import DEFAULT_MODEL
     from ...extensions import all_servers
     from ... import human_pause
+    from ...core.human import TerminalHuman
+
+
+class CliHuman(TerminalHuman):
+    """The terminal, which also answers the model's questions on stdin."""
+
+    def ask(self, agent: Any, questions: list[Any], origin: dict[str, Any] | None = None,
+            timeout_secs: float | None = None) -> dict[str, Any]:
+        return _cli_request_question(questions, origin, timeout_secs)
 
 
 async def main(model: str | None = None) -> None:
@@ -35,7 +46,7 @@ async def main(model: str | None = None) -> None:
     print(f"Using model: {model} ({os.environ.get('LLM_BACKEND', 'vllm')})")
     agent = MimirAgent(model=model)
 
-    agent.request_user_question = _cli_request_question
+    agent.human = CliHuman()
 
     await agent.connect_servers(all_servers())
     agent.seed_classification_from_caps()

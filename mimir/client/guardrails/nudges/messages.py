@@ -97,8 +97,7 @@ def _validation_nudge_message(findings: dict[str, str]) -> str:
     )
 
 
-def denial_nudge_message(execution_context: ExecutionContext | None = None) -> str:
-    context = execution_context or {}
+def denial_nudge_message(context: ExecutionContext) -> str:
     stage = worst_denial_stage(context)
 
     if stage == STAGE_HANDBACK:
