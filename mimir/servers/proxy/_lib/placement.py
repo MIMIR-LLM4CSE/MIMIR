@@ -26,7 +26,7 @@ for holding a GPU. Nor do ``ntasks`` and ``exclusive``: those describe a measure
 — and a compile wants neither.
 
 ``resolve_build`` returns None when no build partition is resolved anywhere, and
-None is what keeps the old path intact: one job, one ``--phase all``.
+then the run is one job, one ``--phase all``.
 """
 
 from __future__ import annotations

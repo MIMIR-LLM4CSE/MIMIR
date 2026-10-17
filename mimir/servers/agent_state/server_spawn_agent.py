@@ -426,9 +426,8 @@ def _caller_mode(ctx: Context | None) -> str:
 def _subagent_level(ctx: Context | None) -> str:
     """How far the user lets this child go; the weakest rung when unsaid or unknown.
 
-    The former name of a rung resolves here rather than being read as unknown: a client
-    of the previous version says "parallel", and reading that as the weakest rung would
-    take away the right its user granted.
+    Another name of a rung ("parallel") resolves here rather than being read as unknown,
+    which would take away the right its user granted.
     """
     level = str(_meta_value(ctx, _SUBAGENT_LEVEL_META) or "").strip().lower()
     level = _SUBAGENT_LEVEL_ALIASES.get(level, level)

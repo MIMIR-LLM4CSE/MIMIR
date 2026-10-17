@@ -1,11 +1,9 @@
 """Atomic snapshots of the file set under optimization.
 
-WHY A SET AND NOT A FILE. The ratchet used to track one ``proxy_source_path`` and
-snapshot it with ``shutil.copy2``. Generalising that to several files by keeping a best
-*per file* would be wrong in a way that does not announce itself: restoring "the best
-version of each" can assemble a combination that was never measured together — file A
-from run 7 beside file B from run 12, after a signature changed in run 9. It may even
-run, and produce a number that means nothing. The unit of acceptance has to be the tree
+WHY A SET AND NOT A FILE. A best *per file* would be wrong in a way that does not
+announce itself: restoring "the best version of each" can assemble a combination never
+measured together (file A from run 7 beside file B from run 12, after a signature
+changed in run 9), which may even run and produce a number that means nothing. The unit of acceptance has to be the tree
 state that was measured, taken and restored as one.
 
 WHY GIT. "Snapshot a set of paths, label it, restore it atomically, diff two of them" is
@@ -13,7 +11,7 @@ version control. Writing a bespoke one means maintaining a format that can be co
 in ways git's cannot. So this drives a *shadow* repository: the git dir lives in the proxy
 store, the work tree is the workspace, and only the declared paths are ever added. The
 user's own ``.git`` is never opened, no branch or index of theirs is touched, and the
-workspace does not need to be a repository at all — the one this was built against is not.
+workspace does not need to be a repository at all.
 
 Every invocation carries its own identity and disables signing: a machine with no
 ``user.email`` configured, or with a global signing hook, must not turn "record the state
@@ -30,9 +28,8 @@ That is not an optimisation of disk writes — a restored file is deliberately s
 the current time, because a build system decides what to recompile by comparing mtimes,
 and a file dated before the artifact built from it would be skipped. A fresh mtime is
 therefore an *instruction to recompile*, and giving it to a file whose bytes never
-changed is a false one. Writing the whole tracked set, as both backends used to, made
-every reset_to_best after a one-file edit cost a full rebuild. Both backends now decide
-by content, never by stat: git by blob sha via ls-tree/hash-object, the fallback by
+changed is a false one, which would make every reset_to_best after a one-file edit cost
+a full rebuild. Both backends decide by content, never by stat: git by blob sha via ls-tree/hash-object, the fallback by
 reading both files. Not ``filecmp`` — its cache is keyed on (size, mtime), so an edit
 landing in the same filesystem tick as a restore would come back "identical".
 """

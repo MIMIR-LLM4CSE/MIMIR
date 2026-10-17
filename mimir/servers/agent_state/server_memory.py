@@ -52,8 +52,8 @@ GLOBAL = "global"
 _SCOPES = (WORKSPACE, GLOBAL)
 
 # Workspace memory lives at the root of the central per-workspace state dir
-# (MIMIR_STATE_DIR, set by server_manager; legacy <workspace>/.mimir fallback for
-# standalone/tests), so it is shared across all sessions of the workspace — not
+# (MIMIR_STATE_DIR, set by server_manager; <workspace>/.mimir for standalone runs and
+# tests), so it is shared across all sessions of the workspace — not
 # scoped to a session.
 MEMORY_DIR = os.path.join(state_dir(), "memory")
 INDEX_FILE = os.path.join(MEMORY_DIR, "MEMORY.md")

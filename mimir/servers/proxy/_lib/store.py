@@ -22,12 +22,9 @@ from ..._shared.responses import err
 
 # ── storage root ──────────────────────────────────────────────────────────────
 
-# Under the WORKSPACE, not ~/.cache. Everything else MIMIR persists is already scoped
-# per workspace; this store was the exception, and the exception had a cost: deleting a
-# project left the registry behind with a run_cmd_template pointing at a file that no
-# longer existed, and an `opt_runs/active_session` still naming an optimisation as "in
-# progress" — so a fresh start silently resumed the old one. Here it is visible, and it
-# goes when the project goes.
+# Under the WORKSPACE, not ~/.cache, like everything else MIMIR persists: it is visible,
+# and it goes when the project goes, rather than leaving a registry and an "in progress"
+# optimisation for a project that no longer exists.
 #
 # Not `<workspace>/.mimir/`: that name is the workspace's *extensions* directory. Not the
 # per-workspace state dir either: sealed reference fields are npz of several megabytes

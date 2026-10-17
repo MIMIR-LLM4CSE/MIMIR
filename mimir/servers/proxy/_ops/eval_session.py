@@ -880,8 +880,7 @@ def _read_ledger(proxy_name: str) -> list[dict]:
 
     One JSON object per line, appended as runs settle. A line that does not parse is
     dropped rather than failing the read: the file is written by another process and
-    its last line can be half there. Entries from before an axis was recorded simply
-    carry none — the old format stays readable.
+    its last line can be half there. An entry may carry no axis.
     """
     rows = []
     try:

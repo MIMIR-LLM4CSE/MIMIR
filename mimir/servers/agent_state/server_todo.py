@@ -41,13 +41,12 @@ from .._shared.state_paths import TODO_FILENAME, session_state_dir, state_dir
 from .._shared.text_tools import yaml_scalar, yaml_unquote
 from .._shared.clock import utc_date, utc_minute
 
-# Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager; legacy
-# <workspace>/.mimir fallback for standalone/tests). Todos and plans are per-session
-# sidecars under sessions/<sid>/; the legacy shared todo lives at the state-dir root.
-# See state_paths.
+# Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager;
+# <workspace>/.mimir for standalone runs and tests). Todos and plans are per-session
+# sidecars under sessions/<sid>/. See state_paths.
 _MIMIR_DIR = state_dir()
-# Legacy fallback path (used when this server belongs to no session at all).
-_LEGACY_TODO_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, TODO_FILENAME))
+# The todo of a server that belongs to no session, at the state-dir root.
+_UNSCOPED_TODO_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, TODO_FILENAME))
 
 
 def _get_todo_file() -> str:
@@ -62,11 +61,11 @@ def _get_todo_file() -> str:
     """
     base = session_state_dir(_MIMIR_DIR)
     if base == _MIMIR_DIR:
-        return _LEGACY_TODO_FILE
+        return _UNSCOPED_TODO_FILE
     try:
         os.makedirs(base, exist_ok=True)
     except OSError:
-        return _LEGACY_TODO_FILE
+        return _UNSCOPED_TODO_FILE
     return os.path.join(base, TODO_FILENAME)
 
 

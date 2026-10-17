@@ -370,9 +370,8 @@ def flatten_unquoted_newlines(command: str) -> str:
     A raw newline is a shell command separator, so a validator that tokenizes with
     ``shlex`` (where newline is mere whitespace) would read ``cat a\\nrm -rf b`` as
     *one* command ``cat`` with extra arguments — only argv[0] is judged, while
-    bash actually runs both. That is why both validators used to refuse newlines
-    outright. Refusing them also refuses the legitimate shape they usually carry: a
-    multi-line ``python3 -c "..."`` body, or a chain written one command per line.
+    bash actually runs both. Refusing newlines would refuse the legitimate shape they
+    usually carry: a multi-line ``python3 -c "..."`` body, or one command per line.
 
     So instead of rejecting, normalize: every **unquoted** newline becomes an
     explicit ``;`` and validation proceeds unchanged, so every command in the chain

@@ -70,12 +70,9 @@ _MAX_TEXT_CHARS = 128 * 1024   # 128 KB — what we will hand back to the model
 # what kind of page this is, which costs a sample and not a window.
 _MARKUP_FALLBACK_CHARS = 8 * 1024
 
-# What a FAILED request may spend. The error branches used to hand back up to
-# _MAX_BYTES of the error body untouched — no extraction, no text ceiling, nothing.
-# Measured on a paper host answering 403: the block page came back as 131 164 tokens,
-# and four fetches issued in one step put a 200k window at 215k before anything could
-# be trimmed. An error body is a diagnosis, never content: what is wanted from it is
-# "Access Denied", "rate limited", "captcha", and that fits in a couple of KB.
+# What a FAILED request may spend. An error body is a diagnosis, never content: what is
+# wanted from it is "Access Denied", "rate limited", "captcha", which fits in a couple
+# of KB, while a block page can run to a hundred thousand tokens.
 _ERROR_BODY_READ = 64 * 1024   # what we read off a failed response
 _ERROR_BODY_CHARS = 2 * 1024   # what we hand back of it
 
@@ -156,12 +153,9 @@ class _TextExtractor(HTMLParser):
     of those bytes is escaped again when the message is serialised, so it is paid
     for twice before anyone reads it.
 
-    Headings survive as headings. `h1`…`h6` used to sit in `_BREAK` and produce a
-    newline like any `<div>`, which left a long document as one undifferentiated wall
-    of prose: nothing said where the abstract ended and the bibliography began. They
-    are marked instead, in the one notation a model reads without being told —
-    Markdown's — so a document comes back as named regions, and so a reader can ask
-    for one of them by name.
+    Headings survive as headings, in the one notation a model reads without being told
+    (Markdown's), so a document comes back as named regions a reader can ask for by
+    name rather than one wall of prose.
     """
 
     _SKIP = {"script", "style", "noscript", "svg", "head"}

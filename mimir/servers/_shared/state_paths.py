@@ -7,8 +7,7 @@ state path (memory/, todos, plans/, …) off ``state_dir()``
 so the whole stack agrees on one location.
 
 When ``MIMIR_STATE_DIR`` is unset — standalone runs and the hermetic test suite,
-which only set ``MCP_FILES_ROOT`` — we fall back to the legacy in-workspace
-``<workspace>/.mimir`` so those callers keep working unchanged.
+which only set ``MCP_FILES_ROOT`` — it is ``<workspace>/.mimir``.
 
 Three tiers, and which one a path belongs to is the whole question:
 
@@ -44,8 +43,8 @@ def workspace_id(root: str) -> str:
 def state_dir() -> str:
     """Return the agent's state directory.
 
-    ``MIMIR_STATE_DIR`` if set (the central per-workspace dir), else the legacy
-    ``<MCP_FILES_ROOT or cwd>/.mimir`` fallback.
+    ``MIMIR_STATE_DIR`` if set (the central per-workspace dir), else
+    ``<MCP_FILES_ROOT or cwd>/.mimir``.
     """
     env = os.environ.get("MIMIR_STATE_DIR")
     if env:

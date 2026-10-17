@@ -181,12 +181,10 @@ mcp = FastMCP(
 _MAX_OUTPUT = 64 * 1024
 # The tail a progress read of a running job gets (see _bash_jobs.output).
 _RUNNING_OUTPUT = 4 * 1024
-# Sized for the work this shell actually does now that it compiles and runs: a default
-# that survives an ordinary build or test suite, and a ceiling past which a run belongs
-# to the background-job route rather than to a call that blocks the turn. A run still
-# going at the ceiling is stopped, as it always was — the ceiling is what bounds a
-# command gone astray — but it now returns whatever it had printed before the stop,
-# which is what makes a low ceiling cheap rather than wasteful.
+# A default that survives an ordinary build or test suite, and a ceiling past which a
+# run belongs to the background-job route rather than to a call that blocks the turn.
+# A run still going at the ceiling is stopped, and returns what it had printed, which
+# keeps a low ceiling cheap.
 _DEFAULT_TIMEOUT = 60
 _MAX_TIMEOUT = 120
 

@@ -434,7 +434,7 @@ def _new_job_dir_name(base: str) -> str:
 def new_job_dir() -> str:
     """An empty directory for a submission about to be made, created.
 
-    Split from :func:`record_job_dir` for the submitter that needs the directory
+    Apart from :func:`record_job_dir` for the submitter that needs the directory
     *before* it has an id: the batch script is written there and the id only exists
     once ``sbatch`` has answered. Both halves name the directory the same way, which
     is the whole reason they live together.

@@ -1,9 +1,8 @@
 """Input guards for ``proxy_eval(op='init'|'configure')``.
 
 Pure checks: each answers "why can this session not be set up that way?" with a
-sentence the caller can act on, or None. They are split out of the ops so the
-ops read as what they persist rather than as a wall of refusals — and because a
-refusal has to be readable on its own to be worth writing.
+sentence the caller can act on, or None. Kept apart from the ops, which then read as
+what they persist rather than as a wall of refusals.
 """
 
 from __future__ import annotations

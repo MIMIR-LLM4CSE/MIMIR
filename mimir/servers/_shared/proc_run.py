@@ -2,10 +2,7 @@
 
 ``subprocess.run(..., timeout=...)`` kills the process it launched and nothing else.
 Anything that process forked keeps running, reparented to init, with no record of where
-it came from. Observed: an agent ran ``find / -name _proxy_runner.py`` through the bash
-tool, the 30s timeout fired and returned an orderly error, and the ``find`` was still
-scanning the filesystem **one hour and forty minutes later** — three of them at once,
-alongside a benchmark whose whole purpose was to measure elapsed time.
+it came from: a ``find /`` whose timeout fired goes on scanning the filesystem.
 
 Two costs, and the second is the one that matters. The leaked processes consume the
 machine; and because they are invisible to the tool that started them, they silently

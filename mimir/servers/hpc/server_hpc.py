@@ -617,8 +617,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
             payload["state"] = settled
         # Recorded is not watched. A watcher is held by the agent that registered it and
         # by nothing else, so a window reload leaves this directory saying "there is a
-        # job" with nobody polling it — and this branch used to answer "already watched"
-        # into exactly that silence. Handing the descriptor over makes the claim true:
+        # job" with nobody polling it. Handing the descriptor over makes "watched" true:
         # the client dedups on the job id, so a watcher that is still there costs
         # nothing, and one that is gone is put back. Withheld for a sibling's job for
         # the reason slurm_job_status withholds it — a wake is routed to the

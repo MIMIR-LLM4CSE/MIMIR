@@ -1,13 +1,9 @@
 """A sub-agent's watcher, for the detached runs it launched itself.
 
-A child used to have no watcher at all. The hook pair the client installs
-(``register_background_job`` / ``watched_background_jobs``) is set on the agent the
-WebSocket worker owns, and a child's agent is built here instead, so every backgroundable
-launch inside a child fell through to ``background.await_background_job``: polled in-turn,
-on the child's own loop, inside its wall budget. Two consequences, both bad for a rung
-whose whole point is working in parallel — the child sat on a step waiting for a build
-rather than preparing the next one, and a run that outlived the budget outlived the only
-thing watching it.
+The hook pair the client installs (``register_background_job`` /
+``watched_background_jobs``) is set on the agent the WebSocket worker owns; a child's
+agent is built here, and gets its own pair from this module. Without it a child would
+poll its runs in-turn, inside its wall budget, instead of preparing its next step.
 
 **The resume is a steer, not an event.** The parent's watcher puts ``job_complete`` on a
 queue, the event bus claims it and a turn is submitted with the wake folded in. A child has
@@ -123,8 +119,7 @@ class ChildWatcher:
         """The runs still being watched. The child's ``watched_background_jobs``.
 
         What the dispatch guards consult to refuse a status poll on a run a watcher is
-        already holding. Inside a child those guards used to abstain for want of this,
-        so a child could be told to end its turn and then poll anyway.
+        already holding.
         """
         with self._lock:
             return [dict(d) for key, d in self._descriptors.items()

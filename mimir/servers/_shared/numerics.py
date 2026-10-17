@@ -2,14 +2,12 @@
 
 The **proxy optimization server** treats these names as *reserved*: values the code
 under optimization prints for them are discarded before evaluation, so a solver can
-never satisfy its own acceptance constraints. (Observed in the wild: an agent-edited
-proxy printing ``conservation_residual=<its own drift>`` to pass a requirement whose
-sealed reference was missing.)
+never satisfy its own acceptance constraints (printing ``conservation_residual=…`` to
+pass a requirement).
 
-The **client** does not read this module at all. It once treated a printed ``l2_rel=…``
-as evidence and raised the validation tier for it; that rewarded a string, since the
-value can never be interpreted from outside the process — the very reason the proxy
-seals references server-side. What a run printed is the model's to read and report.
+The **client** does not read this module: a printed ``l2_rel=…`` is a string, which
+cannot be interpreted from outside the process — the reason the proxy seals references
+server-side. What a run printed is the model's to read and report.
 
 Nothing client-only belongs here, and in particular not the ``check=fail`` verdict
 grammar: that lives beside the other ways a run reports on itself, in

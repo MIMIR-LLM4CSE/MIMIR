@@ -165,13 +165,10 @@ def _declared_root() -> str:
 def _resolve_cwd(raw: str) -> tuple[str, str | None]:
     """Where the build runs, in the spelling the build system was configured with.
 
-    This used to call ``realpath``. On a cluster that is a full rebuild on every run:
-    a project reached through a symlink (``/home/me/proj`` -> ``/gpfs/.../proj``, which
-    is how scratch space is normally presented) gets configured by CMake with the
-    logical path, and CMake bakes absolute paths into its cache, its rules and its
-    depfiles. Handing the same build the resolved path makes every one of those compare
-    unequal, so it reconfigures and recompiles the world — and it alternates forever
-    with whatever the user runs from their own shell.
+    Not ``realpath``: a project reached through a symlink (``/home/me/proj`` ->
+    ``/gpfs/.../proj``, as scratch space is usually presented) is configured by CMake
+    with the logical path, baked into its cache, rules and depfiles. The resolved path
+    would compare unequal to all of them and rebuild the world on every run.
 
     Normalised but not resolved, therefore. ``isdir`` still follows the link, so a
     symlinked build directory is accepted; what changes is only which spelling the

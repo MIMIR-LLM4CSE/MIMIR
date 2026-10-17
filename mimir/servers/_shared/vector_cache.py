@@ -1,7 +1,6 @@
 """A JSON-backed embedding cache with semantic ranking and a lexical fallback.
 
-Extracted from ``agent_state/server_memory``, which grew the pattern first: a file
-of ``{key: {"model": ..., "vec": [...]}}`` beside a corpus, vectors backfilled on the
+A file of ``{key: {"model": ..., "vec": [...]}}`` beside a corpus, vectors backfilled on the
 fly when they are missing or were computed under a different embedding model, and a
 caller that degrades to a non-semantic ordering whenever the backend is down.
 

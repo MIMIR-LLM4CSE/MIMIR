@@ -248,11 +248,9 @@ def _collect_sinfo() -> dict:
 def _collect_modules() -> dict:
     """What is loaded now, plus a pointer to the searchable catalogue.
 
-    This used to return `module -t avail | head -n 120` truncated to 80 names under a
-    key called "sample". An alphabetical slice of a module tree is worse than no list
-    at all: a model that reads "abaqus … cmake" with no cuda in sight concludes CUDA
-    is unavailable. The full tree is searched with platform_search; what belongs here
-    is only the volatile part, which is the set of modules actually loaded.
+    No slice of the module tree: an alphabetical sample with no cuda in it reads as
+    "CUDA is unavailable". The full tree is searched with platform_search; what
+    belongs here is the volatile part, the modules actually loaded.
 
     Never triggers a build — platform_probe must not inherit the catalogue's cost.
     """

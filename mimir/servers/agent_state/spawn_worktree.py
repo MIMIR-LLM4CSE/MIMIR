@@ -134,7 +134,7 @@ def drop_branch_if_empty(repo: str, branch: str, base: str) -> bool:
     leaving behind the litter this exists to remove. Emptiness established that way,
     ``-D`` is the honest way to say it: there is nothing left to protect.
 
-    Without a recorded base — a card written before this — nothing is deleted. A branch
+    Without a recorded base on the card, nothing is deleted. A branch
     kept for nothing costs a line in ``git branch``; one deleted wrongly costs an axis.
     """
     if not branch or not base:

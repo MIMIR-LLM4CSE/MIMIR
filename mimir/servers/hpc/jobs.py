@@ -138,9 +138,7 @@ TERMINAL_STATES = ("done", "crashed", "unknown")
 def recorded_log(job_dir: str) -> str:
     """Where this submission told its job to write, as the submission wrote it down.
 
-    Falls back to the name a batch job's log had when it lived in the submission's own
-    directory: a job submitted by an earlier build has no record of its path, and the
-    rule it was submitted under is the only thing that can find its output.
+    A submission with no recorded path wrote ``slurm.log`` in its own directory.
     """
     try:
         with open(os.path.join(job_dir, LOG_FILE)) as fh:
@@ -149,8 +147,8 @@ def recorded_log(job_dir: str) -> str:
         recorded = ""
     if recorded:
         return recorded
-    legacy = os.path.join(job_dir, "slurm.log")
-    return legacy if os.path.exists(legacy) else ""
+    in_dir = os.path.join(job_dir, "slurm.log")
+    return in_dir if os.path.exists(in_dir) else ""
 
 
 def record_terminal_state(job_dir: str, state: str) -> None:
