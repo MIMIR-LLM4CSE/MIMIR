@@ -225,7 +225,7 @@ def delete(call: Call) -> None:
     # new path-valued field would silently keep stale entries.
     for field in fields_with(FILE_PATH):
         getattr(execution_context, field).discard(deleted_path)
-    call.agent.discard_carry_path(deleted_path)
+    call.agent.carry.discard_path(deleted_path)
 
 
 def read(call: Call) -> None:

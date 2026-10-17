@@ -47,6 +47,7 @@ import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.tests._loops import as_loop_run, run_plan
 from mimir.client.core.turn_state import TurnState
+from mimir.client.context.carry import CarryContext
 
 
 def _reminder_calls(backend, text: str) -> list[int]:
@@ -300,7 +301,9 @@ class FinalizeAnswerTests(unittest.TestCase):
         agent = types.SimpleNamespace(
             tool_owner={},
             run_tool=lambda *a, **k: "{}",
-            update_carry_context=lambda ec: carry.__setitem__("n", carry["n"] + 1),turn=TurnState())
+            carry=types.SimpleNamespace(
+                update=lambda ec: carry.__setitem__("n", carry["n"] + 1)),
+            turn=TurnState())
         return agent, carry
 
     def test_annotates_and_saves_carry(self) -> None:
@@ -1089,6 +1092,7 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             def __init__(self, *args, **kwargs) -> None:
                 super().__init__(*args, **kwargs)
                 self.turn = TurnState()
+                self.carry = CarryContext()
 
             mode = "agent"
             model = "dummy"
@@ -1115,11 +1119,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
 
             approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
-            def apply_carry_context(self, execution_context):
-                pass
-
-            def update_carry_context(self, execution_context):
-                pass
 
         return _QueryAgent()
 

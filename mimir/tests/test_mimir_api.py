@@ -222,7 +222,7 @@ class LoadSkillTests(unittest.TestCase):
     """
 
     def test_the_body_is_the_file_verbatim(self):
-        from mimir.client.agent_core import _parse_skill_markdown
+        from mimir.servers._shared.skill_file import parse_skill_markdown
         source = (pathlib.Path(k.SKILL_BASE) / "debug-numerics" / "SKILL.md").read_text()
         result = api.load_skill("debug-numerics")
         self.assertEqual(result["status"], "ok")
@@ -230,7 +230,7 @@ class LoadSkillTests(unittest.TestCase):
         # Parity with the client's own parser, which is what the user's /<name> path
         # folds into messages[0]: the two routes must hand over the same text.
         self.assertEqual(result["instructions"],
-                         _parse_skill_markdown(source)["content"])
+                         parse_skill_markdown(source)["content"])
         self.assertTrue(result["description"])
 
     def test_a_user_invoked_only_skill_is_refused_with_its_slash_command(self):

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Protocol
 
 from ..context.execution_context import ExecutionContext
+from ..context.carry import CarryContext
 from .turn_state import TurnState
 
 
@@ -37,13 +38,15 @@ class AgentPort(Protocol):
     context_mode: str
     enforcement: str
     subagent_level: str
-    disabled_nudges: set[str]
+    toggles: Any                         # config.toggles.Toggles
     # Bounds a caller may set (a sub-agent is held below the model's window).
     max_context_tokens: int
     max_answer_tokens: int
 
     # ── The turn in flight, and the last one that finished ─────────────────────
     turn: TurnState
+    # What one query leaves for the next in the session.
+    carry: CarryContext
 
     # ── What a front-end lends the turn (None where it lends nothing) ─────────
     # Messages the user typed while the turn runs, drained at each step boundary.
@@ -77,8 +80,6 @@ class AgentPort(Protocol):
 
     # ── The query's state ──────────────────────────────────────────────────────
     def new_execution_context(self, workspace_root: str = "") -> ExecutionContext: ...
-    def apply_carry_context(self, execution_context: ExecutionContext) -> None: ...
-    def update_carry_context(self, execution_context: ExecutionContext) -> None: ...
     def todo_file(self) -> str: ...
     async def build_system_content(self, active_mode: str) -> str: ...
 

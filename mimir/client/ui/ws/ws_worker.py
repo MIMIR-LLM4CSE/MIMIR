@@ -891,17 +891,9 @@ class _AgentWorker:
             return self._agent.toggles_state()
         return {"servers": [], "skills": [], "nudges": []}
 
-    def set_server_enabled(self, name: str, enabled: bool) -> None:
+    def set_enabled(self, kind: str, name: str, enabled: bool) -> None:
         if self._agent is not None:
-            self._agent.set_server_enabled(name, enabled)
-
-    def set_skill_enabled(self, name: str, enabled: bool) -> None:
-        if self._agent is not None:
-            self._agent.set_skill_enabled(name, enabled)
-
-    def set_nudge_enabled(self, name: str, enabled: bool) -> None:
-        if self._agent is not None:
-            self._agent.set_nudge_enabled(name, enabled)
+            self._agent.set_enabled(kind, name, enabled)
 
     def resources_snapshot(self) -> list[dict]:
         """List attachable MCP resources for the frontend picker.

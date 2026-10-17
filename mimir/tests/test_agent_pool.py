@@ -68,8 +68,8 @@ class _StubWorker:
         self.applied.append((name, value))
         return ""
 
-    def set_server_enabled(self, name: str, enabled: bool) -> None:
-        self.applied.append(("server", name, enabled))
+    def set_enabled(self, kind: str, name: str, enabled: bool) -> None:
+        self.applied.append((kind, name, enabled))
 
     # ── the pre-agent stand-in (see _AgentWorker.detached) ────────────────────
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from typing import Any
@@ -29,15 +28,10 @@ from .config import (
 )
 from .config.models import enforcement_level
 from .context.paths import absolute_workspace_path, normalize_workspace_path
-from .config.preferences import load_disabled, load_subagent_level, load_temperature, save_disabled
+from .config.preferences import load_subagent_level, load_temperature
 from .context import (
-        CARRY,
         SOURCE_FILE_EXTENSIONS,
         build_execution_context,
-        carry_context_from_json,
-        carry_context_to_json,
-        carry_path_fields,
-        fields_with,
         validate_execution_context,
 )
 from .context.capabilities import (
@@ -60,6 +54,9 @@ from .core.settings import apply_setting
 from .event_sink import reset_event_sink, set_event_sink
 from .core.extension_set import AMBIENT, ExtensionSet
 from .core.turn_state import TurnState
+from ..servers._shared.skill_file import read_skills_dir
+from .config.toggles import Toggles
+from .context.carry import CarryContext
 from .extensions import all_server_descriptions, all_servers, load_plugins, resolve_skills_dir
 from .guardrails.policy.approval import ApprovalManager, denial_kind
 from .guardrails.toollist import tools_for_readonly_mode
@@ -98,55 +95,6 @@ logger = logging.getLogger(__name__)
 
 _BASE = SERVER_BASE
 
-_FRONT_MATTER_RE = re.compile(
-    r"^---\s*\n(.*?)\n---\s*\n(.*)$",
-    re.DOTALL,
-)
-
-# Front-matter values that mean "yes" for ``disable-model-invocation``. Anything else,
-# the field's absence included, leaves the skill model-invocable: a skill is reachable
-# unless its own file says otherwise, the same default the server/skill toggles use.
-_SKILL_TRUTHY = frozenset({"true", "yes", "1"})
-
-
-def _parse_skill_markdown(text: str) -> dict:
-        """
-        Parse SKILL.md with YAML-like front-matter.
-        Returns: {name, description, content, model_invocable}
-
-        ``model_invocable`` is False when the front-matter carries
-        ``disable-model-invocation: true``. It gates the model's own ``load_skill``
-        pull, never the user's ``/<name>``: the field says who may invoke the skill,
-        and an explicit slash command is the user invoking it.
-        """
-        
-        m = _FRONT_MATTER_RE.match(text)
-        if not m:
-            raise ValueError("SKILL.md is missing front-matter block")
-
-        header, body = m.groups()
-
-        meta: dict[str, str] = {}
-        for line in header.splitlines():
-            if ":" not in line:
-                continue
-            k, v = line.split(":", 1)
-            meta[k.strip()] = v.strip()
-
-        if "name" not in meta or "description" not in meta:
-            raise ValueError("SKILL.md front-matter must define name and description")
-
-        return {
-            "name": meta["name"],
-            "description": meta["description"],
-            "content": body.strip(),
-            "model_invocable": (
-                meta.get("disable-model-invocation", "").strip().lower()
-                not in _SKILL_TRUTHY
-            ),
-        }
-
-
 def _discard_token(_text: str) -> None:
     """Token sink for model calls whose output is not the user's answer.
 
@@ -155,17 +103,6 @@ def _discard_token(_text: str) -> None:
     result in code, so without a sink the summary would be printed into the middle of
     the session.
     """
-
-
-# Execution-context fields MIRRORED into carry_context and back — derived from the
-# CARRY trait declared next to each field, not hand-listed.
-#
-# Deliberately narrower than ``carry_set_fields()``: that one is every set-valued key
-# carry_context holds, including those with no execution-context counterpart
-# (``last_query_written_files``), and it answers a different question — what must be
-# converted for JSON. Merging is only ever about the mirrored subset.
-def _mirrored_carry_fields() -> tuple[str, ...]:
-    return fields_with(CARRY)
 
 
 class MimirAgent:
@@ -196,8 +133,8 @@ class MimirAgent:
         # on a world-writable /tmp must happen in exactly one place, and both this
         # process and the server subprocesses then read the same answer from the
         # environment instead of re-deriving (and re-vetting) the path per call.
-        # A refused /tmp (symlink, foreign owner) falls back to the private state dir,
-        # which is where the scratchpad used to live — degraded, never absent.
+        # A refused /tmp (symlink, foreign owner) falls back to the private state dir:
+        # degraded, never absent.
         resolved = ensure_scratch_home()
         if not resolved:
             resolved = os.path.join(STATE_DIR, "scratch")
@@ -253,8 +190,8 @@ class MimirAgent:
 
         self.plan_todos: list[str] = []
         self.last_plan_query: str = ""
-        # Fields carried forward from previous queries within this session.
-        self._carry_context: dict[str, Any] = {}
+        # What one query leaves for the next in this session.
+        self.carry = CarryContext()
         # The turn in flight and the last finished one (core.turn_state).
         self.turn = TurnState()
         # Bounds below the model's own, 0 meaning none: a sub-agent is held to a smaller
@@ -279,15 +216,8 @@ class MimirAgent:
             logger.warning("extension packs could not all be loaded", exc_info=True)
             self.extensions = ExtensionSet(parent=AMBIENT)
 
-        # Operator toggles (soft-hide): servers/skills/nudges the user switched off in
-        # the panel. Only *disabled* names are persisted (.mimir/preferences.json);
-        # anything absent is enabled, so new servers/skills/nudges default to on. Disabled
-        # servers keep their subprocess but their tools are not advertised to the LLM;
-        # a disabled skill is hidden from both /<name> and the index the model loads
-        # from; disabled nudges are skipped by
-        # the nudge dispatcher. Application policies are locked (no toggle). See
-        # config/preferences.py.
-        self.disabled_servers, self.disabled_skills, self.disabled_nudges = load_disabled()
+        # The servers, skills and nudges the user switched off (config.toggles).
+        self.toggles = Toggles()
         # How far a sub-agent of this agent may go (config.settings.SUBAGENT_LEVELS).
         # The user's call, persisted like the toggles above; the weakest rung when they
         # have never chosen, because each rung hands something over rather than taking
@@ -439,12 +369,8 @@ class MimirAgent:
     def build_system_content_now(self, active_mode: str) -> str:
         """The full system prompt for *active_mode*, assembled synchronously.
 
-        Split out of :meth:`build_system_content` so a caller that is not on the
-        agent's own loop — the context bar, which estimates the prompt from the WS
-        event loop — can measure the prompt the query will actually send instead of
-        re-deriving a smaller one of its own. Nothing here awaits; the assembly only
-        reads local files, and the async method stays because every caller in the
-        loop is already a coroutine.
+        For a caller off the agent's own loop (the context bar measures the prompt from
+        the WebSocket loop). Nothing here awaits: the assembly only reads local files.
         """
         # Both indexes under one gate: the memory server owns the two scopes together,
         # so either both are injectable or neither is.
@@ -495,120 +421,6 @@ class MimirAgent:
             for name, meta in sorted(self.skills.items())
             if self.skill_enabled(name) and meta.get("model_invocable", True)
         ]
-
-    def apply_carry_context(self, execution_context: ExecutionContext) -> None:
-        """Merge long-lived session knowledge into a fresh per-query execution context.
-
-        Only accumulative, additive fields are carried forward.  Per-query state
-        (workflow phases, nudge counts, edit signatures, denied calls) is intentionally
-        reset so each query starts clean from a policy perspective.
-
-        Files in read_files whose on-disk mtime has changed since they were read are
-        evicted so the policy does not falsely treat them as already-confirmed reads.
-        """
-        # Evict stale read_files entries before merging.
-        prior_reads: set[str] = self._carry_context.get("read_files", set())
-        if prior_reads:
-            read_mtimes: dict[str, float] = self._carry_context.get("_read_mtimes", {})
-            fresh_reads: set[str] = set()
-            for p in prior_reads:
-                recorded_mtime = read_mtimes.get(p)
-                if recorded_mtime is None:
-                    fresh_reads.add(p)  # no mtime recorded — keep as-is
-                    continue
-                try:
-                    current_mtime = os.path.getmtime(absolute_workspace_path(p))
-                    if current_mtime <= recorded_mtime:
-                        fresh_reads.add(p)
-                    # else: file modified on disk — drop from carry
-                except OSError:
-                    pass  # file deleted; drop it
-            self._carry_context["read_files"] = fresh_reads
-
-        for field in _mirrored_carry_fields():
-            prior: set = self._carry_context.get(field, set())
-            if isinstance(prior, set) and isinstance(getattr(execution_context, field), set):
-                # sorted(): carried entries seed a RecencySet's order, and a plain set
-                # iterates in hash order — which varies per process. Insert them in a
-                # stable order so the pin renders identically across runs. They are all
-                # older than anything this query records, so relative order among them
-                # carries no recency information to preserve.
-                getattr(execution_context, field).update(sorted(prior))
-        if self._carry_context.get("searched"):
-            execution_context.searched = True
-        # A dict, so the set-only mirror above skips it. Carried because the tool
-        # results carrying these bodies are archived and replayed: a skill already in
-        # the conversation must not be pulled again just because a new query started.
-        prior_skills = self._carry_context.get("skills_loaded")
-        if isinstance(prior_skills, dict):
-            execution_context.skills_loaded.update(prior_skills)
-
-    def update_carry_context(self, execution_context: ExecutionContext) -> None:
-        """Persist the fields worth remembering into the session carry dict."""
-        for field in _mirrored_carry_fields():
-            current: set = getattr(execution_context, field)
-            if isinstance(current, set):
-                prior: set = self._carry_context.get(field, set())
-                self._carry_context[field] = prior | current
-        if execution_context.searched:
-            self._carry_context["searched"] = True
-        loaded = execution_context.skills_loaded
-        if isinstance(loaded, dict):
-            prior_skills = self._carry_context.get("skills_loaded")
-            merged = dict(prior_skills) if isinstance(prior_skills, dict) else {}
-            # A reservation that never resolved is not a load: the query it belonged to
-            # is over, so carrying "pending" forward would bar the skill for the rest of
-            # the session on the strength of a call that never came back.
-            merged.update({n: cid for n, cid in loaded.items() if cid != "pending"})
-            self._carry_context["skills_loaded"] = merged
-        # Record which files were written this query so a sub-agent's hand-back can
-        # report them (see server_spawn_agent).
-        self._carry_context["last_query_written_files"] = set(
-            execution_context.dirty_written_files
-        )
-        # Evict files that were written this query from read_files carry.
-        # The agent just changed them, so the old read evidence is stale — a
-        # fresh read_file must happen before the next query edits them again.
-        dirty: set[str] = execution_context.dirty_written_files
-        read_mtimes: dict[str, float] = self._carry_context.setdefault("_read_mtimes", {})
-        if dirty:
-            carry_reads: set[str] = self._carry_context.get("read_files", set())
-            carry_reads -= dirty
-            # Also drop their mtimes so the next apply_carry_context cannot
-            # accidentally resurrect them as "up to date" entries.
-            for p in dirty:
-                read_mtimes.pop(p, None)
-
-        # Stamp every carried read with the mtime observed NOW. Unconditionally: the
-        # read happened during this query, so the file's current state is the baseline
-        # the next query must compare against. Recording only the first time (the old
-        # `if p not in read_mtimes`) froze the baseline forever, so a single external
-        # edit evicted the path from carry on every subsequent query — the model re-read
-        # it each time and the evidence was never accepted again.
-        carried_reads: set[str] = self._carry_context.get("read_files", set())
-        for p in carried_reads:
-            try:
-                read_mtimes[p] = os.path.getmtime(absolute_workspace_path(p))
-            except OSError:
-                read_mtimes.pop(p, None)
-        # Drop mtimes for paths no longer carried, so the dict cannot grow unboundedly
-        # across a long session.
-        for p in [p for p in read_mtimes if p not in carried_reads]:
-            del read_mtimes[p]
-
-    def discard_carry_path(self, path: str) -> None:
-        """Remove a deleted file from every carried field that holds file paths.
-
-        Derived rather than listed, and derived from the *carry* schema rather than from
-        the execution-context traits alone: ``last_query_written_files`` exists only in
-        carry_context, so a trait-only derivation could not see it and a deleted file
-        kept being announced in the pin as "written last query — re-read before editing".
-        ``inspected_dirs`` is correctly absent: it holds directories, and deleting a file
-        does not un-inspect the directory that contained it.
-        """
-        for field in carry_path_fields():
-            self._carry_context.get(field, set()).discard(path)
-        self._carry_context.get("_read_mtimes", {}).pop(path, None)
 
     # ── The person behind the front-end (core.ports.HumanIO) ─────────────────
 
@@ -777,11 +589,12 @@ class MimirAgent:
         in ``self.tools``), but they are excluded here so the model can neither see nor
         call them. A tool with no known owner is kept (fail-open).
         """
-        if not self.disabled_servers:
+        off = self.toggles.disabled["server"]
+        if not off:
             return self.tools
         return [
             t for t in self.tools
-            if self.tool_owner.get(t.get("function", {}).get("name", "")) not in self.disabled_servers
+            if self.tool_owner.get(t.get("function", {}).get("name", "")) not in off
         ]
 
     def advertised_tools_for_mode(self, active_mode: str | None = None) -> list[dict]:
@@ -799,34 +612,11 @@ class MimirAgent:
         return tools
 
     def skill_enabled(self, name: str) -> bool:
-        return name not in self.disabled_skills
+        return self.toggles.enabled("skill", name)
 
-    def set_server_enabled(self, name: str, enabled: bool) -> None:
-        """Enable/disable a server's tools and persist the choice."""
-        if enabled:
-            self.disabled_servers.discard(name)
-        else:
-            self.disabled_servers.add(name)
-        self._save_toggles()
-
-    def set_skill_enabled(self, name: str, enabled: bool) -> None:
-        """Enable/disable a skill for auto-detection and persist the choice."""
-        if enabled:
-            self.disabled_skills.discard(name)
-        else:
-            self.disabled_skills.add(name)
-        self._save_toggles()
-
-    def set_nudge_enabled(self, name: str, enabled: bool) -> None:
-        """Enable/disable an application nudge and persist the choice."""
-        if enabled:
-            self.disabled_nudges.discard(name)
-        else:
-            self.disabled_nudges.add(name)
-        self._save_toggles()
-
-    def _save_toggles(self) -> None:
-        save_disabled(self.disabled_servers, self.disabled_skills, self.disabled_nudges)
+    def set_enabled(self, kind: str, name: str, enabled: bool) -> None:
+        """Switch a server, skill or nudge on or off, and remember it."""
+        self.toggles.set_enabled(kind, name, enabled)
 
     def toggles_state(self) -> dict:
         """Snapshot for the toggle panel: every server and skill with its enabled flag.
@@ -841,7 +631,7 @@ class MimirAgent:
             {
                 "name": name,
                 "description": server_descriptions.get(name, ""),
-                "enabled": name not in self.disabled_servers,
+                "enabled": self.toggles.enabled("server", name),
             }
             for name in all_servers()
         ]
@@ -856,7 +646,7 @@ class MimirAgent:
                     if meta.get("model_invocable", True)
                     else f"{meta.get('description', '')} (/{name} only)".strip()
                 ),
-                "enabled": name not in self.disabled_skills,
+                "enabled": self.toggles.enabled("skill", name),
             }
             for name, meta in sorted(self.skills.items())
         ]
@@ -866,7 +656,7 @@ class MimirAgent:
             {
                 "name": name,
                 "description": "application nudge",
-                "enabled": name not in self.disabled_nudges,
+                "enabled": self.toggles.enabled("nudge", name),
             }
             for name in self.extensions.nudge_names()
         ]
@@ -1001,61 +791,14 @@ class MimirAgent:
         return [compaction_summary_message(compacted_exchanges(middle), summary)]
 
     def load_skills(self, skills_dir: str, *, merge: bool = False) -> None:
-        """
-        Load skills from a directory.
-
-        Expected layout:
-        skills_dir/
-            <skill-name>/
-            SKILL.md
-
-        ``merge=False`` (default) resets ``self.skills`` first (bundled load). ``merge=True``
-        adds to the existing set so a user skills dir (``.mimir/skills``) can be layered on
-        top of the bundled one; a user skill with the same name overrides the bundled one.
-        """
+        """Load the skills of *skills_dir*. With *merge*, add them to those already
+        loaded, a same-named one overriding (the workspace's over the bundled ones)."""
         if not merge:
             self.skills = {}
-
-        if not os.path.isdir(skills_dir):
-            return
-
-        for entry in os.listdir(skills_dir):
-            skill_path = os.path.join(skills_dir, entry)
-            if not os.path.isdir(skill_path):
-                continue
-
-            md_path = os.path.join(skill_path, "SKILL.md")
-            if not os.path.isfile(md_path):
-                continue
-
-            try:
-                with open(md_path, "r", encoding="utf-8") as f:
-                    parsed = _parse_skill_markdown(f.read())
-            except Exception as exc:
-                logger.warning("Failed to load skill %s: %s", entry, exc)
-                continue
-
-            name = parsed["name"]
-
-            # Defensive: directory name and skill name must match
-            if name != entry:
-                logger.warning(
-                    "Skill directory '%s' and skill name '%s' mismatch; skipping",
-                    entry,
-                    name,
-                )
-                continue
-
+        for name, meta in read_skills_dir(skills_dir).items():
             if merge and name in self.skills:
                 logger.info("User skill '%s' overrides the bundled skill of the same name", name)
-
-            self.skills[name] = {
-                "description": parsed["description"],
-                "content": parsed["content"],
-                # Whether the MODEL may pull this skill itself (load_skill). The user's
-                # /<name> ignores it — see _parse_skill_markdown.
-                "model_invocable": parsed["model_invocable"],
-            }
+            self.skills[name] = meta
 
     async def run(
         self,
@@ -1072,10 +815,8 @@ class MimirAgent:
         event_callback: Any = None,
         resume: dict | None = None,
     ) -> str:
-        # Bind the structured-event sink for this run so emit() in the engine and
-        # tool executor (and their gathered tasks) route events to event_callback
-        # instead of stdout. When no callback is supplied (CLI), the sink stays
-        # unset and emit() prints — preserving the original behaviour.
+        # With an event_callback, emit() in the engine and the executor (and their
+        # gathered tasks) goes to it for this run; without one (the CLI) it prints.
         token = set_event_sink(event_callback) if event_callback else None
         try:
             return await run_agent_query(
@@ -1100,26 +841,13 @@ class MimirAgent:
     async def cleanup(self) -> None:
         await self.exit_stack.aclose()
 
-    # ── Session state serialisation ────────────────────────────────────────────
-    #
-    # "Which keys must survive a JSON round-trip as sets" is answered by the carry
-    # schema (``carry_set_fields``), not by the CARRY trait: the trait only knows the
-    # fields mirrored from the execution context, and carry_context holds set-valued
-    # keys of its own.
+    # ── Session state, as the session store keeps it ───────────────────────────
 
     def export_state(self) -> dict[str, Any]:
-        """Snapshot the agent's carry_context for session persistence.
-
-        Conversion is derived from the carry schema rather than from the CARRY trait
-        alone: keys that live only in carry_context (``last_query_written_files``) are
-        sets too, and the session store serialises with ``default=str``, so anything
-        missed round-trips as a string instead of raising.
-        """
-        return {"carry_context": carry_context_to_json(self._carry_context)}
+        return {"carry_context": self.carry.to_json()}
 
     def load_state(self, state: dict[str, Any]) -> None:
-        """Restore agent state from a previously exported snapshot."""
-        self._carry_context = carry_context_from_json(state.get("carry_context", {}))
+        self.carry = CarryContext.from_json(state.get("carry_context", {}))
 
 
 __all__ = ["MimirAgent", "SERVERS", "_BASE"]

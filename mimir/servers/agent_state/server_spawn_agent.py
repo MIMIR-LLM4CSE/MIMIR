@@ -293,11 +293,9 @@ def _partial_handoff(child: dict) -> dict:
     must start it again.
     """
     agent = child.get("agent")
-    carry = getattr(agent, "_carry_context", None) or {}
     worktree = child.get("worktree")
-    files_read = _repo_relative(sorted(carry.get("read_files") or []), worktree)
-    files_written = _repo_relative(
-        sorted(carry.get("last_query_written_files") or []), worktree)
+    files_read = _repo_relative(agent.carry.files_read() if agent else [], worktree)
+    files_written = _repo_relative(agent.carry.files_written() if agent else [], worktree)
     lines = []
     if files_written:
         lines.append("Files it had already modified: " + ", ".join(files_written) + ".")
@@ -2093,7 +2091,6 @@ async def _drive_sub_agent(
     # fewer servers than the parent, and keeps fewer tools still).
     agent.seed_classification_from_caps()
 
-    agent._spawn_mode = True  # marker flag (not currently used by loop)
 
     # What the child was given decides how it runs. Nothing that writes or executes
     # among its tools means nothing to gate: it explores, in a read-only mode. One such
@@ -2143,12 +2140,10 @@ async def _drive_sub_agent(
     print(f"✓ sub-agent finished: {task[:60]}{'…' if len(task) > 60 else ''}",
           file=sys.stderr)
 
-    # What the child touched this run (recorded by _update_carry_context). `files_read`
-    # goes back so the caller can record the evidence a delegated sweep produced.
-    _carry = agent._carry_context
-    files_read = _repo_relative(sorted(_carry.get("read_files", set())), worktree)
-    files_written = _repo_relative(
-        sorted(_carry.get("last_query_written_files", set())), worktree)
+    # What the child touched this run. `files_read` goes back so the caller can record
+    # the evidence a delegated sweep produced.
+    files_read = _repo_relative(agent.carry.files_read(), worktree)
+    files_written = _repo_relative(agent.carry.files_written(), worktree)
     # "completed" = the task itself finished; distinct from the run succeeding.
     # finalize_incomplete_answer owns its headlines (is_incomplete_answer matches
     # them); the hard step limit yields "Reached the maximum number of steps…".

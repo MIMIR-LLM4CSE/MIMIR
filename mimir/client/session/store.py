@@ -18,7 +18,7 @@ Session JSON schema:
                               #   (a window that carries a compaction summary is what a
                               #   resume reloads instead; see _Session._load_session)
   "display_messages": [...],  # serialised UI ChatMessage objects
-  "carry_context": {...},     # MimirAgent._carry_context
+  "carry_context": {...},     # MimirAgent.carry (context.carry.CarryContext)
   "todos": [{"text": "...", "done": false}],
   "pending_interaction": {...} | null  # the card a deferred turn waits on, and what
                                        #   its answer resumes (query_engine.deferral)

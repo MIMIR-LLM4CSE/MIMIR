@@ -106,7 +106,7 @@ async def run_agent_query(
     # Set here rather than passed in: a front-end's stand-in agent supplies its own
     # zero-argument factory, and the root is a fact about the agent either way.
     execution_context.workspace_root = getattr(agent, "workspace_root", "")
-    agent.apply_carry_context(execution_context)
+    agent.carry.apply(execution_context)
     validate_execution_context(execution_context)
     active_mode = normalize_mode(mode or agent.mode)
     # Baseline for the live-mode check: only a *later* change to agent.mode is a

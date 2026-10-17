@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
+from mimir.client.config.toggles import Toggles
 from mimir.client.extensions import (
     ExtensionSet,
     NudgeRule,
@@ -47,7 +48,7 @@ class _NudgeAgent:
         self.enforcement = enforcement
         self.model = "dummy"
         self.tool_caps: dict = {}
-        self.disabled_nudges = disabled or set()
+        self.toggles = Toggles({"nudge": set(disabled or ())}, persist=False)
 
 
 class ExtensionRegistryResetMixin(unittest.TestCase):

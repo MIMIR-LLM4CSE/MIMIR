@@ -52,7 +52,7 @@ async def _finalize_answer(
     """
     record_exercise_obstacle(agent, execution_context)
     answer = _annotate_answer_with_changes(answer, execution_context)
-    agent.update_carry_context(execution_context)
+    agent.carry.update(execution_context)
     _record_turn(agent, messages)
     return answer
 

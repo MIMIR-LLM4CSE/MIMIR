@@ -131,7 +131,7 @@ class ToggleCommand(Command):
             enabled, name = args[0].lower() == "on", args[1]
             if name not in {r["name"] for r in rows}:
                 return CommandResult.error(f"Unknown {singular}: {name}")
-            getattr(agent, f"set_{singular}_enabled")(name, enabled)
+            agent.set_enabled(singular, name, enabled)
             return CommandResult(
                 f"{'✓ enabled' if enabled else '✗ disabled'} {singular}: {name}")
         return CommandResult.error(f"Usage: /{self.name} on|off <name>")

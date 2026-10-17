@@ -1,8 +1,8 @@
 """Resolution of the user skills directory under ``.mimir/skills/``.
 
 A user skill ``.mimir/skills/<name>/SKILL.md`` (override ``MIMIR_SKILLS_DIR``) is
-loaded by ``MimirAgent.load_skills`` (a same-named user skill overrides the bundled
-one). This module only resolves the directory; the loading lives on the agent.
+loaded by ``MimirAgent.load_skills`` over the bundled ones, a same-named one
+overriding; the file format is ``servers/_shared/skill_file``.
 """
 
 from __future__ import annotations

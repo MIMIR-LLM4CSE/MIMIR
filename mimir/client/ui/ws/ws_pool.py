@@ -145,7 +145,7 @@ class _Settings:
                 logger.warning("pool: could not apply %s to a new worker: %s", name, error)
         for (kind, name), enabled in self.toggles.items():
             try:
-                getattr(worker, f"set_{kind}_enabled")(name, enabled)
+                worker.set_enabled(kind, name, enabled)
             except Exception:
                 logger.warning("pool: could not switch %s %s on a new worker", kind, name,
                                exc_info=True)
@@ -1007,7 +1007,7 @@ class _AgentPool:
         self.settings.toggles[(kind, name)] = enabled
         for _sid, worker in self.items():
             try:
-                getattr(worker, f"set_{kind}_enabled")(name, enabled)
+                worker.set_enabled(kind, name, enabled)
             except Exception:
                 logger.warning("pool: could not switch %s %s", kind, name, exc_info=True)
 

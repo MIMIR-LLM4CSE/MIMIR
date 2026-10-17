@@ -316,16 +316,10 @@ class ExecutionContext:
 
 # ── The carry-context schema ───────────────────────────────────────────────────
 #
-# ``carry_context`` is the session-level dict that survives between queries. Most of it
-# mirrors the CARRY-trait fields above, but three keys exist only there — and because
-# they were never declared anywhere, ``export_state`` did not know to normalise them
-# for JSON. ``last_query_written_files`` is a ``set``: the session store serialises with
-# ``default=str``, so it round-tripped as the *string* "{'a.py', 'b.py'}", and the next
-# ``apply_carry_context`` did ``set(...)`` on that string, exploding it into single
-# characters that the pin then rendered as file paths.
-#
-# Declaring the extras here is what lets the JSON conversion and the deleted-path purge
-# be derived instead of hand-listed, so the next key added cannot repeat the bug.
+# The carry context (``context.carry``) is the session-level dict that survives between
+# queries. Most of it mirrors the CARRY-trait fields above; the keys that exist only
+# there are declared here, so the JSON conversion (sets become lists and back) and the
+# deleted-path purge are derived rather than hand-listed.
 #   (name, default_factory, json_kind, holds_paths)
 _CarryExtraSpec = tuple[str, Callable[[], Any], str, bool]
 

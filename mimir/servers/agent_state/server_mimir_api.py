@@ -44,6 +44,7 @@ from extension_paths import (
     workspace_root,
 )
 from responses import err, ok
+from skill_file import model_invocable
 from text_tools import yaml_unquote
 
 # The installed package root (``<...>/mimir/``): this file is mimir/servers/agent_state/.
@@ -179,21 +180,6 @@ def _front_matter(path: str) -> dict:
     return fields
 
 
-# Front-matter values that mean "yes" for ``disable-model-invocation``. Mirrors the
-# client's ``_SKILL_TRUTHY`` (client/agent_core.py), and the parity is tested.
-_SKILL_TRUTHY = frozenset({"true", "yes", "1"})
-
-
-def _model_invocable(fields: dict) -> bool:
-    """Whether the MODEL may load this skill itself, from its front-matter.
-
-    False only when the file says so. The user's ``/<name>`` is unaffected: the field
-    names who may invoke the skill, and a slash command is the user invoking it.
-    """
-    return str(fields.get("disable-model-invocation", "")).strip().lower() \
-        not in _SKILL_TRUTHY
-
-
 def _bundled_skill_names() -> list[dict]:
     """The shipped skills, which a same-named user skill overrides."""
     out: list[dict] = []
@@ -207,7 +193,7 @@ def _bundled_skill_names() -> list[dict]:
                 # Reported as the one boolean a reader acts on, not as the raw
                 # front-matter spelling: a skill listed here that load_skill would
                 # refuse has to be readable as such.
-                "model_invocable": _model_invocable(fields),
+                "model_invocable": model_invocable(fields),
             })
     return out
 
@@ -629,7 +615,7 @@ def load_skill(name: str) -> dict:
                    hint=f"Available: {', '.join(_available_skill_names())}.")
 
     fields, body = _skill_body(path)
-    if not _model_invocable(fields):
+    if not model_invocable(fields):
         # The file itself says this one is the user's to invoke. Said plainly, with
         # what to do instead, because the alternative the model reaches for otherwise
         # is to stop and ask the user to run the slash command for it.

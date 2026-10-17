@@ -22,6 +22,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 from mimir.client.core.turn_state import TurnState
+from mimir.client.context.carry import CarryContext
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "agent_state"):
@@ -76,10 +77,10 @@ class _FakeAgent:
         self.mode = "agent"
         self.thinking_depth = 99
         self.run_kwargs: dict = {}
-        self._carry_context = {
+        self.carry = CarryContext({
             "read_files": {"/w/a.py", "/w/b.py"},
             "last_query_written_files": set(),
-        }
+        })
         self._answer = answer
 
         # The real manager, not a stand-in: what a session grant is worth is decided
@@ -1323,7 +1324,7 @@ class ForcedDetachmentTests(unittest.TestCase):
         """Its answer is gone with the thread; what it touched is not, and that is what
         lets the caller carry the axis on instead of starting it again."""
         agent = _FakeAgent()
-        agent._carry_context["last_query_written_files"] = {"/w/solver.py"}
+        agent.carry.fields["last_query_written_files"] = {"/w/solver.py"}
 
         async def _never(*a, **kw):
             await asyncio.sleep(5)
@@ -1388,7 +1389,7 @@ class BackgroundTests(unittest.TestCase):
         release = threading.Event()
         started = threading.Event()
         agent = _FakeAgent()
-        agent._carry_context["last_query_written_files"] = {"/w/solver.py"}
+        agent.carry.fields["last_query_written_files"] = {"/w/solver.py"}
 
         async def _drive(*a, **kw):
             # The child publishes itself just before this runs, so waiting here is what
@@ -1738,10 +1739,10 @@ class ReportedPathTests(unittest.TestCase):
     def test_a_handoff_past_the_budget_uses_the_same_names(self):
         # The evidence of a child that overran is read off the agent, not its result —
         # the other half of the report, and it must not speak a different language.
-        agent = types.SimpleNamespace(_carry_context={
+        agent = types.SimpleNamespace(carry=CarryContext({
             "read_files": ["/tmp/wt/child/src/solver.c"],
             "last_query_written_files": ["/tmp/wt/child/src/solver.c"],
-        })
+        }))
         out = spawn._partial_handoff({"agent": agent, "worktree": {"path": "/tmp/wt/child"}})
         self.assertEqual(out["files_read"], ["src/solver.c"])
         self.assertEqual(out["files_written"], ["src/solver.c"])
@@ -1835,7 +1836,7 @@ class BudgetTimeoutAdviceTests(unittest.TestCase):
         interesting.
         """
         child = {"agent": types.SimpleNamespace(
-            _carry_context={"read_files": {"/w/a.py"}, "last_query_written_files": set()},
+            carry=CarryContext({"read_files": {"/w/a.py"}, "last_query_written_files": set()}),
             turn=TurnState())}
         entry = {"state": "running", "started": time.time() - 9000, "budget": 7200,
                  "task": "optimise the kernel", "session": "s/subagents/sub-1",

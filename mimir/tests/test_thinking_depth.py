@@ -26,6 +26,7 @@ from mimir.client.prompt import system_prompt as sp
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.client.core.turn_state import TurnState
+from mimir.client.context.carry import CarryContext
 
 
 class _Agent:
@@ -148,6 +149,7 @@ class _LoopAgent:
 
     def __init__(self):
         self.turn = TurnState()
+        self.carry = CarryContext()
         self.thinking_depth = DEFAULT_THINKING_DEPTH
         self.thinking = True
         self.thinking_budget = -1
@@ -164,11 +166,6 @@ class _LoopAgent:
     def todo_file():
         return ""
 
-    def apply_carry_context(self, execution_context):
-        pass
-
-    def update_carry_context(self, execution_context):
-        pass
 
 
 

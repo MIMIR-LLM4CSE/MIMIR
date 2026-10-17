@@ -8,25 +8,27 @@ server connection is required.
 import tempfile
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import mimir.client.config.preferences as preferences
 from mimir.client.config import paths
+from mimir.client.config.toggles import Toggles
 from mimir.client.core.extension_set import ExtensionSet
 from mimir.client.agent_core import MimirAgent
 from mimir.tests._commands import cli
 from mimir.client.core.turn_state import TurnState
 
 
-def _fake_agent(**overrides):
+def _fake_agent(*, disabled_servers=(), disabled_skills=(), **overrides):
     """A minimal object carrying just the attributes the toggle methods touch."""
     fake = types.SimpleNamespace(
         tools=[],
         tool_owner={},
-        disabled_servers=set(),
-        disabled_skills=set(),
+        toggles=Toggles({"server": set(disabled_servers), "skill": set(disabled_skills)},
+                        persist=False),
         skills={},
-        extensions=ExtensionSet(),turn=TurnState())
+        extensions=ExtensionSet(), turn=TurnState())
     for k, v in overrides.items():
         setattr(fake, k, v)
     return fake
@@ -137,31 +139,27 @@ class TogglesStateTests(unittest.TestCase):
 
 
 class SetEnabledPersistsTests(unittest.TestCase):
-    def test_set_server_enabled_mutates_and_saves(self) -> None:
-        saved = {}
+    def test_switching_off_and_on_is_saved_each_time(self) -> None:
+        saved = []
+        toggles = Toggles({}, persist=True)
+        with mock.patch("mimir.client.config.toggles.save_disabled",
+                        lambda servers, skills, nudges: saved.append(set(servers))):
+            toggles.set_enabled("server", "strings", False)
+            self.assertFalse(toggles.enabled("server", "strings"))
+            toggles.set_enabled("server", "strings", True)
+        self.assertTrue(toggles.enabled("server", "strings"))
+        self.assertEqual(saved, [{"strings"}, set()])
 
-        def fake_save(servers, skills):
-            saved["servers"] = set(servers)
-            saved["skills"] = set(skills)
+    def test_an_unknown_kind_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            Toggles({}, persist=False).set_enabled("policy", "x", False)
 
+    def test_the_agent_switches_through_its_toggles(self) -> None:
         fake = _fake_agent()
-        fake._save_toggles = lambda: fake_save(fake.disabled_servers, fake.disabled_skills)
-
-        MimirAgent.set_server_enabled(fake, "strings", False)
-        self.assertIn("strings", fake.disabled_servers)
-        self.assertEqual(saved["servers"], {"strings"})
-
-        MimirAgent.set_server_enabled(fake, "strings", True)
-        self.assertNotIn("strings", fake.disabled_servers)
-        self.assertEqual(saved["servers"], set())
-
-    def test_set_skill_enabled_mutates_and_saves(self) -> None:
-        fake = _fake_agent()
-        fake._save_toggles = lambda: None
-        MimirAgent.set_skill_enabled(fake, "fix-bug", False)
-        self.assertIn("fix-bug", fake.disabled_skills)
-        MimirAgent.set_skill_enabled(fake, "fix-bug", True)
-        self.assertNotIn("fix-bug", fake.disabled_skills)
+        MimirAgent.set_enabled(fake, "skill", "fix-bug", False)
+        self.assertFalse(MimirAgent.skill_enabled(fake, "fix-bug"))
+        MimirAgent.set_enabled(fake, "skill", "fix-bug", True)
+        self.assertTrue(MimirAgent.skill_enabled(fake, "fix-bug"))
 
 
 class ChatCommandTests(unittest.TestCase):
@@ -178,8 +176,7 @@ class ChatCommandTests(unittest.TestCase):
                             {"name": "strings", "description": "Strings", "enabled": False}],
                 "skills": [{"name": "fix-bug", "description": "Fix", "enabled": True}],
             },
-            set_server_enabled=lambda n, e: calls.append(("server", n, e)),
-            set_skill_enabled=lambda n, e: calls.append(("skill", n, e)),
+            set_enabled=lambda kind, n, e: calls.append((kind, n, e)),
             _calls=calls,
         )
 

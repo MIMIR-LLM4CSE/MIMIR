@@ -22,12 +22,13 @@ from mimir.client.context.execution_context import (
     carry_set_fields,
     build_execution_context,
 )
+from mimir.client.context.carry import CarryContext
 
 
 def _bare_agent():
     """An agent with only the carry machinery — no servers, no model, no init."""
     agent = MimirAgent.__new__(MimirAgent)
-    agent._carry_context = {}
+    agent.carry = CarryContext()
     return agent
 
 
@@ -74,14 +75,14 @@ class CarryJsonRoundTripTests(unittest.TestCase):
     def test_written_files_do_not_explode_into_characters(self) -> None:
         # The exact defect: set -> str -> set(str) == set of characters.
         agent = _bare_agent()
-        agent._carry_context = self._carry()
+        agent.carry.fields = self._carry()
         blob = json.dumps(agent.export_state(), default=str)
 
         reloaded = _bare_agent()
         reloaded.load_state(json.loads(blob))
 
         self.assertEqual(
-            reloaded._carry_context["last_query_written_files"], {"solver.py", "util.py"}
+            reloaded.carry.fields["last_query_written_files"], {"solver.py", "util.py"}
         )
 
     def test_undeclared_set_is_still_converted(self) -> None:
@@ -109,10 +110,10 @@ class ReadStalenessTests(unittest.TestCase):
     def _query_that_reads_the_file(self) -> bool:
         """Run one query's carry cycle; return whether the carried read was accepted."""
         ctx = build_execution_context()
-        self.agent.apply_carry_context(ctx)
+        self.agent.carry.apply(ctx)
         accepted = self.path in ctx.read_files
         ctx.read_files.add(self.path)
-        self.agent.update_carry_context(ctx)
+        self.agent.carry.update(ctx)
         return accepted
 
     def _touch(self) -> None:
@@ -140,37 +141,37 @@ class ReadStalenessTests(unittest.TestCase):
 
     def test_a_file_written_this_query_is_dropped_from_carry(self) -> None:
         ctx = build_execution_context()
-        self.agent.apply_carry_context(ctx)
+        self.agent.carry.apply(ctx)
         ctx.read_files.add(self.path)
         ctx.dirty_written_files.add(self.path)
-        self.agent.update_carry_context(ctx)
-        self.assertNotIn(self.path, self.agent._carry_context["read_files"])
-        self.assertNotIn(self.path, self.agent._carry_context["_read_mtimes"])
+        self.agent.carry.update(ctx)
+        self.assertNotIn(self.path, self.agent.carry.fields["read_files"])
+        self.assertNotIn(self.path, self.agent.carry.fields["_read_mtimes"])
 
     def test_mtimes_do_not_accumulate_for_uncarried_paths(self) -> None:
         self._query_that_reads_the_file()
-        self.agent._carry_context["_read_mtimes"]["gone.py"] = 1.0
+        self.agent.carry.fields["_read_mtimes"]["gone.py"] = 1.0
         self._query_that_reads_the_file()
-        self.assertNotIn("gone.py", self.agent._carry_context["_read_mtimes"])
+        self.assertNotIn("gone.py", self.agent.carry.fields["_read_mtimes"])
 
 
 class DiscardCarryPathTests(unittest.TestCase):
     def test_deleting_a_file_purges_it_from_every_carried_path_field(self) -> None:
         agent = _bare_agent()
-        agent._carry_context = {
+        agent.carry.fields = {
             "read_files": {"a.py", "b.py"},
             "existing_paths": {"a.py"},
             "checked_paths": {"a.py"},
             "last_query_written_files": {"a.py", "c.py"},
             "_read_mtimes": {"a.py": 1.0, "b.py": 2.0},
         }
-        agent.discard_carry_path("a.py")
+        agent.carry.discard_path("a.py")
         for field in carry_path_fields():
-            self.assertNotIn("a.py", agent._carry_context.get(field, set()), field)
-        self.assertNotIn("a.py", agent._carry_context["_read_mtimes"])
+            self.assertNotIn("a.py", agent.carry.fields.get(field, set()), field)
+        self.assertNotIn("a.py", agent.carry.fields["_read_mtimes"])
         # Untouched neighbours survive.
-        self.assertEqual(agent._carry_context["read_files"], {"b.py"})
-        self.assertEqual(agent._carry_context["last_query_written_files"], {"c.py"})
+        self.assertEqual(agent.carry.fields["read_files"], {"b.py"})
+        self.assertEqual(agent.carry.fields["last_query_written_files"], {"c.py"})
 
 
 if __name__ == "__main__":

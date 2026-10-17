@@ -44,6 +44,7 @@ from mimir.tests._loops import run_agent
 # Provide a module-compatible namespace so existing test references work.
 import types
 from mimir.client.core.turn_state import TurnState
+from mimir.client.context.carry import CarryContext
 client_module = types.SimpleNamespace(
     MimirAgent=MimirAgent,
     SERVERS=__import__('mimir.client.config', fromlist=['SERVERS']).SERVERS,
@@ -221,7 +222,7 @@ class ClientHelperTests(unittest.TestCase):
             "inspected_dirs"})
 
     def test_carried_path_purge_drops_the_inert_entry_and_keeps_dirs_out(self) -> None:
-        """`discard_carry_path`'s field set, now derived — two deliberate absences.
+        """`CarryContext.discard_path`'s field set, now derived — two deliberate absences.
 
         `dirty_written_files` is gone: it was in the hand-written list but is never
         placed in carry_context, so purging it was theatre. `inspected_dirs` stays out
@@ -324,7 +325,7 @@ class ClientHelperTests(unittest.TestCase):
             tool_caps={"delete_file": ToolCaps(
                 name="delete_file", capabilities=frozenset({REMOVE}))},
             normalize_workspace_path=lambda p: p or "",
-            discard_carry_path=lambda p: None,turn=TurnState())
+            carry=CarryContext(), turn=TurnState())
         observations.files.delete(Call(
             agent=agent, tool_name="delete_file", arguments={"path": "doomed.py"}, status="ok",
             execution_context=ec,
@@ -339,16 +340,16 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         m = execution_context_module
         for field in m.fields_with(m.CARRY):
-            agent._carry_context[field] = {"doomed.py", "kept.py"}
+            agent.carry.fields[field] = {"doomed.py", "kept.py"}
 
-        agent.discard_carry_path("doomed.py")
+        agent.carry.discard_path("doomed.py")
 
         for field in m.fields_with(m.CARRY, m.FILE_PATH):
             with self.subTest(field=field):
-                self.assertNotIn("doomed.py", agent._carry_context[field])
+                self.assertNotIn("doomed.py", agent.carry.fields[field])
         # inspected_dirs is carried but holds directories: deleting a file must not
         # un-inspect the directory it lived in.
-        self.assertIn("doomed.py", agent._carry_context["inspected_dirs"])
+        self.assertIn("doomed.py", agent.carry.fields["inspected_dirs"])
 
     def test_a_fresh_context_has_every_field_at_its_default(self) -> None:
         # The nudge seeder used to default this to 99 where the schema says 0, so the
@@ -434,10 +435,10 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_carry_context_populates_existing_paths(self) -> None:
         agent = client_module.MimirAgent()
-        agent._carry_context["existing_paths"] = {"mimir/servers/utilities/server_math.py"}
+        agent.carry.fields["existing_paths"] = {"mimir/servers/utilities/server_math.py"}
         execution_context = build_execution_context(searched=False, inspected_dirs=set(), checked_paths=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={})
 
-        agent.apply_carry_context(execution_context)
+        agent.carry.apply(execution_context)
         self.assertIn("mimir/servers/utilities/server_math.py", execution_context.existing_paths)
 
     def test_write_policy_allows_new_non_code_file_with_direct_target_context(self) -> None:
@@ -808,11 +809,9 @@ class ClientHelperTests(unittest.TestCase):
 
             approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
-            def apply_carry_context(self, execution_context):
-                captured_context.update(vars(execution_context))
-
-            def update_carry_context(self, execution_context):
-                pass
+            carry = types.SimpleNamespace(
+                apply=lambda execution_context: captured_context.update(vars(execution_context)),
+                update=lambda execution_context: None)
 
         fake_agent = _QueryAgent()
 
@@ -876,7 +875,7 @@ class ClientHelperTests(unittest.TestCase):
             tools=[],
             tool_caps={},
             thinking_budget=-1,
-            update_carry_context=lambda ec: None,
+            carry=CarryContext(),
             approvals=types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True)),turn=TurnState())
 
         m = agent_loop_module

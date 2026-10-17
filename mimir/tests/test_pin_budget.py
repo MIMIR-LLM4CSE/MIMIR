@@ -46,14 +46,14 @@ class RecencySetTests(unittest.TestCase):
         self.assertEqual(s.insertion_order(), ["a", "c"])
 
     def test_in_place_difference_keeps_the_order_coherent(self) -> None:
-        # update_carry_context does `carry_reads -= dirty`.
+        # CarryContext.update does `carry_reads -= dirty`.
         s = RecencySet(["a", "b", "c"])
         s -= {"b"}
         self.assertIsInstance(s, RecencySet)
         self.assertEqual(s.insertion_order(), ["a", "c"])
 
     def test_set_operators_degrade_to_a_plain_set(self) -> None:
-        # `prior | current` in update_carry_context: order is lost, nothing breaks.
+        # `prior | current` in CarryContext.update: order is lost, nothing breaks.
         merged = RecencySet(["a"]) | {"b"}
         self.assertIsInstance(merged, set)
         self.assertEqual(merged, {"a", "b"})

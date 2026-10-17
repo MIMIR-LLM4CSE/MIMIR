@@ -111,9 +111,7 @@ def end_deferred_turn(agent: AgentPort, execution_context: ExecutionContext) -> 
     What the turn learned is kept for the one that resumes it; its transcript is
     recorded on the way out of the loop, like any other ending.
     """
-    update = getattr(agent, "update_carry_context", None)
-    if callable(update):
-        update(execution_context)
+    agent.carry.update(execution_context)
     return ""
 
 

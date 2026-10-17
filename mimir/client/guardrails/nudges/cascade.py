@@ -26,6 +26,7 @@ from ...config.models import resolve_enforcement
 from ...config.limits import (
     EXERCISE_BUDGET,
 )
+from ...config.toggles import is_enabled
 from ...core.extension_set import extensions_of
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
@@ -194,7 +195,7 @@ class Nudge(Protocol):
 
 
 def _enabled(agent: AgentPort, name: str) -> bool:
-    return name not in (getattr(agent, "disabled_nudges", None) or set())
+    return is_enabled(agent, "nudge", name)
 
 
 def _cascade(agent: AgentPort, layer: str) -> list[Nudge]:
