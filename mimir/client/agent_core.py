@@ -59,6 +59,8 @@ from .integration.server_manager import connect_servers as connect_servers_runti
 from .query_engine import run_agent_query
 from .guardrails.toollist import tools_for_readonly_mode
 from .event_sink import set_event_sink, reset_event_sink
+from .core.human import TerminalHuman
+from .core.ports import HumanIO
 from .core.settings import apply_setting
 from .protocol.tool_result import (
     json_error_payload,
@@ -225,6 +227,12 @@ class MimirAgent:
         # Constructed empty; classification is seeded from the live per-agent
         # registry after servers connect (seed_classification_from_caps).
         self.approvals = ApprovalManager(session_id=session_id)
+        # Who answers for the user: the terminal, unless the front-end puts its own.
+        self.human: HumanIO = TerminalHuman()
+        # What a front-end lends the turn (core.ports.AgentPort); none by default.
+        self.poll_steer: Callable[[], list[str]] | None = None
+        self.register_background_job: Callable[..., bool] | None = None
+        self.watched_background_jobs: Callable[[], list[dict]] | None = None
         self.session_approved_scopes = self.approvals.approved_scopes
 
         self.plan_todos: list[str] = []
@@ -601,72 +609,29 @@ class MimirAgent:
             self._carry_context.get(field, set()).discard(path)
         self._carry_context.get("_read_mtimes", {}).pop(path, None)
 
-    def request_tool_approval(self, tool_name: str, arguments: dict, max_attempts: int = 3) -> tuple[bool, str]:
-        return self.approvals.request(
-            tool_name=tool_name,
-            server_name=self.tool_owner.get(tool_name, "unknown"),
-            arguments=arguments,
-            max_attempts=max_attempts,
-        )
+    # ── The person behind the front-end (core.ports.HumanIO) ─────────────────
 
-    def request_path_approval(
-        self, paths: list[str], tool_name: str, arguments: dict | None = None
-    ) -> tuple[bool, bool]:
-        """Approve out-of-workspace access to *paths*. Returns (approved, always).
+    def request_tool_approval(self, tool_name: str, arguments: dict,
+                              max_attempts: int = 3) -> tuple[bool, str]:
+        return self.human.approve_tool(self, tool_name, arguments, max_attempts)
 
-        One prompt for the whole call: a single command routinely names several
-        outside paths, and asking about each in turn is the same decision put to the
-        user three times. Default terminal prompt (allow once / always / deny).
-        *arguments* are the call's own arguments, shown as the usual tool description
-        so the user sees what the tool is doing, not just which paths it touches.
-        Front-ends override: the WebSocket worker routes this through the approval UI;
-        the headless runner auto-approves. Non-interactive stdin (EOF) fails closed.
-        """
-        from . import human_pause
-        from .context.capabilities import label_for
-
-        # The header names the action with a short file name; the absolute paths are
-        # printed on their own lines below, because *where* is the decision the user is
-        # being asked to make. Shortening only the header keeps the prompt readable
-        # without ever hiding the locations being authorised.
-        from .tool_execution.tool_status_messages import shorten_display_args
-
-        short_args = shorten_display_args(tool_name, arguments or {}, self.tool_caps)
-        what = label_for(tool_name, short_args, self.tool_caps) or tool_name
-        listed = "\n".join(f"  {p}" for p in paths)
-        try:
-            print(f"\n⚠ {what}\n  needs access outside the workspace:\n{listed}",
-                  flush=True)
-            # Waiting on the user, not on the tool (see human_pause).
-            with human_pause.human_pause():
-                reply = input("  Allow once [y] / always [a] / deny [N]? ").strip().lower()
-        except EOFError:
-            return (False, False)
-        if reply in ("a", "always"):
-            return (True, True)
-        if reply in ("y", "yes", "once"):
-            return (True, False)
-        return (False, False)
+    def request_path_approval(self, paths: list[str], tool_name: str,
+                              arguments: dict | None = None) -> tuple[bool, bool]:
+        """Approve out-of-workspace access to *paths*. Returns (approved, always)."""
+        return self.human.approve_paths(self, paths, tool_name, arguments)
 
     def request_user_question(self, questions: list, origin: dict | None = None,
-                               timeout_secs: float | None = None) -> dict:
-        """Ask the user one or more clarifying questions (``ask_user_question`` tool).
+                              timeout_secs: float | None = None) -> dict:
+        """Ask the user clarifying questions (``ask_user_question``).
 
-        ``questions`` is a list of ``{header, question, multiSelect, options}`` specs
-        to ask in order. *origin* names the asker when it is not the turn on screen —
-        a sub-agent running alongside it — so a front-end can say whose question this
-        is; None for the ordinary case. *timeout_secs* is how long to wait for the user
-        before giving up; ``None`` waits indefinitely, which is what an approval and a
-        plan decision do. Returns ``{"answers": [{"selected": [<labels>],
-        "other_text": <str|None>}, ...]}`` — one entry per question — or
-        ``{"answers": [], "timed_out": True}`` when the wall passed with nothing
-        answered. The default (non-interactive) behaviour returns no answers at all,
-        which the elicitation callback maps to a ``decline`` so the model proceeds with
-        its best judgment. Interactive
-        front-ends replace this with a handler that prompts the user sequentially
-        (CLI ``input()`` or a WebSocket question card).
+        ``questions`` is a list of ``{header, question, multiSelect, options}`` specs.
+        *origin* names the asker when it is not the turn on screen — a sub-agent
+        running alongside it. *timeout_secs* is how long to wait; ``None`` waits
+        indefinitely, which is what an approval and a plan decision do. Returns
+        ``{"answers": [{"selected": [...], "other_text": ...}, ...]}`` — or
+        ``{"answers": [], "timed_out": True}`` when the wall passed unanswered.
         """
-        return {"answers": []}
+        return self.human.ask(self, questions, origin, timeout_secs)
 
     def denied_tool_result(
         self,

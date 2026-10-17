@@ -1261,7 +1261,7 @@ class DrainSteerTests(unittest.TestCase):
     """Unit coverage for ``_drain_steer`` — the chat-while-busy injection point."""
 
     def test_injects_queued_messages_as_user_turns(self) -> None:
-        agent = types.SimpleNamespace(_poll_steer=lambda: ["focus on the parser", "skip tests"])
+        agent = types.SimpleNamespace(poll_steer=lambda: ["focus on the parser", "skip tests"])
         messages: list[dict] = [{"role": "tool", "content": "prev result"}]
         emitted: list[dict] = []
         with capture_events(lambda ev: emitted.append(ev)):
@@ -1276,12 +1276,12 @@ class DrainSteerTests(unittest.TestCase):
 
     def test_blank_and_missing_poll_are_noops(self) -> None:
         # Whitespace-only messages are skipped.
-        agent = types.SimpleNamespace(_poll_steer=lambda: ["  ", ""])
+        agent = types.SimpleNamespace(poll_steer=lambda: ["  ", ""])
         messages: list[dict] = []
         loop_base_module._drain_steer(agent, messages)
         self.assertEqual(messages, [])
 
-        # No _poll_steer attr at all (CLI / sub-agents / tests) → untouched.
+        # No poll_steer attr at all (CLI / sub-agents / tests) → untouched.
         bare = types.SimpleNamespace()
         msgs2: list[dict] = [{"role": "user", "content": "x"}]
         loop_base_module._drain_steer(bare, msgs2)
@@ -1301,7 +1301,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
             drains["n"] += 1
             return ["focus on the parser"] if drains["n"] == 2 else []
 
-        agent._poll_steer = _poll
+        agent.poll_steer = _poll
 
         backend = ScriptedBackend([
             {"content": "working", "tool_calls": [_tool_call("noop")]},
@@ -1370,7 +1370,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
             drains["n"] += 1
             return ["focus on the parser"] if drains["n"] == 2 else []
 
-        agent._poll_steer = _poll
+        agent.poll_steer = _poll
 
         backend = ScriptedBackend([
             {"content": "working", "tool_calls": [_tool_call("noop")]},

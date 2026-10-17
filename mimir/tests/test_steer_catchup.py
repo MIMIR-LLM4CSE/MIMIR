@@ -30,6 +30,7 @@ import unittest
 from unittest import mock
 
 from mimir.client.protocol.events import pop_answer_extras
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 from mimir.tests._fake_pool import FakePool
@@ -55,13 +56,13 @@ class _FakeAgent:
 def _worker() -> _AgentWorker:
     """A worker with just the state ``_run_query`` touches."""
     w = object.__new__(_AgentWorker)
+    w.human = HumanBridge(w)
     w.session_id = "s1"
     w.active_session_id = None
     w._query_session_id = "s1"
     w._agent = _FakeAgent()
     w._steer_q = _queue.Queue()
-    w._defer = set()
-    w._preanswer = None
+    w.human._defer = set()
     w._current_task = None
     w._turn_submitted_len = 0
     w.out_q = _queue.Queue()
@@ -94,7 +95,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
     def test_a_turn_that_read_its_steering_carries_nothing(self) -> None:
         w = _worker()
         w.submit_steer("read me")
-        w._agent._poll_steer = w._drain_steer_q   # what the loop patches on
+        w._agent.poll_steer = w._drain_steer_q   # what the loop patches on
         w._agent.run = lambda **_kw: _read_then_answer(w)
         self.assertNotIn("_unconsumed_steer", _answer(w))
 
@@ -120,7 +121,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
 
 
 async def _read_then_answer(w: _AgentWorker) -> str:
-    w._agent._poll_steer()
+    w._agent.poll_steer()
     return "done"
 
 

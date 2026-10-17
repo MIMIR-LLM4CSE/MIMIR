@@ -19,6 +19,7 @@ from unittest import mock
 
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws import job_scan, server_registry, transcript_log, ws_pool
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.wake_router import WakeRouter
@@ -29,13 +30,13 @@ class _Worker:
     """Only what the predicate asks of a worker."""
 
     def __init__(self, *, pending: bool = False, prompt=None, deferral: bool = False):
+        self.human = HumanBridge(self)
         self.out_q = _queue.Queue()
         self.session_id = "s1"
         self._query_session_id = None
         self._pending = pending
-        self._pending_prompt = prompt
-        self.has_deferral = deferral
-        self.unattended_since = None
+        self.human._pending_prompt = prompt
+        self.human.has_deferral = deferral
 
     def has_work_pending(self) -> bool:
         return self._pending

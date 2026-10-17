@@ -492,15 +492,15 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         is shortened.
         """
         import inspect
-        from mimir.client.ui.ws import ws_worker
-        src = inspect.getsource(ws_worker._AgentWorker._path_approval_shim)
+        from mimir.client.ui.ws.human_bridge import HumanBridge
+        src = inspect.getsource(HumanBridge.approve_paths)
         self.assertIn('"oow_paths": list(paths)', src)
         self.assertNotIn("os.path.basename(paths[0])}\",", src)
 
     def test_cli_prompt_prints_the_absolute_path(self):
         import inspect
-        from mimir.client.agent_core import MimirAgent
-        src = inspect.getsource(MimirAgent.request_path_approval)
+        from mimir.client.core.human import TerminalHuman
+        src = inspect.getsource(TerminalHuman.approve_paths)
         self.assertIn('f"  {p}" for p in paths', src)
 
 

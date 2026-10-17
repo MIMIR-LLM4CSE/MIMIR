@@ -113,14 +113,12 @@ class IsolationTests(unittest.TestCase):
 
 class AutoApproveTests(unittest.TestCase):
     def test_install_auto_approve_approves_any_tool(self) -> None:
-        class _Agent:
-            def request_tool_approval(self, name, arguments, max_attempts=3):
-                raise AssertionError("interactive approval must not be called")
-
-        agent = _Agent()
+        import types
+        agent = types.SimpleNamespace()
         _install_auto_approve(agent)
-        # Any tool — including ones that would normally block (non-batch) — is approved.
-        ok, reason = agent.request_tool_approval("bash_run", {"cmd": "ls"})
+        # Any tool — including ones that would normally block (non-batch) — is approved,
+        # and nobody is asked.
+        ok, reason = agent.human.approve_tool(agent, "bash_run", {"cmd": "ls"})
         self.assertTrue(ok)
         self.assertIn("auto-approve", reason)
 

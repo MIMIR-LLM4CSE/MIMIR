@@ -201,13 +201,13 @@ def _drain_steer(agent: AgentPort, messages: list[dict]) -> None:
     """Inject any user "steer" messages queued mid-run as user turns at a step boundary.
 
     Front-ends that support chatting-while-busy (the WebSocket server) give the agent
-    a ``_poll_steer`` callback that returns and clears any messages the user typed
+    a ``poll_steer`` callback that returns and clears any messages the user typed
     while the agent was working. Called at the top of each loop step — after the
     previous step's tool results are already in ``messages`` and before the next model
     call — so the steer reads as the next user turn and the model can adjust course
     without discarding in-flight work.
 
-    Optional by design: callers that never set ``_poll_steer`` (CLI, sub-agents, tests)
+    Optional by design: callers that never set ``poll_steer`` (CLI, sub-agents, tests)
     are unaffected. The injected messages persist in history. Adjacent user turns are
     merged downstream by ``LLMBackend.chat``, so no folding is needed here.
 
@@ -216,7 +216,7 @@ def _drain_steer(agent: AgentPort, messages: list[dict]) -> None:
     mid-run instruction into one user turn ending in a status block, and the model
     answers the block — the defect ``agent_loop._sync_checklist`` documents.
     """
-    poll = getattr(agent, "_poll_steer", None)
+    poll = getattr(agent, "poll_steer", None)
     if not poll:
         return
     for text in (poll() or []):

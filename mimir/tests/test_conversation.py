@@ -15,18 +15,19 @@ from mimir.client.session import store as session_store
 from mimir.client.session.conversation import Conversation, Conversations, turn_messages
 from mimir.client.session.store import SessionStore, StaleSessionWrite
 from mimir.client.ui.ws import transcript_log
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
 def _bare_worker(session_id: str) -> _AgentWorker:
     w = object.__new__(_AgentWorker)
+    w.human = HumanBridge(w)
     w.out_q = _queue.Queue()
     w.session_id = session_id
     w._query_session_id = None
     w._agent = None
     w._current_task = None
     w._query_q = _queue.Queue()
-    w._pending_prompt = None
     return w
 
 

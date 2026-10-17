@@ -117,11 +117,11 @@ def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort
     descriptors = _detect_rewatchable_jobs(name, result_text, agent)
     if not descriptors:
         return result_text
-    hook = getattr(agent, "_register_background_job", None)
+    hook = getattr(agent, "register_background_job", None)
     if not hook:
         return result_text   # CLI: no watcher to re-arm, and nothing was promised
     known = set()
-    watched = getattr(agent, "_watched_background_jobs", None)
+    watched = getattr(agent, "watched_background_jobs", None)
     if callable(watched):
         try:
             known = {str(d.get("job_key") or d.get("run_dir") or "")
@@ -157,8 +157,8 @@ def _maybe_register_background_job(
     """Register a completion watcher for a detached run and tell the model to yield.
 
     Registration is delegated to the optional front-end hook
-    ``agent._register_background_job`` (the WebSocket worker sets it; CLI does not),
-    mirroring the ``_poll_steer``/``_cancel_flag`` optional-hook pattern.
+    ``agent.register_background_job`` (the WebSocket worker sets it; CLI does not),
+    mirroring the ``poll_steer``/``_cancel_flag`` optional-hook pattern.
 
     Returns ``(result, registered)``. The result carries the "you were backgrounded,
     end your turn" note **only when a watcher is actually holding the run**, and
@@ -179,7 +179,7 @@ def _maybe_register_background_job(
     if descriptor is None:
         return result_text, False
     job_key = descriptor.get("job_key", "?")
-    hook = getattr(agent, "_register_background_job", None)
+    hook = getattr(agent, "register_background_job", None)
     if not hook:
         # CLI: there is no watcher to register with. Not a failure — the caller waits
         # the run out in-turn instead.

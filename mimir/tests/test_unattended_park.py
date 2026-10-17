@@ -18,31 +18,24 @@ import threading
 import time
 import types
 import unittest
-from collections import OrderedDict
 from unittest import mock
 
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.ws_worker import _AgentWorker, _detach_grace
+from mimir.client.ui.ws.human_bridge import HumanBridge, _detach_grace
+from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
 def _worker(session_id: str = "s1") -> _AgentWorker:
     """A worker with only what the wait touches: no agent loop, no MCP servers."""
     w = object.__new__(_AgentWorker)
+    w.human = HumanBridge(w)
     w.out_q = _queue.Queue()
-    w._prompts = OrderedDict()
-    w._prompts_lock = threading.Lock()
     w.session_id = session_id
     w.session_title = ""
     w._query_session_id = session_id
     w.active_session_id = None
-    w._pending_prompt = None
-    w._pending_questions = None
-    w._defer = threading.Event()
-    w._preanswer = None
-    w.unattended_since = None
-    w.has_deferral = False
     w._agent = types.SimpleNamespace(
         _cancel_flag=threading.Event(), _deferred_prompts=None, _deferred_turn=None,
         non_interactive=False,
@@ -52,7 +45,7 @@ def _worker(session_id: str = "s1") -> _AgentWorker:
 
 def _card(w: _AgentWorker, req_id: str = "a1", kind: str = "approval") -> str:
     """Raise one card on *w* and answer with the id the wait names."""
-    w._emit_prompt({"type": kind, "id": req_id, "tool": "bash_run"},
+    w.human._emit_prompt({"type": kind, "id": req_id, "tool": "bash_run"},
                    questions=[] if kind == "user_question" else None)
     return req_id
 
@@ -83,91 +76,89 @@ class GracePeriodTests(unittest.TestCase):
 class UnattendedPredicateTests(unittest.TestCase):
     def test_a_worker_with_a_client_is_never_past_grace(self):
         w = _worker()
-        w.unattended_since = None
-        self.assertFalse(w._unattended_past_grace())
+        self.assertFalse(w.human._unattended_past_grace())
 
     def test_within_the_grace_it_is_not_yet_unattended(self):
         w = _worker()
-        w.unattended_since = time.monotonic()
-        self.assertFalse(w._unattended_past_grace())
+        w.human.unattended_since = time.monotonic()
+        self.assertFalse(w.human._unattended_past_grace())
 
     def test_past_the_grace_it_is(self):
         w = _worker()
-        w.unattended_since = time.monotonic() - (_detach_grace() + 1)
-        self.assertTrue(w._unattended_past_grace())
+        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        self.assertTrue(w.human._unattended_past_grace())
 
     def test_a_worker_the_pump_has_not_reached_assumes_somebody_is_there(self):
         # A real state, not only a test's: the safe reading of no information is that
         # the user is present, because being wrong the other way puts a card away.
         w = _worker()
-        del w.unattended_since
-        self.assertFalse(w._unattended_past_grace())
+        del w.human.unattended_since
+        self.assertFalse(w.human._unattended_past_grace())
 
 
 class TheWaitTests(unittest.TestCase):
     def test_a_card_with_somebody_there_still_waits(self):
         w = _worker()
-        w.unattended_since = None
         req = _card(w)
         done: list = []
         t = threading.Thread(
-            target=lambda: done.append(w._await_response(req)), daemon=True)
+            target=lambda: done.append(w.human._await_response(req)), daemon=True)
         t.start()
         t.join(0.6)
         self.assertTrue(t.is_alive(), "the wait gave up while a client was attached")
         self.assertEqual(done, [])
-        w.resolve_approval("y", None, req)
+        w.human.resolve_approval("y", None, req)
         t.join(2)
         self.assertEqual(done, [{"choice": "y", "approved_files": None}])
 
     def test_a_card_with_nobody_there_is_set_aside(self):
         w = _worker()
-        w.unattended_since = time.monotonic() - (_detach_grace() + 1)
-        self.assertIsNone(w._await_response(_card(w)))
+        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        self.assertIsNone(w.human._await_response(_card(w)))
         # Deferred, not cancelled: the record of what it was holding up is kept, which
         # is what lets the answer resume the turn rather than restart it.
-        self.assertTrue(w._deferring())
-        self.assertTrue(w.has_deferral)
+        self.assertTrue(w.human._deferring())
+        self.assertTrue(w.human.has_deferral)
         self.assertEqual(
             [p["prompt"]["id"] for p in w._agent._deferred_prompts], ["a1"])
 
     def test_the_card_is_let_go_of_so_nothing_resends_it(self):
         w = _worker()
-        w.unattended_since = time.monotonic() - (_detach_grace() + 1)
-        w._await_response(_card(w))
-        self.assertIsNone(w._pending_prompt)
+        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human._await_response(_card(w))
+        self.assertIsNone(w.human._pending_prompt)
 
     def test_a_wait_with_its_own_deadline_is_left_alone(self):
         # A question carries five minutes and a documented meaning for running out of
         # them ("go ahead with what you recommend"). Overriding that here would change
         # an answer the model has already been promised.
         w = _worker()
-        w.unattended_since = time.monotonic() - (_detach_grace() + 1)
-        from mimir.client.ui.ws.ws_worker import TIMED_OUT
+        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        from mimir.client.ui.ws.human_bridge import TIMED_OUT
         req = _card(w, "q1", "user_question")
-        self.assertIs(w._await_response(req, timeout_secs=0.05), TIMED_OUT)
-        self.assertFalse(w.has_deferral)
+        self.assertIs(w.human._await_response(req, timeout_secs=0.05), TIMED_OUT)
+        self.assertFalse(w.human.has_deferral)
 
     def test_an_answer_already_in_hand_wins_over_the_grace(self):
         # The queue gets its turn first, always. Consulting the grace before reading it
         # discards a reply that crossed with the grace elapsing — the user answered into
         # a void.
         w = _worker()
-        w.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
         req = _card(w)
-        w.resolve_approval("y", None, req)
-        self.assertEqual(w._await_response(req),
+        w.human.resolve_approval("y", None, req)
+        self.assertEqual(w.human._await_response(req),
                          {"choice": "y", "approved_files": None})
-        self.assertFalse(w.has_deferral, "set a card aside that had been answered")
+        self.assertFalse(w.human.has_deferral, "set a card aside that had been answered")
 
     def test_an_answer_landing_during_the_poll_also_wins(self):
         # The same race one tick later: the grace has elapsed, the queue is empty when
         # first read, and the reply arrives while the poll is still open.
         w = _worker()
-        w.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
         req = _card(w)
-        threading.Timer(0.05, lambda: w.resolve_approval("n", None, req)).start()
-        self.assertEqual(w._await_response(req),
+        threading.Timer(0.05, lambda: w.human.resolve_approval("n", None, req)).start()
+        self.assertEqual(w.human._await_response(req),
                          {"choice": "n", "approved_files": None})
 
     def test_answering_the_deferral_clears_the_debt(self):
@@ -175,11 +166,11 @@ class TheWaitTests(unittest.TestCase):
         w._query_q = _queue.Queue()
         w._loop = None
         w._query_wake = None
-        w.unattended_since = time.monotonic() - (_detach_grace() + 1)
-        w._await_response(_card(w))
-        self.assertTrue(w.has_deferral)
+        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human._await_response(_card(w))
+        self.assertTrue(w.human.has_deferral)
         w.submit_resume({"query": "go", "kind": "calls"}, {"choice": "y"}, [], "s1")
-        self.assertFalse(w.has_deferral)
+        self.assertFalse(w.human.has_deferral)
 
 
 class ThePumpPublishesAttachmentTests(unittest.TestCase):
@@ -191,34 +182,34 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
             bus = _EventBus(_FakePool({"s1": w}))
             bus.subscribe()
             bus.pump_once()
-            self.assertIsNone(w.unattended_since)
+            self.assertIsNone(w.human.unattended_since)
         asyncio.run(run())
 
     def test_a_bus_with_no_subscriber_starts_the_clock(self):
         w = _worker()
         bus = _EventBus(_FakePool({"s1": w}))
         bus.pump_once()
-        self.assertIsNotNone(w.unattended_since)
+        self.assertIsNotNone(w.human.unattended_since)
 
     def test_the_clock_does_not_restart_on_every_tick(self):
         # Otherwise the grace never elapses and the card waits for ever anyway.
         w = _worker()
         bus = _EventBus(_FakePool({"s1": w}))
         bus.pump_once()
-        first = w.unattended_since
+        first = w.human.unattended_since
         time.sleep(0.02)
         bus.pump_once()
-        self.assertEqual(w.unattended_since, first)
+        self.assertEqual(w.human.unattended_since, first)
 
     def test_a_client_arriving_stops_the_clock(self):
         async def run():
             w = _worker()
             bus = _EventBus(_FakePool({"s1": w}))
             bus.pump_once()
-            self.assertIsNotNone(w.unattended_since)
+            self.assertIsNotNone(w.human.unattended_since)
             bus.subscribe()
             bus.pump_once()
-            self.assertIsNone(w.unattended_since)
+            self.assertIsNone(w.human.unattended_since)
         asyncio.run(run())
 
     def test_a_client_leaving_restarts_it(self):
@@ -229,7 +220,7 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
             bus.pump_once()
             sub.close()
             bus.pump_once()
-            self.assertIsNotNone(w.unattended_since)
+            self.assertIsNotNone(w.human.unattended_since)
         asyncio.run(run())
 
     def test_it_is_published_on_ticks_that_move_nothing(self):
@@ -238,7 +229,7 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
         w = _worker()
         bus = _EventBus(_FakePool({"s1": w}))
         self.assertEqual(bus.pump_once(), 0)
-        self.assertIsNotNone(w.unattended_since)
+        self.assertIsNotNone(w.human.unattended_since)
 
 
 class TheReaperTests(unittest.TestCase):
@@ -255,7 +246,6 @@ class TheReaperTests(unittest.TestCase):
 
     def _releasable_worker(self):
         w = _worker()
-        w._pending_prompt = None
         w.has_work_pending = lambda: False
         w._bg_jobs = {}
         return w
@@ -266,13 +256,13 @@ class TheReaperTests(unittest.TestCase):
 
     def test_one_holding_a_deferral_is_not(self):
         w = self._releasable_worker()
-        w.has_deferral = True
+        w.human.has_deferral = True
         self.assertFalse(self._pool(w).releasable("s1"),
                          "released an agent the user still owes an answer")
 
     def test_a_parked_card_still_protects_it(self):
         w = self._releasable_worker()
-        w._pending_prompt = {"id": "a1"}
+        w.human._pending_prompt = {"id": "a1"}
         self.assertFalse(self._pool(w).releasable("s1"))
 
 

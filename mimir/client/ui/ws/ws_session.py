@@ -273,7 +273,7 @@ class _Session:
         that is what routes the answer back to the agent that asked.
         """
         for _sid, worker in self.pool.items():
-            prompt = worker.pending_prompt()
+            prompt = worker.human.pending_prompt()
             if not prompt:
                 continue
             try:
@@ -1694,7 +1694,7 @@ class _Session:
             return
         worker = self._worker_for_answer(msg)
         if worker is not None:
-            worker.resolve_approval(answer["choice"], answer["approved_files"],
+            worker.human.resolve_approval(answer["choice"], answer["approved_files"],
                                     str(msg.get("id") or ""))
 
     async def _handle_user_question_response(self, msg: dict) -> None:
@@ -1704,7 +1704,7 @@ class _Session:
         if worker is not None:
             # With the card's id: an answer reaches the card it was shown on, and one
             # naming a card that is gone settles nothing.
-            worker.resolve_question(msg.get("answers"), str(msg.get("id") or ""))
+            worker.human.resolve_question(msg.get("answers"), str(msg.get("id") or ""))
 
     async def _resend_deferred_prompt(self) -> None:
         """Put the card a deferred turn of this session waits on back on screen."""

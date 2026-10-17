@@ -124,7 +124,8 @@ class FakePool:
         return {"idle": not self.idle_reasons, "reasons": list(self.idle_reasons)}
 
     def is_parked(self, session_id: str | None) -> bool:
-        return getattr(self._for(session_id), "_pending_prompt", None) is not None
+        human = getattr(self._for(session_id), "human", None)
+        return human is not None and human.awaiting_user()
 
     def set_active(self, session_id: str | None) -> None:
         self.active_session_id = session_id

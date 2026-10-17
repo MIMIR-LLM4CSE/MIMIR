@@ -21,6 +21,7 @@ from unittest import mock
 from mimir.client.session import store as session_store
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws import job_scan, transcript_log
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.wake_router import WakeRouter
@@ -31,13 +32,12 @@ class _Worker:
     """Only what the headless consumer asks of a worker."""
 
     def __init__(self, session_id: str, *, busy: bool = False) -> None:
+        self.human = HumanBridge(self)
         self.out_q = _queue.Queue()
         self.session_id = session_id
         self.active_session_id = None
         self._query_session_id = None
         self._busy = busy
-        self._pending_prompt = None
-        self.unattended_since = None
         self.queries: list[dict] = []
         self.steers: list[str] = []
         self.watched: list[str] = []

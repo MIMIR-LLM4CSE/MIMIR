@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import queue as _queue
 import threading
-from collections import OrderedDict
 import types
 import unittest
 
@@ -35,6 +34,7 @@ from mimir.client.query_engine.deferral import (
     take_deferred_calls,
 )
 from mimir.client.ui.ws.ws_session import _Session
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_backend import ScriptedBackend
 from mimir.tests.test_agent_loop import RunAgentQueryNonInteractiveTests, _tool_call
@@ -47,13 +47,8 @@ _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}
 
 def _worker() -> _AgentWorker:
     w = object.__new__(_AgentWorker)
+    w.human = HumanBridge(w)
     w.out_q = _queue.Queue()
-    w._prompts = OrderedDict()
-    w._prompts_lock = threading.Lock()
-    w._pending_prompt = None
-    w._pending_questions = None
-    w._defer = threading.Event()
-    w._preanswer = None
     w._current_task = object()
     w.session_id = "s1"
     w.session_title = ""
@@ -65,11 +60,11 @@ def _worker() -> _AgentWorker:
 class WorkerDeferralTests(unittest.TestCase):
     def test_a_deferred_wait_returns_and_names_its_call(self) -> None:
         w = _worker()
-        w._emit_prompt(dict(_PROMPT))
-        self.assertTrue(w.defer())
+        w.human._emit_prompt(dict(_PROMPT))
+        self.assertTrue(w.human.defer_turn())
         token = CURRENT_CALL_ID.set("call-7")
         try:
-            self.assertIsNone(w._await_response(_PROMPT["id"]))
+            self.assertIsNone(w.human._await_response(_PROMPT["id"]))
         finally:
             CURRENT_CALL_ID.reset(token)
         self.assertEqual(
@@ -79,23 +74,23 @@ class WorkerDeferralTests(unittest.TestCase):
               "questions": []}])
 
     def test_nothing_to_set_aside_when_not_parked(self) -> None:
-        self.assertFalse(_worker().defer())
+        self.assertFalse(_worker().human.defer_turn())
 
     def test_a_card_raised_while_deferring_is_not_sent(self) -> None:
         w = _worker()
-        w._defer.set()
-        w._emit_prompt(dict(_PROMPT))
+        w.human._defer.set()
+        w.human._emit_prompt(dict(_PROMPT))
         self.assertTrue(w.out_q.empty())
 
     def test_a_resume_answers_its_card_without_showing_it(self) -> None:
         w = _worker()
-        w._preanswer = {"type": "approval", "response": {"choice": "y"}}
-        w._emit_prompt(dict(_PROMPT))
+        w.human._preanswer = {"type": "approval", "response": {"choice": "y"}}
+        w.human._emit_prompt(dict(_PROMPT))
         self.assertTrue(w.out_q.empty())
-        self.assertEqual(w._await_response(_PROMPT["id"]), {"choice": "y"})
+        self.assertEqual(w.human._await_response(_PROMPT["id"]), {"choice": "y"})
         # One answer, one card: the next one is asked for real.
-        self.assertIsNone(w._preanswer)
-        w._emit_prompt(dict(_PROMPT))
+        self.assertIsNone(w.human._preanswer)
+        w.human._emit_prompt(dict(_PROMPT))
         self.assertFalse(w.out_q.empty())
 
 
@@ -224,6 +219,7 @@ class AttributionTests(unittest.TestCase):
 
 class _FakeWorker:
     def __init__(self, parked: bool) -> None:
+        self.human = self   # plays its own bridge: the answers are what is recorded
         self.parked = parked
         self.calls: list = []
         self._query_session_id = "s1"

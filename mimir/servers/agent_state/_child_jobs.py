@@ -1,7 +1,7 @@
 """A sub-agent's watcher, for the detached runs it launched itself.
 
 A child used to have no watcher at all. The hook pair the client installs
-(``_register_background_job`` / ``_watched_background_jobs``) is set on the agent the
+(``register_background_job`` / ``watched_background_jobs``) is set on the agent the
 WebSocket worker owns, and a child's agent is built here instead, so every backgroundable
 launch inside a child fell through to ``background._await_background_job``: polled in-turn,
 on the child's own loop, inside its wall budget. Two consequences, both bad for a rung
@@ -12,7 +12,7 @@ thing watching it.
 **The resume is a steer, not an event.** The parent's watcher puts ``job_complete`` on a
 queue, the event bus claims it and a turn is submitted with the wake folded in. A child has
 none of that: no ``out_q``, no bus, and no turn loop to submit to — it is one
-``agent.run(...)`` call. What it does have is ``_poll_steer``, read at the top of every step
+``agent.run(...)`` call. What it does have is ``poll_steer``, read at the top of every step
 by ``agent_loop._drain_steer`` and documented there as optional precisely for callers like
 this one. So a finished run reaches the child's reasoning the same way a user's mid-turn
 message reaches the parent's: as a user turn at the next step boundary, in the words
@@ -75,7 +75,7 @@ class ChildWatcher:
     # ── the hooks the agent reads ────────────────────────────────────────────────
 
     def register(self, descriptor: dict, owner: str | None = None) -> bool:
-        """Put a watcher on a detached run. The child's ``_register_background_job``.
+        """Put a watcher on a detached run. The child's ``register_background_job``.
 
         The return value is the whole contract, as it is for the client's own hook:
         ``False`` means nothing is holding the run, and the caller must wait it out
@@ -120,7 +120,7 @@ class ChildWatcher:
         return True
 
     def live_descriptors(self) -> list[dict]:
-        """The runs still being watched. The child's ``_watched_background_jobs``.
+        """The runs still being watched. The child's ``watched_background_jobs``.
 
         What the dispatch guards consult to refuse a status poll on a run a watcher is
         already holding. Inside a child those guards used to abstain for want of this,
@@ -131,7 +131,7 @@ class ChildWatcher:
                     if key in self._tasks and not self._tasks[key].done()]
 
     def drain_steers(self) -> list[str]:
-        """Pop every wake waiting for the child. The child's ``_poll_steer``."""
+        """Pop every wake waiting for the child. The child's ``poll_steer``."""
         out = []
         while self._steers:
             out.append(self._steers.popleft())

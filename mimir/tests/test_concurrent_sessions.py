@@ -18,14 +18,13 @@ from __future__ import annotations
 import json
 import queue as _queue
 import tempfile
-import threading
 import unittest
-from collections import OrderedDict
 
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_session import _Session
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._session import bare_session
 
@@ -51,23 +50,18 @@ class _FakeWS:
 
 def _worker(session_id: str, title: str = "") -> _AgentWorker:
     w = object.__new__(_AgentWorker)
+    w.human = HumanBridge(w)
     w.out_q = _queue.Queue()
     w._steer_q = _queue.Queue()
-    w._prompts = OrderedDict()
-    w._prompts_lock = threading.Lock()
-    w._defer = threading.Event()
-    w._preanswer = None
     w.session_id = session_id
     w.session_title = title
     w.active_session_id = None
     w._query_session_id = None
-    w._pending_prompt = None
-    w._pending_questions = None
     w.answered: list = []
-    w.resolve_approval = (
+    w.human.resolve_approval = (
         lambda choice, files=None, req_id="": w.answered.append(("approval", choice))
     )
-    w.resolve_question = (
+    w.human.resolve_question = (
         lambda answers, req_id="": w.answered.append(("question", answers))
     )
     return w
@@ -102,7 +96,7 @@ class _ManyPool:
 
     def is_parked(self, session_id):
         w = self._workers.get(session_id or "")
-        return w is not None and w._pending_prompt is not None
+        return w is not None and w.human._pending_prompt is not None
 
     def queued_position(self, session_id):
         return None
@@ -126,7 +120,7 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
 
     def _park(self, worker: _AgentWorker, card_id: str) -> dict:
         worker._query_session_id = worker.session_id
-        worker._emit_prompt({"type": "approval", "id": card_id, "tool": "bash_run"})
+        worker.human._emit_prompt({"type": "approval", "id": card_id, "tool": "bash_run"})
         return worker.out_q.get_nowait()
 
     def test_each_card_names_the_conversation_that_raised_it(self) -> None:
@@ -161,7 +155,7 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_question_answer_routes_the_same_way(self) -> None:
         self.b._query_session_id = "s2"
-        self.b._emit_prompt({"type": "user_question", "id": "q1", "questions": []},
+        self.b.human._emit_prompt({"type": "user_question", "id": "q1", "questions": []},
                             questions=[])
         await self.sess._handle_user_question_response(
             {"id": "q1", "answers": [{"selected": ["yes"]}], "session_id": "s2"})
@@ -193,7 +187,7 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
 
     def test_the_panel_says_which_conversations_are_live(self) -> None:
         self.a._query_session_id = "s1"
-        self.b._pending_prompt = {"id": "card-b"}
+        self.b.human._pending_prompt = {"id": "card-b"}
         self.assertEqual(self.sess._session_activity("s1"),
                          {"running": True, "parked": False, "queued": False,
                           "runs": 0})
@@ -269,7 +263,7 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         """Parked is work waiting to continue, not work that has stopped."""
         sess = self._session()
         self.a._query_session_id = "s1"
-        self.a._pending_prompt = {"id": "card-a"}
+        self.a.human._pending_prompt = {"id": "card-a"}
         self.assertEqual(sess._live_work_of("s1"), ["a turn waiting for your answer"])
 
     def test_an_idle_conversation_has_nothing_to_report(self) -> None:

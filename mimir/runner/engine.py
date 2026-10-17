@@ -37,6 +37,7 @@ from typing import Any
 
 from mimir.client.extensions import all_servers
 from mimir.client.agent_core import MimirAgent
+from mimir.client.core.human import Unattended
 
 from .types import BenchmarkAdapter, BenchTask, CheckContext
 
@@ -57,10 +58,7 @@ class RunResult:
 
 def _install_auto_approve(agent: MimirAgent) -> None:
     """Make the agent approve every tool without prompting (unattended mode)."""
-    agent.request_tool_approval = (
-        lambda name, arguments, max_attempts=3: (True, "benchmark-auto-approve")
-    )
-    agent.request_path_approval = lambda paths, tool_name, arguments=None: (True, False)
+    agent.human = Unattended("benchmark-auto-approve")
 
 
 async def run_one(

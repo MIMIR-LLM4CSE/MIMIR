@@ -19,12 +19,12 @@ import tempfile
 import threading
 import types
 import unittest
-from collections import OrderedDict
 from unittest import mock
 
 from mimir.client.session import store as session_store
 from mimir.client.ui.ws import job_scan, transcript_log, ws_session
 from mimir.client.ui.ws.ws_session import _Session
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
 
@@ -61,9 +61,8 @@ class _WS:
 def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     """A worker with no agent and no loop, whose query emits *turn*."""
     w = object.__new__(_AgentWorker)
+    w.human = HumanBridge(w)
     w.out_q = _queue.Queue()
-    w._prompts = OrderedDict()
-    w._prompts_lock = threading.Lock()
     w.session_id = session_id
     w.session_title = "a conversation"
     w._query_session_id = None
@@ -78,18 +77,12 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
         approvals=types.SimpleNamespace(approval_mode="manual"),
         apply_setting=lambda name, mode: setattr(w._agent.approvals, name, mode),
         toggles_state=lambda: {"servers": [], "skills": [], "nudges": []})
-    w._defer = threading.Event()
-    w._preanswer = None
-    w._pending_prompt = None
-    w._pending_questions = None
     w._expired_prompt_ids = set()
     w._bg_jobs = {}
-    w.unattended_since = None
-    w.has_deferral = False
     w.is_busy = lambda: w._query_session_id is not None
     w.has_work_pending = lambda: False
     w.agent_ready = lambda: True
-    w.pending_prompt = lambda: None
+    w.human.pending_prompt = lambda: None
     w.get_context_mode = lambda *a: "full"
     w.get_enforcement = lambda: "light"
     w.get_thinking_profile = lambda: {}
@@ -535,15 +528,15 @@ class TheApprovalCardReachesTheClientTests(_ChainCase):
         pumper = asyncio.create_task(_pump())
         try:
             await asyncio.sleep(0.05)
-            self.assertIsNone(worker.unattended_since,
+            self.assertIsNone(worker.human.unattended_since,
                               "reported as unattended while a client is subscribed")
 
             answer: dict = {}
 
             def _park():
-                worker._emit_prompt({"type": "approval", "id": "a1",
+                worker.human._emit_prompt({"type": "approval", "id": "a1",
                                      "tool": "bash_run"})
-                answer["seen"] = worker._await_response("a1")
+                answer["seen"] = worker.human._await_response("a1")
 
             thread = threading.Thread(target=_park, daemon=True)
             thread.start()
@@ -558,11 +551,11 @@ class TheApprovalCardReachesTheClientTests(_ChainCase):
                 delivered.append(event["type"])
             self.assertIn("approval", delivered, "the card never reached the client")
 
-            worker.resolve_approval("y", None, "a1")
+            worker.human.resolve_approval("y", None, "a1")
             thread.join(3)
             self.assertEqual(answer.get("seen"),
                              {"choice": "y", "approved_files": None})
-            self.assertFalse(worker.has_deferral,
+            self.assertFalse(worker.human.has_deferral,
                              "set the card aside with a client attached")
         finally:
             pumper.cancel()

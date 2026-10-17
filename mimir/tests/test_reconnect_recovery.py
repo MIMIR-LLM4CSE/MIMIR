@@ -30,7 +30,7 @@ def _parked_worker(prompt: dict | None = None, session_id: str = "s1",
     w = _bare_worker(session_id=session_id)
     w.session_title = title
     if prompt is not None:
-        w._emit_prompt(prompt)
+        w.human._emit_prompt(prompt)
         w.out_q.get_nowait()
     return w
 
@@ -45,9 +45,9 @@ class PendingPromptTests(unittest.TestCase):
     def test_emitting_a_card_marks_the_turn_parked_on_it(self):
         w = _parked_worker()
         card = {"type": "user_question", "id": "q1", "questions": []}
-        w._emit_prompt(card)
+        w.human._emit_prompt(card)
         self.assertEqual(w.out_q.get_nowait(), _attributed(card))
-        self.assertEqual(w.pending_prompt(), _attributed(card))
+        self.assertEqual(w.human.pending_prompt(), _attributed(card))
 
     def test_a_card_says_which_conversation_is_asking(self):
         """Several conversations can be parked at once, and one may be asking while the
@@ -55,7 +55,7 @@ class PendingPromptTests(unittest.TestCase):
         that cannot be answered — and the attribution is structured rather than written
         into the question text, which the model also sees."""
         w = _parked_worker(session_id="s2", title="Port the solver")
-        w._emit_prompt({"type": "approval", "id": "a1"})
+        w.human._emit_prompt({"type": "approval", "id": "a1"})
         card = w.out_q.get_nowait()
         self.assertEqual(card["session_id"], "s2")
         self.assertEqual(card["session_title"], "Port the solver")
@@ -64,24 +64,24 @@ class PendingPromptTests(unittest.TestCase):
         """A background-job wake runs a turn for the session that launched the job."""
         w = _parked_worker(session_id="s1")
         w._query_session_id = "s2"
-        w._emit_prompt({"type": "approval", "id": "a1"})
+        w.human._emit_prompt({"type": "approval", "id": "a1"})
         self.assertEqual(w.out_q.get_nowait()["session_id"], "s2")
 
     def test_the_card_is_a_copy_of_what_was_sent(self):
         """The queued dict is drained and stamped downstream; the record must not follow."""
         w = _parked_worker()
         card = {"type": "approval", "id": "a1"}
-        w._emit_prompt(card)
+        w.human._emit_prompt(card)
         w.out_q.get_nowait()["id"] = "tampered"
-        self.assertEqual(w.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))
+        self.assertEqual(w.human.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))
 
     def test_an_answer_ends_the_park(self):
         w = _parked_worker({"type": "approval", "id": "a1"})
         w._agent = None
-        w.resolve_approval("y", None, "a1")
-        self.assertEqual(w._await_response("a1"),
+        w.human.resolve_approval("y", None, "a1")
+        self.assertEqual(w.human._await_response("a1"),
                          {"choice": "y", "approved_files": None})
-        self.assertIsNone(w.pending_prompt())
+        self.assertIsNone(w.human.pending_prompt())
 
     def test_a_cancelled_wait_ends_the_park(self):
         class _Cancelled:
@@ -93,21 +93,21 @@ class PendingPromptTests(unittest.TestCase):
 
         w = _parked_worker({"type": "approval", "id": "a1"})
         w._agent = _Cancelled()
-        self.assertIsNone(w._await_response("a1"))
-        self.assertIsNone(w.pending_prompt())
+        self.assertIsNone(w.human._await_response("a1"))
+        self.assertIsNone(w.human.pending_prompt())
 
     def test_a_card_still_on_its_way_out_is_not_handed_out_twice(self):
         """The drain loop will deliver it; resending it too is a card answered twice."""
         w = _parked_worker()
-        w._emit_prompt({"type": "approval", "id": "a1"})
-        self.assertIsNone(w.pending_prompt())
+        w.human._emit_prompt({"type": "approval", "id": "a1"})
+        self.assertIsNone(w.human.pending_prompt())
         w.out_q.get_nowait()                      # delivered to whoever was connected
-        self.assertEqual(w.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))
+        self.assertEqual(w.human.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))
 
     def test_abandoning_the_turn_forgets_the_card(self):
         w = _parked_worker({"type": "continue_prompt", "id": "c1", "summary": "3 left"})
         w.flush_prompts()
-        self.assertIsNone(w.pending_prompt())
+        self.assertIsNone(w.human.pending_prompt())
 
 
 class ReconnectTests(unittest.IsolatedAsyncioTestCase):

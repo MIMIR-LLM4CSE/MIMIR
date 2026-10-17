@@ -6,32 +6,26 @@ now on screen. These tests pin the three seams that fence a turn to its own sess
 """
 import json
 import queue as _queue
-import threading
-from collections import OrderedDict
 import unittest
 
 from mimir.tests._fake_pool import FakePool
 from mimir.tests._session import bare_session
 
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
 def _bare_worker(session_id: str | None = None) -> _AgentWorker:
     """A worker with only the queue/state fields the tests touch (no agent, no loop)."""
     w = object.__new__(_AgentWorker)
+    w.human = HumanBridge(w)
     w._agent = None
     w.out_q = _queue.Queue()
     w._steer_q = _queue.Queue()
-    w._prompts = OrderedDict()
-    w._prompts_lock = threading.Lock()
     w.session_id = session_id
     w.session_title = ""
     w.active_session_id = None
     w._query_session_id = None
-    w._pending_prompt = None
-    w._pending_questions = None
-    w._defer = threading.Event()
-    w._preanswer = None
     return w
 
 
@@ -79,12 +73,12 @@ class WorkerStampTests(unittest.TestCase):
         the answers with them.
         """
         w = _bare_worker()
-        w._emit_prompt({"type": "approval", "id": "a1"})
-        w._emit_prompt({"type": "user_question", "id": "q1"}, questions=[])
+        w.human._emit_prompt({"type": "approval", "id": "a1"})
+        w.human._emit_prompt({"type": "user_question", "id": "q1"}, questions=[])
         w._steer_q.put("hurry up")
         w.flush_prompts()
-        self.assertEqual(dict(w._prompts), {})
-        self.assertIsNone(w.pending_prompt())
+        self.assertEqual(dict(w.human._prompts), {})
+        self.assertIsNone(w.human.pending_prompt())
         self.assertTrue(w._steer_q.empty())
 
 

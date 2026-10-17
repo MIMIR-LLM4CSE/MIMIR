@@ -94,6 +94,16 @@ class _FakeAgent:
         except Exception:
             return ""
 
+    # As MimirAgent does: the agent asks through whoever answers for the user.
+    def request_tool_approval(self, tool_name, arguments, max_attempts=3):
+        return self.human.approve_tool(self, tool_name, arguments, max_attempts)
+
+    def request_path_approval(self, paths, tool_name, arguments=None):
+        return self.human.approve_paths(self, paths, tool_name, arguments)
+
+    def request_user_question(self, questions, origin=None, timeout_secs=None):
+        return self.human.ask(self, questions, origin, timeout_secs)
+
     def apply_setting(self, name, value):
         if name == "approval_mode":
             self.approvals.approval_mode = value
@@ -446,9 +456,8 @@ class UserChannelTests(unittest.TestCase):
         agent = _FakeAgent()
         run_tool(agent, _MetaCtx("manual"))
         self.assertFalse(agent.approvals.unattended)
-        for hook in ("request_tool_approval", "request_path_approval",
-                     "request_user_question"):
-            self.assertTrue(callable(getattr(agent, hook, None)), hook)
+        # The person behind the child is the caller's user, reached through it.
+        self.assertIsInstance(agent.human, spawn._RelayedHuman)
 
     def test_a_detached_child_can_reach_the_user_too(self):
         """What ends when the delegating call returns is the REQUEST, not the session.
@@ -984,8 +993,8 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
              mock.patch.object(spawn, "_drive_sub_agent", _drive):
             asyncio.run(spawn._run_sub_agent(
                 "a task", "", [], {}, 4, lambda ev: None, session="parent/subagents/s1"))
-        for hook in ("_register_background_job", "_watched_background_jobs",
-                     "_poll_steer"):
+        for hook in ("register_background_job", "watched_background_jobs",
+                     "poll_steer"):
             self.assertTrue(callable(getattr(agent, hook, None)), hook)
 
     def test_a_finished_run_reaches_the_child_as_a_steer(self) -> None:
@@ -1417,7 +1426,7 @@ class BackgroundTests(unittest.TestCase):
             _asks_whether_a_watched_run_is_done,
         )
         descriptor = spawn._job_descriptor("sub-ab12cd34")
-        agent = types.SimpleNamespace(_watched_background_jobs=lambda: [descriptor])
+        agent = types.SimpleNamespace(watched_background_jobs=lambda: [descriptor])
         status = descriptor["status_op"]
         summary = descriptor["summary_op"]
         self.assertEqual(

@@ -800,6 +800,57 @@ def _paused_secs(session: str) -> float:
         return _PAUSED.get(session, 0.0)
 
 
+class _RelayedHuman:
+    """The user of the session that delegated this child, reached through the caller
+    (``core.ports.HumanIO``). *ask* puts one question to them and returns the option
+    they chose, or "" when nobody answered."""
+
+    def __init__(self, ask) -> None:
+        self._ask = ask
+
+    def approve_tool(self, agent, tool_name: str, arguments: dict,
+                     max_attempts: int = 3) -> tuple[bool, str]:
+        detail = json.dumps(arguments, ensure_ascii=False, default=str)[:400]
+        # The name of the child is in the origin, not repeated here: the card shows it
+        # as a badge, and saying it twice on one card reads as two different facts.
+        answer = self._ask("Sub-agent", f"Run {tool_name}?\n{detail}", _APPROVAL_OPTIONS)
+        if answer.startswith("Allow for the session"):
+            # Recorded under the same key a front-end "always" uses, so a grant given
+            # here narrows the way theirs does — a command family rather than the whole
+            # tool. A call whose scope cannot be derived falls back to trusting the tool
+            # itself, which is what the coarse path has always meant.
+            scope = agent.approval_scope(tool_name, arguments)
+            if scope:
+                agent.approvals.approved_scopes.add(scope)
+            else:
+                agent.approvals.trust_tool(tool_name, agent.tool_owner.get(tool_name))
+            return True, "approved for this session"
+        if answer.startswith("Allow"):
+            return True, "approved once"
+        return False, "the user refused"
+
+    def approve_paths(self, agent, paths: list[str], tool_name: str,
+                      arguments: dict | None = None) -> tuple[bool, bool]:
+        shown = ", ".join(paths[:5]) + ("…" if len(paths) > 5 else "")
+        answer = self._ask("Outside", f"Reach outside the workspace: {shown}",
+                           _APPROVAL_OPTIONS)
+        if answer.startswith("Allow for the session"):
+            return True, True
+        return (answer.startswith("Allow"), False)
+
+    def ask(self, agent, questions: list, origin: dict | None = None,
+            timeout_secs: float | None = None) -> dict:
+        answers = []
+        for q in questions or []:
+            chosen = self._ask(str(q.get("header") or "Sub-agent"),
+                               str(q.get("question") or ""),
+                               list(q.get("options") or []))
+            answers.append({"header": q.get("header", ""),
+                            "selected": [chosen] if chosen else [],
+                            "other_text": None})
+        return {"answers": answers}
+
+
 def _install_user_channel(agent, session, loop, task: str) -> None:
     """Route this child's approvals and questions to the user, through the caller.
 
@@ -825,57 +876,7 @@ def _install_user_channel(agent, session, loop, task: str) -> None:
         finally:
             _record_pause(origin["session"], time.monotonic() - started)
 
-    def _approve_tool(tool_name: str, arguments: dict, max_attempts: int = 3):
-        detail = json.dumps(arguments, ensure_ascii=False, default=str)[:400]
-        # The name of the child is in `origin`, not repeated here: the card shows it as
-        # a badge, and saying it twice on one card reads as two different facts.
-        answer = _ask(
-            "Sub-agent",
-            f"Run {tool_name}?\n{detail}",
-            _APPROVAL_OPTIONS,
-        )
-        if answer.startswith("Allow for the session"):
-            # Recorded under the same key a front-end "always" uses, so a grant given
-            # here narrows the way theirs does — a command family rather than the whole
-            # tool. A call whose scope cannot be derived falls back to trusting the tool
-            # itself, which is what the coarse path has always meant.
-            scope = agent.approval_scope(tool_name, arguments)
-            if scope:
-                agent.approvals.approved_scopes.add(scope)
-            else:
-                agent.approvals.trust_tool(tool_name, agent.tool_owner.get(tool_name))
-            return True, "approved for this session"
-        if answer.startswith("Allow"):
-            return True, "approved once"
-        return False, "the user refused"
-
-    def _approve_paths(paths: list[str], tool_name: str, arguments: dict | None = None):
-        shown = ", ".join(paths[:5]) + ("…" if len(paths) > 5 else "")
-        answer = _ask(
-            "Outside",
-            f"Reach outside the workspace: {shown}",
-            _APPROVAL_OPTIONS,
-        )
-        if answer.startswith("Allow for the session"):
-            return True, True
-        return (answer.startswith("Allow"), False)
-
-    def _question(questions: list) -> dict:
-        answers = []
-        for q in questions or []:
-            chosen = _ask(
-                str(q.get("header") or "Sub-agent"),
-                str(q.get("question") or ""),
-                list(q.get("options") or []),
-            )
-            answers.append({"header": q.get("header", ""),
-                            "selected": [chosen] if chosen else [],
-                            "other_text": None})
-        return {"answers": answers}
-
-    agent.request_tool_approval = _approve_tool
-    agent.request_path_approval = _approve_paths
-    agent.request_user_question = _question
+    agent.human = _RelayedHuman(_ask)
     # It is no longer unattended: there is a person at the end of the channel, and the
     # mode gate must ask them rather than refuse on their behalf.
     agent.approvals.unattended = False
@@ -1953,9 +1954,9 @@ async def _run_sub_agent(
     # hears about it through its steer channel, at its next step boundary.
     watcher = _child_jobs.ChildWatcher(
         agent=agent, origin=_child_origin(agent, task), on_activity=on_event)
-    agent._register_background_job = watcher.register
-    agent._watched_background_jobs = watcher.live_descriptors
-    agent._poll_steer = watcher.drain_steers
+    agent.register_background_job = watcher.register
+    agent.watched_background_jobs = watcher.live_descriptors
+    agent.poll_steer = watcher.drain_steers
     if child is not None:
         child["agent"] = agent
         # Published for the same reason the agent is: a caller out of patience reads the

@@ -15,6 +15,8 @@ import os
 import queue
 import types
 import unittest
+
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from unittest import mock
 
 from mimir.tests._fake_pool import FakePool
@@ -115,7 +117,7 @@ class _FakeAgent:
         # instance is raised. The last two are the paths the field failure took.
         self._outcome = outcome
         if with_hook:
-            self._register_background_job = self._hook
+            self.register_background_job = self._hook
 
     def _hook(self, descriptor: dict) -> bool:
         self.registered.append(descriptor)
@@ -140,7 +142,7 @@ class RegisterBackgroundJobTests(unittest.TestCase):
         self.assertIn("end your turn", out)
 
     def test_no_hook_leaves_result_unchanged(self) -> None:
-        # CLI path: no _register_background_job hook → normal poll contract kept.
+        # CLI path: no register_background_job hook → normal poll contract kept.
         agent = _FakeAgent(cap=True, with_hook=False)
         out, registered = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
         self.assertEqual(out, self._RESULT)
@@ -274,7 +276,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
         registered: list[dict] = []
         agent = types.SimpleNamespace(
             tool_caps=registry,
-            _register_background_job=lambda d: bool(registered.append(d) or True),
+            register_background_job=lambda d: bool(registered.append(d) or True),
         )
         out, was_registered = _maybe_register_background_job(
             "bash_run", json.dumps(result), agent)
@@ -322,8 +324,8 @@ class LiveRegistrySeamTests(unittest.TestCase):
         registered: list[dict] = []
         agent = types.SimpleNamespace(
             tool_caps=registry,
-            _watched_background_jobs=lambda: [],
-            _register_background_job=lambda d: bool(registered.append(d) or True),
+            watched_background_jobs=lambda: [],
+            register_background_job=lambda d: bool(registered.append(d) or True),
         )
         out = _maybe_rewatch_background_jobs("bash_watch", json.dumps(result), agent)
 
@@ -814,9 +816,9 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
         from mimir.client.query_engine import dispatch as dispatch_module
 
         agent = self._agent(result_text)
-        agent._register_background_job = \
+        agent.register_background_job = \
             lambda d, owner=None: (agent.registered.append(d), True)[1]
-        agent._watched_background_jobs = lambda: []
+        agent.watched_background_jobs = lambda: []
         asyncio.run(dispatch_module._dispatch_tool_calls(
             [{"id": "1", "function": {"name": "spawn_agent", "arguments": "{}"}}],
             agent, [], build_execution_context()))
@@ -910,7 +912,7 @@ class _GuardAgent:
         }
         self._watched = watched or []
         if with_hook:
-            self._watched_background_jobs = lambda: list(self._watched)
+            self.watched_background_jobs = lambda: list(self._watched)
 
 
 def _descriptor(job_key: str = "j1") -> dict:
@@ -962,7 +964,7 @@ class WatchedRunPollGuardTests(unittest.TestCase):
         agent = _GuardAgent()
         def _boom():
             raise RuntimeError("worker gone")
-        agent._watched_background_jobs = _boom
+        agent.watched_background_jobs = _boom
         self.assertIsNone(self._asks(agent, "bash_job", {"job_key": "j1"}))
 
 
@@ -1369,6 +1371,7 @@ class _FakeWorker:
         self._agent = types.SimpleNamespace(context_mode="flat")
         self.model = "test-model"
         self.watching = list(watching or [])
+        self.human = HumanBridge(self)
 
     def submit_query(self, text, history, session_id=None) -> None:
         self.submitted.append((text, list(history), session_id))
@@ -2099,7 +2102,7 @@ class CheckinDeliveryTests(unittest.TestCase):
 
     def test_a_parked_conversation_is_never_steered(self) -> None:
         """The card is waiting on a person, not on a status line."""
-        self.worker._pending_prompt = {"type": "approval"}
+        self.worker.human._pending_prompt = {"type": "approval"}
         started = self.session.pool.wakes.consume(self._event())
         self.assertFalse(started)
         self.assertEqual(self.worker.submitted, [])
@@ -2391,8 +2394,8 @@ class RewatchDetectionTests(unittest.TestCase):
         self.registered: list[dict] = []
         self.agent = types.SimpleNamespace(
             tool_caps={},
-            _register_background_job=lambda d: (self.registered.append(d), True)[1],
-            _watched_background_jobs=lambda: [],
+            register_background_job=lambda d: (self.registered.append(d), True)[1],
+            watched_background_jobs=lambda: [],
         )
 
     def _result(self, *descriptors: dict) -> str:
@@ -2438,7 +2441,7 @@ class RewatchDetectionTests(unittest.TestCase):
         self.assertEqual(self.registered, [])
 
     def test_a_run_already_watched_is_not_announced_again(self) -> None:
-        self.agent._watched_background_jobs = lambda: [self._descriptor("j1")]
+        self.agent.watched_background_jobs = lambda: [self._descriptor("j1")]
         out = self.background._maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("j1")), self.agent)
         self.assertEqual(self.registered, [])
@@ -2453,7 +2456,7 @@ class RewatchDetectionTests(unittest.TestCase):
 
     def test_a_cli_with_no_watcher_hook_is_left_alone(self) -> None:
         """Nothing was promised, so there is nothing to re-arm or to say."""
-        del self.agent._register_background_job
+        del self.agent.register_background_job
         payload = self._result(self._descriptor("j1"))
         self.assertEqual(
             self.background._maybe_rewatch_background_jobs("bash_job", payload, self.agent),

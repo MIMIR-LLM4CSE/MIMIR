@@ -85,8 +85,8 @@ class DiagCommand(Command):
                 f"worker {sid[:8]}",
                 f"queue {worker.out_q.qsize()}, "
                 f"running {getattr(worker, '_query_session_id', None)}, "
-                f"parked {getattr(worker, '_pending_prompt', None) is not None}, "
-                f"deferral {getattr(worker, 'has_deferral', False)}"))
+                f"parked {worker.human.awaiting_user()}, "
+                f"deferral {worker.human.has_deferral}"))
         return CommandResult("Event chain", rows)
 
 

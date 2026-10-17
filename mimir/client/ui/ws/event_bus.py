@@ -394,7 +394,7 @@ class _EventBus:
             return
         for _sid, worker in workers:
             try:
-                worker.unattended_since = self._unattended_since
+                worker.human.unattended_since = self._unattended_since
             except Exception:
                 pass
 

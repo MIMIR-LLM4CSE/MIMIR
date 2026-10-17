@@ -43,7 +43,8 @@ from ._ws_runtime import _todo_file_for_session
 from .event_bus import _EventBus
 from .job_scan import has_baseline, scan_all_sessions
 from .wake_router import WakeRouter
-from .ws_worker import _AgentWorker, _detach_grace
+from .human_bridge import _detach_grace
+from .ws_worker import _AgentWorker
 from ...context.todo import load_todo_deps, load_todo_items
 from ...core.settings import parse_setting
 from ...session.conversation import Conversation, Conversations
@@ -252,10 +253,10 @@ class _AgentPool:
             except Exception:
                 reasons.append(f"session {session_id} could not be asked")
                 continue
-            if getattr(worker, "_pending_prompt", None) is not None:
+            if worker.human.awaiting_user():
                 reasons.append(f"session {session_id} is parked on a card")
                 continue
-            if getattr(worker, "has_deferral", False):
+            if worker.human.has_deferral:
                 reasons.append(f"session {session_id} is owed an answer")
                 continue
             if self.bus.concluded_at(session_id) is None:
@@ -645,9 +646,9 @@ class _AgentPool:
             return False
         if getattr(worker, "_bg_jobs", None):
             return False
-        if getattr(worker, "_pending_prompt", None) is not None:
+        if worker.human.awaiting_user():
             return False
-        if getattr(worker, "has_deferral", False):
+        if worker.human.has_deferral:
             return False
         conversation = self.conversations._open.get(session_id)
         if conversation is not None and conversation.pending_wakes:
@@ -919,7 +920,7 @@ class _AgentPool:
     def is_parked(self, session_id: str | None) -> bool:
         """Whether this conversation's turn is waiting on the user right now."""
         worker = self._workers.get(session_id or "")
-        return worker is not None and getattr(worker, "_pending_prompt", None) is not None
+        return worker is not None and worker.human.awaiting_user()
 
     def set_active(self, session_id: str | None) -> None:
         """Point the pool at the conversation on screen, and tell every worker."""

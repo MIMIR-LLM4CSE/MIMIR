@@ -49,6 +49,14 @@ class AgentPort(Protocol):
     _cancel_flag: Any                    # threading.Event the user's Stop sets
     _deferred_prompts: list[dict]
 
+    # ── What a front-end lends the turn (None where it lends nothing) ─────────
+    # Messages the user typed while the turn runs, drained at each step boundary.
+    poll_steer: Callable[[], list[str]] | None
+    # Hand a long run to the front-end, which watches it and wakes the turn after.
+    register_background_job: Callable[..., bool] | None
+    # The runs the front-end is already watching, so asking about one can be refused.
+    watched_background_jobs: Callable[[], list[dict]] | None
+
     # ── Paths and tool calls ───────────────────────────────────────────────────
     def normalize_workspace_path(self, path: str | None) -> str: ...
     def is_code_filepath(self, path: str) -> bool: ...
@@ -77,3 +85,31 @@ class AgentPort(Protocol):
     def update_carry_context(self, execution_context: ExecutionContext) -> None: ...
     def todo_file(self) -> str: ...
     async def build_system_content(self, active_mode: str) -> str: ...
+
+
+class HumanIO(Protocol):
+    """Whoever answers for the person at the end of a front-end.
+
+    The agent asks through this and nothing else: a tool that needs approval, a path
+    outside the workspace, a question for the user. Each front-end puts its own on the
+    agent (``agent.human``) — the terminal prompts on stdin, the WebSocket raises a card
+    and parks the turn on its answer, a sub-agent relays to the session that delegated
+    it, an unattended run approves. It is handed the agent, since what to show about a
+    call (its label, its risk, its scope) is the agent's to say.
+    """
+
+    def approve_tool(self, agent: AgentPort, tool_name: str, arguments: dict,
+                     max_attempts: int = 3) -> tuple[bool, str]:
+        """Whether *tool_name* may run with *arguments*, and the note to record."""
+        ...
+
+    def approve_paths(self, agent: AgentPort, paths: list[str], tool_name: str,
+                      arguments: dict | None = None) -> tuple[bool, bool]:
+        """Whether a call may reach *paths* outside the workspace: (approved, always)."""
+        ...
+
+    def ask(self, agent: AgentPort, questions: list, origin: dict | None = None,
+            timeout_secs: float | None = None) -> dict:
+        """The user's answers to *questions*: ``{"answers": [...]}``, flagged
+        ``timed_out`` when the wait ran out with nothing answered."""
+        ...

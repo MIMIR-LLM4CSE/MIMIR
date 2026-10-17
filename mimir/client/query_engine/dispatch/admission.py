@@ -136,7 +136,7 @@ def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContex
 # ── Guards for a run something else is already watching ───────────────────────
 #
 # Both read one deterministic fact — the set of watchers currently alive — through the
-# optional ``agent._watched_background_jobs`` hook (the WS worker sets it; the CLI does
+# optional ``agent.watched_background_jobs`` hook (the WS worker sets it; the CLI does
 # not, and then both guards abstain). They live in the dispatch rather than in a policy
 # gate on purpose: the dispatch is the *model's* path, while the watcher's own probes
 # and the CLI's in-turn await call ``agent.run_tool`` directly. A gate would see both
@@ -145,7 +145,7 @@ def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContex
 
 def _watched_jobs(agent: AgentPort) -> list[dict]:
     """Descriptors of the runs a watcher is holding right now. Best-effort, never raises."""
-    hook = getattr(agent, "_watched_background_jobs", None)
+    hook = getattr(agent, "watched_background_jobs", None)
     if not hook:
         return []
     try:

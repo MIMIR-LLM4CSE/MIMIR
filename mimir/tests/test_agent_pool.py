@@ -22,6 +22,7 @@ import threading
 import time
 import unittest
 
+from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws import ws_pool
 from mimir.client.ui.ws.ws_pool import _AgentPool
 from mimir.client.ui.ws.ws_worker import _Outbox
@@ -33,6 +34,7 @@ class _StubWorker:
     built = 0
 
     def __init__(self, model: str, session_id: str | None = None) -> None:
+        self.human = HumanBridge(self)
         type(self).built += 1
         self.model = model
         self.session_id = session_id
@@ -41,7 +43,7 @@ class _StubWorker:
         self.busy = False
         self.queued = False
         self._bg_jobs: dict = {}
-        self._pending_prompt: dict | None = None
+        self.human._pending_prompt = None
         self.applied: list[tuple] = []
         self.out_q = _Outbox()
 
@@ -275,7 +277,7 @@ class ReleaseTests(_PoolCase):
     async def test_a_worker_parked_on_a_card_is_never_released(self) -> None:
         """The turn is waiting on a person, with no timeout, by design."""
         pool = self._pool(idle_ttl=0.0)
-        (await pool.worker_for("s1"))._pending_prompt = {"id": "a"}
+        (await pool.worker_for("s1")).human._pending_prompt = {"id": "a"}
         self.assertEqual(await pool.release_idle(), [])
 
     async def test_the_conversation_on_screen_is_never_released(self) -> None:
@@ -288,7 +290,7 @@ class ReleaseTests(_PoolCase):
         """The decision this encodes: wait visibly rather than lose work silently."""
         pool = self._pool(cap=1)
         held = await pool.worker_for("s1")
-        held._pending_prompt = {"id": "waiting on the user"}
+        held.human._pending_prompt = {"id": "waiting on the user"}
         self.assertIsNone(await pool.worker_for("s2"))
         self.assertFalse(held.closed)
 
@@ -407,7 +409,7 @@ class AddressingASessionTests(_PoolCase):
         pool = self._pool(cap=2)
         a, b = await pool.worker_for("s1"), await pool.worker_for("s2")
         a.busy = True
-        b._pending_prompt = {"id": "x"}
+        b.human._pending_prompt = {"id": "x"}
         self.assertTrue(pool.is_busy("s1"))
         self.assertFalse(pool.is_busy("s2"))
         self.assertTrue(pool.is_parked("s2"))
