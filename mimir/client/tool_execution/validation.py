@@ -7,51 +7,9 @@ import re
 import shlex
 from typing import Any, Awaitable, Callable
 
-from ...servers._shared.state_paths import standing_roots
-from ..config import paths
 from ..context.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
-
-def is_python_test_filepath(path: str) -> bool:
-    basename = os.path.basename(path)
-    return path.endswith(".py") and (basename.startswith("test_") or basename.endswith("_test.py"))
-
-
-def scratch_roots() -> list[str]:
-    """The agent's scratchpad directories, as absolute real paths.
-
-    The scratchpad home itself comes from ``MIMIR_SCRATCH_DIR``, which the client
-    resolves and publishes at startup, so both ends agree without either re-deriving
-    it. ``paths.STATE_DIR`` is still passed because the shared helper reads the active
-    -session sidecar from there, and ``MIMIR_STATE_DIR`` reaches only the server
-    subprocesses' environment.
-    """
-    return [os.path.realpath(os.path.abspath(r)) for r in standing_roots(paths.STATE_DIR)]
-
-
-def is_scratch_path(path: str) -> bool:
-    """True if *path* lives in the scratchpad rather than the user's workspace.
-
-    Scratch files are working material, not deliverables: they must not be
-    recorded as produced work, demand validation, or appear in the change ledger.
-    Without this the scratchpad would trade one problem (temporary files polluting
-    the workspace) for another (temporary files polluting the completion state).
-    """
-    if not path:
-        return False
-    full = os.path.realpath(os.path.abspath(path))
-    return any(
-        full == root or full.startswith(root + os.sep) for root in scratch_roots()
-    )
-
-
-def absolute_workspace_path(path: str, *, cwd: str | None = None) -> str:
-    if os.path.isabs(path):
-        return path
-    root = cwd or os.getcwd()
-    return os.path.abspath(os.path.join(root, path))
-
 
 async def auto_validate_written_file(
     *,

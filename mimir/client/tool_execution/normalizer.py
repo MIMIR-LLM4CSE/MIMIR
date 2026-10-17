@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
-
 import os
-from typing import Callable
+from typing import Any, Callable
 
 
 TARGETED_LINE_READ_EXTENSIONS: tuple[str, ...] = (
@@ -37,25 +35,13 @@ TARGETED_LINE_READ_EXTENSIONS: tuple[str, ...] = (
 RANGED_READ_TOOL = "read_file_lines"
 DEFAULT_READ_WINDOW = 200
 
-# Utility to recursively convert unhashable types (list → tuple, dict → frozenset) for cache keys
-def _make_hashable(obj: Any) -> Any:
-    """Recursively convert unhashable types (list → tuple, dict → frozenset) for cache keys."""
+def make_hashable(obj: Any) -> Any:
+    """*obj* as a cache key: lists become tuples, dicts frozensets, recursively."""
     if isinstance(obj, list):
-        return tuple(_make_hashable(v) for v in obj)
+        return tuple(make_hashable(v) for v in obj)
     if isinstance(obj, dict):
-        return frozenset((k, _make_hashable(v)) for k, v in obj.items())
+        return frozenset((k, make_hashable(v)) for k, v in obj.items())
     return obj
-
-
-def normalize_workspace_path(path: str | None, *, cwd: str | None = None) -> str:
-    if not path:
-        return ""
-    normalized = os.path.normpath(str(path).strip())
-    if os.path.isabs(normalized):
-        root = os.path.normpath(cwd or os.getcwd())
-        if normalized == root or normalized.startswith(root + os.sep):
-            return os.path.normpath(os.path.relpath(normalized, root))
-    return normalized
 
 
 def normalize_tool_path_argument(path: str | None, *, cwd: str | None = None) -> str:
@@ -131,9 +117,3 @@ def rewrite_tool_for_context(
     else:
         rewritten.setdefault("end_line", 0)
     return RANGED_READ_TOOL, rewritten
-
-
-def parent_path(path: str) -> str:
-    normalized = os.path.normpath(path)
-    parent = os.path.dirname(normalized)
-    return parent if parent else "."

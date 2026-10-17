@@ -41,6 +41,7 @@ from ...context.capabilities import (
     shell_command_args,
 )
 from ...context.execution_context import ExecutionContext
+from ...context.paths import absolute_workspace_path, scratch_roots
 from ...core.ports import AgentPort
 from ...protocol.tool_result import json_error_payload
 from ...tool_execution.tool_status_messages import (
@@ -48,7 +49,6 @@ from ...tool_execution.tool_status_messages import (
     tool_arg_preview,
     tool_status_message,
 )
-from ...tool_execution.validation import absolute_workspace_path, scratch_roots
 from ..proxy_state import active_proxy_source
 
 logger = logging.getLogger(__name__)

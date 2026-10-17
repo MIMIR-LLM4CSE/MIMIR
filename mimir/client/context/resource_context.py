@@ -26,8 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..tool_execution.normalizer import normalize_workspace_path
-from ..tool_execution.validation import absolute_workspace_path
+from .paths import absolute_workspace_path, normalize_workspace_path
 
 # A mention is ``@`` followed by a run of non-whitespace. We resolve the captured
 # token against the registry / filesystem rather than constraining the pattern to a URI

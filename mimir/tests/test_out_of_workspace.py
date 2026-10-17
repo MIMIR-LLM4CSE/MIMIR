@@ -228,7 +228,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         the scratchpad home lives under the temp dir and must not depend on the
         state dir (only the per-session subdirectory reads its sidecar).
         """
-        from mimir.client.tool_execution.validation import scratch_roots
+        from mimir.client.context.paths import scratch_roots
         old = os.environ.pop("MIMIR_STATE_DIR", None)
         try:
             agent = self._agent(cap=EDIT, script=(False, False))  # would DENY if asked
@@ -244,7 +244,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
     def test_scratchpad_grant_does_not_widen_to_its_parent(self) -> None:
         # The exemption must be the scratchpad specifically, not "the temp dir is
         # writable now" — nor a prefix match that admits a same-named sibling.
-        from mimir.client.tool_execution.validation import scratch_roots
+        from mimir.client.context.paths import scratch_roots
         home = scratch_roots()[0]
         agent = self._agent(cap=EDIT, script=(False, False))
         for path in (

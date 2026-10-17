@@ -207,14 +207,14 @@ class ScratchIsNotADeliverableTests(unittest.TestCase):
         self.addCleanup(env.stop)
         self.scratch = scratch_dir(self.state)
         patcher = patch(
-            "mimir.client.tool_execution.validation.scratch_roots",
+            "mimir.client.context.paths.scratch_roots",
             return_value=[os.path.realpath(self.scratch)],
         )
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_is_scratch_path_discriminates(self):
-        from mimir.client.tool_execution.validation import is_scratch_path
+        from mimir.client.context.paths import is_scratch_path
         self.assertTrue(is_scratch_path(os.path.join(self.scratch, "probe.py")))
         self.assertFalse(is_scratch_path("/some/workspace/solver.py"))
         self.assertFalse(is_scratch_path(""))

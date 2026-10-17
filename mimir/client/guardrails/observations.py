@@ -65,10 +65,7 @@ from ..context.capabilities import (
     shell_command_args,
     target_path_arg,
 )
-from ..tool_execution.validation import (
-    is_python_test_filepath,
-    is_scratch_path,
-)
+from ..context.paths import is_python_test_filepath, is_scratch_path, parent_path
 from ...servers._shared.shell_paths import (
     EFFECT_BUILD,
     EFFECT_RUN,
@@ -83,7 +80,6 @@ from ..context.bash_classify import (
     FILE_LIKE_RE,
 )
 from ..context.execution_context import ExecutionContext
-from ..tool_execution.normalizer import parent_path
 from ..protocol.tool_result import parse_tool_payload
 from ..core.ports import AgentPort
 

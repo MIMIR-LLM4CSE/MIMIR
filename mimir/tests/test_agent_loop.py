@@ -38,7 +38,7 @@ from mimir.client.context.execution_context import build_execution_context
 from mimir.client.core.settings import normalize_mode
 from mimir.client.guardrails.observations import _observe_todo_flags
 from mimir.client.protocol.tool_call import as_dict
-from mimir.client.tool_execution.normalizer import _make_hashable
+from mimir.client.tool_execution.normalizer import make_hashable
 from mimir.client.protocol.tool_call import normalize_arguments
 from mimir.client.agent_core import MimirAgent
 from mimir.tests._fake_backend import ScriptedBackend
@@ -1850,7 +1850,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
 
         agent = self._agent(run_tool)
         ec = build_execution_context()
-        key = ("code_check_file", _make_hashable({"filepath": "a.py"}))
+        key = ("code_check_file", make_hashable({"filepath": "a.py"}))
 
         # Failure 1: counted, no corrective yet.
         self._dispatch(agent, ec)

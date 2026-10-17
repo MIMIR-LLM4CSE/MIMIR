@@ -29,6 +29,7 @@ from .config import (
         WORKSPACE_ROOT,
 )
 from .config.models import enforcement_level
+from .context.paths import absolute_workspace_path, normalize_workspace_path
 from .config.preferences import load_disabled, load_subagent_level, load_temperature, save_disabled
 from .context import (
         CARRY,
@@ -89,13 +90,9 @@ from .tool_execution.executor import execute_tool_call
 from .tool_execution.normalizer import (
         normalize_tool_arguments,
         normalize_tool_path_argument,
-        normalize_workspace_path,
         rewrite_tool_for_context,
 )
-from .tool_execution.validation import (
-        absolute_workspace_path,
-        auto_validate_written_file,
-)
+from .tool_execution.validation import auto_validate_written_file
 
 logger = logging.getLogger(__name__)
 

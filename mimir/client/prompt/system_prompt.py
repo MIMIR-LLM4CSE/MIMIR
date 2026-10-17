@@ -691,7 +691,7 @@ def _scratch_dir_for_prompt(session_id: str | None = None) -> str:
     The session-scoped directory, not ``standing_roots()[0]``: the standing grant is
     the scratchpad *home* (it has to cover a mid-run session switch), so advertising it
     would point the model one level above where its own working files belong.
-    paths.STATE_DIR is passed explicitly — see tool_execution.validation.scratch_roots.
+    paths.STATE_DIR is passed explicitly — see context.paths.scratch_roots.
 
     *session_id* names the conversation this prompt is for. It has to be passed, not
     looked up: several sessions build prompts in this one process, and the active-session

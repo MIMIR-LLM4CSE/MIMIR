@@ -21,7 +21,7 @@ from ...core.ports import AgentPort
 from ...event_sink import emit
 from ...protocol.tool_call import DOING_ARG, UNPARSED_ARGUMENTS, as_dict, normalize_arguments
 from ...protocol.tool_result import json_error_payload
-from ...tool_execution.normalizer import _make_hashable
+from ...tool_execution.normalizer import make_hashable
 from ...tool_execution.tool_status_messages import clip_doing
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class Call:
 
     @property
     def key(self) -> tuple:
-        return (self.name, _make_hashable(self.args))
+        return (self.name, make_hashable(self.args))
 
 
 @dataclass

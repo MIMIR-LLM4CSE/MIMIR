@@ -27,6 +27,7 @@ from ..context.capabilities import (
     target_path_arg,
 )
 from ..context.execution_context import ExecutionContext, failed_runs, unsettled_runs
+from ..context.paths import absolute_workspace_path, is_scratch_path
 from ..core.ports import AgentPort
 from ..event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
@@ -35,9 +36,8 @@ from ..guardrails.policy.engine import evaluate_tool_preconditions
 from ..guardrails.toollist import grantable_tools, grantable_writers
 from ..protocol.tool_result import json_error_payload, normalize_tool_content, parse_tool_payload
 from . import bash_effect
-from .normalizer import _make_hashable
+from .normalizer import make_hashable
 from .plugins import PostToolRegistry
-from .validation import absolute_workspace_path, is_scratch_path
 
 logger = logging.getLogger(__name__)
 
@@ -482,7 +482,7 @@ async def execute_tool_call(
     cache_key: tuple | None = None
     cache_stamp: tuple | None = None
     if has_cap(tool_name, CACHEABLE, agent.tool_caps):
-        cache_key = (tool_name, _make_hashable(arguments))
+        cache_key = (tool_name, make_hashable(arguments))
         cache_stamp = _path_stamp(agent, arguments)
         hit = cache.get(cache_key)
         if hit is not None:
