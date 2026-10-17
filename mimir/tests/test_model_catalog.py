@@ -16,7 +16,7 @@ from mimir.client.config.model_catalog import (
 )
 
 # What the internal router listed on 2026-09-19.
-_ROUTER = [
+ROUTER = [
     {"id": "mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4"},
     {"id": "mistralai/Mistral-Medium-3.5-128B"},
     {"id": "Qwen/Qwen3-0.6B"},
@@ -27,7 +27,7 @@ _ROUTER = [
 
 class TestMatching:
     def test_every_router_id_reaches_an_entry(self):
-        for m in _ROUTER:
+        for m in ROUTER:
             assert catalog_entry(m["id"]), m["id"]
 
     def test_an_arbitrary_served_name_is_matched_through_its_root(self):
@@ -52,42 +52,42 @@ class TestSpeed:
 
 class TestDescription:
     def test_one_model_offers_nothing_else(self):
-        text = describe_served_models(_ROUTER[3:4])
+        text = describe_served_models(ROUTER[3:4])
         assert "No other model" in text
 
     def test_a_not_delegable_model_does_not_count_as_a_choice(self):
-        text = describe_served_models([_ROUTER[2], _ROUTER[3]])
+        text = describe_served_models([ROUTER[2], ROUTER[3]])
         assert "No other model" in text
 
     def test_the_router_table_ranks_speed_among_usable_models_only(self):
-        text = describe_served_models(_ROUTER)
+        text = describe_served_models(ROUTER)
         line = next(ln for ln in text.splitlines() if ln.startswith("- RedHatAI/GLM"))
         assert "speed 1/4" in line
         assert "Not for sub-agents: Qwen/Qwen3-0.6B" in text
         assert "- Qwen/" not in text
 
     def test_an_unmeasured_category_says_so(self):
-        text = describe_served_models(_ROUTER)
+        text = describe_served_models(ROUTER)
         assert "instructions n/a" in text
         assert "Not measured comparably yet: instructions" in text
 
     def test_a_model_without_entry_is_still_offered(self):
-        text = describe_served_models([_ROUTER[3], {"id": "acme/Unknown-7B"}])
+        text = describe_served_models([ROUTER[3], {"id": "acme/Unknown-7B"}])
         assert "- acme/Unknown-7B: speed ? | no benchmark data" in text
 
     def test_the_endpoint_window_wins_over_the_documented_one(self):
         text = describe_served_models([
             {"id": "RedHatAI/GLM-5.3-Flash-NVFP4", "max_model_len": 131072},
-            _ROUTER[4]])
+            ROUTER[4]])
         assert "131k ctx" in text
 
 
 class TestRefusal:
     def test_a_served_delegable_model_is_accepted(self):
-        assert subagent_model_refusal("deepseek-ai/DeepSeek-V4.1-Flash", _ROUTER) is None
+        assert subagent_model_refusal("deepseek-ai/DeepSeek-V4.1-Flash", ROUTER) is None
 
     def test_an_unserved_model_lists_only_usable_ones(self):
-        why = subagent_model_refusal("gpt-oss", _ROUTER)
+        why = subagent_model_refusal("gpt-oss", ROUTER)
         assert "RedHatAI/GLM-5.3-Flash-NVFP4" in why and "Qwen3" not in why
 
     def test_nothing_listed_says_to_leave_it_empty(self):

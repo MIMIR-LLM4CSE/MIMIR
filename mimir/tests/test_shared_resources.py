@@ -188,11 +188,15 @@ class WhatStaysSharedTests(unittest.TestCase):
                 self.assertNotEqual(session_state_dir(), state_dir())
 
     def test_the_memory_dir_is_not_per_session(self) -> None:
-        import inspect
+        import importlib.util
         from mimir.servers.agent_state import server_memory
-        source = inspect.getsource(server_memory)
-        self.assertIn("state_dir()", source)
-        self.assertNotIn("session_state_dir", source)
+        from mimir.tests.support.modules import spec_for
+        with tempfile.TemporaryDirectory() as d, \
+                patch.dict(os.environ, {"MIMIR_STATE_DIR": d, "MIMIR_SESSION_ID": "s1"}):
+            spec = spec_for(server_memory.__file__)
+            fresh = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fresh)
+            self.assertEqual(fresh.MEMORY_DIR, os.path.join(d, "memory"))
 
 
 if __name__ == "__main__":
@@ -248,10 +252,36 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
         approvals = self._manager()
         self.assertIsNone(approvals.batch.reviewed_matches("/nowhere/at/all.py"))
 
-    def test_building_the_review_diff_is_what_records_the_digest(self) -> None:
-        """The two ends of the seam, so neither can drift from the other."""
-        import inspect
-        from mimir.client.ui.ws.worker import worker as ws_worker
-        from mimir.client.ui.ws.connection import connection as ws_session
-        self.assertIn("note_reviewed", inspect.getsource(ws_worker.AgentWorker._build_batch_status))
-        self.assertIn("reviewed_matches", inspect.getsource(ws_session.Connection._revert_one))
+    def _reviewed(self, path: str, original: str):
+        """A worker whose agent snapshotted *path* at *original*, after it built the diff."""
+        import types
+        from mimir.tests.support.workers import bare_worker
+        approvals = self._manager()
+        approvals.batch.snapshots[path] = original
+        worker = bare_worker(agent=types.SimpleNamespace(approvals=approvals))
+        worker._build_batch_status()
+        return types.SimpleNamespace(worker=worker)
+
+    def test_a_revert_restores_the_file_the_user_reviewed(self) -> None:
+        from mimir.client.ui.ws.connection.handlers.cards import CardHandlers
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.py")
+            with open(path, "w") as fh:
+                fh.write("edited\n")
+            view = self._reviewed(path, "original\n")
+            self.assertTrue(CardHandlers._revert_one(view, path, "original\n"))
+            with open(path) as fh:
+                self.assertEqual(fh.read(), "original\n")
+
+    def test_a_revert_leaves_a_file_changed_since_the_review(self) -> None:
+        from mimir.client.ui.ws.connection.handlers.cards import CardHandlers
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.py")
+            with open(path, "w") as fh:
+                fh.write("edited\n")
+            view = self._reviewed(path, "original\n")
+            with open(path, "w") as fh:
+                fh.write("edited again elsewhere\n")
+            self.assertFalse(CardHandlers._revert_one(view, path, "original\n"))
+            with open(path) as fh:
+                self.assertEqual(fh.read(), "edited again elsewhere\n")

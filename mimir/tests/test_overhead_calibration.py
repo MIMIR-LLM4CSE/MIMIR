@@ -74,14 +74,14 @@ class OverheadCalibrationTests(_IsolatedCalibrationCache, unittest.TestCase):
     def test_agent_step_calibrates_and_strips_the_figure(self) -> None:
         backend = _Backend(reported=5020)
         with patch.object(streaming, "get_backend", return_value=backend):
-            msg = streaming._stream_chat("m", _HISTORY, [], False, False, {})
+            msg = streaming.stream_chat("m", _HISTORY, [], False, False, {})
         self.assertNotIn("prompt_tokens", msg)
         self.assertEqual(backend.measured_prompt_overhead("m"), 5000)
 
     def test_side_call_leaves_the_overhead_alone(self) -> None:
         backend = _Backend(reported=5020)
         with patch.object(streaming, "get_backend", return_value=backend):
-            streaming._stream_chat("m", _HISTORY, [], False, False, {})
+            streaming.stream_chat("m", _HISTORY, [], False, False, {})
         backend.reported = 300
         backend.chat("m", [{"role": "system", "content": "classify"}], [], False, False, {})
         self.assertEqual(backend.measured_prompt_overhead("m"), 5000)
@@ -131,7 +131,7 @@ class CharsPerTokenCalibrationTests(_IsolatedCalibrationCache, unittest.TestCase
 
     def _step(self, backend, messages, tools=_TOOLS):
         with patch.object(streaming, "get_backend", return_value=backend):
-            streaming._stream_chat("m", messages, tools, False, False, {})
+            streaming.stream_chat("m", messages, tools, False, False, {})
 
     def test_one_step_measures_the_history_and_the_true_overhead(self) -> None:
         backend = _Server()

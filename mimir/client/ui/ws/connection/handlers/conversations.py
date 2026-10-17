@@ -12,7 +12,7 @@ import logging
 import os
 from datetime import datetime
 
-from ...runtime import _todo_file_for_session, _write_active_session
+from ...runtime import todo_file_for_session, write_active_session
 from .....session.jobs_on_disk import is_settled
 from .....session.summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
 from ......servers._shared.state_paths import session_dir
@@ -99,7 +99,7 @@ class ConversationHandlers:
         self.conv = session = self.pool.conversations.new()
         self._active_session_id = session.id
         self.pool.set_active(session.id)
-        _write_active_session(session.id)
+        write_active_session(session.id)
         # A new conversation has rendered nothing. Carried over, the previous one's
         # watermark is a number from a journal this session does not have: its own
         # starts at 1, every stamped event is at or below the inherited mark, and the
@@ -141,7 +141,7 @@ class ConversationHandlers:
         # Nothing is reset on a switch. Each conversation's approved paths are its own
         # file, so there is nothing of another conversation's to drop — and dropping
         # this one's would revoke grants its own turn may still be writing under.
-        _write_active_session(session.id)
+        write_active_session(session.id)
         self._rendered_seq = session.rendered_seq
         self._publish_title(session.id, session.title)
         if not resuming_live_agent:
@@ -242,7 +242,7 @@ class ConversationHandlers:
         one without the other yields dependencies pointing at steps that are not there.
         """
         try:
-            todo_file = _todo_file_for_session(self._active_session_id)
+            todo_file = todo_file_for_session(self._active_session_id)
             if not self._snapshot_is_current(todo_file, snapshot_at):
                 return False
             os.makedirs(os.path.dirname(todo_file), exist_ok=True)

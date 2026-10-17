@@ -491,18 +491,40 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         explicit "outside workspace" line, one row per path); only the header label
         is shortened.
         """
-        import inspect
-        from mimir.client.ui.ws.worker.human import HumanBridge
-        src = inspect.getsource(HumanBridge.approve_paths)
-        self.assertIn('"oow_paths": list(paths)', src)
-        self.assertNotIn("os.path.basename(paths[0])}\",", src)
+        import types
+        from unittest import mock
+        from mimir.tests.support.workers import bare_worker
+
+        class _Raised(Exception):
+            pass
+
+        cards = []
+
+        def _capture(payload):
+            cards.append(payload)
+            raise _Raised
+
+        bridge = bare_worker().human
+        agent = types.SimpleNamespace(
+            tool_owner={}, tool_caps={},
+            approvals=types.SimpleNamespace(describe_risk=lambda tool: ""))
+        paths = ["/far/away/data.csv", "/elsewhere/out.log"]
+        with mock.patch.object(bridge, "_emit_prompt", _capture), \
+                self.assertRaises(_Raised):
+            bridge.approve_paths(agent, paths, "t", {"path": paths[0]})
+        self.assertEqual(cards[0]["oow_paths"], paths)
 
     def test_cli_prompt_prints_the_absolute_path(self):
-        import inspect
+        import contextlib
+        import io
+        import types
+        from unittest import mock
         from mimir.client.core.human import TerminalHuman
-        src = inspect.getsource(TerminalHuman.approve_paths)
-        self.assertIn('f"  {p}" for p in paths', src)
-
+        out = io.StringIO()
+        with mock.patch("builtins.input", return_value="n"), contextlib.redirect_stdout(out):
+            TerminalHuman().approve_paths(types.SimpleNamespace(tool_caps={}),
+                                          ["/far/away/data.csv"], "t", {})
+        self.assertIn("  /far/away/data.csv", out.getvalue())
 
 if __name__ == "__main__":
     unittest.main()
@@ -536,7 +558,7 @@ class ClipDoingTests(unittest.TestCase):
 
 
 class _FakeAgent:
-    """The slice of the agent ``_dispatch_tool_calls`` touches."""
+    """The slice of the agent ``dispatch_tool_calls`` touches."""
 
     def __init__(self, registry):
         self.tool_caps = registry
@@ -576,7 +598,7 @@ class DispatchRowFieldsTests(unittest.TestCase):
         events: list[dict] = []
         with capture_events(events.append), \
              patch.object(dispatch_execution, "run_post_tool_annotations", lambda *a, **k: None):
-            asyncio.run(d._dispatch_tool_calls(
+            asyncio.run(d.dispatch_tool_calls(
                 tool_calls, agent, [] if messages is None else messages,
                 build_execution_context()))
         return agent, [e for e in events if e.get("type") == "tool_call"]

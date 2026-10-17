@@ -103,7 +103,7 @@ class LoopDeferralTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", dispatch), \
+             patch.object(loop_base_module, "dispatch_tool_calls", dispatch), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              capture_events(lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -167,7 +167,7 @@ class PlanDecisionDeferralTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              capture_events(lambda ev: None), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             result = asyncio.run(run_plan(
                 agent=agent, query="plan it", messages=messages,
                 execution_context=build_execution_context(),

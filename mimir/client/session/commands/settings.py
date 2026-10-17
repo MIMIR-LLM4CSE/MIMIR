@@ -22,7 +22,7 @@ from ...config.preferences import save_subagent_level
 from ...query_engine.backends.factory import switch_backend
 from .base import Command, CommandHost, CommandResult, Item, apply_setting_or_error
 
-_APPROVAL_LABELS: dict[str, str] = {
+APPROVAL_LABELS: dict[str, str] = {
     "manual": "manual", "auto": "auto (tools)", "auto_all": "auto (everything)",
 }
 
@@ -35,7 +35,7 @@ def _flag(args: list[str]) -> bool | None:
     return True if word in _ON else False if word in _OFF else None
 
 
-def _on_off(value: bool) -> str:
+def on_off(value: bool) -> str:
     return "on" if value else "off"
 
 
@@ -98,8 +98,8 @@ class StreamingCommand(Command):
             if error:
                 return error
         enabled = bool(host.read("streaming"))
-        title = (f"Streaming mode turned {_on_off(enabled)}." if args
-                 else f"Streaming is currently: {_on_off(enabled)}")
+        title = (f"Streaming mode turned {on_off(enabled)}." if args
+                 else f"Streaming is currently: {on_off(enabled)}")
         return CommandResult.setting(title, {"type": "streaming", "enabled": enabled})
 
 
@@ -117,8 +117,8 @@ class BatchCommand(Command):
                 return error
         enabled = bool(host.read("batch"))
         return CommandResult.setting(
-            f"Batch approval mode turned {_on_off(enabled)}." if args
-            else f"Batch mode is currently: {_on_off(enabled)}")
+            f"Batch approval mode turned {on_off(enabled)}." if args
+            else f"Batch mode is currently: {on_off(enabled)}")
 
 
 class ApprovalsCommand(Command):
@@ -136,7 +136,7 @@ class ApprovalsCommand(Command):
             if error:
                 return error
         mode = host.read("approval_mode")
-        label = _APPROVAL_LABELS.get(mode, mode)
+        label = APPROVAL_LABELS.get(mode, mode)
         state = {"type": "approval_mode", "mode": mode}
         if not args:
             return CommandResult.setting(

@@ -25,11 +25,11 @@ from ..event_sink import emit
 from ..guardrails.nudges import drop_transient_reminders, inject_reminder
 from ..guardrails.nudges.messages import empty_turn_retry_message
 from .deferral import end_deferred_calls, end_deferred_turn
-from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
-from .finalize import _finalize_answer
-from .history import _enforce_context_budget
+from .dispatch import dispatch_tool_calls, post_dispatch_inject
+from .finalize import finalize_answer
+from .history import enforce_context_budget
 from .readonly_guard import filter_readonly_tool_calls
-from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
+from .streaming import DraftHold, note_truncated_turn, process_response, stream_chat
 from ..context.execution_context import ExecutionContext
 from ..core.ports import AgentPort
 
@@ -119,7 +119,7 @@ def _live_mode(agent: AgentPort, active_mode: str, execution_context: ExecutionC
 
 # ── The system message ──────────────────────────────────────────────────────────
 
-async def _rebuild_system_content(
+async def rebuild_system_content(
     agent: AgentPort, active_mode: str, execution_context: ExecutionContext,
 ) -> str:
     """The system message as it must be after ANY rebuild: prompt + skill block.
@@ -161,7 +161,7 @@ async def _sync_thinking_directive(
         return auto_active, system_content
     if getattr(agent, "build_system_content", None) and messages \
             and messages[0].get("role") == "system":
-        system_content = await _rebuild_system_content(
+        system_content = await rebuild_system_content(
             agent, active_mode, execution_context,
         )
         messages[0]["content"] = system_content
@@ -181,13 +181,13 @@ async def _apply_mode_switch(
     """
     emit({"type": "status", "text": f"  ↻ Switched to {new_mode} mode mid-run"})
     emit({"type": "mode", "mode": new_mode})
-    system_content = await _rebuild_system_content(agent, new_mode, execution_context)
+    system_content = await rebuild_system_content(agent, new_mode, execution_context)
     if messages and messages[0].get("role") == "system":
         messages[0]["content"] = system_content
     return system_content
 
 
-def _advertised_tools(agent: AgentPort) -> list[dict]:
+def step_tools(agent: AgentPort) -> list[dict]:
     """The tool list to expose this step: the agent's soft-hide-filtered set when it
     provides one (``advertised_tools``), else its raw ``tools`` (keeps lightweight
     test stubs working, matching the loop's defensive ``getattr`` idiom)."""
@@ -197,7 +197,7 @@ def _advertised_tools(agent: AgentPort) -> list[dict]:
 
 # ── Steering and diagnostics ────────────────────────────────────────────────────
 
-def _drain_steer(agent: AgentPort, messages: list[dict]) -> None:
+def drain_steer(agent: AgentPort, messages: list[dict]) -> None:
     """Inject any user "steer" messages queued mid-run as user turns at a step boundary.
 
     Front-ends that support chatting-while-busy (the WebSocket server) give the agent
@@ -359,29 +359,29 @@ class StepLoop:
 
     def enforce_budget(self, tools: list[dict]) -> None:
         """Fit the history to the window the next call will be measured against."""
-        _enforce_context_budget(
+        enforce_context_budget(
             self.messages, self.system_content, tools, self.ec,
             self.turn.model, self.context_mode, self.compact_fn, self.turn.count_tokens,
             context_ceiling=self.context_ceiling,
         )
 
     async def call_model(self, tools: list[dict], *, may_refuse: bool
-                         ) -> tuple[dict, _DraftHold | None]:
+                         ) -> tuple[dict, DraftHold | None]:
         """One model call. Returns the message and the hold its prose sits in, if any.
 
         The context budget is enforced first, so the call can never overflow the
         window. When the loop *may_refuse* a bare answer, its prose is held off the
-        screen (see _DraftHold): rendering a turn a nudge then discards is what makes
+        screen (see DraftHold): rendering a turn a nudge then discards is what makes
         an answer appear and vanish. A turn that acted has its prose released at once,
         above its tool cards.
         """
         self.enforce_budget(tools)
         callbacks = self.turn.callbacks
-        hold = (_DraftHold(callbacks["token_callback"])
+        hold = (DraftHold(callbacks["token_callback"])
                 if may_refuse and callbacks.get("token_callback") is not None else None)
         step_callbacks = {**callbacks, "token_callback": hold.capture} if hold else callbacks
         try:
-            msg = _stream_chat(
+            msg = stream_chat(
                 self.turn.model, self.messages, tools, self.thinking,
                 self.turn.streaming, self.step_options(),
                 cancel_flag=self.agent.turn.cancel_flag,
@@ -399,14 +399,14 @@ class StepLoop:
             # Keeping them is what let one sentence reach 21 identical copies in a
             # single session; the emitted nudge_injected events keep the diagnosis.
             drop_transient_reminders(self.messages, self.ec)
-        _process_response(msg, self.messages, self.thinking, streamed_thinking=(
+        process_response(msg, self.messages, self.thinking, streamed_thinking=(
             self.turn.streaming and callbacks.get("think_token_callback") is not None))
-        _note_truncated_turn(msg, self.step)
+        note_truncated_turn(msg, self.step)
         if hold and msg.get("tool_calls"):
             hold.flush()
         return msg, hold
 
-    async def on_empty_turn(self, msg: dict, hold: _DraftHold | None) -> str | None:
+    async def on_empty_turn(self, msg: dict, hold: DraftHold | None) -> str | None:
         """A turn with neither prose nor a call: retry, or give up with an answer.
 
         A generation failure, not a conclusion — accepting it ends the run on an empty
@@ -452,16 +452,16 @@ class StepLoop:
         """
         self.empty_turns = 0
         tool_calls = self.prepare_calls(tool_calls)
-        await _dispatch_tool_calls(tool_calls, self.agent, self.messages, self.ec)
+        await dispatch_tool_calls(tool_calls, self.agent, self.messages, self.ec)
         if end_deferred_calls(self.agent, self.messages, tool_calls,
                               query=self.turn.query, mode=self.mode):
             return end_deferred_turn(self.agent, self.ec)
         # The mid-loop correctives: an alert the dispatch staged (a repeated failing
         # call) reaches the model here, at the step it concerns.
-        await _post_dispatch_inject(self.agent, self.messages, self.ec,
+        await post_dispatch_inject(self.agent, self.messages, self.ec,
                                     active_mode=self.mode)
         return None
 
     async def finalize(self, answer: str) -> str:
-        return await _finalize_answer(self.agent, self.turn.query, answer, self.ec,
+        return await finalize_answer(self.agent, self.turn.query, answer, self.ec,
                                       self.messages, self.turn.logger)

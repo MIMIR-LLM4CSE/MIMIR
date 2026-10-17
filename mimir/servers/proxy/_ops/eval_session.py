@@ -623,11 +623,8 @@ async def run_awaited(
 
     settled = results(name)
     # Keep the launch identity on the answer: which run this was, and where its log
-    # is, are what a crash diagnosis needs and `results` does not carry. `resume_notice`
-    # rides along for a blunter reason: this branch rebuilds its reply from `results()`,
-    # so anything set only on the launch payload is dropped here — and this is the branch
-    # a caller actually reaches, which would have made the warning invisible exactly
-    # where it matters.
+    # is, are what a crash diagnosis needs and `results` does not carry; and the
+    # `resume_notice`, which this reply, rebuilt from `results()`, would otherwise drop.
     for key in ("pid", "log", "benchmark_name", "resume_notice"):
         settled.setdefault(key, launched.get(key))
     settled.setdefault("run_dir", run_dir)

@@ -103,7 +103,7 @@ class PerEventTests(_RouterCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "todo_list.md")
             self.worker.todos = [{"text": "step", "done": False}]
-            with mock.patch.object(event_router, "_todo_file_for_session",
+            with mock.patch.object(event_router, "todo_file_for_session",
                                    lambda _sid: path):
                 with open(path, "w") as fh:
                     fh.write("- [ ] step\n")

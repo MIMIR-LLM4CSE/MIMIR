@@ -11,7 +11,7 @@ from mimir.client.context.execution_context import build_execution_context
 import json
 import unittest
 
-from mimir.client.query_engine.history import _enforce_context_budget, _trim_tool_history
+from mimir.client.query_engine.history import enforce_context_budget, _trim_tool_history
 from mimir.client.protocol.messages import EVICTED_TOOL_RESULT, reconcile_tool_pairs
 
 
@@ -166,7 +166,7 @@ class TrimBreaksPairingTests(unittest.TestCase):
             _assistant("c2"),
             _tool("c2", "y" * 4000),
         ]
-        _enforce_context_budget(
+        enforce_context_budget(
             messages,
             system_content="S",
             step_tools=None,
@@ -232,19 +232,19 @@ class UniqueCallIdTests(unittest.TestCase):
 
     def test_missing_and_repeated_ids_are_replaced(self) -> None:
         from types import SimpleNamespace
-        from mimir.client.query_engine.streaming import _process_response
+        from mimir.client.query_engine.streaming import process_response
 
         messages: list[dict] = []
         first = {"role": "assistant", "content": "",
                  "tool_calls": [{"id": "call_0", "function": {"name": "a", "arguments": {}}}]}
-        _process_response(first, messages, thinking=False)
+        process_response(first, messages, thinking=False)
         # The next step: the provider repeats call_0, omits an id, and sends an object.
         second = {"role": "assistant", "content": "", "tool_calls": [
             {"id": "call_0", "function": {"name": "b", "arguments": {}}},
             {"function": {"name": "c", "arguments": {}}},
             SimpleNamespace(function={"name": "d", "arguments": {}}),
         ]}
-        _process_response(second, messages, thinking=False)
+        process_response(second, messages, thinking=False)
 
         ids = [tc["id"] for m in messages for tc in m["tool_calls"]]
         self.assertEqual(len(ids), len(set(ids)))

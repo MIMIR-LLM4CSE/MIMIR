@@ -94,7 +94,7 @@ class ChatTurn:
     whichever backend made it.
 
     Without streaming, reasoning never reaches the callbacks: the whole block is
-    emitted once by ``streaming._process_response``, and firing the callbacks too
+    emitted once by ``streaming.process_response``, and firing the callbacks too
     showed it twice. Prose still does — it is the answer, once.
     """
 
@@ -346,7 +346,7 @@ class LLMBackend(ABC):
         (OpenAI/vLLM ``finish_reason``, Ollama ``done_reason``, Anthropic
         ``stop_reason``); without it a turn cut off at ``max_tokens`` reads like a
         model that had nothing to say. It describes the *call*, not the message: strip it before the
-        message is appended to history (``streaming._process_response`` does),
+        message is appended to history (``streaming.process_response`` does),
         or it goes back to the provider on the next turn.
 
         The history is repaired here, for every provider: the tool-call pairing

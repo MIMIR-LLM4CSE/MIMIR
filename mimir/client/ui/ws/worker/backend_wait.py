@@ -10,7 +10,7 @@ import os
 from .....servers._shared.embed import verify_ssl
 from ....query_engine.backends.factory import get_backend
 from ..runtime import (
-    _ORIGINAL_STDOUT,
+    ORIGINAL_STDOUT,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ class WorkerBackendWait:
 
         def _say(text: str) -> None:
             self.out_q.put({"type": "output", "text": text})
-            print(text.rstrip("\n"), file=_ORIGINAL_STDOUT, flush=True)
+            print(text.rstrip("\n"), file=ORIGINAL_STDOUT, flush=True)
 
         def _get(url: str) -> tuple[bool, str]:
             """(ready, permanent failure reason) for one GET. Empty reason: retry."""

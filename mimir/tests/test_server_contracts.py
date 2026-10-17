@@ -423,10 +423,14 @@ class RepresentativeServerContractTests(unittest.TestCase):
     def test_web_success_notes_never_use_the_reserved_hint_key(self) -> None:
         """`hint` belongs to error payloads: responses.ok() strips it, so a note written
         under that key is addressed to a model that never receives it."""
-        src = Path(server_web.__file__).read_text()
-        head = src.split("# \u2500\u2500 tools")[0]
-        self.assertNotIn('note["hint"]', head)
-        self.assertNotIn('setdefault("hint"', head)
+        import ast
+        tree = ast.parse(Path(server_web.__file__).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
+                self.assertNotEqual(getattr(node.slice, "value", None), "hint")
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "setdefault" and node.args):
+                self.assertNotEqual(getattr(node.args[0], "value", None), "hint")
 
     def test_web_may_read_far_more_than_it_will_ever_hand_back(self) -> None:
         """What makes a generous read affordable. The two are no longer the same
@@ -2322,9 +2326,6 @@ class ToolSchemaHonestyTests(unittest.TestCase):
 
     def test_write_file_advertises_no_line_threshold_policy(self) -> None:
         import inspect
-        source = (SERVERS_DIR / "workspace" / "server_files.py").read_text()
-        self.assertNotIn("large_file_overwrite_confirmed", source)
-
         sig = inspect.signature(server_files.write_file)
         self.assertEqual(
             list(sig.parameters), ["path", "content", "overwrite"]

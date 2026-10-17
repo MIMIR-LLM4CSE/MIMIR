@@ -23,7 +23,7 @@ from mimir.client.guardrails.policy.gates import check_skill_pull
 from mimir.client.query_engine import dispatch as dispatch_module
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine.history import (
-    _force_fit_to_window,
+    force_fit_to_window,
     _maybe_compact_intra_query,
     _trim_tool_history,
 )
@@ -261,7 +261,7 @@ class PinIsNeverHarderThanTheWindowTests(unittest.TestCase):
         # A target the unpinned content alone can satisfy: cutting the sibling result
         # frees more than the overshoot, so nothing should reach the pinned body.
         target = self._total(messages) - 400
-        fitted = _force_fit_to_window(messages, target, len, pinned_call_ids={"pinned"})
+        fitted = force_fit_to_window(messages, target, len, pinned_call_ids={"pinned"})
         self.assertTrue(fitted)
         self.assertEqual(messages[3]["content"], before)
         self.assertLess(len(messages[4]["content"]), 400)
@@ -274,7 +274,7 @@ class PinIsNeverHarderThanTheWindowTests(unittest.TestCase):
         the model was promised, before anything else.
         """
         messages = _history_with_pinned_body(body_size=400)
-        _force_fit_to_window(messages, self._total(messages) - 400, len)
+        force_fit_to_window(messages, self._total(messages) - 400, len)
         self.assertLess(len(messages[3]["content"]), 400)
 
     def test_a_pin_never_manufactures_an_overflow(self) -> None:
@@ -285,7 +285,7 @@ class PinIsNeverHarderThanTheWindowTests(unittest.TestCase):
         """
         messages = _history_with_pinned_body(body_size=4000)
         target = 800  # below everything but the irreducible core
-        fitted = _force_fit_to_window(messages, target, len, pinned_call_ids={"pinned"})
+        fitted = force_fit_to_window(messages, target, len, pinned_call_ids={"pinned"})
         self.assertTrue(fitted)
         self.assertLessEqual(self._total(messages), target)
         self.assertLess(len(messages[3]["content"]), 4000)

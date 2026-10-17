@@ -79,7 +79,7 @@ def _effort() -> str | None:
     """Reasoning/output effort (low|medium|high|xhigh|max). Default high.
 
     ``MIMIR_ANTHROPIC_EFFORT=none`` omits ``output_config`` entirely — an escape
-    hatch for legacy models that predate the effort parameter.
+    hatch for older models that predate the effort parameter.
     """
     level = os.environ.get("MIMIR_ANTHROPIC_EFFORT", "high").strip().lower()
     if level == "none":
@@ -91,7 +91,7 @@ def _thinking_enabled(flag: bool) -> bool:
     """Whether to send adaptive thinking. Env can force-disable it.
 
     ``MIMIR_ANTHROPIC_THINKING=off`` disables thinking regardless of the caller's
-    request — an escape hatch for legacy models that reject ``{type: "adaptive"}``.
+    request — an escape hatch for older models that reject ``{type: "adaptive"}``.
     """
     if os.environ.get("MIMIR_ANTHROPIC_THINKING", "").strip().lower() in ("off", "0", "false"):
         return False

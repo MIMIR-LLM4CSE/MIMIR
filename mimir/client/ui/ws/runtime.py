@@ -13,7 +13,7 @@ import sys
 import threading
 from typing import Any, Callable
 
-from ...config.limits import CTX_TOTAL_FULL as _CTX_DEFAULT_FULL
+from ...config.limits import CTX_TOTAL_FULL as CTX_DEFAULT_FULL
 from ...config import paths
 from ...context.resource_context import augment_query_with_resources
 from ...query_engine.backends.factory import get_backend
@@ -60,26 +60,26 @@ class _ThreadAwareOutput:
         return getattr(self._original, name)
 
 
-_ORIGINAL_STDOUT = sys.stdout
-_ROUTER = _ThreadAwareOutput(_ORIGINAL_STDOUT)
+ORIGINAL_STDOUT = sys.stdout
+ROUTER = _ThreadAwareOutput(ORIGINAL_STDOUT)
 # Install the router once; uninstall on shutdown.
 _ROUTER_INSTALLED = False
 
-def _ensure_router_installed() -> None:
+def ensure_router_installed() -> None:
     global _ROUTER_INSTALLED
     if not _ROUTER_INSTALLED:
-        sys.stdout = _ROUTER
+        sys.stdout = ROUTER
         _ROUTER_INSTALLED = True
 
 
 # ── Session-scoped todo helpers (module-level so both classes can use them) ───
 
-def _todo_file_for_session(session_id: str | None) -> str:
+def todo_file_for_session(session_id: str | None) -> str:
     """The todo file of *session_id*, or the state root's without one."""
     return session_file(TODO_FILENAME, session_id, paths.STATE_DIR)
 
 
-def _write_active_session(session_id: str | None) -> None:
+def write_active_session(session_id: str | None) -> None:
     """Write the active session ID to .mimir/active_session (sidecar)."""
     try:
         os.makedirs(paths.STATE_DIR, exist_ok=True)
@@ -87,18 +87,18 @@ def _write_active_session(session_id: str | None) -> None:
         with open(sidecar, "w", encoding="utf-8") as f:
             f.write(session_id or "")
     except Exception:
-        logger.debug("_write_active_session: a best-effort step failed and was skipped", exc_info=True)
+        logger.debug("write_active_session: a best-effort step failed and was skipped", exc_info=True)
 
 
 # Public surface pulled by the sibling ws modules, re-exports included.
 __all__ = [
-    "_ORIGINAL_STDOUT",
-    "_ROUTER",
-    "_ensure_router_installed",
-    "_todo_file_for_session",
-    "_write_active_session",
+    "ORIGINAL_STDOUT",
+    "ROUTER",
+    "ensure_router_installed",
+    "todo_file_for_session",
+    "write_active_session",
     "get_backend",
     "augment_query_with_resources",
     "context_budget_for",
-    "_CTX_DEFAULT_FULL",
+    "CTX_DEFAULT_FULL",
 ]

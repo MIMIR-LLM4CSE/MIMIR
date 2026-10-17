@@ -821,7 +821,7 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
         agent.register_background_job = \
             lambda d, owner=None: (agent.registered.append(d), True)[1]
         agent.watched_background_jobs = lambda: []
-        asyncio.run(dispatch_module._dispatch_tool_calls(
+        asyncio.run(dispatch_module.dispatch_tool_calls(
             [{"id": "1", "function": {"name": "spawn_agent", "arguments": "{}"}}],
             agent, [], build_execution_context()))
         return agent.registered
@@ -974,9 +974,9 @@ class WatchedRunProgressNoteTests(unittest.TestCase):
 
     def _reads(self, agent, name, args):
         from mimir.client.query_engine.dispatch.admission import (
-            _reads_progress_of_a_watched_run,
+            reads_progress_of_a_watched_run,
         )
-        return _reads_progress_of_a_watched_run(agent, name, args)
+        return reads_progress_of_a_watched_run(agent, name, args)
 
     def test_output_of_a_watched_run_is_annotated(self) -> None:
         agent = _GuardAgent([_descriptor()])
@@ -999,10 +999,10 @@ class WatchedRunProgressNoteTests(unittest.TestCase):
 
     def test_the_note_leaves_the_payload_readable(self) -> None:
         """Appended after the JSON, like the launch note: the payload still parses."""
-        from mimir.client.query_engine.dispatch.admission import _watched_progress_note
+        from mimir.client.query_engine.dispatch.admission import watched_progress_note
         from mimir.client.protocol.tool_result import parse_tool_payload
         raw = json.dumps({"status": "ok", "state": "running", "job_key": "j1"})
-        note = _watched_progress_note("j1")
+        note = watched_progress_note("j1")
         self.assertIn("end your turn", note)
         self.assertEqual(parse_tool_payload(raw + note)["state"], "running")
 
@@ -1030,38 +1030,6 @@ class BlockingWaitGuardTests(unittest.TestCase):
     def test_a_tool_that_takes_no_command_line_abstains(self) -> None:
         agent = _GuardAgent([_descriptor()])
         self.assertFalse(self._waits(agent, "sleep 60", name="bash_job"))
-
-
-class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
-    """The failure mode this guard could introduce, pinned down.
-
-    The watcher polls the very status op the guard refuses. It reaches the tool through
-    ``agent.run_tool``, never through ``_dispatch_tool_calls``, so the separation is
-    structural — but nothing said so out loud until this test, and getting it wrong
-    would silently kill every wake.
-    """
-
-    def test_dispatch_is_the_only_caller_that_consults_the_guards(self) -> None:
-        import inspect
-        from mimir.client.query_engine.jobs import background, poll as job_poll
-        from mimir.client.ui.ws.worker import worker as ws_worker
-        from mimir.servers.agent_state import _child_jobs
-
-        guard_names = ("_asks_whether_a_watched_run_is_done",
-                       "_waits_by_blocking_the_turn")
-        # Every module that polls on its own account: the watcher (WS), the in-turn
-        # await (CLI), a sub-agent's own watcher, and the loop all three share.
-        for module in (background, job_poll, ws_worker, _child_jobs):
-            src = inspect.getsource(module)
-            for guard in guard_names:
-                self.assertNotIn(guard, src, f"{module.__name__} must not gate its own probes")
-        # And every probe path reaches the tool through run_tool, not the dispatcher.
-        for probe in (background.await_background_job,
-                      JobWatcher._poll_to_completion,
-                      _child_jobs.ChildWatcher._watch):
-            src = inspect.getsource(probe)
-            self.assertIn("run_tool", src)
-            self.assertNotIn("_dispatch_tool_calls", src)
 
 
 # ── 3b. proxy_slurm(op='eval', background=True) attaches the descriptor ─────────

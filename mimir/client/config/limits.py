@@ -172,7 +172,7 @@ NUDGE_STATE_IDLE_STEPS: int = 3
 NUDGE_MAX_CREATION: int = 1
 NUDGE_MAX_TODO: int = 1
 # The mid-loop "you just wrote X — tick the step off" reminder, which fires from
-# _post_dispatch_inject rather than from the nudge table. Capped, or consecutive edits of
+# post_dispatch_inject rather than from the nudge table. Capped, or consecutive edits of
 # one file mid-debug would repeat it at every call.
 NUDGE_MAX_TODO_TICK: int = 2
 TODO_NUDGE_MULTIFILE_THRESHOLD: int = 3

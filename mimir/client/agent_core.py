@@ -78,7 +78,7 @@ from .protocol.tool_result import (
 from .query_engine import run_agent_query
 from .query_engine.backends.factory import get_backend
 from .query_engine.history import (
-        _force_fit_to_window,
+        force_fit_to_window,
         compacted_exchanges,
         compaction_summary_message,
         served_compaction_instruction,
@@ -774,7 +774,7 @@ class MimirAgent:
         # the summary output; protect the system + instruction messages.
         window = backend.context_window(self.model)
         if window:
-            _force_fit_to_window(prompt, int(window * 0.75), tok)
+            force_fit_to_window(prompt, int(window * 0.75), tok)
         try:
             msg = backend.chat(
                 self.model, prompt, [], False, False, {"temperature": 0.2},

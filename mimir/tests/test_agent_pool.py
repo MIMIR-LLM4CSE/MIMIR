@@ -453,15 +453,30 @@ class AdmissionLatencyTests(_PoolCase):
 
     async def test_the_session_reports_the_admission(self) -> None:
         """Said out loud: the queue notice is still on screen until something replaces it."""
-        import inspect
-        from mimir.client.ui.ws.connection import connection as ws_session
-        source = inspect.getsource(ws_session.Connection._admit_waiting)
-        self.assertIn("pool.pump()", source)
-        self.assertIn("starting", source)
-        # Both the ending of a turn in this conversation and in another one admit.
-        from mimir.client.ui.ws.connection import router as event_router
-        router = inspect.getsource(event_router.EventRouter)
-        self.assertGreaterEqual(router.count("_admit_waiting()"), 2)
+        from mimir.tests._session import bare_session
+        pool = self._pool(cap=1)
+        held = await pool.worker_for("s1")
+        held.busy = True
+        pool.enqueue("s2", lambda w: None)
+        sess = bare_session(pool, active="s1")
+        held.busy = False
+        await sess._admit_waiting()
+        notices = [m for m in sess.ws.sent if m.get("session_id") == "s2"]
+        self.assertEqual(len(notices), 1)
+        self.assertIn("starting", notices[0]["text"])
+
+    async def test_a_turn_ending_here_or_elsewhere_admits(self) -> None:
+        import types
+        from unittest import mock
+        from mimir.client.ui.ws.connection.router import EventRouter
+        session = types.SimpleNamespace(
+            _rows_for=lambda owner: {}, _sent_progress={},
+            _emit_context_usage=mock.AsyncMock(), _admit_waiting=mock.AsyncMock(),
+            _announce_detached_answer=mock.AsyncMock(), _foreign_withheld={})
+        router = EventRouter(session)
+        await router._after_error({"type": "error"}, {}, "s1")
+        await router._foreign({"type": "error"}, {}, "s2")
+        self.assertEqual(session._admit_waiting.await_count, 2)
 
 
 class AnEventWakesThePumpTests(_PoolCase):
@@ -546,7 +561,7 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         self.assertEqual(_StubWorker.built, 0)
 
     async def test_only_an_explicit_ask_can_build_one(self) -> None:
-        """Pinned on the code: two call sites in the session layer, and both are asks.
+        """Two asks build an agent: a query, and opening the drawer.
 
         The query is the obvious one. The other is the scientific-computing drawer being
         opened: its sections are filled by MCP servers — the clusters this workspace
@@ -559,26 +574,21 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         switching to it, listing it, replaying it — must never build, or browsing a
         history of ten would hit the cap on the fourth click.
         """
-        import inspect
-        from mimir.client.ui.ws.connection import connection as ws_session
-        from mimir.client.ui.ws.connection.handlers import (
-            cards,
-            conversations,
-            detach,
-            panel,
-            turns,
-        )
-        # The session layer is the connection and its handler mixins.
-        source = "".join(inspect.getsource(m) for m in
-                         (ws_session, cards, conversations, detach, panel, turns))
-        self.assertEqual(source.count("self._ensure_worker()"), 2)
-        # The query waits for its agent — it has nothing to say without one.
-        self.assertIn("worker = await self._ensure_worker()",
-                      inspect.getsource(ws_session.Connection._handle_query))
-        # The drawer does not: it answers with what there is, and the build runs off the
-        # socket's read loop so the user can keep typing through it.
-        self.assertIn("self._schedule(self._report_panel_once_built(self._ensure_worker()))",
-                      inspect.getsource(ws_session.Connection._handle_list_panel))
+        import asyncio
+        from mimir.tests._session import bare_session
+        pool = self._pool(cap=2)
+        sess = bare_session(pool, active="s1")
+        sess._request_panel = lambda **_kw: None   # the report itself is not under test
+        await sess._handle_list_panel({"type": "list_panel"})        # a timer asking
+        await asyncio.sleep(0.05)
+        self.assertEqual(_StubWorker.built, 0)
+        await sess._handle_list_panel({"type": "list_panel", "build": True})
+        for _ in range(20):
+            if _StubWorker.built:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(_StubWorker.built, 1)
+        self.assertIsNotNone(pool.get("s1"))
 
     async def test_returning_to_a_conversation_reuses_its_agent(self) -> None:
         """Its context is live, so coming back is instant and costs no rebuild."""

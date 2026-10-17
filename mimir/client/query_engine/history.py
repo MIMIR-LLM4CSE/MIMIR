@@ -1,7 +1,7 @@
 """Context-window budgeting: keep the message list inside the model window.
 
 Trims oldest tool output, compacts the middle of the conversation, and — as a
-deterministic backstop — force-fits to a token target. ``_enforce_context_budget``
+deterministic backstop — force-fits to a token target. ``enforce_context_budget``
 orchestrates trim → compact → force-fit before each model call.
 ``served_compaction_instruction`` is the handoff note used when summarizing.
 """
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class ContextOverflowError(RuntimeError):
     """The prompt cannot be made to fit the model's window.
 
-    Raised by :func:`_enforce_context_budget` when eviction, compaction and the
+    Raised by :func:`enforce_context_budget` when eviction, compaction and the
     force-fit backstop have all run and the irreducible core — the system message
     plus the current query, neither of which may be reduced — still exceeds the
     usable window. Without it the oversized prompt goes to the backend anyway and comes
@@ -211,7 +211,7 @@ def _trim_tool_history(
     protected_paths = {p for p in protected_paths if p}  # drop empty strings
 
     # Authoritative per-message file association, recorded at dispatch time (see
-    # _dispatch_tool_calls). Structural matching avoids the substring hazard: a grep
+    # dispatch_tool_calls). Structural matching avoids the substring hazard: a grep
     # result that merely *mentions* a path neither protects it from eviction nor
     # invalidates that file's actual read.
     tool_msg_files: dict = (
@@ -224,7 +224,7 @@ def _trim_tool_history(
         When the message's tool_call_id was recorded at dispatch we know exactly
         which files it concerns (possibly none) — authoritative. Messages with no
         record (e.g. history carried over from a prior query) return
-        is_structural=False so the caller falls back to the legacy substring scan.
+        is_structural=False so the caller falls back to the substring scan.
         """
         cid = m.get("tool_call_id")
         if cid is not None and cid in tool_msg_files:
@@ -272,7 +272,7 @@ def _trim_tool_history(
             if structural:
                 if any(p in protected_paths for p in paths):
                     continue
-            elif any(p in content for p in protected_paths):  # legacy fallback
+            elif any(p in content for p in protected_paths):  # the substring fallback
                 continue
 
         to_remove.append(idx)
@@ -405,7 +405,7 @@ def _maybe_compact_intra_query(
 def _truncate_text_to_tokens(text: str, max_tokens: int, token_counter: Any) -> str:
     """Shrink *text* to at most *max_tokens*, keeping a head and tail with a marker.
 
-    Used as a last resort by _force_fit_to_window when whole-message eviction
+    Used as a last resort by force_fit_to_window when whole-message eviction
     isn't enough (e.g. a single huge tool result or pasted blob). Keeps the start
     and end — usually the most informative parts — and drops the middle. The
     result is GUARANTEED to be <= max_tokens (verified, then shrunk if the
@@ -497,10 +497,10 @@ def bound_step_results(
     token count so the caller can tell the user.
 
     Called from ``dispatch`` BEFORE the append, which is the only moment that works.
-    ``_enforce_context_budget`` runs after, and by then it is powerless here:
+    ``enforce_context_budget`` runs after, and by then it is powerless here:
     ``_trim_tool_history`` deliberately exempts the current step from eviction (a
     sub-agent's whole answer is one of these results), so the only pass that could
-    touch them is ``_force_fit_to_window`` — and that one engages only once the window
+    touch them is ``force_fit_to_window`` — and that one engages only once the window
     is already over. Which is how four parallel fetches took a 200k window to 215k in
     a single step, with nothing given the chance to object.
     """
@@ -565,7 +565,7 @@ def _message_tokens(m: dict, token_counter: Any) -> int:
     content — HTML, LaTeX, JSON inside JSON, the shapes a web fetch returns — it
     reaches 30%.
 
-    That gap is what let ``_force_fit_to_window`` report a fit and the provider
+    That gap is what let ``force_fit_to_window`` report a fit and the provider
     reject the very same prompt: 272,386 tokens against a 262,144 window, after a
     backstop that had just announced it had made it fit. The two were never
     reading the same string, and no tokenizer — heuristic or exact — closes a
@@ -708,7 +708,7 @@ def _digest_failed_call_args(messages: list[dict]) -> int:
     return digested
 
 
-def _force_fit_to_window(
+def force_fit_to_window(
     messages: list[dict],
     target_tokens: int,
     token_counter: Any,
@@ -808,7 +808,7 @@ def _force_fit_to_window(
     return cur <= target_tokens
 
 
-def _enforce_context_budget(
+def enforce_context_budget(
     messages: list[dict],
     system_content: str,
     step_tools: list[dict] | None,
@@ -875,7 +875,7 @@ def _enforce_context_budget(
         usable = max(1, total - reserved - overhead
                      - len(messages) * WIRE_LIST_TOKENS_PER_MESSAGE)
         before = sum(_message_tokens(m, token_counter) for m in messages)
-        fitted = _force_fit_to_window(
+        fitted = force_fit_to_window(
             messages, usable, token_counter,
             pinned_call_ids=execution_context.pinned_call_ids or set(),
         )

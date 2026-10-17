@@ -816,10 +816,10 @@ class ClientHelperTests(unittest.TestCase):
 
         fake_agent = _QueryAgent()
 
-        # The LLM backend is reached via agent_loop._stream_chat, which returns a
+        # The LLM backend is reached via agent_loop.stream_chat, which returns a
         # single response dict ({"content": ..., "tool_calls": ...}).  No tool calls
         # means the content becomes the final answer.
-        with patch.object(loop_base_module, "_stream_chat", return_value={"content": "done"}):
+        with patch.object(loop_base_module, "stream_chat", return_value={"content": "done"}):
             result = asyncio.run(
                 turn_module.run_agent_query(
                     agent=fake_agent,
@@ -848,7 +848,7 @@ class ClientHelperTests(unittest.TestCase):
     # ── step budget ───────────────────────────────────────────────────────────
 
     def _run_loop_with_budget(self, *, max_steps, answer_after=None):
-        """Drive the agent loop with a _stream_chat that emits a tool call every step.
+        """Drive the agent loop with a stream_chat that emits a tool call every step.
 
         ``answer_after`` makes the model deliver a final answer on that step instead,
         which is the only way an unbounded run ends. Returns the step count. Heavy
@@ -880,15 +880,15 @@ class ClientHelperTests(unittest.TestCase):
             approvals=types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True)),turn=TurnState())
 
         m = agent_loop_module
-        with patch.object(loop_base_module, "_stream_chat", _fake_stream), \
-             patch.object(loop_base_module, "_process_response", lambda *a, **k: None), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+        with patch.object(loop_base_module, "stream_chat", _fake_stream), \
+             patch.object(loop_base_module, "process_response", lambda *a, **k: None), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False), \
-             patch.object(loop_base_module, "_finalize_answer", _fake_finalize):
+             patch.object(loop_base_module, "finalize_answer", _fake_finalize):
             asyncio.run(run_agent(
                 agent=fake_agent,
                 query="q",
@@ -1163,7 +1163,7 @@ class ClientHelperTests(unittest.TestCase):
                           lambda model, mode, ceiling=None: (
                               16_000, 3_200, 10_000, 8_000)), \
              self.assertRaises(history_module.ContextOverflowError) as caught:
-            history_module._enforce_context_budget(
+            history_module.enforce_context_budget(
                 messages, "S" * 40_000, None, build_execution_context(), "m", "full", None, tok,
             )
         self.assertIn("16,000-token window", str(caught.exception))
@@ -1181,12 +1181,12 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(history_module, "context_budget_for",
                           lambda model, mode, ceiling=None: (
                               16_000, 3_200, 10_000, 8_000)):
-            history_module._enforce_context_budget(
+            history_module.enforce_context_budget(
                 messages, "sys", None, build_execution_context(), "m", "full", None, lambda t: len(t) // 4,
             )
         self.assertEqual(len(messages), 2)
 
-    # ── _stream_chat retry/backoff (transient-failure resilience) ───────────────
+    # ── stream_chat retry/backoff (transient-failure resilience) ───────────────
 
     def test_stream_chat_retries_transient_failure_then_succeeds(self) -> None:
         calls = {"n": 0}
@@ -1201,7 +1201,7 @@ class ClientHelperTests(unittest.TestCase):
         # Patch sleep so backoff doesn't actually wait during the test.
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None):
-            result = loop_base_module._stream_chat(
+            result = loop_base_module.stream_chat(
                 model="m", messages=[], tools=[],
                 thinking=False, streaming=False, options={},
             )
@@ -1219,7 +1219,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None):
             with self.assertRaises(ConnectionError):
-                loop_base_module._stream_chat(
+                loop_base_module.stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                 )
@@ -1246,7 +1246,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None) as slept:
             with self.assertRaises(PromptTooLongError):
-                loop_base_module._stream_chat(
+                loop_base_module.stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                 )
@@ -1265,7 +1265,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None):
             with self.assertRaises(RuntimeError):
-                loop_base_module._stream_chat(
+                loop_base_module.stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                 )
@@ -1291,14 +1291,14 @@ class ClientHelperTests(unittest.TestCase):
         fake_backend = types.SimpleNamespace(chat=chat)
         with patch.object(streaming_module, "get_backend", return_value=fake_backend):
             with self.assertRaises(asyncio.CancelledError):
-                loop_base_module._stream_chat(
+                loop_base_module.stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                     cancel_flag=_Flag(),
                 )
         self.assertEqual(calls["n"], 0)
 
-    # ── _dispatch_tool_calls: the per-call diff event ───────────────────────────
+    # ── dispatch_tool_calls: the per-call diff event ───────────────────────────
 
     def _diff_events(self, edits):
         """Dispatch each (path, content) write in turn; return the emitted diff events.
@@ -1360,7 +1360,7 @@ class ClientHelperTests(unittest.TestCase):
                                   return_value=(True, "")), \
                      capture_events(events.append):
                     for i, (path, content) in enumerate(edits):
-                        asyncio.run(dispatch_module._dispatch_tool_calls(
+                        asyncio.run(dispatch_module.dispatch_tool_calls(
                             [{"id": f"c{i}", "function": {
                                 "name": "write_file",
                                 "arguments": {"path": path, "content": content}}}],
@@ -1414,7 +1414,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertNotIn("\n\n", diffs[0]["patch"])
         self.assertEqual(diffs[0]["patch"].count("\n"), 6)   # 2 headers + hunk + 3 adds
 
-    # ── _dispatch_tool_calls: writes serialized, reads parallel ─────────────────
+    # ── dispatch_tool_calls: writes serialized, reads parallel ─────────────────
 
     def test_dispatch_serializes_writes_and_parallelizes_reads(self) -> None:
         state = {"active_w": 0, "max_w": 0, "active_r": 0, "max_r": 0}
@@ -1467,7 +1467,7 @@ class ClientHelperTests(unittest.TestCase):
 
         with patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(
-                dispatch_module._dispatch_tool_calls(
+                dispatch_module.dispatch_tool_calls(
                     tool_calls, agent, messages, execution_context
                 )
             )
@@ -1537,7 +1537,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(dispatch_execution, "timeout_for", lambda *_a, **_k: 0.05), \
              capture_events(events.append), \
              patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
-            asyncio.run(dispatch_module._dispatch_tool_calls(
+            asyncio.run(dispatch_module.dispatch_tool_calls(
                 tool_calls, _SlowApprovalAgent(), [], build_execution_context()))
 
         results = [e for e in events if e.get("type") == "tool_result"]

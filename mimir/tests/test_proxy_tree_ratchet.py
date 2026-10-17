@@ -551,10 +551,17 @@ class ResumeNoticeTests(_Workspace):
         `op='run'` actually takes, so a notice added to `run()` alone would be invisible
         exactly where it matters.
         """
-        import inspect
+        import asyncio
+        from unittest import mock
         from mimir.servers.proxy._ops import eval_session
-        carried = inspect.getsource(eval_session.run_awaited)
-        self.assertIn('"resume_notice"', carried)
+        launched = {"status": "ok", "run_dir": "/runs/r1", "proxy_name": "bench",
+                    "pid": 1, "resume_notice": "the code moved on"}
+        with mock.patch.object(eval_session, "run", return_value=launched), \
+                mock.patch.object(eval_session, "_await_terminal_state",
+                                  mock.AsyncMock(return_value=("done", ""))), \
+                mock.patch.object(eval_session, "results", return_value={"status": "ok"}):
+            answer = asyncio.run(eval_session.run_awaited("bench"))
+        self.assertEqual(answer["resume_notice"], "the code moved on")
 
 
 if __name__ == "__main__":

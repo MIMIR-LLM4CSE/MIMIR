@@ -5,7 +5,7 @@ connection or wake produced the turn."""
 from __future__ import annotations
 
 import logging
-from ..runtime import _todo_file_for_session
+from ..runtime import todo_file_for_session
 from ..worker.worker import AgentWorker
 from ....context.todo import load_todo_deps, load_todo_items
 from ....session.conversation import Conversation
@@ -81,7 +81,7 @@ class PoolWriter:
             except Exception:
                 logger.warning("session %s: its agent's state could not be read",
                                conversation.id, exc_info=True)
-        todo_file = _todo_file_for_session(conversation.id)
+        todo_file = todo_file_for_session(conversation.id)
         try:
             record.todos = load_todo_items(todo_file)
             record.todo_deps = load_todo_deps(todo_file)

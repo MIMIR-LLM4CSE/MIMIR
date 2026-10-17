@@ -165,12 +165,12 @@ class RebuildRuleTests(unittest.TestCase):
 
     def test_the_helper_reapplies_the_skill_block(self):
         ctx = build_execution_context(skill_suffix="\n\nSKILL CONTEXT (SUBORDINATE). xyz")
-        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", ctx))
+        out = asyncio.run(loop_base_module.rebuild_system_content(self._agent(), "agent", ctx))
         self.assertTrue(out.endswith("SKILL CONTEXT (SUBORDINATE). xyz"))
         self.assertIn("Task checklist", out)
 
     def test_no_skill_block_adds_nothing(self):
-        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", build_execution_context()))
+        out = asyncio.run(loop_base_module.rebuild_system_content(self._agent(), "agent", build_execution_context()))
         self.assertNotIn("SKILL CONTEXT", out)
 
     def test_a_mode_switch_keeps_the_skill_block(self):
@@ -236,7 +236,7 @@ class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
     def test_a_rebuild_after_a_pull_carries_no_skill_block(self):
         """Because there is nothing in the suffix to carry: the body is in the tail."""
         ctx = build_execution_context(skills_loaded={"fix-bug": "call-1"}, pinned_call_ids={"call-1"})
-        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", ctx))
+        out = asyncio.run(loop_base_module.rebuild_system_content(self._agent(), "agent", ctx))
         self.assertNotIn("SKILL CONTEXT", out)
 
 

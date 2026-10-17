@@ -1,6 +1,6 @@
 """End-of-query bookkeeping: annotate the answer, finalize.
 
-``_finalize_answer`` is the single exit funnel for both loops (annotate written
+``finalize_answer`` is the single exit funnel for both loops (annotate written
 files → save carry context → return).
 
 Nothing is written to persistent memory here: what is worth remembering is the
@@ -35,7 +35,7 @@ def _annotate_answer_with_changes(answer: str, execution_context: ExecutionConte
     return answer + render_ledger(ledger)
 
 
-async def _finalize_answer(
+async def finalize_answer(
     agent: AgentPort,
     query: str,
     answer: str,
@@ -53,11 +53,11 @@ async def _finalize_answer(
     record_exercise_obstacle(agent, execution_context)
     answer = _annotate_answer_with_changes(answer, execution_context)
     agent.carry.update(execution_context)
-    _record_turn(agent, messages)
+    record_turn(agent, messages)
     return answer
 
 
-def _record_turn(agent: AgentPort, messages: list[dict], *, repair: bool = True) -> None:
+def record_turn(agent: AgentPort, messages: list[dict], *, repair: bool = True) -> None:
     """Stash this turn's transcript (minus the system prompt) for full-context history.
 
     Called on every exit, not only on a finished answer. The front-end reads it back

@@ -28,7 +28,7 @@ from ..jobs.background import (
     maybe_rewatch_background_jobs,
 )
 from ..deferral import CURRENT_CALL_ID
-from .admission import Call, _reads_progress_of_a_watched_run, _watched_progress_note
+from .admission import Call, reads_progress_of_a_watched_run, watched_progress_note
 
 logger = logging.getLogger(__name__)
 
@@ -243,10 +243,10 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
             target=file_target(name, args, result, agent.tool_caps) if ok else None,
         )
         maybe_emit_open_editor(result)
-        watched_key = (_reads_progress_of_a_watched_run(agent, name, args)
+        watched_key = (reads_progress_of_a_watched_run(agent, name, args)
                        if ok and isinstance(result, str) else None)
         if watched_key:
-            result += _watched_progress_note(watched_key)
+            result += watched_progress_note(watched_key)
         descriptor = detect_background_job(name, result, agent)
         if descriptor is not None:
             # Branching on the hook's *existence* left the WS front-end with no

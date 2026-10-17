@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from mimir.client.query_engine.backends.base import normalize_finish_reason
-from mimir.client.query_engine.streaming import _process_response, _note_truncated_turn
+from mimir.client.query_engine.streaming import process_response, note_truncated_turn
 
 
 class NormalizeFinishReasonTests(unittest.TestCase):
@@ -44,7 +44,7 @@ class HistoryLeakTests(unittest.TestCase):
         msg = {"role": "assistant", "content": "hi",
                "thinking": "…", "finish_reason": "length"}
         with patch("mimir.client.query_engine.streaming.emit"):
-            _process_response(msg, messages, thinking=True)
+            process_response(msg, messages, thinking=True)
         self.assertEqual(len(messages), 1)
         self.assertNotIn("finish_reason", messages[0])
         self.assertNotIn("thinking", messages[0])
@@ -55,13 +55,13 @@ class HistoryLeakTests(unittest.TestCase):
         messages: list[dict] = []
         msg = {"role": "assistant", "content": "Je vérifie :\n\n\n\n", "tool_calls": []}
         with patch("mimir.client.query_engine.streaming.emit"):
-            _process_response(msg, messages, thinking=False)
+            process_response(msg, messages, thinking=False)
         self.assertEqual(messages[0]["content"], "Je vérifie :")
 
     def test_the_caller_can_still_read_it_off_the_original(self) -> None:
         msg = {"role": "assistant", "content": "hi", "finish_reason": "length"}
         with patch("mimir.client.query_engine.streaming.emit"):
-            _process_response(msg, [], thinking=False)
+            process_response(msg, [], thinking=False)
         self.assertEqual(msg["finish_reason"], "length")
 
 
@@ -69,7 +69,7 @@ class TruncationNoticeTests(unittest.TestCase):
     def test_a_truncated_turn_is_announced(self) -> None:
         emitted: list[dict] = []
         with patch("mimir.client.query_engine.streaming.emit", emitted.append):
-            _note_truncated_turn({"finish_reason": "length"}, step=7)
+            note_truncated_turn({"finish_reason": "length"}, step=7)
         self.assertEqual(len(emitted), 1)
         self.assertIn("finish_reason=length", emitted[0]["text"])
         self.assertIn("step 7", emitted[0]["text"])
@@ -77,8 +77,8 @@ class TruncationNoticeTests(unittest.TestCase):
     def test_a_normal_turn_says_nothing(self) -> None:
         emitted: list[dict] = []
         with patch("mimir.client.query_engine.streaming.emit", emitted.append):
-            _note_truncated_turn({"finish_reason": "stop"})
-            _note_truncated_turn({})
+            note_truncated_turn({"finish_reason": "stop"})
+            note_truncated_turn({})
         self.assertEqual(emitted, [])
 
 

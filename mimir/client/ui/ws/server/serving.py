@@ -16,7 +16,7 @@ from typing import Any
 from ....config import DEFAULT_MODEL
 from ....query_engine.backends.openai_compat import OpenAICompatBackend
 from . import registry as server_registry
-from ..runtime import _CTX_DEFAULT_FULL, _ORIGINAL_STDOUT, _ensure_router_installed, get_backend
+from ..runtime import CTX_DEFAULT_FULL, ORIGINAL_STDOUT, ensure_router_installed, get_backend
 from ..pool.pool import AgentPool
 from ..connection.connection import Connection
 
@@ -99,7 +99,7 @@ async def serve(
     model: str | None = None,
 ) -> None:
     """Start the WebSocket server (runs forever)."""
-    _ensure_router_installed()
+    ensure_router_installed()
     # Model resolution: explicit arg > MIMIR_DEFAULT_MODEL env var > DEFAULT_MODEL config
     _model = model or os.environ.get("MIMIR_DEFAULT_MODEL", "").strip() or DEFAULT_MODEL
     if not _model:
@@ -110,7 +110,7 @@ async def serve(
         served = get_backend().served_models()
         if served:
             _model = served[0]
-            print(f"Auto-selected served model: {_model}", file=_ORIGINAL_STDOUT)
+            print(f"Auto-selected served model: {_model}", file=ORIGINAL_STDOUT)
     if not _model:
         # An unreachable endpoint and one serving nothing both leave the list
         # empty, and blaming the missing --model sends the user hunting for a
@@ -123,16 +123,16 @@ async def serve(
     try:
         win = get_backend().context_window(_model)
         if win:
-            print(f"Model context window: {win:,} tokens (model: {_model})", file=_ORIGINAL_STDOUT)
+            print(f"Model context window: {win:,} tokens (model: {_model})", file=ORIGINAL_STDOUT)
         else:
             print(
                 f"WARNING: could not detect context window for '{_model}' — "
-                f"falling back to the static {_CTX_DEFAULT_FULL:,}-token budget. "
+                f"falling back to the static {CTX_DEFAULT_FULL:,}-token budget. "
                 f"The endpoint's /v1/models may not report max_model_len.",
-                file=_ORIGINAL_STDOUT,
+                file=ORIGINAL_STDOUT,
             )
     except Exception as _e:
-        print(f"WARNING: context-window detection failed: {_e!r}", file=_ORIGINAL_STDOUT)
+        print(f"WARNING: context-window detection failed: {_e!r}", file=ORIGINAL_STDOUT)
 
     # The port is deliberately absent here: with --port 0 (what the VS Code extension
     # passes, so each window gets its own server) it is the kernel that picks one, and
@@ -142,9 +142,9 @@ async def serve(
     # logs the binary it launched, but a stray PYTHONHOME/PYTHONPATH in the inherited
     # environment can still bend that interpreter onto another installation — this is
     # the line that says so, from inside the process, where it cannot be mistaken.
-    print(f"MIMIR WS server starting on {host}  (model: {_model})", file=_ORIGINAL_STDOUT)
-    print(f"Python: {sys.executable}  (prefix {sys.prefix})", file=_ORIGINAL_STDOUT)
-    print("Initialising agent connections…", file=_ORIGINAL_STDOUT)
+    print(f"MIMIR WS server starting on {host}  (model: {_model})", file=ORIGINAL_STDOUT)
+    print(f"Python: {sys.executable}  (prefix {sys.prefix})", file=ORIGINAL_STDOUT)
+    print("Initialising agent connections…", file=ORIGINAL_STDOUT)
 
     # The pool, not an agent: one agent per conversation, built on that conversation's
     # first query. Process-global and shared by every connection, because two webviews on
@@ -165,14 +165,14 @@ async def serve(
             # workspace instead of adding a second.
             print(f"Another MIMIR server already serves this workspace "
                   f"(pid {existing['pid']}). Attaching to it instead of starting a "
-                  f"second one.", file=_ORIGINAL_STDOUT)
-            print(f"Listening on {existing['url']}", file=_ORIGINAL_STDOUT, flush=True)
+                  f"second one.", file=ORIGINAL_STDOUT)
+            print(f"Listening on {existing['url']}", file=ORIGINAL_STDOUT, flush=True)
             return
         print("Another process holds this workspace's server lock but published no "
               "address. Refusing to start a second server: that would corrupt the "
               "shared journal. Stop the other server, or clear "
               f"{server_registry.lock_path()} if nothing is running.",
-              file=_ORIGINAL_STDOUT, flush=True)
+              file=ORIGINAL_STDOUT, flush=True)
         raise SystemExit(1)
 
     pool = AgentPool(_model)
@@ -181,7 +181,7 @@ async def serve(
     # whatever sockets are attached — has to happen when none are.
     pool.ensure_pump()
     print(f"Agent pool ready (up to {pool.cap} live conversations).",
-          file=_ORIGINAL_STDOUT)
+          file=ORIGINAL_STDOUT)
 
     async def _handler(ws: Any) -> None:
         session = Connection(ws, pool)
@@ -195,7 +195,7 @@ async def serve(
         # --port 0 the argument is a placeholder, and this line is the contract the
         # VS Code extension parses to learn where to connect.
         url = _announced_url(server.sockets)
-        print(f"Listening on {url}", file=_ORIGINAL_STDOUT, flush=True)
+        print(f"Listening on {url}", file=ORIGINAL_STDOUT, flush=True)
         # Written down as well as announced. The printed line reaches whoever holds this
         # process's stdout — the extension host that spawned it, and nobody else; a
         # server meant to outlive that window has to leave its address somewhere a
@@ -258,7 +258,7 @@ async def _run_until_signalled(pool: AgentPool) -> None:
         await asyncio.wait([stop, asked], return_when=asyncio.FIRST_COMPLETED)
         why = "idle" if pool.stop_requested.is_set() else "asked to"
         print(f"Stopping ({why}) — closing agent connections…",
-              file=_ORIGINAL_STDOUT, flush=True)
+              file=ORIGINAL_STDOUT, flush=True)
     finally:
         asked.cancel()
         for sig in installed:

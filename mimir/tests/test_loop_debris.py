@@ -206,7 +206,7 @@ class InterruptedTurnRecordTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _dispatch), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _dispatch), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              capture_events(lambda ev: None):
             with self.assertRaises(asyncio.CancelledError):
@@ -252,7 +252,7 @@ class InterleavedReasoningTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _dispatch), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _dispatch), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              capture_events(lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -373,8 +373,8 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             result = asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages,

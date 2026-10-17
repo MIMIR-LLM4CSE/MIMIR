@@ -19,7 +19,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from ..runtime import _todo_file_for_session
+from ..runtime import todo_file_for_session
 from ....protocol.events import DURABLE_EVENTS
 from ....tool_execution import run_channel
 
@@ -243,7 +243,7 @@ class EventRouter:
         """Send the checklist of the conversation on screen, if its file changed."""
         session = self.session
         try:
-            path = _todo_file_for_session(session._active_session_id)
+            path = todo_file_for_session(session._active_session_id)
             mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
         except OSError:
             return

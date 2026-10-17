@@ -195,7 +195,7 @@ def _op_matches(op: Any, name: str, args: dict) -> bool:
     return all(args.get(k) == v for k, v in op_args.items())
 
 
-def _reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) -> str | None:
+def reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) -> str | None:
     """The job_key whose output this call reads while a watcher holds it, else None.
 
     The progress read stays allowed (see above), but it is the one door a poll loop
@@ -210,7 +210,7 @@ def _reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) ->
     return None
 
 
-def _watched_progress_note(job_key: str) -> str:
+def watched_progress_note(job_key: str) -> str:
     """Appended to a progress read of a watched run."""
     return (
         f"\n\n[background] Job '{job_key}' is still being watched: you will be resumed "

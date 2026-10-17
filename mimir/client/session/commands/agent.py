@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ...config import THINKING_DEPTH_LABELS
 from .base import Command, CommandHost, CommandResult, Item
-from .settings import _APPROVAL_LABELS, _on_off
+from .settings import APPROVAL_LABELS, on_off
 
 _CLI = frozenset({"cli"})
 
@@ -41,13 +41,13 @@ class StatusCommand(Command):
         fields = [
             ("Current mode", host.read("mode")),
             ("thinking", THINKING_DEPTH_LABELS[depth]
-             if 0 <= depth < len(THINKING_DEPTH_LABELS) else _on_off(host.read("thinking"))),
-            ("streaming", _on_off(host.read("streaming"))),
-            ("batch", _on_off(host.read("batch"))),
+             if 0 <= depth < len(THINKING_DEPTH_LABELS) else on_off(host.read("thinking"))),
+            ("streaming", on_off(host.read("streaming"))),
+            ("batch", on_off(host.read("batch"))),
             ("context", host.read("context_mode")),
             ("enforcement", host.read("enforcement")),
             ("temperature", "default" if temperature is None else f"{temperature:g}"),
-            ("approvals", _APPROVAL_LABELS.get(approvals, approvals)),
+            ("approvals", APPROVAL_LABELS.get(approvals, approvals)),
         ]
         if host.agent is not None:
             fields.append(("trusted", _trusted(host.agent)))

@@ -22,7 +22,7 @@ from mimir.client.query_engine.history import (
     _water_fill,
     bound_step_results,
     _digest_failed_call_args,
-    _force_fit_to_window,
+    force_fit_to_window,
     _maybe_compact_intra_query,
     _message_tokens,
     WIRE_LIST_TOKENS_PER_MESSAGE,
@@ -90,7 +90,7 @@ class WireUnitsTests(unittest.TestCase):
 
     Regression cover for the crash that ended session ``7d322a3b``: the backstop
     announced ``truncated ~441,752 tokens of older content to fit the model's
-    window`` — the branch it only takes when ``_force_fit_to_window`` returned
+    window`` — the branch it only takes when ``force_fit_to_window`` returned
     True — and the very next call was refused with *Prompt (272,386 tokens)
     exceeds the model's context window (262,144 tokens)*. Both sides used the
     same tokenizer. They were counting different strings: the budget measured
@@ -147,7 +147,7 @@ class WireUnitsTests(unittest.TestCase):
         messages = self._escape_dense_history()
         window = len(json.dumps(messages)) // 2  # force the backstop to engage
         target = window - len(messages) * WIRE_LIST_TOKENS_PER_MESSAGE
-        fitted = _force_fit_to_window(messages, target, len)
+        fitted = force_fit_to_window(messages, target, len)
         self.assertTrue(fitted)
         self.assertLessEqual(len(json.dumps(messages)), window)
 
@@ -229,7 +229,7 @@ class ForceFitArgumentsTests(unittest.TestCase):
     def test_a_message_with_no_content_but_huge_arguments_is_reducible(self) -> None:
         messages = self._history()
         self.assertIsNone(messages[1]["content"])  # nothing for the old pass to shrink
-        fitted = _force_fit_to_window(messages, self.TARGET, len)
+        fitted = force_fit_to_window(messages, self.TARGET, len)
         self.assertTrue(fitted)
         self.assertLessEqual(
             sum(_message_tokens(m, len) for m in messages), self.TARGET)
@@ -238,7 +238,7 @@ class ForceFitArgumentsTests(unittest.TestCase):
     def test_the_newest_call_turn_keeps_its_arguments(self) -> None:
         """The turn whose results are being answered must stay legible to the model."""
         messages = self._history()
-        _force_fit_to_window(messages, self.TARGET, len)
+        force_fit_to_window(messages, self.TARGET, len)
         self.assertEqual(messages[3]["tool_calls"][0]["function"]["arguments"]["content"],
                          "y" * 10)
 
@@ -247,7 +247,7 @@ class ForceFitArgumentsTests(unittest.TestCase):
             {"role": "system", "content": "s" * 5_000},
             {"role": "user", "content": "u" * 5_000},
         ]
-        self.assertFalse(_force_fit_to_window(messages, 100, len))
+        self.assertFalse(force_fit_to_window(messages, 100, len))
 
 
 class FailedCallDigestTests(unittest.TestCase):
@@ -486,7 +486,7 @@ class EnforceBudgetIntegrationTests(unittest.TestCase):
              patch.object(history_module, "context_budget_for",
                           lambda model, mode, ceiling=None: (
                               1_000_000, 200_000, 500_000, 400_000)):
-            history_module._enforce_context_budget(
+            history_module.enforce_context_budget(
                 messages, "sys", None, build_execution_context(), "m", "full", None, lambda t: len(t) // 4,
             )
         self.assertIn("elided", messages[1]["tool_calls"][0]["function"]["arguments"]["content"])

@@ -1,8 +1,8 @@
 """Direct unit coverage for agent-loop functions that had none.
 
-Covers ``_maybe_compact_intra_query``, ``_post_dispatch_inject``,
-``_finalize_answer``, ``PlanLoop``, and the non-interactive
-``run_agent_query`` path — driving the latter through the real ``_stream_chat``
+Covers ``_maybe_compact_intra_query``, ``post_dispatch_inject``,
+``finalize_answer``, ``PlanLoop``, and the non-interactive
+``run_agent_query`` path — driving the latter through the real ``stream_chat``
 wrapper with a ``ScriptedBackend`` so the loop's plumbing is exercised, not mocked.
 
 Plain ``unittest`` + ``asyncio.run`` to match the rest of the suite.
@@ -210,7 +210,7 @@ class PostDispatchInjectTests(unittest.TestCase):
     def test_injects_todo_reminder_after_successful_edit(self) -> None:
         messages: list[dict] = []
         ec = build_execution_context(last_edit_success_path="src/kernel.cu", todo_written=True, todo_file_path="/tmp/todo.md")
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, ec))
 
         self.assertEqual(ec.last_edit_success_path, "")   # consumed on inject
         self.assertEqual(len(messages), 1)
@@ -221,7 +221,7 @@ class PostDispatchInjectTests(unittest.TestCase):
     def test_no_reminder_without_written_todo(self) -> None:
         messages: list[dict] = []
         ec = build_execution_context(last_edit_success_path="src/kernel.cu", todo_written=False, todo_file_path="/tmp/todo.md")
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, ec))
         self.assertEqual(messages, [])
         # success_path is NOT consumed when no reminder fires
         self.assertEqual(ec.last_edit_success_path, "src/kernel.cu")
@@ -230,7 +230,7 @@ class PostDispatchInjectTests(unittest.TestCase):
         """One post-dispatch pass after a successful write of *path*."""
         messages: list[dict] = []
         ec.last_edit_success_path = path
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, ec))
         return messages
 
     def test_the_todo_reminder_is_silent_on_a_repeat_of_the_same_file(self) -> None:
@@ -250,7 +250,7 @@ class PostDispatchInjectTests(unittest.TestCase):
     def test_injects_moving_test_corrective_and_consumes_alert(self) -> None:
         messages: list[dict] = []
         ec = build_execution_context(moving_test_alert="tests/test_wave2d.py")
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, ec))
         self.assertIsNone(ec.moving_test_alert)     # consumed
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["role"], "user")
@@ -260,7 +260,7 @@ class PostDispatchInjectTests(unittest.TestCase):
     def test_injects_repeat_corrective_and_consumes_alert(self) -> None:
         messages: list[dict] = []
         ec = build_execution_context(repeat_alert=("code_check_file", 2))
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, ec))
         self.assertIsNone(ec.repeat_alert)          # consumed
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["role"], "user")
@@ -277,7 +277,7 @@ class PostDispatchInjectTests(unittest.TestCase):
         # them. This is the only channel that reaches it.
         messages: list[dict] = []
         ec = self._refusals(3)
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, ec))
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["role"], "user")
         self.assertIn("refused this repeatedly", messages[0]["content"])
@@ -286,12 +286,12 @@ class PostDispatchInjectTests(unittest.TestCase):
         # Said once. Repeating "stop" every step would crowd out the model's own
         # closing summary, which is the thing we actually want it to produce.
         messages.clear()
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, ec))
         self.assertEqual(messages, [])
 
     def test_a_refusal_short_of_the_ladder_does_not_stop_the_model(self) -> None:
         messages: list[dict] = []
-        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, self._refusals(2)))
+        asyncio.run(dispatch_module.post_dispatch_inject(None, messages, self._refusals(2)))
         self.assertEqual(messages, [])
 
 
@@ -312,7 +312,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
 
         result = asyncio.run(
-            loop_base_module._finalize_answer(
+            loop_base_module.finalize_answer(
                 agent, "q", "Done.", ec, messages, logger=None,
             )
         )
@@ -330,7 +330,7 @@ class FinalizeAnswerTests(unittest.TestCase):
     def test_the_turn_boundary_survives_a_rewrite_of_the_prefix(self) -> None:
         """The index is resolved by identity, so an in-turn rewrite cannot shift it.
 
-        ``_enforce_context_budget`` runs between the loop's prologue and this point and
+        ``enforce_context_budget`` runs between the loop's prologue and this point and
         mutates the list in place — evicting old tool results, replacing the middle
         with a summary. Anything that counted positions beforehand is wrong by however
         much moved; the opening message is still the same object.
@@ -379,7 +379,7 @@ class FinalizeAnswerTests(unittest.TestCase):
     def test_no_annotation_when_nothing_written(self) -> None:
         agent, _ = self._agent()
         result = asyncio.run(
-            loop_base_module._finalize_answer(
+            loop_base_module.finalize_answer(
                 agent, "q", "Nothing changed.", build_execution_context(dirty_written_files=set()),
                 [{"role": "system", "content": "S"}], logger=None,
             )
@@ -397,7 +397,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         agent.tool_owner = {"memory_add": "memory"}
         agent.run_tool = lambda *a, **k: calls.append(a) or "{}"
         asyncio.run(
-            loop_base_module._finalize_answer(
+            loop_base_module.finalize_answer(
                 agent, "remember that the project uses pytest", "Noted.",
                 build_execution_context(dirty_written_files={"a.py"}),
                 [{"role": "system", "content": "S"}], logger=None,
@@ -441,7 +441,7 @@ class PlanModeContextBudgetTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages,
@@ -475,8 +475,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             result = asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages, execution_context=build_execution_context(),
@@ -493,8 +493,8 @@ class RunPlanModeTests(unittest.TestCase):
     def test_plan_mode_delivers_the_repeated_call_corrective(self) -> None:
         """Regression: plan mode dispatched but never consumed the staged alert.
 
-        ``_dispatch_tool_calls`` only *stages* ``_repeat_alert`` when a non-write call
-        fails identically; ``_post_dispatch_inject`` is what turns it into a reminder.
+        ``dispatch_tool_calls`` only *stages* ``_repeat_alert`` when a non-write call
+        fails identically; ``post_dispatch_inject`` is what turns it into a reminder.
         Plan mode called the first and not the second, so a model spinning on the same
         failing fetch was never told — and the alert sat in the execution context until
         an approved plan handed the run to the agent loop, which then fired it about a
@@ -522,8 +522,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages, execution_context=context,
@@ -563,8 +563,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             result = asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages, execution_context=build_execution_context(),
@@ -608,8 +608,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             result = asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages,
@@ -646,8 +646,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages,
@@ -689,8 +689,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages,
@@ -727,8 +727,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             result = asyncio.run(
                 run_plan(
                     agent=agent, query="q", messages=messages, execution_context=build_execution_context(),
@@ -772,7 +772,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
              patch.object(agent_loop_module.AgentLoop, "run", as_loop_run(_fake_agent_loop)):
             result = asyncio.run(
                 run_plan(
@@ -827,7 +827,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
              patch.object(agent_loop_module.AgentLoop, "run", as_loop_run(_fake_agent_loop)):
             result = asyncio.run(
                 run_plan(
@@ -888,7 +888,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
              patch.object(agent_loop_module.AgentLoop, "run", as_loop_run(_fake_agent_loop)):
             asyncio.run(
                 run_plan(
@@ -929,8 +929,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize), \
              patch.object(agent_loop_module.AgentLoop, "run", as_loop_run(_fake_agent_loop)):
             result = asyncio.run(
                 run_plan(
@@ -970,8 +970,8 @@ class RunPlanModeTests(unittest.TestCase):
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", _tools), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(loop_base_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "finalize_answer", _finalize):
             result = asyncio.run(
                 run_plan(
                     agent=agent, query=query, messages=messages,
@@ -1135,8 +1135,8 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
@@ -1175,8 +1175,8 @@ class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
@@ -1243,8 +1243,8 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _snapshot), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _snapshot), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
@@ -1257,14 +1257,14 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
 
 
 class DrainSteerTests(unittest.TestCase):
-    """Unit coverage for ``_drain_steer`` — the chat-while-busy injection point."""
+    """Unit coverage for ``drain_steer`` — the chat-while-busy injection point."""
 
     def test_injects_queued_messages_as_user_turns(self) -> None:
         agent = types.SimpleNamespace(poll_steer=lambda: ["focus on the parser", "skip tests"])
         messages: list[dict] = [{"role": "tool", "content": "prev result"}]
         emitted: list[dict] = []
         with capture_events(lambda ev: emitted.append(ev)):
-            loop_base_module._drain_steer(agent, messages)
+            loop_base_module.drain_steer(agent, messages)
 
         # Both steer messages appended, in order, as user turns.
         self.assertEqual(messages[-2], {"role": "user", "content": "focus on the parser"})
@@ -1277,13 +1277,13 @@ class DrainSteerTests(unittest.TestCase):
         # Whitespace-only messages are skipped.
         agent = types.SimpleNamespace(poll_steer=lambda: ["  ", ""])
         messages: list[dict] = []
-        loop_base_module._drain_steer(agent, messages)
+        loop_base_module.drain_steer(agent, messages)
         self.assertEqual(messages, [])
 
         # No poll_steer attr at all (CLI / sub-agents / tests) → untouched.
         bare = types.SimpleNamespace()
         msgs2: list[dict] = [{"role": "user", "content": "x"}]
-        loop_base_module._drain_steer(bare, msgs2)
+        loop_base_module.drain_steer(bare, msgs2)
         self.assertEqual(msgs2, [{"role": "user", "content": "x"}])
 
 
@@ -1312,8 +1312,8 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
@@ -1381,8 +1381,8 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
@@ -1416,8 +1416,8 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
@@ -1494,8 +1494,8 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _dispatch), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _dispatch), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
@@ -1575,8 +1575,8 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
         m = agent_loop_module
         patches = [
             patch.object(streaming_module, "get_backend", lambda: backend),
-            patch.object(loop_base_module, "_dispatch_tool_calls", _dispatch),
-            patch.object(loop_base_module, "_post_dispatch_inject", _noop_async),
+            patch.object(loop_base_module, "dispatch_tool_calls", _dispatch),
+            patch.object(loop_base_module, "post_dispatch_inject", _noop_async),
             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None),
             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None),
             patch.object(m, "tools_for_context", lambda **k: k["tools"]),
@@ -1784,7 +1784,7 @@ class ForceFitToWindowTests(unittest.TestCase):
             {"role": "assistant", "content": "analysis " * 100},
             {"role": "user", "content": "latest " * 20},  # active query (protected)
         ]
-        fit = history_module._force_fit_to_window(msgs, 400, self._tok)
+        fit = history_module.force_fit_to_window(msgs, 400, self._tok)
         total = sum(self._tok(m.get("content", "")) for m in msgs)
         self.assertTrue(fit)
         self.assertLessEqual(total, 400)
@@ -1801,7 +1801,7 @@ class ForceFitToWindowTests(unittest.TestCase):
             {"role": "system", "content": "x " * 300},
             {"role": "user", "content": "y " * 300},
         ]
-        self.assertFalse(history_module._force_fit_to_window(msgs, 100, self._tok))
+        self.assertFalse(history_module.force_fit_to_window(msgs, 100, self._tok))
 
     def test_noop_when_already_fits(self) -> None:
         msgs = [
@@ -1809,7 +1809,7 @@ class ForceFitToWindowTests(unittest.TestCase):
             {"role": "user", "content": "d e"},
         ]
         snapshot = [dict(m) for m in msgs]
-        self.assertTrue(history_module._force_fit_to_window(msgs, 1000, self._tok))
+        self.assertTrue(history_module.force_fit_to_window(msgs, 1000, self._tok))
         self.assertEqual(msgs, snapshot)  # unchanged
 
 
@@ -1835,7 +1835,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
     def _dispatch(self, agent, ec):
         msgs: list[dict] = []
         tc = [_tool_call("code_check_file", '{"filepath": "a.py"}')]
-        asyncio.run(dispatch_module._dispatch_tool_calls(tc, agent, msgs, ec))
+        asyncio.run(dispatch_module.dispatch_tool_calls(tc, agent, msgs, ec))
         return msgs
 
     def test_warns_then_blocks_repeated_failure(self) -> None:
@@ -1954,7 +1954,7 @@ class WriteDiffEmitTests(unittest.TestCase):
         ec = build_execution_context()
         tc = [_tool_call("replace_in_file", json.dumps({"path": path}))]
         with event_sink_module.event_sink(events.append):
-            asyncio.run(dispatch_module._dispatch_tool_calls(tc, agent, [], ec))
+            asyncio.run(dispatch_module.dispatch_tool_calls(tc, agent, [], ec))
         return events
 
     def test_failed_edit_on_prechanged_file_emits_no_diff(self) -> None:
@@ -2071,8 +2071,8 @@ class HeldDraftTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
@@ -2150,7 +2150,7 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
     def _dispatch(self, agent, messages, ec, name="bash_run", args=None):
         call = {"id": f"c{len(messages)}", "function": {
             "name": name, "arguments": args if args is not None else {"command": "find . -name '*.x'"}}}
-        asyncio.run(dispatch_module._dispatch_tool_calls([call], agent, messages, ec))
+        asyncio.run(dispatch_module.dispatch_tool_calls([call], agent, messages, ec))
         return messages[-1]["content"]
 
     def test_the_third_identical_result_is_annotated(self) -> None:
@@ -2221,7 +2221,7 @@ class StreamRetryTests(unittest.TestCase):
         # The held draft kept the failed attempt's tokens, and the retry's were
         # appended behind them: the answer appeared with its opening twice.
         shown: list[str] = []
-        hold = streaming_module._DraftHold(shown.append)
+        hold = streaming_module.DraftHold(shown.append)
         attempts = {"n": 0}
 
         class _Flaky:
@@ -2236,7 +2236,7 @@ class StreamRetryTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", return_value=_Flaky()), \
              patch.object(streaming_module.time, "sleep", lambda _s: None), \
              patch.object(streaming_module, "emit", lambda _e: None):
-            streaming_module._stream_chat(
+            streaming_module.stream_chat(
                 "m", [], [], False, True, {}, token_callback=hold.capture,
                 on_retry=hold.discard)
         hold.flush()

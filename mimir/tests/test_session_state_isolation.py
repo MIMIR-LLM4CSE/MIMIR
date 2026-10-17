@@ -241,12 +241,13 @@ class AgentCarriesItsSessionTests(_StateDirCase):
 
     def test_servers_are_told_which_session_they_serve(self):
         """What makes every server-side state path per-conversation."""
-        import inspect
+        import types
         from mimir.client.integration import server_manager
-        # The spawn half holds the frozen environment every server is started with.
-        source = inspect.getsource(server_manager._spawn_session)
-        self.assertIn("MIMIR_SESSION_ID", source)
-        self.assertIn('getattr(agent, "session_id", "")', source)
+        agent = types.SimpleNamespace(session_id="mine", model="m", backend="vllm",
+                                      workspace_root="/w", server_env={})
+        self.assertEqual(server_manager.server_environment(agent)["MIMIR_SESSION_ID"], "mine")
+        agent.session_id = None
+        self.assertEqual(server_manager.server_environment(agent)["MIMIR_SESSION_ID"], "")
 
 
 class GlobalStateDirTests(unittest.TestCase):

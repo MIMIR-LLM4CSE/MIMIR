@@ -18,7 +18,7 @@ from ..event_sink import emit
 from ..protocol.messages import reconcile_tool_pairs
 from .agent_loop import AgentLoop
 from .deferral import KIND_CALLS, KIND_PLAN_DECISION, take_deferred_calls
-from .finalize import _record_turn
+from .finalize import record_turn
 from .loop_base import ModeSwitch, StepLoop, TurnContext
 from .plan_loop import PlanLoop
 from .verification import build_ledger
@@ -99,7 +99,7 @@ async def run_agent_query(
 
     Builds the per-query execution context and system prompt, then dispatches to the
     plan-mode or agent-mode loop. The two loops (and every exit path) share
-    ``_finalize_answer`` for end-of-query bookkeeping.
+    ``finalize_answer`` for end-of-query bookkeeping.
     """
     agent.turn.tool_cache = {}
     execution_context = agent.new_execution_context()
@@ -149,10 +149,10 @@ async def run_agent_query(
 
     # The message this turn opens on — the caller's own last archived message, or the
     # query just appended above. Handed over as the *object*, never as an index:
-    # ``_enforce_context_budget`` rewrites this list in place while the turn runs
+    # ``enforce_context_budget`` rewrites this list in place while the turn runs
     # (evicting old tool results, replacing the middle with a summary, then repairing
     # the assistant↔tool pairing those break), so a position computed before the turn
-    # stops meaning what it meant. ``_finalize_answer`` resolves it back to an index at
+    # stops meaning what it meant. ``finalize_answer`` resolves it back to an index at
     # the one moment both are true together. A caller that slices on its own arithmetic
     # instead re-archives or drops whatever the rewrite shifted — and, because the
     # repair leaves no orphan behind, cuts straight through an assistant↔tool pair.
@@ -164,7 +164,7 @@ async def run_agent_query(
     agent.turn.opening_message = messages[-1] if messages else None
     # This turn owns the transcript slot from here on: an earlier turn's (or an earlier
     # session's) must never be read back as this one's, whatever way this one ends.
-    _record_turn(agent, messages, repair=False)
+    record_turn(agent, messages, repair=False)
 
     # Every loop below mutates this exact list in place, so handing the reference out
     # is enough for a front-end to read the in-flight context without polling the agent.
@@ -255,6 +255,6 @@ async def run_agent_query(
         raise
     finally:
         agent.turn.live_messages = None
-        # A cancelled or failed turn never reaches _finalize_answer; record what it did
+        # A cancelled or failed turn never reaches finalize_answer; record what it did
         # so the front-end keeps its work instead of rolling back to the turn before.
-        _record_turn(agent, messages)
+        record_turn(agent, messages)

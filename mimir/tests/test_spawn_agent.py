@@ -371,7 +371,7 @@ class _EmittingAgent(_FakeAgent):
         sink = kwargs.get("event_callback")
         if sink:
             sink({"type": "tool_call", "id": "c1", "name": "grep",
-                  "label": "Searching: _ROUTER", "detail": "mimir/"})
+                  "label": "Searching: ROUTER", "detail": "mimir/"})
             sink({"type": "tool_result", "id": "c1", "ok": True,
                   "summary": "3 matches", "duration_ms": 41})
         return self._answer

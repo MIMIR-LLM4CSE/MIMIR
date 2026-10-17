@@ -341,21 +341,8 @@ def _make_elicitation_callback(agent: AgentPort):
     return _callback
 
 
-async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
-    """Start a server process and open its session, stopping short of ``initialize``.
-
-    Split from the registration half so a whole registry can be started at once:
-    launching the process is immediate, while the handshake waits on the child's
-    interpreter importing the MCP SDK — two thirds of a second, the same two thirds
-    in every one of them. Serialized that is the startup; overlapped it is paid once.
-    Every session is entered on the agent's own exit stack from the caller's task,
-    so the stack stays single-task and ``stdio_client``'s cancel scope is unwound
-    where it was opened.
-    """
-    if not (script.endswith(".py") or script.endswith(".js")):
-        raise ValueError("Server script must be a .py or .js file")
-
-    command = sys.executable if script.endswith(".py") else "node"
+def server_environment(agent: AgentPort) -> dict[str, str]:
+    """The environment a server of *agent* is started with, frozen at spawn."""
     # Propagate the client's cwd as the file-server root so paths are predictable,
     # and the central per-workspace state dir so state-owning servers (memory, todo,
     # platform profile) persist to the same place the client resolves. The state dir
@@ -381,7 +368,7 @@ async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
     # works in a copy of the repository, its own roots. Per agent rather than in
     # os.environ, because several of them run concurrently in one process.
     root = getattr(agent, "workspace_root", None) or os.getcwd()
-    server_env = {
+    return {
         **os.environ,
         "MCP_FILES_ROOT": root,
         "SEARCH_ROOT": root,
@@ -393,6 +380,24 @@ async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
         "LLM_BACKEND": getattr(agent, "backend", "") or os.environ.get("LLM_BACKEND", ""),
         **(getattr(agent, "server_env", None) or {}),
     }
+
+
+async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
+    """Start a server process and open its session, stopping short of ``initialize``.
+
+    Apart from the registration half so a whole registry can be started at once:
+    launching the process is immediate, while the handshake waits on the child's
+    interpreter importing the MCP SDK — two thirds of a second, the same two thirds
+    in every one of them. Serialized that is the startup; overlapped it is paid once.
+    Every session is entered on the agent's own exit stack from the caller's task,
+    so the stack stays single-task and ``stdio_client``'s cancel scope is unwound
+    where it was opened.
+    """
+    if not (script.endswith(".py") or script.endswith(".js")):
+        raise ValueError("Server script must be a .py or .js file")
+
+    command = sys.executable if script.endswith(".py") else "node"
+    server_env = server_environment(agent)
     params = StdioServerParameters(command=command, args=server_args(script), env=server_env)
 
     transport = await agent.exit_stack.enter_async_context(stdio_client(params))

@@ -35,7 +35,7 @@ class ChatTurnTests(unittest.TestCase):
         self.assertEqual(ev.seen[-1], ("end", ""))
 
     def test_without_streaming_reasoning_never_reaches_the_callbacks(self) -> None:
-        # _process_response emits the whole block in that mode; a tag-based model's
+        # process_response emits the whole block in that mode; a tag-based model's
         # thinking used to go out through the callbacks as well, and showed twice.
         ev = _Events()
         turn = ChatTurn(streaming=False, **ev.callbacks())

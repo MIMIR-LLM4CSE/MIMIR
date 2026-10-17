@@ -553,8 +553,8 @@ class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
         sess.store.saved["s1"] = FullSession(
             id="s1", title="t", created_at="x", updated_at=updated_at, todos=todos,
         )
-        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"), \
-             mock.patch("mimir.client.ui.ws.connection.handlers.conversations._todo_file_for_session",
+        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"), \
+             mock.patch("mimir.client.ui.ws.connection.handlers.conversations.todo_file_for_session",
                         lambda _sid: todo_file):
             await sess._load_session("s1")
 
@@ -610,8 +610,8 @@ class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
             id="s1", title="t", created_at="x", updated_at=now.isoformat(),
             todos=self.SNAPSHOT, todo_deps=[[], [0]],
         )
-        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"), \
-             mock.patch("mimir.client.ui.ws.connection.handlers.conversations._todo_file_for_session",
+        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"), \
+             mock.patch("mimir.client.ui.ws.connection.handlers.conversations.todo_file_for_session",
                         lambda _sid: todo_file):
             await sess._load_session("s1")
         self.assertFalse(os.path.exists(deps_file))
@@ -638,8 +638,8 @@ class AlwaysResumeTests(unittest.IsolatedAsyncioTestCase):
                 updated_at=datetime.now(timezone.utc).isoformat(), todos=todos,
             )
             d = tempfile.mkdtemp()
-            with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"), \
-                 mock.patch("mimir.client.ui.ws.connection.handlers.conversations._todo_file_for_session",
+            with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"), \
+                 mock.patch("mimir.client.ui.ws.connection.handlers.conversations.todo_file_for_session",
                             lambda _sid: os.path.join(d, "todo_list.md")):
                 await sess._load_session("s1")
             return [json.loads(m) for m in sess.ws.sent]
@@ -675,7 +675,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         sess.store.saved["s1"] = stored
         sess.ws = mock.AsyncMock()
         sess._emit_context_usage = mock.AsyncMock()
-        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"):
+        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
             await sess._load_session("s1")
         self.assertEqual(len(sess.conv.history), 4)
         self.assertEqual(len(sess.conv.history_full), 4)
@@ -693,7 +693,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         )
         sess.ws = mock.AsyncMock()
         sess._emit_context_usage = mock.AsyncMock()
-        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"):
+        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
             await sess._load_session("s1")
         sess.conv.history[0]["content"] = "…[truncated]…"
         self.assertEqual(sess.conv.history_full[0]["content"], "turn 0")
@@ -719,7 +719,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         )
         sess.ws = mock.AsyncMock()
         sess._emit_context_usage = mock.AsyncMock()
-        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"):
+        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
             await sess._load_session("s1")
         self.assertEqual(len(sess.conv.history), 3)
         self.assertIn("Handoff Note", sess.conv.history[1]["content"])
@@ -738,7 +738,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         )
         sess.ws = mock.AsyncMock()
         sess._emit_context_usage = mock.AsyncMock()
-        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"):
+        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
             await sess._load_session("s1")
         sess.conv.history[0]["content"] = "…[truncated]…"
         self.assertIn("note", sess.conv.history_full[0]["content"])
@@ -751,7 +751,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         )
         sess.ws = mock.AsyncMock()
         sess._emit_context_usage = mock.AsyncMock()
-        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations._write_active_session"):
+        with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
             await sess._load_session("s1")
         self.assertEqual(sess.conv.history_full, [{"role": "user", "content": "only this"}])
 

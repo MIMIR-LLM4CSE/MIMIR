@@ -192,8 +192,8 @@ class LiveRungChangeTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(loop_base_module, "_dispatch_tool_calls", _flip), \
-             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _flip), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \

@@ -23,8 +23,8 @@ from ..guardrails.nudges import (
 from ..guardrails.workflow import finalize_incomplete_answer, TERMINATION_STEP_LIMIT
 from ..guardrails.nudges.messages import evidence_handback_message, STEP_LIMIT_NUDGE
 from .loop_base import (
-    ModeSwitch, StepLoop, TurnContext, _advertised_tools, _drain_steer,
-    _rebuild_system_content,
+    ModeSwitch, StepLoop, TurnContext, step_tools, drain_steer,
+    rebuild_system_content,
 )
 from ..guardrails.toollist import tools_for_context, tools_for_readonly_mode
 from ..context.execution_context import ExecutionContext
@@ -58,7 +58,7 @@ def _mode_advertised_tools(agent: AgentPort, active_mode: str) -> list[dict]:
     fn = getattr(agent, "advertised_tools_for_mode", None)
     if callable(fn):
         return fn(active_mode)
-    tools = _advertised_tools(agent)
+    tools = step_tools(agent)
     if active_mode in READONLY_MODES:
         tools = tools_for_readonly_mode(tools, agent.tool_caps, mode=active_mode)
     return tools
@@ -118,7 +118,7 @@ async def _sync_checklist(
     if not (getattr(agent, "build_system_content", None) and messages
              and messages[0].get("role") == "system"):
         return system_content
-    rebuilt = await _rebuild_system_content(agent, active_mode, execution_context)
+    rebuilt = await rebuild_system_content(agent, active_mode, execution_context)
     if rebuilt == messages[0].get("content"):
         return system_content  # touched, not changed: the prefix still hits
     messages[0]["content"] = rebuilt
@@ -187,7 +187,7 @@ class AgentLoop(StepLoop):
     async def run(self) -> str | ModeSwitch:
         budget = self.turn.max_steps
         while self.steps_left():
-            _drain_steer(self.agent, self.messages)
+            drain_steer(self.agent, self.messages)
             switch = await self.follow_mode()
             if switch is not None:
                 return switch

@@ -1,7 +1,7 @@
 """Model round-trip: the single backend call with retry, and response shaping.
 
-``_stream_chat`` runs ONE model call with decorrelated-jitter retry/backoff;
-``_process_response`` emits the thinking event and appends the assistant message.
+``stream_chat`` runs ONE model call with decorrelated-jitter retry/backoff;
+``process_response`` emits the thinking event and appends the assistant message.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _ensure_unique_call_ids(msg: dict, messages: list[dict]) -> None:
         taken.add(call_id)
 
 
-def _process_response(msg: dict, messages: list[dict], thinking: bool, streamed_thinking: bool = False) -> None:
+def process_response(msg: dict, messages: list[dict], thinking: bool, streamed_thinking: bool = False) -> None:
     """Emit thinking block as a structured event and append the assistant message (without thinking) to history.
 
     When streamed_thinking is True the thinking tokens were already emitted
@@ -80,7 +80,7 @@ def _process_response(msg: dict, messages: list[dict], thinking: bool, streamed_
     messages.append(msg_for_history)
 
 
-def _note_truncated_turn(msg: dict, step: int | None = None) -> None:
+def note_truncated_turn(msg: dict, step: int | None = None) -> None:
     """Announce a turn the provider cut short because it hit its output cap.
 
     Purely observational — the loop's behaviour is unchanged. Without it a turn
@@ -98,7 +98,7 @@ def _note_truncated_turn(msg: dict, step: int | None = None) -> None:
     )})
 
 
-class _DraftHold:
+class DraftHold:
     """Buffer for streamed answer prose the loop might still refuse.
 
     A nudge — or the evidence handback — sends the model back to work, and the
@@ -184,7 +184,7 @@ def _calibrate_overhead(backend: Any, model: str, messages: list[dict], msg: Any
         note(model, messages, reported, tools=tools)
 
 
-def _stream_chat(model: str,
+def stream_chat(model: str,
                  messages: list[dict],
                  tools: list[dict],
                  thinking: bool,
@@ -209,7 +209,7 @@ def _stream_chat(model: str,
     emitted via token_callback; the retry re-streams from the start, so the UI
     may briefly show duplicated partial output on the (rare) retry path. We trade
     that cosmetic glitch for not losing the entire query. ``on_retry`` is called
-    before each new attempt, so a caller holding the partial output (``_DraftHold``)
+    before each new attempt, so a caller holding the partial output (``DraftHold``)
     can drop it rather than flush the failed attempt's text ahead of the retry's.
     """
     backend = get_backend()

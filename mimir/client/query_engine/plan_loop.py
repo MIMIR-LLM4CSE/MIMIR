@@ -40,9 +40,9 @@ from .loop_base import (
     ModeSwitch,
     StepLoop,
     TurnContext,
-    _advertised_tools,
-    _drain_steer,
-    _rebuild_system_content,
+    step_tools,
+    drain_steer,
+    rebuild_system_content,
 )
 from .readonly_guard import filter_readonly_tool_calls, refusal_reply
 
@@ -220,7 +220,7 @@ class PlanLoop(StepLoop):
 
     def _plan_tools(self) -> list:
         return tools_for_plan_mode(
-            _advertised_tools(self.agent), self.agent.tool_caps, exploring=self.exploring,
+            step_tools(self.agent), self.agent.tool_caps, exploring=self.exploring,
         )
 
     def prepare_calls(self, tool_calls: list[Any]) -> list[Any]:
@@ -247,7 +247,7 @@ class PlanLoop(StepLoop):
                     return outcome
                 break
 
-            _drain_steer(self.agent, self.messages)
+            drain_steer(self.agent, self.messages)
             # Leaving plan mid-draft hands the run to the agent loop (which serves both
             # "agent" and read-only "ask"), carrying the conversation and whatever
             # evidence was already gathered with it.
@@ -408,7 +408,7 @@ class PlanLoop(StepLoop):
             emit({"type": "mode", "mode": "agent"})
             # Through the shared rule: the agent-mode prompt renders the checklist this
             # plan just wrote, and the skill block survives the handoff.
-            agent_system = await _rebuild_system_content(self.agent, "agent", self.ec)
+            agent_system = await rebuild_system_content(self.agent, "agent", self.ec)
             self.messages[0]["content"] = agent_system
             self.messages.append({"role": "user", "content": PLAN_APPROVED_EXECUTE})
             return ModeSwitch("agent", agent_system)

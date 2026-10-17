@@ -31,11 +31,11 @@ from .. import streaming as _streaming
 from ..history import bound_step_results
 from .admission import Call, admit, is_write
 from .execution import run_call
-from .inject import _post_dispatch_inject
+from .inject import post_dispatch_inject
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ToolDispatcher", "_dispatch_tool_calls", "_post_dispatch_inject"]
+__all__ = ["ToolDispatcher", "dispatch_tool_calls", "post_dispatch_inject"]
 
 
 class ToolDispatcher:
@@ -161,7 +161,7 @@ class ToolDispatcher:
                     )
                 continue
             # The first time a failing call crosses the soft threshold, a one-time
-            # corrective is staged (consumed by _post_dispatch_inject).
+            # corrective is staged (consumed by post_dispatch_inject).
             lc.call_fails[key] = lc.call_fails.get(key, 0) + 1
             if lc.call_fails[key] >= SOFT_REPEAT_THRESHOLD and key not in lc.repeat_warned:
                 lc.repeat_warned.add(key)
@@ -192,7 +192,7 @@ class ToolDispatcher:
                                   "content": json.dumps({"status": "skipped", "note": why})})
 
 
-async def _dispatch_tool_calls(tool_calls: list, agent: AgentPort, messages: list[dict],
+async def dispatch_tool_calls(tool_calls: list, agent: AgentPort, messages: list[dict],
                                execution_context: ExecutionContext) -> None:
     """Run one step's calls (see :class:`ToolDispatcher`)."""
     await ToolDispatcher(agent, messages, execution_context).run(tool_calls)

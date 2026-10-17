@@ -6,7 +6,7 @@ import logging
 import os
 from ....context.todo import load_todo_items
 from ..runtime import (
-    _todo_file_for_session,
+    todo_file_for_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ class WorkerReview:
 
     def _load_todos(self) -> list:
         try:
-            return load_todo_items(_todo_file_for_session(self._own_session()))
+            return load_todo_items(todo_file_for_session(self._own_session()))
         except Exception:
             logger.debug("_load_todos: a best-effort step failed and was skipped", exc_info=True)
             return []
@@ -89,7 +89,7 @@ class WorkerReview:
     def _clear_todos(self) -> None:
         """Wipe this worker's own session's todo file."""
         try:
-            todo_file = _todo_file_for_session(self._own_session())
+            todo_file = todo_file_for_session(self._own_session())
             if os.path.exists(todo_file):
                 open(todo_file, "w").close()
         except Exception:

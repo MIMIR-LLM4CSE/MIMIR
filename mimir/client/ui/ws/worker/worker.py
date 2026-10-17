@@ -29,7 +29,7 @@ from ....tool_execution.direct import NO_AGENT, call_tool_directly
 # Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
 from ..runtime import (
-    _ROUTER,
+    ROUTER,
 )
 
 # After the runtime: it reads the workspace root that the bootstrap above pins.
@@ -263,7 +263,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
         if self._agent is not None:
             self._agent.turn.cancel_flag.clear()
         tid = threading.get_ident()
-        _ROUTER.register(tid, lambda text: self.out_q.put({"type": "output", "text": text}))
+        ROUTER.register(tid, lambda text: self.out_q.put({"type": "output", "text": text}))
 
         cancelled = False
         try:
@@ -340,7 +340,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
             self.out_q.put({"type": "error", "text": str(exc)})
         finally:
             self._current_task = None
-            _ROUTER.unregister(tid)
+            ROUTER.unregister(tid)
             # Always clear the cancel flag after the query ends so it does not
             # bleed into the next query (race: user cancels then immediately
             # sends a new message before _run_query starts again).
@@ -434,7 +434,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
         Mirrors what the CLI chat loop uses in full-context mode: the full message
         list ``[*prior_history, user_turn, assistant(tool_calls), tool_results,
         final_assistant]`` with the model's chain-of-thought already stripped (see
-        ``_process_response`` in the agent loop). Returns ``None`` when no query has
+        ``process_response`` in the agent loop). Returns ``None`` when no query has
         completed yet so callers can fall back to flattened history.
         """
         if self._agent is None:
@@ -679,7 +679,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
 
     def cancel(self) -> bool:
         """Cancel the currently running query task. Returns True if a task was cancelled."""
-        # Set the cancel flag first so _stream_chat aborts mid-chunk immediately,
+        # Set the cancel flag first so stream_chat aborts mid-chunk immediately,
         # without waiting for the next asyncio await point.
         if self._agent is not None:
             self._agent.turn.cancel_flag.set()

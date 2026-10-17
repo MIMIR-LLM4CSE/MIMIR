@@ -16,7 +16,7 @@ from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
 
-async def _post_dispatch_inject(
+async def post_dispatch_inject(
     agent: AgentPort,
     messages: list[dict],
     execution_context: ExecutionContext,

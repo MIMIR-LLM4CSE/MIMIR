@@ -245,7 +245,7 @@ def evaluate_tool_preconditions(
     extra_checks = extensions_of(agent).policy_checks()
     normalized_context = ensure_execution_context(execution_context)
 
-    # Normalize + rewrite BEFORE the registry check. Legacy aliases such as the
+    # Normalize + rewrite BEFORE the registry check. Aliases such as the
     # model's habitual `read_file` are intentionally unregistered and exist only
     # to be healed here (→ read_file_lines). Checking the registry on the raw
     # name first would reject the alias before the rewrite that resolves it can
