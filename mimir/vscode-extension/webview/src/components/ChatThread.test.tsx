@@ -77,18 +77,22 @@ describe("the answers-only view", () => {
   });
 
   it("keeps the draft, and hides the live machinery of the step in flight", () => {
+    // The draft renders in the live area, which the empty state pre-empts — so
+    // the turn must have its prompt, exactly as it does in production.
+    const prompt = { id: "q", role: "user", kind: "text", text: "Prompt" } as ChatMessage;
     const liveTool = {
       id: "c1", name: "evaluate", label: "Evaluating", detail: "",
       status: "running", startedAt: 0, seq: 1, doing: "running the row-display tests",
     } as ToolActivity;
     const liveThinking = [{ id: "b1", text: "wondering aloud", done: false, collapsed: false, startedAt: 0, seq: 1 }];
-    const html = thread([], {
+    const html = thread([prompt], {
       answersOnly: true,
       draft: "The answer, so far",
       draftSeq: 1,
       liveToolCalls: [liveTool],
       liveThinkingBlocks: liveThinking,
     });
+    expect(html).toContain("Prompt");
     expect(html).toContain("The answer, so far");
     expect(html).not.toContain("running the row-display tests");
     expect(html).not.toContain("wondering aloud");
