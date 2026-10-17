@@ -126,7 +126,7 @@ control's rungs. The rungs are the served family's own (a token ladder for
 sent back is always a `THINKING_DEPTH` index, so the rest of the protocol is
 unchanged.
 
-There are two emission paths into the WS layer. Messages originated by `server/main.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line, preserving the original behaviour. The legacy `sys.stdout` router is retained only as a defensive catch-all for stray prints.
+There are two emission paths into the WS layer. Messages originated by `server/main.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line. The `sys.stdout` router (`ui/ws/runtime.py`) is a catch-all for stray prints.
 
 ---
 
@@ -160,7 +160,7 @@ webview/src/
     ├── CommandResult.tsx      ← terminal-style in/out panel for an exec-shaped result
     ├── FileDiff.tsx           ← unified-diff renderer
     ├── diffUtils.ts           ← diff parsing helpers
-    ├── VerificationLedger.tsx ← the former evidence panel; no longer mounted
+    ├── VerificationLedger.tsx ← an evidence panel that nothing mounts
     ├── ledgerUtils.ts         ← ledger split/parse helpers (unit-tested)
     ├── CompletionReport.tsx   ← the collapsed completion report
     ├── completionUtils.ts     ← its split/parse helpers — mirrors guardrails/workflow/completion.py
@@ -281,7 +281,7 @@ a path.
 | State variable | Type | Purpose |
 |----------------|------|---------|
 | `messages` | `ChatMessage[]` | Full chat history (persisted in memory across reconnects) |
-| `draft` | `string` | Prose of the turn in flight, held **out** of `messages` until the loop accepts it. A turn is only an answer once it ends with no tool call and no guardrail sends the model back to work; streaming it straight into the transcript is what made a finished-looking answer appear and then vanish. Committed on the next step's cards, on an approval/diff/error, or superseded by `answer`; dropped on `nudge_injected`. The drop is now the backstop rather than the norm: the client holds a turn's prose off the wire entirely when a guardrail could still refuse it (see `_DraftHold` in POLICY.md), so the draft mostly carries turns that will be kept. |
+| `draft` | `string` | Prose of the turn in flight, held **out** of `messages` until the loop accepts it. A turn is only an answer once it ends with no tool call and no guardrail sends the model back to work; streaming it straight into the transcript is what made a finished-looking answer appear and then vanish. Committed on the next step's cards, on an approval/diff/error, or superseded by `answer`; dropped on `nudge_injected`. The drop is now the backstop rather than the norm: the client holds a turn's prose off the wire entirely when a guardrail could still refuse it (see `DraftHold` in POLICY.md), so the draft mostly carries turns that will be kept. |
 | `batchFiles` | `DiffEntry[]` | Files accumulated in the BatchReviewBar since last accept/revert |
 | `liveThinkingBlocks` | `ThinkingBlock[]` | Currently-streaming "Working…" blocks |
 | `busy` | `boolean` | True while the agent is running (input disabled) |
@@ -515,9 +515,8 @@ failure, say) keeps the command already on the row rather than erasing it.
 Both of the first two come from **one** declared fact. A server names its tool's family
 of work in its own declaration — `tool_caps(kind="edit")`, vocabulary in
 `servers/_shared/capabilities.py` — and the row shows that word and draws its icon from
-it, so the glyph and the label cannot disagree. What this replaced was a table in the
-reducer keyed on *tool names*, of which ten of twelve named tools that no longer
-existed: `evaluate` and `symbolic` both came out as a wrench. A tool that declares no
+it, so the glyph and the label cannot disagree, and the reducer keys on no tool name. A
+tool that declares no
 family gets one derived from its capabilities (`kind_for`), so a third-party server
 still lands on a sensible glyph without the client knowing anything about it.
 
@@ -548,9 +547,7 @@ repository the call reached into), a path, then the object keys (`verdict`, `que
 `expression`, `name`, `job_id`, `packages`, …) and `op` last, since an op selects an
 action and the description already carries that half. Of the 71 tools, 13 show nothing:
 seven take no arguments at all, and the rest carry only a payload — a plan's text, a
-json body — which the description describes better than an excerpt would. Every one of these used to reach the row
-through the server's label template — "Slurm cancel {job_id}", "Verdict: {verdict}" — and
-went off screen with the label until this replaced it.
+json body — which the description describes better than an excerpt would.
 
 It is dropped in two cases: when the model's own description already names it
 (`dedup_row_detail`, server-side), and when the panel below carries it in full — the
@@ -578,7 +575,7 @@ then "refonte des lignes" again.
 
 The derived label (`"Reading file: x.py"`, from the `label` template) is still on the
 wire and still used: it is the row's tooltip and `aria-label`, and approval cards and
-policy messages are written from it. It is simply no longer what the row says.
+policy messages are written from it. It is not what the row says.
 
 ---
 

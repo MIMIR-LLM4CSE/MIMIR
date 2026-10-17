@@ -103,7 +103,7 @@ Optional extras (declared in `pyproject.toml`):
   packages, and all of them are optional: the agent names an optional check as unrun when
   its tool is absent, and the required one never depends on them.
 
-> **Legacy path.** `pip install -r mimir/requirements.txt` still works and installs
+> **Requirements file.** `pip install -r mimir/requirements.txt` installs
 > the same core dependencies, but it does **not** register the `mimir` /
 > `mimir-server` commands — prefer `pip install .`.
 

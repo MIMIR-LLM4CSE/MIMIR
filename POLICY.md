@@ -262,9 +262,8 @@ cap and, for guidance, the enforcement gate — so the runner just walks the tab
 
 **Every predicate reads recorded state, never the wording of the request.** A nudge
 interrupts the model's reasoning, so what triggers it must be checkable: a file on disk,
-an exit status, a counter. Four guidance rows used to open on a keyword match over the
-user's query. That is a guess about intent dressed as a test, and in a French session it
-mostly guessed wrong. The remaining conditions were already doing the work.
+an exit status, a counter. A keyword match over the user's query is a guess about intent,
+not a test.
 
 The keyword did earn one thing, and it was replaced rather than dropped: it told
 `blast_radius` from `creation`. Both fire on "a target declared, files read, nothing
@@ -296,9 +295,8 @@ A few notes worth keeping:
 
 - **`write.py` guards a loss, never a working order.** A rule that only enforces a
   preferred order does not belong there: it blocks reversible work, and as a hard guard it
-  sits outside the enforcement dial that exists to tune exactly that. The pre-edit
-  planning gate was removed on that ground. The risk it gestured at — concluding with
-  open steps — is covered by the `unfinished_plan` nudge, from disk state.
+  sits outside the enforcement dial that exists to tune exactly that. Concluding with open
+  steps is the `unfinished_plan` nudge's business, from disk state, not a pre-edit gate.
 - **`observations/` credits shell commands like dedicated tools.** `bash_classify`
   reads the command, so a `cat`/`grep`/`sed -i` feeds `read_files`, `searched`,
   `inspected_dirs`, `dirty_written_files` and `action_op_count` the same way the file and
@@ -346,14 +344,14 @@ invite the model to skip a step the loop actually requires.
 **A refused turn is never streamed.** Before the model call, `nudges.nudge_pending()`
 walks the same table and registry, evaluating predicates only — nothing rendered,
 injected or counted. When something is pending, the step's token callback is swapped for
-a `_DraftHold` that buffers the prose: released verbatim once the turn calls a tool
+a `DraftHold` that buffers the prose: released verbatim once the turn calls a tool
 (narration belongs above its cards), dropped silently if the guardrail does refuse the
 turn, and left unflushed on the accepted path. Nothing that reaches the screen can be
 taken back. The cost is that an at-risk turn lands at once rather than token by token.
 
 ### Loop-control correctives
 
-Separate from the nudge layers, `_post_dispatch_inject` fires reminders **mid-tool-loop**,
+Separate from the nudge layers, `post_dispatch_inject` fires reminders **mid-tool-loop**,
 after every dispatch step. This is the channel the nudge table cannot reach: the table only
 runs when the model stops calling tools, and a model that is retrying against the wrong
 interpreter, chasing a moving test, or has been told to hand back is by definition still
@@ -437,11 +435,8 @@ count as discovery? — are answered once, as a `traits` frozenset on the field'
 | `KNOWN_FILE` | holds a path the model has encountered | `known_existing_files()` |
 | `DISCOVERY` | counts as the model's own exploration | `DISCOVERY_EVIDENCE_SIGNALS` |
 
-These answers used to live in eight hand-maintained name lists across four modules, and
-they had already drifted: two computed the same four-field set twice, two named
-`dirty_written_files` as carried when it never was, and two constants shared a name with
-different membership. `test_client_helpers` now fails if a `*_files` / `*_paths` /
-`*_dirs` field is added without answering the question.
+No hand-maintained list restates them. `test_client_helpers` fails if a `*_files` /
+`*_paths` / `*_dirs` field is added without answering the question.
 
 `inspected_dirs` is `CARRY + DISCOVERY` but not `FILE_PATH`: it holds directories, and
 deleting a file does not un-inspect the directory that held it.
@@ -478,14 +473,8 @@ explored?" measures this query's tool calls and nothing else. The only thing mer
 the session carry-context, which replays long-lived path knowledge — never the discovery
 flags a gate reads.
 
-A structural repo snapshot used to seed `inspected_dirs` here. It was removed with the
-snapshot itself, and the reason is worth keeping: it made a discovery field non-empty
-before the model had acted. A discount was then written into the shared helper to subtract
-it back out, which worked only for consumers that went through the helper. One guard read
-the field raw, so on any repo-touching query it was satisfied before the model acted and
-never fired — while on a bibliography query, where no snapshot was built, it was the one
-thing that did fire. A guard that is a no-op exactly where it should bite. Deleting the
-seeding removed the discount and the whole class of bug.
+Nothing seeds these fields: a discovery field non-empty before the model has acted would
+satisfy a guard exactly where it should bite.
 
 ### Discovery evidence
 
@@ -500,9 +489,8 @@ whole test.
 reads the same signal set through `plan_evidence_ready`, but against its own knob
 (`DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN`, the same value today) **plus** a floor on how many
 files were actually read: distinct signal kinds alone do not express its bar, since listing
-a directory and running a find scores two while grounding nothing. Two consumers of one
-definition used to disagree on the count itself — one took a default of 1 while the other
-asked 2 — which is what made the knob explicit.
+a directory and running a find scores two while grounding nothing. Both knobs are explicit,
+so two consumers of one definition cannot disagree on the count.
 
 **Delegated reading counts here, and only here.** `delegated_read_files` holds what a
 sub-agent opened and reported back. These gates ask whether the model has *facts about the
@@ -546,10 +534,8 @@ in this file". The policy layer matches that rather than policing it.
 - The one read precondition left is read-before-overwrite. Any extent satisfies it.
 
 A gate on "was it read whole" would reward the exhaustive read the rest of the policy
-argues against, and measure nothing else. The line-coverage ledger that used to answer it
-cost four context fields, an mtime stamp, a diff re-indexer and a crediting path per tool
-— to spare the tokens of a slid window, while duplicating the repeat guard. A repeated
-read is a loop-control concern, handled where the other repeats are.
+argues against, and measure nothing else. A repeated read is a loop-control concern,
+handled where the other repeats are.
 
 ---
 
@@ -593,16 +579,11 @@ exhausted its validation retry budget.** The `validate` state blocks nothing —
 the model back to a pending check is the validation nudge's job, advisory and
 dial-tunable.
 
-The guard used to police `validate` too, refusing edits to files unrelated to the pending
-set. That branch accumulated three carve-outs, and the last one (target already read this
-session) made it nearly unreachable: a model that reads before it edits never triggered
-it. What stayed reachable — editing a file never read — is already covered by
-`check_write_policy`, which guards a real loss rather than a working order. It was removed
-rather than kept as near-dead code on the hot path of every write.
+The guard does not police `validate`: editing a file never read is `check_write_policy`'s,
+which guards a real loss rather than a working order.
 
-The states still drive the nudges, the conclude gate and the finalization buckets. What
-they no longer do is gate edits on anything but a file that has demonstrably stopped
-converging. Editing is reversible, a wrong edit costs a diff, and the approval layer
+The states drive the nudges, the conclude gate and the finalization buckets. They gate
+edits on nothing but a file that has demonstrably stopped converging. Editing is reversible, a wrong edit costs a diff, and the approval layer
 snapshots it.
 
 ---
@@ -623,10 +604,9 @@ recommended, never required.
 
 **Only the check axis blocks.** `needs_incomplete_finalization` refuses to conclude over a
 file that was modified and never checked, and reads nothing else — not `workflow_state`,
-not the run ledger. `workflow_state` used to be a third condition, and it silently
-promoted the recommendations to requirements: a failed run sends the state machine back to
-`edit`, so every answer came back `Task is incomplete.` until the run had failed its whole
-budget. The state machine is *steering*, not evidence.
+not the run ledger. Not `workflow_state` either: a failed run sends the state machine back
+to `edit`, which would turn the recommendations into requirements. The state machine is
+*steering*, not evidence.
 
 Nothing blocks on a build or a run. A toolchain, a queue, a dataset or a GPU may simply
 not be there, and a gate that cannot be satisfied is a dead end, not a guarantee. What an
@@ -659,9 +639,8 @@ The state layer carries this on both sides of an attempt:
 - **After.** A red exit says *that* a run failed, never *whose fault* it was.
   `report_verdict("blocked", …)` re-imputes it to the environment: no repair budget, no
   steer back to `edit`, reported as a limitation instead of an issue — so attempting a
-  recommended step can no longer turn a finished task into `Task is incomplete.` It never
-  makes the run green, and it must be claimed: an unclaimed red exit drives the repair
-  ladder exactly as before. The question is put in-band by an `IMPUTATION_DUE` annotation
+  recommended step cannot turn a finished task into `Task is incomplete.` It never makes
+  the run green, and it must be claimed: an unclaimed red exit drives the repair ladder. The question is put in-band by an `IMPUTATION_DUE` annotation
   on the failing result.
 
 The only wall the machine names by itself is a command that is not installed. Everything
@@ -674,10 +653,9 @@ guess. Both keep the try-then-resolve path.
 
 ### The built-in check
 
-The mandatory axis is performed **here, not on the machine**. It used to be an external
-binary named in the prompt, which made the one blocking axis depend on what happened to be
-installed (a `.cu` with no `nvcc` became unverifiable) and on the few languages those
-binaries covered (`.rs`, `.go`, `.js` were never checked at all).
+The mandatory axis is performed **here, not on the machine**, so the one blocking axis does
+not depend on what is installed (a `.cu` with no `nvcc`) or on which languages external
+checkers cover.
 
 `guardrails/builtin_check.py` replaces that with two tiers:
 
@@ -737,10 +715,8 @@ to run adds on top.
 - A green run of a project checker naming no file (`ruff check .`, `mypy src/`) covers
   every pending file at once.
 - **Reformatting is not checking.** `ruff format` and a bare `black` rewrite the file and
-  exit 0 whether or not the code is correct, so they credit nothing. The tier used to be
-  read from the command head alone, which made `ruff format .` a whole-project pass
-  awarded for moving whitespace. `--check`/`--diff` report instead of writing, and stay
-  checks.
+  exit 0 whether or not the code is correct, so they credit nothing; the tier is not read
+  from the command head alone. `--check`/`--diff` report instead of writing, and are checks.
 - An **execution** validates **no file at all**. It is recorded in `runs`. So is a
   **build**, recorded already settled — its exit code is its verdict — so it can never
   surface as unjudged.
@@ -756,11 +732,9 @@ question disappears — the run is the subject.
 
 **Which axis a command is on is declared, never inferred.** `shell_paths` splits the exec
 taxonomy into `VALIDATOR_COMMANDS` / `BUILD_COMMANDS` / `RUN_COMMANDS` /
-`ENV_SETUP_COMMANDS`, and `EXEC_EFFECTS` maps each head to its effect. It used to be
-derived by elimination — a head the validator table did not know had, by that fact alone,
-run the project's code — so `source set_env.sh` was recorded as a run owing a verdict, and
-every `make` came back as "ran but never judged". Environment setup proves nothing and is
-recorded as nothing. A run in the same chain outranks the build before it (`make &&
+`ENV_SETUP_COMMANDS`, and `EXEC_EFFECTS` maps each head to its effect: a head is not a run
+by elimination. Environment setup (`source set_env.sh`) proves nothing and is recorded as
+nothing. A run in the same chain outranks the build before it (`make &&
 ./solver` produced output somebody must read). A green build credits **no file**: which
 sources it compiled is recorded nowhere, and the check axis has to stay honest.
 
@@ -884,7 +858,7 @@ Other rules on this axis:
   one direction an exit code is trustworthy. It goes straight onto the repair ladder.
   Asking the model to judge output that never came would be asking for a guess.
 - **`fail` routes through the same ladder a non-zero exit drives** —
-  `_register_run_failure`: the run's failure count, its attempt log, and a return to
+  `register_run_failure`: the run's failure count, its attempt log, and a return to
   `edit`. There is no second mechanism. The return to `edit` happens only if code was
   actually mutated this query, so a discovery-only session is not pushed into an edit
   state. Once every failed run has spent `VALIDATION_RETRY_BUDGET` attempts and nothing
@@ -892,8 +866,7 @@ Other rules on this axis:
   reported unresolved with what was tried, and the answer carries the residual risk.
 - **A declared verdict outranks the exit code, one way only.** A check that evaluates its
   own criteria, prints that they were not met, and returns 0 anyway is a green exit over a
-  red result — observed: a boundary test reported "significant reflection may be present",
-  exited 0, and was recorded as validated. A `check=fail` line in stdout (strict whole-line
+  red result. A `check=fail` line in stdout (strict whole-line
   `key=value` grammar) demotes the run. A `check=pass` line never rescues a red one.
 - **A server that runs code itself declares what it saw.** A tool declares a `run_outcome`
   spec naming the payload field that identifies the run, plus the conditions under which
@@ -942,13 +915,10 @@ nothing.
 Three routes to a higher tier were designed and dropped, recorded so they are not
 rediscovered:
 
-- **A printed invariant earns nothing.** A green run whose stdout carried an `l2_rel=…`
-  line used to be promoted. It rewarded a *string*: the value was never interpreted — it
-  could not be, a forged number is unfalsifiable from out here — so the signal amounted to
-  "the run printed something in the right shape".
-- **Red→green was dropped with it.** A check seen failing then passing has discriminated,
-  which was the domain-agnostic route to that tier. It was a property of a *run* all along,
-  expressed as a per-file tier. With correctness on the run axis the ledger says it more
+- **A printed invariant earns nothing.** An `l2_rel=…` line in stdout is a *string*: the
+  value cannot be interpreted from out here, and a forged number is unfalsifiable.
+- **Red→green is not a tier.** A check seen failing then passing has discriminated, but that
+  is a property of a *run*, not of a file. With correctness on the run axis the ledger says it more
   directly: the run failed, then the run passed, both rows visible.
 - **A pre-existing verifier cannot fire.** Treating a verifier file that is tracked by git
   and clean vs `HEAD` as independently authored does not work in the current credit model:
@@ -964,9 +934,8 @@ rediscovered:
 
 An edit through the file tools returns a diff, and the prompt tells the model to check it.
 A write through the shell returns nothing — `sed -i` prints an empty line and exits 0 — so
-the one actor that could catch a bad edit has nothing to look at. Observed: a `sed -i`
-whose address matched every closing brace inserted its block **eight times** into a C++
-header; the model saw `(no output)` and the corruption survived the run.
+the one actor that could catch a bad edit (a `sed -i` whose address matches every closing
+brace) would have nothing to look at.
 
 `tool_execution/bash_effect.py` closes that with the `BASH_EFFECT` annotation.
 
@@ -1001,7 +970,7 @@ header; the model saw `(no output)` and the corruption survived the run.
 ## Cluster-submission guard
 
 A cluster launch spends real allocation hours, so a trivial unvalidated error is
-expensive. Tools that submit or launch declare `CLUSTER_SUBMIT`; `gates._check_cluster_submit`
+expensive. Tools that submit or launch declare `CLUSTER_SUBMIT`; `gates.check_cluster_submit`
 runs before approval. Pinned by `test_cluster_submit_stays_held_until_something_is_validated`
 and `test_cluster_submit_not_held_when_the_session_wrote_nothing`.
 
@@ -1017,9 +986,8 @@ satisfy the condition. Nothing was changed, so nothing ought to have been checke
 approval prompt these irreversible tools always raise is the protection that applies
 there.
 
-**It used to be one-shot** — warn once, then let the next call through. That made it a
-reminder, not a guard: against a model that simply calls again, it cost one round trip and
-constrained nothing, on the least reversible action in the system. The condition is a fact
+**It is not one-shot**: a warning that lets the next call through is a reminder, not a
+guard, on the least reversible action in the system. The condition is a fact
 about the session, not a nagging budget, so it holds until that fact changes, and the
 error names exactly what clears it.
 
@@ -1036,7 +1004,7 @@ source and going through `proxy_eval(op='run')`. A direct `python proxy.py` bypa
 reference sealing, the numerical invariants and the ratchet, and would let a hand-run be
 reported as a win.
 
-`gates._check_proxy_exec` runs right after the cluster-submit guard.
+`gates.check_proxy_exec` runs right after the cluster-submit guard.
 
 - Scoped by the **`command_prefix` scope** — the tools taking a raw shell command — not by
   `CODE_EXEC`, which also marks tools executing through structured arguments. Reading
@@ -1060,17 +1028,14 @@ detected; the server-side reserved-metrics guard still prevents forging a result
 ## Why there is no plan-shape guard
 
 The plan-mode prompt states the rule — *"exploring, surveying, examining, reviewing and
-identifying gaps … are never steps or axes of the plan"* — and a guard used to enforce it,
-refusing a plan document whose axis titles began with one of 23 listed verbs. It was
-removed, and the reasoning applies to anything proposed in its place.
+identifying gaps … are never steps or axes of the plan"* — and no guard enforces it by
+refusing a plan on its wording. The reasoning applies to anything proposed in that place.
 
 Deciding that *"Audit the existing bindings"* is exploration while *"Map the old API onto
 the new one"* is a change is a semantic judgement. A verb list is an approximation of it,
 and an approximation is the wrong instrument for a **refusal**: a nudge that misfires costs
 a sentence, a block that misfires costs a turn and teaches the model to word its way past
-the check. That happened — an early version read sub-steps as axes and refused *"Add a
-conditional block that: 1. Check the flag"*, so the model cleared the gate by deleting the
-steps, and the guard bought a vaguer plan than the one it turned down.
+the check, which buys a vaguer plan than the one turned down.
 
 The failure it was built for is real: a plan whose first axis was *"Audit Existing
 Bindings"*, the audit returning "nothing is missing", every axis after it vacuous, and the
@@ -1085,7 +1050,7 @@ a gate on a fact, which is the kind that belongs here.
 
 Any read, write or exec touching a path **outside the workspace root** is held for
 explicit approval — allow once, always for this path, or deny — before the tool runs.
-`gates._check_out_of_workspace_access` runs **before** the sensitive-tool gate, so a
+`gates.check_out_of_workspace_access` runs **before** the sensitive-tool gate, so a
 previewable write cannot slip past it.
 
 `_out_of_workspace_targets` reuses the file/edit-target extractor, any `cwd` arg-role, and
@@ -1103,11 +1068,8 @@ previewable write cannot slip past it.
 Behaviour:
 
 - **One card per call, whatever it names.** Every out-of-workspace path of a call travels
-  in a single prompt, and one answer settles all of them. The gate used to loop and prompt
-  per path: `cd /data && python /opt/x.py > /var/log/y.log` put three cards in front of the
-  user, in sequence, for a decision already made when they read the command. The
-  parent/child collapse stays; it simply never applied to siblings, which is where the
-  repetition came from.
+  in a single prompt, and one answer settles all of them: the user judges the command
+  (`cd /data && python /opt/x.py > /var/log/y.log`), not each of its operands.
 - With no approval hook wired the gate **fails closed**.
 - A granted path is mirrored to `<state_dir>/sessions/<sid>/approved_paths.json`. The
   sandboxed servers read that sidecar **per call** — their env is frozen at spawn, so the
@@ -1127,9 +1089,7 @@ Behaviour:
   sandbox.
 
 **Shell commands carry their paths inside a string**, where the file-target extractor
-cannot see them. `cat /etc/passwd` used to be refused by the server with no prompt ever
-shown, leaving the user unable to grant an access they might well have wanted.
-`_shell_path_targets` walks the segments and surfaces every path, so the rule is uniform:
+cannot see them. `_shell_path_targets` walks the segments and surfaces every path, so the rule is uniform:
 anything reaching outside the workspace asks, whatever tool or syntax it arrives in.
 
 The operand extraction lives in `servers/_shared/shell_paths.py`, imported by **both** this
@@ -1172,7 +1132,7 @@ never prompts. It is where throwaway probe scripts, intermediate data and workin
 
 Without one, the only writable place is the user's workspace, so every temporary file is
 indistinguishable from produced work: it lands in the repo *and* in the change ledger, and
-then demands validation before the run can conclude. So `_record_code_edit` **excludes**
+then demands validation before the run can conclude. So `record_code_edit` **excludes**
 scratch paths from `dirty_written_files` — which is what makes the scratchpad useful rather
 than a new source of validation noise.
 
@@ -1226,8 +1186,8 @@ disjoint from the guidance set, so a verification row can never be silently swit
 enforcement.
 
 Nudges refer to tools by **capability**, never by literal name. Validation names no tool at
-all: the check it used to steer toward is performed in-process, so its nudge carries a
-finding rather than a command.
+all: the check is performed in-process, so its nudge carries a finding rather than a
+command.
 
 ### `regression`
 The model edited a source file whose associated test (`test_<stem>.py` / `<stem>_test.py`)
@@ -1247,11 +1207,8 @@ recorded** — the gate writes the obstacle to `exercise_blocked_reason` and the
 it. Suppressing an ask the environment cannot satisfy is the point; suppressing the *fact*
 that it could not be satisfied was a side effect nobody wanted.
 
-`unresolved_modules` gates that feasibility check, so it must not be one-way. It used to be
-set by the first `ModuleNotFoundError` and never cleared, which silenced the advice for the
-whole query — including the case where the model went on to find the right interpreter,
-whose successful run is precisely the evidence that the environment resolved. A successful
-execution now clears it.
+`unresolved_modules` gates that feasibility check, so it must not be one-way: a successful
+execution clears it, being the evidence that the environment resolved.
 
 ### `unfinished_plan`
 Fired once, when the turn committed to something and the model's own checklist still has
@@ -1264,16 +1221,14 @@ The same predicate also **blocks** finalization, and is tested first, before eit
 validation shortcut: validating the two files you wrote is no evidence about the three steps
 you never started. That is why `## Planning & todo` sits in the core system prompt rather
 than the overridable half — the blocker is a contract about an artifact only that section
-describes, and an application prompt used to delete it while the loop kept enforcing it.
+describes, and an application prompt must not be able to delete it.
 
 The checklist must also be *visible* to the model for this to be fair, so `_sync_checklist`
 keeps the copy in the first message current as steps are ticked off.
 
 ### The removed output-verdict nudge
-There is no turn-end reminder asking for a verdict. One existed and was withdrawn: its
-condition — a completed run nobody judged — is satisfied on the ordinary successful session,
-so it fired *after* the final answer had streamed, discarded it, and sent the model back to
-re-run the command to recover output it no longer had. The whole cost of a rejected turn,
+There is no turn-end reminder asking for a verdict: its condition — a completed run nobody
+judged — holds on the ordinary successful session, so it would discard a finished answer
 for a label the ledger already prints. **A recommended axis must not be able to reject a
 finished answer.**
 
@@ -1356,9 +1311,9 @@ case is `reversible` on purpose — since sensitivity is derived, defaulting to
 `recoverable` would put every read tool behind a prompt. `EXTERNAL_FETCH` is deliberately
 not a trigger: it means "reaches outside the workspace", which a read-only GitHub query
 does as much as a POST. What makes an outbound call irreversible is that it *sends*, and
-no capability expresses that, so those tools declare their level themselves. A legacy
-descriptor carrying `approval.sensitive: true` reads as `recoverable`, so a third-party
-server written before the field keeps its prompt.
+no capability expresses that, so those tools declare their level themselves. A descriptor
+carrying `approval.sensitive: true` reads as `recoverable`, so a third-party server keeps
+its prompt.
 
 The prompt shows the level on its own `Undo :` line. A binary gate spent identical
 friction on a file the client can restore and on a Slurm submission burning allocation
@@ -1431,7 +1386,7 @@ completion report and is cleared once the action later succeeds. `denial_history
 append-only and is what the ladder counts, so a refusal followed by an unrelated success
 never silently resets the escalation.
 
-**Reporting.** A refusal alone no longer forces `Task is incomplete.` — reading (2) says
+**Reporting.** A refusal alone does not force `Task is incomplete.` — reading (2) says
 the step was not needed, and the honest report of that is a finished task with a named
 omission.
 
@@ -1451,12 +1406,9 @@ recommendation can set is a requirement.**
 contract as the verification ledger. The front-ends lift the block off the prose and render
 it as a collapsed disclosure: headline and residual risk in view, sections one click away.
 
-It used to be bare prose concatenated *ahead* of the answer, with the model's own words
-demoted beneath it. Nothing could lift it off, so every front-end rendered the whole of it
-as body text — which is how an ordinary interim turn ("the build is still running") reached
-the user as a wall of machine output. Prominence was the intent, and prominence is what it
-lost the moment it became unreadable: a report skipped every time is not read more than one
-that is folded. What is folded is the **presentation** and nothing else — the block is still
+It is marked, so a front-end can fold it rather than render a wall of machine output above
+the model's own words: a report skipped every time is not read more than one that is
+folded. What is folded is the **presentation** and nothing else — the block is still
 appended to the answer text, history keeps it verbatim for the model, and no line is
 dropped or shortened.
 
@@ -1496,9 +1448,8 @@ Verification ledger — machine-recorded, not model-authored:
 ```
 
 Rows with no content are omitted, so a clean run with no checklist collapses to one row.
-Why it exists: the closing prose and the recorded evidence used to sit side by side with
-nothing reconciling them, so "verified and working" could be emitted directly above files
-that had only ever been executed. The ledger lands *after* the model stops acting — it
+Why it exists: closing prose that says "verified and working" is reconciled with the
+recorded evidence, file by file. The ledger lands *after* the model stops acting — it
 cannot loop and cannot be argued with.
 
 **Marker contract.** The block is always the answer's tail and opens with a
@@ -1516,9 +1467,8 @@ Rules worth knowing:
   Merging them is what let "validated" be reported as "correct".
 - When files were checked and nothing ran, the ledger says so in one line: *a checker says
   a file parses, imports and lints — it says nothing about whether the answer is right.*
-  Worded **domain-neutrally** on purpose: it used to name reference comparisons and
-  convergence measurements, vocabulary a parser or a CLI can never satisfy, so it fired on
-  every non-numerical run and became wallpaper.
+  Worded **domain-neutrally** on purpose: vocabulary a parser or a CLI can never satisfy
+  (reference comparisons, convergence) would make it wallpaper.
 - A run still outstanding at the end is rendered for what it is rather than dropped. The
   reminder budget stops asking after two tries; the ledger is where a run stops being asked
   about and starts being reported.

@@ -2,19 +2,22 @@
 
 > **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
-The layering of `mimir/client/`, derived from the actual imports. Read top-to-bottom:
-higher layers depend on lower ones. Solid edges are import-time; **dotted edges are
-lazy** — imported inside a function, so they never run at load time.
+The layering of `mimir/client/` and its relation to `mimir/servers/`. Every rule on
+this page is checked by `mimir/tests/test_architecture.py`; a change that breaks one
+fails the suite.
 
-The graph shows the layering, not every edge: every unit also imports the foundational
-ones (`config`, `protocol`, `event_sink`, `human_pause`) and
-`mimir/servers/_shared` freely, and those edges are omitted to keep it readable.
+## The client's layers
+
+Read bottom to top: a unit imports, at load time, only units below it. Solid edges are
+import-time; the **dotted edge is lazy** (imported inside a function). Every unit also
+imports the foundations (`config`, `protocol`, `event_sink`, `human_pause`) and
+`mimir/servers/_shared`; those edges are omitted.
 
 ```mermaid
 graph TD
-    subgraph FE["🖥️ Front-ends"]
-        cli["ui/cli/<br/><small>REPL · CliHost · text rendering</small>"]
-        ws["ui/ws/<br/><small>server/ (main · serving · registry)<br/>connection/ (Connection · handlers · router)<br/>pool/ (AgentPool · bus · wakes)<br/>worker/ (AgentWorker · human · jobs)</small>"]
+    subgraph FE["🖥️ Front-ends · ui/"]
+        cli["ui/cli/<br/><small>REPL · CliHost</small>"]
+        ws["ui/ws/<br/><small>server/ · connection/ · pool/ · worker/</small>"]
     end
     subgraph SES["💬 Conversations"]
         session["session/<br/><small>conversation · store · journal<br/>jobs_on_disk · summary · commands/</small>"]
@@ -23,65 +26,52 @@ graph TD
         agent["agent_core.py<br/><small>MimirAgent</small>"]
     end
     subgraph ENG["⚙️ Engine"]
-        qe["query_engine/<br/><small>turn · loop_base · agent_loop · plan_loop<br/>dispatch/ · history · streaming · background<br/>context_budget · backends/</small>"]
+        qe["query_engine/<br/><small>turn · loops · dispatch/ · jobs/<br/>history · streaming · backends/</small>"]
     end
-    subgraph GOV["🛡️ Governance &amp; services"]
-        guard["guardrails/<br/><small>policy · nudges · workflow · observations</small>"]
+    subgraph SVC["🧩 Services"]
         prompt["prompt/<br/><small>system_prompt</small>"]
         ext["extensions/<br/><small>.mimir/ servers · skills · plugins</small>"]
         integ["integration/<br/><small>MCP connect</small>"]
+    end
+    subgraph EXE["🔧 Execution"]
         te["tool_execution/<br/><small>executor · validation · direct</small>"]
     end
-    subgraph CON["📜 Contracts"]
-        core["core/<br/><small>ports (AgentPort, HumanIO) · settings · human</small>"]
+    subgraph GOV["🛡️ Governance"]
+        guard["guardrails/<br/><small>policy/ · nudges/ · workflow/<br/>observations/ · ladder · verdict</small>"]
     end
-    subgraph FND["🧱 Foundational"]
-        ctx["context/<br/><small>execution_context · capabilities · signals</small>"]
-        cfg["config/ · protocol/<br/><small>paths · limits · settings · models<br/>events · messages · errors</small>"]
+    subgraph CON["📜 Contracts"]
+        core["core/<br/><small>ports · settings · human<br/>turn_state · extension_set</small>"]
+    end
+    subgraph FND["🧱 Foundations"]
+        ctx["context/<br/><small>execution_context · capabilities · carry<br/>paths · tool_display · signals</small>"]
+        cfg["config/ · protocol/<br/><small>paths · limits · settings · toggles<br/>models · events · messages</small>"]
     end
 
     cli --> session
-    cli --> qe
-    cli -.->|lazy| agent
     ws --> session
     ws --> agent
-    ws --> qe
-    ws --> core
-
-    session --> core
     session --> qe
-
     agent --> qe
-    agent --> guard
     agent --> prompt
-    agent --> ext
     agent --> integ
-    agent --> te
-    agent --> core
-
-    qe --> guard
-    qe --> te
-    qe --> core
-    qe --> ctx
-
-    guard --> core
-    guard --> ctx
-    te --> guard
-    te --> core
-    te --> ctx
+    agent --> ext
     prompt --> ext
-    ext --> guard
+    qe --> te
+    qe --> guard
     ext --> te
+    ext --> guard
+    te --> guard
+    guard --> core
     integ --> core
-    integ --> ctx
-
     core --> ctx
-    core -.->|lazy| qe
     ctx --> cfg
+    core -.->|lazy| qe
 
     classDef fnd fill:#e6faf1,stroke:#1f9d6a,color:#0f3d29;
     classDef con fill:#eef7ee,stroke:#4a9d5b,color:#1e3a24;
     classDef gov fill:#f3ecff,stroke:#8257d1,color:#2e1a52;
+    classDef exe fill:#fdf3e7,stroke:#c98a2b,color:#4a300a;
+    classDef svc fill:#eef3fb,stroke:#5a7fbf,color:#1c2c48;
     classDef eng fill:#fff7e6,stroke:#d99a2b,color:#5a3d0a;
     classDef orch fill:#e8f0ff,stroke:#3b6fd4,color:#1a2a4a;
     classDef ses fill:#e8f6ff,stroke:#3a8fc4,color:#123a52;
@@ -91,60 +81,52 @@ graph TD
     class session ses;
     class agent orch;
     class qe eng;
-    class guard,prompt,ext,integ,te gov;
+    class prompt,ext,integ svc;
+    class te exe;
+    class guard gov;
     class core con;
     class ctx,cfg fnd;
 ```
 
-## How to read it
-
-- **Foundational** (`config`, `protocol`, `context`, `event_sink`) depend on
-  nothing above them. `config` is the vocabulary (paths, limits, the closed sets of each
-  setting, the model catalogue); `protocol` the shapes that cross a boundary (event
-  types, chat messages and their invariants, error payloads); `context` the
-  `ExecutionContext` dataclass, the query/tool signals and the capability vocabulary;
-  `event_sink` the injectable `emit()` seam that keeps the engine ignorant of front-ends.
-- **`core`** holds the contracts the layers above agree on: `AgentPort` (everything the
-  engine and the guardrails may call on an agent), `HumanIO` (how the agent reaches a
-  person — the terminal, a WebSocket card, a sub-agent's caller, nobody), and the
-  settings table (`apply_setting` / `read_setting`, one validation for every front-end).
-- **`guardrails`** (hard `policy` gates as a pipeline, soft `nudges` as one cascade,
-  the `workflow` state and the `observations` it records) sits below the engine.
-- **`query_engine`** drives a turn: `turn.run_loops` switches between the `AgentLoop`
-  and `PlanLoop` strategies (both `StepLoop`s), `dispatch/` admits and runs tool calls,
-  `backends/` share one `LLMBackend.chat` template.
-- **`agent_core.py`** (`MimirAgent`) is what every front-end, the runner and the
-  sub-agent server instantiate; it implements `AgentPort`.
-- **`session`** is what a conversation is, independent of the front-end showing it:
-  `Conversation` (one in-memory object per conversation, handed to every writer by the
-  `Conversations` registry), what it keeps on disk (the `SessionStore`, the `journal`,
-  the detached runs it left in `jobs_on_disk`, its one-line `summary`), and the session
-  commands (`Command`, `CommandRegistry`) both front-ends share.
-- **`ui/`** is only the front-ends. The CLI drives an agent in-process; the WebSocket
-  server runs one worker per conversation in a pool, whose pump commits answers and
-  routes finished runs before any socket renders them.
-
-### Back-edges
-
-Two places where a lower unit reaches a higher one, each a **lazy import inside a
-function**:
-
-| Edge | Where | Why |
+| Rank | Units | What they are |
 |---|---|---|
-| `core → query_engine` | `core/settings._store_backend` | switching the backend needs the factory, and the engine reads the mode through `core.settings` at load |
-| `ui/cli → agent_core` | `ui/cli/main.py` | the script-mode bootstrap (`python main.py`) has to fix `sys.path` first |
+| 0 | `config`, `protocol`, `event_sink`, `human_pause` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam |
+| 1 | `context` | the `ExecutionContext` blackboard, the capability vocabulary, the carry context, the path rules, how a call reads on screen |
+| 2 | `core` | the contracts the layers above agree on: `AgentPort`, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
+| 3 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the repair `ladder` |
+| 4 | `tool_execution` | a call run through the guardrails: policy before, observations after |
+| 5 | `extensions`, `integration` | the user's `.mimir/` extensions; connecting MCP servers |
+| 6 | `prompt` | the system prompt |
+| 7 | `query_engine` | a turn: the loops, the dispatcher, detached jobs, the context budget, the backends |
+| 8 | `agent_core` | `MimirAgent`, which every front-end, the runner and the sub-agent server instantiate; it satisfies `AgentPort` |
+| 9 | `session` | a conversation, independent of the front-end showing it, and what it keeps on disk |
+| 10 | `ui` | the front-ends: the CLI drives an agent in-process; the WebSocket server runs one worker per conversation in a pool |
 
-The proxy store (`guardrails/proxy_state`, `guardrails/policy/gates`) is lazy too: it
-is the proxy server's heavy library, needed only by a conversation running an
-optimisation. The WebSocket entry
-(`ui/ws/server/main.py`) imports `serving` only after applying `--cwd`, because
-`config.paths` resolves the workspace root as it is imported.
+The one lazy back-edge: `core.settings` reaches the backend factory in `query_engine`
+when the backend is switched, because the engine reads the mode through
+`core.settings` at load. The WebSocket entry (`ui/ws/server/main.py`) imports
+`serving` only after applying `--cwd`, because `config.paths` resolves the workspace
+root as it is imported.
 
-### Cycles
+## The servers
 
-None between units. `tool_execution` runs a call through the `guardrails` (policy
-before, observations after), and nothing in `guardrails`, `core` or `context` imports
-`tool_execution`: the path rules live in `context/paths.py` and the display vocabulary
-in `context/tool_display.py`.
+`mimir/servers/` is a package: each domain (`workspace`, `agent_state`, `hpc`, `proxy`,
+…) imports `_shared` and its siblings by package. A bundled server runs as a module
+through `servers/_launch.py` (`_shared/launcher.launch_argv`), which keeps the user's
+workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path.
 
-Everything else is a straight downward dependency.
+- `_shared` never imports the client.
+- Only `agent_state` (the sub-agent server builds a `MimirAgent`) and `interaction`
+  import the client, and only its public names.
+
+## Rules for every module
+
+- **One home per concept.** The on-disk layout (`_shared/state_paths`), the atomic write
+  (`_shared/atomic`), the shape of a tool answer (`_shared/responses`), the clock, the
+  pid liveness check, the SKILL.md format: each has one module.
+- **No private name crosses a module.** A name another module imports is public; a
+  server's private packages (the proxy's `_lib`, `_ops`) are internal to that server.
+- **Comments say what the code does now.** History belongs in the commits and
+  [CHANGELOG.md](CHANGELOG.md).
+- **Tests go through public construction and behaviour.** No test reads the source or
+  builds an object around its constructor; shared fixtures live in `mimir/tests/support/`.

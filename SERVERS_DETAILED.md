@@ -69,10 +69,8 @@ Response contract:
 
 `subprocess.run(..., timeout=…)` kills the process it launched and nothing that process
 forked. The bash tool runs `bash -c "<preamble><command>"`, which is compound, so bash
-**forks** rather than execs — the kill landed on bash and the fork ran on. Observed:
-`find / -name …` outliving its 30s timeout by an hour and forty minutes, three at once,
-while a ratchet next door was timing a solver on the same disk. Leaked processes consume
-the machine, and being invisible to the tool that started them they silently corrupt
+**forks** rather than execs — a kill aimed at bash leaves the fork running (a `find /` that
+outlives its timeout by hours). Leaked processes consume the machine, and being invisible to the tool that started them they silently corrupt
 every measurement taken afterwards.
 
 `proc_run.run()` is a drop-in for `subprocess.run` (same `CompletedProcess`, same
@@ -251,18 +249,18 @@ plan, indexed by `PLANS.md`, with a `.active` pointer). Which session is resolve
 `state_paths.active_session_id()`: **`MIMIR_SESSION_ID`** first, stamped into each server's
 environment at spawn. One agent owns a server for its whole life, so the session is fixed
 and a frozen environment is the right carrier — and it is what makes the answer *correct*
-now that conversations run turns at the same time. It is also how a sub-agent gets a
+while conversations run turns at the same time. It is also how a sub-agent gets a
 checklist of its own. The `<STATE_DIR>/active_session` sidecar remains the fallback for the
 ends that genuinely have one session (the CLI, standalone runs, the test suite), where "the
-session on screen" is still the right answer; CLI runs with no sidecar fall back to the
-shared legacy `todo_list.md`.
+session on screen" is the right answer; a CLI run with no sidecar uses the `todo_list.md`
+at the state-dir root.
 
 The **plan** tools declare `MAIN_ONLY` and are never granted to a sub-agent: the plan is
 what the user approved, and an axis of it has no standing to rewrite it. The **checklist**
 tools are grantable, because a child writes them in its own session.
 
 Tools:
-- `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the prose body). A client-side guard used to read that body and refuse a plan whose axes were exploration steps; it was removed — see [POLICY.md](POLICY.md#why-there-is-no-plan-shape-guard) for why a verb list is the wrong instrument for a refusal
+- `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the prose body). No guard refuses a plan for its wording — see [POLICY.md](POLICY.md#why-there-is-no-plan-shape-guard) for why a verb list is the wrong instrument for a refusal
 - `todo_write` — replace the entire checklist with new steps. Takes an optional `depends_on` (one list of prerequisite indices per step), so a plan whose steps are genuinely partially ordered is recorded as the DAG it is instead of being flattened into a line
 - `todo_read` — return the current checklist (index, text, done)
 - `todo_read_ready` — split the open steps into `ready` and `blocked` against that DAG (a step is ready once every step it depends on is done)
@@ -303,7 +301,7 @@ resolves paths off a single per-workspace **state dir**. The client computes
 `~/.mimir/<workspace-id>/` and passes it to server subprocesses via the `MIMIR_STATE_DIR`
 env var (`client/integration/server_manager.py`); servers read it through
 `servers/_shared/state_paths.py`. When `MIMIR_STATE_DIR` is unset (standalone runs, the
-hermetic test suite), they fall back to the legacy in-workspace `<workspace>/.mimir`.
+hermetic test suite), it is the in-workspace `<workspace>/.mimir`.
 
 Above it sits the **global state dir**, `~/.mimir/global/` — what belongs to the *user*
 rather than to one repository, which today is the global memory store. The client
@@ -351,10 +349,9 @@ optimization prints — a solver must not be able to satisfy its own acceptance
 constraints. Hoisted here from `proxy/_lib/metrics.py`, which re-imports
 `RESERVED_METRICS` so its behaviour is unchanged.
 
-The client does **not** read these names as evidence. A scan that promoted a run to the
-`oracle` tier for printing an `l2_rel=…` line existed and was removed: the value could
-never be interpreted (a forged number is unfalsifiable from outside the process — the
-very reason the proxy seals references server-side), so it rewarded a string. What a run
+The client does **not** read these names as evidence: a printed `l2_rel=…` cannot be
+interpreted from outside the process (a forged number is unfalsifiable — the reason the
+proxy seals references server-side), so crediting it would reward a string. What a run
 printed is for the model to read and report through `report_verdict`.
 
 One client-side reading remains, and it only ever *withholds* credit:
@@ -446,7 +443,7 @@ Purpose: workspace-scoped file CRUD and surgical edit helpers.
 
 Every model-facing tool here requires an **absolute** `path`; a relative one is rejected by `_require_abs` at the tool boundary. The check itself is `require_absolute()` in `servers/_shared/root_paths.py`, shared with the read-only servers (see below); `_require_abs` is the file server's thin wrapper over it.
 
-This is the structural fix for misplacement. `write_file` previously accepted *"absolute or relative to server start directory"* — a directory the model has no way to learn — so a relative path was silently resolved against a root it had to **infer**. Asked twice to create a solver *outside* the `codes` directory, MIMIR twice wrote it inside and reported the constraint satisfied. Two prompt-level attempts to make that inference reliable both failed; requiring an absolute path removes the inference, and the destination is stated in the call itself.
+A relative path would be resolved against the server's start directory, which the model has no way to learn, so it would have to **infer** the root, and no prompt makes that inference reliable. Requiring an absolute path removes the inference: the destination is stated in the call itself.
 
 The error is designed to be **self-correcting**: it names the path the relative form would have produced, so the model re-issues in one step, and it states the workspace root at the moment placement is being decided — which no static prompt section can do.
 
@@ -467,7 +464,7 @@ Client-side storage is untouched: `normalize_workspace_path` already converts ab
 The rule above is only coherent if the model can **copy** paths rather than construct them. So discovery reports absolute paths too:
 
 - `server_search` — `read_file_lines`, `list_directory` (including a `path` per entry, not just `name`) and `tree_summary` echo the *resolved* path, not the argument they were given.
-- `server_code_intel` — `_out_path` (formerly `_rel`) returns absolute for every navigation result; the ctags `by_file` index is keyed the same way, so lookups stay consistent.
+- `server_code_intel` — `_out_path` returns absolute for every navigation result; the ctags `by_file` index is keyed the same way, so lookups stay consistent.
 
 What matters just as much is the output side: hand back a relative path and the model must join the root itself, which is the inference the rule removed, reintroduced exactly where it is most likely to copy without thinking.
 
@@ -547,17 +544,12 @@ Three ceilings, because a fetch can go wrong in three different ways.
 
 HTML is turned into text before any of them applies, since markup is what the ceiling
 would otherwise spend itself on. When that extraction comes back empty the page is a
-script shell, or markup the parser choked on, or a body that never arrived — and the
-fallback used to hand back the raw markup under the 128 KB ceiling, on the reasoning
-that markup beats nothing.
+script shell, or markup the parser choked on, or a body that never arrived. Empty
+extraction is the strongest evidence there is that the markup holds no prose (a record
+page can be 92% inline `<style>`), so raw markup would be tens of thousands of tokens of
+CSS.
 
-Measured, that is backwards. A thesis record page is 754 KB, 92% of it a single inline
-`<style>`. The socket read stops at 512 KB, entirely inside that block, so the body
-never arrives and the parser correctly reports no text — and the fallback then spent
-131 072 chars, about 34 000 tokens, on CSS. Empty extraction is the strongest evidence
-there is that the markup holds no prose.
-
-So the fallback now answers with what the page says about itself, under one 8 KB
+So the fallback answers with what the page says about itself, under one 8 KB
 budget, in order:
 
 1. `<head>` metadata — `<title>`, `description`, `og:*`, the `citation_*` set. It is
@@ -570,18 +562,13 @@ budget, in order:
 3. Failing both, 8 KB of markup labelled `markup_only` — a sample to show what kind of
    page this is, not a window.
 
-The thesis page costs about 100 tokens instead of 34 000 and says what it is instead of
-saying nothing in CSS; a 300 KB script shell carrying a record comes back as ~120 tokens
-of that record. `raw=True` bypasses all of it and always has.
+A 300 KB script shell carrying a record comes back as ~120 tokens of that record.
+`raw=True` bypasses all of it.
 
-The read ceiling could then be raised, which is what actually recovered the content.
-It was 512 KB while the read and the prompt were the same thing; now that what reaches
-the model is bounded separately, a bigger read costs time and memory, not context. On
-the thesis page `<meta name="description">` sits at byte 700 336, behind ~700 KB of
-inline CSS — at 512 KB the abstract was not slow to reach, it was unreachable. At 2 MB
-the whole body arrives, extraction works normally, and the fetch returns the title,
-author, director, jury, date, keywords and full abstract for about 1 400 tokens. The
-no-prose fallback is what covers the pages where even that is not enough.
+The read ceiling is set apart from what reaches the model, so a bigger read costs time and
+memory, not context: at 2 MB the body of a page whose `<meta name="description">` sits
+behind ~700 KB of inline CSS arrives whole, and extraction works normally. The no-prose
+fallback covers the pages where even that is not enough.
 
 ### Reading part of a document
 
@@ -659,9 +646,8 @@ MORE_CONTENT hint. The first page of a 1 462-line source file costs ~4 100 token
 instead of ~15 000 for the whole thing, and the whole thing still costs the same if
 you actually want it.
 
-A file over `_MAX_FILE_BYTES` used to be **refused**, which cost the caller the file
-entirely in order to avoid a large result — a total loss of information to avoid a
-large one. It now falls back to the raw URL (bounded by `_MAX_RAW_BYTES`) and serves
+A file over `_MAX_FILE_BYTES` is not refused, which would lose the file entirely to
+avoid a large result: it falls back to the raw URL (bounded by `_MAX_RAW_BYTES`) and serves
 the same window, with `source` saying which path answered. A 1.18 MB LAPACK source
 that was unreadable comes back as 400 of its 41 864 lines for ~3 600 tokens.
 
@@ -678,14 +664,14 @@ Tools:
 - `slurm_nodes(partition="", states="", node="", detail=False)` — **compute-node inventory**: architecture, CPU topology, memory, GPU type/count, node features, and live occupancy (allocated/free CPUs, free memory, load), read from `scontrol show node` — Slurm's own database, which is what actually governs placement. Read-only and instant: it allocates nothing, so it can be consulted *before* choosing where to submit, unlike running a probe on the node (that needs `srun`, i.e. a queued allocation billed against your hours). Aggregates nodes onto their hardware signature by default with a count per state, since a per-node listing of a large cluster is mostly noise; `detail=True` or `node="<name>"` gives individual nodes. Falls back to `sinfo -N` where `scontrol` is restricted, flagging in `degraded` that architecture and CPU occupancy are then unknown. Both parsers, the pipe-table reader and the signature aggregation live in `_shared/slurm_nodes.py`, which runs no command at all: the digest needs the same view of the cluster's hardware for every scheduler the workspace reaches, and a second copy of either parser would drift.
   > **Architecture is the field that earns the tool.** Where a cluster mixes architectures, a binary built where the agent runs will not run on a node of a different one. What Slurm cannot report — CPU model, SIMD, `-march`, caches, OS, toolchains — needs execution on the node: it is read there by `slurm_probe_node` and served by `slurm_node_profile`.
 - `slurm_queue` — the queue, with one field the scheduler cannot supply: `watched` per row, plus the `unwatched` ids as a set. Whether *this workspace* is watching a job is a fact about the descriptors on disk, and a job submitted any other way left none — so the listing answers it rather than leaving it to be worked out, and the client records the set for the conclude-phase nudge (see `CLIENT_DETAILED.md` → *A run nobody is watching*). An array is adopted or submitted under its base id and listed by task, so `_covered_by` tries the base too: read literally, every task of a watched array reads as unwatched — and the `unwatched` set is keyed by array rather than by task, because adoption is by array and eight task rows name one descriptor to write. The descriptors are read in **one** pass (`recorded_jobs`, keyed by `(host, id)`) rather than searched per row: a search answers one id and only returns early on a hit, so asking it per row had a queue of two hundred jobs re-walk every session's submissions two hundred times, with the rows that answer "no" — the interesting ones — paying the whole walk every time.
-- `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing — the old two-step the server + free-form `salloc_submit(command=...)` is gone, because the validation lived entirely in the step nothing forced you to call
+- `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing; there is no free-form command, so the validation cannot be skipped
 - `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Its own bookkeeping — the script, the id, the state a poll settles it at — goes under `session_state_dir()/hpc_jobs/<ts>/`; the **job's output does not**, see below. Takes `constraint`, `nodelist`, `nodes`, `ntasks` and `exclusive` to aim at one kind of node and to time without a neighbour, and `comment` (as `salloc_submit` does) for the free-text `--comment` Slurm keeps with the job, refusing control characters and anything over 512 characters.
-  > **Where a job's output goes, and why it is not a setting.** A job writes from the node it ran on, and the log used to be pointed at the submission's directory under the state dir — the one directory in the arrangement that nothing guarantees a compute node can write. On a site whose home is not mounted on them the job ran, succeeded, and its output went nowhere; an empty read then looked like a job that printed nothing. The rule now needs no configuration and no failure to learn from: `--chdir` and `--output` name the *same* directory, so the output goes where the job runs — and if the job could start at all, that directory is reachable from the node Slurm started it on, otherwise there would have been nothing to chdir into. It is an implication, not a heuristic. `work_dir` exposes it (default: where the server runs, which is where `sbatch` would have started the job anyway), so pointing a run at a scratch filesystem takes its log along. Checked for existence *and* writability before submitting, because both are knowable now and the alternative is learning them after the queue wait — and refused rather than redirected: the tempting fallback is somewhere always writable, which on a cluster means `/tmp`, and `/tmp` is the compute node's own disk. A shared directory that is not writable fails loudly; a node-local one fails silently, with an empty run that looks like a job which printed nothing. The resolved path is written into the submission's directory (`log`) rather than re-derived, so a job submitted by an older build still has its output found where that build put it.
+  > **Where a job's output goes, and why it is not a setting.** A job writes from the node it ran on, and nothing guarantees a compute node can write the state dir (a site's home may not be mounted there). The rule needs no configuration: `--chdir` and `--output` name the *same* directory, so the output goes where the job runs — and if the job could start at all, that directory is reachable from the node Slurm started it on, otherwise there would have been nothing to chdir into. It is an implication, not a heuristic. `work_dir` exposes it (default: where the server runs, which is where `sbatch` would have started the job anyway), so pointing a run at a scratch filesystem takes its log along. Checked for existence *and* writability before submitting, because both are knowable now and the alternative is learning them after the queue wait — and refused rather than redirected: the tempting fallback is somewhere always writable, which on a cluster means `/tmp`, and `/tmp` is the compute node's own disk. A shared directory that is not writable fails loudly; a node-local one fails silently, with an empty run that looks like a job which printed nothing. The resolved path is written into the submission's directory (`log`) rather than re-derived, so a job submitted by an older build still has its output found where that build put it.
   > The script itself is **piped to `sbatch` on stdin**, which reads it from there when given no file. So nothing of ours has to exist on the host that runs it — the one thing a remote scheduler cannot promise — and the command line is one word, with no path to quote. A copy is still written to the submission's directory for a reader asking what was actually submitted.
 - `slurm_probe_node(partition, constraint="", nodelist="", account="", scheduler="", confirm=False)` — submits a job of a few seconds that runs `server_platform --profile-json` (through `_launch.py`) **on the node**, so the node gets the same profile as the host. The job picks its own Python (`.venv-<os>-<arch>`); with none, a shell fallback still reads `lscpu`, `-march`, GPU and OS, and the profile is marked `partial`. Irreversible (approval prompt) but not `CLUSTER_SUBMIT`: it runs no user code, so the local-validation hold does not apply.
   > **It reaches a scheduler behind `ssh`.** The script goes over on stdin, as `sbatch_submit`'s does and for the same reason — nothing of ours can be promised to exist on the host that runs it — and a copy is still written to the submission's directory for a reader. The *result* needs the same treatment: the script's working directory has to be on the far side, so for a remote scheduler it is `${MIMIR_STATE_HOME:-$HOME/.mimir}/node_probes/<stamp>`, which the script creates itself, with `--output` pointing there too. The harvest then reads the probe's four files in **one** round trip, labelled with the `==<name>` markers the fallback sections already use — a call per file would be four ssh handshakes per probe, per panel refresh. The submission records its host both in `probe.json` and in the descriptor's own `slurm_host`, so a probe left by an earlier call is harvested for the scheduler it was actually sent to. On a cluster that does not share this checkout there is no MIMIR Python on the node, so the profile is `partial` and says that reason rather than implying a defect in the node — though a site with a shared home gets the full profile, which is the common HPC case and why the local path stays a candidate.
 - `slurm_node_profile(partition="", node="", scheduler="")` — read-only. Harvests finished probes into `state_dir()/hpc/node_profiles/<scheduler>/<node>.json`, then returns each node kind of the partition with its profile, or `profiled: false`. **Keyed by scheduler, because Slurm's node names are chosen per site:** two clusters each with a `node01` are two unrelated machines, and one flat directory had the second overwrite the first. A profile filed before the layout was per-scheduler records no host and is read for none of them — guessing `local` for it is the mistake the keying exists to prevent, and there is no TTL to respect, so the node re-profiles on demand instead. A profile is kept until Slurm's description of the node changes (no TTL). `matches_this_host` lists what differs from the host MIMIR runs on (arch, CPU model, SIMD, OS, glibc). Inside an allocation, the current node is profiled on the spot, with no job.
-- `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown), on whichever reachable scheduler is running it (see *A job is not owned by a scheduler* below), via squeue (active) + sacct (terminal); the poll target the background-job watcher uses. A running job also reports the `nodes` it got, expanded from Slurm's own hostlist and read from the same `squeue` call rather than a second one — only ever for a running job, since a pending one has no node yet and that column is the reason it is waiting instead. **A job the queue already calls finished is settled from that answer alone**, before sacct is asked: one round trip instead of two for every finished job, and the only thing that can settle one on a site with no accounting at all, where sacct answers nothing and "in the queue with a state I do not recognise" used to read as still running — which for a `CANCELLED` job is a watcher polling, for as long as the process lives, something that will never change again. The array rule holds either way: the worst outcome among the elements wins, and one element still going keeps the job live. A terminal answer whose recorded log does not exist says so in `log_missing`: a job writes from the node it ran on, so that directory was not one that node could write — and the alternative is reading an empty `tail` as a job that printed nothing. It names `work_dir`, not a setting. A terminal answer also writes that state into the submission's own directory (`slurm_state`), for a job of any session: it is the counterpart of a detached shell job's exit-code trap, and the only thing that will ever know. Without it the directory records a job id and nothing else, which reads as a job still running for ever — see `CLIENT_DETAILED.md` → *Background jobs*. Write-once, because sacct's retention window expires and the same job then reads `unknown`.
+- `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown), on whichever reachable scheduler is running it (see *A job is not owned by a scheduler* below), via squeue (active) + sacct (terminal); the poll target the background-job watcher uses. A running job also reports the `nodes` it got, expanded from Slurm's own hostlist and read from the same `squeue` call rather than a second one — only ever for a running job, since a pending one has no node yet and that column is the reason it is waiting instead. **A job the queue already calls finished is settled from that answer alone**, before sacct is asked: one round trip instead of two for every finished job, and the only thing that can settle one on a site with no accounting at all, where sacct answers nothing and "in the queue with a state I do not recognise" must not read as still running — for a `CANCELLED` job that would be a watcher polling, for as long as the process lives, something that will never change again. The array rule holds either way: the worst outcome among the elements wins, and one element still going keeps the job live. A terminal answer whose recorded log does not exist says so in `log_missing`: a job writes from the node it ran on, so that directory was not one that node could write — and the alternative is reading an empty `tail` as a job that printed nothing. It names `work_dir`, not a setting. A terminal answer also writes that state into the submission's own directory (`slurm_state`), for a job of any session: it is the counterpart of a detached shell job's exit-code trap, and the only thing that will ever know. Without it the directory records a job id and nothing else, which reads as a job still running for ever — see `CLIENT_DETAILED.md` → *Background jobs*. Write-once, because sacct's retention window expires and the same job then reads `unknown`.
 - `slurm_watch(job_id, note="")` — **adopts a job this server did not submit**, which is the only way such a job is ever watched. Tracking is the descriptor a submission writes, not an id somebody read: work that goes through a site launcher, a submission script, or any shell path leaves none, so nothing polls it, no wake is owed when it ends, and the process stops on its idle TTL with the run still going — the failure is silent on both sides. This writes the descriptor after the fact (`slurm_job_id`, the `slurm_host` that answered, plus an `adopted` marker, no `batch_script.sh`: the job was not built here) and returns the handle the client watcher arms on under the **plural** `background_jobs` key, the one a status op answers with: singular means *this call launched it* and is read only from a tool declaring `BACKGROUNDABLE`, which an adopter does not — it launches nothing, it hands over a run already going. The plural key is read with no capability gate at all, since what registration buys is a read-only poll of a named op. Asks the disk first and Slurm only on the path that writes something: an id already recorded returns its directory and, when the recorded job has not settled (`slurm_state`, the same file `jobs_on_disk.is_settled` reads), hands the descriptor over again — recorded is not watched, a window reload takes every watcher with it, and asking again is the moment that is repairable; the client dedups on the id, so a watcher still there costs nothing and one that is gone is put back (withheld for a sibling session's job, for the reason `slurm_job_status` withholds it). The common answer when a model adopts an array task by task, and over ssh two round trips for something the directory already knows, and an id no reachable scheduler has heard of is refused before anything is written, naming the ones asked, since a descriptor for a job that does not exist holds the process open until the staleness horizon. An array's base id covers every task. All three recorders — this, `sbatch_submit`, and the proxy filing a run that went to Slurm — go through one `slurm_site.record_job_dir`, which lives beside the readers whose layout it decides, so the descriptor's shape and the id file's name have a single author, and both attach the still-unwatched ids to their answer (`_add_unwatched`): those are the two moments the model is holding job ids, and a launcher prints a server job *and* a client array, of which adopting the first is the usual place to stop. Never on `slurm_job_status`, which is the watcher's poll target and would pay for a per-user queue read for the life of every run. A job already terminal is recorded (`slurm_state`) and *not* watched — a watcher on a finished job reports at its first poll, which is a wake for news the caller is holding.
 - `slurm_cancel(job_id, confirm=False)` — cancels **one** job of the user's, pending or running (an array task as `1234_5`). The ID is the only input, so a card never approves a sweep: `scancel -u`, `--partition` or a list of IDs cannot be expressed. A job owned by someone else, or no longer in the queue, is refused with its state. Launched as argv. It declares `IRREVERSIBLE` (approval card, blocked in plan/ask) but not `CLUSTER_SUBMIT`: stopping a job spends no allocation, so the local-validation hold does not apply. A watched job that is cancelled ends like any other (`CANCELLED` → `crashed`), and the watcher resumes the agent. `scancel` itself stays refused in `bash_run`, whose refusal points here.
 
@@ -726,12 +712,12 @@ Purpose: report what this host actually is — hardware, scheduler, toolchains, 
 Tools:
 - `platform_probe` — collect and return a full profile of **this host** (CPU with caches, `-march`, OS and glibc, GPU, memory, Slurm, loaded modules, toolchains, Python environments), plus `execution_context` and `machine_signature`. Every fact is built on demand, so none of it can be stale; it reports the module catalogue's summary but never builds it. `python servers/_launch.py mimir.servers.hpc.server_platform --profile-json` prints the same profile without serving MCP: that is what a node probe runs. Probes run with `LC_ALL=C`, since `lscpu` translates its field names.
   > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`ISA_EXTENSIONS` in `_shared/cpu_facts.py`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.
-- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. Always built fresh for the current host (so it can never serve another node's hardware), no cache, no the catalogue guard arg. The collectors whose answer cannot change while the process lives (CPU, GPU, Slurm, modules, toolchains) are memoized, so a second probe costs a fraction of the first. The probe tools are the **only** source of live platform facts: the client used to carry a duplicate probe whose output was injected into every system prompt, which paid for a full hardware summary on every query to answer a question most of them never asked.
+- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. Always built fresh for the current host (so it can never serve another node's hardware), no cache, no the catalogue guard arg. The collectors whose answer cannot change while the process lives (CPU, GPU, Slurm, modules, toolchains) are memoized, so a second probe costs a fraction of the first. The probe tools are the **only** source of live platform facts: nothing injects a hardware summary into the system prompt, which would pay for it on every query to answer a question most of them never ask.
 
 - `platform_search(query, limit=10, refresh=False)` — search the host's **environment-module catalogue** by name (`"cuda"`) or by capability (`"parallel hdf5"`). Each hit carries `load`, the exact string to pass to `module load`.
 - `platform_catalogue_status()` — what the index currently holds, without building or refreshing it. Backs the CLI's `/modules`.
 
-> **Why the catalogue is the one thing this server persists.** `_collect_modules` used to run `module -t avail | head -n 120` and return 80 names under a key called `sample`. An alphabetical slice of a module tree is worse than no list: a model that reads `abaqus … cmake` with no `cuda` in sight concludes CUDA is unavailable. A site's tree runs to thousands of entries and cannot be put in a context window, so it is indexed once under `<STATE_DIR>/platform/modules/` and *searched*. What `platform_probe` still reports about modules is only the volatile part — the ones loaded right now.
+> **Why the catalogue is the one thing this server persists.** An alphabetical slice of a module tree is worse than no list: a model that reads `abaqus … cmake` with no `cuda` in sight concludes CUDA is unavailable. A site's tree runs to thousands of entries and cannot be put in a context window, so it is indexed once under `<STATE_DIR>/platform/modules/` and *searched*. What `platform_probe` still reports about modules is only the volatile part — the ones loaded right now.
 >
 > **Freshness is a signal, never a clock.** The catalogue is rebuilt when a fingerprint changes: hostname, the *effective* `MODULEPATH` (after the site's init scripts), a depth-2 stat-hash of the modulefile trees, and the mtime of Lmod's own spider cache — which a site regenerates exactly when modules change. No TTL is consulted. The file is named per hostname, because `STATE_DIR` is per-workspace while a module tree belongs to a machine.
 >
@@ -771,9 +757,8 @@ Tools:
 - `system(op, ...)` — single read-only dispatch; set `op` to one of: `info`, `disk`
   (uses `path`), `cpu`, `memory`, `env` (uses `name`, allow-listed vars only), `uptime`.
 
-> **Removed (2026-07): `server_code.py` (exec) and `server_code_quality.py` (static
-> checks).** Compiling, running, validating, linting, type-checking, and testing code all
-> go through the `bash` server now — the agent invokes `gcc`/`gfortran`/`nvcc`,
+> Compiling, running, validating, linting, type-checking, and testing code all
+> go through the `bash` server: the agent invokes `gcc`/`gfortran`/`nvcc`,
 > `python`/`node`, `python -m py_compile`, `ruff`/`pyflakes`, `python -m mypy`, `black`,
 > and `pytest` directly with the exact flags it needs. Exec/compile commands are
 > approval-gated and workspace-confined by the bash server. The client marks a written
@@ -897,15 +882,12 @@ session's own state dir (`<STATE_DIR>/sessions/<sid>/jobs/`), which is a trusted
 (`_shared/trusted_read_roots.py`), so the log is readable with the ordinary file tools while
 the run is still going.
 
-**Per session**, and for two reasons that turn out to be the same one. These used to sit in
-a fixed `~/.cache/mimir_bash/jobs`, outside every conversation, so `bash_job(op='list')`
-enumerated every conversation's jobs — one could read, and kill, another's. Resolving the
-root per session makes the listing correct by construction: there is nothing to filter. And
-a detached job's directory is never swept, however old, so a root under `$HOME` grew for
-ever; tied to a conversation it goes when the conversation goes, which is the retention
-policy this never had. Deleting a conversation whose jobs are still running therefore asks
-first rather than taking the log of a live process with it. Slurm job directories moved the
-same way (`<STATE_DIR>/sessions/<sid>/hpc_jobs/`) — with the difference that a Slurm job
+**Per session**, for two reasons. `bash_job(op='list')` enumerates this conversation's jobs
+only, by construction: one conversation cannot read or kill another's. And a detached job's
+directory is never swept, however old, so tied to a conversation it goes when the
+conversation goes. Deleting a conversation whose jobs are still running therefore asks first
+rather than taking the log of a live process with it. Slurm job directories live the same
+way (`<STATE_DIR>/sessions/<sid>/hpc_jobs/`) — with the difference that a Slurm job
 outlives its conversation, so `slurm_job_status` searches the sibling sessions read-only and
 says which conversation a job came from: filed per session, never unfindable.
 
@@ -1008,8 +990,8 @@ wrapper × interpreter pair unwraps to the interpreter) and
 
 ### What a command's category still decides
 
-The taxonomy in `servers/_shared/shell_paths.py` is no longer a gate — it is what the
-client's classifier reads to decide approval and plan-mode availability.
+The taxonomy in `servers/_shared/shell_paths.py` is not a gate — it is what the client's
+classifier reads to decide approval and plan-mode availability.
 
 | Category | Commands | Plan mode | Approval |
 |---|---|---|---|
@@ -1023,15 +1005,14 @@ client's classifier reads to decide approval and plan-mode availability.
 | `exec` | the compilers (`gcc` `g++` `gfortran` `clang` `nvcc` `mpicc` …), the build drivers (`make` `cmake` `ninja` `meson` …), the runners (`python` `python3` `java` `node` `pytest` `ctest`), the checkers (`ruff` `mypy` `pyflakes` `black`), the TeX engines, and `source` | ⛔ | ✅ |
 | **unplaced** | **everything else** (`git`, `rm`, `curl`, `tar`, `awk`, …) | ⛔ | ✅ |
 
-The last row is the one that changed: a head no group places classifies as `UNKNOWN`,
+The last row matters most: a head no group places classifies as `UNKNOWN`,
 which is read as a **run** — never plan-safe, never approval-exempt, owing a verdict, and
 with its path operands still extracted so they are confined and prompted for. Widening
 what bash accepts therefore widens what the user is *asked* about, not what slips
 through. A parity test (`test_no_classified_command_is_one_the_server_refuses`) fails if
 a group names a denied command, or if a category disagrees with how a call to it is
-gated. (It also used to check the client-side platform probe's toolchain list against
-`EXEC_EFFECTS`; that probe is gone — the platform servers below are now the only source
-of hardware and toolchain facts, queried on demand rather than injected.)
+gated. The platform servers below are the only source of hardware and toolchain facts,
+queried on demand rather than injected.
 
 `printenv` and `export` are `neutral` because their arguments are words (`VAR=value`), not
 paths, and neither can run a command; an `export` holds only for the rest of the one chain,
@@ -1047,7 +1028,7 @@ denied". It grants no new *kind* of power: `python f.py`, `make` and a compiled 
 already execute workspace code. Note that `black` rewrites the file it formats yet is
 filed `exec`: approval and plan-mode
 gating are already right for it, and its operand is credited as *validated* by
-`_bash_validation_scan` — a mixed write/exec kind for a single tool would buy nothing.
+`bash_validation_scan` — a mixed write/exec kind for a single tool would buy nothing.
 
 ### ◆ What shifts a command out of its category, per call
 
@@ -1098,9 +1079,8 @@ The detail behind each row:
   so a nested *write* targets paths that cannot be checked. Because the split happens in
   the shared parser, the nested segment inherits the ordinary operand confinement **and**
   the client's out-of-workspace gate for free (`find /etc -exec cat {} \;` still refuses).
-  This grants no new power: `python f.py` was already directly invocable. Previously the
-  whole family was denied on the `-exec` token alone, leaving read-only fan-out no
-  working spelling at all.
+  This grants no new power: `python f.py` is directly invocable anyway, and read-only
+  fan-out keeps a working spelling.
 - TeX shell-escape/`write18` in every spelling (plus `_safe_env` pinning
   `shell_escape=f`, `openout_any=p`, `openin_any=p`).
 - env managers: `run`/`execute` only — they nest an arbitrary command. Install,
@@ -1345,13 +1325,10 @@ Tools:
     card next to them for the sub-agents panel, and the whole thing goes when the parent
     session is deleted.
   - **A child watches its own detached runs.** The hook pair the client installs
-    (`_register_background_job` / `_watched_background_jobs`) goes on the agent the
-    WebSocket worker owns, and a child's agent is built here, so every backgroundable
-    launch inside a child used to fall through to `background._await_background_job`:
-    polled in-turn, on the child's own loop, inside its wall budget. For the rung whose
-    whole point is working in parallel that meant sitting on a step until a build
-    finished instead of preparing the next one, and a run that outlived the budget
-    outlived the only thing watching it. `_child_jobs.ChildWatcher` is the watcher, on
+    (`register_background_job` / `watched_background_jobs`) goes on the agent the
+    WebSocket worker owns, and a child's agent is built here, so it gets its own; polled
+    in-turn instead, a child would sit on a step until a build finished rather than
+    prepare the next one. `_child_jobs.ChildWatcher` is the watcher, on
     the loop `asyncio.run` creates for the child's thread — the only window in which
     `get_running_loop()` can hold one. The resume is a **steer**, not an event: a child
     has no `out_q` and no event bus, and no turn loop to submit to, so a finished run
@@ -1373,10 +1350,8 @@ Tools:
     cannot be added to a running process. A child killed outright publishes nothing, and
     is picked up instead by `session/jobs_on_disk`, which walks `subagents/` for exactly this.
   - **A child that outlives its caller is stopped.** The child runs on a thread of its
-    own that nothing can kill, so a budget that expires used to return to the caller and
-    leave the thread working: it went on spending model calls on an answer nobody would
-    read, and wrote its card as a clean `finished` minutes later. The timeout branch now
-    sets the agent's `turn.cancel_flag` — the same cooperative flag the WebSocket worker uses
+    own that nothing can kill, so a budget that expires would otherwise leave the thread
+    spending model calls on an answer nobody reads. The timeout branch sets the agent's `turn.cancel_flag` — the same cooperative flag the WebSocket worker uses
     to interrupt a turn — and marks the card `abandoned`, which outranks `finished` even
     when the thread does reach a clean result. The card's four terminal states are
     therefore `finished`, `abandoned`, `failed` and `unknown`. The line handed back to
@@ -1408,7 +1383,7 @@ Tools:
 
 Capabilities and gating:
 - Declares `DELEGATE` (the channel prompt, guidance and observation all address by
-  capability rather than by name) and `BACKGROUNDABLE` (a detached child's handle). It is **no longer dual-use by argument**: delegation
+  capability rather than by name) and `BACKGROUNDABLE` (a detached child's handle). It is **not dual-use by argument**: delegation
   cannot be the way around a read-only mode, because the grantable table is computed under
   the caller's own mode and has nothing writing in it there. So it stays plainly visible in
   plan and ask — that is where a sweep is the whole of the work.
@@ -1527,7 +1502,7 @@ Helper package (not an MCP server) imported by `proxy/server_proxy.py`, the `pro
 | module | contents |
 |---|---|
 | `store.py` | Storage root `_CACHE_DIR` (env-overridable via `MIMIR_PROXY_BENCH_DIR`, default `<workspace>/proxy_bench`), the whole on-disk layout, atomic JSON/symlink IO, the re-entrant registry flock, and registry/suite/reference/opt-session persistence — including `workspace_root()` and `_entry_or_err()`, which every op resolves a proxy through. |
-| `procs.py` | Process/run state: pid + `/proc` starttime bookkeeping (PID-recycling and zombie detection in `_is_running`), `_squeue_state`, `_run_state`; log access (`_log_path`, `_read_log` capped at `_MAX_LOG`); run lifecycle — `_new_run_dir`, `_write_run_config`, `_launch_detached`, `_submit_sbatch`, `_cancel_run` (`scancel` else SIGTERM → SIGKILL), `_validate_slurm_args`; active-run symlinks. |
+| `procs.py` | Process/run state: pid + `/proc` starttime bookkeeping (PID-recycling and zombie detection in `is_running`), `_squeue_state`, `_run_state`; log access (`_log_path`, `_read_log` capped at `_MAX_LOG`); run lifecycle — `_new_run_dir`, `_write_run_config`, `_launch_detached`, `_submit_sbatch`, `_cancel_run` (`scancel` else SIGTERM → SIGKILL), `_validate_slurm_args`; active-run symlinks. |
 | `metrics.py` | `_parse_metrics_block` (block-delimited; strict fallback scan), `_strip_reserved_metrics` (against `RESERVED_METRICS` from `_shared/numerics.py`) (server-side invariants the proxy cannot forge), `_normalize_time_metrics` (server-measured `wall_time_s` + `time_s` plausibility guard), field I/O + `_field_norms`, invariants (`_finite_check`, `_conservation_residual`, `_convergence_order`), `_evaluate_requirements`. |
 | `command.py` | `_render_param_file`, `_expand_cmd_template` (single template-expansion path for local + sbatch), `_build_run_cmd`, `_sbatch_header`, `_build_sbatch` (injection-safe `repr()` postrun; captures solver wall time + exit code for the post-run guard). |
 | `report.py` | Roofline (`_resolve_roofline` with platform-profile fallback, `_compute_roofline`), `_row_with_extra`, `_diff_run_pair`, `_diff_run_dirs`. |
@@ -1633,7 +1608,7 @@ Safety model:
 - Every mutating op requires `confirm=True`; unknown/missing-arg calls fail closed with a hint.
 - **Registry concurrency**: register/update/unregister acquire `_registry_lock()` (exclusive `fcntl.flock`) around the read-modify-write sequence.
 - Runs are non-blocking (detached subprocess or Slurm job) — `reference`, `suite`, and `benchmark_create` are the blocking exceptions.
-- PID recycling guard: starttime from `/proc/<pid>/stat` is stored alongside the PID; `_is_running` rejects mismatching starttimes.
+- PID recycling guard: starttime from `/proc/<pid>/stat` is stored alongside the PID; `is_running` rejects mismatching starttimes.
 - Registry corruption: `json.JSONDecodeError` copies the file to `.corrupt` and raises `RuntimeError` before any write attempt.
 - Slurm injection safety: `_build_sbatch` writes a `postrun.py` with all paths embedded as `repr()` literals; the sbatch script passes it via `shlex.quote`.
 - `proxy_slurm` is the only `CLUSTER_SUBMIT` tool — the client's pre-submission guard holds the first submission each query until something has been validated locally.
@@ -1712,7 +1687,7 @@ declare surfaces instead of silently losing its policy/approval/caching semantic
 `@mcp.tool(**tool_caps(...))`. Pure tools (math, string, datetime ops, read-only
 queries/advisors) declare no *capability* — they correctly carry none — but do declare
 their `kind`.
-The expected classification is the golden oracle in `mimir/tests/_golden_caps.py`;
+The expected classification is the golden oracle in `mimir/tests/support/golden_caps.py`;
 `test_phase_b_servers.py` AST-parses every decorator and asserts the resulting
 registry reproduces it. A new server "just works": declare each tool's caps and the
 client classifies it for policy/approval/caching/labels with **zero client edits**.

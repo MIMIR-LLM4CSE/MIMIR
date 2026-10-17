@@ -44,11 +44,11 @@ about structure and flow. The VS Code frontend has its own file,
 | `dispatch/` | `ToolDispatcher`: `admission` (dedup, read-only, backstop), `execution` (one call, its timeout, its post-processing), `inject` (what is put back in front of the model) |
 | `history.py` | context budgeting: trim → compact → force-fit → repair, plus the compaction marker |
 | `context_budget.py` | `context_budget_for(model, mode)` — the window a model actually has |
-| `streaming.py` | the model call (retry/backoff), `_process_response`, the single `get_backend` handle |
+| `streaming.py` | the model call (retry/backoff), `process_response`, the single `get_backend` handle |
 | `jobs/background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
 | `jobs/poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
-| `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
+| `finalize.py` | `finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
 | `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
 | `backends/` | `LLMBackend.chat` is a template (`_complete` per backend); `OpenAICompatBackend` with `VllmBackend` and `RayBackend` as subclasses, `AnthropicBackend`, `OllamaBackend`, the `ThinkTagParser` |
 
@@ -147,7 +147,7 @@ mid-run lands on the very next one. `loop_base._sync_thinking_directive()` rebui
 `messages[0]` only when the run enters or leaves the `auto` rung, since that is the only
 rung whose directive lives in the system prompt — one deliberate prefix-cache miss on an
 explicit user action, and a single comparison in steady state. `on` stays accepted as an
-alias for `auto`, so a legacy `/think on` keeps working. Sub-agents run at depth 0.
+alias for `auto`. Sub-agents run at depth 0.
 
 ### `models.py`
 
@@ -236,10 +236,9 @@ A conversation, independent of the front-end showing it.
 | `store.py` | `SessionStore` — `<STATE_DIR>/sessions/<id>.json`, atomic writes, a revision that refuses a stale save, sub-agent cards |
 | `commands/` | the slash commands ([above](#slash-commands)): `base` (`Command`, `CommandRegistry`, `CommandResult`, `CommandHost`), `settings`, `housekeeping`, `agent` |
 
-**One copy per conversation.** A connection and the pool used to keep a copy each, and
-the event bus arbitrated them with a claim on every answer and every finished run. The
-pool owns the `Conversations` now; a connection holds a reference to the one on screen,
-and both write the same object, on the server's one event loop.
+**One copy per conversation.** The pool owns the `Conversations`; a connection holds a
+reference to the one on screen, and both write the same object, on the server's one event
+loop.
 
 ---
 
@@ -282,10 +281,9 @@ asserts the two key sets match. **47 fields** today.
   about *semantic* state, not loop plumbing.
 
 **Field traits.** The `traits` frozenset on each row declares what a field *is* — `CARRY`,
-`FILE_PATH`, `KNOWN_FILE`, `DISCOVERY` — and `fields_with(*traits)` derives every list that
-used to be hand-maintained: the carry merge, session serialisation, the delete purge, the
-discovery signals, `known_existing_files`. Eight such lists lived across four modules and
-had already drifted apart.
+`FILE_PATH`, `KNOWN_FILE`, `DISCOVERY` — and `fields_with(*traits)` derives every list built
+from them: the carry merge, session serialisation, the delete purge, the discovery signals,
+`known_existing_files`. None is hand-maintained, so none can drift from the schema.
 
 **Named predicates, not bare set membership.** `was_read()` / `is_known_to_exist()` /
 `was_checked_for()` name the distinctions [POLICY.md](POLICY.md#what-each-field-means)
@@ -299,7 +297,7 @@ stopped at the cap is the normal case.
   `structural` < `syntax` < `static` < `compiled` < `measured`, raised monotonically and
   retracted wherever `validated_files` is, since evidence is about one revision. Every
   checked file starts at `structural`, which the in-process floor establishes with nothing
-  installed — that is why the mandatory axis can no longer be waived for want of a binary.
+  installed — that is why the mandatory axis is never waived for want of a binary.
   `compiled` needs a toolchain and is demanded nowhere; `measured` has one route, a server
   that ran the file *and recorded which file it ran*. Report-only: it gates nothing and
   fires no nudge. A file not readable as text lands in `unverifiable_files` instead.
@@ -369,9 +367,8 @@ a subset of servers.
 ### `signals.py`
 
 Query-signal vocabularies. **One predicate still reads them**:
-`query_requires_repo_discovery`, the plan-mode explore phase's coarse exit filter. The
-`query_prefers_*` and `query_is_informational` classifiers were removed with the nudge
-conditions that consumed them — a keyword match over a natural-language request guesses at
+`query_requires_repo_discovery`, the plan-mode explore phase's coarse exit filter. Nothing
+else reads the wording of a request: a keyword match over natural language guesses at
 intent, and a nudge has to rest on something checkable.
 
 - `QUERY_EDIT_SIGNALS`, `QUERY_CREATE_SIGNALS`, `QUERY_HPC_SIGNALS` survive **only** as
@@ -383,10 +380,8 @@ intent, and a nudge has to rest on something checkable.
   of what this machine has installed, because the mandatory check runs in-process. This
   tuple decides only whether an edit is *recorded as produced work*. It also carries the
   structured-data extensions the floor holds a real parser for (`.json`, `.toml`, `.ini`,
-  `.cfg`, `.xml` and dialects), and deliberately not YAML, which has no stdlib parser. It
-  used to be paired with a per-language table of external checker commands — `.f03` was in
-  that table and missing from this tuple, so a Fortran 2003 edit was never even recorded as
-  modified.
+  `.cfg`, `.xml` and dialects), and deliberately not YAML, which has no stdlib parser. A
+  spelling missing here (`.f03`, say) is an edit never recorded as modified.
 
 ### `resource_context.py`
 
@@ -444,13 +439,8 @@ cacheable.
 
 The root is a **prerequisite, not a safeguard**: file tools reject relative paths, so the
 model needs it to construct any in-workspace destination. It is there to be *joined*, not
-reasoned about. It began as a safeguard and failed twice in that role. A run asked to create
-files "outside the codes directory" wrote them into the workspace root and reported the
-constraint satisfied; adding a `Workspace root (absolute):` line left the tree still
-rendered as `codes/`, and the next run failed the same way, its plan reading "a new
-directory at the workspace root … outside the existing `codes/` directory" — a bare-name
-root is indistinguishable from a subdirectory. The general lesson: no phrasing makes an
-inferred root reliable, so the inference was removed instead.
+reasoned about. No phrasing makes an inferred root reliable — a bare-name root reads like a
+subdirectory — so the prompt states the absolute path and infers nothing.
 
 **The live checklist, and where state may not sit.** `build_system_content` renders the
 checklist into `messages[0]` (agent mode only) and `_sync_checklist` refreshes it there
@@ -473,11 +463,11 @@ per-model workaround: the block was a tail `user` turn specifically because a ta
 turn broke one template's generation prompt, a distinction that measured irrelevant to the
 real failure (7/40 vs 8/40).
 
-The block used to also carry discovery evidence — read files, existing paths, planned
-targets. That was removed: the paths are already in the transcript, and repeating a bare
-list of them is a pattern the model **copies** rather than uses.
+The block carries no discovery evidence (read files, existing paths, planned targets): the
+paths are already in the transcript, and a bare list of them is a pattern the model
+**copies** rather than uses.
 
-**`_rebuild_system_content(agent, active_mode, execution_context)`** is the single answer to
+**`rebuild_system_content(agent, active_mode, execution_context)`** is the single answer to
 "what must `messages[0]` be after a rebuild": the mode's prompt plus the folded skill block.
 Five sites rebuild it — mode switch, thinking-rung change, plan→agent handoff, checklist
 refresh, initial build — and before this existed the skill block was silently dropped by
@@ -494,7 +484,7 @@ is protected there instead.
 One set of ids, `execution_context["pinned_call_ids"]`, and three passes that honour it. It
 exists because the tail is where the context budget does its work: `_trim_tool_history`
 evicts whole tool results, `_maybe_compact_intra_query` summarises the middle of the list,
-and `_force_fit_to_window` truncates largest-first. All three would carry off a skill body,
+and `force_fit_to_window` truncates largest-first. All three would carry off a skill body,
 and the model has been told the method is in its context.
 
 - `_trim_tool_history` skips pinned ids outright, by `tool_call_id` — the same structural key
@@ -504,7 +494,7 @@ and the model has been told the method is in its context.
   optional: `reconcile_tool_pairs` drops any tool message not immediately preceded by that
   turn, so a body saved alone would be deleted by the very next repair pass — protection that
   looks like it works and does nothing.
-- `_force_fit_to_window` sorts pinned messages to the **end** of the reduction order rather
+- `force_fit_to_window` sorts pinned messages to the **end** of the reduction order rather
   than protecting them. Protecting them there could only turn an over-window prompt into a
   hard `ContextOverflowError`; ordering them last means a body is cut only once everything
   else has been, and usually not at all. Doing nothing was not an option either — the order
@@ -607,9 +597,9 @@ the loop sends live in `nudges/messages.py`.
   `config/limits.py`. See [POLICY.md](POLICY.md#if-approval-is-refused).
 - `turn_made_commitments(ctx)` / `unhonoured_commitments(ctx)` — did this turn commit to
   producing something, and is some of it still undone? Three signals, all per-query: an edit
-  happened, a set of target files was declared, or a checklist was written. The completeness
-  guards used to ask `code_mutation_started` instead, which read a turn that declared eight
-  files and wrote none as pure discovery — the exact case they exist for.
+  happened, a set of target files was declared, or a checklist was written. Not
+  `code_mutation_started`, which would read a turn that declared eight files and wrote none
+  as pure discovery — the exact case the completeness guards exist for.
 - `unchecked_checklist_items(ctx)` — the single reader of live checklist state outside the
   prompt builder. **Fails closed to `[]`** on a missing or unreadable file, so a run without
   a checklist behaves exactly as before rather than having an obligation invented for it.
@@ -678,7 +668,7 @@ once — on the revision it will ship at.
 |---|---|
 | `engine.py` | `evaluate_tool_preconditions()` — the gate order and the two pack slots |
 | `violations.py` | violation enrichment, the evidence a refused call lacks, path clarification |
-| `gates.py` | `_check_cluster_submit()`, `_check_proxy_exec()`, `_check_out_of_workspace_access()` |
+| `gates.py` | `check_cluster_submit()`, `check_proxy_exec()`, `check_out_of_workspace_access()` |
 | `write.py` | `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` |
 | `state_machine.py` | `check_state_machine_guard()` and the retry budget |
 | `approval.py` | `ApprovalManager`: prompts, `always` grants, batch queue, snapshots, revert |
@@ -694,7 +684,7 @@ Two details worth stating here:
   and `server_manager` places that variable only in the *server subprocesses'* env. Without
   the explicit append the agent could not read back its own plans without a prompt, while
   the servers — which do see the variable — would have allowed it.
-- `_enrich_violation_payload()` always sets `policy_stage`, `tool`,
+- `enrich_violation_payload()` always sets `policy_stage`, `tool`,
   `suggested_next_tool_class`, `state` and `status`. `missing_evidence` is **conditional**:
   attached only at the `write_policy` and `approval` stages, then dropped in the `discover`
   state, and dropped again once the denial nudge has fired twice.
@@ -779,10 +769,8 @@ The full per-nudge table, with what each fires on and which survive at each leve
   `workflow_state` nowhere: that condition made the *recommended* axes mandatory, since a
   failed run sends the state machine back to `edit`.
 
-**Every predicate reads recorded state, never the wording of the request.** Four guidance
-rows used to open on a keyword match over the query; that is a guess about intent dressed as
-a test. What replaced the one thing the keyword earned — telling `blast_radius` from
-`creation` — is whether the declared target already exists on disk.
+**Every predicate reads recorded state, never the wording of the request.** What tells
+`blast_radius` from `creation` is whether the declared target already exists on disk.
 
 **A run nobody is watching.** `unwatched_run` is the row that rule shaped most. The failure
 it guards is a job submitted outside MIMIR — through a site launcher, a submission script, a
@@ -822,7 +810,7 @@ split is [above](#a-turn).
 `StepLoop`s. A loop that has to change mode (the plan approved, say) returns a
 `ModeSwitch` and the driver starts the other strategy on the same turn; there is no
 recursion between the two. Every exit path routes end-of-query bookkeeping through
-`_finalize_answer()`: annotate the answer, save carry context, stash the full messages. Nothing is written to memory there: that is the model's call, made during the run.
+`finalize_answer()`: annotate the answer, save carry context, stash the full messages. Nothing is written to memory there: that is the model's call, made during the run.
 
 **Completion is `if not tool_calls:`** — the model emitted no tool call. There is no goal
 check, so the honesty surface is the verification ledger appended to every answer. Full
@@ -830,7 +818,7 @@ format in [POLICY.md](POLICY.md#verification-ledger).
 
 - **Setup** — reset the per-query tool cache, build a fresh `ExecutionContext`, apply the
   carry context, assemble the system prompt.
-- **`_stream_chat()`** — iterative streaming backend calls, retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
+- **`stream_chat()`** — iterative streaming backend calls, retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
   blocks stream for live display but are **excluded from history**: reasoning is never
   re-fed. UI events go through `emit()`.
 - **`ToolDispatcher`** (`dispatch/`) — takes the model's per-call `doing` description out of the
@@ -874,7 +862,7 @@ because the spin it catches is invisible to everything else — the failing-call
 only failures, and a nudge fires only once the model stops calling tools, which a spinning
 model never does.
 
-**`_post_dispatch_inject()` is the mid-tool-loop channel**, carrying the five reminders the
+**`post_dispatch_inject()` is the mid-tool-loop channel**, carrying the five reminders the
 end-of-turn table cannot reach, because that table only fires once the model *stops* calling
 tools — and a model retrying against the wrong interpreter, chasing a moving test, or told
 to hand back is by definition still calling tools. The five, and the fact that only
@@ -893,10 +881,8 @@ to hand back is by definition still calling tools. The five, and the fact that o
   so a hallucinated call is answered rather than executed. Hiding a tool is what lets both
   prompts drop the matching prohibition: an absent tool needs no rule and no prompt tokens.
 
-  The loop used to re-derive this locally from tool names, counting the checklist alone — so
-  a plan recorded in prose was invisible, the loop kept telling a model whose plan was on
-  disk that it had not recorded one, the model answered by rewriting the document, and the
-  run spun to the ceiling delivering nothing.
+  The loop does not re-derive this from tool names: counting the checklist alone would miss
+  a plan recorded in prose and send the model back to rewrite a plan it already has.
 - **The explore phase.** Plan mode runs in two phases and the plan-document tool does not
   exist during the first. On a repo-touching query the document tool is hidden and the nudge
   asks for the exploration rather than for the plan. The phase flips the moment
@@ -927,7 +913,7 @@ to hand back is by definition still calling tools. The five, and the fact that o
 
 ### `history.py`
 
-Context budgeting: trim → compact → force-fit → repair. `_enforce_context_budget` rewrites
+Context budgeting: trim → compact → force-fit → repair. `enforce_context_budget` rewrites
 `messages` **in place while the turn runs**, so a position the front-end measured before
 submitting stops meaning what it meant. The loop records the message the turn opens on and
 resolves it back to an index by **identity**, not equality, so two byte-identical job wakes
@@ -937,7 +923,7 @@ whatever it shifted over, and cuts through an assistant↔tool pair on the way.
 **The compaction marker's count is cumulative.** `compacted_exchanges()` reads the count out
 of the summary a second pass is about to swallow and adds to it, rather than counting that
 message as one exchange. It is what the model reads to judge how much of its own past it
-can no longer see, and per-pass counting made every pass announce less than the one before.
+cannot see any more; counting per pass would make every pass announce less than the one before.
 A second compaction feeds the previous summary back through the summariser, so the window is
 always `[system, task, exactly one summary, last two exchanges]` and never a stack of them.
 
@@ -1014,22 +1000,22 @@ never a parse of the command, which is the guess the module exists to avoid. See
 
 - `scratch_roots()` / `is_scratch_path(path)` — the client's view of the scratchpad, one
   definition read by the out-of-workspace gate (scratch never prompts) and by
-  `observations._record_code_edit` (scratch writes never enter `dirty_written_files`).
+  `observations.record_code_edit` (scratch writes never enter `dirty_written_files`).
   Without the second exclusion the scratchpad would trade workspace clutter for ledger
   clutter and spurious validation obligations.
-- `auto_validate_written_file()` — the post-write hook. The deterministic
-  syntax→imports→lint→typecheck→tests ladder was removed, and the mandatory check that
-  replaced it does not live here either. What remains are the two *completeness* checks with
-  no bash equivalent: the replacement-completeness grep for leftover text after a replace,
+- `auto_validate_written_file()` — the post-write hook. The mandatory check is not here
+  (it is `guardrails.builtin_check`, swept at the conclusion gate); what is here are the two
+  *completeness* checks with no bash equivalent: the replacement-completeness grep for leftover text after a replace,
   and the cross-file reference check for stale callers after a rename.
 
-### `normalizer.py`, `formatter.py`, `context/tool_display.py`
+### `normalizer.py`, `protocol/tool_result.py`, `context/tool_display.py`
 
-- `normalizer.py` — `normalize_tool_arguments()`, `normalize_workspace_path()`, and
+- `normalizer.py` — `normalize_tool_arguments()` and
   `rewrite_tool_for_context()`, which heals the `read_file` alias to `read_file_lines` and
   fills in the line range a bare read left out, so every read says what it asks for.
-- `formatter.py` — `normalize_arguments()`, `normalize_tool_content()`, `truncate_text()`,
-  `json_error_payload()`, `parse_tool_payload()`.
+- `protocol/tool_result.py` — `normalize_tool_content()`, `truncate_text()`,
+  `json_error_payload()`, `parse_tool_payload()`. The path rules
+  (`normalize_workspace_path()` and its kin) are `context/paths.py`.
 - `context/tool_display.py` — `tool_status_message()` derives a human-readable status from
   the tool *name*, with no per-tool table: a verb is located in a reusable lexicon, rendered
   as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces declared
@@ -1058,19 +1044,18 @@ never a parse of the command, which is the guess the module exists to avoid. See
   `tool_arg_preview()` finds the call's **salient argument** — the url, the file, the
   verdict, the job id, the queried name — from argument *names* in priority order, with
   `op` last, since an op selects an action and the model's own description already
-  carries that half. Every one of these used to reach the row through the server's label
-  template, and went off screen with it. A url keeps its host and path and sheds its
+  carries that half. A url keeps its host and path and sheds its
   userinfo and query on both branches, parsed or not: a row is read over a shoulder and
   then stored. `dedup_row_detail()` drops the preview when the description already says
-  it, matched on **word boundaries** — as a substring, a verdict of `pass` was eaten by
-  "recording the passing run" and an op of `now` by "knowing the time".
+  it, matched on **word boundaries**: as a substring, a verdict of `pass` would be found in
+  "recording the passing run".
 
   `clip_doing()` is the row's other half: the model's own description of the call, cut to
   its first line and bounded. The 15-word limit is asked of the model and not enforced —
   a sentence cut mid-word reads worse than a long one — and this only stops a model that
   ignores it entirely from pushing the rest of the row off screen.
 
-  The name-derived label is no longer what a row shows. The row shows the tool's declared
+  The row does not show the name-derived label: it shows the tool's declared
   work family (`kind_for`), that description and that preview; the label remains its
   tooltip, and is
   what approval cards and policy messages are written from. So all of the above is still
@@ -1089,15 +1074,12 @@ frontends pilot, not a frontend.
 - `seed_classification_from_caps()` — called once after all servers connect. Re-seeds the
   approval manager's sensitive / non-batch / fallback sets **in place** from `tool_caps`
   (in-place mutation preserves an alias), then reports connected tools that declared no caps.
-- `_apply_carry_context()` / `_update_carry_context()` — merge prior-session discovery sets
-  into each new context, evicting stale reads by mtime, and save fields back after each
+- `carry` (`context.carry.CarryContext`) — `apply()` merges prior-query discovery sets into
+  each new context, evicting stale reads by mtime; `update()` saves fields back after each
   query. Both iterate the trait-derived carry list.
 - `compact_history()` / `compact_messages()` — the model calls MIMIR makes on **its own
-  behalf**. Both go through `get_backend()`; they used to call Ollama directly, which broke
-  them under every other backend. A third used to live here — a classifier picking a skill
-  from the query before the first step. It is gone: the model is given the index and loads a
-  skill itself, so no round-trip is spent guessing from a request that does not yet know what
-  the task is made of. Both pass a discarding token callback, because `chat` streams to
+  behalf**. Both go through `get_backend()`, whatever the backend. No model call picks a skill
+  from the query: the model is given the index and loads a skill itself. Both pass a discarding token callback, because `chat` streams to
   stdout when given none — that default belongs to the CLI answer path, and without a sink a
   compaction summary is printed into the middle of the session. Both degrade quietly when the
   endpoint is down, so an unreachable backend costs a summary, not the turn.
@@ -1188,8 +1170,7 @@ schedules it on the worker and awaits the future. It keeps the opening user mess
 last two exchanges, replaces the middle with one summary, and re-runs the tool-pair
 reconciliation because that slice can strand a tool call. Front-trimming the oldest turns is
 the **fallback** — taken when the middle is too short to be worth a call, when summarisation
-fails, or when the summary still does not fit. It used to be the only behaviour, so the
-window was amputated where it could have been summarised.
+fails, or when the summary still does not fit.
 
 **A background-job wake belongs to the session that launched it.** A two-hour build outlives
 the conversation on screen, so the job records its session at launch and the completion event
@@ -1303,15 +1284,11 @@ summary call is under the same deadline, and there it matters more: the run is a
 a summary op that never answers withholds the wake itself, and better a wake with nothing in
 it than no wake.
 
-**A connection that drops does not end the turn, and no longer costs its record either.**
-An agent outlives the connections that read it, so a socket that dies mid-run leaves a turn
-working with nobody watching. What used to be true as well is that nothing *recorded* that
-work: the draining, the journal tee and the writing-back of a finished turn's answer all
-lived in the connection's drain loop, which is created per connection and cancelled when the
-socket goes. A disconnected run wrote nothing, grew `out_q` for the length of the
-disconnection, and lost its answer if it finished while away.
+**A connection that drops does not end the turn, nor its record.** An agent outlives the
+connections that read it, so a socket that dies mid-run leaves a turn working with nobody
+watching, and that work is still drained, journaled and written back.
 
-So the WebSocket is no longer the bus. `EventBus` (`pool/bus.py`), owned by the pool and
+The WebSocket is not the bus. `EventBus` (`pool/bus.py`), owned by the pool and
 started by `serve()`, is the one pump for the process: it drains every worker through
 `drain()` — already the single choke point for everything the engine emits — writes each
 event to that session's `transcript.jsonl` under a monotonic `seq`, hands each answer and
@@ -1334,10 +1311,7 @@ the pump and by nobody else, which is what makes it a watermark a reconnect can 
 anything else appending to a session's journal goes through `record_client_event` (a query,
 a steer, a compaction record, a job wake).
 
-There used to be a sweep on connect — `_drop_stale_events` — that emptied an idle
-conversation's queue and spared a busy one's, with a carve-out for `job_complete` and
-`job_checkin` because those answer to no turn. The carve-out was the tell: deciding what to
-discard was the wrong question. Nothing is discarded now. The one thing not *recorded* is a
+Nothing is discarded on connect. The one thing not *recorded* is a
 streamed delta (`token`, `thinking`, and the rest of `_SKIPPED_TYPES`): hundreds per turn, so
 a replayed turn shows aggregates rather than keystrokes — which is what makes replay
 affordable.
@@ -1355,12 +1329,8 @@ been watched — the same draft-and-boundary logic decides where the block sits 
 cards that followed. Reasoning is still not kept: it is the one thing a replay deliberately
 sacrifices, and the one the aggregate is not worth paying for.
 
-**Who writes a finished turn down: the pool, always.** A conversation used to have two
-writers — the connection showing it held its history in memory, the pool wrote the stored
-copy when nobody was connected — and a claim on every answer decided which acted, with a
-grace window of first refusal for the socket, a reload when the pool won, and a revision
-check on save for when the arbitration failed. There is one copy now (`session.conversation`):
-the pump hands every `answer` to `AgentPool.commit_turn` before any socket sees it,
+**Who writes a finished turn down: the pool, always.** There is one copy of a conversation
+(`session.conversation`): the pump hands every `answer` to `AgentPool.commit_turn` before any socket sees it,
 attached or not, and `Conversation.commit_answer` writes it. A connection renders what is
 already written; what the pool did travels to it in the event's extras (`_committed`: the
 title, the interaction now awaited, the steering given a turn).
@@ -1573,8 +1543,8 @@ on a job that finished hours ago, which is precisely the failure this path exist
 an announcement repeats until a consumer has taken the wake in, and the consumers dedup
 instead: a run whose marker is already on disk is dropped (`jobs_on_disk.wake_reported`), and a
 job already pending for a conversation is not added twice. Checking pending wakes alone
-missed a second announcement arriving after the first was delivered, and several emitters
-— the reconnect scan, the worker-build scan, the watcher — announce one run. A steered wake
+would miss a second announcement arriving after the first was delivered, and several
+emitters — the reconnect scan, the worker-build scan, the watcher — announce one run. A steered wake
 is settled when the loop confirms it was read (`steer_injected`): `_drop_injected_wakes`
 marks what it drops, since with the run no longer held by a watcher that marker is the only
 guard against every later scan announcing it again. A sub-agent's run is marked and looked
@@ -1592,7 +1562,7 @@ baseline is about what has ended. Slurm
 jobs are never declared finished by inspection: their state is in the controller, not in a pid
 here, so they come back as live and the watcher's first poll settles it.
 
-The liveness check is a deliberate twin of `_bash_jobs._is_running` rather than a call into
+The liveness check is a deliberate twin of `_bash_jobs.is_running` rather than a call into
 it — the MCP servers resolve imports against their own directory, so nothing in
 `mimir.client` can import that tree, the same reason `tool_execution/run_channel.py` twins
 `servers/_shared/run_channel.py`. What must change in both together: a pid is alive only if
@@ -1751,14 +1721,11 @@ on the way back in, the journal the half the mechanism is audited from, and the 
 handling (a session that will not load, a save that will not write) is the fragile part, so it
 has one author.
 
-Nothing used to reach the transcript at all — the decision was printed in the process's own
-log, which the user has no reason to be reading, so a morning opened on a thread whose last
-line was hours old with nothing between. That reads as a night lost rather than a decision
-taken, and the two want opposite responses. What the notice says is only what `idle_report`
+The decision reaches the transcript, not only the process's log: a thread whose last line is
+hours old reads as a night lost rather than a decision taken. What the notice says is only what `idle_report`
 told it, and the wording of the clock has one author (`idle_stop_reason`, beside the TTL, in
 both tenses because two layers say it). It names no remedy: a pool does not know whether this
-workspace has a scheduler at all, and naming a cluster tool there was the incident leaking
-into a general mechanism — that sentence belongs to the layer that knows one exists.
+workspace has a scheduler at all; that sentence belongs to the layer that knows one exists.
 
 **And what a detachment promises is checked against that.** "This run keeps working with
 this window closed" is a claim about what the process would still owe once the window has
@@ -1796,13 +1763,12 @@ anything and must not touch loop state. So the pump pushes a plain timestamp ont
 each tick — including the ticks that move no events, since what it reports is the absence of
 events. And `releasable()` gains a clause: a deferred turn has cleared its pending card, so
 the parked-on-a-card clause no longer sees it, while the user still owes it an answer and
-releasing the agent would throw away the ~19 servers that answer is resumed against. (It has
-since gained three more, for the same shape of debt one step later: see *Who is allowed to
-act*.)
+releasing the agent would throw away the ~19 servers that answer is resumed against. (Three
+more clauses cover the same shape of debt one step later: see *Who is allowed to act*.)
 
 **When a detached server stops.** The unclaimed case is settled above and never reaches
-here. What remains is a server conversations *did* ask to keep: it is no longer killed by
-closing the window, so it needs its own answer to "am I still needed", and
+here. What remains is a server conversations *did* ask to keep: closing the window does not
+kill it, so it needs its own answer to "am I still needed", and
 `AgentPool.idle_report()` is that answer in one interrogable place — read by the idle shutdown and by anyone asking whether this window
 has anything worth leaving running.
 
@@ -1856,11 +1822,8 @@ so a card left out is a conversation stopped for ever with nothing on screen to 
 card is state, not a journal line, which is why `_resend_parked_prompt` still exists beside
 the replay.
 
-**Conversations run at the same time, one agent each.** One worker used to serve every
-session, which is why leaving a conversation had to cancel its turn — or defer it when it was
-parked on a person. That was never a policy: a single worker cannot stream two conversations
-anywhere the user can see, and a card it was parked on would have been answered from the next
-conversation's UI. `AgentPool` gives each conversation its own agent, so leaving one leaves
+**Conversations run at the same time, one agent each.** `AgentPool` gives each conversation
+its own agent, so leaving one leaves
 its turn running; its output goes to its own transcript — written by the pump, so it is
 written whether or not anyone is attached — which is what makes coming back show the whole
 turn rather than only the answer that ended it.
@@ -1913,10 +1876,8 @@ directories. The delete is refused once, naming what is running; asking again go
 
 **Who owns the rendered chat.** `display_messages` as the server assembles it is text bubbles
 and nothing else; the tool rows, reasoning panels and diff cards are built by the webview's
-reducer and exist nowhere else, so the client hands its rendered copy back under guard. That
-handover used to happen once, when the turn ended — which made every long run a window in
-which the work on screen existed in one place, a browser tab. Three things close it: the
-client checkpoints mid-turn, a turn **parking on a question** counts as a fall of `busy`
+reducer and exist nowhere else, so the client hands its rendered copy back under guard, and
+not only when the turn ends: the client checkpoints mid-turn, a turn **parking on a question** counts as a fall of `busy`
 like any other, and a reconnect keeps the **richer** copy rather than the stored one.
 
 ---
@@ -1964,8 +1925,8 @@ installed.
 
 | Suite | Covers |
 |---|---|
-| `_fake_backend.py` | `ScriptedBackend`: a deterministic backend replaying canned responses, driving the streaming callbacks and recording per-call inputs. Shared by the loop and runner tests; dependency-light, so it runs on ARM and x86 |
-| `test_agent_loop.py` | the loop functions — intra-query compaction, `_post_dispatch_inject`, `_finalize_answer` (including the turn boundary surviving an in-turn rewrite, and matching on identity so two byte-identical job wakes are not confused), plan mode, and the non-interactive path. Plus the failing-call guard and the identical-success annotation |
+| `support/backend.py` | `ScriptedBackend`: a deterministic backend replaying canned responses, driving the streaming callbacks and recording per-call inputs. Shared by the loop and runner tests; dependency-light, so it runs on ARM and x86 |
+| `test_agent_loop.py` | the loop functions — intra-query compaction, `post_dispatch_inject`, `finalize_answer` (including the turn boundary surviving an in-turn rewrite, and matching on identity so two byte-identical job wakes are not confused), plan mode, and the non-interactive path. Plus the failing-call guard and the identical-success annotation |
 | `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
 | `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
 | `test_event_chain.py` | coming back to a running turn — the conversation restored under the level it was left on, a rebuilt worker coming up on it too, an ordinary connect deciding nothing about it, a turn in flight reported as running and an idle one not, and what the turn produced while away coming back — that an absence keeps the prose: the record interleaving what was said with what was called, the aggregate not being sent to a client that already had the deltas, a reconnect replaying both, and a blank block not recorded — plus the whole chain with the real objects: handshake, query, and the turn's `status` / `tool_call` / `tool_result` / `answer` arriving, nothing lost to the watermark, the journal holding the same turn the client saw, a second turn arriving, a brand-new conversation not silenced by an inherited watermark, the approval card reaching the client and its answer coming back — plus the ways a chat *can* go quiet, pinned so each is deliberate |
@@ -1980,10 +1941,10 @@ installed.
 | `test_event_router.py` | a connection that costs nothing idle: it waits on its subscription with no timeout, refreshes once a tick only while a turn on screen is live, and per event type keeps the divertible rows, pushes the review bar only when there is one, withholds another conversation's event and counts it, says whether a wake started a turn here, and sends the checklist only when its file changed |
 | `test_session_commands.py` / `test_slash_commands.py` | the command registry: one grammar for both front-ends, the old spellings kept, a setting applied through the host and reported as state never as prose, a refusal or an invalid value an error with nothing changed, listings and erasures as cards; the webview's list matching the socket's registry both ways |
 | `test_idle_predicate.py` | what counts as finished: a concluded conversation with no jobs idle, one that never answered *not* idle, an error counting as an ending, a live run on disk holding the process open even for a session with no agent, an unreadable state dir counting as busy, and a Slurm submission holding it open until a poll has settled it, still holding it while its wake is owed, and letting go when nothing can ever settle it — plus each prohibition (attached client, parked card, owed answer, queued turn, agent being built, a worker that cannot be asked), and the clock: it starts rather than stopping at once, stops on the TTL, and is reset by activity rather than shortened — then the state that must not exist, a server nobody claimed and nobody is watching: a window still here keeping it whatever the claims, a reload not counting as a departure, gone past the grace with no claim ending it, one conversation's claim being enough for the whole process, a server never yet connected to having lost nothing, and claims that cannot be read not reading as nobody, and that both stops are written into the conversations they were keeping — stamped, journaled, and saying what the idleness consisted of |
-| `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), that a reconnect throws nothing away, and re-arming a watcher from a status result — plus the fourth and quietest way, a tool call that never answers: a status op that hangs ending the run as `unknown` rather than polling for ever, a timed-out probe reported as `unreadable` rather than as still running, and a summary op that hangs not withholding the wake |
+| `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run could wake nobody (the wrong agent, a store that would not write, a socket dying on the send), that a reconnect throws nothing away, and re-arming a watcher from a status result — plus the fourth and quietest way, a tool call that never answers: a status op that hangs ending the run as `unknown` rather than polling for ever, a timed-out probe reported as `unreadable` rather than as still running, and a summary op that hangs not withholding the wake |
 | `test_policy_manager.py` | the gates and the state guard |
 | `test_client_helpers.py` | the nudge predicates, token counting, eviction and `ContextOverflowError` |
-| `test_capabilities.py` / `test_phase_b_servers.py` | `infer_tool_caps` precedence and the golden declared registry (`_golden_caps.py` AST-parses the server decorators) |
+| `test_capabilities.py` / `test_phase_b_servers.py` | `infer_tool_caps` precedence and the golden declared registry (`support/golden_caps.py` AST-parses the server decorators) |
 | `test_capability_consumers.py` | drift guard — fails if a declared capability has no live consumer |
 | `test_session_persistence.py` | the window/record split, WS compaction and its front-trim fallback, which one a resume restores, the turn boundary in both stale directions, and the cumulative marker count |
 | `test_scratchpad.py` | home resolution, the standing grant being the home, `ensure_scratch_home` refusing a symlink / foreign owner, and scratch writes staying out of `dirty_written_files` |
