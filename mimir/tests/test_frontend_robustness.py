@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import types
 import json
 import unittest
 
 from mimir.client.core.settings import read_setting
 from mimir.client.ui.ws.connection.connection import Connection
+from mimir.tests.support.pools import FakePool
 from mimir.client.core.turn_state import TurnState
 
 
@@ -23,8 +25,7 @@ class HandlerIsolationTests(unittest.TestCase):
     def test_a_failing_handler_reports_and_leaves_the_connection_up(self) -> None:
         # Raised out of _handle, the exception ended the read loop: the socket stayed
         # open and nothing the user sent afterwards was ever read.
-        sess = object.__new__(Connection)
-        sess.ws = _FakeWS()
+        sess = Connection(_FakeWS(), FakePool())
 
         async def _boom(_msg):
             raise AttributeError("'NoneType' object has no attribute 'set_backend'")
@@ -71,6 +72,7 @@ class _SettingsPool:
     def __init__(self, stand_in: _StandIn) -> None:
         self.stand_in = stand_in
         self.applied: list[tuple] = []
+        self.conversations = types.SimpleNamespace(store=None)
 
     def worker_or_detached(self, _sid):
         return self.stand_in
@@ -86,9 +88,7 @@ class _SettingsPool:
 
 class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
     def _session(self, payload: dict | None = None) -> Connection:
-        sess = object.__new__(Connection)
-        sess.ws = _FakeWS()
-        sess.pool = _SettingsPool(_StandIn(payload))
+        sess = Connection(_FakeWS(), _SettingsPool(_StandIn(payload)))
         sess._active_session_id = "s1"
         return sess
 
@@ -127,7 +127,7 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
 
 class DeletedSessionTests(unittest.TestCase):
     def test_a_deleted_conversation_leaves_no_bookkeeping_behind(self) -> None:
-        sess = object.__new__(Connection)
+        sess = Connection(_FakeWS(), FakePool())
         for name in ("_live_rows", "_sent_progress", "_foreign_withheld"):
             setattr(sess, name, {"gone": object(), "kept": object()})
         sess._forget_session_state("gone")

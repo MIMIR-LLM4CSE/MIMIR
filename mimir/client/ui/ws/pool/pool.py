@@ -66,7 +66,8 @@ class AgentPool(PoolWriter, PoolLifecycle):
     """The live workers, keyed by the session each one works for."""
 
     def __init__(self, model: str, *, cap: int | None = None,
-                 idle_ttl: float | None = None) -> None:
+                 idle_ttl: float | None = None,
+                 conversations: Conversations | None = None) -> None:
         self.model = model
         self.cap = cap if cap is not None else _cap()
         self.idle_ttl = idle_ttl if idle_ttl is not None else default_idle_ttl()
@@ -96,7 +97,7 @@ class AgentPool(PoolWriter, PoolLifecycle):
         # has to as well.
         # Every conversation of this process, one object each: the connections and
         # this pool write the same one, so nothing has to decide which of them may.
-        self.conversations = Conversations()
+        self.conversations = conversations if conversations is not None else Conversations()
         self.store = self.conversations.store
         self.wakes = WakeRouter(self)
         self.bus = EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,

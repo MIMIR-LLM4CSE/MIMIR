@@ -214,9 +214,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         pool = FakePool(type("W", (), {"model": "m"})())
         pool.conversations = Conversations(store)
         pool.store = store
-        sess = object.__new__(Connection)
-        sess.ws = _FakeWS()
-        sess.pool = pool
+        sess = Connection(_FakeWS(), pool)
         sess.store = store
         sess.conv = None
         sess._active_session_id = "s1"

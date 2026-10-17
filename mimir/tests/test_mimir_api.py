@@ -266,7 +266,6 @@ class LoadSkillTests(unittest.TestCase):
 
     def test_a_user_skill_overrides_the_bundled_one_of_the_same_name(self):
         import tempfile
-        from mimir.client.agent_core import MimirAgent
         with tempfile.TemporaryDirectory() as d:
             skill_dir = pathlib.Path(d) / "write-tests"
             skill_dir.mkdir()
@@ -279,11 +278,10 @@ class LoadSkillTests(unittest.TestCase):
                 self.assertEqual(result["description"], "OVERRIDDEN")
                 # And the client's loader agrees: the override rule is restated across
                 # a process boundary, so parity is tested rather than trusted.
-                agent = MimirAgent.__new__(MimirAgent)
-                agent.skills = {}
-                agent.load_skills(k.SKILL_BASE)
-                agent.load_skills(resolve_skills_dir(), merge=True)
-                self.assertEqual(agent.skills["write-tests"]["content"], "My own method.")
+                from mimir.servers._shared.skill_file import read_skills_dir
+                skills = read_skills_dir(k.SKILL_BASE)
+                skills.update(read_skills_dir(resolve_skills_dir()))
+                self.assertEqual(skills["write-tests"]["content"], "My own method.")
 
     def test_the_inventory_reports_which_skills_the_model_may_load(self):
         # Every bundled skill is the model's to pull: each one is a method it has to be

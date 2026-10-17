@@ -24,9 +24,8 @@ from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.server import registry as server_registry
 from mimir.client.ui.ws.pool import lifecycle as pool_lifecycle
 from mimir.client.session import jobs_on_disk
-from mimir.client.ui.ws.pool.bus import EventBus
-from mimir.client.ui.ws.pool.wakes import WakeRouter
 from mimir.client.ui.ws.pool.pool import AgentPool
+from mimir.tests.support.pools import pool_with
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -66,20 +65,7 @@ class _IdleCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _pool(self, workers: dict | None = None) -> AgentPool:
-        pool = object.__new__(AgentPool)
-        pool.active_session_id = None
-        pool._workers = dict(workers or {})
-        pool._last_use = {}
-        pool._queue = []
-        pool._building = {}
-        pool.stop_requested = None
-        pool.server_idle_ttl = 100.0
-        pool._idle_since = None
-        pool.conversations = Conversations(SessionStore(self._tmp.name))
-        pool.store = pool.conversations.store
-        pool.wakes = WakeRouter(pool)
-        pool.bus = EventBus(pool)
-        return pool
+        return pool_with(Conversations(SessionStore(self._tmp.name)), workers)
 
     def _conclude(self, pool: AgentPool, session_id: str, worker: _Worker) -> None:
         """Let a turn of *session_id* actually finish, the way the pump sees it."""
@@ -480,11 +466,12 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
     """
 
     def _pool(self, *, claims: dict, unattended: float | None, ever: bool = True):
+        import tempfile
         from unittest import mock
-        from mimir.client.ui.ws.pool.pool import AgentPool
 
-        pool = object.__new__(AgentPool)
-        pool.stop_requested = None
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pool = pool_with(Conversations(SessionStore(tmp.name)))
 
         class _Bus:
             ever_attached = ever

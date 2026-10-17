@@ -168,6 +168,22 @@ class CommentTests(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+class TestHygieneTests(unittest.TestCase):
+    """Tests go through public construction and behaviour, never the source text."""
+
+    def _test_files(self) -> list[Path]:
+        here = Path(__file__).resolve()
+        return [p for p in sorted((PACKAGE / "tests").glob("test_*.py")) if p != here]
+
+    def test_no_test_reads_the_source(self) -> None:
+        offenders = [p.name for p in self._test_files() if "getsource" in p.read_text()]
+        self.assertEqual(offenders, [])
+
+    def test_no_test_builds_an_object_around_its_constructor(self) -> None:
+        offenders = [p.name for p in self._test_files() if "__new__(" in p.read_text()]
+        self.assertEqual(offenders, [])
+
+
 class JobPollingTests(unittest.TestCase):
     """Only the dispatcher refuses a status poll on a run a watcher holds.
 

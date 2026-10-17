@@ -22,9 +22,8 @@ from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.session import jobs_on_disk, journal
-from mimir.client.ui.ws.pool.bus import EventBus
-from mimir.client.ui.ws.pool.wakes import WakeRouter
 from mimir.client.ui.ws.pool.pool import AgentPool
+from mimir.tests.support.pools import pool_with
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -74,22 +73,7 @@ class _WakeCase(unittest.TestCase):
         self.store = SessionStore()
 
     def _pool(self, workers: dict | None = None) -> AgentPool:
-        pool = object.__new__(AgentPool)
-        pool.active_session_id = None
-        pool._workers = dict(workers or {})
-        pool._last_use = {}
-        pool._queue = []
-        pool._building = {}
-        pool._reaper = None
-        pool.stop_requested = None
-        pool.server_idle_ttl = 100.0
-        pool._idle_since = None
-        pool.conversations = Conversations(self.store)
-        pool.store = self.store
-        pool.wakes = WakeRouter(pool)
-        pool.bus = EventBus(pool, commit=pool.commit_turn, durable=pool.wakes.consume,
-                             steered=pool.wakes.steered)
-        return pool
+        return pool_with(Conversations(self.store), workers)
 
     def _session(self):
         s = self.store.new_session()
@@ -453,9 +437,7 @@ class AViewThatEndsReleasesWhatItHoldsTests(_WakeCase):
         async def _noop(*_a, **_k):
             return None
 
-        sess = object.__new__(Connection)
-        sess.ws = _NoWS()
-        sess.pool = pool
+        sess = Connection(_NoWS(), pool)
         sess.store = self.store
         sess.worker_for_test = worker
         sess.conv = None

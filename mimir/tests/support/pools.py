@@ -200,3 +200,13 @@ class FakePool:
     def set_model(self, model: str) -> list[str]:
         self.model = model
         return self.apply_setting("model", model)
+
+
+def pool_with(conversations: Any, workers: dict | None = None, *,
+              server_idle_ttl: float = 100.0) -> "AgentPool":
+    """A real ``AgentPool`` over *conversations*, holding *workers* as already built."""
+    from mimir.client.ui.ws.pool.pool import AgentPool
+    pool = AgentPool("test-model", conversations=conversations)
+    pool._workers.update(workers or {})
+    pool.server_idle_ttl = server_idle_ttl
+    return pool

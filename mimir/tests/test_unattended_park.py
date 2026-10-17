@@ -230,12 +230,11 @@ class TheReaperTests(unittest.TestCase):
     """A deferred turn has no pending card, so nothing else would protect it."""
 
     def _pool(self, worker):
-        from mimir.client.ui.ws.pool.pool import AgentPool
-        pool = object.__new__(AgentPool)
-        pool.active_session_id = None
-        pool._workers = {"s1": worker}
-        pool._last_use = {"s1": 0.0}
-        pool.conversations = Conversations(SessionStore(tempfile.mkdtemp()))
+        from mimir.tests.support.pools import pool_with
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pool = pool_with(Conversations(SessionStore(tmp.name)), {"s1": worker})
+        pool._last_use["s1"] = 0.0
         return pool
 
     def _releasable_worker(self):

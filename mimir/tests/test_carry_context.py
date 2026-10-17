@@ -8,13 +8,13 @@ just the values.
 """
 
 import json
+import types
 import os
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from mimir.client.agent_core import MimirAgent
 from mimir.client.context.execution_context import (
     carry_context_from_json,
     carry_context_to_json,
@@ -26,10 +26,8 @@ from mimir.client.context.carry import CarryContext
 
 
 def _bare_agent():
-    """An agent with only the carry machinery — no servers, no model, no init."""
-    agent = MimirAgent.__new__(MimirAgent)
-    agent.carry = CarryContext()
-    return agent
+    """What these tests use of an agent: its carry context."""
+    return types.SimpleNamespace(carry=CarryContext())
 
 
 class CarrySchemaTests(unittest.TestCase):
@@ -74,16 +72,9 @@ class CarryJsonRoundTripTests(unittest.TestCase):
 
     def test_written_files_do_not_explode_into_characters(self) -> None:
         # The exact defect: set -> str -> set(str) == set of characters.
-        agent = _bare_agent()
-        agent.carry.fields = self._carry()
-        blob = json.dumps(agent.export_state(), default=str)
-
-        reloaded = _bare_agent()
-        reloaded.load_state(json.loads(blob))
-
-        self.assertEqual(
-            reloaded.carry.fields["last_query_written_files"], {"solver.py", "util.py"}
-        )
+        blob = json.dumps(CarryContext(self._carry()).to_json(), default=str)
+        reloaded = CarryContext.from_json(json.loads(blob))
+        self.assertEqual(reloaded.fields["last_query_written_files"], {"solver.py", "util.py"})
 
     def test_undeclared_set_is_still_converted(self) -> None:
         # Backstop: a key nobody declared must not corrupt the session file.

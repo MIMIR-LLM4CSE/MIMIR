@@ -236,9 +236,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
             def setting(self, name, default=None):
                 return self.mode
 
-        self.sess = object.__new__(Connection)
-        self.sess.ws = _WS()
-        self.sess.pool = FakePool(_Worker(), active="s1")
+        self.sess = Connection(_WS(), FakePool(_Worker(), active="s1"))
         self.sess._active_session_id = "s1"
         self.sess._apply_setting = lambda name, *args: None
 
@@ -415,10 +413,8 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
             async def send(_self, payload):
                 self.sent.append(json.loads(payload))
 
-        self.sess = object.__new__(Connection)
-        self.sess.ws = _WS()
-        self.sess.pool = FakePool(self.a, active="s1",
-                                  workers={"s1": self.a, "s2": self.b})
+        self.sess = Connection(_WS(), FakePool(self.a, active="s1",
+                                  workers={"s1": self.a, "s2": self.b}))
         self.sess._active_session_id = "s1"
         # The subscription this view holds. ``_handle_detach`` passes it to
         # ``idle_report`` so the asking window is not counted as the answer, and a
