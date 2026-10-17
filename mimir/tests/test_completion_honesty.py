@@ -39,16 +39,16 @@ from mimir.client.guardrails.nudges import maybe_append_nudge
 from mimir.client.guardrails.nudges.messages import unexercised_code_nudge_message
 from mimir.client.guardrails.verdict import apply_verdict
 from mimir.client.guardrails.workflow import (
+    collect_completion_issues,
+    COMPLETION_MARKER,
+    finalize_incomplete_answer,
     HEADLINE_HANDBACK,
     HEADLINE_INCOMPLETE,
     HEADLINE_REFUSED_ONLY,
-    TERMINATION_STEP_LIMIT,
-    _collect_completion_issues,
-    finalize_incomplete_answer,
-    COMPLETION_MARKER,
     is_incomplete_answer,
     parse_completion_block,
     split_answer_completion,
+    TERMINATION_STEP_LIMIT,
     unchecked_checklist_items,
     unjudged_run_lines,
 )
@@ -341,7 +341,7 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
         ec.dirty_written_files = {"solver.py"}
         ec.validated_files = {"solver.py"}
         ec.code_mutation_started = True
-        issues, _ = _collect_completion_issues(ec)
+        issues, _ = collect_completion_issues(ec)
         joined = "\n".join(issues)
         self.assertIn("budget exhausted", joined)
         self.assertIn("0.00% amplitude reduction", joined)
@@ -354,7 +354,7 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
         ec.dirty_written_files = {"solver.py"}
         ec.validated_files = {"solver.py"}
         ec.code_mutation_started = True
-        joined = "\n".join(_collect_completion_issues(ec)[0])
+        joined = "\n".join(collect_completion_issues(ec)[0])
         self.assertIn("unresolved", joined)
         self.assertNotIn("will retry", joined)
 
@@ -486,7 +486,7 @@ class CompletionIssueTests(_ChecklistFixture):
     def test_checked_sentence_does_not_claim_correctness(self):
         # The unqualified sentence is what a model reads back as licence to report
         # the work as verified.
-        _, completed = _collect_completion_issues(_written({"a.py"}, tier="static"))
+        _, completed = collect_completion_issues(_written({"a.py"}, tier="static"))
         self.assertIn(
             "All modified files checked (static) — parses, says nothing about the result",
             completed,
@@ -496,7 +496,7 @@ class CompletionIssueTests(_ChecklistFixture):
         ec = _written({"a.py", "b.py"})
         raise_validation_tier(ec, "a.py", "static")
         raise_validation_tier(ec, "b.py", "syntax")
-        _, completed = _collect_completion_issues(ec)
+        _, completed = collect_completion_issues(ec)
         # The value reported is the floor across the change, and the sentence must say so:
         # the weakest tier printed under the word "highest" claims the opposite.
         self.assertIn("checked (syntax)", " ".join(completed))
@@ -505,13 +505,13 @@ class CompletionIssueTests(_ChecklistFixture):
     def test_unchecked_checklist_becomes_an_issue(self):
         ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] add the test"])
-        issues, _ = _collect_completion_issues(ec)
+        issues, _ = collect_completion_issues(ec)
         self.assertTrue(any("Checklist incomplete" in i for i in issues))
 
     def test_optional_steps_are_not_an_issue(self):
         ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] [optional] tune the sponge"])
-        issues, _ = _collect_completion_issues(ec)
+        issues, _ = collect_completion_issues(ec)
         self.assertFalse(any("Checklist incomplete" in i for i in issues))
 
     def test_declared_but_unwritten_is_not_a_completion_issue(self):
@@ -519,7 +519,7 @@ class CompletionIssueTests(_ChecklistFixture):
         # broken, and a plan revised mid-course is not that.
         ec = _written({"a.py"}, tier="static")
         ec.declared_edit_set = {"a.py", "b.py"}
-        issues, _ = _collect_completion_issues(ec)
+        issues, _ = collect_completion_issues(ec)
         self.assertFalse(any("Declared but never written" in i for i in issues))
 
 
@@ -579,7 +579,7 @@ class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
         # and not a defect in the change.
         ec = _written({"solver.py"}, tier="static")
         record_run(ec, "python solver.py", completed=True)
-        issues, _ = _collect_completion_issues(ec)
+        issues, _ = collect_completion_issues(ec)
         self.assertTrue(any("never judged" in line for line in unjudged_run_lines(ec)))
         self.assertFalse(any("never judged" in i for i in issues))
         self.assertFalse(needs_incomplete_finalization(ec))
@@ -590,7 +590,7 @@ class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
         ec = _written({"solver.py"}, tier="static")
         record_run(ec, "python solver.py", completed=True)
         apply_verdict("unknown", "only prints 'done'", "", ec)
-        issues, _ = _collect_completion_issues(ec)
+        issues, _ = collect_completion_issues(ec)
         self.assertTrue(any("inconclusive" in line for line in unjudged_run_lines(ec)))
         self.assertFalse(any("inconclusive" in i for i in issues))
         self.assertFalse(needs_incomplete_finalization(ec))
@@ -840,7 +840,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
         return ec
 
     def test_a_blocked_run_is_never_a_completion_issue(self):
-        issues, _ = _collect_completion_issues(self._blocked())
+        issues, _ = collect_completion_issues(self._blocked())
         self.assertEqual([i for i in issues if "make" in i], [])
 
     def test_attempting_a_recommended_step_cannot_make_a_finished_task_incomplete(self):
@@ -863,7 +863,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
         self.assertNotIn("make", remaining)
 
     def test_the_unknown_blocker_line_never_fires_over_a_limitation(self):
-        issues, _ = _collect_completion_issues(self._blocked())
+        issues, _ = collect_completion_issues(self._blocked())
         self.assertNotIn(
             "Unknown blocker; explicit completion criteria were not met", issues,
         )
@@ -882,7 +882,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
         # The negative control: nothing here swallows a real failure.
         ec = self._blocked()
         ec.runs["make"]["blocked"] = ""
-        issues, _ = _collect_completion_issues(ec)
+        issues, _ = collect_completion_issues(ec)
         self.assertTrue(any("make" in i for i in issues))
         self.assertTrue(is_incomplete_answer(finalize_incomplete_answer("Done.", ec)))
 

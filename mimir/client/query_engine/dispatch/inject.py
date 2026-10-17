@@ -6,10 +6,9 @@ import os
 from ...config.limits import NUDGE_MAX_TODO_TICK
 from ...context.execution_context import nudge_count
 from ...guardrails.nudges import inject_reminder, maybe_inject_env_resolution
-from ...guardrails.workflow import (
+from ...guardrails.workflow import handback_required, handback_scopes
+from ...guardrails.nudges.messages import (
     handback_corrective_message,
-    handback_required,
-    handback_scopes,
     moving_test_corrective_message,
     repeat_corrective_message,
 )

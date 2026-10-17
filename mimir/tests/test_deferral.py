@@ -178,7 +178,7 @@ class PlanDecisionDeferralTests(unittest.TestCase):
 
     def test_the_decision_is_asked_again_without_a_model_call(self) -> None:
         from mimir.client.query_engine.plan_loop import _PLAN_REJECT
-        from mimir.client.guardrails.workflow import PLAN_REJECTED_ANSWER
+        from mimir.client.guardrails.nudges.messages import PLAN_REJECTED_ANSWER
 
         result, backend, _, _ = self._run_plan(
             lambda agent: {"answers": [{"selected": [_PLAN_REJECT]}]})

@@ -163,7 +163,7 @@ webview/src/
     ├── VerificationLedger.tsx ← the former evidence panel; no longer mounted
     ├── ledgerUtils.ts         ← ledger split/parse helpers (unit-tested)
     ├── CompletionReport.tsx   ← the collapsed completion report
-    ├── completionUtils.ts     ← its split/parse helpers — mirrors guardrails/workflow.py
+    ├── completionUtils.ts     ← its split/parse helpers — mirrors guardrails/workflow/completion.py
     ├── GlobalApprovalBar.tsx  ← approval banner (allow / always / deny), for sensitive
     │                            tools and out-of-workspace paths: one card per call,
     │                            listing every outside path it names

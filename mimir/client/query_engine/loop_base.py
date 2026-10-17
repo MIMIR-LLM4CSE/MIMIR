@@ -23,7 +23,7 @@ from ..config.models import READONLY_MODES, VALID_MODES
 from ..config.settings import THINKING_DEPTH_AUTO
 from ..event_sink import emit
 from ..guardrails.nudges import drop_transient_reminders, inject_reminder
-from ..guardrails.workflow import empty_turn_retry_message
+from ..guardrails.nudges.messages import empty_turn_retry_message
 from .deferral import end_deferred_calls, end_deferred_turn
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .finalize import _finalize_answer

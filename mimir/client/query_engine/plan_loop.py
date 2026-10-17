@@ -19,7 +19,7 @@ from ..core.ports import AgentPort
 from ..event_sink import emit
 from ..guardrails.nudges import inject_reminder
 from ..guardrails.toollist import tools_for_plan_mode
-from ..guardrails.workflow import (
+from ..guardrails.nudges.messages import (
     PLAN_ALREADY_RECORDED_ERROR,
     PLAN_APPROVED_EXECUTE,
     PLAN_DELIVER_ANSWER,
@@ -29,10 +29,10 @@ from ..guardrails.workflow import (
     PLAN_EXPLORE_FIRST,
     PLAN_REJECTED_ANSWER,
     PLAN_REJECTED_STOP,
+    plan_revision_nudge,
     PLAN_REWORK_NUDGE,
     PLAN_TODO_NUDGE_EARLY,
     PLAN_TODO_NUDGE_LATE,
-    plan_revision_nudge,
 )
 from ..protocol.tool_call import as_dict, normalize_arguments
 from .deferral import KIND_PLAN_DECISION, deferred_prompts, mark_deferred

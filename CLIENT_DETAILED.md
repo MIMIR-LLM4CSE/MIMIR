@@ -591,12 +591,13 @@ Behaviour governance. The root holds what both halves read; `policy/` blocks and
 advises. Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
 Paths below are relative to `mimir/client/guardrails/`.
 
-### `workflow.py` (root)
+### `workflow/` (root)
 
 The workflow state model and the completion report — shared by policy **and** nudges, which
-is why it sits at the root.
+is why it sits at the root. `state`, `denials`, `commitments` and `completion`; the texts
+the loop sends live in `nudges/messages.py`.
 
-- `WORKFLOW_STATES`, `VALIDATION_RETRY_BUDGET`, `set_workflow_state()`,
+- `WORKFLOW_STATES`, `set_workflow_state()`,
   `pending_validation_paths()`, `has_pending_validation()`, `has_blocking_denials()`.
 - **The denial ladder**: `denial_stage(ctx, scope)` / `worst_denial_stage(ctx)` /
   `handback_required(ctx)` / `handback_scopes(ctx)` / `approval_is_settled(ctx, scope)`.

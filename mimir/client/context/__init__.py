@@ -43,10 +43,8 @@ from .signals import (
     SOURCE_FILE_EXTENSIONS,
     query_matches_any,
 )
-# NOTE: the workflow state model + nudge message copy moved to
-# ``guardrails/workflow.py`` (governance logic layer). Import it from there;
-# ``context`` intentionally no longer re-exports it (that would make the
-# foundational data layer depend on guardrails).
+# The workflow state model lives in ``guardrails/workflow/``: ``context`` is below
+# ``guardrails`` and does not re-export it.
 
 __all__ = [
     "ExecutionContext",

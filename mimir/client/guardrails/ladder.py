@@ -10,7 +10,8 @@ from __future__ import annotations
 from ...servers._shared.shell_paths import EFFECT_BUILD, EFFECT_RUN
 from ..context import failed_runs, raise_validation_tier, record_run, run_ledger_key
 from ..context.execution_context import ExecutionContext
-from .workflow import VALIDATION_RETRY_BUDGET, has_pending_validation, set_workflow_state
+from ..config.limits import VALIDATION_RETRY_BUDGET
+from .workflow import has_pending_validation, set_workflow_state
 
 BUILD_EXIT_IS_THE_VERDICT = "the build exited 0; a build reports diagnostics, not results"
 

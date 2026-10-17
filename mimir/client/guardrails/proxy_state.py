@@ -22,7 +22,7 @@ def active_proxy_source(session_id: str | None = None) -> str:
     *session_id* names the conversation asking. The store's pointer is per MIMIR
     session, and in this process N sessions share one environment, so a caller that
     knows which agent it is acting for must say. A caller that does not — the two
-    evidence paths in guardrails/workflow.py and guardrails/observations/, which
+    evidence paths in guardrails/workflow/ and guardrails/observations/, which
     receive only an execution_context — gets the pointer's own fallback, i.e. the
     session on screen. Imprecise under concurrency, and bounded: those two only ever
     raise a file's validation tier or add a reported line, never gate or block.

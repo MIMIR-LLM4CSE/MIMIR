@@ -196,7 +196,7 @@ class CommitmentTests(unittest.TestCase):
         self.assertFalse(unhonoured_commitments(build_execution_context(code_mutation_started=False, declared_edit_set=set(), todo_written=False)))
 
     def test_the_empty_turn_advice_stops_offering_the_exit(self):
-        from mimir.client.guardrails.workflow import empty_turn_retry_message
+        from mimir.client.guardrails.nudges.messages import empty_turn_retry_message
         owed = empty_turn_retry_message(copy.deepcopy(self.ABANDONED))
         self.assertNotIn("or write the answer", owed)
         self.assertIn("do the next piece of the work", owed)
@@ -1716,7 +1716,7 @@ class EmptyTurnTests(unittest.TestCase):
         # The empty turn is gone from history and the retry is announced.
         retry = backend.calls[1]["messages"]
         self.assertTrue(all(m.get("content") != "" for m in retry if m["role"] == "assistant"))
-        from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
+        from mimir.client.guardrails.nudges.messages import EMPTY_TURN_OPENING
         self.assertIn(EMPTY_TURN_OPENING, retry[-1]["content"])
         self.assertTrue(any(
             e["type"] == "status" and "Empty turn" in e.get("text", "") for e in emitted

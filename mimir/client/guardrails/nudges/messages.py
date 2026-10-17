@@ -1,24 +1,22 @@
-"""Nudge message copy — the text/renderers for the advisory nudges.
+"""Every text the guardrails send the model: the nudges of the cascade, and the
+loop-control messages (plan mode, the step limit, empty turns, repeat correctives).
 
-The built-in nudge messages (discovery, state, validation, denial, doc, env,
-blast-radius, creation, todo, …) live here, in the nudges subsystem, rather than
-in the shared ``workflow`` module: only the cascade uses them.
-``validation_nudge_message`` is a stateful renderer (reads validation progress);
-the rest are static text.
+When each one is sent is decided elsewhere; only the wording lives here.
 """
 from __future__ import annotations
 
 
 from ..builtin_check import builtin_check_failures
 from ..workflow import (
+    collect_completion_issues,
     pending_validation_paths,
+    unhonoured_commitments,
     worst_denial_stage,
     STAGE_DROP_OR_STOP,
     STAGE_HANDBACK,
-    VALIDATION_RETRY_BUDGET,
     WORKFLOW_STATES,
 )
-from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER
+from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER, VALIDATION_RETRY_BUDGET
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
@@ -389,3 +387,273 @@ def validation_nudge_message(agent: AgentPort, execution_context: ExecutionConte
               "unless the user explicitly wants it."
         )
     return base_message + suffix + " Prefer a smaller, localized repair."
+
+
+# --- Loop-control nudge copy -----------------------------------------------
+# Message bodies for the nudges fired directly from query_engine.agent_loop
+# (plan-mode control flow, the step-limit reminder, and the mid-tool-loop repeat
+# correctives). As with the guidance-nudge copy above, only the wording lives
+# here; the *when-to-fire* gating stays in agent_loop. Kept here so all nudge copy
+# sits in one module regardless of which loop fires it.
+
+# Plan-mode user nudges.
+# Explore phase: the plan-document tool is withheld until the code has actually been
+# read, so this nudge asks for the exploration rather than for the plan. Nothing here
+# forbids a plan-to-explore — the tool list does, by not offering the document yet.
+PLAN_EXPLORE_FIRST = (
+    "The plan tool is not available yet: this phase of plan mode is the exploration itself, and the plan is written once it is done. "
+    "Use the read-only exploration tools now (search, read, inspect, platform/memory queries) to READ the code this task touches — not just to locate it. "
+    "Listing directories and matching file names tells you nothing about what has to change; open the files, follow the symbols, and find the boundaries the work runs into. "
+    "Keep going until you could name the concrete files and symbols the change touches and say what happens to each. "
+)
+
+
+# Appended to the above when a delegation capability is connected. Kept separate so the
+# reminder stays true when it is not: the fan-out is an instruction only where it can be
+# carried out.
+PLAN_EXPLORE_DELEGATE = (
+    "This exploration parallelises: rather than reading every area yourself, split it into one to three self-contained questions and send them out as read-only sub-agents in the SAME response, so they run at once. "
+    "Each returns a conclusion naming the files and symbols it found; you then read for yourself only the places those answers point at. "
+)
+
+
+# Escape hatch: the explore-turn budget is spent and the evidence is still thin. The
+# tool is unlocked regardless — plan mode must always reach a plan — so the plan is
+# written over what was found, with its gaps stated rather than papered over.
+PLAN_EXPLORE_BUDGET_SPENT = (
+    "You have spent the exploration budget for this task, so the plan tool is now available whatever you found. "
+    "Record the plan over the evidence you actually gathered, and state plainly in it which parts rest on assumptions you could not verify and what would settle them. "
+)
+
+
+PLAN_TODO_NUDGE_EARLY = (
+    "You have not yet recorded a plan, which is mandatory to produce a valid plan output. "
+    "Record it with the plan tool as a written plan document (structured markdown prose — an overview, the approach broken into its main axes with the reasoning and the concrete files/symbols each touches, key decisions/risks, and how you'll validate). "
+    "The exploration is already done and is not part of the plan: write the plan over what you found. "
+    "The plan must focus on detailed key actions and validations needed to complete the task (implementations, tests, validations, etc.). "
+    "Steps such as discovery, analysis, or information gathering that are not directly part of the implementation/validation plan should be omitted. "
+)
+
+
+PLAN_TODO_NUDGE_LATE = (
+    "You should have described a plan to the user by now — record it with the plan tool as a written plan document (structured markdown prose explaining the approach, its main axes, the reasoning, and validation). "
+    "If you are unsure about the exact approach, make your best guess based on the information you have, and we can iterate from there. "
+    "The plan must focus on detailed key actions and validations needed to complete the task (implementations, tests, validations, etc.). "
+    "Steps such as discovery, analysis, or information gathering that are not directly part of the implementation/validation plan should be omitted. "
+)
+
+
+PLAN_DELIVER_ANSWER = (
+    "You must now deliver your final answer to the user, explaining the plan you have written. No more tool calls should be made. "
+    "The plan should be the main basis of your answer, but you can also include relevant information from the discovery context or tool results if it helps the user understand the reasoning behind the plan. "
+)
+
+
+PLAN_DELIVER_ANSWER_FIRM = (
+    "STOP calling tools. The plan is already recorded and the user can see it — re-reading or re-writing it "
+    "changes nothing and repeating its text back is not an answer. Reply now, in prose only, with a short "
+    "summary (a few sentences) of what the plan does and what you need from the user to proceed. "
+    "Do not reproduce the plan document verbatim. "
+)
+
+
+# Tool-role reply used when a redundant plan/todo call is dropped after the plan is
+# already recorded (the model is looping on the checklist instead of delivering).
+PLAN_ALREADY_RECORDED_ERROR = (
+    "The plan is already recorded and unchanged — this call was skipped. "
+    "Do not call any more tools: answer the user in prose now."
+)
+
+
+def evidence_handback_message(execution_context: ExecutionContext) -> str:
+    """Hand the model the machine-recorded state before it writes its conclusion.
+
+    The gap this closes: the completion report is assembled *after* the model has
+    written its summary and appended below it, so the model has never seen the ledger
+    it is contradicting. "Successfully implemented, complete and correct" printed above
+    "Modified files never checked" is not a rhetoric problem to police in the prose —
+    it is a missing fact at the moment the prose is written. Sent once per query; if the
+    corrected summary still contradicts the record, the report below states the record
+    and the two stand side by side.
+    """
+    issues, _ = collect_completion_issues(execution_context)
+    return (
+        "Before you conclude, here is what this run actually recorded:\n- "
+        + "\n- ".join(issues)
+        + "\n\nThese are machine-recorded facts, not an opinion about your work. Rewrite your "
+        "summary so it matches them: say what was done, name each gap above as unfinished or "
+        "unverified, and do not describe as complete or correct anything the record does not "
+        "support. If you can still close one of these gaps with a tool call, do that instead."
+    )
+
+
+# The plan-grounding check no longer lives here as an after-the-fact advisory: plan
+# mode withholds the document tool until the evidence bar is met (see plan_loop), so a
+# plan written over nothing is unreachable rather than flagged. PLAN_EXPLORE_FIRST and
+# PLAN_EXPLORE_BUDGET_SPENT above are what remains of it.
+
+# Plan-approval workflow nudges. After the user reviews a proposed plan they may
+# accept it (switch to agent mode and execute), reject it (drop it and stop), ask for a
+# rework (re-plan from scratch), or describe specific changes in free text (fold them
+# in, then re-present for approval).
+PLAN_APPROVED_EXECUTE = (
+    "The user has APPROVED your plan. You are now switching to agent mode to carry it out. "
+    "The exploration behind this plan is already done and its findings are in the plan: do not survey the "
+    "code again from scratch — re-read a specific file only when you are about to change it. "
+    "No task checklist exists yet: before starting the work, record the ordered implementation/validation "
+    "steps of the approved plan with the plan/todo tool, unless the task is small enough not to warrant one. "
+    "The steps must be the key actions and validations the task needs (implementations, tests, validations, "
+    "etc.); omit discovery, analysis, and information-gathering steps. "
+    "Then carry out the approved plan, making the necessary edits, running the relevant validations, "
+    "and marking each step done with the plan/todo update tool as you complete it. "
+    "The plan is what you agreed with the user, not a script: where the code turns out differently than "
+    "it assumed, adapt — rewrite the checklist, drop a step that proved unnecessary, add one it missed — "
+    "and say what you changed and why in your final answer. Ask for re-plan or re-approval when the "
+    "difference is large enough to change what the user approved."
+)
+
+
+PLAN_REJECTED_STOP = (
+    "The user has REJECTED this plan. Do not execute any part of it and do not write a new plan. "
+    "Stop here and wait for the user's next instruction."
+)
+
+
+PLAN_REJECTED_ANSWER = (
+    "Plan rejected — nothing was executed. Tell me what you would like to do instead."
+)
+
+
+PLAN_REWORK_NUDGE = (
+    "The user has asked you to REWORK this plan. Redo it from scratch: reconsider the approach, question the "
+    "assumptions that led to the rejected plan, gather any further evidence you need with the read-only "
+    "exploration tools, and then record a revised plan with the plan/todo tool for the user to review again."
+)
+
+
+def plan_revision_nudge(feedback: str) -> str:
+    """Nudge to fold the user's requested changes into a revised plan, then re-present it."""
+    detail = f' The user asked for the following changes:\n"{feedback}"\n' if feedback else " "
+    return (
+        "The user has requested CHANGES to the plan before approving it." + detail +
+        "Evaluate each request: integrate the changes that improve the plan, and for anything you "
+        "disagree with or that seems out of scope, briefly explain your reasoning rather than blindly "
+        "applying it. Then record the revised plan with the plan/todo tool so the user can review it again."
+    )
+
+
+STEP_LIMIT_NUDGE = (
+    "You are approaching the step limit. "
+    "Consider to stop calling tools and summarise: (1) what has been completed, "
+    "(2) what still needs doing, and (3) the next step the user should request."
+)
+
+
+# The half both wordings share: what happened. Public because it is the stable way
+# to recognise this reminder among others without pinning the advice half.
+EMPTY_TURN_OPENING = (
+    "Your last turn came back empty — no text and no tool call — so nothing was done and "
+    "nothing was said. Pick the work back up where it stood: "
+)
+
+
+# What the reminder adds on the second and third attempt. A retry that re-sends the
+# same sentence is not a retry: the loop asked three times with one prompt, and the
+# reminder is transient, so the model saw the identical message each round. Escalating
+# the *ask* — narrower each time — is what makes the attempts different, and it does it
+# without keeping the reminder in history (which is what once put 21 copies of one
+# sentence in a single prompt).
+_EMPTY_TURN_ESCALATION = (
+    " The previous retry also came back empty. Emit a single tool call — the smallest "
+    "useful one — rather than a turn of prose.",
+    " Two retries have now come back empty. Do not call a tool this turn: write one "
+    "plain sentence saying where the work stands.",
+)
+
+
+def empty_turn_retry_message(
+    execution_context: ExecutionContext | None = None, *, attempt: int = 1,
+) -> str:
+    """What to say after a turn that produced nothing, given what the turn owes.
+
+    Offering "or write the answer" is right for a turn with nothing outstanding and wrong
+    for one that has just declared eight files and written none: it hands the model the
+    exit at the moment it must not take it, and in the one recorded instance that is
+    exactly the branch it took, ending the turn on "Creating the package files now:".
+
+    A constant could not know the difference. Every other corrective in this module is
+    already a function of the state it speaks about; this one was the exception.
+
+    *attempt* is the 1-based retry number, and only widens the advice: attempt 1 is the
+    wording this function has always returned.
+    """
+    if execution_context is not None and unhonoured_commitments(execution_context):
+        base = (
+            EMPTY_TURN_OPENING
+            + "call the tool the next unfinished step needs. Your checklist still has "
+            "open steps and files you named are not written, so this is not a turn to "
+            "summarise — do the next piece of the work."
+        )
+    else:
+        base = EMPTY_TURN_OPENING + "call the tool the task needs next, or write the answer."
+    if attempt <= 1:
+        return base
+    return base + _EMPTY_TURN_ESCALATION[min(attempt, len(_EMPTY_TURN_ESCALATION) + 1) - 2]
+
+
+def repeat_corrective_message(tool_name: str, fails: int) -> str:
+    """One-time mid-loop reminder when a non-write call keeps failing identically."""
+    return (
+        f"[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
+        f"The same operation has now failed {fails} times with identical arguments. "
+        "Repeating it unchanged will keep failing. Change something concrete — different "
+        "arguments, a different tool, or fix the underlying precondition (e.g. resolve the "
+        "environment per the cascade) — or stop and conclude clearly that you cannot proceed, "
+        "naming what failed and why. Do not issue the same call again."
+    )
+
+
+def moving_test_corrective_message(test_path: str) -> str:
+    """One-time mid-loop reminder when a test file's failing SET keeps changing.
+
+    A failure that repeats identically is spin, and the repeated-call guard already says
+    so. A failure that *moves* between runs is a different thing: it is the signature of a
+    test whose own oracle is wrong — the expected value, the indexing, the units, the
+    direction of a ratio — being corrected one symptom at a time while the code under it
+    is fine. That is the shape recorded across four sessions of the same task, where a
+    subsampling stride, a time-step rescaling, a missing wavelet precursor and finally an
+    inverted error ratio were fixed in four separate passes, each revealing the next.
+
+    The correction is not "try harder": it is to read the test as a whole once, and to
+    say which side is wrong before touching either.
+    """
+    return (
+        "[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
+        f"The set of failing tests in {test_path} has changed between runs — you are fixing "
+        "a different failure each time rather than the same one. That usually means the "
+        "test's own oracle is wrong, not the code it exercises. Before editing this file "
+        "again, read it in full and check the oracle itself against the implementation: the "
+        "expected value and where it comes from, the indexing and strides, the units and "
+        "scaling, and the direction of any ratio or comparison. Then state which of the two "
+        "— the test or the code — is wrong, and change only that one."
+    )
+
+
+def handback_corrective_message(refusals: list[dict]) -> str:
+    """One-time mid-loop stop once refusals reached the end of the denial ladder.
+
+    Unlike the other correctives this one is not advisory framing around a retry: the
+    user has refused the same thing to the end of the ladder, and the only remaining
+    reading of that is "stop". It carries what was refused so the model reports the
+    right thing rather than guessing which of its actions is meant.
+    """
+    what = ", ".join(item.get("scope") or item.get("tool", "that action") for item in refusals[:3])
+    return (
+        "[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
+        f"The user has refused this repeatedly ({what}) and will not be asked to approve it "
+        "again. That is no longer a hint to find another way — it is the end of this line of "
+        "work. Stop calling tools toward it now and end your turn: report what you completed, "
+        "what the refusal leaves undone, and what you need from the user to go further. If "
+        "other, unrelated parts of the task remain and are unaffected by the refusal, finish "
+        "those first, then hand back."
+    )

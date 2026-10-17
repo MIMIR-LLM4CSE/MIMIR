@@ -17,7 +17,7 @@ from mimir.client.context.execution_context import build_execution_context
 from mimir.client.event_sink import event_sink as capture_events
 from mimir.client.config.limits import AGENT_EMPTY_TURN_RETRIES
 from mimir.client.guardrails.nudges import drop_transient_reminders, inject_reminder
-from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
+from mimir.client.guardrails.nudges.messages import EMPTY_TURN_OPENING
 from mimir.client.query_engine import agent_loop as agent_loop_module
 from mimir.client.query_engine import streaming as streaming_module
 from mimir.client.protocol.messages import merge_consecutive_user_messages

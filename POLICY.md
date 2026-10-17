@@ -286,7 +286,7 @@ target **already exists** — a file that does not exist yet has no callers to b
 | `context/bash_classify.py` | classifies a shell command into kinds (read/search/inspect/write/exec/env) |
 | `guardrails/policy/readonly_exempt.py` | waives the prompt for a read-only dual-use shell command, in any mode |
 | `guardrails/observations/` | the blackboard writer: `record_tool_observation` and the observers in `ORDER` |
-| `guardrails/workflow.py` | the state model, the denial ladder, the completion report |
+| `guardrails/workflow/` | `state`, `denials` (the denial ladder), `commitments`, `completion` (the report) |
 | `guardrails/nudges/` | `cascade` (`maybe_append_nudge`, the `CORE_NUDGES` table), `predicates`, `tiers`, `exercise`, `reminders`, the pack registry |
 | `guardrails/nudges/messages.py` | every nudge's message text |
 | `guardrails/builtin_check.py` | the in-process check that every modified file owes |
@@ -379,7 +379,7 @@ more than the repetition it caught, and withholding content just sent the model 
 read the same file another way.
 
 The firing decision lives in the loop; the message text lives with the other copy in
-`guardrails/workflow.py`, so wording stays consistent.
+`guardrails/nudges/messages.py`, so wording stays consistent.
 
 ---
 

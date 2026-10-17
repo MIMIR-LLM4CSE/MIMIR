@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from __future__ import annotations
 import os
+from ...config.limits import VALIDATION_RETRY_BUDGET
 from ..workflow import (
-    VALIDATION_RETRY_BUDGET,
     handback_required,
     has_blocking_denials,
     has_pending_validation,

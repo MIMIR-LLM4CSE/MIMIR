@@ -3,8 +3,8 @@
 Layout::
 
     guardrails/
-      workflow.py       shared state model (discover→edit→validate→conclude) +
-                        its predicates + the agent-loop plan/loop message copy
+      workflow/         the shared state model (discover→edit→validate→conclude),
+                        refused approvals, commitments, the completion report
       ladder.py         the repair ladder: what a passing or failing check or run
                         does to the workflow
       observations/     the execution_context blackboard WRITER: the observers of
