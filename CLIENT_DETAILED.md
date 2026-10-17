@@ -1017,14 +1017,14 @@ never a parse of the command, which is the guess the module exists to avoid. See
   no bash equivalent: the replacement-completeness grep for leftover text after a replace,
   and the cross-file reference check for stale callers after a rename.
 
-### `normalizer.py`, `formatter.py`, `tool_status_messages.py`
+### `normalizer.py`, `formatter.py`, `context/tool_display.py`
 
 - `normalizer.py` — `normalize_tool_arguments()`, `normalize_workspace_path()`, and
   `rewrite_tool_for_context()`, which heals the `read_file` alias to `read_file_lines` and
   fills in the line range a bare read left out, so every read says what it asks for.
 - `formatter.py` — `normalize_arguments()`, `normalize_tool_content()`, `truncate_text()`,
   `json_error_payload()`, `parse_tool_payload()`.
-- `tool_status_messages.py` — `tool_status_message()` derives a human-readable status from
+- `context/tool_display.py` — `tool_status_message()` derives a human-readable status from
   the tool *name*, with no per-tool table: a verb is located in a reusable lexicon, rendered
   as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces declared
   path arguments to their **file name** for display, capability-driven off the `path`

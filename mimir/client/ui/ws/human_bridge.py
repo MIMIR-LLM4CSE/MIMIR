@@ -29,7 +29,7 @@ from ...context.capabilities import (
     reversibility_of,
 )
 from ...query_engine.deferral import CURRENT_CALL_ID
-from ...tool_execution.tool_status_messages import shorten_display_args
+from ...context.tool_display import shorten_display_args
 from .file_preview import build_preview_diffs
 
 if TYPE_CHECKING:

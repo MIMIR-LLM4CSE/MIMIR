@@ -1,6 +1,6 @@
 """The file a tool call touched, and where, for the row's clickable file name.
 
-A row shows the file name alone (see ``tool_status_messages.shorten_display_args``),
+A row shows the file name alone (see ``tool_display.shorten_display_args``),
 so the UI cannot open the file from what it displays. This rides on the
 ``tool_result`` event as ``target: {path, name, line?, end_line?}``: the absolute
 path, the name the row shows, and the lines to select.

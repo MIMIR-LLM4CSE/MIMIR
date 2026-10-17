@@ -19,7 +19,7 @@ from ...tool_execution.exec_preview import extract_exec_preview
 from ...tool_execution.executor import run_post_tool_annotations
 from ...tool_execution.file_target import file_target
 from ...tool_execution.math_preview import extract_math_preview
-from ...tool_execution.tool_status_messages import error_detail, summarize_tool_result
+from ...context.tool_display import error_detail, summarize_tool_result
 from ..background import (
     _await_background_job,
     _detect_background_job,

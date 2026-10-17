@@ -66,7 +66,7 @@ graph TD
 
     guard --> core
     guard --> ctx
-    te <-->|cycle| guard
+    te --> guard
     te --> core
     te --> ctx
     prompt --> ext
@@ -76,9 +76,7 @@ graph TD
     integ --> ctx
 
     core --> ctx
-    core --> te
     core -.->|lazy| qe
-    ctx --> te
     ctx --> cfg
 
     classDef fnd fill:#e6faf1,stroke:#1f9d6a,color:#0f3d29;
@@ -144,13 +142,9 @@ library, needed only by a conversation running an optimisation. The WebSocket en
 
 ### Cycles
 
-`guardrails` and `tool_execution` import each other **at load time**:
-`guardrails/observations.py` needs `tool_execution.validation` (scratch-path rules), and
-`tool_execution/executor.py` needs `guardrails.observations` and the policy engine.
-`context/resource_context` also reaches up into `tool_execution` for its path
-normalisation (an `@path` mention is resolved as a tool argument would be). Python resolves
-both because the names each side needs are defined before the other is reached; they are
-stated here rather than hidden, so a change that moves either import knows what it is
-touching.
+None between units. `tool_execution` runs a call through the `guardrails` (policy
+before, observations after), and nothing in `guardrails`, `core` or `context` imports
+`tool_execution`: the path rules live in `context/paths.py` and the display vocabulary
+in `context/tool_display.py`.
 
 Everything else is a straight downward dependency.

@@ -18,7 +18,7 @@ import re
 from typing import Any
 
 from ..protocol.tool_result import parse_tool_payload
-from .tool_status_messages import _COMMAND_KEYS
+from ..context.tool_display import COMMAND_KEYS
 
 # CSI / OSC escape sequences (colors, cursor movement) — noise in an HTML panel.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
@@ -61,7 +61,7 @@ def _command_from_args(arguments: dict | None) -> str | None:
     """
     if not isinstance(arguments, dict):
         return None
-    for key in _COMMAND_KEYS:
+    for key in COMMAND_KEYS:
         val = arguments.get(key)
         if isinstance(val, str) and val.strip():
             command = val.strip()

@@ -1,6 +1,6 @@
 import unittest
 
-from mimir.client.tool_execution.tool_status_messages import (
+from mimir.client.context.tool_display import (
     _gerund,
     _humanize_tool_name,
     tool_status_message,
@@ -70,7 +70,7 @@ class HumanizeToolNameTest(unittest.TestCase):
 
 class NoHardcodedToolTableTest(unittest.TestCase):
     def test_dicts_removed(self):
-        import mimir.client.tool_execution.tool_status_messages as m
+        import mimir.client.context.tool_display as m
 
         self.assertFalse(hasattr(m, "_DYNAMIC_STATUS"))
         self.assertFalse(hasattr(m, "_STATIC_STATUS"))

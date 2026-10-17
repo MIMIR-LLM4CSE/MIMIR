@@ -20,7 +20,7 @@ from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...event_sink import emit
 from ...tool_execution.exec_preview import exec_input_preview
-from ...tool_execution.tool_status_messages import (
+from ...context.tool_display import (
     dedup_row_detail,
     shorten_display_args,
     summarize_tool_result,
@@ -63,7 +63,7 @@ class ToolDispatcher:
         # Paths are shortened to their file name for the row: tools carry absolute
         # paths now, and a row reading "Reading file: /shared/.../mimir/client/foo.py"
         # buries the only token the user is scanning for. Approval prompts keep the
-        # absolute path — see tool_status_messages._relpath.
+        # absolute path — see tool_display._relpath.
         row_args = shorten_display_args(display_name, display_args, self.agent.tool_caps)
         row_label = (label_for(display_name, row_args, self.agent.tool_caps)
                      or tool_status_message(display_name, row_args))

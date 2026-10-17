@@ -1,6 +1,4 @@
-"""
-Status message formatting for MCP agent tool calls.
-"""
+"""How a tool call reads on screen: its status line, its shortened arguments, its result."""
 
 from __future__ import annotations
 
@@ -11,7 +9,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from ..context.capabilities import CONVENTIONAL_PATH_ARGS, READ, SEARCH_WITH_PATH, arg_role, has_cap
+from .capabilities import CONVENTIONAL_PATH_ARGS, READ, SEARCH_WITH_PATH, arg_role, has_cap
 
 logger = logging.getLogger(__name__)
 
@@ -169,20 +167,13 @@ def tool_status_message(name: str, args: dict) -> str:
 
 
 # Argument keys that carry a runnable command / code body, in priority order.
-_COMMAND_KEYS = ("command", "cmd", "script", "code")
-# The *object* of a call, in priority order: the thing it is acting on or asking about.
-# Argument names, never tool identities — the same convention `shorten_display_args`
-# and `file_preview` already follow, and the reason a new tool needs no entry anywhere.
+COMMAND_KEYS = ("command", "cmd", "script", "code")
+# The *object* of a call, in priority order: what it acts on or asks about. The model's
+# description says what the call is for; this says what it is for *on* (the verdict, the
+# url, the job id). Argument names, never tool identities, so a new tool needs no entry.
 #
-# These used to reach the row through each server's label template ("Slurm cancel
-# {job_id}", "Searching modules: {query}", "Verdict: {verdict}"), which the row no
-# longer shows. The description says what the call is for; this says what it is for
-# *on*, and losing it took the verdict, the url, the job id and the queried module name
-# off the screen with it.
-#
-# Identifiers come before `op`, which is last on purpose: an op selects an action, which
-# is the half the model's own description already carries, so it is what a row falls back
-# to when the call names no object at all (`system`, `date_op`).
+# `op` comes last: it selects an action, which the description already carries, so a
+# row falls back to it only when the call names no object (`system`, `date_op`).
 _OBJECT_KEYS = (
     "verdict", "query", "expression", "equation",
     "symbol", "name", "job_id", "job_key", "target", "packages",
@@ -222,7 +213,7 @@ def tool_arg_preview(name: str, args: dict) -> str:
         return ""
 
     # Runnable command / code body → first non-empty line, clipped.
-    for key in _COMMAND_KEYS:
+    for key in COMMAND_KEYS:
         val = args.get(key)
         if isinstance(val, str) and val.strip():
             first = next((ln for ln in val.splitlines() if ln.strip()), "").strip()
@@ -386,11 +377,8 @@ def dedup_row_detail(shown: str, detail: str) -> str:
     Empty *shown* (no description was written) keeps the detail unconditionally: it is
     then the only thing on the row besides its family.
 
-    Matched on word boundaries, not as a substring. The previews are now short words —
-    a verdict is "pass", an op is "now" or "info" — and a substring test loses every one
-    of them to an ordinary sentence: "pass" inside "recording the passing run", "now"
-    inside "knowing the time", "info" inside "informing the user". The verdict going
-    missing was the whole reason these previews came back to the row.
+    Matched on word boundaries, not as a substring: previews are short words ("pass",
+    "now", "info") that a substring test would find inside any ordinary sentence.
 
     Fails towards keeping: a detail whose edges are not word characters (a trailing
     slash, a closing bracket) simply does not match, and a repeated preview reads better

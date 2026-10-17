@@ -10,7 +10,7 @@ from typing import Any
 
 from .. import human_pause
 from ..context.capabilities import label_for
-from ..tool_execution.tool_status_messages import shorten_display_args
+from ..context.tool_display import shorten_display_args
 
 
 class TerminalHuman:
