@@ -13,7 +13,6 @@ of resuming on the answer.
 from __future__ import annotations
 
 import asyncio
-import queue as _queue
 import threading
 import types
 import unittest
@@ -34,7 +33,6 @@ from mimir.client.query_engine.deferral import (
     take_deferred_calls,
 )
 from mimir.client.ui.ws.connection.connection import Connection
-from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.backend import ScriptedBackend
 from mimir.tests.test_agent_loop import RunAgentQueryNonInteractiveTests, _tool_call
@@ -47,12 +45,9 @@ _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}
 
 
 def _worker() -> AgentWorker:
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
-    w.out_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w._current_task = object()
     w.session_id = "s1"
-    w.session_title = ""
     w._query_session_id = "s1"
     w._agent = types.SimpleNamespace(turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=[]))
     return w

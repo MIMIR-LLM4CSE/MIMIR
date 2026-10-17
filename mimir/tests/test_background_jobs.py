@@ -472,12 +472,9 @@ class _HangingAgent:
 
 class WatchJobTests(unittest.TestCase):
     def _make_worker(self, agent) -> object:
-        import queue as _queue
         from mimir.client.ui.ws.worker.worker import AgentWorker
-        w = AgentWorker.__new__(AgentWorker)   # bypass __init__ (spawns a thread)
+        w = AgentWorker("test-model", start=False)
         w._agent = agent
-        w.out_q = _queue.Queue()
-        w.jobs = JobWatcher(w)
         return w
 
     def _descriptor(self) -> dict:
@@ -869,11 +866,8 @@ class RegisterBgJobTests(unittest.TestCase):
 
     def _worker(self) -> object:
         from mimir.client.ui.ws.worker.worker import AgentWorker
-        w = AgentWorker.__new__(AgentWorker)   # bypass __init__ (spawns a thread)
-        w.jobs = JobWatcher(w)
+        w = AgentWorker("test-model", start=False)
         w.session_id = None
-        w._query_session_id = None
-        w._loop = None
         return w
 
     def test_descriptor_without_a_key_is_refused_out_loud(self) -> None:
@@ -1771,7 +1765,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         from mimir.client.ui.ws.worker import worker as ws_worker
         self.ws_worker = ws_worker
-        self.worker = object.__new__(ws_worker.AgentWorker)
+        self.worker = ws_worker.AgentWorker("test-model", start=False)
         self.worker.jobs = JobWatcher(self.worker)
         self.worker.out_q = __import__("queue").Queue()
 

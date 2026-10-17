@@ -29,7 +29,6 @@ import types
 import unittest
 
 from mimir.client.protocol.events import pop_answer_extras
-from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.worker import AgentWorker
 
 from mimir.tests.support.pools import FakePool
@@ -57,16 +56,12 @@ class _FakeAgent:
 
 def _worker() -> AgentWorker:
     """A worker with just the state ``_run_query`` touches."""
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
+    w = AgentWorker("test-model", start=False)
     w.session_id = "s1"
     w._query_session_id = "s1"
     w._agent = _FakeAgent()
-    w._steer_q = _queue.Queue()
     w.human._defer = set()
-    w._current_task = None
     w._turn_submitted_len = 0
-    w.out_q = _queue.Queue()
     w._load_todos = lambda: []
     w._count_tokens = lambda _text: 0
     return w

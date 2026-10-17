@@ -12,12 +12,11 @@ another thread, so two can be in flight at once; the cards queue — one on scre
 time — rather than share one slot.
 """
 
-import queue as _queue
 import threading
 import time
 import unittest
 
-from mimir.client.ui.ws.worker.human import TIMED_OUT, HumanBridge
+from mimir.client.ui.ws.worker.human import TIMED_OUT
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
 
@@ -29,13 +28,9 @@ class _StubAgent:
 
 
 def _make_worker() -> AgentWorker:
-    w = AgentWorker.__new__(AgentWorker)  # bypass __init__ (spawns a thread)
-    w.human = HumanBridge(w)
+    w = AgentWorker("test-model", start=False)
     w._agent = _StubAgent()
-    w.out_q = _queue.Queue()
-    w._query_session_id = None
     w.session_id = None
-    w.session_title = ""
     return w
 
 

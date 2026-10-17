@@ -6,27 +6,19 @@ commit itself (``Conversation.commit_answer``), the registry that hands every as
 same object (``Conversations``), and the pump doing the writing whether or not anyone
 is attached.
 """
-import queue as _queue
 import tempfile
 import unittest
 from unittest import mock
 
 from mimir.client.session.conversation import Conversation, Conversations, turn_messages
 from mimir.client.session.store import SessionStore, StaleSessionWrite
-from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.state import pin_state_dir
 
 
 def _bare_worker(session_id: str) -> AgentWorker:
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
-    w.out_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w.session_id = session_id
-    w._query_session_id = None
-    w._agent = None
-    w._current_task = None
-    w._query_q = _queue.Queue()
     return w
 
 

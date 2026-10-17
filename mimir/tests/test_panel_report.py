@@ -16,7 +16,6 @@ import types
 from pathlib import Path
 from unittest import mock
 
-from mimir.client.ui.ws.worker.jobs import JobWatcher
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
@@ -128,8 +127,7 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
         tool_owner={"good": "proxy", "bad": "platform"},
         sessions={"proxy": Connection(payload="x"), "platform": Connection(boom=True)},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(AgentWorker)
-    worker.jobs = JobWatcher(worker)
+    worker = AgentWorker("test-model", start=False)
     worker._agent = agent
     worker._loop = loop
 
@@ -169,8 +167,7 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
         sessions={"platform": Connection(), "hpc": Connection(), "proxy": Connection()},turn=TurnState())
     loop = asyncio.new_event_loop()
     release.append(loop.create_future())
-    worker = object.__new__(AgentWorker)
-    worker.jobs = JobWatcher(worker)
+    worker = AgentWorker("test-model", start=False)
     worker._agent = agent
     worker._loop = loop
 
@@ -209,8 +206,7 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
         tool_owner={"cluster": "hpc", "machine": "platform"},
         sessions={"hpc": Connection(), "platform": Connection()},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(AgentWorker)
-    worker.jobs = JobWatcher(worker)
+    worker = AgentWorker("test-model", start=False)
     worker._agent = agent
     worker._loop = loop
 
@@ -321,8 +317,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
         tool_owner={"empty": "hpc", "spoken_for": "proxy"},
         sessions={"hpc": Connection("empty"), "proxy": Connection("spoken_for")},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(AgentWorker)
-    worker.jobs = JobWatcher(worker)
+    worker = AgentWorker("test-model", start=False)
     worker._agent = agent
     worker._loop = loop
 
@@ -355,8 +350,7 @@ def test_a_section_that_only_has_groups_is_kept():
         tool_owner={"tree": "hpc"},
         sessions={"hpc": Connection()},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(AgentWorker)
-    worker.jobs = JobWatcher(worker)
+    worker = AgentWorker("test-model", start=False)
     worker._agent = agent
     worker._loop = loop
     future = worker.panel_sections()
@@ -602,9 +596,8 @@ def test_the_worker_reports_what_its_poll_learned():
         def done():
             return False
 
-    worker = object.__new__(AgentWorker)
+    worker = AgentWorker("test-model", start=False)
 
-    worker.jobs = JobWatcher(worker)
     worker.jobs._bg_jobs = {"15306620": _Watch(
         _Task(),
         {"job_key": "15306620", "kind": "slurm-batch", "server": "hpc",

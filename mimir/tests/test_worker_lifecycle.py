@@ -26,8 +26,6 @@ import threading
 import time
 import unittest
 
-from mimir.client.ui.ws.worker.human import HumanBridge
-from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
 
@@ -51,19 +49,12 @@ class _FakeAgent:
 
 def _worker_with_loop(agent: object | None) -> tuple[AgentWorker, threading.Thread, int]:
     """A worker whose loop really runs on its own thread, without building an agent."""
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
-    w.jobs = JobWatcher(w)
+    w = AgentWorker("test-model", start=False)
     w.session_id = "s1"
-    w._query_session_id = None
     w._agent = agent
     w.jobs._bg_jobs = {}
     w.jobs._checkin_task = None
-    w._query_q = _queue.Queue()
-    w._query_wake = None
     w._closed = threading.Event()
-    w._current_task = None
-    w.out_q = _queue.Queue()
 
     loop = asyncio.new_event_loop()
     started = threading.Event()
@@ -104,9 +95,7 @@ def _worker_with_loop(agent: object | None) -> tuple[AgentWorker, threading.Thre
 
 class OwnSessionTests(unittest.TestCase):
     def _bare(self, session_id=None) -> AgentWorker:
-        w = object.__new__(AgentWorker)
-        w.human = HumanBridge(w)
-        w.jobs = JobWatcher(w)
+        w = AgentWorker("test-model", start=False)
         w.session_id = session_id
         return w
 
@@ -179,14 +168,8 @@ class TheQueryLoopWaitsTests(unittest.TestCase):
     """It used to wake every 20 ms, through a thread of the executor, to look."""
 
     def test_a_turn_queued_from_another_thread_starts_at_once(self) -> None:
-        w = object.__new__(AgentWorker)
-        w.human = HumanBridge(w)
-        w.jobs = JobWatcher(w)
+        w = AgentWorker("test-model", start=False)
         w.session_id = "s1"
-        w._query_q = _queue.Queue()
-        w._query_wake = None
-        w._current_task = None
-        w._query_session_id = None
         w._own_session = lambda: "s1"
         ran: list[str] = []
         started = threading.Event()

@@ -7,7 +7,6 @@ journals whether or not a client is listening, ``seq`` has exactly one writer, a
 subscriber that falls behind is told it has a gap rather than stalling the process.
 """
 import asyncio
-import queue as _queue
 import tempfile
 import unittest
 
@@ -19,10 +18,8 @@ from mimir.tests.support.state import pin_state_dir
 
 def _bare_worker(session_id: str | None = None) -> AgentWorker:
     """A worker with only the fields ``drain()`` touches (no agent, no loop)."""
-    w = object.__new__(AgentWorker)
-    w.out_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w.session_id = session_id
-    w._query_session_id = None
     return w
 
 

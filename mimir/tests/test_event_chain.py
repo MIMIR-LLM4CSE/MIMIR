@@ -14,7 +14,6 @@ window cannot see.
 """
 import asyncio
 import json
-import queue as _queue
 import tempfile
 import threading
 import types
@@ -24,8 +23,6 @@ from unittest import mock
 from mimir.client.session import store as session_store
 from mimir.client.session import journal
 from mimir.client.ui.ws.connection.connection import Connection
-from mimir.client.ui.ws.worker.human import HumanBridge
-from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.pools import FakePool
 from mimir.tests.support.state import pin_state_dir
@@ -63,13 +60,9 @@ class _WS:
 
 def _worker(session_id: str, turn: list[dict] | None = None) -> AgentWorker:
     """A worker with no agent and no loop, whose query emits *turn*."""
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
-    w.jobs = JobWatcher(w)
-    w.out_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w.session_id = session_id
     w.session_title = "a conversation"
-    w._query_session_id = None
     w.model = "m"
     # A stand-in agent with the surface the worker actually calls on it. `_approvals`
     # is what the policy engine reads afresh at each gate, so setting the mode is a

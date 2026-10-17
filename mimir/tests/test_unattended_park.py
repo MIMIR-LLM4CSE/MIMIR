@@ -23,20 +23,15 @@ from unittest import mock
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.pool.bus import EventBus
-from mimir.client.ui.ws.worker.human import HumanBridge, detach_grace
-from mimir.client.ui.ws.worker.jobs import JobWatcher
+from mimir.client.ui.ws.worker.human import detach_grace
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
 
 
 def _worker(session_id: str = "s1") -> AgentWorker:
     """A worker with only what the wait touches: no agent loop, no MCP servers."""
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
-    w.jobs = JobWatcher(w)
-    w.out_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w.session_id = session_id
-    w.session_title = ""
     w._query_session_id = session_id
     w._agent = types.SimpleNamespace(non_interactive=False, turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=None, deferred_turn=None))
     return w

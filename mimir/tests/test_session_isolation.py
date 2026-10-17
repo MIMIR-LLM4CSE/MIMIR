@@ -5,26 +5,18 @@ answer and its `open_editor` must all reach the conversation it started in and n
 now on screen. These tests pin the three seams that fence a turn to its own session.
 """
 import json
-import queue as _queue
 import unittest
 
 from mimir.tests.support.pools import FakePool
 from mimir.tests.support.connections import bare_session
 
-from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.worker import AgentWorker
 
 
 def _bare_worker(session_id: str | None = None) -> AgentWorker:
     """A worker with only the queue/state fields the tests touch (no agent, no loop)."""
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
-    w._agent = None
-    w.out_q = _queue.Queue()
-    w._steer_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w.session_id = session_id
-    w.session_title = ""
-    w._query_session_id = None
     return w
 
 

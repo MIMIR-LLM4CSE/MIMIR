@@ -16,7 +16,6 @@ Pure-Python: stub workers and a stub pool, because what is under test is the rou
 from __future__ import annotations
 
 import json
-import queue as _queue
 import tempfile
 import unittest
 
@@ -24,8 +23,6 @@ from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.pool.bus import EventBus
 from mimir.client.ui.ws.connection.connection import Connection
-from mimir.client.ui.ws.worker.human import HumanBridge
-from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.connections import bare_session
 from mimir.tests.support.state import pin_state_dir
@@ -51,14 +48,9 @@ class _FakeWS:
 
 
 def _worker(session_id: str, title: str = "") -> AgentWorker:
-    w = object.__new__(AgentWorker)
-    w.human = HumanBridge(w)
-    w.jobs = JobWatcher(w)
-    w.out_q = _queue.Queue()
-    w._steer_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w.session_id = session_id
     w.session_title = title
-    w._query_session_id = None
     w.answered: list = []
     w.human.resolve_approval = (
         lambda choice, files=None, req_id="": w.answered.append(("approval", choice))

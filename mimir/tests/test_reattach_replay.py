@@ -8,7 +8,6 @@ sent; and only afterwards is the subscription's gate raised to where the replay 
 so events produced *during* the read — which are in both places — collapse to one copy.
 """
 import json
-import queue as _queue
 import tempfile
 import unittest
 from unittest import mock
@@ -32,10 +31,8 @@ class _FakeWS:
 
 
 def _bare_worker(session_id: str = "s1") -> AgentWorker:
-    w = object.__new__(AgentWorker)
-    w.out_q = _queue.Queue()
+    w = AgentWorker("test-model", start=False)
     w.session_id = session_id
-    w._query_session_id = None
     return w
 
 
