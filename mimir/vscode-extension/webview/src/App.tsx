@@ -42,7 +42,7 @@ import { DetachButton } from "./components/DetachButton";
 import { DisconnectPrompt } from "./components/DisconnectPrompt";
 import { workingSessions } from "./components/disconnectUtils";
 import { ModeSwitcher } from "./components/ModeSwitcher";
-import { BlocksIcon, GearIcon, SendIcon, StopIcon } from "./components/icons";
+import { BlocksIcon, EyeIcon, EyeOffIcon, GearIcon, SendIcon, StopIcon } from "./components/icons";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
 import { UserQuestion } from "./components/UserQuestion";
@@ -226,6 +226,9 @@ export const App: React.FC = () => {
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
+  // Answers-only view: a reading mode, not an agent setting — it filters what the
+  // transcript shows (prompts and answers), never what the agent does.
+  const [answersOnly, setAnswersOnly] = useState(false);
   const [serverToggles, setServerToggles] = useState<ToggleItem[]>([]);
   const [skillToggles, setSkillToggles] = useState<ToggleItem[]>([]);
   const slashItems = useMemo(
@@ -1636,6 +1639,7 @@ export const App: React.FC = () => {
           draftSeq={draftSeq}
           liveToolCalls={liveToolCalls}
           liveThinkingBlocks={liveThinkingBlocks}
+          answersOnly={answersOnly}
           loading={sessionLoading}
           chatThreadRef={chatThreadRef}
           bottomRef={bottomRef}
@@ -1870,6 +1874,24 @@ export const App: React.FC = () => {
                 />
               )}
             </div>
+
+            {/* Answers-only view: a reading filter over the transcript, so the
+                conversation reads as prompts and answers without the working
+                machinery in between. Kept apart from the settings popover: those
+                change what the agent does; this only changes what is shown. */}
+            <button
+              className="settings-btn"
+              title={
+                answersOnly
+                  ? "Answers only — showing prompts and answers; click to show all activity"
+                  : "Show only prompts and answers — hides tool activity, reasoning and edit cards"
+              }
+              aria-label="Answers-only view"
+              aria-pressed={answersOnly}
+              onClick={() => setAnswersOnly((o) => !o)}
+            >
+              <span className="settings-gear">{answersOnly ? <EyeOffIcon /> : <EyeIcon />}</span>
+            </button>
 
             {/* Hard right, away from the controls that change what the next turn does:
                 this one changes who owns the process, and it is pressed once a session

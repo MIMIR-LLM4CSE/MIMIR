@@ -151,6 +151,7 @@ webview/src/
 ├── App.tsx                   ← root component: state wiring and handleServerMessage()
 └── components/
     ├── ChatThread.tsx         ← the scrolling transcript
+    ├── answersOnlyUtils.ts    ← which rows survive the answers-only view (unit-tested)
     ├── ChatMessage.tsx        ← one message (text / thinking / approval / tools / error)
     ├── MarkdownContent.tsx    ← markdown renderer used inside a message
     ├── mathDelimiters.ts      ← normalises LaTeX delimiters for remark-math
@@ -320,6 +321,17 @@ values and titles wrap at word boundaries, clamped to two lines, while labels st
 a time, and grows by that much when the reader reaches the top or asks, anchored so
 nothing jumps. The last user message is found in one pass rather than a scan per message,
 which was quadratic in the history and paid on every render.
+
+The **answers-only view** — the eye button in the bottom toolbar — is a reading filter
+over that transcript: user prompts and the agent's answers stay, the working machinery
+in between (tool rows, reasoning panels, edit cards) does not, frozen in the history
+and live during the step alike. What counts as the conversation proper is decided in
+`answersOnlyUtils.ts` and is deliberately generous: error cards, pending approval bars
+and session-command replies are kept, because each is the turn's outcome, a question
+the agent is asking, or an answer to a typed command — hiding one would lose
+information or strand the turn. The draft in flight stays too; it is the answer being
+written. The window and the scroll anchoring are computed over the filtered list, so
+toggling can only remove rows, never reorder what remains.
 
 The end-of-turn transcript handed back to the server (`transcriptUtils.ts`) is sent whole
 once per `epoch`, then as deltas: `order` names every stored message by id and `changed`

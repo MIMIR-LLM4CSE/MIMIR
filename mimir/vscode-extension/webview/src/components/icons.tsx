@@ -86,3 +86,18 @@ export const DetachIcon = () => (
     <path d="M10 13.5v1M13.5 10h1M6 2.5v-1M2.5 6h-1" />
   </Svg>
 );
+
+export const EyeIcon = () => (
+  <Svg>
+    <path d="M1.6 8S4 3.8 8 3.8 14.4 8 14.4 8 12 12.2 8 12.2 1.6 8 1.6 8z" />
+    <circle cx="8" cy="8" r="1.9" />
+  </Svg>
+);
+
+export const EyeOffIcon = () => (
+  <Svg>
+    <path d="M1.6 8S4 3.8 8 3.8 14.4 8 14.4 8 12 12.2 8 12.2 1.6 8 1.6 8z" />
+    <circle cx="8" cy="8" r="1.9" />
+    <path d="M2.5 13.5l11-11" />
+  </Svg>
+);
