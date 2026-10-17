@@ -494,7 +494,7 @@ trait (`searched`, `read_files`, `delegated_read_files`, `checked_paths`,
 `inspected_dirs`), plus `has_discovery_evidence(ctx, *, min_distinct)`. Presence is the
 whole test.
 
-`engine._missing_evidence` holds the `discover`-state gate to
+`violations.missing_evidence` holds the `discover`-state gate to
 `DISCOVERY_EVIDENCE_MIN_DISTINCT`, and is its only consumer. The plan-mode explore phase
 reads the same signal set through `plan_evidence_ready`, but against its own knob
 (`DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN`, the same value today) **plus** a floor on how many

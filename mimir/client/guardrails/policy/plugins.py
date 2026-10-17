@@ -1,7 +1,9 @@
 """Pluggable policy checks — the extension seam for application-specific constraints.
 
-The built-in precondition chain in :mod:`policy.engine` (registry → external_fetch →
-cluster_submit → state_guard → write_policy → approval) is the fixed *core*. This module
+The built-in pipeline in :mod:`policy.engine` (registry → *pre_mutation* →
+cluster_submit → proxy_exec → skill_pull → state_guard → write_policy → *pre_approval* →
+workspace → approval) is the fixed *core*; registered checks run at the two stages in
+italics. This module
 lets an application register **additional** checks on top — e.g. an API-contract or
 cybersecurity guard — without editing core code. Custom checks can only *add*
 constraints: the core runs first and independently, and a custom check that returns

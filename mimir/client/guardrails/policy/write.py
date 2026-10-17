@@ -1,8 +1,7 @@
 """Write-policy gate: preconditions that BLOCK a file mutation.
 
-The hard write guard (read-before-overwrite, delete evidence, anti-thrashing).
-Split out of the former ``runtime.py``; the observation layer that populates the
-execution_context it reads lives in ``guardrails/observations/``.
+The hard write guard (read-before-overwrite, delete evidence, anti-thrashing). What
+it reads is written by ``guardrails/observations/``.
 
 Every rule here guards against a *loss* — an unread file overwritten, a file deleted
 on a guess, a patch retried into the ground. A rule that only enforces a preferred

@@ -269,7 +269,7 @@ class TheReaperTests(unittest.TestCase):
 
 class NonInteractiveTests(unittest.TestCase):
     def test_the_agent_is_told_there_is_no_terminal(self):
-        # Read by the policy engine's _is_interactive_session, which otherwise has to
+        # Read by the policy violations._is_interactive_session, which otherwise has to
         # infer it from a tty — and a log file is not a tty but also not proof that
         # nobody is reachable.
         w = _worker()

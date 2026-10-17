@@ -1,4 +1,4 @@
-"""Proxy direct-execution guard (client policy gate `gates._check_proxy_exec`).
+"""Proxy direct-execution guard (client policy gate `gates.check_proxy_exec`).
 
 While a proxy optimization session is active, running the proxy's source/executable
 directly through a CODE_EXEC tool is blocked; read-only inspection of the source is
@@ -70,7 +70,7 @@ class ProxyExecGuardTests(unittest.TestCase):
         store._write_active_session(name)
 
     def _check(self, tool: str, **args) -> str | None:
-        return gates._check_proxy_exec(self.agent, tool, args, {})
+        return gates.check_proxy_exec(self.agent, tool, args, {})
 
     def _assert_blocked(self, res: str | None) -> None:
         self.assertIsNotNone(res)

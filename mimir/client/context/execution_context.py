@@ -447,7 +447,7 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 #
 #   WRITER                                   FIELDS WRITTEN                              READ BY
 #   guardrails.observations.record_tool_observation   searched, read_files, inspected_dirs,      engine (tools_for_context,
-#     (the observers of ORDER,                 checked_paths, existing_paths,             _missing_evidence, guards),
+#     (the observers of ORDER,                 checked_paths, existing_paths,             missing_evidence, guards),
 #      run after every tool call)              search_tool_calls,                          runtime (check_write_policy),
 #                                              similar_candidates_by_dir,                 state_machine (guards),
 #                                              dirty_written_files, declared_edit_set,    nudges (all nudges),
@@ -480,7 +480,7 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 
 # ── Discovery-evidence semantics: the single definition of "what counts as the
 # model's own exploration this query." Every consumer (the agent-mode discovery
-# nudge, the plan-mode explore phase, engine._missing_evidence) reads these helpers
+# nudge, the plan-mode explore phase, violations.missing_evidence) reads these helpers
 # instead of hand-picking its own subset of fields — that duplicated subset-picking
 # was the source of cross-layer coherence bugs.
 #

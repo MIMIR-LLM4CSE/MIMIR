@@ -315,7 +315,7 @@ stopped at the cap is the normal case.
 `read_files`, `delegated_read_files`). Presence is the whole test — nothing seeds these
 fields, so a fresh context carries zero evidence.
 
-Two consumers, two bars. `engine._missing_evidence` holds the `discover`-state gate to
+Two consumers, two bars. `violations.missing_evidence` holds the `discover`-state gate to
 `DISCOVERY_EVIDENCE_MIN_DISTINCT`. `plan_evidence_ready()` reads the same signal set
 against `DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN` **plus** a floor on files actually read,
 because distinct signal *kinds* do not express its bar: listing a directory and running a

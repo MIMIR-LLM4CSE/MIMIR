@@ -3,12 +3,9 @@
 The dual-use bash tool is ``sensitive`` so build/execution commands prompt for
 approval. Side-effect-free discovery (``rg``/``ls``/``cat``/``sed`` without
 ``-i`` …) is safe to run unattended, so re-prompting for it is pure friction — in
-**any** mode. ``_readonly_bash_exempt`` waives the prompt for exactly those calls,
+**any** mode. ``readonly_bash_exempt`` waives the prompt for exactly those calls,
 delegating the read-only decision to :func:`bash_classify.bash_command_is_readonly`.
 An exec command or an in-place write (``sed -i``) still hits the normal gate.
-
-Formerly ``plan_mode.py``: what began as a plan-mode-only gate now applies to every
-mode, so neither the module nor its helper carries the ``plan`` name any longer.
 """
 
 from __future__ import annotations
@@ -40,7 +37,7 @@ def is_readonly_invocation(tool_name: str, arguments: dict[str, Any], caps: Any)
     return bash_command_is_readonly(shell_command_of(tool_name, arguments, caps))
 
 
-def _readonly_bash_exempt(agent: AgentPort, tool_name: str, arguments: dict[str, Any]) -> bool:
+def readonly_bash_exempt(agent: AgentPort, tool_name: str, arguments: dict[str, Any]) -> bool:
     """True when a sensitive dual-use call is read-only and needs no approval.
 
     Applies in every mode. Before it shared :func:`is_readonly_invocation`, a

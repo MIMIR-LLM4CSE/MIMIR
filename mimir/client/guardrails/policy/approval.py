@@ -165,9 +165,8 @@ class TrustedToolsView:
     """
     Lightweight dynamic view over trusted tool names.
 
-    This is intentionally *not* a mutable set. It reflects the ApprovalManager
-    state dynamically so callers can pass it to status/help code without
-    reintroducing legacy `approved_tools`.
+    Not a mutable set: it reflects the ApprovalManager's state, so status and help
+    code can read it without holding a copy.
     """
 
     def __init__(self, manager: "ApprovalManager"):
@@ -327,7 +326,7 @@ class ApprovalManager:
         return self.fallback_tools.get(tool_name, tuple())
 
     # ------------------------------------------------------------------
-    # Public approval API (new, explicit, non-legacy)
+    # Public approval API
     # ------------------------------------------------------------------
 
     @staticmethod

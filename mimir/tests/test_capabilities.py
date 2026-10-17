@@ -386,7 +386,7 @@ class ReversibilityDerivationTest(unittest.TestCase):
                 # reachability of the exit, not about the dial.
                 ctx: dict = build_execution_context(dirty_written_files={"job.py"})
                 self.assertIsNotNone(
-                    gates._check_cluster_submit(agent, "submit", ctx),
+                    gates.check_cluster_submit(agent, "submit", ctx),
                     "an irreversible action was softened by the enforcement dial",
                 )
 

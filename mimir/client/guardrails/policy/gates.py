@@ -202,7 +202,7 @@ def _call_base(agent: AgentPort, tool_name: str, arguments: dict) -> tuple[str, 
     return root, base
 
 
-def _out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict) -> list[str]:
+def out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict) -> list[str]:
     """Absolute target paths of this call outside the workspace and not yet approved.
 
     Sources: the existing file/edit-target extractor (covers file & batch args), any
@@ -217,7 +217,7 @@ def _out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict)
     try:
         raw.extend(agent.get_tool_file_targets(tool_name, arguments) or [])
     except Exception:
-        logger.debug("_out_of_workspace_targets: a best-effort step failed and was skipped", exc_info=True)
+        logger.debug("out_of_workspace_targets: a best-effort step failed and was skipped", exc_info=True)
     # A declared cwd is itself a place the call goes.
     for a in arg_role(tool_name, "cwd", getattr(agent, "tool_caps", None)):
         v = arguments.get(a)
@@ -263,7 +263,7 @@ def _name_paths(paths: list[str], limit: int = 4) -> str:
     return f"{shown} and {rest} more" if rest > 0 else shown
 
 
-def _check_out_of_workspace_access(
+def check_out_of_workspace_access(
     agent: AgentPort, tool_name: str, arguments: dict, execution_context: ExecutionContext | None,
     targets: list[str] | None = None,
 ) -> str | None:
@@ -274,19 +274,16 @@ def _check_out_of_workspace_access(
     so a previewable write cannot bypass it. Fail-closed: with no hook wired,
     out-of-workspace access is denied. Returns a violation payload or ``None``.
 
-    **All the call's paths are asked about once.** This used to prompt per path, and
-    one ordinary command names several: ``cd /data && python /opt/x.py > /var/log/y.log``
-    put three cards in front of the user, one after another, for a single decision they
-    had already made when they read the command. The command is the unit the user
-    actually judges — they allow *this call*, not each of its operands — so the hook
-    takes the whole list and returns one answer, and ``always`` covers every path in it.
+    **All the call's paths are asked about once.** The user judges the command (``cd
+    /data && python /opt/x.py > /var/log/y.log``), not each of its operands, so the
+    hook takes the whole list and returns one answer, and ``always`` covers every path.
 
     *targets* lets the caller pass the list it already computed with
-    :func:`_out_of_workspace_targets` — the engine needs to know whether this call
+    :func:`out_of_workspace_targets` — the engine needs to know whether this call
     prompts at all, and re-deriving it after the grants land would come back empty.
     """
     if targets is None:
-        targets = _out_of_workspace_targets(agent, tool_name, arguments)
+        targets = out_of_workspace_targets(agent, tool_name, arguments)
     if not targets:
         return None
     # ``auto_all``: grant without asking. The servers still validate and confine every
@@ -315,7 +312,7 @@ def _check_out_of_workspace_access(
 
 # ── cluster submit ────────────────────────────────────────────────────────────
 
-def _check_cluster_submit(
+def check_cluster_submit(
     agent: AgentPort, tool_name: str, execution_context: ExecutionContext | None,
     arguments: dict[str, Any] | None = None,
 ) -> str | None:
@@ -433,7 +430,7 @@ def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
-def _check_proxy_exec(
+def check_proxy_exec(
     agent: AgentPort, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:
@@ -469,7 +466,7 @@ def _check_proxy_exec(
         if not (executed & targets):
             return None
     except Exception:
-        logger.debug("_check_proxy_exec: a best-effort step failed and was skipped", exc_info=True)
+        logger.debug("check_proxy_exec: a best-effort step failed and was skipped", exc_info=True)
         return None
     return json_error_payload(
         f"Direct execution of the proxy under optimization is blocked ('{tool_name}').",
@@ -485,7 +482,7 @@ def _check_proxy_exec(
 
 # ── loading a skill on demand ─────────────────────────────────────────────────
 
-def _check_skill_pull(
+def check_skill_pull(
     agent: AgentPort, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:

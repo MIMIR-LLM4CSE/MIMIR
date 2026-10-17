@@ -649,7 +649,7 @@ class _AgentWorker:
     def set_non_interactive(self, value: bool = True) -> None:
         """Tell the agent there is no terminal behind it.
 
-        Read by the policy engine's ``_is_interactive_session``, which otherwise has to
+        Read by the policy ``violations._is_interactive_session``, which otherwise has to
         infer it from the tty — and a detached server's stdout is a log file, which is
         not a tty but also not proof that nobody is reachable. Saying so plainly is
         what keeps the interactive path from being attempted at all.

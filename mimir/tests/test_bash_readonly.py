@@ -4,12 +4,12 @@
 build/execution/write. Plan mode uses it to stay side-effect-free; the approval
 exemption uses it to run read-only discovery unattended in **any** mode. Writes
 like ``sed -i`` are not read-only and keep the approval prompt. See
-``bash_classify.bash_command_is_readonly`` / ``readonly_exempt._readonly_bash_exempt``.
+``bash_classify.bash_command_is_readonly`` / ``readonly_exempt.readonly_bash_exempt``.
 """
 import unittest
 
 from mimir.client.context.bash_classify import bash_command_is_readonly
-from mimir.client.guardrails.policy.readonly_exempt import _readonly_bash_exempt
+from mimir.client.guardrails.policy.readonly_exempt import readonly_bash_exempt
 from mimir.client.guardrails.toollist import tools_for_plan_mode, tools_for_readonly_mode
 from mimir.client.query_engine.readonly_guard import filter_readonly_tool_calls
 from mimir.client.context.capabilities import (
@@ -327,29 +327,29 @@ class ReadonlyToolCallGuardTests(unittest.TestCase):
 class ReadonlyBashApprovalExemptionTests(unittest.TestCase):
     def test_read_only_bash_exempt_from_approval_in_plan_mode(self):
         agent = _FakeAgent("plan")
-        self.assertTrue(_readonly_bash_exempt(agent, "bash_run", {"command": "rg foo src"}))
+        self.assertTrue(readonly_bash_exempt(agent, "bash_run", {"command": "rg foo src"}))
 
     def test_exec_bash_not_exempt_in_plan_mode(self):
         agent = _FakeAgent("plan")
-        self.assertFalse(_readonly_bash_exempt(agent, "bash_run", {"command": "python x.py"}))
+        self.assertFalse(readonly_bash_exempt(agent, "bash_run", {"command": "python x.py"}))
 
     def test_read_only_bash_exempt_in_agent_mode(self):
         # The exemption now applies in any mode: read-only discovery runs unattended.
         agent = _FakeAgent("agent")
-        self.assertTrue(_readonly_bash_exempt(agent, "bash_run", {"command": "rg foo src"}))
+        self.assertTrue(readonly_bash_exempt(agent, "bash_run", {"command": "rg foo src"}))
 
     def test_exec_bash_not_exempt_in_agent_mode(self):
         agent = _FakeAgent("agent")
-        self.assertFalse(_readonly_bash_exempt(agent, "bash_run", {"command": "python x.py"}))
+        self.assertFalse(readonly_bash_exempt(agent, "bash_run", {"command": "python x.py"}))
 
     def test_inplace_write_not_exempt_in_agent_mode(self):
         # `sed -i` mutates a file — it keeps the approval prompt in every mode.
         agent = _FakeAgent("agent")
-        self.assertFalse(_readonly_bash_exempt(agent, "bash_run", {"command": "sed -i s/x/y/ f.py"}))
+        self.assertFalse(readonly_bash_exempt(agent, "bash_run", {"command": "sed -i s/x/y/ f.py"}))
 
     def test_other_sensitive_tool_never_exempt(self):
         agent = _FakeAgent("agent")
-        self.assertFalse(_readonly_bash_exempt(agent, "code_run", {"command": "rg foo"}))
+        self.assertFalse(readonly_bash_exempt(agent, "code_run", {"command": "rg foo"}))
 
 
 class ReadonlyInvocationTests(unittest.TestCase):
@@ -364,12 +364,12 @@ class ReadonlyInvocationTests(unittest.TestCase):
     def test_a_declared_readonly_call_needs_no_approval_in_any_mode(self) -> None:
         # Plan mode ran op=list unasked; agent mode prompted for the very same call.
         from types import SimpleNamespace
-        from mimir.client.guardrails.policy.readonly_exempt import _readonly_bash_exempt
+        from mimir.client.guardrails.policy.readonly_exempt import readonly_bash_exempt
 
         agent = SimpleNamespace(tool_caps=self._caps())
-        self.assertTrue(_readonly_bash_exempt(agent, "jobs", {"op": "list"}))
-        self.assertTrue(_readonly_bash_exempt(agent, "jobs", {}))
-        self.assertFalse(_readonly_bash_exempt(agent, "jobs", {"op": "cancel"}))
+        self.assertTrue(readonly_bash_exempt(agent, "jobs", {"op": "list"}))
+        self.assertTrue(readonly_bash_exempt(agent, "jobs", {}))
+        self.assertFalse(readonly_bash_exempt(agent, "jobs", {"op": "cancel"}))
 
 
 if __name__ == "__main__":

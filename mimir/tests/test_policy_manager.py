@@ -564,7 +564,7 @@ class PolicyManagerTests(unittest.TestCase):
         # Tools run outside a query (the CLI's direct calls) have no context: a
         # violation there used to raise AttributeError instead of being reported.
         violation = json.dumps({"status": "error", "error": "nope"})
-        enriched = json.loads(policy_manager_module._enrich_violation_payload(
+        enriched = json.loads(policy_manager_module.enrich_violation_payload(
             violation=violation, policy_stage="write_policy",
             execution_context=None, tool_name="write_file"))
         self.assertEqual(enriched["policy_stage"], "write_policy")
@@ -579,7 +579,7 @@ class PolicyManagerTests(unittest.TestCase):
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
              patch.object(policy_manager_module, "check_write_policy", return_value=violation), \
              patch.object(policy_manager_module, "is_known_to_exist", return_value=False), \
-             patch.object(policy_manager_module, "_interactive_clarify_path",
+             patch.object(policy_manager_module, "clarify_path",
                           return_value=None) as clarify:
             policy_manager_module.evaluate_tool_preconditions(
                 agent=agent, tool_name="replace_in_file", arguments={"path": "x.py"},
@@ -601,14 +601,14 @@ class MissingEvidenceTests(unittest.TestCase):
 
         # Context simulating a write blocked due to missing read
         context = build_execution_context(read_files=set(), checked_paths=set(), existing_paths=set(), last_replace_file="src/foo.py", last_replace_old_text="old_val")
-        missing = policy_module.engine._missing_evidence(context)
+        missing = policy_module.violations.missing_evidence(context)
         self.assertIn("Read at least one concrete file before proposing code changes.", missing)
 
     def test_missing_evidence_suggests_search_when_discover_and_empty(self) -> None:
         from mimir.client.guardrails import policy as policy_module
 
         context = build_execution_context(workflow_state="discover", searched=False, read_files=set())
-        missing = policy_module.engine._missing_evidence(context)
+        missing = policy_module.violations.missing_evidence(context)
         self.assertIn("Run a targeted local search first.", missing)
 
     def test_missing_evidence_silent_once_model_has_evidence(self) -> None:
@@ -617,7 +617,7 @@ class MissingEvidenceTests(unittest.TestCase):
         from mimir.client.guardrails import policy as policy_module
 
         context = build_execution_context(workflow_state="discover", searched=True, read_files={"src/foo.py"})
-        missing = policy_module.engine._missing_evidence(context)
+        missing = policy_module.violations.missing_evidence(context)
         self.assertNotIn("Run a targeted local search first.", missing)
         self.assertNotIn("Read at least one concrete file before proposing code changes.", missing)
 
@@ -625,7 +625,7 @@ class MissingEvidenceTests(unittest.TestCase):
         from mimir.client.guardrails import policy as policy_module
 
         context = build_execution_context(workflow_state="edit", read_files={"src/foo.py"})
-        missing = policy_module.engine._missing_evidence(context)
+        missing = policy_module.violations.missing_evidence(context)
         self.assertEqual(missing, [])
 
 

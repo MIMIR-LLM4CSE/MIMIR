@@ -18,7 +18,7 @@ from pathlib import Path
 
 from mimir.client.context.capabilities import ToolCaps, CODE_EXEC, READ, EDIT
 from mimir.client.guardrails.policy import approval as approval_mod
-from mimir.client.guardrails.policy import engine
+from mimir.client.guardrails.policy import engine, gates
 import mimir.client.config.paths as paths
 
 
@@ -131,14 +131,14 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         agent = self._agent()
         # A path under the workspace root (cwd) — no prompt, no violation.
         rel = "some/in_workspace_file.py"
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": rel}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [])
 
     def test_out_of_workspace_deny_returns_violation(self) -> None:
         agent = self._agent(script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": "/etc/passwd"}, {})
         self.assertIsNotNone(out)
         self.assertIn("outside the workspace", out)
@@ -153,25 +153,25 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         """
         agent = self._agent(script=(True, False))
         args = {"path": "/etc/passwd", "start_line": 1}
-        engine._check_out_of_workspace_access(agent, "read_file_lines", args, {})
+        gates.check_out_of_workspace_access(agent, "read_file_lines", args, {})
         self.assertEqual(agent.prompt_args, [args])
 
     def test_out_of_workspace_allow_once_grants_then_reprompts(self) -> None:
         agent = self._agent(script=(True, False))
-        out1 = engine._check_out_of_workspace_access(
+        out1 = gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": "/tmp/x/f.log"}, {})
         self.assertIsNone(out1)
         # allow-once did NOT record the scope → a second call prompts again.
-        out2 = engine._check_out_of_workspace_access(
+        out2 = gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": "/tmp/x/f.log"}, {})
         self.assertIsNone(out2)
         self.assertEqual(len(agent.prompts), 2)
 
     def test_out_of_workspace_always_skips_second_prompt(self) -> None:
         agent = self._agent(script=(True, True))
-        engine._check_out_of_workspace_access(
+        gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": "/tmp/x/f.log"}, {})
-        engine._check_out_of_workspace_access(
+        gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": "/tmp/x/f.log"}, {})
         self.assertEqual(len(agent.prompts), 1)   # "always" → no re-prompt
 
@@ -184,7 +184,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         """
         agent = self._agent(cap=READ)
         log = os.path.join(self._tmp.name, "sessions", "s1", "jobs", "k", "job.log")
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": log}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [])
@@ -212,7 +212,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         try:
             agent = self._agent(cap=READ)
             plan = os.path.join(paths.STATE_DIR, "sessions", "s1", "plans", "p.md")
-            out = engine._check_out_of_workspace_access(
+            out = gates.check_out_of_workspace_access(
                 agent, "read_file_lines", {"path": plan}, {})
             self.assertIsNone(out)
             self.assertEqual(agent.prompts, [])
@@ -233,7 +233,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         try:
             agent = self._agent(cap=EDIT, script=(False, False))  # would DENY if asked
             probe = os.path.join(scratch_roots()[0], "probe.py")
-            out = engine._check_out_of_workspace_access(
+            out = gates.check_out_of_workspace_access(
                 agent, "write_file", {"path": probe}, {})
             self.assertIsNone(out)
             self.assertEqual(agent.prompts, [])
@@ -253,7 +253,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
             os.path.join(paths.STATE_DIR, "sessions", "s1", "plans", "p.md"),
         ):
             with self.subTest(path=path):
-                out = engine._check_out_of_workspace_access(
+                out = gates.check_out_of_workspace_access(
                     agent, "write_file", {"path": path}, {})
                 self.assertIsNotNone(out)
 
@@ -295,7 +295,7 @@ class ShellPathApprovalTests(_TmpStateDir):
 
     def test_file_operand_outside_workspace_prompts(self) -> None:
         agent = self._agent(script=(True, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cat /etc/passwd"}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [os.path.realpath("/etc/passwd")])
@@ -306,12 +306,12 @@ class ShellPathApprovalTests(_TmpStateDir):
                             ("gcc /tmp/x.c -o out.o", "/tmp/x.c"),
                             ("cp /etc/hosts here.txt", "/etc/hosts")):
             agent = self._agent(script=(True, False))
-            engine._check_out_of_workspace_access(agent, "run_shell", {"command": cmd}, {})
+            gates.check_out_of_workspace_access(agent, "run_shell", {"command": cmd}, {})
             self.assertIn(os.path.realpath(target), agent.prompts, cmd)
 
     def test_denied_path_blocks_the_call(self) -> None:
         agent = self._agent(script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cat /etc/passwd"}, {})
         self.assertIsNotNone(out)
         self.assertIn("outside the workspace", out)
@@ -322,7 +322,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         agent = self._agent(script=(False, False))
         for cmd in ("gcc -I/usr/include a.c -o a.out -lm", "python -m pytest",
                     "ls *.py | head", "make -j4"):
-            out = engine._check_out_of_workspace_access(
+            out = gates.check_out_of_workspace_access(
                 agent, "run_shell", {"command": cmd}, {})
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
@@ -330,7 +330,7 @@ class ShellPathApprovalTests(_TmpStateDir):
     def test_in_workspace_paths_never_prompt(self) -> None:
         agent = self._agent()
         for cmd in ("cat notes.txt", "python mimir/x.py", "cp a.py b.py"):
-            out = engine._check_out_of_workspace_access(
+            out = gates.check_out_of_workspace_access(
                 agent, "run_shell", {"command": cmd}, {})
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
@@ -338,7 +338,7 @@ class ShellPathApprovalTests(_TmpStateDir):
     def test_cd_inside_workspace_never_prompts(self) -> None:
         agent = self._agent()
         for cmd in ("cd sub && ls", "cd sub/deeper && cat f.py", "ls"):
-            out = engine._check_out_of_workspace_access(
+            out = gates.check_out_of_workspace_access(
                 agent, "run_shell", {"command": cmd}, {})
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
@@ -348,7 +348,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         # stopping to ask the user about /etc/passwd would be noise.
         agent = self._agent(script=(False, False))
         for cmd in ("grep /etc/passwd notes.txt", 'sed "s|/etc/passwd|x|" f.txt'):
-            out = engine._check_out_of_workspace_access(
+            out = gates.check_out_of_workspace_access(
                 agent, "run_shell", {"command": cmd}, {})
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
@@ -358,7 +358,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         # extraction has a real out-of-workspace path sitting beside the flag refused by
         # the server with no way for the user to grant it.
         agent = self._agent(script=(True, False))
-        engine._check_out_of_workspace_access(
+        gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "gcc -I$CUDA_HOME/include /tmp/x.c -o a.out"}, {})
         self.assertIn(os.path.realpath("/tmp/x.c"), agent.prompts)
 
@@ -366,7 +366,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         # In path position an expansion is refused outright by the guard (it cannot
         # be checked), so there is nothing to ask about.
         agent = self._agent(script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cat $CUDA_HOME/version.txt"}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [])
@@ -376,7 +376,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         # rejects the command outright.
         agent = self._agent(script=(False, False))
         for cmd in ("cat $(which python)", "cat `echo /etc/passwd`"):
-            out = engine._check_out_of_workspace_access(
+            out = gates.check_out_of_workspace_access(
                 agent, "run_shell", {"command": cmd}, {})
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
@@ -391,7 +391,7 @@ class ShellPathApprovalTests(_TmpStateDir):
                     "cat /tmp/outside/q && echo 'cost: $5'",
                     'grep "a>b" /tmp/outside/q'):
             agent.prompts = []
-            engine._check_out_of_workspace_access(
+            gates.check_out_of_workspace_access(
                 agent, "run_shell", {"command": cmd}, {})
             self.assertIn(os.path.realpath("/tmp/outside/q"), agent.prompts, cmd)
 
@@ -400,21 +400,21 @@ class ShellPathApprovalTests(_TmpStateDir):
         # so the file *is* seen — but granting the destination admits it to the
         # server as a root, so asking again for a path under it decides nothing.
         agent = self._agent(script=(True, True))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd /etc && cat passwd"}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [os.path.realpath("/etc")])
 
     def test_cd_outside_workspace_prompts(self) -> None:
         agent = self._agent(script=(True, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd /tmp/elsewhere && ls"}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [os.path.realpath("/tmp/elsewhere")])
 
     def test_cd_outside_workspace_denied_blocks_the_call(self) -> None:
         agent = self._agent(script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd /etc && cat passwd"}, {})
         self.assertIsNotNone(out)
         self.assertIn("outside the workspace", out)
@@ -422,7 +422,7 @@ class ShellPathApprovalTests(_TmpStateDir):
     def test_escape_via_relative_cd_is_caught(self) -> None:
         # `cd ..` leaves the workspace just as surely as an absolute path.
         agent = self._agent(script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd ../.. && ls"}, {})
         self.assertIsNotNone(out)
 
@@ -430,7 +430,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         # Each hop resolves against the previous one, mirroring the server walk:
         # the first stays inside, the second escapes and must prompt.
         agent = self._agent(script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd sub && cd ../../.. && ls"}, {})
         self.assertIsNotNone(out)
 
@@ -438,7 +438,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         # The grant must reach the sidecar the server reads per call, or the
         # approved cd would still be refused server-side.
         agent = self._agent(script=(True, True))
-        engine._check_out_of_workspace_access(
+        gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd /tmp/granted && ls"}, {})
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "servers" / "_shared"))
         import approved_roots
@@ -449,7 +449,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         # argument is not a chdir.
         agent = _FakeAgent(approval_mod.ApprovalManager(sensitive_tools=set()),
                            cap=READ, script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "read_file_lines", {"path": "notes.txt", "q": "cd /etc"}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [])
@@ -551,7 +551,7 @@ One per path would put three cards in front of the user for
 
     def test_every_path_arrives_in_a_single_prompt(self) -> None:
         agent = self._agent()
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": self.COMMAND}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompt_calls, 1)
@@ -559,7 +559,7 @@ One per path would put three cards in front of the user for
 
     def test_one_allow_grants_all_of_them(self) -> None:
         agent = self._agent()
-        engine._check_out_of_workspace_access(
+        gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": self.COMMAND}, {})
         # allow-once records the sidecar grant the servers read (not an "always" scope)
         for path in self._expected():
@@ -567,7 +567,7 @@ One per path would put three cards in front of the user for
 
     def test_one_deny_blocks_and_grants_nothing(self) -> None:
         agent = self._agent(script=(False, False))
-        out = engine._check_out_of_workspace_access(
+        out = gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": self.COMMAND}, {})
         self.assertIsNotNone(out)
         self.assertEqual(agent.prompt_calls, 1)

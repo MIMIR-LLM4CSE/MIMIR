@@ -19,7 +19,7 @@ import unittest
 
 from mimir.client.config.servers import SKILL_LOAD_TOOL
 from mimir.client.config.limits import SKILL_PULL_MAX
-from mimir.client.guardrails.policy.gates import _check_skill_pull
+from mimir.client.guardrails.policy.gates import check_skill_pull
 from mimir.client.query_engine import dispatch as dispatch_module
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine.history import (
@@ -65,7 +65,7 @@ class SkillPullGateTests(unittest.TestCase):
     def test_a_first_pull_is_allowed_and_reserves_its_slot(self) -> None:
         context = build_execution_context()
         self.assertIsNone(
-            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
+            check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
         )
         # "pending", not the call id: the result has not come back yet. What the
         # reservation buys is a cap that two parallel pulls in one step cannot both
@@ -75,22 +75,22 @@ class SkillPullGateTests(unittest.TestCase):
     def test_another_tool_is_not_this_gate_s_business(self) -> None:
         context = build_execution_context()
         self.assertIsNone(
-            _check_skill_pull(_agent(), "read_file_lines", {"name": "fix-bug"}, context)
+            check_skill_pull(_agent(), "read_file_lines", {"name": "fix-bug"}, context)
         )
         self.assertFalse(context.skills_loaded)
 
     def test_the_same_skill_twice_is_refused_pointing_at_the_earlier_result(self) -> None:
         context = build_execution_context()
-        _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
+        check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
         refusal = _refusal(
-            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
+            check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
         )
         self.assertIn("already loaded", refusal["error"])
         self.assertIn("earlier tool result", refusal["hint"])
 
     def test_an_unknown_skill_is_refused_with_the_ones_on_offer(self) -> None:
         refusal = _refusal(
-            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "nope"}, build_execution_context())
+            check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "nope"}, build_execution_context())
         )
         self.assertIn("No skill named 'nope'", refusal["error"])
         self.assertIn("fix-bug", refusal["hint"])
@@ -102,7 +102,7 @@ class SkillPullGateTests(unittest.TestCase):
         the skill exists but is switched off describes a capability it cannot have and
         invites it to stop and ask the user to switch it back on.
         """
-        refusal = _refusal(_check_skill_pull(
+        refusal = _refusal(check_skill_pull(
             _agent(disabled={"write-tests"}),
             SKILL_LOAD_TOOL, {"name": "write-tests"}, build_execution_context(),
         ))
@@ -112,7 +112,7 @@ class SkillPullGateTests(unittest.TestCase):
 
     def test_a_user_invoked_only_skill_names_its_slash_command(self) -> None:
         refusal = _refusal(
-            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "prepare-pr"}, build_execution_context())
+            check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "prepare-pr"}, build_execution_context())
         )
         self.assertIn("user-invoked only", refusal["error"])
         self.assertIn("/prepare-pr", refusal["hint"])
@@ -125,10 +125,10 @@ class SkillPullGateTests(unittest.TestCase):
         agent = _agent()
         for name in ("fix-bug", "write-tests", "explore-repo")[:SKILL_PULL_MAX]:
             self.assertIsNone(
-                _check_skill_pull(agent, SKILL_LOAD_TOOL, {"name": name}, context)
+                check_skill_pull(agent, SKILL_LOAD_TOOL, {"name": name}, context)
             )
         refusal = _refusal(
-            _check_skill_pull(agent, SKILL_LOAD_TOOL, {"name": "refactor-code"}, context)
+            check_skill_pull(agent, SKILL_LOAD_TOOL, {"name": "refactor-code"}, context)
         )
         self.assertIn(str(SKILL_PULL_MAX), refusal["error"])
         self.assertIn("fix-bug", refusal["error"])
