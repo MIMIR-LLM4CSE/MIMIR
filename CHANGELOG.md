@@ -15,7 +15,31 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **One set of slash commands for the terminal and the panel.** `/think`, `/thinking`
+  and `/thinking-depth` are one command, as are `/stream` and `/streaming`, and both
+  front-ends parse them the same way. `/modules` and `/backend` now work in the panel
+  too; `/subagents` accepts the rung's former name (`parallel`) there as it did in the
+  terminal.
+- **The client is reorganised** (`mimir/client/`): settings, commands and
+  conversations each have one home shared by both front-ends, and the WebSocket server
+  no longer polls — an idle window costs nothing. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ### Fixed
+- **`mimir-server --cwd` takes effect.** The workspace root was resolved before the
+  flag was applied, so `.mimir/` and the state directory followed the directory the
+  server was launched from.
+- **A setting chosen before the first query is checked at once.** An invalid value
+  was accepted, recorded, and failed silently when the agent was built.
+- **Every server or skill switched off before the first query stays off.** Only the
+  last switch of each kind was replayed onto the agent built afterwards.
+- **A sub-agent's question with a deadline reaches the user.** The relay to the
+  delegating conversation accepted only the questions, and a deadline made it fail.
+- **A cancelled turn is written down whether or not a window is open.** With none, the
+  question stood unanswered in the history and the next turn was sent two in a row.
+- **Starting a conversation's agent no longer waits for another one to close.**
+- **The terminal sizes a full-context window by the model's own window**, not by a
+  fixed 120 000 tokens.
 - **Dropping MIMIR's co-author line covers the pull request too.** The default has
   always applied to both, but the sentence offering to leave it out named only the
   commit — which read as if the pull request, the published half, kept the line
