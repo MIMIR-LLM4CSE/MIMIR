@@ -260,7 +260,7 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
         approvals = self._manager()
         approvals.batch.snapshots[path] = original
         worker = bare_worker(agent=fake_agent(approvals=approvals))
-        worker._build_batch_status()
+        worker.review.batch_status()
         return types.SimpleNamespace(worker=worker)
 
     def test_a_revert_restores_the_file_the_user_reviewed(self) -> None:

@@ -132,16 +132,16 @@ class CardHandlers:
 
     async def _handle_batch_review_accept(self, msg: dict) -> None:
         # User accepted all pending file edits — keep them on disk, clear snapshots.
-        if self.worker._agent is not None:
-            self.worker._agent.approvals.batch.snapshots.clear()
-            self.worker._agent.approvals.batch.forget_reviewed()
+        if self.worker.agent is not None:
+            self.worker.agent.approvals.batch.snapshots.clear()
+            self.worker.agent.approvals.batch.forget_reviewed()
         await self.ws.send(json.dumps({"type": "batch_status", "files": []}))
 
     async def _handle_batch_review_revert(self, msg: dict) -> None:
         # User wants to undo all pending file edits — restore originals.
         moved: list[str] = []
-        if self.worker._agent is not None:
-            approvals = self.worker._agent.approvals
+        if self.worker.agent is not None:
+            approvals = self.worker.agent.approvals
             for path, original in list(approvals.batch.snapshots.items()):
                 if not self._revert_one(path, original):
                     moved.append(os.path.relpath(path))
@@ -161,7 +161,7 @@ class CardHandlers:
         Returns False only for that case; a file it could not write is a best-effort
         failure, like the rest of this path.
         """
-        approvals = self.worker._agent.approvals
+        approvals = self.worker.agent.approvals
         if approvals.batch.reviewed_matches(path) is False:
             return False
         abs_path = os.path.abspath(path)
@@ -191,24 +191,24 @@ class CardHandlers:
     async def _handle_batch_review_accept_file(self, msg: dict) -> None:
         # Accept a single file — remove its snapshot, keep file on disk.
         file_rel = msg.get("file", "")
-        if file_rel and self.worker._agent is not None:
+        if file_rel and self.worker.agent is not None:
             target = os.path.normpath(os.path.abspath(file_rel))
-            snapshots = self.worker._agent.approvals.batch.snapshots
+            snapshots = self.worker.agent.approvals.batch.snapshots
             key = next(
                 (k for k in snapshots if os.path.normpath(os.path.abspath(k)) == target),
                 None,
             )
             if key is not None:
                 del snapshots[key]
-                self.worker._agent.approvals.batch.forget_reviewed(key)
-        self.worker._push_batch_status()
+                self.worker.agent.approvals.batch.forget_reviewed(key)
+        self.worker.review.push_batch_status()
 
     async def _handle_batch_review_revert_file(self, msg: dict) -> None:
         # Revert a single file — restore its original content.
         file_rel = msg.get("file", "")
-        if file_rel and self.worker._agent is not None:
+        if file_rel and self.worker.agent is not None:
             target = os.path.normpath(os.path.abspath(file_rel))
-            snapshots = self.worker._agent.approvals.batch.snapshots
+            snapshots = self.worker.agent.approvals.batch.snapshots
             key = next(
                 (k for k in snapshots if os.path.normpath(os.path.abspath(k)) == target),
                 None,
@@ -216,7 +216,7 @@ class CardHandlers:
             if key is not None:
                 original = snapshots.pop(key)
                 reverted = self._revert_one(key, original)
-                self.worker._agent.approvals.batch.forget_reviewed(key)
+                self.worker.agent.approvals.batch.forget_reviewed(key)
                 if not reverted:
                     await self._report_unreverted([os.path.relpath(key)])
-        self.worker._push_batch_status()
+        self.worker.review.push_batch_status()

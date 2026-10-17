@@ -136,7 +136,7 @@ class JobWatcher:
         existing = self._bg_jobs.get(job_key)
         if existing is not None and not existing.task.done():
             return True  # already watched
-        session_id = owner or self.worker._query_session_id or self.worker._own_session()
+        session_id = owner or self.worker._query_session_id or self.worker.session_id
         # Whose run this is, which is not the same question as who gets woken: a run a
         # sub-agent launched and handed over is watched for the parent and still named
         # after the child. setdefault, never an assignment: a descriptor that arrived
@@ -179,7 +179,7 @@ class JobWatcher:
         and the ordinary case — a server that simply stayed up — finds it full and does
         nothing at all. Returns what it did, for the log and for tests.
         """
-        session_id = self.worker._own_session()
+        session_id = self.worker.session_id
         if not session_id:
             return {"rearmed": [], "reported": []}
         # This session's own runs and its sub-agents'. A child's watcher goes with the
@@ -425,14 +425,14 @@ class JobWatcher:
                 })
 
         state, reason = await poll.poll_until_terminal(
-            self.worker._agent.run_tool, status_op,
+            self.worker.agent.run_tool, status_op,
             interval=5.0, max_interval=30.0,
             call_timeout=poll.STATUS_CALL_TIMEOUT,
             unreadable_limit=poll.UNREADABLE_POLL_LIMIT,
             on_tick=_tick, label=job_key)
 
         summary = await poll.read_summary(
-            self.worker._agent.run_tool, summary_op,
+            self.worker.agent.run_tool, summary_op,
             call_timeout=poll.STATUS_CALL_TIMEOUT, label=job_key)
 
         logger.info("background job %r of session %s finished (%s); waking it",

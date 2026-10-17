@@ -56,7 +56,7 @@ class TurnHandlers:
             # Include the fixed per-call overhead (system prompt + tools schema).
             # Without it the bar shows only the conversation and hides the tens of
             # thousands of tokens (~30k with every tool server on) that ride on each call.
-            overhead = self.worker.context_overhead_tokens()
+            overhead = self.worker.usage.overhead_tokens()
             used = history_used + overhead
             if used == self._last_context_usage:
                 return  # nothing moved — don't spend a frame on an identical payload
@@ -67,7 +67,7 @@ class TurnHandlers:
                 "total_tokens": total,
                 "reserved_tokens": reserved,
                 "overhead_tokens": overhead,
-                "overhead_measured": self.worker.context_overhead_is_measured(),
+                "overhead_measured": self.worker.usage.overhead_is_measured(),
                 # No agent yet, so the fixed part — tens of thousands of tokens — is not
                 # in `used_tokens` at all. Said out loud rather than left to be read off
                 # a missing figure: this is the one moment the bar is too low by more
@@ -115,7 +115,7 @@ class TurnHandlers:
         Keeps the opening user message and the last two exchanges and replaces what
         lies between with a single summary — the same shape the agent loop's
         intra-query compaction uses. The summarization is an LLM call, so it happens
-        on the worker thread (``AgentWorker.compact_middle``); this coroutine only
+        on the worker thread (``Usage.compact_middle``); this coroutine only
         awaits its future. ``history_full`` is deliberately untouched: it stays the
         one complete account of the session, exactly as for a front-trim.
 
@@ -128,7 +128,7 @@ class TurnHandlers:
         await self.ws.send(json.dumps({"type": "output",
             "text": "  ⚡ Context budget reached — compacting older history…\n"}))
         try:
-            summary = await asyncio.wrap_future(self.worker.compact_middle(list(middle)))
+            summary = await asyncio.wrap_future(self.worker.usage.compact_middle(list(middle)))
         except Exception:
             logger.debug("_compact_history: a best-effort step failed and was skipped", exc_info=True)
             return False
@@ -197,7 +197,7 @@ class TurnHandlers:
         total, reserved = self._ctx_budget()
         # Subtract the per-call overhead (system prompt + tools schema) that rides on
         # every call: without it the bar reads past 100% while this check says it fits.
-        usable_tokens = max(1, total - reserved - self.worker.context_overhead_tokens())
+        usable_tokens = max(1, total - reserved - self.worker.usage.overhead_tokens())
         # allow_network=False: never block the WS event loop on tokenize.
         backend = get_backend()
         history = self.conv.history
@@ -261,7 +261,7 @@ class TurnHandlers:
         if worker is not None:
             try:
                 effective_text, attached_uris = await asyncio.wrap_future(
-                    worker.resolve_resources(text)
+                    worker.panel.resolve_resources(text)
                 )
             except Exception:
                 attached_uris = []

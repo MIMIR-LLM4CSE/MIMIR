@@ -375,7 +375,7 @@ class ConversationHandlers:
             worker.session_title = title or ""
 
     async def _handle_clear_todos(self, msg: dict) -> None:
-        self.worker._clear_todos()
+        self.worker.review.clear_todos()
         await self.ws.send(json.dumps({"type": "todo", "items": []}))
 
     async def _handle_create_session(self, msg: dict) -> None:

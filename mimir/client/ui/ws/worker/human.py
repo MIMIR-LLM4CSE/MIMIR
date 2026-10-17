@@ -141,7 +141,7 @@ class HumanBridge:
         The loop's own record (which calls, which mode) plus the card to put back:
         the first prompt deferred, whose id the answer will come back with.
         """
-        agent = self.worker._agent
+        agent = self.worker.agent
         turn = agent.turn.deferred_turn if agent is not None else None
         prompts = agent.turn.deferred_prompts if agent is not None else None
         if not turn or not prompts:
@@ -333,7 +333,7 @@ class HumanBridge:
         try:
             with human_pause.human_pause():
                 while True:
-                    agent = self.worker._agent
+                    agent = self.worker.agent
                     if agent is not None and agent.turn.cancel_flag.is_set():
                         return None
                     if self._deferring():
@@ -374,7 +374,7 @@ class HumanBridge:
         turn's own prompt, and for a card still queued behind another they are not.
         """
 
-        agent = self.worker._agent
+        agent = self.worker.agent
         if agent is None:
             return
         agent.turn.deferred_prompts = [*(agent.turn.deferred_prompts or []), {

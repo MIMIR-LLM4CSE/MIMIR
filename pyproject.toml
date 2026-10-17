@@ -130,9 +130,5 @@ module = [
     "mimir.client.ui.ws.connection.handlers.*",
     "mimir.client.ui.ws.pool.lifecycle",
     "mimir.client.ui.ws.pool.writer",
-    "mimir.client.ui.ws.worker.usage",
-    "mimir.client.ui.ws.worker.panel",
-    "mimir.client.ui.ws.worker.review",
-    "mimir.client.ui.ws.worker.backend_wait",
 ]
 ignore_errors = true

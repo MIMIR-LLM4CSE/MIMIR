@@ -1,6 +1,6 @@
 """The readiness probe that gates server startup.
 
-Nothing else runs until ``_wait_for_backend`` returns: the WS server does not bind
+Nothing else runs until ``wait_for_backend`` returns: the WS server does not bind
 its port, so a probe that waits on a verdict it already has costs the user the whole
 timeout and shows them nothing. These tests pin the two halves of that: what counts
 as ready, and what counts as never going to be ready.
@@ -13,7 +13,7 @@ import queue
 import httpx
 import pytest
 
-from mimir.client.ui.ws.worker.worker import AgentWorker
+from mimir.client.ui.ws.worker.backend_wait import wait_for_backend
 from mimir.tests.support.workers import bare_worker
 
 
@@ -31,7 +31,7 @@ class _Stub:
 
 
 def _run(stub: _Stub) -> None:
-    asyncio.run(AgentWorker._wait_for_backend(stub))
+    asyncio.run(wait_for_backend(stub.out_q))
 
 
 @pytest.fixture
@@ -182,10 +182,10 @@ def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
     monkeypatch.setattr(ws_worker, "_backend_seen_up", False)
     probes: list[int] = []
 
-    async def _probe(self):
+    async def _probe(out_q):
         probes.append(1)
 
-    monkeypatch.setattr(AgentWorker, "_wait_for_backend", _probe)
+    monkeypatch.setattr(ws_worker, "wait_for_backend", _probe)
 
     class _NoAgent:
         def __init__(self, *a, **kw):

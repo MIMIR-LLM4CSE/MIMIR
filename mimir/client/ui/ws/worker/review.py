@@ -4,26 +4,34 @@ from __future__ import annotations
 import difflib
 import logging
 import os
+from typing import Any, Callable
+
 from ....context.todo import load_todo_items
 from ..runtime import (
     todo_file_for_session,
 )
+from .outbox import Outbox
 
 logger = logging.getLogger(__name__)
 
 
-class WorkerReview:
-        # batch_status is sent from the drain loop's answer handler instead, so it
-        # reflects the current snapshot — a batch_status queued here would lose the
-        # race with an in-flight batch_review_accept.
+class Review:
+    """The review bar and the checklist of one conversation.
 
-    def _build_batch_status(self) -> list[dict]:
-        """Compute per-file accumulated diffs from original → current for every
-        snapshotted file.  Returns a list of diff entries suitable for the
-        ``batch_status`` WebSocket message.
-        """
+    *session* names the conversation the worker works for — never the one on screen,
+    which may be another — and *agent* the agent, None until it is built.
+    """
 
-        agent = self._agent
+    def __init__(self, session: Callable[[], str | None], out_q: Outbox,
+                 agent: Callable[[], Any]) -> None:
+        self._session = session
+        self._out_q = out_q
+        self._agent = agent
+
+    def batch_status(self) -> list[dict]:
+        """Per-file diffs from original to current for every snapshotted file, as the
+        ``batch_status`` message carries them."""
+        agent = self._agent()
         if agent is None:
             return []
         snapshots = agent.approvals.batch.snapshots
@@ -54,43 +62,33 @@ class WorkerReview:
                 files.append(entry)
         return files
 
-    def _push_batch_status(self) -> None:
+    def push_batch_status(self) -> None:
         try:
-            files = self._build_batch_status()
+            files = self.batch_status()
         except Exception:
             files = []
-        self.out_q.put({"type": "batch_status", "files": files})
+        self._out_q.put({"type": "batch_status", "files": files})
 
-    def _push_todos(self) -> None:
+    def push_todos(self) -> None:
         try:
-            items = self._load_todos()
+            items = self.todos()
             if items:
-                self.out_q.put({"type": "todo", "items": items})
+                self._out_q.put({"type": "todo", "items": items})
         except Exception:
-            logger.debug("_push_todos: a best-effort step failed and was skipped", exc_info=True)
+            logger.debug("push_todos: a best-effort step failed and was skipped", exc_info=True)
 
-    def _own_session(self) -> str | None:
-        """The conversation this worker works for — never the one on screen.
-
-        It fell back to the session on screen once, for a worker built before any
-        session was known; one with a session of its own reading the screen instead
-        wrote another conversation's checklist the moment the user looked elsewhere.
-        A worker with no session (the pre-agent stand-in) has none.
-        """
-        return self.session_id
-
-    def _load_todos(self) -> list:
+    def todos(self) -> list:
         try:
-            return load_todo_items(todo_file_for_session(self._own_session()))
+            return load_todo_items(todo_file_for_session(self._session()))
         except Exception:
-            logger.debug("_load_todos: a best-effort step failed and was skipped", exc_info=True)
+            logger.debug("todos: a best-effort step failed and was skipped", exc_info=True)
             return []
 
-    def _clear_todos(self) -> None:
-        """Wipe this worker's own session's todo file."""
+    def clear_todos(self) -> None:
+        """Wipe this conversation's todo file."""
         try:
-            todo_file = todo_file_for_session(self._own_session())
+            todo_file = todo_file_for_session(self._session())
             if os.path.exists(todo_file):
                 open(todo_file, "w").close()
         except Exception:
-            logger.debug("_clear_todos: a best-effort step failed and was skipped", exc_info=True)
+            logger.debug("clear_todos: a best-effort step failed and was skipped", exc_info=True)

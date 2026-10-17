@@ -231,11 +231,11 @@ class MeasuredOverheadTests(unittest.TestCase):
     def _overhead(self) -> int:
         with patch("mimir.client.query_engine.backends.factory.get_backend",
                    return_value=_CountingBackend()):
-            return self._worker.context_overhead_tokens()
+            return self._worker.usage.overhead_tokens()
 
     def test_an_estimate_says_it_is_one(self):
         self.assertGreater(self._overhead(), 0)
-        self.assertFalse(self._worker.context_overhead_is_measured())
+        self.assertFalse(self._worker.usage.overhead_is_measured())
 
     def test_a_remembered_figure_is_reported_as_measured(self):
         """It is: a server counted it, against this very prompt and tool set."""
@@ -247,7 +247,7 @@ class MeasuredOverheadTests(unittest.TestCase):
         token_calibration.remember_overhead(key, 36_000)
         token_calibration.reset_for_tests()  # a fresh process reads it off disk
         self.assertEqual(self._overhead(), 36_000)
-        self.assertTrue(self._worker.context_overhead_is_measured())
+        self.assertTrue(self._worker.usage.overhead_is_measured())
 
     def test_a_changed_tool_set_falls_back_to_the_estimate(self):
         agent = self._worker._agent
@@ -260,7 +260,7 @@ class MeasuredOverheadTests(unittest.TestCase):
         )
         token_calibration.reset_for_tests()
         self.assertNotEqual(self._overhead(), 36_000)
-        self.assertFalse(self._worker.context_overhead_is_measured())
+        self.assertFalse(self._worker.usage.overhead_is_measured())
 
 
 if __name__ == "__main__":

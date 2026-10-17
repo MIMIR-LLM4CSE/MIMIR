@@ -18,6 +18,7 @@ import uuid
 import json
 import os
 import tempfile
+import types
 import unittest
 
 from mimir.tests.support.pools import FakePool
@@ -96,15 +97,14 @@ class _FakeWorker:
     def __init__(self, turn_start=None):
         self.active_session_id = None
         self._turn_start = turn_start
+        self.review = types.SimpleNamespace(todos=lambda: [])
+        self.usage = types.SimpleNamespace()
 
     def last_turn_start(self):
         return self._turn_start
 
     def export_agent_state(self):
         return {"carry_context": {}}
-
-    def _load_todos(self):
-        return []
 
     def load_agent_state(self, state):
         pass
@@ -158,7 +158,7 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_middle_is_summarized_and_the_head_and_tail_survive(self):
         sess = self._sess_with_history(5)
         summary = [{"role": "assistant", "content": "[Context summary] what happened"}]
-        sess.worker.compact_middle = lambda middle: _done_future(summary)
+        sess.worker.usage.compact_middle = lambda middle: _done_future(summary)
 
         self.assertTrue(await sess._compact_history())
         self.assertEqual(sess.conv.history[0]["content"], "opening question")
@@ -177,7 +177,7 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
         # the caller must read that as "no compaction" and fall back to trimming.
         sess = self._sess_with_history(5)
         before = list(sess.conv.history)
-        sess.worker.compact_middle = lambda middle: _done_future(middle)
+        sess.worker.usage.compact_middle = lambda middle: _done_future(middle)
 
         self.assertFalse(await sess._compact_history())
         self.assertEqual(sess.conv.history, before)
@@ -185,7 +185,7 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_too_short_a_middle_is_not_worth_an_llm_call(self):
         sess = self._sess_with_history(1)
         called = []
-        sess.worker.compact_middle = lambda middle: called.append(middle) or _done_future([])
+        sess.worker.usage.compact_middle = lambda middle: called.append(middle) or _done_future([])
 
         self.assertFalse(await sess._compact_history())
         self.assertEqual(called, [])

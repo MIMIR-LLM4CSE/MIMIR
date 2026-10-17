@@ -33,13 +33,13 @@ from ..runtime import (
 )
 
 # After the runtime: it reads the workspace root that the bootstrap above pins.
+from .backend_wait import prewarm_model, wait_for_backend
 from .human import HumanBridge
 from .jobs import JobWatcher
-from .backend_wait import WorkerBackendWait
 from .outbox import Outbox
-from .review import WorkerReview
-from .panel import WorkerPanel
-from .usage import WorkerUsage
+from .panel import Panel
+from .review import Review
+from .usage import Usage
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 _backend_seen_up = False
 
 
-class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
+class AgentWorker:
     """Runs MimirAgent in a dedicated background thread with its own event loop.
 
     Thread-safe queues carry events to the WS layer and approval responses back.
@@ -84,11 +84,6 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
     def _init_fields(self, model: str, session_id: str | None) -> None:
         """Every field, and nothing that starts running (see :class:`NoAgentWorker`)."""
         self.model = model
-        # Whether the overhead `context_overhead_tokens` last returned came from a
-        # server's own count. Recorded as it is computed rather than worked out again:
-        # answering it needs the system prompt and the tools schema, and the bar asks
-        # both questions once a second.
-        self._overhead_measured = False
         # The conversation this worker exists for, fixed for its whole life. One worker
         # per session is what lets a turn keep running in a conversation nobody is looking
         # at: a worker shared between conversations can stream only one of them anywhere
@@ -128,7 +123,16 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
         self._query_session_id: str | None = None
         # The runs this conversation left going, and the check-ins about them.
         self.jobs = JobWatcher(self)
+        # What the review bar, the side panel and the context bar read of this worker.
+        self.review = Review(lambda: self.session_id, self.out_q, lambda: self._agent)
+        self.panel = Panel(lambda: self._agent, lambda: self._loop)
+        self.usage = Usage(lambda: self.model, lambda: self._agent, lambda: self._loop)
         self._thread = None
+
+    @property
+    def agent(self) -> Any:
+        """The agent, None until it is built and again once it is closed."""
+        return self._agent
 
     # ── Background thread ─────────────────────────────────────────────────────
 
@@ -183,7 +187,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
         building: Any = None
         try:
             if not _backend_seen_up:
-                await self._wait_for_backend()
+                await wait_for_backend(self.out_q)
                 _backend_seen_up = True
             agent = building = MimirAgent(model=self.model, session_id=self.session_id)
             await agent.connect_servers(all_servers())
@@ -218,7 +222,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
             # Pre-warm the model in the background so VRAM is ready for the first
             # real query.  Runs after _ready so it never blocks the WS handshake.
             if self._agent is not None:
-                asyncio.get_event_loop().create_task(self._prewarm_model())
+                asyncio.get_event_loop().create_task(prewarm_model(self.model))
 
 
     async def _query_loop(self) -> None:
@@ -239,7 +243,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
                 return  # shutdown sentinel
 
             self._current_task = asyncio.current_task()
-            self._query_session_id = item.get("session_id") or self._own_session()
+            self._query_session_id = item.get("session_id") or self.session_id
             # What this turn was handed, so whoever writes its answer can tell the
             # turn's own messages from the prefix it inherited. Recorded here because
             # this is where the turn begins, and carried on the answer rather than kept
@@ -307,7 +311,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
             def _think_end_cb() -> None:
                 text = "".join(think_buf)
                 think_buf.clear()
-                self.out_q.put({"type": "thinking_end", "tokens": self._count_tokens(text)})
+                self.out_q.put({"type": "thinking_end", "tokens": self.usage.count_tokens(text)})
 
             # Structured events (status/tool_call/tool_result/diff) go straight
             # onto out_q as event dicts — no stdout round-trip. The drain/send
@@ -387,7 +391,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
             answer_ev["_unconsumed_steer"] = unread
 
         # Push current todo state.
-        self._push_todos()
+        self.review.push_todos()
         self.out_q.put(answer_ev)
 
 
@@ -655,7 +659,7 @@ class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
         """Call *tool* directly (``call_tool_directly``) on the worker's OWN loop.
 
         Returns a Future of the decoded payload. Same constraint as
-        :meth:`resolve_resources`: the MCP ClientSession objects are bound to this loop,
+        :meth:`Panel.resolve_resources`: the MCP ClientSession objects are bound to this loop,
         so a call made from the WebSocket thread is scheduled onto it rather than
         awaited where it was asked for.
         """

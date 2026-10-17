@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -28,15 +29,11 @@ class _Worker:
         self.batch: list[dict] = []
         self.todos: list[dict] = []
         self._query_session_id = None
+        self.review = types.SimpleNamespace(batch_status=lambda: list(self.batch),
+                                            todos=lambda: list(self.todos))
 
     def is_busy(self) -> bool:
         return self._query_session_id is not None
-
-    def _build_batch_status(self) -> list[dict]:
-        return list(self.batch)
-
-    def _load_todos(self) -> list[dict]:
-        return list(self.todos)
 
 
 class _RouterCase(unittest.IsolatedAsyncioTestCase):

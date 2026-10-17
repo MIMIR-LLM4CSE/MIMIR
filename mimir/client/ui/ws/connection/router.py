@@ -232,7 +232,7 @@ class EventRouter:
 
     async def _push_batch_status(self, *, only_if_any: bool) -> None:
         try:
-            files = self.session.worker._build_batch_status()
+            files = self.session.worker.review.batch_status()
         except Exception:
             logger.debug("batch status could not be built", exc_info=True)
             return
@@ -251,7 +251,7 @@ class EventRouter:
             return
         self._todo_mtime = mtime
         try:
-            items = session.worker._load_todos()
+            items = session.worker.review.todos()
         except Exception:
             logger.debug("checklist could not be read", exc_info=True)
             return

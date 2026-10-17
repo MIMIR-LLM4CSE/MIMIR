@@ -99,15 +99,9 @@ class OwnSessionTests(unittest.TestCase):
         w.session_id = session_id
         return w
 
-    def test_it_works_for_its_own_session(self):
-        self.assertEqual(self._bare("mine")._own_session(), "mine")
-
     def test_it_does_not_even_know_which_one_is_on_screen(self):
         """The user looking elsewhere can change nothing for this worker."""
         self.assertFalse(hasattr(self._bare("mine"), "active_session_id"))
-
-    def test_without_one_it_has_none(self):
-        self.assertIsNone(self._bare(None)._own_session())
 
 
 class ACloseTests(unittest.TestCase):
@@ -170,7 +164,6 @@ class TheQueryLoopWaitsTests(unittest.TestCase):
     def test_a_turn_queued_from_another_thread_starts_at_once(self) -> None:
         w = AgentWorker("test-model", start=False)
         w.session_id = "s1"
-        w._own_session = lambda: "s1"
         ran: list[str] = []
         started = threading.Event()
 

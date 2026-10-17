@@ -181,7 +181,7 @@ class PanelHandlers:
         # One worker for the whole report: the agent may land during the await, and a
         # report read off the stand-in must not then claim to be the agent's.
         worker = self.worker
-        sections = await asyncio.wrap_future(worker.panel_sections(force=refresh))
+        sections = await asyncio.wrap_future(worker.panel.sections(force=refresh))
         agent_ready = worker.agent_ready()
         if not agent_ready:
             sections = recorded_hosts_sections(paths.STATE_DIR)
@@ -229,7 +229,7 @@ class PanelHandlers:
         """Serve the attachable-resource list for the webview picker/autocomplete."""
         await self.ws.send(json.dumps({
             "type": "resources",
-            "resources": self.worker.resources_snapshot(),
+            "resources": self.worker.panel.resources(),
         }))
 
     async def _handle_toggle_server(self, msg: dict) -> None:

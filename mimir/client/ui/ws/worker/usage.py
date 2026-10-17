@@ -6,7 +6,8 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
+
 from ....agent_core import build_base_system_content
 from ....query_engine import token_calibration
 from ....query_engine.backends.factory import get_backend
@@ -14,7 +15,23 @@ from ....query_engine.backends.factory import get_backend
 logger = logging.getLogger(__name__)
 
 
-class WorkerUsage:
+class Usage:
+    """How much of the window one worker's conversation fills, and compaction of it.
+
+    *model*, *agent* and *loop* are read afresh at each call: the model can be
+    switched, and the agent and its loop exist only once the worker has built them.
+    """
+
+    def __init__(self, model: Callable[[], str], agent: Callable[[], Any],
+                 loop: Callable[[], asyncio.AbstractEventLoop | None]) -> None:
+        self._model = model
+        self._agent = agent
+        self._loop = loop
+        # Whether the overhead `overhead_tokens` last returned came from a server's own
+        # count. Recorded as it is computed: answering it again needs the system prompt
+        # and the tools schema, and the bar asks both questions once a second.
+        self._overhead_measured = False
+
     def compact_middle(self, middle: list) -> Any:
         """Summarize *middle* into one message, off the WS event loop.
 
@@ -26,19 +43,19 @@ class WorkerUsage:
         or to *middle* unchanged when summarization failed (``compact_messages``
         swallows its own errors) — the caller treats that as "no compaction".
         """
-        if self._agent is None or self._loop is None:
+        agent, loop = self._agent(), self._loop()
+        if agent is None or loop is None:
             fut: Any = concurrent.futures.Future()
             fut.set_result(middle)
             return fut
 
         async def _run() -> list:
             return await asyncio.get_running_loop().run_in_executor(
-                None, self._agent.compact_messages, middle
-            )
+                None, agent.compact_messages, middle)
 
-        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
+        return asyncio.run_coroutine_threadsafe(_run(), loop)
 
-    def _count_tokens(self, text: str) -> int:
+    def count_tokens(self, text: str) -> int:
         """Token count for *text* — exact when the backend has a tokenizer.
 
         ``allow_network=False``: this runs inline on the streaming path, which must
@@ -48,12 +65,12 @@ class WorkerUsage:
         if not text:
             return 0
         try:
-            return get_backend().count_text_tokens(self.model, text, allow_network=False)
+            return get_backend().count_text_tokens(self._model(), text, allow_network=False)
         except Exception:
-            logger.debug("_count_tokens: a best-effort step failed and was skipped", exc_info=True)
+            logger.debug("count_tokens: a best-effort step failed and was skipped", exc_info=True)
             return 0
 
-    def context_overhead_is_measured(self) -> bool:
+    def overhead_is_measured(self) -> bool:
         """True once a server-reported prompt size has replaced the estimate.
 
         Surfaced to the bar's tooltip because the two numbers answer different
@@ -62,13 +79,13 @@ class WorkerUsage:
         received. Saying which one is on screen turns a figure that quietly shifts
         after the first turn into one the user can account for.
 
-        Reads what :meth:`context_overhead_tokens` recorded on its last call, so ask it
+        Reads what :meth:`overhead_tokens` recorded on its last call, so ask it
         after that one. A figure read back from the calibration cache counts as measured:
         a server did measure it, against this very system prompt and tool set.
         """
         return self._overhead_measured
 
-    def context_overhead_tokens(self) -> int:
+    def overhead_tokens(self) -> int:
         """Fixed prompt overhead (tokens) sent on *every* LLM call besides history.
 
         The system prompt plus the tools schema — ~30k tokens with every tool server
@@ -104,16 +121,17 @@ class WorkerUsage:
 
         Best-effort, cached via the backend's token cache; never raises.
         """
-        agent = self._agent
+        agent = self._agent()
         if agent is None:
             return 0
+        model = self._model()
         try:
             backend = get_backend()
             # getattr, not a direct call: a backend stub without the calibration
             # should fall through to the estimate, not lose the overhead entirely
             # to the except below.
             probe = getattr(backend, "measured_prompt_overhead", None)
-            measured = probe(self.model) if callable(probe) else None
+            measured = probe(model) if callable(probe) else None
             mode = getattr(agent, "mode", "") or ""
             build = getattr(agent, "build_system_content_now", None)
             prompt = build(mode) if callable(build) else build_base_system_content()
@@ -121,7 +139,7 @@ class WorkerUsage:
             tools = narrow(mode) if callable(narrow) else getattr(agent, "tools", None)
             tools_json = json.dumps(tools) if tools else ""
             key = token_calibration.overhead_key(
-                self.model, getattr(agent, "context_mode", "full"), prompt, tools_json
+                model, getattr(agent, "context_mode", "full"), prompt, tools_json
             )
             if measured is not None:
                 # Write-through, so the next run of this same configuration starts
@@ -136,12 +154,10 @@ class WorkerUsage:
                 self._overhead_measured = True
                 return remembered
             self._overhead_measured = False
-            total = backend.count_text_tokens(self.model, prompt, allow_network=False)
+            total = backend.count_text_tokens(model, prompt, allow_network=False)
             if tools_json:
-                total += backend.count_text_tokens(
-                    self.model, tools_json, allow_network=False
-                )
+                total += backend.count_text_tokens(model, tools_json, allow_network=False)
             return total
         except Exception:
-            logger.debug("context_overhead_tokens: a best-effort step failed and was skipped", exc_info=True)
+            logger.debug("overhead_tokens: a best-effort step failed and was skipped", exc_info=True)
             return 0

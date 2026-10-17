@@ -62,8 +62,8 @@ def _worker() -> AgentWorker:
     w._agent = _FakeAgent()
     w.human._defer = set()
     w._turn_submitted_len = 0
-    w._load_todos = lambda: []
-    w._count_tokens = lambda _text: 0
+    w.review.todos = lambda: []
+    w.usage.count_tokens = lambda _text: 0
     return w
 
 
@@ -136,6 +136,7 @@ class _FakeWorker:
         self._query_session_id = "s1"
         self._agent = types.SimpleNamespace(context_mode="flat")
         self.model = "test-model"
+        self.usage = types.SimpleNamespace()
 
     def submit_query(self, text, history, session_id=None) -> None:
         self.submitted.append((text, list(history), session_id))
@@ -287,7 +288,7 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
         # What the ordinary query path reads on the way in, and nothing of what is
         # under test here: the history fits, and there are no @-mentions to resolve.
         self.worker.get_context_mode = lambda *_a: "flat"
-        self.worker.context_overhead_tokens = lambda: 0
+        self.worker.usage.overhead_tokens = lambda: 0
         self.session = Connection(self.ws, FakePool(self.worker))
         conv = self.session.pool.conversations.new()
         conv.history = [{"role": "user", "content": "do it"}]

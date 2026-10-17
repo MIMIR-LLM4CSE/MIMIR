@@ -132,7 +132,7 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
     worker._agent = agent
     worker._loop = loop
 
-    future = worker.panel_sections()
+    future = worker.panel.sections()
     _drain(loop, future)
     sections = future.result(timeout=5)
     loop.close()
@@ -172,7 +172,7 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
     worker._agent = agent
     worker._loop = loop
 
-    future = worker.panel_sections()
+    future = worker.panel.sections()
     while len(started) < 3:
         loop.run_until_complete(asyncio.sleep(0))
     release[0].set_result(None)
@@ -212,7 +212,7 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
     worker._loop = loop
 
     for force in (False, True):
-        future = worker.panel_sections(force=force)
+        future = worker.panel.sections(force=force)
         _drain(loop, future)
         future.result(timeout=5)
     loop.close()
@@ -322,7 +322,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
     worker._agent = agent
     worker._loop = loop
 
-    future = worker.panel_sections()
+    future = worker.panel.sections()
     _drain(loop, future)
     sections = future.result(timeout=5)
     loop.close()
@@ -354,7 +354,7 @@ def test_a_section_that_only_has_groups_is_kept():
     worker = AgentWorker("test-model", start=False)
     worker._agent = agent
     worker._loop = loop
-    future = worker.panel_sections()
+    future = worker.panel.sections()
     _drain(loop, future)
     sections = future.result(timeout=5)
     loop.close()

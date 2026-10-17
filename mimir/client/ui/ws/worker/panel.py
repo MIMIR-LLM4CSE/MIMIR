@@ -6,8 +6,9 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-from typing import Any
-from ....context.capabilities import panel_sections as _declared
+from typing import Any, Callable
+
+from ....context.capabilities import panel_sections
 from ....protocol.tool_result import normalize_tool_content
 from ..runtime import (
     augment_query_with_resources,
@@ -16,18 +17,29 @@ from ..runtime import (
 logger = logging.getLogger(__name__)
 
 
-class WorkerPanel:
-    def resources_snapshot(self) -> list[dict]:
+class Panel:
+    """What the side panel reads of one worker's agent, on that agent's loop.
+
+    *agent* and *loop* answer None until the worker has built them.
+    """
+
+    def __init__(self, agent: Callable[[], Any],
+                 loop: Callable[[], asyncio.AbstractEventLoop | None]) -> None:
+        self._agent = agent
+        self._loop = loop
+
+    def resources(self) -> list[dict]:
         """List attachable MCP resources for the frontend picker.
 
         The registry (``agent.resources``) is populated once at connect and never
         mutated afterward, so this read-only snapshot is safe to take directly from
         the WS event loop without hopping to the worker loop.
         """
-        if self._agent is None:
+        agent = self._agent()
+        if agent is None:
             return []
         out: list[dict] = []
-        for uri, info in sorted((self._agent.resources or {}).items()):
+        for uri, info in sorted((agent.resources or {}).items()):
             out.append({
                 "uri": uri,
                 "name": info.get("name", uri),
@@ -43,15 +55,15 @@ class WorkerPanel:
         read must run there — we schedule it via ``run_coroutine_threadsafe`` and return
         a ``concurrent.futures.Future`` the caller awaits with ``asyncio.wrap_future``.
         """
-        if self._agent is None or self._loop is None:
+        agent, loop = self._agent(), self._loop()
+        if agent is None or loop is None:
             fut: Any = concurrent.futures.Future()
             fut.set_result((text, []))
             return fut
         return asyncio.run_coroutine_threadsafe(
-            augment_query_with_resources(self._agent, text), self._loop
-        )
+            augment_query_with_resources(agent, text), loop)
 
-    def panel_sections(self, *, force: bool = False) -> Any:
+    def sections(self, *, force: bool = False) -> Any:
         """Collect every section the connected servers can fill. Future of a list.
 
         Asked by capability, never by name: a server declares ``PANEL_REPORT`` and the
@@ -70,16 +82,15 @@ class WorkerPanel:
         user opening a drawer, not the model taking a step, and routing it through the
         guardrail pipeline would scatter tool cards through their transcript.
         """
-
-        if self._agent is None or self._loop is None:
+        agent, loop = self._agent(), self._loop()
+        if agent is None or loop is None:
             fut: Any = concurrent.futures.Future()
             fut.set_result([])
             return fut
-        agent = self._agent
-        declared = _declared(getattr(agent, "tool_caps", None))
+        declared = panel_sections(agent.tool_caps)
 
         async def _ask(tool: str, spec: dict) -> dict | None:
-            owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
+            owner = agent.tool_owner.get(tool)
             if owner is None:
                 return None
             args = dict(spec.get("args") or {})
@@ -130,4 +141,4 @@ class WorkerPanel:
                 })
             return out
 
-        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
+        return asyncio.run_coroutine_threadsafe(_run(), loop)
