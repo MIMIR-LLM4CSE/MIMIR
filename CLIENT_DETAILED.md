@@ -1139,9 +1139,11 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 | `connection/router.py` | `EventRouter`: the connection's share of the stream, sent to its client, one handler per event type |
 | `connection/commands.py`, `connection/panel_runs.py` | the socket's side of the slash commands (`WsCommandHost`, `/cancel`, `/diag`); the runs the panel shows |
 | `pool/bus.py` | the pump: drains every worker, journals, hands answers and finished runs to the pool, fans out to subscriptions |
-| `pool/pool.py` | `AgentPool`: one worker per conversation, built on demand, released when idle; owns the `Conversations` and commits every turn |
+| `pool/pool.py` | `AgentPool`: one worker per conversation, built on demand, queued past the cap; owns the `Conversations` |
+| `pool/lifecycle.py`, `pool/writer.py`, `pool/settings_record.py` | when an idle worker or the whole server goes; every write of a conversation (`commit_turn`, `submit_turn`, `save_conversation`); the settings replayed onto later workers |
 | `pool/wakes.py` | `WakeRouter`: finished runs, bulletins, and unread steering, each to a turn of its conversation |
-| `worker/worker.py` | `AgentWorker`: the agent's thread and loop, the query loop, the outbox that wakes the pump |
+| `worker/worker.py` | `AgentWorker`: the agent's thread and loop, the query loop; `NoAgentWorker`, the worker of a conversation before its first query |
+| `worker/outbox.py`, `worker/backend_wait.py`, `worker/review.py`, `worker/panel.py`, `worker/usage.py` | the outbox that wakes the pump; the wait for the backend; the review bar and checklist; the panel sections and resources; the context overhead and compaction |
 | `worker/human.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
 | `worker/jobs.py` | `JobWatcher`: a conversation's detached runs and the check-in cycle |
 | `worker/file_preview.py`, `runtime.py` | the diff a write would make; what the parts share (stdout router, todo file, context budget) |

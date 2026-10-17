@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from mimir.client.ui.ws.worker.worker import AgentWorker
+from mimir.tests.support.workers import bare_worker
 
 
 class _Stub:
@@ -192,7 +193,6 @@ def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
 
     monkeypatch.setattr(agent_core, "MimirAgent", _NoAgent)
     for sid in ("s1", "s2"):
-        worker = AgentWorker.detached("m")
-        worker.session_id = sid
+        worker = bare_worker("m", sid)
         asyncio.run(worker._setup())
     assert probes == [1]

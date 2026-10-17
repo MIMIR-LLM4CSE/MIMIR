@@ -2,11 +2,8 @@
 
 A run finishing, a bulletin on runs still going, and steering a turn ended without
 reading: each of these is owed to one conversation, and each becomes either a steer
-into the turn already running or a turn of its own. There used to be two copies of
-this — one in the connection, against the conversation it held on screen, and one in
-the pool, against the stored conversation when nobody was connected — with a claim
-deciding which of them acted. There is one conversation object now, so there is one
-router, and it runs whether or not anyone is attached.
+into the turn already running or a turn of its own. The router works on the one
+conversation object the pool holds, so it runs whether or not anyone is attached.
 
 Everything here is synchronous. Appending to a conversation, saving it and queueing a
 turn are plain calls — ``submit_query`` is a queue put — so the pump runs this inside

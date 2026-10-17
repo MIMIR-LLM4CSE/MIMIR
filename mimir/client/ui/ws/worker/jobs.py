@@ -6,8 +6,6 @@ loop until it ends, then puts a ``job_complete`` on the worker's outbox; the poo
 ``WakeRouter`` hands that to a turn of the conversation that launched it. While runs
 are going, a check-in cycle sends a short bulletin on a widening schedule, so a run
 gone wrong is found out early rather than at its end.
-
-Split out of the worker, which kept all of this among its own state.
 """
 from __future__ import annotations
 

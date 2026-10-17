@@ -10,41 +10,36 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import difflib
-import json
 import logging
 import os
 import queue as _queue
 import threading
-from typing import Any, Callable
+from typing import Any
 
-from .....servers._shared.embed import verify_ssl
 from .....servers._shared.responses import err
-from ....agent_core import MimirAgent, build_base_system_content
+from ....agent_core import MimirAgent
 from ....config import TEMPERATURE_BACKENDS
 from ....config.models import thinking_can_disable, thinking_profile
 from ....config.preferences import load_temperature
-from ....context.capabilities import panel_sections as _declared
-from ....context.todo import load_todo_items
 from ....core.settings import read_setting
 from ....extensions import all_servers
-from ....protocol.tool_result import normalize_tool_content
-from ....query_engine import token_calibration
 from ....query_engine.backends.factory import get_backend
 from ....tool_execution.direct import NO_AGENT, call_tool_directly
 
 # Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
 from ..runtime import (
-    _ORIGINAL_STDOUT,
     _ROUTER,
-    _todo_file_for_session,
-    augment_query_with_resources,
 )
 
 # After the runtime: it reads the workspace root that the bootstrap above pins.
 from .human import HumanBridge
 from .jobs import JobWatcher
+from .backend_wait import WorkerBackendWait
+from .outbox import Outbox
+from .review import WorkerReview
+from .panel import WorkerPanel
+from .usage import WorkerUsage
 
 logger = logging.getLogger(__name__)
 
@@ -53,29 +48,7 @@ logger = logging.getLogger(__name__)
 _backend_seen_up = False
 
 
-class _Outbox(_queue.Queue):
-    """A worker's events on their way to the pump, which each one wakes.
-
-    The pump used to look every 50 ms whether or not anything was there. ``on_put`` is
-    set by the pool once the worker is built, to a thread-safe nudge of the pump; until
-    then, and if the loop is gone, the pump's own tick still drains what is here.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.on_put: Callable[[], None] | None = None
-
-    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
-        super().put(item, block, timeout)
-        notify = self.on_put
-        if notify is not None:
-            try:
-                notify()
-            except RuntimeError:
-                pass   # the loop is closing; there is no pump left to wake
-
-
-class AgentWorker:
+class AgentWorker(WorkerUsage, WorkerPanel, WorkerReview, WorkerBackendWait):
     """Runs MimirAgent in a dedicated background thread with its own event loop.
 
     Thread-safe queues carry events to the WS layer and approval responses back.
@@ -83,24 +56,15 @@ class AgentWorker:
 
     @classmethod
     def detached(cls, model: str) -> "AgentWorker":
-        """A worker that never builds an agent: no thread, no servers, no LLM wait.
+        """The worker of a conversation that has no agent yet (:class:`NoAgentWorker`)."""
+        return NoAgentWorker(model)
 
-        The stand-in for "this conversation has no agent yet", which is the ordinary state
-        until its first query. A real ``AgentWorker`` rather than a parallel null class, on
-        purpose: every getter here answers for ``_agent is None`` (``setting("context_mode")`` →
-        the default its caller passes, ``get_temperature_state`` → the stored preference,
-        ``toggles_state`` → empty) and every setter is a no-op in that state. A separate
-        class would restate all of those, and then drift from them.
-
-        What it must never be given is a query: ``submit_query`` would put it on a queue no
-        loop is reading. The session resolves a real worker through the pool for that.
-        """
-        worker = object.__new__(cls)
-        worker._init_fields(model, None)
-        return worker
-
-    def __init__(self, model: str, session_id: str | None = None) -> None:
+    def __init__(self, model: str, session_id: str | None = None, *,
+                 start: bool = True) -> None:
+        """*start* False builds the fields only: no thread, no servers, no agent."""
         self._init_fields(model, session_id)
+        if not start:
+            return
         self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
         self._thread.start()
         # Wait for server connections. The timeout is long to accommodate vLLM
@@ -115,11 +79,7 @@ class AgentWorker:
             raise self._error
 
     def _init_fields(self, model: str, session_id: str | None) -> None:
-        """Every field, and nothing that starts running.
-
-        Split from ``__init__`` so :meth:`detached` can have the state without the thread,
-        the backend wait and the ~19 server spawns.
-        """
+        """Every field, and nothing that starts running (see :class:`NoAgentWorker`)."""
         self.model = model
         # Whether the overhead `context_overhead_tokens` last returned came from a
         # server's own count. Recorded as it is computed rather than worked out again:
@@ -146,7 +106,7 @@ class AgentWorker:
         self._error: Exception | None = None
 
         # Queues for cross-thread communication.
-        self.out_q = _Outbox()                               # agent → WS
+        self.out_q = Outbox()                               # agent → WS
         self._query_q: _queue.Queue[dict | None] = _queue.Queue()  # WS → query loop
         self._steer_q: _queue.Queue[str] = _queue.Queue()  # WS → running agent (mid-run steering)
         # The person behind this agent: the cards it raises and their answers.
@@ -211,120 +171,6 @@ class AgentWorker:
         finally:
             self._closed.set()
 
-    async def _wait_for_backend(self) -> None:
-        """Poll the LLM backend until it answers, or fail fast when it never will.
-
-        The request is the one the agent actually depends on — the backend's
-        ``readiness_urls`` (the model list for every OpenAI-compatible endpoint,
-        ``/api/tags`` for Ollama, nothing for a hosted API) — asked with the same
-        client, proxy posture and TLS policy the backends themselves use. A probe that asks a different question of a different client
-        than the chat path can fail where the chat path succeeds, which is exactly
-        what a readiness check must never do.
-
-        A second URL is a fallback (a local vLLM's ``/health`` answers while the engine
-        is still loading weights, before ``/v1/models`` does). It is only a fallback
-        because it lives at the server root, which an ingress route in front of the
-        endpoint usually does not expose.
-
-        Not every failure is worth waiting on. A refused certificate or a route that
-        is not there answers identically on the first attempt and on the hundredth,
-        so those stop the wait immediately, naming the URL and the reason, instead of
-        spending the full timeout on a verdict already known.
-
-        Progress goes to the client *and* to stdout: during startup the WS server has
-        not bound its port yet, so the client that would show the spinner does not
-        exist, and an attempt reported only there is an attempt reported to no one.
-
-        Controlled by env vars:
-        - MIMIR_BACKEND_TIMEOUT  (seconds, default 600)
-        - MIMIR_BACKEND_POLL_INTERVAL (seconds, default 5)
-        """
-        import httpx
-
-
-
-        # Which endpoint, and what to ask it, is the backend's to say: a hosted API has
-        # nothing to wait on, a self-hosted server names what to poll.
-        backend = os.environ.get("LLM_BACKEND", "vllm")
-        urls = get_backend().readiness_urls()
-        if not urls:
-            return
-        health_url, fallback_url = urls[0], (urls[1] if len(urls) > 1 else "")
-
-        timeout = int(os.environ.get("MIMIR_BACKEND_TIMEOUT", "600"))
-        poll = float(os.environ.get("MIMIR_BACKEND_POLL_INTERVAL", "5"))
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        last_progress = loop.time()
-        progress_interval = 10.0
-
-        def _say(text: str) -> None:
-            self.out_q.put({"type": "output", "text": text})
-            print(text.rstrip("\n"), file=_ORIGINAL_STDOUT, flush=True)
-
-        def _get(url: str) -> tuple[bool, str]:
-            """(ready, permanent failure reason) for one GET. Empty reason: retry."""
-            try:
-                # trust_env=False: a corporate proxy has no route to the cluster and
-                # swallows the request instead of refusing it. verify_ssl(): the same
-                # switch the chat and embedding clients read, so the probe trusts
-                # exactly what they trust.
-                with httpx.Client(trust_env=False, timeout=4.0, verify=verify_ssl()) as client:
-                    resp = client.get(url)
-            except httpx.ConnectError as exc:
-                # A refused certificate is the one connection failure that will not
-                # resolve itself: waiting cannot add a CA to the trust store.
-                if "CERTIFICATE_VERIFY_FAILED" in str(exc) or "SSLCertVerificationError" in str(exc):
-                    return False, (
-                        f"the server at {url} answered, but its security certificate "
-                        f"is not trusted (common for internal servers). If you trust "
-                        f"this server, untick “Vllm Verify Ssl” in the MIMIR settings "
-                        f"(or set VLLM_VERIFY_SSL=0), then retry. Details: {exc}"
-                    )
-                return False, ""
-            except Exception:
-                logger.debug("_get: a best-effort step failed and was skipped", exc_info=True)
-                return False, ""
-            if resp.status_code == 200:
-                return True, ""
-            # Up, but guarding the endpoint: the agent's own request carries the key.
-            if resp.status_code in (401, 403):
-                return True, ""
-            if resp.status_code == 404:
-                return False, f"404 — nothing is served at {url}"
-            return False, ""
-
-        def _check() -> tuple[bool, str]:
-            ready, reason = _get(health_url)
-            if ready or not fallback_url:
-                return ready, reason
-            # The engine may still be loading, when /health answers and /v1/models
-            # does not. A fallback that answers outranks the primary's 404.
-            alt_ready, _ = _get(fallback_url)
-            return alt_ready, "" if alt_ready else reason
-
-        _say(f"⏳ Waiting for LLM backend ({backend}) at {health_url} …\n")
-
-        while True:
-            ready, permanent = await loop.run_in_executor(None, _check)
-            if ready:
-                _say("✅ LLM backend is ready.\n")
-                return
-            if permanent:
-                raise RuntimeError(f"LLM backend unreachable: {permanent}")
-
-            now = loop.time()
-            if now >= deadline:
-                raise RuntimeError(
-                    f"LLM backend did not become ready within {timeout} s "
-                    f"(health URL: {health_url})"
-                )
-            if now - last_progress >= progress_interval:
-                elapsed = int(now - (deadline - timeout))
-                _say(f"⏳ Still waiting for LLM backend … ({elapsed}s elapsed)\n")
-                last_progress = now
-
-            await asyncio.sleep(poll)
 
     async def _setup(self) -> None:
         # Holds the agent for as long as it is half-built, so a failure partway through
@@ -371,16 +217,6 @@ class AgentWorker:
             if self._agent is not None:
                 asyncio.get_event_loop().create_task(self._prewarm_model())
 
-    async def _prewarm_model(self) -> None:
-        """Ask the backend to load the model now, off the first query's clock."""
-
-        model = self.model
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: get_backend().prewarm(model))
-        except Exception:
-            logger.debug("_prewarm_model: a best-effort step failed and was skipped", exc_info=True)
-            pass  # Non-fatal — first real query will trigger load.
 
     async def _query_loop(self) -> None:
         # Bound to this loop, which is the one it is awaited on. A turn queued before
@@ -550,87 +386,7 @@ class AgentWorker:
         # Push current todo state.
         self._push_todos()
         self.out_q.put(answer_ev)
-        # batch_status is sent from the drain loop's answer handler instead, so it
-        # reflects the current snapshot — a batch_status queued here would lose the
-        # race with an in-flight batch_review_accept.
 
-    def _build_batch_status(self) -> list[dict]:
-        """Compute per-file accumulated diffs from original → current for every
-        snapshotted file.  Returns a list of diff entries suitable for the
-        ``batch_status`` WebSocket message.
-        """
-
-        agent = self._agent
-        if agent is None:
-            return []
-        snapshots = agent.approvals.batch.snapshots
-        files: list[dict] = []
-        for path, original in list(snapshots.items()):
-            try:
-                with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                    current = fh.read()
-            except OSError:
-                current = ""
-            # What the user is about to be shown, recorded so a later revert can tell
-            # whether the file still holds it. Anything else on disk by then was written
-            # by something outside this review — another session, or the user's editor.
-            agent.approvals.batch.note_reviewed(path, current)
-            before_lines = original.splitlines(keepends=True) if original is not None else []
-            after_lines  = current.splitlines(keepends=True)
-            if before_lines == after_lines:
-                continue
-            rel = os.path.relpath(path)
-            diff_lines = list(difflib.unified_diff(
-                before_lines, after_lines,
-                fromfile="a/" + rel, tofile="b/" + rel, n=3,
-            ))
-            if diff_lines:
-                entry: dict = {"file": rel, "patch": "".join(diff_lines)}
-                if original is None:
-                    entry["is_new"] = True
-                files.append(entry)
-        return files
-
-    def _push_batch_status(self) -> None:
-        try:
-            files = self._build_batch_status()
-        except Exception:
-            files = []
-        self.out_q.put({"type": "batch_status", "files": files})
-
-    def _push_todos(self) -> None:
-        try:
-            items = self._load_todos()
-            if items:
-                self.out_q.put({"type": "todo", "items": items})
-        except Exception:
-            logger.debug("_push_todos: a best-effort step failed and was skipped", exc_info=True)
-
-    def _own_session(self) -> str | None:
-        """The conversation this worker works for — never the one on screen.
-
-        It fell back to the session on screen once, for a worker built before any
-        session was known; one with a session of its own reading the screen instead
-        wrote another conversation's checklist the moment the user looked elsewhere.
-        A worker with no session (the pre-agent stand-in) has none.
-        """
-        return self.session_id
-
-    def _load_todos(self) -> list:
-        try:
-            return load_todo_items(_todo_file_for_session(self._own_session()))
-        except Exception:
-            logger.debug("_load_todos: a best-effort step failed and was skipped", exc_info=True)
-            return []
-
-    def _clear_todos(self) -> None:
-        """Wipe this worker's own session's todo file."""
-        try:
-            todo_file = _todo_file_for_session(self._own_session())
-            if os.path.exists(todo_file):
-                open(todo_file, "w").close()
-        except Exception:
-            logger.debug("_clear_todos: a best-effort step failed and was skipped", exc_info=True)
 
     def emit_assistant_text(self, text: str) -> bool:
         """Record one streamed prose block. True when it was worth recording.
@@ -831,11 +587,8 @@ class AgentWorker:
 
         The agent process is the one authority on this: it holds the address and the
         API key, and it reaches the cluster with the proxy posture the whole client
-        uses. The VS Code panel used to learn the list only from its own probe in the
-        extension host, so a probe that a corporate proxy swallowed left the user
-        connected to a working endpoint with no way to switch model — the list was
-        missing, not the capability. Reporting it from here makes the panel's picker
-        independent of whether that probe got through.
+        uses. Reporting it from here keeps the panel's model picker working when the
+        extension host's own probe is swallowed by a proxy.
 
         Never raises: a backend that cannot enumerate itself, or an endpoint that
         does not answer, reads as "nothing to offer" and the caller falls back to
@@ -894,39 +647,6 @@ class AgentWorker:
         if self._agent is not None:
             self._agent.set_enabled(kind, name, enabled)
 
-    def resources_snapshot(self) -> list[dict]:
-        """List attachable MCP resources for the frontend picker.
-
-        The registry (``agent.resources``) is populated once at connect and never
-        mutated afterward, so this read-only snapshot is safe to take directly from
-        the WS event loop without hopping to the worker loop.
-        """
-        if self._agent is None:
-            return []
-        out: list[dict] = []
-        for uri, info in sorted((self._agent.resources or {}).items()):
-            out.append({
-                "uri": uri,
-                "name": info.get("name", uri),
-                "description": info.get("description", ""),
-                "mimeType": info.get("mimeType"),
-            })
-        return out
-
-    def resolve_resources(self, text: str) -> Any:
-        """Resolve @-mentions by reading resources on the worker's OWN loop.
-
-        The MCP ``ClientSession`` objects are bound to this worker's event loop, so the
-        read must run there — we schedule it via ``run_coroutine_threadsafe`` and return
-        a ``concurrent.futures.Future`` the caller awaits with ``asyncio.wrap_future``.
-        """
-        if self._agent is None or self._loop is None:
-            fut: Any = concurrent.futures.Future()
-            fut.set_result((text, []))
-            return fut
-        return asyncio.run_coroutine_threadsafe(
-            augment_query_with_resources(self._agent, text), self._loop
-        )
 
     def call_session_tool(self, tool: str, args: dict) -> Any:
         """Call *tool* directly (``call_tool_directly``) on the worker's OWN loop.
@@ -943,86 +663,6 @@ class AgentWorker:
         return asyncio.run_coroutine_threadsafe(
             call_tool_directly(self._agent, tool, args), self._loop)
 
-    def panel_sections(self, *, force: bool = False) -> Any:
-        """Collect every section the connected servers can fill. Future of a list.
-
-        Asked by capability, never by name: a server declares ``PANEL_REPORT`` and the
-        section it fills, and a plugin server's section appears with no client edit.
-        Each answer is whatever that server chose to show — the panel renders lines, it
-        does not interpret them.
-
-        *force* is the reader asking for a re-read rather than a timer asking for the
-        current picture. A section that costs an ``sinfo`` or a reach across ``ssh`` is
-        served from the owning server's cache, which is what makes a panel on a timer
-        affordable and what made pressing ⟳ hand back the page just read. A server that
-        caches names the argument meaning "read it again" in its ``panel`` descriptor;
-        this sets it, and only for that press.
-
-        Straight to the owning session, like the slash commands above: this is the
-        user opening a drawer, not the model taking a step, and routing it through the
-        guardrail pipeline would scatter tool cards through their transcript.
-        """
-
-        if self._agent is None or self._loop is None:
-            fut: Any = concurrent.futures.Future()
-            fut.set_result([])
-            return fut
-        agent = self._agent
-        declared = _declared(getattr(agent, "tool_caps", None))
-
-        async def _ask(tool: str, spec: dict) -> dict | None:
-            owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
-            if owner is None:
-                return None
-            args = dict(spec.get("args") or {})
-            if force and spec.get("refresh_arg"):
-                args[str(spec["refresh_arg"])] = True
-            try:
-                raw = await agent.sessions[owner].call_tool(tool, args)
-                text = normalize_tool_content(raw)
-                return json.loads(text) if isinstance(text, str) else (text or {})
-            except Exception as exc:
-                # One server that cannot answer costs its own section, never the
-                # panel: the others have already said something worth showing.
-                logger.debug("panel section %r failed: %s", tool, exc)
-                return None
-
-        async def _run() -> list[dict]:
-            # All at once: the sections are independent, they are owned by different
-            # processes, and the slow one is slow because it is waiting on a scheduler.
-            # Asked in turn, the drawer cost the sum of every server's wait; asked
-            # together it costs the longest. The order below is still the declared one.
-            payloads = await asyncio.gather(
-                *(_ask(tool, spec) for tool, spec in declared))
-            out: list[dict] = []
-            for (tool, spec), payload in zip(declared, payloads):
-                if payload is None:
-                    continue
-                lines = payload.get("lines") or []
-                detail = payload.get("detail") or ""
-                # A nested half, for a server whose answer is a tree rather than a
-                # list: a scheduler, the kinds of node on it, what one of them is.
-                # Passed through unread, exactly as the lines are — this end renders
-                # what a server chose to say and never decides what a field means.
-                groups = payload.get("groups") or []
-                if not lines and not detail and not groups:
-                    # A server with nothing to say gets no heading. A section that has
-                    # something to report about having nothing — "no optimisation
-                    # session here" — says it in `detail` and still appears; one that
-                    # returns neither is a facility this machine does not have, and a
-                    # bare title is a heading the user reads to learn there is nothing
-                    # to read.
-                    continue
-                out.append({
-                    "section": spec.get("section", tool),
-                    "title": payload.get("title") or spec.get("section", tool),
-                    "lines": lines,
-                    "groups": groups,
-                    "detail": detail,
-                })
-            return out
-
-        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
 
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs this conversation still has in flight (``JobWatcher``)."""
@@ -1036,138 +676,6 @@ class AgentWorker:
         """Put watchers back on this session's runs found on disk (``JobWatcher``)."""
         return self.jobs.rearm_detached_jobs()
 
-    def compact_middle(self, middle: list) -> Any:
-        """Summarize *middle* into one message, off the WS event loop.
-
-        The session's pre-query budget check used to front-trim only — the oldest
-        turns were dropped and what they established was simply forgotten — because
-        summarizing means an LLM call and that call must not run on the WebSocket
-        event loop. It runs here instead: scheduled on this worker's loop and handed
-        to an executor thread, since ``compact_messages`` blocks on the backend.
-
-        Returns a ``concurrent.futures.Future`` resolving to the summary messages,
-        or to *middle* unchanged when summarization failed (``compact_messages``
-        swallows its own errors) — the caller treats that as "no compaction".
-        """
-        if self._agent is None or self._loop is None:
-            fut: Any = concurrent.futures.Future()
-            fut.set_result(middle)
-            return fut
-
-        async def _run() -> list:
-            return await asyncio.get_running_loop().run_in_executor(
-                None, self._agent.compact_messages, middle
-            )
-
-        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
-
-    def _count_tokens(self, text: str) -> int:
-        """Token count for *text* — exact when the backend has a tokenizer.
-
-        ``allow_network=False``: this runs inline on the streaming path, which must
-        not stall on a tokenize round-trip mid-answer; the cached-or-heuristic value
-        is close enough for a size readout. Never raises.
-        """
-        if not text:
-            return 0
-        try:
-            return get_backend().count_text_tokens(self.model, text, allow_network=False)
-        except Exception:
-            logger.debug("_count_tokens: a best-effort step failed and was skipped", exc_info=True)
-            return 0
-
-    def context_overhead_is_measured(self) -> bool:
-        """True once a server-reported prompt size has replaced the estimate.
-
-        Surfaced to the bar's tooltip because the two numbers answer different
-        questions: before the first answer the overhead is this client's reading of
-        the prompt it is about to send, after it the server's reading of what it
-        received. Saying which one is on screen turns a figure that quietly shifts
-        after the first turn into one the user can account for.
-
-        Reads what :meth:`context_overhead_tokens` recorded on its last call, so ask it
-        after that one. A figure read back from the calibration cache counts as measured:
-        a server did measure it, against this very system prompt and tool set.
-        """
-        return self._overhead_measured
-
-    def context_overhead_tokens(self) -> int:
-        """Fixed prompt overhead (tokens) sent on *every* LLM call besides history.
-
-        The system prompt plus the tools schema — ~30k tokens with every tool server
-        on, most of it the tools. The context bar must include it, otherwise the
-        displayed usage hides the very tokens that actually overflow the window.
-
-        Both halves are measured the way the query builds them, not approximated.
-        The prompt comes from ``build_system_content_now`` in the current mode, so
-        the mode-gated sections, the memory index and the checklist are counted;
-        measuring the base doctrine alone under-reported the prompt by everything
-        the modes add. The tools come from ``advertised_tools_for_mode``, so a
-        disabled server and a read-only mode remove from the bar what they remove
-        from the call; the raw registry over-reported them. What stays out of reach
-        is ``tools_for_context``, which prunes against the query and therefore does
-        not exist before there is one — it only ever removes, so this is a ceiling
-        on the tool half and the bar errs high, never low.
-
-        Once a call has come back, none of this is estimated any more: the server
-        reports what it actually charged for the prompt, and ``measured_prompt_overhead``
-        hands back that figure minus the history it came with. That number replaces the
-        estimate for every later call, which is what makes the bar exact rather than
-        merely close — and it is why the estimate above only has to carry the session
-        as far as its first answer.
-
-        A measured figure outlives the process too: it is written to the calibration
-        cache under a fingerprint of the whole fixed part (model, mode, system prompt,
-        advertised tools) and read back on the next run. A session reopened against a
-        fresh server is therefore accounted for exactly from its first frame rather
-        than from its first answer — which is what kept the bar reading over-full on a
-        resume. The fingerprint is the safety: change a mode, a server or the prompt
-        and the entry is simply not found, so the estimate answers instead of a stale
-        measurement wearing its authority.
-
-        Best-effort, cached via the backend's token cache; never raises.
-        """
-        agent = self._agent
-        if agent is None:
-            return 0
-        try:
-            backend = get_backend()
-            # getattr, not a direct call: a backend stub without the calibration
-            # should fall through to the estimate, not lose the overhead entirely
-            # to the except below.
-            probe = getattr(backend, "measured_prompt_overhead", None)
-            measured = probe(self.model) if callable(probe) else None
-            mode = getattr(agent, "mode", "") or ""
-            build = getattr(agent, "build_system_content_now", None)
-            prompt = build(mode) if callable(build) else build_base_system_content()
-            narrow = getattr(agent, "advertised_tools_for_mode", None)
-            tools = narrow(mode) if callable(narrow) else getattr(agent, "tools", None)
-            tools_json = json.dumps(tools) if tools else ""
-            key = token_calibration.overhead_key(
-                self.model, getattr(agent, "context_mode", "full"), prompt, tools_json
-            )
-            if measured is not None:
-                # Write-through, so the next run of this same configuration starts
-                # calibrated. A no-op when the figure is already on disk, which it is
-                # for all but the first call after a turn — the bar asks every second.
-                token_calibration.remember_overhead(key, measured)
-                self._overhead_measured = True
-                return measured
-            remembered = token_calibration.recall_overhead(key)
-            if remembered is not None:
-                # Measured by a server too, against this very prompt and tool set.
-                self._overhead_measured = True
-                return remembered
-            self._overhead_measured = False
-            total = backend.count_text_tokens(self.model, prompt, allow_network=False)
-            if tools_json:
-                total += backend.count_text_tokens(
-                    self.model, tools_json, allow_network=False
-                )
-            return total
-        except Exception:
-            logger.debug("context_overhead_tokens: a best-effort step failed and was skipped", exc_info=True)
-            return 0
 
     def cancel(self) -> bool:
         """Cancel the currently running query task. Returns True if a task was cancelled."""
@@ -1252,3 +760,19 @@ class AgentWorker:
             return
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)
+
+
+class NoAgentWorker(AgentWorker):
+    """A conversation's worker before its first query: no thread, no servers, no agent.
+
+    Every read of ``AgentWorker`` answers for an absent agent (``setting`` gives the
+    caller's default, ``toggles_state`` is empty, the temperature is the stored
+    preference) and every setter does nothing, so this class only refuses what needs
+    an agent: a query. The pool builds a real worker for that.
+    """
+
+    def __init__(self, model: str) -> None:
+        super().__init__(model, start=False)
+
+    def submit_query(self, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("a conversation's query goes to the worker the pool builds for it")

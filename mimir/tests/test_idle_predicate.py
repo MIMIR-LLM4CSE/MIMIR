@@ -22,7 +22,7 @@ from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.server import registry as server_registry
-from mimir.client.ui.ws.pool import pool as ws_pool
+from mimir.client.ui.ws.pool import lifecycle as pool_lifecycle
 from mimir.client.session import jobs_on_disk
 from mimir.client.ui.ws.pool.bus import EventBus
 from mimir.client.ui.ws.pool.wakes import WakeRouter
@@ -280,7 +280,7 @@ class JobsHoldItOpenTests(_IdleCase):
         # The name bound in ws_pool, not the one in jobs_on_disk: the import is by value,
         # so patching the source module would leave the caller untouched and the test
         # would pass for the wrong reason.
-        with mock.patch("mimir.client.ui.ws.pool.pool.scan_all_sessions",
+        with mock.patch("mimir.client.ui.ws.pool.lifecycle.scan_all_sessions",
                         side_effect=OSError("gone")):
             report = pool.idle_report()
         self.assertFalse(report["idle"])
@@ -411,7 +411,7 @@ class TheClockTests(_IdleCase):
                     raise RuntimeError("not needed here")
 
             pool.store = _Store()
-            with mock.patch.object(ws_pool.server_registry, "claims",
+            with mock.patch.object(pool_lifecycle.server_registry, "claims",
                                    return_value={}):
                 pool._consider_stopping()
             self.assertTrue(pool.stop_requested.is_set())
@@ -460,14 +460,14 @@ class TheClockTests(_IdleCase):
         asyncio.run(run())
 
     def test_the_ttl_is_configurable_and_floored(self):
-        from mimir.client.ui.ws.pool.pool import _server_idle_ttl
+        from mimir.client.ui.ws.pool.lifecycle import server_idle_ttl
         with mock.patch.dict(os.environ, {"MIMIR_SERVER_IDLE_TTL": "300"}):
-            self.assertEqual(_server_idle_ttl(), 300.0)
+            self.assertEqual(server_idle_ttl(), 300.0)
         with mock.patch.dict(os.environ, {"MIMIR_SERVER_IDLE_TTL": "1"}):
-            self.assertEqual(_server_idle_ttl(), 60.0, "a floor keeps a tick from "
+            self.assertEqual(server_idle_ttl(), 60.0, "a floor keeps a tick from "
                                                        "stopping a working server")
         with mock.patch.dict(os.environ, {"MIMIR_SERVER_IDLE_TTL": "soon"}):
-            self.assertEqual(_server_idle_ttl(), 7200.0)
+            self.assertEqual(server_idle_ttl(), 7200.0)
 
 
 class NobodyAskedToKeepItTests(unittest.TestCase):
@@ -481,7 +481,6 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
 
     def _pool(self, *, claims: dict, unattended: float | None, ever: bool = True):
         from unittest import mock
-        from mimir.client.ui.ws.pool import pool as ws_pool
         from mimir.client.ui.ws.pool.pool import AgentPool
 
         pool = object.__new__(AgentPool)
@@ -498,7 +497,7 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
         patcher = mock.patch.object(server_registry, "claims", lambda: claims)
         patcher.start()
         self.addCleanup(patcher.stop)
-        patcher = mock.patch.object(ws_pool, "_detach_grace", lambda: 30.0)
+        patcher = mock.patch.object(pool_lifecycle, "detach_grace", lambda: 30.0)
         patcher.start()
         self.addCleanup(patcher.stop)
         return pool

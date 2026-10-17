@@ -23,7 +23,7 @@ from unittest import mock
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.pool.bus import EventBus
-from mimir.client.ui.ws.worker.human import HumanBridge, _detach_grace
+from mimir.client.ui.ws.worker.human import HumanBridge, detach_grace
 from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
@@ -61,15 +61,15 @@ class GracePeriodTests(unittest.TestCase):
     def test_the_default_leaves_room_for_a_window_reload(self):
         # Reloading a VS Code window closes and reopens the socket; parking every card
         # on that blink would put the user's own question away under their nose.
-        self.assertGreaterEqual(_detach_grace(), 5.0)
+        self.assertGreaterEqual(detach_grace(), 5.0)
 
     def test_it_is_configurable(self):
         with mock.patch.dict(os.environ, {"MIMIR_DETACH_GRACE": "2.5"}):
-            self.assertEqual(_detach_grace(), 2.5)
+            self.assertEqual(detach_grace(), 2.5)
 
     def test_nonsense_falls_back_rather_than_raising(self):
         with mock.patch.dict(os.environ, {"MIMIR_DETACH_GRACE": "soon"}):
-            self.assertEqual(_detach_grace(), 30.0)
+            self.assertEqual(detach_grace(), 30.0)
 
 
 class UnattendedPredicateTests(unittest.TestCase):
@@ -84,7 +84,7 @@ class UnattendedPredicateTests(unittest.TestCase):
 
     def test_past_the_grace_it_is(self):
         w = _worker()
-        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         self.assertTrue(w.human._unattended_past_grace())
 
     def test_a_worker_the_pump_has_not_reached_assumes_somebody_is_there(self):
@@ -112,7 +112,7 @@ class TheWaitTests(unittest.TestCase):
 
     def test_a_card_with_nobody_there_is_set_aside(self):
         w = _worker()
-        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         self.assertIsNone(w.human._await_response(_card(w)))
         # Deferred, not cancelled: the record of what it was holding up is kept, which
         # is what lets the answer resume the turn rather than restart it.
@@ -123,7 +123,7 @@ class TheWaitTests(unittest.TestCase):
 
     def test_the_card_is_let_go_of_so_nothing_resends_it(self):
         w = _worker()
-        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         w.human._await_response(_card(w))
         self.assertIsNone(w.human._pending_prompt)
 
@@ -132,7 +132,7 @@ class TheWaitTests(unittest.TestCase):
         # them ("go ahead with what you recommend"). Overriding that here would change
         # an answer the model has already been promised.
         w = _worker()
-        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         from mimir.client.ui.ws.worker.human import TIMED_OUT
         req = _card(w, "q1", "user_question")
         self.assertIs(w.human._await_response(req, timeout_secs=0.05), TIMED_OUT)
@@ -143,7 +143,7 @@ class TheWaitTests(unittest.TestCase):
         # discards a reply that crossed with the grace elapsing — the user answered into
         # a void.
         w = _worker()
-        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         req = _card(w)
         w.human.resolve_approval("y", None, req)
         self.assertEqual(w.human._await_response(req),
@@ -154,7 +154,7 @@ class TheWaitTests(unittest.TestCase):
         # The same race one tick later: the grace has elapsed, the queue is empty when
         # first read, and the reply arrives while the poll is still open.
         w = _worker()
-        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         req = _card(w)
         threading.Timer(0.05, lambda: w.human.resolve_approval("n", None, req)).start()
         self.assertEqual(w.human._await_response(req),
@@ -165,7 +165,7 @@ class TheWaitTests(unittest.TestCase):
         w._query_q = _queue.Queue()
         w._loop = None
         w._query_wake = None
-        w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
+        w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         w.human._await_response(_card(w))
         self.assertTrue(w.human.has_deferral)
         w.submit_resume({"query": "go", "kind": "calls"}, {"choice": "y"}, [], "s1")

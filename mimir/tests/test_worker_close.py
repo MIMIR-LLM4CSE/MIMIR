@@ -19,6 +19,7 @@ import threading
 import unittest
 
 from mimir.client.ui.ws.worker.worker import AgentWorker
+from mimir.tests.support.workers import bare_worker
 
 
 class _StubAgent:
@@ -32,10 +33,8 @@ class _StubAgent:
 
 
 def _bare_worker() -> AgentWorker:
-    """A worker with its fields but no thread — ``detached`` with a session."""
-    worker = AgentWorker.detached("test-model")
-    worker.session_id = "s1"
-    return worker
+    """A worker with its fields but no thread."""
+    return bare_worker()
 
 
 class CloseRunsInTheOwningTaskTests(unittest.IsolatedAsyncioTestCase):
@@ -146,6 +145,23 @@ class AcloseWithoutALoopTests(unittest.TestCase):
                          daemon=True).start()
         self.assertTrue(done.wait(5.0), "aclose waited for a close that cannot happen")
         self.assertIsNone(worker._query_q.get_nowait(), "no sentinel was sent")
+
+
+
+
+class NoAgentWorkerTests(unittest.TestCase):
+    """The worker of a conversation before its first query."""
+
+    def test_it_refuses_a_query(self) -> None:
+        worker = AgentWorker.detached("test-model")
+        with self.assertRaises(RuntimeError):
+            worker.submit_query("hi", [])
+
+    def test_it_reads_as_a_worker_with_no_agent(self) -> None:
+        worker = AgentWorker.detached("test-model")
+        self.assertFalse(worker.agent_ready())
+        self.assertEqual(worker.setting("context_mode", "full"), "full")
+        self.assertEqual(worker.toggles_state(), {"servers": [], "skills": [], "nudges": []})
 
 
 if __name__ == "__main__":

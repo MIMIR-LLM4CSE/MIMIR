@@ -5,9 +5,6 @@ out-of-workspace path or a question becomes a card sent through the worker's out
 and the thread that asked blocks on that card's own answer slot until the client
 answers it, Stop cancels it, or — nobody being attached past the grace — the turn is
 set aside (``query_engine.deferral``) to be resumed when somebody answers.
-
-Split out of the worker, which used to monkeypatch three shims onto the agent and keep
-all of this state among its own.
 """
 from __future__ import annotations
 
@@ -57,7 +54,7 @@ class _Prompt:
     shown: bool = False
 
 
-def _detach_grace() -> float:
+def detach_grace() -> float:
     """How long a socket may be gone before this process treats it as gone.
 
     Not zero, and this is the whole reason the delay exists: reloading a VS Code window
@@ -82,7 +79,7 @@ class HumanBridge:
         self.worker = worker
         # Cards waiting on the user, oldest first, each holding the slot the thread
         # that raised it blocks on. One is shown at a time and each is answered by its
-        # own id — see _emit_prompt for why that is not the single slot it used to be.
+        # own id (see _emit_prompt).
         self._prompts: "OrderedDict[str, _Prompt]" = OrderedDict()
         self._prompts_lock = threading.Lock()
         # The card currently on screen, set for exactly as long as it is up. Read by a
@@ -269,7 +266,7 @@ class HumanBridge:
         since = getattr(self, "unattended_since", None)
         if since is None:
             return False
-        return (time.monotonic() - since) >= _detach_grace()
+        return (time.monotonic() - since) >= detach_grace()
 
     def _deferring(self) -> bool:
         defer = getattr(self, "_defer", None)

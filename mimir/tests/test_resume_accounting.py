@@ -24,9 +24,9 @@ from mimir.client.query_engine import token_calibration
 from mimir.client.query_engine.backends.base import LLMBackend
 from mimir.client.session.store import FullSession
 from mimir.client.ui.ws.connection.connection import Connection
-from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests._fake_pool import FakePool
 from mimir.tests._session import bare_session
+from mimir.tests.support.workers import bare_worker
 
 
 class _NoAgentWorker:
@@ -226,8 +226,7 @@ class MeasuredOverheadTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         token_calibration.reset_for_tests()
         self.addCleanup(token_calibration.reset_for_tests)
-        self._worker = AgentWorker.detached("m")
-        self._worker._agent = _StubAgent()
+        self._worker = bare_worker("m", None, agent=_StubAgent())
 
     def _overhead(self) -> int:
         with patch("mimir.client.query_engine.backends.factory.get_backend",

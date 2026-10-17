@@ -25,7 +25,7 @@ import unittest
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.pool import pool as ws_pool
 from mimir.client.ui.ws.pool.pool import AgentPool
-from mimir.client.ui.ws.worker.worker import _Outbox
+from mimir.client.ui.ws.worker.outbox import Outbox
 
 
 class _StubWorker:
@@ -44,7 +44,7 @@ class _StubWorker:
         self._bg_jobs: dict = {}
         self.human._pending_prompt = None
         self.applied: list[tuple] = []
-        self.out_q = _Outbox()
+        self.out_q = Outbox()
 
     def drain(self) -> list:
         out = []

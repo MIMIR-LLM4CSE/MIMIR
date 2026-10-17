@@ -14,7 +14,7 @@ from ...server import registry as server_registry
 from .....config import paths
 from ...server.detach import detach as detach_process
 from .....session.jobs_on_disk import establish_baseline, has_baseline, scan_all_sessions
-from ...pool.pool import idle_stop_reason
+from ...pool.lifecycle import idle_stop_reason
 
 logger = logging.getLogger(__name__)
 
