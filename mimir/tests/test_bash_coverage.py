@@ -83,7 +83,7 @@ def _run(command: str, *, status: str = "ok", stdout: str = "out",
 def _head_installed(present: bool):
     """Pin the host's PATH out of the pipeline for one assertion.
 
-    ``_record_run_outcome`` treats a run whose command is not installed as *blocked*
+    ``record_run_outcome`` treats a run whose command is not installed as *blocked*
     and charges it nothing — deliberately, since a missing binary said nothing about
     the patch. That makes every run-failure assertion depend on what happens to be
     installed on the machine running the suite: this file's own ``pytest`` examples

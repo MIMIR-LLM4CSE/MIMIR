@@ -133,10 +133,9 @@ function**:
 | `core → query_engine` | `core/settings._store_backend` | switching the backend needs the factory, and the engine reads the mode through `core.settings` at load |
 | `ui/cli → agent_core` | `ui/cli/main.py` | the script-mode bootstrap (`python main.py`) has to fix `sys.path` first |
 
-`guardrails/observations → guardrails/verdict` and the proxy store
-(`guardrails/proxy_state`, `guardrails/policy/gates`) are lazy too, inside their own
-layer: the first is a cycle within `guardrails`, the second the proxy server's heavy
-library, needed only by a conversation running an optimisation. The WebSocket entry
+The proxy store (`guardrails/proxy_state`, `guardrails/policy/gates`) is lazy too: it
+is the proxy server's heavy library, needed only by a conversation running an
+optimisation. The WebSocket entry
 (`ui/ws/ws_server.main`) imports `serving` only after applying `--cwd`, because
 `config.paths` resolves the workspace root as it is imported.
 

@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from xml.etree import ElementTree
 
 from ..context.execution_context import ExecutionContext
-from .observations import _mark_file_validated, _register_validation_failure
+from .ladder import mark_file_validated, register_validation_failure
 from .workflow import pending_validation_paths
 
 # Anything larger is not read: the floor is a cheap check, and a multi-megabyte source
@@ -553,10 +553,10 @@ def sweep_builtin_checks(execution_context: ExecutionContext, absolute_path_fn=N
             execution_context.unverifiable_files.add(path)
         elif outcome.status == STATUS_FAIL:
             findings[path] = outcome.detail
-            _register_validation_failure(execution_context, path, outcome.tier)
+            register_validation_failure(execution_context, path, outcome.tier)
         else:
             findings.pop(path, None)
-            _mark_file_validated(execution_context, path, outcome.tier)
+            mark_file_validated(execution_context, path, outcome.tier)
 
 
 def builtin_check_failures(execution_context: ExecutionContext) -> dict[str, str]:

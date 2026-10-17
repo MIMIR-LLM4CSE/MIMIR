@@ -45,7 +45,7 @@ from typing import Any
 
 from ..context import VERDICTS, failed_runs, unsettled_runs
 from ..event_sink import emit
-from .observations import _register_run_failure
+from .ladder import register_run_failure
 from ..context.execution_context import ExecutionContext
 
 
@@ -141,7 +141,7 @@ def apply_verdict(
     because it is the direction that matters: ``fail``/``unknown`` fall back to every
     run, ``pass`` to exactly one.
 
-    ``fail`` routes through :func:`_register_run_failure`, the *same* ladder a non-zero
+    ``fail`` routes through :func:`register_run_failure`, the *same* ladder a non-zero
     exit drives — retry budget, workflow transition, and the record of what was tried.
     There is no second mechanism. ``rejected`` deliberately routes through none of it:
     an optimisation loop rejects most of what it tries, and a ladder that fires on each
@@ -167,7 +167,7 @@ def apply_verdict(
     for command, run in addressed.items():
         run["verdict"], run["reason"] = verdict, reason
         if verdict == "fail":
-            _register_run_failure(execution_context, command, reason)
+            register_run_failure(execution_context, command, reason)
         settled.append({**run, "command": run.get("command") or command})
     _close_exercise_advice(execution_context, verdict)
     return settled

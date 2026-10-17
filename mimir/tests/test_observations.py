@@ -34,7 +34,7 @@ from mimir.client.context.execution_context import (
     unsettled_runs,
     unwritten_declared_files,
 )
-from mimir.client.guardrails.observations import _register_run_failure
+from mimir.client.guardrails.ladder import register_run_failure
 
 
 # The authoritative dispatch order, mirroring record_tool_observation's body.
@@ -931,7 +931,7 @@ class RunLedgerKeyTests(unittest.TestCase):
         ec = build_execution_context()
         for tail in (15, 8, 12):
             record_run(ec, f"pytest tests/test_x.py -q | tail -{tail}", completed=False)
-            _register_run_failure(ec, f"pytest tests/test_x.py -q | tail -{tail}", "red")
+            register_run_failure(ec, f"pytest tests/test_x.py -q | tail -{tail}", "red")
         self.assertEqual(len(ec.runs), 1)
         self.assertEqual(ec.runs["pytest tests/test_x.py"]["failures"], 3)
 
@@ -1217,9 +1217,9 @@ class ValidationTierTests(unittest.TestCase):
 
     def test_extension_pack_validator_defaults_to_static(self):
         # A VALIDATE-capability tool checked something but tells us no more than that.
-        from mimir.client.guardrails.observations import _mark_file_validated
+        from mimir.client.guardrails.ladder import mark_file_validated
         ec = self._ctx({"foo.py"})
-        _mark_file_validated(ec, "foo.py")
+        mark_file_validated(ec, "foo.py")
         self.assertEqual(self.tier(ec), "static")
 
 

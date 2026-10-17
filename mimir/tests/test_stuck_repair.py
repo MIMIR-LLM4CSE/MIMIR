@@ -37,7 +37,7 @@ from mimir.client.guardrails.nudges.engine import (
     _worst_run_failure_streak,
 )
 from mimir.client.guardrails.nudges.messages import stuck_repair_nudge_message
-from mimir.client.guardrails.observations import _register_run_failure
+from mimir.client.guardrails.ladder import register_run_failure
 from mimir.client.context.execution_context import run_ledger_key
 
 
@@ -49,7 +49,7 @@ def _ctx(command="pytest -q solver.py", failures=0, fired=0):
     for _ in range(max(failures, 1)):
         record_run(ec, command, completed=False)
         if failures:
-            _register_run_failure(ec, command, "still wrong")
+            register_run_failure(ec, command, "still wrong")
     if not failures:
         # Runs are keyed by identity, not by the text typed (run_ledger_key).
         key = run_ledger_key(command)
@@ -71,7 +71,7 @@ class StreakTests(unittest.TestCase):
         ec.code_mutation_started = True
         for cmd in ("make", "pytest -q"):
             record_run(ec, cmd, completed=False)
-            _register_run_failure(ec, cmd, "nope")
+            register_run_failure(ec, cmd, "nope")
         self.assertEqual(_worst_run_failure_streak(ec), 1)
 
     def test_a_re_run_keeps_climbing(self) -> None:
@@ -123,7 +123,7 @@ class LadderTests(unittest.TestCase):
 
     def test_there_is_no_third_rung(self) -> None:
         # Past the two rungs the existing release takes over: at
-        # VALIDATION_RETRY_BUDGET failures _register_run_failure moves the workflow to
+        # VALIDATION_RETRY_BUDGET failures register_run_failure moves the workflow to
         # `conclude`. Saying it a third time would just be louder.
         ec = _ctx(failures=VALIDATION_RETRY_BUDGET, fired=NUDGE_MAX_STUCK_REPAIR)
         self.assertFalse(_should_nudge_stuck_repair(ec))
@@ -280,13 +280,13 @@ class TheLadderIsReachableThroughAStatusLineTests(unittest.TestCase):
         from mimir.client.context.execution_context import (
             build_execution_context, record_run,
         )
-        from mimir.client.guardrails.observations import _register_run_failure
+        from mimir.client.guardrails.ladder import register_run_failure
         base = "python3 tests/test_wave2d.py"
         forms = [base, base + '; echo "suite_exit=$?"', "cd sub && " + base]
         ec = build_execution_context()
         for cmd in forms:
             record_run(ec, cmd, completed=False)
-            _register_run_failure(ec, cmd, "red")
+            register_run_failure(ec, cmd, "red")
         self.assertEqual(len(ec.runs), 1)
         self.assertEqual(ec.runs[base]["failures"], len(forms))
 

@@ -1,10 +1,8 @@
-"""Tool-observation layer: the writer of the execution_context blackboard.
+"""What a tool call tells the guardrails: the writer of the execution_context blackboard.
 
 ``record_tool_observation`` runs after every tool call and dispatches the ordered
-``_observe_*`` handlers that populate discovery/edit/validation state + workflow
-transitions. Both guardrail subsystems (policy gates, nudges) read what this
-writes. Split out of the former ``policy/runtime.py`` and hoisted to the
-``guardrails`` root because it is shared machinery, not a policy gate.
+``_observe_*`` handlers that record discovery, edit and validation state and move the
+workflow. The policy gates and the nudges read what this writes.
 """
 from __future__ import annotations
 
@@ -19,11 +17,7 @@ from ..context import (
     VALIDATION_TIERS,
     declared_edit_set_complete,
     ensure_execution_context,
-    failed_runs,
     fields_with,
-    raise_validation_tier,
-    record_run,
-    run_ledger_key,
 )
 from .runner_output import (
     TEST_RUNNER_FAILURE,
@@ -32,9 +26,15 @@ from .runner_output import (
     test_failure_signature,
 )
 from ..event_sink import emit
+from .ladder import (
+    mark_file_validated,
+    record_run_outcome,
+    register_run_failure,
+    register_validation_failure,
+)
 from .proxy_state import active_proxy_source
+from .verdict import apply_verdict
 from .workflow import (
-    VALIDATION_RETRY_BUDGET,
     has_pending_validation,
     pending_validation_paths,
     set_workflow_state,
@@ -293,61 +293,6 @@ def _observe_replacement_tracking(
         execution_context.cross_file_grep_source = edited_path or ""
 
 
-def _mark_file_validated(
-    execution_context: ExecutionContext, target: str, tier: str = "static",
-) -> None:
-    """Credit *target* as checked and advance the workflow when nothing is pending.
-
-    Only a **checker** reaches here — ``py_compile``, ``ruff``, ``mypy``, a compiler:
-    a tool whose output *is* a list of problems, so exit 0 means there were none and
-    there is nothing left for anyone to read. Running the code never lands here, however
-    green it exits: "it reached the end" is a fact about the process, not about the
-    answer, and it is recorded on the run instead (see ``context.record_run``).
-
-    *tier* records which kind of check it was (see ``VALIDATION_TIERS``). It has no
-    effect on the conclude-gate — every tier counts as validated — and is read only by
-    the completion ledger.
-    """
-    execution_context.validation_fail_count_by_file.pop(target, None)
-    execution_context.validated_files.add(target)
-    raise_validation_tier(execution_context, target, tier)
-    if execution_context.code_mutation_started and not has_pending_validation(execution_context):
-        set_workflow_state(execution_context, "conclude")
-        execution_context.nudge_counts["validation"] = 0
-        execution_context.nudge_counts["state"] = 0
-
-
-def _register_validation_failure(
-    execution_context: ExecutionContext, target: str, tier: str = "static",
-) -> None:
-    """Record a failed check of *target* and drive the retry-budget escape.
-
-    The mirror of :func:`_mark_file_validated`: a checker that ran but exited non-zero
-    means the file did NOT pass. Increment its per-file failure count, drop it from
-    ``validated_files``, and return the workflow to ``edit`` so the model repairs it.
-    When every dirty file is either validated or has exhausted
-    ``VALIDATION_RETRY_BUDGET`` attempts, escape to ``conclude`` so a file that cannot be
-    made to pass does not wedge the workflow — the model concludes with the residual risk
-    stated. This is what re-feeds the (otherwise inert) fail-count that the completion
-    gate, the anti-thrashing state guard, and the nudge all read.
-    """
-    fail_counts = execution_context.validation_fail_count_by_file
-    fail_counts[target] = int(fail_counts.get(target, 0)) + 1
-    execution_context.validated_files.discard(target)
-    execution_context.validation_tier_by_file.pop(target, None)
-    if not execution_context.code_mutation_started:
-        return
-    set_workflow_state(execution_context, "edit")
-    dirty = execution_context.dirty_written_files
-    validated = execution_context.validated_files
-    all_stuck = dirty and all(
-        f in validated or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
-        for f in dirty
-    )
-    if all_stuck:
-        set_workflow_state(execution_context, "conclude")
-
-
 def _observe_validation_tool(
     agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
@@ -366,7 +311,7 @@ def _observe_validation_tool(
     raw = next((arguments.get(a) for a in arg_names if arguments.get(a)), None)
     target = agent.normalize_workspace_path(raw)
     if target and target in execution_context.dirty_written_files:
-        _mark_file_validated(execution_context, target)
+        mark_file_validated(execution_context, target)
 
 
 def _observe_missing_module(
@@ -716,7 +661,7 @@ def _observe_tool_run(
     if not has_cap(tool_name, CODE_EXEC, agent.tool_caps):
         return
     spec = run_outcome_spec(tool_name, getattr(agent, "tool_caps", None))
-    _record_run_outcome(
+    record_run_outcome(
         execution_context, _run_key(tool_name, payload or {}, spec), True, call_id)
 
 
@@ -775,7 +720,7 @@ def _credit_measured_source(
 
     source = active_proxy_source()
     if source and source in execution_context.dirty_written_files:
-        _mark_file_validated(execution_context, source, "measured")
+        mark_file_validated(execution_context, source, "measured")
 
 
 def _settle_from_machine(
@@ -798,15 +743,15 @@ def _settle_from_machine(
         return
     key = _run_key(tool_name, payload, spec)
     if crashed:
-        _record_run_outcome(
+        record_run_outcome(
             execution_context, key, False, call_id, _MACHINE_SAW_CRASH)
         return
-    _record_run_outcome(execution_context, key, True, call_id)
+    record_run_outcome(execution_context, key, True, call_id)
     run = (execution_context.runs or {}).get(key)
     if run is not None:
         run["verdict"] = "fail"
         run["reason"] = _MACHINE_SAW_FAILURE
-        _register_run_failure(execution_context, key, _MACHINE_SAW_FAILURE)
+        register_run_failure(execution_context, key, _MACHINE_SAW_FAILURE)
 
 
 # Checkers that cover a whole tree in one call. A *successful* run of one naming no
@@ -863,7 +808,6 @@ def _rewrites_instead_of_checking(head: str, argv: tuple[str, ...]) -> bool:
 # mandatory floor for a compiled language the way ``py_compile`` is for Python.
 _SYNTAX_ONLY_FLAGS = ("-fsyntax-only", "--fsyntax-only")
 
-_BUILD_EXIT_IS_THE_VERDICT = "the build exited 0; a build reports diagnostics, not results"
 # A server that ran the code itself reported the run red. Its own judgement, not a
 # reading of what the program printed — the floor a stated verdict cannot rise above.
 _MACHINE_SAW_CRASH = "the run server reported this run did not complete"
@@ -994,72 +938,6 @@ def _bash_validation_scan(
     return targets, whole_project, tier, execution, missing_head, exit_is_the_run_s
 
 
-def _record_run_outcome(
-    execution_context: ExecutionContext, command: str, completed: bool,
-    call_id: str = "", reason: str = "", effect: str = EFFECT_RUN,
-    missing_head: str = "", exit_settles: bool = True,
-) -> None:
-    """Register an execution and, when it did not complete, charge the repair budget.
-
-    A run that exited non-zero is already judged — by the machine, in the only direction
-    an exit code is trustworthy — so it owes no verdict and goes straight onto the
-    repair ladder. A green one owes a reading of what it printed.
-
-    A **build** owes nothing in either direction: like the compilers it drives, what it
-    reports is diagnostics, and a green exit means the artefacts were produced. It is
-    still recorded — a failed build is a wall the user must see — but settled by the
-    machine, so it can never surface as "ran but never judged".
-
-    That shortcut rests on the exit status belonging to the build, and ``exit_settles``
-    is where the assumption is checked rather than assumed. ``make 2>&1 | tail -20``
-    reports the pager's status, and auto-passing on it credits a build nobody
-    established had succeeded; denied the shortcut, it falls back to owing a reading
-    like any other run.
-
-    ``missing_head`` is the one wall the machine can name without being told: a command
-    that is not installed said nothing about the patch, so it charges no repair budget and
-    steers nothing. Every other wall needs the model to claim it (``guardrails/verdict.py``);
-    unclaimed, a red exit drives the repair ladder exactly as it always did.
-    """
-    run = record_run(execution_context, command, completed=completed, call_id=call_id, effect=effect)
-    if completed and effect == EFFECT_BUILD and exit_settles:
-        run["verdict"] = "pass"
-        run["reason"] = _BUILD_EXIT_IS_THE_VERDICT
-    if not completed:
-        if missing_head:
-            run["blocked"] = f"{missing_head} is not installed here"
-            execution_context.exercise_blocked_reason = run["blocked"]
-            execution_context.exercise_advice_closed = True
-        else:
-            _register_run_failure(execution_context, command, reason)
-
-
-def _register_run_failure(
-    execution_context: ExecutionContext, command: str, reason: str = "",
-) -> None:
-    """Charge a run's failure against the repair budget and steer back to ``edit``.
-
-    Same shape as the per-file budget: try, try again, then stop trying. Past
-    ``VALIDATION_RETRY_BUDGET`` attempts at the same command the workflow is released to
-    ``conclude`` rather than wedged — the run is reported unresolved with what was
-    tried, and the answer carries the residual risk instead of looping on it.
-    """
-    run = (execution_context.runs or {}).get(run_ledger_key(command))
-    if run is None:
-        return
-    run["failures"] = int(run.get("failures", 0)) + 1
-    if reason:
-        run.setdefault("attempts", []).append(reason)
-    if not execution_context.code_mutation_started:
-        return
-    set_workflow_state(execution_context, "edit")
-    if all(
-        int(r.get("failures", 0)) >= VALIDATION_RETRY_BUDGET
-        for r in failed_runs(execution_context).values()
-    ) and not has_pending_validation(execution_context):
-        set_workflow_state(execution_context, "conclude")
-
-
 def _record_test_failure_signatures(
     execution_context: ExecutionContext, out: str,
 ) -> None:
@@ -1176,18 +1054,18 @@ def _observe_bash_validation(
         if not tier or target not in dirty:
             continue
         if completed:
-            _mark_file_validated(execution_context, target, tier)
+            mark_file_validated(execution_context, target, tier)
         else:
             # A specific-file failure is attributable; a whole-project failure is not.
-            _register_validation_failure(execution_context, target, tier)
+            register_validation_failure(execution_context, target, tier)
     # A green project-wide check covers every still-pending file. A failing one is not
     # attributable to a single file, so it leaves pending untouched (the model narrows
     # down or re-runs per file).
     if tier and whole_project and completed:
         for target in list(pending_validation_paths(execution_context)):
-            _mark_file_validated(execution_context, target, tier)
+            mark_file_validated(execution_context, target, tier)
     if execution:
-        _record_run_outcome(
+        record_run_outcome(
             execution_context, command, completed, call_id, reason,
             effect=execution, missing_head=missing_head,
             exit_settles=exit_status_settles(exit_is_the_run_s),
@@ -1300,10 +1178,6 @@ def _observe_verdict_tool(
     """
     if status != "ok" or not has_cap(tool_name, JUDGE, agent.tool_caps):
         return
-    # Local import: verdict.py builds on this module's ladder entry points, so the
-    # dependency only runs the other way at call time.
-    from .verdict import apply_verdict
-
     def _arg(role: str) -> str:
         names = arg_role(tool_name, role, agent.tool_caps)
         return str(arguments.get(names[0], "") or "").strip() if names else ""

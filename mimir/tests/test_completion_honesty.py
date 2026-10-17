@@ -557,10 +557,10 @@ class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
     """
 
     def test_a_failing_run_does_not_make_a_checked_change_incomplete(self):
-        from mimir.client.guardrails.observations import _register_run_failure
+        from mimir.client.guardrails.ladder import register_run_failure
         ec = _written({"solver.py"}, tier="static")
         record_run(ec, "python solver.py", completed=False)
-        _register_run_failure(ec, "python solver.py", "segfault")
+        register_run_failure(ec, "python solver.py", "segfault")
         # The state machine still steers the model back to the code — it just no
         # longer doubles as the completion gate.
         self.assertEqual(ec.workflow_state, "edit")
