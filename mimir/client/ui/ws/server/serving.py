@@ -148,13 +148,10 @@ async def serve(
 
     # The pool, not an agent: one agent per conversation, built on that conversation's
     # first query. Process-global and shared by every connection, because two webviews on
-    # one port must see the same live turns — which is what the single shared worker gave
-    # for free, and the one property of it worth keeping.
+    # one port must see the same live turns.
     #
-    # Nothing is built here any more, so the socket is listening in milliseconds instead
-    # of after the backend wait plus ~19 server spawns. That cost did not disappear; it
-    # moved to the first query of each conversation, which is the only place that can say
-    # which session is paying it.
+    # Nothing is built here, so the socket listens in milliseconds; the backend wait and
+    # the server spawns are paid by each conversation's first query.
     # One server per workspace, enforced before anything is bound. Two of them share
     # the sessions directory, so both append to the same journal and both derive `seq`
     # from it: the numbering collides, the watermark built on it stops meaning

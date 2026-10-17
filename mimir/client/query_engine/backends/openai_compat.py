@@ -142,8 +142,7 @@ def _answer_max_tokens(mml: int, prompt_tokens: int) -> int:
 
     Our estimate counts raw JSON; vLLM counts the rendered chat template + tool
     schemas, which is larger by an amount that grows with prompt/schema size — a
-    fixed margin eventually loses (observed: 513-token undercount at ~17K prompt
-    tokens, one over the old 512 margin → 400 "maximum context length"). Scale
+    fixed margin eventually loses (a 513-token undercount at ~17K prompt tokens). Scale
     the margin with the estimate, and cap the request at the answer reserve
     instead of claiming the whole remaining window: the loop's context budgeting
     sizes prompts so the answer never legitimately needs more than the reserve.
@@ -375,9 +374,9 @@ def _normalize_tool_calls(raw_tool_calls: list) -> list[dict]:
 
     The OpenAI tool-call ``id`` is **preserved** when present: the dispatcher keys the
     tool-result message by this id, and on replay `_prepare_messages_for_openai` echoes
-    it back. Dropping it (as the non-streaming path used to) forces the dispatcher and
-    the replay normalizer to invent two *different* positional ids, so the assistant
-    `tool_calls` and the `tool` message no longer pair up and vLLM rejects the history.
+    it back. Without it the dispatcher and the replay normalizer would invent two
+    *different* positional ids, the assistant `tool_calls` and the `tool` message would
+    not pair up, and vLLM would reject the history.
     """
     result = []
     for tc in raw_tool_calls:

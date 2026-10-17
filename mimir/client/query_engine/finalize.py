@@ -1,7 +1,7 @@
 """End-of-query bookkeeping: annotate the answer, finalize.
 
 ``_finalize_answer`` is the single exit funnel for both loops (annotate written
-files → save carry context → return). Extracted from ``agent_loop.py``.
+files → save carry context → return).
 
 Nothing is written to persistent memory here: what is worth remembering is the
 model's call, made during the run (see ``_SECTION_MEMORY``). A note stored on its
@@ -61,11 +61,9 @@ def _record_turn(agent: AgentPort, messages: list[dict], *, repair: bool = True)
     """Stash this turn's transcript (minus the system prompt) for full-context history.
 
     Called on every exit, not only on a finished answer. The front-end reads it back
-    once the turn is over, whatever the outcome, and replaces its history with it. A
-    turn that was cancelled or raised used to leave the *previous* turn's transcript
-    here, so the history rolled back to it: the cancelled turn's own work was lost, its
-    messages were archived a second time, and a "continue" replayed the same steps
-    word for word. After a session switch the stale transcript was another session's.
+    once the turn is over, whatever the outcome, and replaces its history with it: a
+    cancelled or failed turn keeps its own work rather than leaving the previous turn's
+    transcript in place.
 
     *repair* is off when a turn claims the slot on entry: a resumed turn has just taken
     out the results it is about to produce, and a repair would stub them in first.

@@ -6,11 +6,9 @@ What is left is the view: send the event, keep the bookkeeping a screen needs (t
 rows a divert click or a progress bar resolves through, the context bar, the review
 bar), and say what the pool did that the client cannot infer.
 
-It waits on its subscription rather than polling it. The old loop slept 5 ms between
-looks, plus a ``stat`` of the checklist file each time round — on every connection, for
-the life of the socket, whether anything was happening or not. Now an idle connection
-costs nothing: the loop wakes for an event, and for the once-a-second refreshes only
-while a turn of the conversation on screen is live.
+It waits on its subscription rather than polling it, so an idle connection costs
+nothing: the loop wakes for an event, and for the once-a-second refreshes only while
+a turn of the conversation on screen is live.
 """
 from __future__ import annotations
 

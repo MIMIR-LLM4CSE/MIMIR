@@ -4,7 +4,6 @@ Trims oldest tool output, compacts the middle of the conversation, and — as a
 deterministic backstop — force-fits to a token target. ``_enforce_context_budget``
 orchestrates trim → compact → force-fit before each model call.
 ``served_compaction_instruction`` is the handoff note used when summarizing.
-Extracted from ``agent_loop.py``.
 """
 from __future__ import annotations
 

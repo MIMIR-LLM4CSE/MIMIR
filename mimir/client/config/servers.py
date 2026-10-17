@@ -9,10 +9,9 @@ from .paths import SERVER_BASE
 # engine gates the pull on the live toggles, and the dispatcher pins the result.
 SKILL_LOAD_TOOL: str = "load_skill"
 
-# Tool classification (sensitive / plan-blocked / path args / …) is no longer a
-# static list here: each server declares its tools' capabilities and the client
-# reads them from the per-agent live registry (agent.tool_caps). See
-# context/capabilities.py and POLICY.md.
+# Tool classification (sensitive / plan-blocked / path args / …) is not listed here:
+# each server declares its tools' capabilities and the client reads them from the
+# per-agent live registry (agent.tool_caps). See context/capabilities.py and POLICY.md.
 
 SERVERS: dict[str, str] = {
     "math": SERVER_BASE + "utilities/server_math.py",

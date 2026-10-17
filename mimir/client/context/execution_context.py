@@ -479,10 +479,8 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 # was the source of cross-layer coherence bugs.
 #
 # Every signal below is only ever set by the model's own tool calls this query (see
-# guardrails.observations), so presence is the whole test. Nothing seeds
-# these fields any more: a structural snapshot used to pre-fill ``inspected_dirs``,
-# which meant a gate could be satisfied before the model had done anything, and the
-# discount that existed to undo it was itself a field only some consumers applied.
+# guardrails.observations), so presence is the whole test. Nothing seeds them: a gate
+# must not be satisfied before the model has done anything.
 
 # Derived from the ``DISCOVERY`` trait rather than hand-listed, so a new discovery
 # field cannot be added to the schema and forgotten here. Membership:
@@ -572,17 +570,13 @@ def _declared_target_written(declared: str, written: set[str], root: str) -> boo
 def unwritten_declared_files(execution_context: ExecutionContext) -> list[str]:
     """Declared edit targets that no write this query honoured, sorted.
 
-    Read while the work is still going — the edit→validate transition, the empty-turn
-    corrective, the missing-evidence text — and no longer at completion time. The end-of
-    -run readers (completion issues, residual risk, the ledger) were dropped: the
-    declared set is scraped from checklist prose and replaced only when a new checklist
-    is written, so what it reports is "named earlier, not written yet", which is useful
-    guidance mid-run and an accusation at the end, where a revised plan is
-    indistinguishable from a skipped step.
+    Read while the work is still going (the edit→validate transition, the empty-turn
+    corrective, the missing-evidence text), never at completion: the set is scraped from
+    checklist prose, so "named earlier, not written yet" is guidance mid-run, and at the
+    end a revised plan would read as a skipped step.
 
-    Matching is by resolved path, not by string (see :func:`_declared_target_written`) —
-    a raw set difference reported a file as never written whenever the plan spelled it
-    differently from the write.
+    Matching is by resolved path (:func:`_declared_target_written`): a plan may spell a
+    file differently from the write.
     """
     declared = execution_context.declared_edit_set or set()
     if not declared:
@@ -720,16 +714,15 @@ def run_ledger_key(command: str) -> str:
     """The identity a run is remembered by: WHAT it ran, not how it was typed.
 
     The repair budget counts attempts at the same command, so what counts as "the same"
-    decides whether it ever accumulates. Keyed on the raw string it never did: a model
-    narrowing down a failure rewrites the tail of its command every time, and
+    decides whether it ever accumulates. A model narrowing down a failure rewrites the
+    tail of its command every time; keyed on the raw string,
 
         pytest tests/test_x.py -q 2>&1 | tail -15
         pytest tests/test_x.py -q 2>&1 | tail -8
         pytest tests/test_x.py -v  2>&1 | tail -12
 
-    are three ledger entries of one failure apiece — never the three strikes that arm
-    the ladder. (Observed: eleven pytest invocations in one session, no two keys equal,
-    the budget never reached.)
+    would be three ledger entries of one failure apiece — never the three strikes that
+    arm the ladder.
 
     The key is the executing segment's head plus the files it named, taken from the same
     classifier the policy layer parses with, so ``timeout 280 python3 -m pytest a.py``

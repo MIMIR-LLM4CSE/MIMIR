@@ -200,9 +200,8 @@ def enforcement_level(model: str) -> str:
                   mistake — blast-radius and env cleanup.
       - "off":    no guidance at all.
 
-    ``validation`` is deliberately absent from that list: checking a file one just
-    modified is a reality check, not a reasoning shim, so it moved to the verification
-    layer and now runs at every level.
+    ``validation`` is not in that list: checking a file one just modified is a reality
+    check, not a reasoning shim, so it is a verification nudge and runs at every level.
 
     **Default "light"**, with "strict" available as an explicit opt-in. The `light` set
     is already defined by the right criterion — a mistake that is expensive, hard to

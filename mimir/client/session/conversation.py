@@ -1,14 +1,6 @@
 """One conversation in memory: the one copy every writer goes through.
 
-A conversation used to have two writers. The connection showing it held its history in
-memory and saved that; the pool, when nobody was connected, loaded the stored copy,
-wrote a turn into it and saved that. Two copies of one conversation had to be
-arbitrated — a claim on every answer and every finished run, a grace window during
-which the socket had first refusal, a reload when the pool had won, a revision check
-on save for when the arbitration failed — and each of those was a place a turn could
-be recorded twice or lost.
-
-Now there is one copy. :class:`Conversations` hands out the same :class:`Conversation`
+:class:`Conversations` hands out the same :class:`Conversation`
 object to whoever asks for a session id, the connection and the pool alike, and every
 change goes through it and is saved from it. They all run on the server's one event
 loop, so nothing about sharing it needs a lock.

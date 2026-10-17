@@ -43,8 +43,8 @@ from .settings import (
     parse_temperature,
 )
 from .models import DEFAULT_MODEL, VALID_MODES, READONLY_MODES, LLM_BACKEND, VLLM_BASE_URL, VLLM_API_KEY, VLLM_MODEL_PROFILES, RAY_BASE_URL, RAY_API_KEY, thinking_mechanism
-# NOTE: user-extension discovery (.mimir/ servers / skills / plugins) moved to
-# ``mimir.client.extensions``; import from there, not from ``config``.
+# User-extension discovery (.mimir/ servers / skills / plugins) is
+# ``mimir.client.extensions``.
 
 __all__ = [
     "APPROVAL_MODE_ALIASES",

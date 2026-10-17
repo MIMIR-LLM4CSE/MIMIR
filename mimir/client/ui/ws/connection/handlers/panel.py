@@ -254,11 +254,8 @@ class PanelHandlers:
         """Tell the client what the endpoint serves, so it can offer a choice.
 
         The agent process is the one authority on this: it holds the address and the
-        API key, and it reaches the cluster the way the rest of the client does. The
-        VS Code panel used to learn the list only from its own probe in the extension
-        host — so a probe a corporate proxy swallowed left the user connected to a
-        working endpoint with no way to switch model, the list missing rather than
-        the capability.
+        API key, and it reaches the cluster the way the rest of the client does, so the
+        list does not depend on the extension host's own probe getting through a proxy.
 
         Sent after the greeting, not inside it: asking the endpoint is a network
         round trip, and the greeting is what takes the webview out of "connecting".

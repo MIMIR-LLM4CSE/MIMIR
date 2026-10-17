@@ -153,13 +153,9 @@ class ConversationHandlers:
         # If session had todos, restore them to disk so agent picks them up —
         # unless what is already on disk is newer than this snapshot (see below).
         #
-        # And then simply show them. A checklist with work left on it used to raise a
-        # modal asking whether to resume the plan or start fresh, which was the wrong
-        # question asked at the worst moment: this runs on every session load, and a
-        # connection dropping mid-turn reloads the session — so the card arrived in the
-        # middle of the very work it was asking whether to continue. There is no reading
-        # of "start fresh" that is right there, and the plan of record is on disk either
-        # way: the agent reads the file, not this message.
+        # And then simply show them, without asking whether to resume: this runs on
+        # every session load, a reconnect mid-turn included, and the plan of record is
+        # on disk either way (the agent reads the file, not this message).
         if session.todos:
             if not self._restore_todos(
                 session.todos, getattr(session, 'todo_deps', None),

@@ -12,27 +12,14 @@ task:
   mode does not get the plan-writing tools it has no use for. Both are read from
   capabilities the servers declare, so the decision is a fact.
 
-Everything else is sent, to every model. Two filters used to trim the list further —
-pruning whole tool families the query's wording did not mention, and capping the
-total by relevance — and both were removed deliberately:
-
-* They guessed the task's subject from its opening sentence, and a guess that is
-  wrong *removes a capability*. The recorded failure is an auto-optimisation task
-  whose request said "optimise this solver": the plan mode that preceded it did not
-  prune, so the plan was built around the surrogate tools, and the execution that
-  followed rebuilt the list from the request alone, dropped them, and fell back to
-  the shell. Every replacement signal measured out fragile in the same way.
-* They cost the very thing they looked like they were saving. The full list is
-  *constant*, so it sits in the prompt prefix and is paid for once per session; a
-  list that depends on the request changes with every request and misses that cache
-  each time.
-
-What remains is query-stable by construction: the mode and the user's server toggles
-are the only inputs, and neither moves during a query unless the user moves it.
+Everything else is sent, to every model. Nothing is pruned by the query's wording: a
+wrong guess about the task removes a capability, and a list that changes per request
+misses the prompt cache every time. The inputs are the mode and the user's server
+toggles, which do not move during a query unless the user moves them.
 
 This is prompt-construction (which tools the model sees *before* it chooses), the
-counterpart to ``tool_execution`` which runs the call the model chose *after*. It
-moved here out of ``policy/engine.py`` because it is not a precondition gate.
+counterpart to ``tool_execution`` which runs the call the model chose *after*. It is
+not a precondition gate, which is why it is not in ``policy``.
 """
 
 from __future__ import annotations
@@ -59,33 +46,10 @@ def blocked_tools_for_context(
     if execution_context is None:
         return set()
 
-    # Nothing is blocked here any more, and the empty set is deliberate — see below.
-    #
-    # This used to drop every CONTENT_WRITE tool (`write_file`, `append_file`) whenever
-    # the query read as edit-flavoured, on the reasoning that "appending is effectively
-    # creating new content, not a surgical edit". Two things were wrong with it.
-    #
-    # It guessed intent from vocabulary, and the guess is not sound: "refactor" is an
-    # edit word, but the most ordinary refactor there is — splitting a module into a
-    # package — is pure file creation. The query cannot answer "will this need a new
-    # file?"; only the work can.
-    #
-    # And it enforced the guess by AMPUTATION. Hiding here is query-stable and therefore
-    # irreversible for the whole query, with no call-time path back.
-    # A model that had planned a package split was left with
-    # `replace_in_file` alone — which cannot create a file — and had no way to say so:
-    # it created the directory, read what it needed, and then returned an EMPTY TURN at
-    # the exact step where the write belonged, twice, in two recorded sessions on the
-    # same request. The visible symptom was an answer ending "Creating the package files
-    # now:" with nothing created.
-    #
-    # The concern behind it was real but already met, precisely and at call time:
-    # `policy.write.check_write_policy` refuses an OVERWRITE-capable tool aimed at a file
-    # that is known to exist and was never read. That gate tells rewriting a file from
-    # creating one by FACT rather than by keyword, which is the distinction that was
-    # wanted. The keyword predicate itself is gone now: the nudge layer that kept using
-    # it was the last consumer, and it too went back to reading recorded state rather
-    # than the wording of the request.
+    # Nothing is blocked here, on purpose. Intent is not guessed from the request's
+    # vocabulary: a refactor that splits a module is pure file creation, and a tool
+    # hidden for the whole query has no way back. Rewriting a file never read is refused
+    # at call time, by fact (policy.write.check_write_policy).
     #
     # Kept as a function, and still called, so the seam is here if a genuinely
     # query-stable block is ever needed. Anything state-dependent belongs in

@@ -232,8 +232,7 @@ class FullSession:
     # card to put back and the calls its answer resumes (query_engine.deferral).
     pending_interaction: dict | None = None
     # The context mode the session was running in. Read on resume to size the window
-    # before this conversation has an agent to ask — without it the budget fell back to
-    # compact's 32k and a restored full-mode window read as overflowing.
+    # before this conversation has an agent to ask.
     context_mode: str = "full"
     # Bumped on every save. Two things write a session file now — a connected
     # ``Connection`` and, when none is connected, the pump's turn committer — and the
@@ -281,8 +280,7 @@ class FullSession:
             todos=data.get("todos", []),
             todo_deps=data.get("todo_deps", []),
             pending_interaction=data.get("pending_interaction") or None,
-            # Sessions saved before this field existed were full-mode by default, which
-            # is also the mode a rebuilt agent starts in.
+            # A session file without the field is full-mode, the mode an agent starts in.
             context_mode=data.get("context_mode") or "full",
             rev=int(data.get("rev") or 0),
             rendered_seq=int(data.get("rendered_seq") or 0),

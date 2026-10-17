@@ -5,9 +5,7 @@ tools the mode has no use for, but some models still hallucinate calls to tools 
 were never advertised, and the dual-use PLAN_READONLY exec tool stays visible on
 purpose (discovery commands). This module is the defence in depth: it drops those
 classes of call and feeds the model a tool-role error explaining why, so it can
-correct course.
-
-Extracted from ``plan_loop.py`` when ask mode started sharing the same guard.
+correct course. Plan mode and ask mode share it.
 """
 from __future__ import annotations
 

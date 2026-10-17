@@ -150,11 +150,8 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
         # Two baselines, deliberately: `record_snapshot` keeps the FIRST content seen
         # per path so the approval card can show the whole batch as one diff, while
         # the event emitted below is per call and needs the content as it was just
-        # before THIS call. Reading the batch baseline for both is what made every
-        # edit re-diff against the state at the start of the batch — for a file
-        # created in-session that baseline is None forever, so all 151 diff events
-        # across four recorded sessions arrived as `is_new` with the entire file as
-        # additions.
+        # before THIS call (against the batch baseline, a file created in-session would
+        # show every later edit as the whole file added).
         targets = agent.get_tool_file_targets(name, args)
         before_by_path: dict[str, str | None] = {}
         for path in targets:

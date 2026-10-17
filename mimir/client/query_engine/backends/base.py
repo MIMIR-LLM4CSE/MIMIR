@@ -23,11 +23,8 @@ logger = logging.getLogger(__name__)
 class PromptTooLongError(ValueError):
     """The prompt does not fit the model's window, as the provider counted it.
 
-    A ``ValueError`` subclass so nothing that used to catch the untyped error
-    stops catching it, and a type of its own so the retry loop can tell the one
-    failure that re-sending cannot fix from the flaky connection it looks like.
-    Retrying it spent three backoffs and three requests on a prompt that was the
-    same size each time, and then ended the query anyway.
+    A ``ValueError``, and a type of its own so the retry loop can tell the one failure
+    that re-sending cannot fix from a flaky connection: it is not retried.
     """
 
 
@@ -347,9 +344,8 @@ class LLMBackend(ABC):
         ``finish_reason`` is why the provider stopped generating, normalized by
         :func:`normalize_finish_reason` — every provider spells it differently
         (OpenAI/vLLM ``finish_reason``, Ollama ``done_reason``, Anthropic
-        ``stop_reason``) and all three used to drop it, which left a turn cut off
-        at ``max_tokens`` indistinguishable from a model that simply had nothing
-        to say. It describes the *call*, not the message: strip it before the
+        ``stop_reason``); without it a turn cut off at ``max_tokens`` reads like a
+        model that had nothing to say. It describes the *call*, not the message: strip it before the
         message is appended to history (``streaming._process_response`` does),
         or it goes back to the provider on the next turn.
 
@@ -433,9 +429,8 @@ class LLMBackend(ABC):
         """Chars-per-token estimate, measured against the server once it can be.
 
         Falls back through the ratio measured in an earlier run before the static
-        default: a session reopened against a fresh server then counts its history the
-        way the server charged it, instead of at a 4 that was off by a fifth and moved
-        the bar on its own as soon as the first answer re-measured it.
+        default: a session reopened against a fresh server counts its history the way
+        the server charged it.
         """
         ratio = (self._calibrated_cpt.get(model)
                  or token_calibration.recall_chars_per_token(model)

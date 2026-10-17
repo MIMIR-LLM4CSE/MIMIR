@@ -23,13 +23,8 @@ there::
     pytest tests/test_x.py -q 2>&1 | tail -15     # the status is tail's
     timeout 280 python3 test_x.py; echo "EXIT=$?" # the status is echo's
 
-Across four recorded sessions of one task, every single test invocation was written
-one of those two ways. All of them therefore reported ``returncode: 0`` — including
-the runs with four red tests — and each was recorded as a run that had reached its end
-and merely owed a reading. Nothing downstream could tell those from real passes, so
-the repair ladder never engaged and the model was free to declare them passing, which
-it did. The readers below are what close that: when the status cannot be trusted, the
-run's own report is the only evidence there is, so it must be read.
+Both report ``returncode: 0`` even with red tests. When the status cannot be trusted,
+the run's own report is the only evidence there is, so the readers below read it.
 
 Attribution itself is a separate question with a separate answer
 (:func:`exit_status_settles`) — an unattributable green is not a failure, it is an
@@ -62,11 +57,9 @@ _FAILURE_COUNT_KEYS = frozenset({"failed", "failures", "exit"})
 
 # ``key=value`` at the start of a line, value a single token, remainder optional.
 #
-# The remainder is what a strict whole-line ``fullmatch`` used to forbid, and it cost a
-# whole recorded session: a harness printing ``check=fail (2 failed: convergence_order_4,
-# absorption)`` declared its failure in exactly the documented grammar and was read as
-# silent, because of the parenthetical. Prose is still excluded by construction — the
-# ``=`` must sit against the key, so "the check failed to converge" does not match.
+# The remainder is allowed: ``check=fail (2 failed: convergence_order_4, absorption)``
+# declares its failure in the documented grammar. Prose is excluded by construction —
+# the ``=`` must sit against the key, so "the check failed to converge" does not match.
 _KEY_VALUE_RE = re.compile(
     r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>\S+)(?:\s.*)?"
 )
@@ -77,8 +70,7 @@ def _verdict_key(key: str) -> str:
 
     A harness checking several things names them (``abc_check=fail``,
     ``dalembert_check=pass``) rather than printing three bare ``check=`` lines it would
-    have to reconcile. Reading only the bare key made every such run look silent — the
-    second half of the same recorded session that the parenthetical cost.
+    have to reconcile; reading only the bare key would make every such run look silent.
     """
     return key.rsplit("_", 1)[-1].lower()
 

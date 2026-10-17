@@ -412,8 +412,8 @@ def was_reported(job: DetachedJob) -> bool:
     """
     candidates = [_job_dir(job.session_id, job.job_key, job.kind)]
     if job.watcher:
-        # What the live watcher's own completion wrote, before this scan existed to
-        # resolve the descriptor: the same run, the other spelling of its directory.
+        # Where the live watcher's own completion writes: the same run under the other
+        # spelling of its directory.
         candidates.append(os.path.join(_sessions_root(), job.session_id, "jobs",
                                        job.job_key))
     if job.kind == "slurm":
@@ -427,8 +427,7 @@ def mark_reported(job: DetachedJob) -> None:
 
     Best-effort on purpose: a marker that cannot be written costs a duplicate wake,
     while refusing to announce the run because the marker failed costs the wake
-    entirely. The first is a nuisance, the second is the bug this whole path exists to
-    fix.
+    entirely.
     """
     try:
         path = _job_dir(job.session_id, job.job_key, job.kind)

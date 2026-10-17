@@ -41,8 +41,7 @@ def clamp_thinking_depth(level: int) -> int:
 def thinking_depth_from_label(label: str) -> int | None:
     """Resolve a depth label (``"auto"``, ``"deep"``, …) to its level, else None.
 
-    ``on`` is accepted as an alias for ``auto`` so the legacy ``/think on`` keeps
-    working and now means "let the model calibrate" rather than "always think hard".
+    ``on`` is accepted as an alias for ``auto``: ``/think on`` lets the model calibrate.
     """
     key = label.strip().lower()
     if key in ("on", "true", "1", "yes"):
@@ -60,8 +59,7 @@ def thinking_depth_from_label(label: str) -> int | None:
 # call, not the model's: a child that writes, and more so one that opens a branch,
 # commits something on their behalf.
 #
-#   explore   read, search, navigate. What a sub-agent could do before this ladder
-#             existed, and what it falls back to whenever the rung is unknown.
+#   explore   read, search, navigate; also what an unknown rung falls back to.
 #   build     + editing and running commands — always in a git worktree of its own,
 #             on its own branch. There is deliberately no rung in between: sub-agents
 #             editing one shared tree overwrite each other in silence (one reads a
@@ -71,11 +69,8 @@ def thinking_depth_from_label(label: str) -> int | None:
 SUBAGENT_LEVELS: tuple[str, ...] = ("explore", "build")
 DEFAULT_SUBAGENT_LEVEL: str = SUBAGENT_LEVELS[0]
 
-# What this rung used to be called. "parallel" named the consequence — children at work
-# at the same time — rather than what the user is actually granting, which is the right
-# of a child to change files and run commands. It is still read: it is in the
-# preferences file of everyone who set it, and a rung that silently fell back to
-# "explore" would quietly take a granted right away.
+# Other names a rung is read under. "parallel" is in the preferences of everyone who set
+# it, and falling back to "explore" would take a granted right away.
 SUBAGENT_LEVEL_ALIASES: dict[str, str] = {"parallel": "build"}
 
 

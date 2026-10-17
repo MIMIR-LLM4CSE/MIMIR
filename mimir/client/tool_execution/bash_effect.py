@@ -2,10 +2,8 @@
 
 An edit through the file tools returns a diff, and the prompt tells the model to check
 it. A write through the shell returns nothing — ``sed -i`` prints an empty line and
-exits 0 — so the one actor that could catch a bad edit is the one with nothing to look
-at. Observed in the wild: a ``sed -i '/^\\s*}\\s*$/{ i\\...}'`` whose address matched
-every closing brace inserted its block eight times into a C++ header, the model saw
-``(no output)``, and the corruption survived to the end of the run.
+exits 0 — so the one actor that could catch a bad edit (a ``sed -i`` whose address
+matches every closing brace) would have nothing to look at.
 
 **The trigger is "the command was not read-only", not "the command was a write."**
 Classifying by kind would miss the cases that surprise most: ``git checkout -- f.py``

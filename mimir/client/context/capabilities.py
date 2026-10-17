@@ -1,13 +1,8 @@
 """Tool capability registry — the single source of truth for tool *semantics*.
 
-Historically the client hardcoded the meaning of ~85 specific server tool names
-across ~20 sets scattered through ``config``, ``context``, ``policy``,
-``tool_execution``, ``query_engine``, ``integration`` and ``ui``: which tools are
-sensitive, plan-blocked, writes, edits, searches, validations, reads,
-dir-inspections, cacheable, which args carry paths, what fallbacks they have, etc.
-Adding or renaming a server tool silently broke classification with *no error*.
-
-This module centralises that knowledge.  A tool is described by a :class:`ToolCaps`
+What a tool *is* (sensitive, plan-blocked, a write, an edit, a search, a
+validation, a read, cacheable; which arguments carry paths, what fallbacks it has)
+is declared by its server and read here. A tool is described by a :class:`ToolCaps`
 descriptor — an orthogonal set of capability flags plus structured metadata
 (argument roles, approval fallbacks, validation ordering, status label).  Every
 client consumer derives its behaviour from the registry instead of re-listing tool
@@ -296,9 +291,8 @@ def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
     # the failure mode of that disagreement is a tool running unasked.
     reversibility = approval.get("reversibility")
     if reversibility not in REVERSIBILITY_LEVELS:
-        # `sensitive: true` is the pre-reversibility spelling. Honour it as
-        # "recoverable" (gated, but not treated as irreversible) so a third-party
-        # server written against the old descriptor keeps its prompt.
+        # A third-party server may still declare `sensitive: true`: read it as
+        # "recoverable" (gated, not irreversible) so its tool keeps its prompt.
         reversibility = RECOVERABLE if approval.get("sensitive") else _derive_reversibility(caps)
     if reversibility != REVERSIBLE:
         caps.add(SENSITIVE)
@@ -458,9 +452,8 @@ def is_write(name: str, registry: dict[str, ToolCaps] | None = None) -> bool:
     """Whether ``name`` mutates a file (write/edit/create or delete).
 
     Derived rather than declared: a tool is a write iff it edits/creates content
-    or removes a file. Replaces the former ``IS_WRITE`` flag so a server can't
-    declare its write caps yet forget the umbrella. Used for snapshot/targeting
-    (agent_core).
+    or removes a file, so a server cannot declare its write caps and forget an
+    umbrella flag. Used for snapshot/targeting (agent_core).
     """
     c = _registry(registry).get(name)
     if not c:
@@ -472,8 +465,8 @@ def clears_edit_loop(name: str, registry: dict[str, ToolCaps] | None = None) -> 
     """Whether a successful call to ``name`` resets a file's edit-failure tracking.
 
     Derived rather than declared: re-reading a file or re-running a validator on it
-    gives the model fresh ground truth, so the repeated-failed-edit counter clears.
-    Replaces the former ``EDIT_LOOP_CLEAR`` flag (== READ or VALIDATE).
+    gives the model fresh ground truth, so the repeated-failed-edit counter clears
+    (READ or VALIDATE).
     """
     c = _registry(registry).get(name)
     if not c:

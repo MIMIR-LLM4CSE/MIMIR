@@ -5,10 +5,6 @@ the :class:`CommandHost` it is given, and returns a :class:`CommandResult` — n
 already laid out for a terminal, nor a payload already shaped for a socket. Each
 front-end renders the result its own way: the CLI prints it, the WebSocket sends a
 state message, a result card or an error.
-
-Before this, the CLI and the WebSocket each parsed every command (``/think`` on one,
-``/thinking`` on the other), with their own messages and their own gaps: ``/subagents``
-took the rung's former name on one side and refused it on the other.
 """
 from __future__ import annotations
 

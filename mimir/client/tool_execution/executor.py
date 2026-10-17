@@ -326,10 +326,9 @@ async def run_post_write_validation(
     Runs the post-write validation ladder for an EDIT-capable tool with a target
     path; no-ops (returns "") for anything else. Best-effort: any error yields "".
 
-    Split out of ``execute_tool_call`` so a caller can run it OUTSIDE the write's
-    timeout budget. Validation runs after the file is already on disk, so a slow or
-    crashing validator must never be able to turn a successful write into a failed
-    tool row — the dispatch layer gives this its own independent budget.
+    Apart from ``execute_tool_call`` so a caller runs it OUTSIDE the write's timeout
+    budget: the file is already on disk, and a slow or crashing validator must not turn
+    a successful write into a failed tool row.
     """
     target_path = agent.normalize_workspace_path(arguments.get("path"))
     if not (has_cap(tool_name, EDIT, agent.tool_caps) and target_path):

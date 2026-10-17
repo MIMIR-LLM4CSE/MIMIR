@@ -1,18 +1,12 @@
 """Injectable event sink for the agent engine.
 
 The engine emits structured UI events (status, thinking, tool_call, tool_result,
-diff). Historically these were written as ``print(json.dumps(...))``
-to stdout and captured by a front-end that monkeypatched ``sys.stdout``. That
-coupled the engine to a stdout wire protocol and made it impossible to embed or
-test headless without capturing stdout.
-
-This module provides a thin seam instead: emit sites call :func:`emit`, which
-routes the event to a sink bound for the current run. The sink is held in a
+diff). Emit sites call :func:`emit`, which routes the event to a sink bound for the
+current run, so the engine runs headless and embedded alike. The sink is held in a
 ``contextvars.ContextVar`` so it is copied into ``asyncio.gather`` tasks — binding
 it once at the top of a run reaches every nested helper and parallel tool task
 without threading a parameter through each function. When no sink is bound (e.g.
-the CLI front-end), :func:`emit` falls back to printing a JSON line, preserving
-the original behaviour exactly.
+the CLI front-end), :func:`emit` prints a JSON line.
 """
 
 from __future__ import annotations

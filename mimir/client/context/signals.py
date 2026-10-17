@@ -4,11 +4,9 @@ import re
 from functools import lru_cache
 
 
-# These two no longer classify anything on their own: the nudges that asked "did the
-# user word this as an edit / as a creation?" were removed, because a keyword over a
-# natural-language request is a guess about intent and a nudge must rest on a fact. They
-# survive as ingredients of QUERY_DISCOVERY_SIGNALS below, whose single consumer reads
-# the union as a coarse exit filter and nothing more.
+# These two classify nothing on their own: a keyword over a request is a guess about
+# intent, and a nudge rests on facts. They are ingredients of QUERY_DISCOVERY_SIGNALS
+# below, whose single consumer reads the union as a coarse exit filter.
 QUERY_EDIT_SIGNALS: tuple[str, ...] = (
     "improve", "ameliore", "améliore", "modify", "modifie", "update",
     "edit", "patch", "refactor", "fix", "correct",
@@ -66,19 +64,12 @@ QUERY_DISCOVERY_SIGNALS: tuple[str, ...] = tuple(
     )
 )
 
-# Tool-classification sets (search / edit / validate) are no longer defined here:
-# each server declares its tools' capabilities and consumers read them from the
-# per-agent live registry (agent.tool_caps) via has_cap()/names_with_cap().
-
-
-
 
 # What counts as source: an edit to one of these is recorded as produced work and owes
 # a check. Every source language belongs here whatever this machine has installed: the
 # check itself is performed in-process (guardrails.builtin_check), so what a file owes
-# no longer depends on a binary being on PATH. Every spelling of a language belongs
-# here too — `.f03` was once missing, and a Fortran 2003 file was then never even
-# recorded as modified.
+# does not depend on a binary being on PATH. Every spelling of a language belongs here
+# too (`.f`, `.f90`, `.f03`, …): a missing one is a file never recorded as modified.
 SOURCE_FILE_EXTENSIONS: tuple[str, ...] = (
     # Python
     ".py", ".pyi", ".pyx", ".pxd",
@@ -147,12 +138,8 @@ def query_matches_any(query: str, tokens: tuple[str, ...]) -> bool:
 
 
 # ── query-signal reading ───────────────────────────────────────────────────────
-# One predicate, one consumer. The guardrail layer used to host four of these, asking
-# whether the user's wording meant "edit", "create" or "just a question", and the nudges
-# read the answers. That is a guess about intent, and a nudge must rest on something the
-# code can check — so those predicates went, along with the nudge conditions that read
-# them. What the nudges ask now is what actually happened: a file was edited, a target
-# was declared, a run failed.
+# One predicate, one consumer. The nudges do not read the user's wording for intent;
+# they read what happened: a file was edited, a target was declared, a run failed.
 #
 # This one survives for the plan-mode explore phase (``query_engine/plan_loop``), where
 # it is used as the coarse exit filter the union above describes — "does this request

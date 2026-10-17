@@ -491,9 +491,8 @@ def should_nudge_todo(
         and not execution_context.todo_written
         # A checklist is only useful while work remains. The many-ops trigger has no
         # workflow-state bound, so in a long task that never wrote one it would fire
-        # at the very end — the model then writes a plan/todo AFTER the work is done
-        # (observed: proxy optimization emitting a todo list at conclusion). Suppress
-        # once concluding: a plan written then guides nothing.
+        # at the very end, after the work is done. Suppressed once concluding: a plan
+        # written then guides nothing.
         and execution_context.workflow_state != "conclude"
         and nudge_count(execution_context, "todo") < NUDGE_MAX_TODO
         and (multi_file or many_ops)

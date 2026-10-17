@@ -172,9 +172,8 @@ NUDGE_STATE_IDLE_STEPS: int = 3
 NUDGE_MAX_CREATION: int = 1
 NUDGE_MAX_TODO: int = 1
 # The mid-loop "you just wrote X — tick the step off" reminder, which fires from
-# _post_dispatch_inject rather than from the nudge table. It was the one injection point
-# with no cap at all: one recorded session took 20+ copies of it in 61 tool calls, most
-# of them on consecutive edits of a single file mid-debug where the answer is plainly no.
+# _post_dispatch_inject rather than from the nudge table. Capped, or consecutive edits of
+# one file mid-debug would repeat it at every call.
 NUDGE_MAX_TODO_TICK: int = 2
 TODO_NUDGE_MULTIFILE_THRESHOLD: int = 3
 # Alternative trigger for the same nudge: at least this many successful substantive

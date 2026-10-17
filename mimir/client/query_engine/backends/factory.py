@@ -22,8 +22,7 @@ _cache: dict[str, LLMBackend] = {}
 def get_backend() -> LLMBackend:
     """The backend ``LLM_BACKEND`` names (default ``vllm``).
 
-    An unknown name is an error: it used to fall through to Ollama, so a typo talked to
-    a server nobody had asked for and failed somewhere far from the cause.
+    An unknown name is an error, raised here rather than far from the typo.
     """
     name = os.environ.get("LLM_BACKEND", "vllm").strip().lower()
     if name not in _cache:

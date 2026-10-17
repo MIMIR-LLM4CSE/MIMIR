@@ -43,8 +43,7 @@ WORKSPACE_ROOT = _workspace_root()
 # Per-workspace *extensions* directory (<workspace>/.mimir). Holds ONLY the user
 # extensions that belong with the repo: plugins/, skills/, servers/, and the
 # system_prompt.md template. The agent's own STATE (memory, sessions, todos,
-# plans, preferences.json, active_session) no longer lives
-# here — see STATE_DIR below. Resolved the same way the UI front-ends and servers
+# plans, preferences.json, active_session) is in STATE_DIR below. Resolved the same way the UI front-ends and servers
 # resolve it, so the extension path stays in agreement.
 MIMIR_DIR = _mimir_dir(WORKSPACE_ROOT)
 

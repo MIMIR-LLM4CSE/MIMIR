@@ -2,12 +2,10 @@
 
 Two figures make the context bar exact rather than merely close, and both are
 measured against what the server reported for a real prompt: the fixed per-call
-overhead (system prompt + tools schema) and the history's chars-per-token. Measured
-in the backend singleton, they used to live and die with the process — so a session
-reopened against a fresh server was accounted for by the default heuristic and a
-ceiling estimate of the overhead, and the bar moved on its own as soon as the first
-answer landed. An endpoint that serves no ``/tokenize`` has no other way back to an
-exact number: ``usage.prompt_tokens`` is the only one anyone here gets.
+overhead (system prompt + tools schema) and the history's chars-per-token. Kept on
+disk, they let a session reopened against a fresh server be counted exactly from its
+first draw; an endpoint that serves no ``/tokenize`` has no other way to an exact
+number, since ``usage.prompt_tokens`` is the only one anyone here gets.
 
 What may be remembered is bounded by what stays true across a restart:
 

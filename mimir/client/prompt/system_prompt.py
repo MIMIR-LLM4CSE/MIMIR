@@ -643,14 +643,10 @@ def build_tool_catalog_for_planning(
 
     Plan mode strips the write/exec tools from the model's tool list, which removes
     their schemas along with them — so a plan built entirely around one of them is
-    written by a model that cannot see what it takes. Observed: a third of one
-    planning phase spent on two filesystem-wide ``find`` calls that timed out, a
-    grep through the session's own transcripts for op names, and finally reading
-    mimir's own server source to recover an API whose docstring enumerates every op
-    it accepts. That only worked because the source happened to be on the same disk.
+    written by a model that cannot see what it takes.
 
-    Names alone were never the answer — the model already had those, and knowing
-    that ``proxy_eval`` exists is not knowing what ``op`` it takes. So each tool
+    A name is not enough: knowing that ``proxy_eval`` exists is not knowing what
+    ``op`` it takes. So each tool
     carries its one-line summary here, and the schema stays out of the tool list:
     knowable without being callable.
     """

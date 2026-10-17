@@ -128,12 +128,9 @@ def build_ledger(execution_context: ExecutionContext) -> dict | None:
     files, unjudged runs, open checklist steps) — it is what a front-end colours the
     panel by.
 
-    Every row reports what a check, a run or a file on disk established. A row for a file
-    the plan *named* and never wrote used to sit among them, and it is gone: the declared
-    set is scraped from checklist prose, so the gap it measured was as often a plan the
-    model had revised — correctly — as work it had skipped, and at completion time there
-    is no way to tell the two apart. What the model owes at the end is what it changed
-    and never checked; what it decided not to build along the way is not a defect.
+    Every row reports what a check, a run or a file on disk established. A file the plan
+    named and never wrote has no row: at completion a revised plan and a skipped step
+    look the same. What the model owes at the end is what it changed and never checked.
 
     Two kinds of row, kept apart on purpose. A **file** row says what a checker
     established: it parses, it lints, nothing more. A **run** row says what happened when

@@ -37,8 +37,8 @@ def message_wire_form(message: dict) -> str:
     optimism of exactly this size that let a backstop announce a fit on a prompt
     the provider then rejected.
 
-    Falls back to the joined-text approximation on anything unserialisable. That
-    only ever under-counts, which is the old behaviour rather than a new failure.
+    Falls back to the joined-text approximation on anything unserialisable, which
+    can only under-count.
     """
     # Keyed on presence, not on truth: a message that carries ``content: None``
     # is serialised with ``"content": null`` and paid for, so dropping the falsy
@@ -87,7 +87,7 @@ def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
     evicts a tool result while preserving its assistant turn, and
     ``_maybe_compact_intra_query`` can slice between an assistant turn and its results.
     (The dispatcher answers every call it declines to run under that call's own id, so
-    it no longer leaves gaps of its own.)
+    it leaves no gaps of its own.)
 
     The invariant belongs to the history, not to one provider: strict backends reject a
     dangling pair outright (the Claude API 400s on a ``tool_use`` with no ``tool_result``)
@@ -156,9 +156,7 @@ def merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
     """Collapse adjacent plain ``user`` messages into one.
 
     Lives here, beside :func:`reconcile_tool_pairs`, because every backend needs it
-    (``LLMBackend.chat`` applies both): it was once defined inside the vLLM backend,
-    so the same history produced a legal prompt there and two adjacent ``user``
-    entries on the Anthropic path — which requires strict alternation.
+    (``LLMBackend.chat`` applies both): the Anthropic path requires strict alternation.
 
     A strict tokenizer (vLLM's ``--tokenizer-mode mistral`` is one) enforces
     strict role alternation and degenerates into token salad when it sees two

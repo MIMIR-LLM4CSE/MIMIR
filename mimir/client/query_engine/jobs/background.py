@@ -170,8 +170,7 @@ def maybe_register_background_job(
     the result parsed a second time; omitted, it is detected here as before.
 
     Best-effort: every failure path returns the result unchanged, and says so in the
-    log. A watcher that was never posted used to leave no trace at all, which is why a
-    run could finish into silence with nothing anywhere to explain it.
+    log, so a run that finishes unwatched leaves a trace explaining why.
     """
     if descriptor is None:
         descriptor = detect_background_job(name, result_text, agent)

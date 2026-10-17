@@ -1,14 +1,9 @@
 """Built-in call-time policy gates.
 
-Each gate is a small function ``_check_*(agent, tool_name, [arguments,]
-execution_context) -> str | None`` returning a raw violation payload (built via
-``agent._json_error_payload``) to BLOCK, or ``None`` to allow. The orchestrator
-in :mod:`.engine` runs them in a fixed order and enriches the returned payload;
-the gates themselves stay free of orchestration concerns.
-
-These moved out of ``engine.py`` (which had grown to several jobs) so the gates
-live together and a new one lands next to its siblings rather than in a
-one-policy module. Behaviour is unchanged for the three original gates.
+Each gate is a function ``check_*(agent, tool_name, [arguments,] execution_context)
+-> str | None`` returning a violation payload (``json_error_payload``) to BLOCK, or
+``None`` to allow. :mod:`.engine` runs them in a fixed order and enriches what they
+return; the gates know nothing of the orchestration.
 """
 
 from __future__ import annotations

@@ -318,9 +318,8 @@ class TurnHandlers:
         """Store the client's rendered transcript as this session's display messages.
 
         The rich transcript — tool rows, reasoning panels, diff cards — is assembled by
-        the webview's reducer and exists nowhere else; the server only ever appended the
-        text bubbles, which is why a reload used to come back stripped to prose. Rather
-        than rebuild that assembly here, we take the client's copy of it.
+        the webview's reducer and exists nowhere else; the server appends only the text
+        bubbles. Rather than rebuild that assembly here, we take the client's copy of it.
 
         Two things make that safe to trust: the transcript must name the session it
         belongs to (one arriving after a switch would otherwise overwrite the session the

@@ -238,9 +238,6 @@ class Connection(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandler
         """
         await EventRouter(self).run()
 
-    # Maps an inbound WS message "type" to the Connection handler method that serves it.
-    # Replaces the former 13-branch ``if mtype == …`` chain in _handle.
-
     # Inbound message type -> the method that serves it, from every handler mixin.
     _MSG_HANDLERS: dict[str, str] = {
         **ConversationHandlers.MESSAGES, **TurnHandlers.MESSAGES, **CardHandlers.MESSAGES,
@@ -254,7 +251,7 @@ class Connection(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandler
             return
         handler_name = self._MSG_HANDLERS.get(msg.get("type"))
         if handler_name is None:
-            return  # unknown/missing type — ignore, as the old fall-through did
+            return  # an unknown or missing type is ignored
         try:
             await getattr(self, handler_name)(msg)
         except asyncio.CancelledError:

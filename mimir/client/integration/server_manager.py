@@ -423,10 +423,8 @@ async def _register_session(*, agent: AgentPort, name: str, session: Any, listin
             continue
         registered.append(tool.name)
         agent.tool_owner[tool.name] = name
-        # Derive the tool's semantics (capabilities, arg roles, fallbacks, label)
-        # from what the server declares (meta/annotations), falling back to the
-        # relocated legacy table.  This registry replaces the old scattered
-        # hardcoded tool-name lists; see context/capabilities.py.
+        # The tool's semantics (capabilities, arg roles, fallbacks, label), from what
+        # the server declares (meta/annotations); see context/capabilities.py.
         agent.tool_caps[tool.name] = infer_tool_caps(tool)
         # Convert MCP tool -> Ollama function-calling format.
         # Parameter descriptions lifted out of the docstring's `Args:` block: a

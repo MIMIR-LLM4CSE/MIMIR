@@ -1,11 +1,9 @@
 """A turn parked on the user, set aside when the user leaves its conversation.
 
 A turn parks on a person: a tool approval, a clarification, a plan awaiting a
-decision. One worker serves every conversation and runs one turn at a time, so a turn
-left parked would hold every other conversation behind it — and cancelling it, as a
-session switch used to, threw the card away with the work that led to it.
+decision. Cancelling it would throw the card away with the work that led to it.
 
-Deferral is the third way out. The front-end asks the worker to set the wait aside;
+Deferral is the way out. The front-end asks the worker to set the wait aside;
 each parked prompt then returns at once and is recorded here, the turn finishes the
 step it was on and ends. What it was waiting on is stored with the conversation, and
 the card comes back when the user does. Their answer starts a resume turn that runs

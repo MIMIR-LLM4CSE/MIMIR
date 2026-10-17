@@ -2,7 +2,6 @@
 
 ``_stream_chat`` runs ONE model call with decorrelated-jitter retry/backoff;
 ``_process_response`` emits the thinking event and appends the assistant message.
-Extracted from ``agent_loop.py``.
 """
 from __future__ import annotations
 
@@ -152,8 +151,7 @@ def _is_retryable(exc: Exception) -> bool:
     A retry loop that cannot tell "the connection dropped" from "this prompt is
     too long" treats both as bad luck. The second is not bad luck: the prompt is
     byte-identical on every attempt, so the backoff only delays an outcome that
-    was already decided — three requests and eight seconds, observed, before a
-    query ended on the error it would have ended on immediately.
+    was already decided.
 
     Errs toward retrying. A transient failure wrongly called permanent loses a
     whole query; a permanent one wrongly called transient loses a few seconds, and
