@@ -37,7 +37,7 @@ from ..guardrails.toollist import grantable_tools, grantable_writers
 from ..protocol.tool_result import json_error_payload, normalize_tool_content, parse_tool_payload
 from . import bash_effect
 from .normalizer import make_hashable
-from .plugins import PostToolRegistry
+from ..core.extension_set import extensions_of
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +359,7 @@ async def run_post_tool_annotations(
     a nudge pack, for the same reason.
     """
     text = await run_post_write_validation(agent, tool_name, arguments, execution_context)
-    for rule in PostToolRegistry.rules():
+    for rule in extensions_of(agent).post_tool_rules():
         try:
             produced = rule.run(agent, tool_name, arguments, result + text, execution_context)
             if inspect.isawaitable(produced):

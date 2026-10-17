@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 from .write import UNCONFIRMED_PATH, check_write_policy
-from .plugins import PolicyRegistry
+from ...core.extension_set import extensions_of
 from ...context import ensure_execution_context, is_known_to_exist
 from .state_machine import check_state_machine_guard
 from .gates import (
@@ -239,10 +239,10 @@ def evaluate_tool_preconditions(
 
     The single call-time entry point: the call goes through :data:`_PIPELINE` and the
     first gate that blocks it decides. Application-registered :class:`PolicyCheck`s
-    from :data:`PolicyRegistry` run at their declared stage between the built-in gates
+    of the agent's extension set run at their declared stage between the built-in gates
     and can only add constraints.
     """
-    extra_checks = PolicyRegistry.active_checks()
+    extra_checks = extensions_of(agent).policy_checks()
     normalized_context = ensure_execution_context(execution_context)
 
     # Normalize + rewrite BEFORE the registry check. Legacy aliases such as the

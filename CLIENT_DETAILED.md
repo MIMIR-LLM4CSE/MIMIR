@@ -253,7 +253,7 @@ primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME` / `*_DIR_ENV` 
 |---|---|
 | `servers.py` | `all_servers()` — bundled `SERVERS` merged with `discover_user_servers()` (scans `.mimir/servers/server_<name>.py\|.js`, env `MIMIR_SERVERS_DIR`). A name colliding with a bundled server is skipped, so the core is protected. `all_server_descriptions()` does the same for the toggle panel |
 | `skills.py` | `resolve_skills_dir()` — `.mimir/skills/`, env `MIMIR_SKILLS_DIR`. Loading itself is `MimirAgent.load_skills(..., merge=True)`, where a same-named user skill overrides the bundled one. Only names and one-line descriptions reach the prompt (`model_invocable_skills()`); a body is read on demand by the `load_skill` tool |
-| `plugins.py` | `load_plugins()` / `resolve_plugins_dir()` — scans `.mimir/plugins/`, env `MIMIR_PLUGINS_DIR`, and imports each pack. A pack self-registers through `register_policy_check` / `register_nudge` as an import side effect |
+| `plugins.py` | `load_plugins()` / `resolve_plugins_dir()` — scans `.mimir/plugins/`, env `MIMIR_PLUGINS_DIR`, and imports each pack into an `ExtensionSet` (`core/extension_set.py`), loaded once per directory and shared by the agents of that workspace. A pack self-registers through `register_policy_check` / `register_nudge` / `register_post_tool` as an import side effect; registrations made outside a load (an embedding app) go to the ambient set every workspace set reads through |
 
 Nothing is auto-created in `.mimir/` — it is the user's alone. Copy-to-customize examples
 live in [`mimir/examples/`](mimir/examples/), one `README.md` per type.
@@ -684,7 +684,7 @@ once — on the revision it will ship at.
 | `approval.py` | `ApprovalManager`: prompts, `always` grants, batch queue, snapshots, revert |
 | `bash_classify.py` | `classify_bash_command()` / `bash_command_is_readonly()` |
 | `readonly_exempt.py` | the read-only dual-use waiver, in any mode |
-| `plugins.py` | `PolicyCheck` descriptor + `PolicyRegistry` + `register_policy_check()` |
+| `plugins.py` | `PolicyCheck` descriptor + `register_policy_check()`; the checks run are the agent's `extensions.policy_checks()` |
 
 Two details worth stating here:
 
@@ -802,7 +802,8 @@ conclusion, which is the last moment the record can still be written, and it is 
 three rows kept at `light` — costly, hard to detect, and not self-correcting.
 
 `nudges/messages.py` holds the message copy for every built-in row. `nudges/plugins.py`
-holds the `NudgeRule` descriptor, the process-global `NudgeRegistry` and `register_nudge()`;
+holds the `NudgeRule` descriptor and `register_nudge()`; the rules run are the agent's
+`extensions.nudge_rules()`;
 pack guidance rules are tier-gated by `rule_tier_enabled()`, suppressed when their name is in
 `agent.disabled_nudges` (toggleable via `/nudges`), and capped per query.
 

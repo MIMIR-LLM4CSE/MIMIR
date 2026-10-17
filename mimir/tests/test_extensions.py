@@ -1,10 +1,10 @@
 """Coverage for the pluggable policy/nudge extension seam (``client.extensions``).
 
 Asserts that application-registered PolicyChecks block calls at their stage, that
-NudgeRules fire / are tier-gated / are toggle-suppressed, that an empty registry leaves
-core behaviour byte-identical, that registration is idempotent by name, and that the
-directory-scan loader imports a pack module. The module-global registries are cleared in
-setUp/tearDown so nothing leaks between tests or into other test modules.
+NudgeRules fire / are tier-gated / are toggle-suppressed, that an empty set leaves core
+behaviour byte-identical, that registration is idempotent by name, and that the
+directory-scan loader imports a pack module into its own set. Each test registers into
+an ExtensionSet of its own, which the test's agents carry.
 """
 
 from __future__ import annotations
@@ -16,21 +16,21 @@ import os
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
 from mimir.client.extensions import (
+    ExtensionSet,
     NudgeRule,
     PolicyCheck,
     PostToolRule,
     register_nudge,
     register_policy_check,
     register_post_tool,
+    registering_into,
 )
-from mimir.client.guardrails.policy.plugins import PolicyRegistry
 from mimir.client.guardrails.nudges import maybe_append_nudge
-from mimir.client.guardrails.nudges.plugins import NudgeRegistry
 from mimir.client.tool_execution.executor import run_post_tool_annotations
-from mimir.client.tool_execution.plugins import PostToolRegistry
 from mimir.client.extensions.plugins import load_plugins
 from mimir.tests.test_policy_manager import _FakeAgent
 
@@ -50,15 +50,19 @@ class _NudgeAgent:
 
 
 class ExtensionRegistryResetMixin(unittest.TestCase):
-    def setUp(self) -> None:
-        PolicyRegistry.clear()
-        NudgeRegistry.clear()
-        PostToolRegistry.clear()
+    """Registrations land in this test's own set, and its agents carry that set."""
 
-    def tearDown(self) -> None:
-        PolicyRegistry.clear()
-        NudgeRegistry.clear()
-        PostToolRegistry.clear()
+    def _enter(self, cm):
+        value = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+        return value
+
+    def setUp(self) -> None:
+        self.extensions = ExtensionSet()
+        self._enter(registering_into(self.extensions))
+        for agent_class in (_NudgeAgent, _FakeAgent):
+            self._enter(mock.patch.object(agent_class, "extensions", self.extensions,
+                                                create=True))
 
 
 class PolicyPluginTests(ExtensionRegistryResetMixin):
@@ -124,8 +128,8 @@ class PolicyPluginTests(ExtensionRegistryResetMixin):
     def test_register_is_idempotent_by_name(self) -> None:
         register_policy_check(PolicyCheck(name="dup", check=lambda a, t, ar, e: None))
         register_policy_check(PolicyCheck(name="dup", check=lambda a, t, ar, e: _block_payload("x")))
-        self.assertEqual(PolicyRegistry.names(), ["dup"])
-        self.assertEqual(len(PolicyRegistry.active_checks()), 1)
+        self.assertEqual(self.extensions.policy_names(), ["dup"])
+        self.assertEqual(len(self.extensions.policy_checks()), 1)
 
     def test_invalid_stage_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -165,7 +169,9 @@ class NudgePluginTests(ExtensionRegistryResetMixin):
         )
         self.assertEqual(len(strict_msgs), 1)
 
-        NudgeRegistry.clear()
+        self.extensions = ExtensionSet()
+        self._enter(registering_into(self.extensions))
+        self._enter(mock.patch.object(_NudgeAgent, "extensions", self.extensions))
         light_msgs = self._fire(
             _NudgeAgent(enforcement="light"),
             {"layer": "guidance", "tiers": frozenset({("strict", "agent")})},
@@ -212,6 +218,7 @@ class PostToolPluginTests(ExtensionRegistryResetMixin):
         return types.SimpleNamespace(
             tool_caps={},
             normalize_workspace_path=lambda p: p or "",
+            extensions=self.extensions,
         )
 
     def _annotate(self, result: str = "{}") -> str:
@@ -290,18 +297,20 @@ class LoaderTests(ExtensionRegistryResetMixin):
                 f.write("x = 1\n")
             loaded = load_plugins(d)
 
-        self.assertEqual(loaded, 1)
-        self.assertIn("scanned_policy", PolicyRegistry.names())
-        self.assertIn("scanned_nudge", NudgeRegistry.names())
+        self.assertEqual(len(loaded.packs), 1)
+        self.assertIn("scanned_policy", loaded.policy_names())
+        self.assertIn("scanned_nudge", loaded.nudge_names())
+        # Nothing registered outside the set it was loaded into.
+        self.assertEqual(self.extensions.policy_names(), [])
 
     def test_missing_dir_is_noop(self) -> None:
-        self.assertEqual(load_plugins("/nonexistent/path/plugins"), 0)
+        self.assertEqual(load_plugins("/nonexistent/path/plugins").packs, [])
 
     def test_bad_pack_does_not_crash(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "broken.py"), "w", encoding="utf-8") as f:
                 f.write("raise RuntimeError('boom at import')\n")
-            self.assertEqual(load_plugins(d), 0)  # skipped, not fatal
+            self.assertEqual(load_plugins(d).packs, [])  # skipped, not fatal
 
 
 if __name__ == "__main__":

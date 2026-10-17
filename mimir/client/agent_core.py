@@ -59,8 +59,8 @@ from .core.human import TerminalHuman
 from .core.ports import HumanIO
 from .core.settings import apply_setting
 from .event_sink import reset_event_sink, set_event_sink
+from .core.extension_set import AMBIENT, ExtensionSet
 from .extensions import all_server_descriptions, all_servers, load_plugins, resolve_skills_dir
-from .guardrails.nudges.plugins import NudgeRegistry
 from .guardrails.policy.approval import ApprovalManager, denial_kind
 from .guardrails.toollist import tools_for_readonly_mode
 from .guardrails.workflow import (
@@ -282,15 +282,13 @@ class MimirAgent:
         # overrides the bundled one). See extensions.resolve_skills_dir.
         self.load_skills(resolve_skills_dir(), merge=True)
 
-        # Application extension packs: import custom policy/nudge modules from the
-        # plugins dir so their descriptors register before the first query. Locked
-        # policies + toggleable nudges; see client/extensions/plugins.py.
+        # The workspace's extension packs: locked policies, toggleable nudges, post-tool
+        # hooks. A failure to load them is logged, never fatal.
         try:
-            load_plugins()
+            self.extensions = load_plugins()
         except Exception:
-            # An extension pack that fails to load must not stop the agent; it must
-            # not go unnoticed either.
             logger.warning("extension packs could not all be loaded", exc_info=True)
+            self.extensions = ExtensionSet(parent=AMBIENT)
 
         # Operator toggles (soft-hide): servers/skills/nudges the user switched off in
         # the panel. Only *disabled* names are persisted (.mimir/preferences.json);
@@ -881,7 +879,7 @@ class MimirAgent:
                 "description": "application nudge",
                 "enabled": name not in self.disabled_nudges,
             }
-            for name in NudgeRegistry.names()
+            for name in self.extensions.nudge_names()
         ]
         return {"servers": servers, "skills": skills, "nudges": nudges}
 

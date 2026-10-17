@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ...config.limits import CUSTOM_NUDGE_MAX_PER_QUERY
+from ...core.extension_set import registration_target
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
@@ -109,32 +110,6 @@ def rule_tier_enabled(rule: NudgeRule, *, enforcement: str, active_mode: str) ->
     return (enforcement, active_mode) in tiers
 
 
-class _NudgeRegistry:
-    """Process-global registry of application nudges (keyed by name)."""
-
-    def __init__(self) -> None:
-        self._rules: dict[str, NudgeRule] = {}
-
-    def register(self, rule: NudgeRule) -> None:
-        # Idempotent by name (see policy plugins for the rationale).
-        self._rules[rule.name] = rule
-
-    def rules(self, layer: str | None = None) -> list[NudgeRule]:
-        """Registered rules (optionally filtered by layer), sorted by (priority, name)."""
-        items = [r for r in self._rules.values() if layer is None or r.layer == layer]
-        return sorted(items, key=lambda r: (r.priority, r.name))
-
-    def names(self) -> list[str]:
-        return sorted(self._rules)
-
-    def clear(self) -> None:
-        """Drop all registered rules (used by tests to isolate the global registry)."""
-        self._rules.clear()
-
-
-NudgeRegistry = _NudgeRegistry()
-
-
 def register_nudge(rule: NudgeRule) -> None:
-    """Public entry point a pack calls at import time to add a nudge."""
-    NudgeRegistry.register(rule)
+    """Add a nudge rule to the extension set being loaded (see ``core.extension_set``)."""
+    registration_target().add_nudge(rule)

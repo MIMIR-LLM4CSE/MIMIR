@@ -40,6 +40,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ..core.extension_set import registration_target
+
 # (agent, tool_name, arguments, result, execution_context) -> annotation appended to the
 # tool result, or "" / None for nothing. May be a coroutine function.
 PostToolFn = Callable[[Any, str, dict, str, "dict | None"], "Any"]
@@ -52,30 +54,6 @@ class PostToolRule:
     order: int = 100     # lower runs first
 
 
-class _PostToolRegistry:
-    """Process-global registry of application post-tool hooks (keyed by name)."""
-
-    def __init__(self) -> None:
-        self._rules: dict[str, PostToolRule] = {}
-
-    def register(self, rule: PostToolRule) -> None:
-        # Idempotent by name (see policy plugins for the rationale).
-        self._rules[rule.name] = rule
-
-    def rules(self) -> list[PostToolRule]:
-        return sorted(self._rules.values(), key=lambda r: (r.order, r.name))
-
-    def names(self) -> list[str]:
-        return sorted(self._rules)
-
-    def clear(self) -> None:
-        """Drop all registered hooks (used by tests to isolate the global registry)."""
-        self._rules.clear()
-
-
-PostToolRegistry = _PostToolRegistry()
-
-
 def register_post_tool(rule: PostToolRule) -> None:
-    """Public entry point a pack calls at import time to add a post-tool hook."""
-    PostToolRegistry.register(rule)
+    """Add a post-tool hook to the extension set being loaded (see ``core.extension_set``)."""
+    registration_target().add_post_tool(rule)

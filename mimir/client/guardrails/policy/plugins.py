@@ -32,6 +32,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ...core.extension_set import POLICY_STAGES, registration_target
+
 # A check receives (agent, tool_name, arguments, execution_context) and returns a
 # violation payload string (ideally the agent's JSON-error shape) to BLOCK the call,
 # or None to allow it to proceed to the next check.
@@ -42,7 +44,7 @@ PolicyCheckFn = Callable[[Any, str, dict, "dict | None"], "str | None"]
 #                    reach/state/write gate. Use to veto a call outright.
 #   "pre_approval" — after the built-in write_policy gate, just before approval. Use for
 #                    constraints that should see the fully-resolved tool + arguments.
-VALID_POLICY_STAGES = ("pre_mutation", "pre_approval")
+VALID_POLICY_STAGES = POLICY_STAGES
 
 
 @dataclass(frozen=True)
@@ -59,37 +61,6 @@ class PolicyCheck:
             )
 
 
-class _PolicyRegistry:
-    """Process-global registry of application policy checks (keyed by name)."""
-
-    def __init__(self) -> None:
-        self._checks: dict[str, PolicyCheck] = {}
-
-    def register(self, check: PolicyCheck) -> None:
-        # Idempotent by name: re-registration replaces, so re-importing a pack (agent
-        # re-init, multiple agents in one process) never duplicates a check.
-        self._checks[check.name] = check
-
-    def active_checks(self) -> list[PolicyCheck]:
-        """All registered checks, sorted by (stage, order, name) for deterministic runs."""
-        stage_rank = {name: i for i, name in enumerate(VALID_POLICY_STAGES)}
-        return sorted(
-            self._checks.values(),
-            key=lambda c: (stage_rank.get(c.stage, 99), c.order, c.name),
-        )
-
-    def names(self) -> list[str]:
-        return sorted(self._checks)
-
-    def clear(self) -> None:
-        """Drop all registered checks (used by tests to isolate the global registry)."""
-        self._checks.clear()
-
-
-# The single process-global instance.
-PolicyRegistry = _PolicyRegistry()
-
-
 def register_policy_check(check: PolicyCheck) -> None:
-    """Public entry point a pack calls at import time to add a policy check."""
-    PolicyRegistry.register(check)
+    """Add a policy check to the extension set being loaded (see ``core.extension_set``)."""
+    registration_target().add_policy_check(check)

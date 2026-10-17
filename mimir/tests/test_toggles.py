@@ -12,6 +12,7 @@ from pathlib import Path
 
 import mimir.client.config.preferences as preferences
 from mimir.client.config import paths
+from mimir.client.core.extension_set import ExtensionSet
 from mimir.client.agent_core import MimirAgent
 from mimir.tests._commands import cli
 
@@ -24,6 +25,7 @@ def _fake_agent(**overrides):
         disabled_servers=set(),
         disabled_skills=set(),
         skills={},
+        extensions=ExtensionSet(),
     )
     for k, v in overrides.items():
         setattr(fake, k, v)

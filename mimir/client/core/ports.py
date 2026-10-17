@@ -26,6 +26,7 @@ class AgentPort(Protocol):
     skills: dict[str, dict]
     resources: dict[str, Any]
     approvals: Any                       # guardrails.policy.approval.ApprovalManager
+    extensions: Any                      # core.extension_set.ExtensionSet
 
     # ── Settings read live, at every step ──────────────────────────────────────
     thinking: bool

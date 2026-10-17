@@ -26,7 +26,7 @@ from ...config.models import resolve_enforcement
 from ...config.limits import (
     EXERCISE_BUDGET,
 )
-from .plugins import NudgeRegistry
+from ...core.extension_set import extensions_of
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from .exercise import exercise_hint, should_nudge_regression, should_nudge_unexercised_code
@@ -90,10 +90,8 @@ def maybe_append_nudge(
 ) -> bool:
     """Append at most one workflow nudge, in priority order.
 
-    Built-in nudges are an ordered table (``CORE_NUDGES``) walked by the generic
-    ``_append_core_nudge`` runner; application packs add more via the ``NudgeRegistry``
-    (``_append_custom_nudge``). Both share the same shape (name + layer + predicate +
-    render). Two clearly separated layers:
+    The built-in table (``CORE_NUDGES``) comes first, then the rules of the agent's
+    extension set; both answer the ``Nudge`` protocol. Two layers:
 
     - **Verification reminders** (``layer="verification"``) check *reality* — denied
       required actions, repeated edit failures, an edited source whose test was never
@@ -203,7 +201,7 @@ def _cascade(agent: AgentPort, layer: str) -> list[Nudge]:
     """The enabled nudges of *layer*, in the order they are tried: the core table, then
     the packs, so a built-in reality check always wins over an application's."""
     nudges: list[Nudge] = [n for n in CORE_NUDGES if n.layer == layer]
-    nudges += NudgeRegistry.rules(layer)
+    nudges += extensions_of(agent).nudge_rules(layer)
     return [n for n in nudges if _enabled(agent, n.name)]
 
 

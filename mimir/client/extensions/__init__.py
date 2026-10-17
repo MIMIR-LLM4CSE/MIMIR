@@ -24,10 +24,11 @@ reacts to what it produced, a nudge speaks at the *end of the turn*. Policies ar
 
 from __future__ import annotations
 
-# Plugin-pack authoring surface (descriptors + registries live next to their consumers).
-from ..guardrails.policy.plugins import PolicyCheck, PolicyRegistry, register_policy_check
-from ..guardrails.nudges.plugins import NudgeRule, NudgeRegistry, register_nudge
-from ..tool_execution.plugins import PostToolRule, PostToolRegistry, register_post_tool
+# Plugin-pack authoring surface (each descriptor lives next to its consumer).
+from ..core.extension_set import ExtensionSet, registering_into
+from ..guardrails.policy.plugins import PolicyCheck, register_policy_check
+from ..guardrails.nudges.plugins import NudgeRule, register_nudge
+from ..tool_execution.plugins import PostToolRule, register_post_tool
 
 # .mimir/ discovery + loading, one module per extension type.
 from .servers import (
@@ -42,14 +43,13 @@ from .plugins import load_plugins, resolve_plugins_dir
 
 __all__ = [
     # authoring surface
+    "ExtensionSet",
+    "registering_into",
     "PolicyCheck",
-    "PolicyRegistry",
     "register_policy_check",
     "NudgeRule",
-    "NudgeRegistry",
     "register_nudge",
     "PostToolRule",
-    "PostToolRegistry",
     "register_post_tool",
     # servers
     "all_servers",
