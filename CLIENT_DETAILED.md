@@ -676,7 +676,8 @@ once — on the revision it will ship at.
 
 | Module | Holds |
 |---|---|
-| `engine.py` | `evaluate_tool_preconditions()` — the gate order, the two pack slots, violation enrichment |
+| `engine.py` | `evaluate_tool_preconditions()` — the gate order and the two pack slots |
+| `violations.py` | violation enrichment, the evidence a refused call lacks, path clarification |
 | `gates.py` | `_check_cluster_submit()`, `_check_proxy_exec()`, `_check_out_of_workspace_access()` |
 | `write.py` | `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` |
 | `state_machine.py` | `check_state_machine_guard()` and the retry budget |

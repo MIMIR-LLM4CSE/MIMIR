@@ -278,7 +278,8 @@ target **already exists** — a file that does not exist yet has no callers to b
 
 | Module | Holds |
 |---|---|
-| `guardrails/policy/engine.py` | `evaluate_tool_preconditions` — the gate order, pack slots, violation enrichment |
+| `guardrails/policy/engine.py` | `evaluate_tool_preconditions` — the gate order and the pack slots |
+| `guardrails/policy/violations.py` | violation enrichment, missing evidence, path clarification |
 | `guardrails/policy/gates.py` | the individual gates: cluster-submit, proxy-exec, out-of-workspace |
 | `guardrails/policy/write.py` | read-before-overwrite, delete evidence, anti-thrashing |
 | `guardrails/policy/state_machine.py` | the workflow-state guard and the retry budget |
