@@ -15,6 +15,7 @@ The faithfulness test asserts the declared registry reproduces ``GOLDEN`` exactl
 """
 
 import ast
+import functools
 import inspect
 import pathlib
 import types
@@ -301,6 +302,16 @@ def _literal(node, module_consts: dict | None = None):
     raise AssertionError(f"unexpected tool_caps arg node: {ast.dump(node)}")
 
 
+@functools.lru_cache(maxsize=None)
+def _sibling_constants(directory: pathlib.Path) -> dict:
+    """``{"module.NAME": value}`` for the constants of every module in *directory*."""
+    out: dict = {}
+    for sibling in directory.glob("*.py"):
+        for name, value in _module_constants(ast.parse(sibling.read_text())).items():
+            out[f"{sibling.stem}.{name}"] = value
+    return out
+
+
 def _module_constants(tree: ast.Module) -> dict:
     """Module-level ``NAME = <literal>`` bindings, so a decorator may name its own."""
     consts: dict = {}
@@ -326,9 +337,7 @@ def build_declared_registry() -> dict:
     for path in SERVERS_DIR.rglob("*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
         module_consts = _module_constants(tree)
-        for sibling in path.parent.glob("*.py"):
-            for name, value in _module_constants(ast.parse(sibling.read_text())).items():
-                module_consts[f"{sibling.stem}.{name}"] = value
+        module_consts.update(_sibling_constants(path.parent))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue

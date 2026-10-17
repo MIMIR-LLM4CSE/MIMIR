@@ -1,3 +1,4 @@
+from mimir.servers.workspace import bash_validation
 import importlib.util
 import io
 import re
@@ -967,12 +968,12 @@ class BashServerTests(unittest.TestCase):
         *command*, only a path, so the agent could only retry spellings of it. The
         gate is now the denylist plus the user's prompt.
         """
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("git status", "awk '{print $1}' notes.txt", "tar -tf a.tar",
                     "rm -rf build", "clang --version", "mpicc -o a.out a.c",
                     "curl -s https://example.com"):
             self.assertEqual(
-                server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+                bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_bash_run_chaining_is_validated_per_command(self) -> None:
         # Chaining is allowed, but each command is validated on its own, so a
@@ -985,12 +986,12 @@ class BashServerTests(unittest.TestCase):
         # An unquoted newline chains like ';': each line must be validated on its
         # own, so a disallowed command on a later line is rejected instead of
         # being read as an extra argument of the line above.
-        cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command("ls\nsh script.sh", cwd)
+        cwd = bash_validation.WORKSPACE_ROOT
+        payload = bash_validation.validate_command("ls\nsh script.sh", cwd)
         self.assertEqual(payload["status"], "error")
         self.assertIn("not available here", payload["error"])
         # ... and the confinement of every line still applies.
-        payload = server_bash._validate_command("ls\ncat /etc/passwd", cwd)
+        payload = bash_validation.validate_command("ls\ncat /etc/passwd", cwd)
         self.assertEqual(payload["status"], "error")
         self.assertIn("outside workspace", payload["error"])
 
@@ -998,13 +999,13 @@ class BashServerTests(unittest.TestCase):
         # Denying `-exec` on the token alone, without inspecting what is nested, leaves
         # read-only fan-out no spelling at all: the obvious alternative hint is `xargs`,
         # which is itself permanently banned.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in (
             r'find . -name "*.py" -exec grep -l pattern {} \;',
             "find . -type f -exec wc -l {} +",
             r"find . -name x -exec grep q {} \; -print",  # terminator, then more find args
         ):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "ok", f"{cmd} -> {payload}")
 
     def test_find_exec_still_refuses_anything_not_read_only(self) -> None:
@@ -1012,14 +1013,14 @@ class BashServerTests(unittest.TestCase):
         # expansion cannot be resolved here, so a nested write/exec targets unknown
         # paths. `python f.py` is directly invocable anyway, so the allowance reaches
         # nothing that was out of reach.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in (
             r"find . -exec rm {} \;",
             r"find . -exec python evil.py {} \;",
             r"find . -exec chmod 777 {} \;",
             r"find . -exec mv {} /tmp \;",
         ):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", f"{cmd} -> {payload}")
 
     def test_find_hidden_target_flags_are_still_denied(self) -> None:
@@ -1027,23 +1028,23 @@ class BashServerTests(unittest.TestCase):
         # agent does not have); they were never about nesting and stay denied.
         # ('-delete' is not among them: it deletes the matches, whose paths the
         # confinement check does see, so it runs under the approval prompt.)
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in (r"find . -ok rm {} \;",
                     "find . -fprint /tmp/out", "find . -fls /tmp/out"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", f"{cmd} -> {payload}")
 
     def test_nested_command_operands_are_still_confined(self) -> None:
         # The nested segment goes through the same path validation as any other, so
         # confinement is inherited rather than re-implemented.
-        cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command(r"find /etc -exec cat {} \;", cwd)
+        cwd = bash_validation.WORKSPACE_ROOT
+        payload = bash_validation.validate_command(r"find /etc -exec cat {} \;", cwd)
         self.assertEqual(payload["status"], "error")
         self.assertIn("outside workspace", payload["error"])
 
     def test_unterminated_exec_is_rejected(self) -> None:
-        cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command("find . -exec grep q {}", cwd)
+        cwd = bash_validation.WORKSPACE_ROOT
+        payload = bash_validation.validate_command("find . -exec grep q {}", cwd)
         self.assertEqual(payload["status"], "error")
 
     def test_bash_run_allows_multiline_command(self) -> None:
@@ -1063,29 +1064,29 @@ class BashServerTests(unittest.TestCase):
         not, so `gcc a.c -o/tmp/x.out` wrote outside the workspace with no prompt while
         `gcc a.c -o /tmp/x.out` was refused. Both must be refused.
         """
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("gcc a.c -o /tmp/x.out", "gcc a.c -o/tmp/x.out",
                     "ruff check --output-file=/tmp/r.txt f.py",
                     "pytest --junitxml=/tmp/j.xml",
                     "sort --output=/tmp/x in.txt", "cmake -B /tmp/build",
                     "javac -d /tmp X.java", "mypy --cache-dir=/tmp/c f.py",
                     "pdflatex -output-directory=/tmp main.tex"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("outside workspace", payload["error"], cmd)
         # In-workspace targets pass, and a `cd` rebases them like any other path.
         for cmd in ("gcc a.c -o out.o", "gcc a.c -oout.o", "sort -o out.txt in.txt",
                     "pytest --junitxml=j.xml", "cd mimir && cmake -B build"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_bash_read_flags_stay_unconfined(self) -> None:
         # Reading system headers/libraries is how any real build works, so read flags
         # are deliberately out of scope — only writes are confined.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("gcc -I/usr/include -L/usr/lib a.c -lm -o a.out",
                     "gcc -Wl,-rpath,/usr/lib a.c -o a.out",
                     "nvcc -L/usr/local/cuda/lib64 k.cu -o k.out"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_bash_env_managers_only_lose_the_sub_command_that_nests(self) -> None:
         """pip/conda run their whole surface; 'conda run' is the one exception.
@@ -1094,60 +1095,60 @@ class BashServerTests(unittest.TestCase):
         what the approval prompt is for. 'conda run' is not: it executes a nested
         command this validator never sees, exactly like a shell interpreter.
         """
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("pip install requests", "pip3 install -r requirements.txt",
                     "pip list", "conda create -n myenv python=3.11",
                     "conda env create -f env.yml", "mamba install -y numpy",
                     "conda list", "pip uninstall requests", "conda remove numpy",
                     "conda env remove -n x", "conda clean --all",
                     "pip config set global.index x", "pip wheel ."):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
         for cmd in ("conda run -n x python a.py", "mamba run -n x ls"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("nested command", payload["hint"], cmd)
-        self.assertIn("sub-command", server_bash._validate_command("pip", cwd)["error"])
+        self.assertIn("sub-command", bash_validation.validate_command("pip", cwd)["error"])
 
     def test_bash_env_manager_file_operands_are_confined(self) -> None:
         # A requirements file / local wheel is a file operand like any other: it can
         # be read from the workspace, not from outside it without approval.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("pip install /tmp/pkg.whl", "pip install -r /etc/req.txt",
                     "conda env create -f /etc/env.yml"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("outside workspace", payload["error"], cmd)
         # A package name, a version pin and a VCS URL are not paths.
         for cmd in ("pip install requests", "pip install 'numpy==1.26.0'",
                     "pip install git+https://github.com/a/b"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_bash_sed_out_of_workspace_path_is_rejected(self) -> None:
         # `sed` reads and (with -i) writes files, so its paths must be confined.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("sed -n '1,5p' /etc/passwd", "sed -i 's/a/b/' /etc/hosts"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("outside workspace", payload["error"], cmd)
 
     def test_bash_wc_out_of_workspace_path_is_rejected(self) -> None:
-        cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command("wc -l /etc/passwd", cwd)
+        cwd = bash_validation.WORKSPACE_ROOT
+        payload = bash_validation.validate_command("wc -l /etc/passwd", cwd)
         self.assertEqual(payload["status"], "error")
         self.assertIn("outside workspace", payload["error"])
 
     def test_bash_sed_inplace_in_workspace_is_permitted_by_validation(self) -> None:
         # `sed -i` on a workspace-relative file is a legitimate (approval-gated,
         # confined) edit — it must pass command validation, not be denied.
-        cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command("sed -i 's/a/b/' notes.txt", cwd)
+        cwd = bash_validation.WORKSPACE_ROOT
+        payload = bash_validation.validate_command("sed -i 's/a/b/' notes.txt", cwd)
         self.assertEqual(payload["status"], "ok", payload)
 
     def test_bash_tr_character_set_is_not_treated_as_a_path(self) -> None:
         # `tr` reads stdin; its args are character SETs, so a '/' set must not be
         # rejected as an out-of-workspace path.
-        cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command("tr '/' '_'", cwd)
+        cwd = bash_validation.WORKSPACE_ROOT
+        payload = bash_validation.validate_command("tr '/' '_'", cwd)
         self.assertEqual(payload["status"], "ok", payload)
 
     def test_bash_run_allows_workspace_local_compiled_binary(self) -> None:
@@ -1171,12 +1172,12 @@ class BashServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         import os
-        src = os.path.join(server_bash._WORKSPACE_ROOT, "bin_src.c")
+        src = os.path.join(bash_validation.WORKSPACE_ROOT, "bin_src.c")
         with open(src, "w") as fh:
             fh.write('#include <stdio.h>\nint main(){printf("WS-BIN-OK\\n");return 0;}')
         cls._wlocal_src = src
 
-        root = os.path.join(server_bash._WORKSPACE_ROOT, cls.FIXTURE_DIR)
+        root = os.path.join(bash_validation.WORKSPACE_ROOT, cls.FIXTURE_DIR)
         os.makedirs(os.path.join(root, "inner"), exist_ok=True)
         for name, body in (("probe.py", "VALUE = 1\n"),
                            ("inner/deeper.py", "VALUE = 2\n"),
@@ -1190,7 +1191,7 @@ class BashServerTests(unittest.TestCase):
         import os
         import shutil as _shutil
         for name in ("bin_src.c", "bin_out.out"):
-            p = os.path.join(server_bash._WORKSPACE_ROOT, name)
+            p = os.path.join(bash_validation.WORKSPACE_ROOT, name)
             if os.path.exists(p):
                 os.remove(p)
         _shutil.rmtree(getattr(cls, "_fixture_root", ""), ignore_errors=True)
@@ -1260,9 +1261,9 @@ class BashServerTests(unittest.TestCase):
     def test_deletion_is_allowed_but_still_confined(self) -> None:
         # 'rm' is destructive and reviewable, which is exactly what the approval
         # prompt is for; what it may not do is reach outside the workspace.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         self.assertEqual(
-            server_bash._validate_command("rm -rf build", cwd)["status"], "ok")
+            bash_validation.validate_command("rm -rf build", cwd)["status"], "ok")
         payload = server_bash.bash_run("rm -rf /tmp/something")
         self.assertEqual(payload["status"], "error")
         self.assertIn("outside workspace", payload["error"])
@@ -1275,20 +1276,20 @@ class BashServerTests(unittest.TestCase):
         self.assertIn("outside workspace", payload["error"])
         # Same for the input side, and for a target reached with '..'.
         for cmd in ("cat < /etc/passwd", "ls >> ../escape.log"):
-            payload = server_bash._validate_command(cmd, server_bash._WORKSPACE_ROOT)
+            payload = bash_validation.validate_command(cmd, bash_validation.WORKSPACE_ROOT)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("outside workspace", payload["error"], cmd)
         # An expanded target cannot be checked (the shell that expands it is not
         # the one validating), so it is refused rather than guessed at.
-        payload = server_bash._validate_command("ls > $HOME/x.log",
-                                                server_bash._WORKSPACE_ROOT)
+        payload = bash_validation.validate_command("ls > $HOME/x.log",
+                                                bash_validation.WORKSPACE_ROOT)
         self.assertEqual(payload["status"], "error")
         self.assertIn("expansion", payload["error"])
 
     def test_bash_run_allows_file_redirection_in_workspace(self) -> None:
         # The ordinary shell idiom for keeping a run's output: write it, read it back.
         import os
-        log = os.path.join(server_bash._WORKSPACE_ROOT, "redir_test.log")
+        log = os.path.join(bash_validation.WORKSPACE_ROOT, "redir_test.log")
         try:
             payload = server_bash.bash_run("echo redirected > redir_test.log")
             self.assertEqual(payload["status"], "ok", payload)
@@ -1322,7 +1323,7 @@ class BashServerTests(unittest.TestCase):
                     "module unload cuda", "module purge",
                     "module load gcc/11.3.0 && gcc --version"):
             self.assertIsNone(
-                server_bash._validate_module_args(cmd.split("&&")[0].split()), cmd)
+                bash_validation.validate_module_args(cmd.split("&&")[0].split()), cmd)
 
     def test_bash_run_rejects_unsafe_module_argument(self) -> None:
         payload = server_bash.bash_run("module load ../../etc/passwd")
@@ -1332,9 +1333,9 @@ class BashServerTests(unittest.TestCase):
         # A refusal that names no route is one the agent retries variants of. The
         # reply to a *shell* call must not name something to "call" either — that
         # reads as another shell command to try.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for name in sorted(_shell_paths.DENIED_COMMANDS):
-            payload = server_bash._validate_command(f"{name} x", cwd)
+            payload = bash_validation.validate_command(f"{name} x", cwd)
             self.assertEqual(payload["status"], "error", name)
             self.assertIn(name, payload["error"], name)
             self.assertTrue(payload["hint"].strip(), name)
@@ -1351,19 +1352,19 @@ class BashServerTests(unittest.TestCase):
     def test_a_wrapper_that_nests_nothing_unvalidated_runs(self) -> None:
         # 'timeout'/'env'/'xargs' were refused as runners; they are unwrapped now,
         # so what is validated is the command they carry.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("timeout 5 ls", "env ls", "xargs ls", "nohup ls",
                     "env A=B python3 x.py", "timeout 60 pytest -q"):
             self.assertEqual(
-                server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+                bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_noop_commands_enable_the_capability_probe(self) -> None:
         # `which X || true` is how availability is established; without the
         # no-ops the whole chain is rejected on its last segment.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("true", "false", ":", "which pdflatex || true",
                     "which pdflatex 2>/dev/null || true"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "ok", cmd)
 
     def test_no_match_is_a_result_not_an_error(self) -> None:
@@ -1393,22 +1394,22 @@ class BashServerTests(unittest.TestCase):
         # mv/cp/mkdir are available (approval-gated), but both ends of a move or
         # copy must stay inside the workspace — otherwise they would be an
         # exfiltration channel out or an import channel in.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("mv old.py new.py", "cp -r src dst", "mkdir -p build/obj",
                     "mkdir build && cp main.c build/"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
         for cmd in ("cp /etc/passwd .", "mv secrets.txt /tmp/out",
                     "cp ../../outside.txt here.txt"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("outside workspace", payload["error"], cmd)
 
     def test_cd_outside_the_workspace_needs_approval(self) -> None:
         # Not forbidden — ungranted. The refusal must name approval as the way
         # forward, since that is an action the agent can actually take.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("cd /etc", "cd ..", "cd ../..", "cd /tmp && ls"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("not approved", payload["error"], cmd)
             self.assertIn("approval", payload["hint"], cmd)
@@ -1417,25 +1418,25 @@ class BashServerTests(unittest.TestCase):
         # A user grant reaches the server through the shared sidecar, so the same
         # cd that was refused above now validates — and rebases the paths after it.
         import unittest.mock as mock
-        cwd = server_bash._WORKSPACE_ROOT
-        with mock.patch.object(server_bash, "_is_within_workspace",
+        cwd = bash_validation.WORKSPACE_ROOT
+        with mock.patch.object(bash_validation, "is_within_workspace",
                                side_effect=lambda p: p == "/tmp" or p.startswith("/tmp/")
                                or p == cwd or p.startswith(cwd + "/")):
             for cmd in ("cd /tmp && ls", "cd /tmp && cat data.csv"):
-                self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+                self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
             # A grant on one directory does not open a different one.
-            self.assertEqual(server_bash._validate_command("cd /etc", cwd)["status"], "error")
+            self.assertEqual(bash_validation.validate_command("cd /etc", cwd)["status"], "error")
 
     def test_cd_rebases_the_confinement_of_later_segments(self) -> None:
         # Regression: path confinement is validated against the directory the
         # shell will actually be in. Checking every segment against the *initial*
         # cwd made each half of `cd /etc && cat passwd` look fine on its own while
         # the chain read outside the sandbox.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("cd /etc && cat passwd",
                     "cd mimir && cd ../../etc && cat passwd",
                     "cd .. && cp outside.txt here.txt"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
         # ...and a legitimate in-workspace hop still resolves through the new base.
         # A bare 'cd' is NOT one of these any more: HOME is inherited, so it lands in
@@ -1445,7 +1446,7 @@ class BashServerTests(unittest.TestCase):
         for cmd in ("cd mimir && ls", "cd mimir && cd .. && ls",
                     "cd mimir/servers && cat workspace/server_bash.py",
                     "cd -"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_cd_then_relative_path_still_runs(self) -> None:
         payload = server_bash.bash_run(f"cd {self.FIXTURE_DIR}/inner && ls deeper.py")
@@ -1455,11 +1456,11 @@ class BashServerTests(unittest.TestCase):
     def test_deletion_runs_but_only_inside_the_workspace(self) -> None:
         # 'rm' is destructive and reviewable, which is what the approval prompt is
         # for. What it may not do is reach outside the workspace.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("rm f.txt", "rm -rf build", "rmdir build"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
         for cmd in ("rm /etc/passwd", "rm -rf ../../elsewhere"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("outside workspace", payload["error"], cmd)
 
@@ -1467,19 +1468,19 @@ class BashServerTests(unittest.TestCase):
         # Regression: confining the readers (`cat`) while leaving the executors
         # free was backwards — an interpreter or compiler takes a file operand the
         # same way, so `python /tmp/evil.py` reached outside the sandbox.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("python /tmp/evil.py", "python ../../evil.py",
                     "gcc /tmp/x.c -o /tmp/x.out", "pytest /etc/",
                     "mypy /etc/x.py", "pdflatex /tmp/a.tex",
                     "./solver.out /etc/passwd"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("outside workspace", payload["error"], cmd)
 
     def test_exec_confinement_does_not_reject_ordinary_invocations(self) -> None:
         # Flags are skipped by _normalize_path_arg, so the toolchain's usual
         # spellings — include dirs, link flags, -m modules, sub-commands — pass.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("python -m pytest", "python -m py_compile foo.py",
                     "gcc a.c -O3 -march=native -o a.out -lm",
                     "gcc -I/usr/include a.c -o a.out", "pytest -q tests/",
@@ -1487,7 +1488,7 @@ class BashServerTests(unittest.TestCase):
                     'python -c "print(1)"', "java -cp . Main",
                     "ruff check foo.py", "./solver.out 1000 0.5",
                     "python script.py --flag value"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_every_command_that_opens_a_file_is_path_confined(self) -> None:
         # Confinement is the default, exceptions listed — which is what keeps a
@@ -1509,12 +1510,12 @@ class BashServerTests(unittest.TestCase):
     def test_printf_arguments_are_text_but_its_redirection_is_confined(self) -> None:
         # A script written line by line with printf had a quoted line starting with
         # '/' judged as a path outside the workspace, and the call was refused.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         cmd = ("printf '%s\\n' 'x = 1' '/ spectrum is band-limited' "
                "'/etc/passwd' > gen.py")
-        self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok")
+        self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok")
         self.assertEqual(
-            server_bash._validate_command("printf 'x' > /etc/cron.d/x", cwd)["status"],
+            bash_validation.validate_command("printf 'x' > /etc/cron.d/x", cwd)["status"],
             "error")
 
     def test_a_workspace_script_can_be_made_executable_and_run(self) -> None:
@@ -1522,50 +1523,50 @@ class BashServerTests(unittest.TestCase):
         # without the x bit (fresh checkout, or one the agent just wrote) is a dead end
         # unless both halves stay available: './build.sh' fails with "Permission denied",
         # 'bash build.sh' is refused by design, so `chmod` is the only way to grant it.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("chmod +x ./build.sh", "chmod 755 tools/run.sh", "./build.sh"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_chmod_stays_confined(self) -> None:
         # chmod is a write like any other: its operand is confined to the workspace.
         # '-R' is no longer refused — it re-modes a tree whose root is confined, and
         # deletion, which is worse, runs under the prompt.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         self.assertEqual(
-            server_bash._validate_command("chmod +x /etc/passwd", cwd)["status"], "error")
+            bash_validation.validate_command("chmod +x /etc/passwd", cwd)["status"], "error")
         for cmd in ("chmod -R 777 .", "chmod --recursive 700 src"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_single_quoted_substitution_markers_are_literal(self) -> None:
         # Single quotes make these characters text, and a search pattern is where
         # they legitimately appear. The check used to run on tokens *after* shlex had
         # stripped the quotes, so a backtick bash treats as data was indistinguishable
         # from one that executes, and extracting a fenced block was impossible.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("sed -n '/```mermaid/,/```/p' ARCHITECTURE.md",
                     "grep -n '```mermaid' ARCHITECTURE.md",
                     "grep -n '${HOME}' notes.txt",
                     "grep -rn '$(x)' src"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_double_quoted_process_substitution_is_literal(self) -> None:
         # Bash expands $( ${ and ` inside double quotes, but not <( or >(. C++ passed
         # inline carries them in every template call, and refusing it sent the model
         # to write one throwaway patch script per edit.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ('python3 -c "s = \'allocateArray2D<arrayReal>(1, n)\'"',
                     'grep -n "vector<int>(n)" src/a.cc'):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
         self.assertEqual(
-            server_bash._validate_command('echo "<(ls)" $(id)', cwd)["status"], "error")
+            bash_validation.validate_command('echo "<(ls)" $(id)', cwd)["status"], "error")
 
     def test_substitution_the_shell_would_run_is_still_refused(self) -> None:
         # Double quotes do NOT make them literal, so those still count — as does
         # anything unquoted. This is the half that must not regress.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("ls $(echo x)", "cat `whoami`", 'grep -n "`cmd`" f.md',
                     'echo "$(id)"', "cat <(ls)", "ls ${HOME}"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "error", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "error", cmd)
 
     def test_which_reports_absence_as_a_conclusive_answer(self) -> None:
         # GNU `which` exits with the number of names it did not find (4 here); the
@@ -1584,23 +1585,23 @@ class BashServerTests(unittest.TestCase):
         # out-of-workspace *executable* was refused as an unknown command — with a
         # hint telling the agent to stop trying. Same path, same treatment: the
         # program a call runs is judged by confinement, so the user can grant it.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("../outside/x.sh", "/opt/tools/run.sh"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("not approved", payload["error"], cmd)
             self.assertIn("approval", payload["hint"], cmd)
         # ...while a workspace-local one still just runs.
         for cmd in ("./build.sh", "./a.out data.txt"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_shell_interpreter_is_refused_by_path_too(self) -> None:
         # The escape hatch the rule above must not open: an interpreter spelled as a
         # path would otherwise become approvable, and one approved root would restore
         # the arbitrary-nested-command bypass that refusing 'bash' exists to prevent.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("/bin/sh -c 'rm -rf /'", "../outside/bash script.sh", "./sh -c x"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("not available here", payload["error"], cmd)
 
@@ -1610,7 +1611,7 @@ class BashServerTests(unittest.TestCase):
         # exactly how it ended up unprompted by the client and unapprovable.
         import os
         from mimir.servers._shared.shell_paths import segment_path_operands
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         self.assertIn("/opt/tools/run.sh",
                       segment_path_operands(["/opt/tools/run.sh"], cwd))
         self.assertIn(os.path.join(cwd, "a.out"),
@@ -1626,9 +1627,9 @@ class BashServerTests(unittest.TestCase):
         # so a command that works in the user's shell failed under MIMIR. HOME is
         # inherited; what confines a command is the path check on its operands.
         import os
-        env = server_bash._safe_env(server_bash._WORKSPACE_ROOT)
+        env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
         self.assertEqual(env["HOME"], os.path.realpath(os.path.expanduser("~")))
-        self.assertNotEqual(env["HOME"], server_bash._WORKSPACE_ROOT)
+        self.assertNotEqual(env["HOME"], bash_validation.WORKSPACE_ROOT)
         # Startup files are what --noprofile/--norc and BASH_ENV are for, and that
         # must not regress now that HOME points at a directory holding real dotfiles.
         self.assertEqual(env["BASH_ENV"], "")
@@ -1637,9 +1638,9 @@ class BashServerTests(unittest.TestCase):
         # HOME being inherited must not become a way out of the workspace: a bare
         # 'cd' and 'cd ~' now really do land in the user's home, so they are judged
         # like any other outside destination rather than modelled as a no-op.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("cd", "cd ~", "cd ~ && cat .netrc", "cat ~/.netrc"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "error", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "error", cmd)
 
     def test_there_is_no_working_directory_argument(self) -> None:
         # One way to say "where", not two: every call starts at the workspace root
@@ -1659,20 +1660,20 @@ class BashServerTests(unittest.TestCase):
         # /etc/passwd. Treating the pattern as a path refused a legitimate search
         # and (once the client gate existed) asked the user about a file that would
         # never be read. Same for a `sed` script.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("grep /etc/passwd notes.txt", "grep -rn /etc/passwd .",
                     "rg /etc/shadow src", 'sed "s|/etc/passwd|x|" f.txt',
                     "grep -e /etc/passwd notes.txt"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_search_file_operands_are_still_confined(self) -> None:
         # The pattern is skipped, not the files — including the ones that arrive in
         # flag-value position, where the pattern-skipping rule stops looking.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("grep foo /etc/passwd", "rg foo /etc", "sed -n 1p /etc/passwd",
                     "sed -f /etc/s.sed f.txt", "grep -f /etc/patterns f.txt",
                     "rg -f /etc/patterns f.txt"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "error", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "error", cmd)
 
     def test_expanded_path_is_refused_not_guessed(self) -> None:
         # Regression: `module load cuda && cat $CUDA_HOME/version.txt` validated as a
@@ -1680,22 +1681,22 @@ class BashServerTests(unittest.TestCase):
         # read from the module tree at runtime. The command that runs must be the
         # command that was checked.
         import os
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         os.environ.pop("CUDA_HOME", None)
         for cmd in ("module load cuda && cat $CUDA_HOME/version.txt",
                     "cat $HOME/x", "cd $SOMEDIR && ls", "python $X/evil.py",
                     "cp $SRC/a.txt b.txt"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
             self.assertIn("expansion", payload["error"], cmd)
 
     def test_expansion_outside_path_position_still_works(self) -> None:
         # The HPC idiom: a module-provided root used as an include/link flag. Nothing
         # is claimed about a flag's value, so there is no divergence to protect from.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("echo $HOME", "gcc -I$CUDA_HOME/include a.c -o a.out",
                     "module load cuda && nvcc -L$CUDA_HOME/lib64 k.cu -o k.out"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+            self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_no_classified_command_is_one_the_server_refuses(self) -> None:
         """A command cannot be both classified and denied.
@@ -1807,17 +1808,17 @@ class BashServerTests(unittest.TestCase):
 
     def test_a_wrapper_cannot_smuggle_a_refused_command(self) -> None:
         """The behaviour the set invariant above protects, spelled out end to end."""
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("timeout 5 bash -c 'echo hi'", "nohup sudo ls",
                     "env A=B sh script.sh", "/usr/bin/timeout 5 /bin/sh -c x",
                     "timeout 5 nohup bash -c x", "xargs -n1 bash",
                     "nice -n 10 sbatch job.sh"):
             with self.subTest(command=cmd):
-                self.assertEqual(server_bash._validate_command(cmd, cwd).get("status"),
+                self.assertEqual(bash_validation.validate_command(cmd, cwd).get("status"),
                                  "error", f"{cmd!r} smuggled a denied command through")
         # …without costing the ordinary run its own timeout, which is the tool's to set.
         self.assertEqual(
-            server_bash._validate_command("python solver.py", cwd).get("status"), "ok")
+            bash_validation.validate_command("python solver.py", cwd).get("status"), "ok")
 
     def test_unwrapping_terminates(self) -> None:
         # A chain deeper than the bound stops unwrapping rather than looping, and
@@ -1839,7 +1840,7 @@ class BashServerTests(unittest.TestCase):
             cd_destination, normalize_path_arg, segment_path_operands,
         )
 
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         corpus = [
             "ls > /tmp/out.txt",
             "cat < /etc/passwd",
@@ -1859,7 +1860,7 @@ class BashServerTests(unittest.TestCase):
             "ls && cat /etc/passwd",
         ]
         for cmd in corpus:
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             if payload["status"] == "ok" or "not approved" not in payload["error"]:
                 continue
             refused = payload["error"].split(": ", 1)[1]
@@ -1891,25 +1892,25 @@ class BashServerTests(unittest.TestCase):
     def test_tex_shell_escape_is_rejected(self) -> None:
         # \write18 is arbitrary execution outside the validator; every spelling
         # of the flag that re-enables it must be refused.
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("pdflatex -shell-escape main.tex",
                     "pdflatex --shell-escape main.tex",
                     "lualatex -enable-write18 main.tex",
                     "latexmk -pdf -shell-escape main.tex"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
 
     def test_tex_normal_invocation_validates(self) -> None:
-        cwd = server_bash._WORKSPACE_ROOT
+        cwd = bash_validation.WORKSPACE_ROOT
         for cmd in ("pdflatex main.tex",
                     "pdflatex -interaction=nonstopmode report.tex",
                     "pdflatex main.tex && pdflatex main.tex"):
-            payload = server_bash._validate_command(cmd, cwd)
+            payload = bash_validation.validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "ok", cmd)
 
     def test_tex_source_outside_workspace_is_rejected(self) -> None:
-        cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command("pdflatex /etc/passwd", cwd)
+        cwd = bash_validation.WORKSPACE_ROOT
+        payload = bash_validation.validate_command("pdflatex /etc/passwd", cwd)
         self.assertEqual(payload["status"], "error")
         self.assertIn("outside workspace", payload["error"])
 
@@ -1926,19 +1927,19 @@ class BashServerTests(unittest.TestCase):
             "no_proxy": "localhost,10.0.0.1",
         }
         with unittest.mock.patch.dict(os.environ, ambient):
-            env = server_bash._safe_env(server_bash._WORKSPACE_ROOT)
+            env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
         for name, value in ambient.items():
             self.assertEqual(env[name], value)
         # An unset var stays unset rather than being handed over as an empty string,
         # which curl reads as "no proxy" and would mask the site's own configuration.
         with unittest.mock.patch.dict(os.environ, {}, clear=True):
-            env = server_bash._safe_env(server_bash._WORKSPACE_ROOT)
+            env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
         self.assertNotIn("http_proxy", env)
 
     def test_tex_sandbox_is_pinned_in_the_environment(self) -> None:
         # Backstop for the denylisted flags: kpathsea reads these from the env,
         # so \write18 stays off even if the site's texmf.cnf enables it.
-        env = server_bash._safe_env(server_bash._WORKSPACE_ROOT)
+        env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
         self.assertEqual(env["shell_escape"], "f")
         self.assertEqual(env["openout_any"], "p")
 

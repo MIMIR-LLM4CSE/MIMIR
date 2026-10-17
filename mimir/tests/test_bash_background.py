@@ -30,6 +30,7 @@ from mimir.servers._shared import slurm_site
 from mimir.tests.support.scheduler import local_slurm
 from mimir.servers.workspace import _bash_jobs
 from mimir.servers.workspace import server_bash
+from mimir.servers.workspace import bash_validation
 
 from mimir.servers._shared.trusted_read_roots import trusted_read_roots
 
@@ -251,14 +252,14 @@ class BashBackgroundTests(unittest.TestCase):
         # Under 'note': 'hint' is reserved to error payloads and ok() strips it, so a
         # message put there is silently lost — which is what this first caught.
         self.assertIn("out.txt", payload["note"])
-        os.remove(os.path.join(server_bash._WORKSPACE_ROOT, "out.txt"))
+        os.remove(os.path.join(bash_validation.WORKSPACE_ROOT, "out.txt"))
 
     def test_a_quiet_job_is_not_annotated_for_being_quiet(self) -> None:
         # Long jobs that legitimately print nothing — an extraction, a copy, a quiet
         # install — are the ordinary case, and must not each carry a caveat about
         # output that might have gone elsewhere. Nothing was redirected, so there is
         # nothing to say.
-        target = os.path.join(server_bash._WORKSPACE_ROOT, "quiet-job-dir")
+        target = os.path.join(bash_validation.WORKSPACE_ROOT, "quiet-job-dir")
         result = server_bash.bash_run("mkdir -p quiet-job-dir", background=True)
         _wait_terminal(result["job_key"])
         payload = server_bash.bash_job(op="output", job_key=result["job_key"])
