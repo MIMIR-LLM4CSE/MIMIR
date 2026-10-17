@@ -14,7 +14,7 @@ ones (`config`, `protocol`, `event_sink`, `human_pause`) and
 graph TD
     subgraph FE["🖥️ Front-ends"]
         cli["ui/cli/<br/><small>REPL · CliHost · text rendering</small>"]
-        ws["ui/ws/<br/><small>serving · ws_session + handlers/ · event_router<br/>event_bus · ws_pool · wake_router<br/>ws_worker · human_bridge · job_watcher</small>"]
+        ws["ui/ws/<br/><small>server/ (main · serving · registry)<br/>connection/ (Connection · handlers · router)<br/>pool/ (AgentPool · bus · wakes)<br/>worker/ (AgentWorker · human · jobs)</small>"]
     end
     subgraph SES["💬 Conversations"]
         session["session/<br/><small>conversation · store · journal<br/>jobs_on_disk · summary · commands/</small>"]
@@ -137,7 +137,7 @@ function**:
 The proxy store (`guardrails/proxy_state`, `guardrails/policy/gates`) is lazy too: it
 is the proxy server's heavy library, needed only by a conversation running an
 optimisation. The WebSocket entry
-(`ui/ws/ws_server.main`) imports `serving` only after applying `--cwd`, because
+(`ui/ws/server/main.py`) imports `serving` only after applying `--cwd`, because
 `config.paths` resolves the workspace root as it is imported.
 
 ### Cycles

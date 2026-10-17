@@ -7,7 +7,7 @@ import json
 import unittest
 
 from mimir.client.core.settings import read_setting
-from mimir.client.ui.ws.ws_session import _Session
+from mimir.client.ui.ws.connection.connection import Connection
 from mimir.client.core.turn_state import TurnState
 
 
@@ -23,7 +23,7 @@ class HandlerIsolationTests(unittest.TestCase):
     def test_a_failing_handler_reports_and_leaves_the_connection_up(self) -> None:
         # Raised out of _handle, the exception ended the read loop: the socket stayed
         # open and nothing the user sent afterwards was ever read.
-        sess = object.__new__(_Session)
+        sess = object.__new__(Connection)
         sess.ws = _FakeWS()
 
         async def _boom(_msg):
@@ -49,7 +49,7 @@ class _Pool:
 
 
 class _StandIn:
-    """What ``_Session.worker`` answers before a conversation's first query."""
+    """What ``Connection.worker`` answers before a conversation's first query."""
 
     _agent = None
 
@@ -85,8 +85,8 @@ class _SettingsPool:
 
 
 class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
-    def _session(self, payload: dict | None = None) -> _Session:
-        sess = object.__new__(_Session)
+    def _session(self, payload: dict | None = None) -> Connection:
+        sess = object.__new__(Connection)
         sess.ws = _FakeWS()
         sess.pool = _SettingsPool(_StandIn(payload))
         sess._active_session_id = "s1"
@@ -127,7 +127,7 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
 
 class DeletedSessionTests(unittest.TestCase):
     def test_a_deleted_conversation_leaves_no_bookkeeping_behind(self) -> None:
-        sess = object.__new__(_Session)
+        sess = object.__new__(Connection)
         for name in ("_live_rows", "_sent_progress", "_foreign_withheld"):
             setattr(sess, name, {"gone": object(), "kept": object()})
         sess._forget_session_state("gone")
@@ -135,9 +135,9 @@ class DeletedSessionTests(unittest.TestCase):
             self.assertEqual(set(getattr(sess, name)), {"kept"}, name)
 
     def test_the_pool_forgets_what_it_owed_a_deleted_conversation(self) -> None:
-        from mimir.client.ui.ws.ws_pool import _AgentPool
+        from mimir.client.ui.ws.pool.pool import AgentPool
 
-        pool = _AgentPool("m", cap=1)
+        pool = AgentPool("m", cap=1)
         conversation = pool.conversations.new("gone")
         conversation.pending_wakes.append({"ev": {}, "told": False})
         conversation.held_checkin = {"type": "job_checkin"}

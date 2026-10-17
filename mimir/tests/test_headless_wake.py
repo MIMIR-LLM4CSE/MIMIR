@@ -23,14 +23,14 @@ import queue as _queue
 import tempfile
 import unittest
 
-from mimir.client.ui.ws.human_bridge import HumanBridge
+from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.session import journal
-from mimir.client.ui.ws.event_bus import _EventBus
+from mimir.client.ui.ws.pool.bus import EventBus
 from mimir.client.session.jobs_on_disk import scan_session
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
-from mimir.client.ui.ws.wake_router import WakeRouter
-from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.client.ui.ws.pool.wakes import WakeRouter
+from mimir.client.ui.ws.pool.pool import AgentPool
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -75,8 +75,8 @@ class _HeadlessCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.store = SessionStore()
 
-    def _pool(self, workers: dict | None = None) -> _AgentPool:
-        pool = object.__new__(_AgentPool)
+    def _pool(self, workers: dict | None = None) -> AgentPool:
+        pool = object.__new__(AgentPool)
         pool.active_session_id = None
         pool._workers = dict(workers or {})
         pool._last_use = {}
@@ -88,7 +88,7 @@ class _HeadlessCase(unittest.TestCase):
         pool.conversations = Conversations(self.store)
         pool.store = self.store
         pool.wakes = WakeRouter(pool)
-        pool.bus = _EventBus(pool, commit=pool.commit_turn, durable=pool.wakes.consume,
+        pool.bus = EventBus(pool, commit=pool.commit_turn, durable=pool.wakes.consume,
                              steered=pool.wakes.steered)
         return pool
 

@@ -22,7 +22,7 @@ import os
 import types
 import unittest
 
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +40,7 @@ class _FakeSession:
 
 
 def _worker_stub(session: _FakeSession, loop) -> types.SimpleNamespace:
-    """The minimum of ``_AgentWorker`` that ``call_session_tool`` touches."""
+    """The minimum of ``AgentWorker`` that ``call_session_tool`` touches."""
 
     def _boom(*_a, **_k):
         raise AssertionError(
@@ -63,7 +63,7 @@ class CallSessionToolTests(unittest.TestCase):
 
     def _run(self, worker, tool: str, args: dict) -> dict:
         """Drive the worker's loop until the scheduled coroutine resolves."""
-        fut = _AgentWorker.call_session_tool(worker, tool, args)
+        fut = AgentWorker.call_session_tool(worker, tool, args)
         # run_coroutine_threadsafe needs the loop to actually turn; this test owns it.
         while not fut.done():
             self.loop.call_soon(self.loop.stop)
@@ -101,7 +101,7 @@ class CallSessionToolTests(unittest.TestCase):
 
     def test_no_agent_means_no_crash(self) -> None:
         worker = types.SimpleNamespace(_agent=None, _loop=None)
-        fut = _AgentWorker.call_session_tool(worker, "memory_list_all", {})
+        fut = AgentWorker.call_session_tool(worker, "memory_list_all", {})
         self.assertEqual(fut.result()["status"], "error")
 
 
@@ -110,7 +110,7 @@ class ProxyListTests(unittest.TestCase):
 
     def test_both_surfaces_offer_it(self) -> None:
         from mimir.client.ui.cli.chat_commands import CLI_COMMANDS
-        from mimir.client.ui.ws.ws_commands import WS_COMMANDS
+        from mimir.client.ui.ws.connection.commands import WS_COMMANDS
         for registry in (CLI_COMMANDS, WS_COMMANDS):
             self.assertIsNotNone(registry.find("/proxy list"))
 

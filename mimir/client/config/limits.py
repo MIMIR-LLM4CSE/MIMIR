@@ -231,7 +231,7 @@ BASH_EFFECT_SNAPSHOT_MAX_FILES: int = 200
 
 
 # ── Context-window budget ──────────────────────────────────────────────────────
-# Shared by both front-ends (CLI chat_session + WebSocket ws_server) so the
+# Shared by both front-ends (CLI chat_session + the WebSocket server) so the
 # token-usage bar and history trimming stay in agreement. How the window is resolved
 # against the live backend is the engine's business (query_engine.context_budget).
 

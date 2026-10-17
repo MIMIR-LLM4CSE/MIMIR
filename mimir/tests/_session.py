@@ -1,6 +1,6 @@
-"""A bare ``_Session`` for tests that drive one handler, not a whole connection.
+"""A bare ``Connection`` for tests that drive one handler, not a whole connection.
 
-``_Session.__init__`` wants a socket and opens nothing else, but most tests want a
+``Connection.__init__`` wants a socket and opens nothing else, but most tests want a
 session already showing a conversation, with only the fields the handler under test
 reads. This builds that: the conversation on screen is the pool's own object for
 *active*, created if the pool has none, exactly as a connection holds it.
@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from mimir.client.ui.ws.ws_session import _Session
+from mimir.client.ui.ws.connection.connection import Connection
 
 
 class FakeWS:
@@ -24,8 +24,8 @@ class FakeWS:
 
 
 def bare_session(pool: Any, *, active: str | None = "s1", ws: Any = None,
-                 history: list[dict] | None = None) -> _Session:
-    sess = object.__new__(_Session)
+                 history: list[dict] | None = None) -> Connection:
+    sess = object.__new__(Connection)
     sess.ws = ws if ws is not None else FakeWS()
     sess.pool = pool
     sess.store = pool.conversations.store

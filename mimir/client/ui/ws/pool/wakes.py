@@ -17,14 +17,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ...protocol.events import DURABLE_EVENTS
-from ...session.conversation import Conversation
-from ...session.jobs_on_disk import mark_wakes_reported, wake_reported
-from ...query_engine.jobs.wakes import checkin_text, wake_text
-from .ws_worker import _AgentWorker
+from ....protocol.events import DURABLE_EVENTS
+from ....session.conversation import Conversation
+from ....session.jobs_on_disk import mark_wakes_reported, wake_reported
+from ....query_engine.jobs.wakes import checkin_text, wake_text
+from ..worker.worker import AgentWorker
 
 if TYPE_CHECKING:
-    from .ws_pool import _AgentPool
+    from .pool import AgentPool
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class WakeRouter:
     """Hands each finished run, bulletin and unread steer to a turn of its conversation."""
 
-    def __init__(self, pool: "_AgentPool") -> None:
+    def __init__(self, pool: "AgentPool") -> None:
         self.pool = pool
 
     # ── A run finished, or is still going ─────────────────────────────────────
@@ -57,7 +57,7 @@ class WakeRouter:
             return self._checkin(conversation, worker, ev)
         return self._complete(conversation, worker, ev)
 
-    def _complete(self, conversation: Conversation, worker: "_AgentWorker | None",
+    def _complete(self, conversation: Conversation, worker: "AgentWorker | None",
                   ev: dict) -> bool:
         """Hand a finished run to a turn — the running one where possible.
 
@@ -102,7 +102,7 @@ class WakeRouter:
             return False
         return self.flush(conversation, worker)
 
-    def _checkin(self, conversation: Conversation, worker: "_AgentWorker | None",
+    def _checkin(self, conversation: Conversation, worker: "AgentWorker | None",
                  ev: dict) -> bool:
         """Report on runs still going, without ever interrupting. True if a turn began.
 
@@ -123,7 +123,7 @@ class WakeRouter:
             return False
         return self._deliver_checkin(conversation, worker, ev)
 
-    def _deliver_checkin(self, conversation: Conversation, worker: "_AgentWorker",
+    def _deliver_checkin(self, conversation: Conversation, worker: "AgentWorker",
                          ev: dict) -> bool:
         conversation.held_checkin = None
         text = checkin_text(ev)
@@ -139,7 +139,7 @@ class WakeRouter:
 
     # ── Delivering what is owed ───────────────────────────────────────────────
 
-    def flush(self, conversation: Conversation, worker: "_AgentWorker") -> bool:
+    def flush(self, conversation: Conversation, worker: "AgentWorker") -> bool:
         """Start one turn carrying every run this conversation is still owed.
 
         One turn for all of them: a burst that finished together is one piece of news,

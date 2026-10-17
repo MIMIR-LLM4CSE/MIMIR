@@ -1,6 +1,6 @@
 """The WebSocket server itself: resolve the model, bind, serve connections, shut down.
 
-Started by ``ws_server.main`` once the command line is applied — the protocol is
+Started by ``server.main`` once the command line is applied — the protocol is
 documented there.
 """
 
@@ -13,17 +13,12 @@ import signal
 import sys
 from typing import Any
 
-from ...config import DEFAULT_MODEL
-from ...query_engine.backends.openai_compat import OpenAICompatBackend
-from . import server_registry
-from ._ws_runtime import (
-    _CTX_DEFAULT_FULL,
-    _ORIGINAL_STDOUT,
-    _ensure_router_installed,
-    get_backend,
-)
-from .ws_pool import _AgentPool
-from .ws_session import _Session
+from ....config import DEFAULT_MODEL
+from ....query_engine.backends.openai_compat import OpenAICompatBackend
+from . import registry as server_registry
+from ..runtime import _CTX_DEFAULT_FULL, _ORIGINAL_STDOUT, _ensure_router_installed, get_backend
+from ..pool.pool import AgentPool
+from ..connection.connection import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +178,7 @@ async def serve(
               file=_ORIGINAL_STDOUT, flush=True)
         raise SystemExit(1)
 
-    pool = _AgentPool(_model)
+    pool = AgentPool(_model)
     # The event pump, started here rather than with the first worker: it belongs to the
     # process, and what it does — drain every worker, journal what they emit, hand it to
     # whatever sockets are attached — has to happen when none are.
@@ -192,7 +187,7 @@ async def serve(
           file=_ORIGINAL_STDOUT)
 
     async def _handler(ws: Any) -> None:
-        session = _Session(ws, pool)
+        session = Connection(ws, pool)
         await session.run()
 
     # The default 1 MiB frame cap is below what a client transcript weighs once it
@@ -221,7 +216,7 @@ async def serve(
             server_registry.release()
 
 
-async def _run_until_signalled(pool: _AgentPool) -> None:
+async def _run_until_signalled(pool: AgentPool) -> None:
     """Serve until nothing needs this process, then close every agent's MCP servers.
 
     ``stdio_client`` spawns each server with ``start_new_session=True`` — its own process

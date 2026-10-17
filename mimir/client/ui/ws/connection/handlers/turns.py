@@ -1,6 +1,6 @@
 """A turn of the conversation on screen: the query, its budget, steering, the transcript.
 
-A part of ``_Session`` (``ws_session``): a mixin over the connection's own state, so a
+A part of ``Connection``: a mixin over the connection's own state, so a
 handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
 types it answers.
 """
@@ -10,14 +10,11 @@ import asyncio
 import json
 import logging
 
-from ....protocol.messages import reconcile_tool_pairs
-from ....session.conversation import trim_front
-from ....tool_execution import run_channel
-from .._ws_runtime import (
-    context_budget_for,
-    get_backend,
-)
-from ..ws_worker import _AgentWorker
+from .....protocol.messages import reconcile_tool_pairs
+from .....session.conversation import trim_front
+from .....tool_execution import run_channel
+from ...runtime import context_budget_for, get_backend
+from ...worker.worker import AgentWorker
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +115,7 @@ class TurnHandlers:
         Keeps the opening user message and the last two exchanges and replaces what
         lies between with a single summary — the same shape the agent loop's
         intra-query compaction uses. The summarization is an LLM call, so it happens
-        on the worker thread (``_AgentWorker.compact_middle``); this coroutine only
+        on the worker thread (``AgentWorker.compact_middle``); this coroutine only
         awaits its future. ``history_full`` is deliberately untouched: it stays the
         one complete account of the session, exactly as for a front-trim.
 
@@ -150,7 +147,7 @@ class TurnHandlers:
         })
         return True
 
-    async def _ensure_worker(self) -> _AgentWorker | None:
+    async def _ensure_worker(self) -> AgentWorker | None:
         """This conversation's agent, built now if it has none and there is room.
 
         None means the pool is full of conversations that are working, waiting on the user,
@@ -285,7 +282,7 @@ class TurnHandlers:
                     + [{"role": "user", "content": effective_text}])
         session_id = self._active_session_id
 
-        def _submit(worker: _AgentWorker) -> None:
+        def _submit(worker: AgentWorker) -> None:
             worker.submit_query(effective_text, messages, session_id=session_id)
 
         if worker is not None:

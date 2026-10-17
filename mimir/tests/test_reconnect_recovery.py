@@ -1,7 +1,7 @@
 """A connection that drops under a running turn must not cost the turn.
 
-One ``_AgentWorker`` serves the whole server and outlives every connection, but a
-``_Session`` is per-socket. A drop mid-run therefore left a turn alive with nobody
+One ``AgentWorker`` serves the whole server and outlives every connection, but a
+``Connection`` is per-socket. A drop mid-run therefore left a turn alive with nobody
 reading it, and the next connection did three things to it: it emptied the queue the
 turn was writing into, it never put back the card the turn was parked on, and it told
 the client nothing was running. The turn then waited on an answer that could not
@@ -14,14 +14,14 @@ import tempfile
 import unittest
 
 from mimir.client.session import journal
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFencingTests
 from mimir.tests.support.state import pin_state_dir
 from mimir.client.core.turn_state import TurnState
 
 
 def _parked_worker(prompt: dict | None = None, session_id: str = "s1",
-                   title: str = "Install the toolchain") -> _AgentWorker:
+                   title: str = "Install the toolchain") -> AgentWorker:
     """A worker parked on *prompt*, or on nothing.
 
     The card is raised the way the shims raise it and then drained, which is the state
@@ -166,7 +166,7 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
 class AgentReadinessTests(unittest.TestCase):
     """The socket opens long before the agent exists, and both greetings say "ready".
 
-    ``_Session.run`` sends one the moment the socket is accepted, so the webview can
+    ``Connection.run`` sends one the moment the socket is accepted, so the webview can
     leave "connecting"; the worker sends its own only after the LLM backend answers
     and the agent is constructed, which on a cold vLLM is minutes later. Nothing in
     either payload told them apart, so the chat showed "Type a message to start" over

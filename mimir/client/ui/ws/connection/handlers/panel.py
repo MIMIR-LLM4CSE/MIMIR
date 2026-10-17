@@ -1,6 +1,6 @@
 """Commands, the toggles, the scientific panel, sub-agents, resources, the model.
 
-A part of ``_Session`` (``ws_session``): a mixin over the connection's own state, so a
+A part of ``Connection``: a mixin over the connection's own state, so a
 handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
 types it answers.
 """
@@ -11,12 +11,12 @@ import json
 import logging
 from typing import Any
 
-from ....config import paths
-from ....session.commands import CommandResult
-from ....session.store import list_subagents as _list_subagents
-from ....session.store import read_subagent as _read_subagent
+from .....config import paths
+from .....session.commands import CommandResult
+from .....session.store import list_subagents as _list_subagents
+from .....session.store import read_subagent as _read_subagent
 from ..panel_runs import attach_runs, recorded_hosts_sections
-from ..ws_commands import WS_COMMANDS, WsCommandHost
+from ..commands import WS_COMMANDS, WsCommandHost
 
 logger = logging.getLogger(__name__)
 

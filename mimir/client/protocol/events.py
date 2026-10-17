@@ -30,7 +30,7 @@ REPLAY_ONLY_EVENTS = frozenset({"assistant_text"})
 # for it: the turn's history (``_full`` from ``_turn_start``), the length of the history
 # it was submitted with, the context mode it ran in, its deferral record, and the
 # steering it ended without reading. Taken off the event before it is journaled or sent
-# (``event_bus``): none of it is part of the wire protocol.
+# (``ui/ws/pool/bus``): none of it is part of the wire protocol.
 ANSWER_EXTRA_KEYS = ("_full", "_turn_start", "_deferred", "_submitted_len",
                      "_context_mode", "_unconsumed_steer")
 

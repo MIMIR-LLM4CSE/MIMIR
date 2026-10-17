@@ -20,12 +20,13 @@ from unittest import mock
 from mimir.servers._shared.processes import proc_starttime
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws import server_registry, ws_pool
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.server import registry as server_registry
+from mimir.client.ui.ws.pool import pool as ws_pool
 from mimir.client.session import jobs_on_disk
-from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.wake_router import WakeRouter
-from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.client.ui.ws.pool.bus import EventBus
+from mimir.client.ui.ws.pool.wakes import WakeRouter
+from mimir.client.ui.ws.pool.pool import AgentPool
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -64,8 +65,8 @@ class _IdleCase(unittest.TestCase):
         pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
-    def _pool(self, workers: dict | None = None) -> _AgentPool:
-        pool = object.__new__(_AgentPool)
+    def _pool(self, workers: dict | None = None) -> AgentPool:
+        pool = object.__new__(AgentPool)
         pool.active_session_id = None
         pool._workers = dict(workers or {})
         pool._last_use = {}
@@ -77,10 +78,10 @@ class _IdleCase(unittest.TestCase):
         pool.conversations = Conversations(SessionStore(self._tmp.name))
         pool.store = pool.conversations.store
         pool.wakes = WakeRouter(pool)
-        pool.bus = _EventBus(pool)
+        pool.bus = EventBus(pool)
         return pool
 
-    def _conclude(self, pool: _AgentPool, session_id: str, worker: _Worker) -> None:
+    def _conclude(self, pool: AgentPool, session_id: str, worker: _Worker) -> None:
         """Let a turn of *session_id* actually finish, the way the pump sees it."""
         worker.out_q.put({"type": "answer", "text": "done", "session_id": session_id})
         pool.bus.pump_once()
@@ -279,7 +280,7 @@ class JobsHoldItOpenTests(_IdleCase):
         # The name bound in ws_pool, not the one in jobs_on_disk: the import is by value,
         # so patching the source module would leave the caller untouched and the test
         # would pass for the wrong reason.
-        with mock.patch("mimir.client.ui.ws.ws_pool.scan_all_sessions",
+        with mock.patch("mimir.client.ui.ws.pool.pool.scan_all_sessions",
                         side_effect=OSError("gone")):
             report = pool.idle_report()
         self.assertFalse(report["idle"])
@@ -459,7 +460,7 @@ class TheClockTests(_IdleCase):
         asyncio.run(run())
 
     def test_the_ttl_is_configurable_and_floored(self):
-        from mimir.client.ui.ws.ws_pool import _server_idle_ttl
+        from mimir.client.ui.ws.pool.pool import _server_idle_ttl
         with mock.patch.dict(os.environ, {"MIMIR_SERVER_IDLE_TTL": "300"}):
             self.assertEqual(_server_idle_ttl(), 300.0)
         with mock.patch.dict(os.environ, {"MIMIR_SERVER_IDLE_TTL": "1"}):
@@ -480,10 +481,10 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
 
     def _pool(self, *, claims: dict, unattended: float | None, ever: bool = True):
         from unittest import mock
-        from mimir.client.ui.ws import ws_pool
-        from mimir.client.ui.ws.ws_pool import _AgentPool
+        from mimir.client.ui.ws.pool import pool as ws_pool
+        from mimir.client.ui.ws.pool.pool import AgentPool
 
-        pool = object.__new__(_AgentPool)
+        pool = object.__new__(AgentPool)
         pool.stop_requested = None
 
         class _Bus:

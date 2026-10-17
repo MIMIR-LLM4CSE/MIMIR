@@ -492,7 +492,7 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         is shortened.
         """
         import inspect
-        from mimir.client.ui.ws.human_bridge import HumanBridge
+        from mimir.client.ui.ws.worker.human import HumanBridge
         src = inspect.getsource(HumanBridge.approve_paths)
         self.assertIn('"oow_paths": list(paths)', src)
         self.assertNotIn("os.path.basename(paths[0])}\",", src)

@@ -13,7 +13,7 @@ import queue
 import httpx
 import pytest
 
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.worker import AgentWorker
 
 
 class _Stub:
@@ -30,7 +30,7 @@ class _Stub:
 
 
 def _run(stub: _Stub) -> None:
-    asyncio.run(_AgentWorker._wait_for_backend(stub))
+    asyncio.run(AgentWorker._wait_for_backend(stub))
 
 
 @pytest.fixture
@@ -176,7 +176,7 @@ def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
     # The backend belongs to the server: a new conversation's agent re-probing it showed
     # "waiting for the LLM backend" again on an endpoint already known to be up.
     from mimir.client import agent_core
-    from mimir.client.ui.ws import ws_worker
+    from mimir.client.ui.ws.worker import worker as ws_worker
 
     monkeypatch.setattr(ws_worker, "_backend_seen_up", False)
     probes: list[int] = []
@@ -184,7 +184,7 @@ def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
     async def _probe(self):
         probes.append(1)
 
-    monkeypatch.setattr(_AgentWorker, "_wait_for_backend", _probe)
+    monkeypatch.setattr(AgentWorker, "_wait_for_backend", _probe)
 
     class _NoAgent:
         def __init__(self, *a, **kw):
@@ -192,7 +192,7 @@ def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
 
     monkeypatch.setattr(agent_core, "MimirAgent", _NoAgent)
     for sid in ("s1", "s2"):
-        worker = _AgentWorker.detached("m")
+        worker = AgentWorker.detached("m")
         worker.session_id = sid
         asyncio.run(worker._setup())
     assert probes == [1]

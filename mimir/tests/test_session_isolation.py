@@ -11,13 +11,13 @@ import unittest
 from mimir.tests._fake_pool import FakePool
 from mimir.tests._session import bare_session
 
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.worker import AgentWorker
 
 
-def _bare_worker(session_id: str | None = None) -> _AgentWorker:
+def _bare_worker(session_id: str | None = None) -> AgentWorker:
     """A worker with only the queue/state fields the tests touch (no agent, no loop)."""
-    w = object.__new__(_AgentWorker)
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w._agent = None
     w.out_q = _queue.Queue()

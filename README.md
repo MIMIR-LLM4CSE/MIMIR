@@ -495,7 +495,7 @@ npm install && npm run deploy      # installs it, or updates it in place
 To run the WebSocket server yourself instead (headless, or on another host):
 
 ```bash
-python3 -m mimir.client.ui.ws.ws_server --port 8765 \
+python3 -m mimir.client.ui.ws.server.main --port 8765 \
     --backend vllm --vllm-base-url http://<host>:8000
 #   options: --host --port --model --cwd
 #            --backend {ollama,vllm,ray,anthropic} --vllm-base-url --vllm-api-key

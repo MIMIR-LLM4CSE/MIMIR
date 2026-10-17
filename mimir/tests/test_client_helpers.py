@@ -2511,7 +2511,7 @@ class ModulesCommandTests(unittest.TestCase):
     platform server is switched off rather than raising.
     """
 
-    class _Session:
+    class Connection:
         def __init__(self, payloads):
             self.payloads = payloads
             self.calls = []
@@ -2526,7 +2526,7 @@ class ModulesCommandTests(unittest.TestCase):
         def __init__(self, payloads, connected=True):
             names = ("platform_catalogue_status", "platform_search")
             self.tool_owner = {n: "platform" for n in names} if connected else {}
-            self.session = ModulesCommandTests._Session(payloads)
+            self.session = ModulesCommandTests.Connection(payloads)
             self.sessions = {"platform": self.session}
 
     def _run(self, query, agent):

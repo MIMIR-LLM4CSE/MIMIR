@@ -16,8 +16,8 @@ import queue
 import types
 import unittest
 
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.job_watcher import JobWatcher, _Watch
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.jobs import JobWatcher, _Watch
 from unittest import mock
 
 from mimir.tests._fake_pool import FakePool
@@ -473,8 +473,8 @@ class _HangingAgent:
 class WatchJobTests(unittest.TestCase):
     def _make_worker(self, agent) -> object:
         import queue as _queue
-        from mimir.client.ui.ws.ws_worker import _AgentWorker
-        w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
+        from mimir.client.ui.ws.worker.worker import AgentWorker
+        w = AgentWorker.__new__(AgentWorker)   # bypass __init__ (spawns a thread)
         w._agent = agent
         w.out_q = _queue.Queue()
         w.jobs = JobWatcher(w)
@@ -493,7 +493,7 @@ class WatchJobTests(unittest.TestCase):
             # Zero the poll interval so the test doesn't wait 5s per tick. `ws.asyncio`
             # is the asyncio module itself, so this reaches the shared poll loop too —
             # which is where the waiting actually happens.
-            import mimir.client.ui.ws.ws_worker as ws
+            import mimir.client.ui.ws.worker.worker as ws
             orig_sleep = asyncio.sleep
 
             async def _fast_sleep(_):
@@ -868,8 +868,8 @@ class RegisterBgJobTests(unittest.TestCase):
     """
 
     def _worker(self) -> object:
-        from mimir.client.ui.ws.ws_worker import _AgentWorker
-        w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
+        from mimir.client.ui.ws.worker.worker import AgentWorker
+        w = AgentWorker.__new__(AgentWorker)   # bypass __init__ (spawns a thread)
         w.jobs = JobWatcher(w)
         w.session_id = None
         w._query_session_id = None
@@ -878,21 +878,21 @@ class RegisterBgJobTests(unittest.TestCase):
 
     def test_descriptor_without_a_key_is_refused_out_loud(self) -> None:
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.job_watcher", "WARNING") as log:
+        with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
             self.assertFalse(w.jobs.register({"server": "bash", "status_op": {}}))
         self.assertIn("job_key", "\n".join(log.output))
         self.assertEqual(w.jobs._bg_jobs, {})
 
     def test_non_dict_descriptor_is_refused_out_loud(self) -> None:
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.job_watcher", "WARNING") as log:
+        with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
             self.assertFalse(w.jobs.register("not a descriptor"))
         self.assertIn("not a dict", "\n".join(log.output))
 
     def test_no_running_loop_is_refused_out_loud(self) -> None:
         """Called off the worker loop there is nothing to host the watcher."""
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.job_watcher", "WARNING") as log:
+        with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
             self.assertFalse(w.jobs.register({"job_key": "fast", "status_op": {}}))
         self.assertIn("event loop", "\n".join(log.output))
         self.assertEqual(w.jobs._bg_jobs, {})
@@ -1044,7 +1044,7 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
     def test_dispatch_is_the_only_caller_that_consults_the_guards(self) -> None:
         import inspect
         from mimir.client.query_engine.jobs import background, poll as job_poll
-        from mimir.client.ui.ws import ws_worker
+        from mimir.client.ui.ws.worker import worker as ws_worker
         from mimir.servers.agent_state import _child_jobs
 
         guard_names = ("_asks_whether_a_watched_run_is_done",
@@ -1363,7 +1363,7 @@ class _FakeWS:
 
 
 class _FakeWorker:
-    """Records submitted turns, the way _AgentWorker's query queue would."""
+    """Records submitted turns, the way AgentWorker's query queue would."""
 
     def __init__(self, watching: list[str] | None = None) -> None:
         self.submitted: list[tuple] = []
@@ -1419,14 +1419,14 @@ class DetachedSessionResumeTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-detached-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
         pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
-        self.session = _Session(self.ws, FakePool(self.worker))
+        self.session = Connection(self.ws, FakePool(self.worker))
 
         # A: the conversation that launched the job. B: the one being read now.
         self.a = self.session.store.new_session()
@@ -1546,14 +1546,14 @@ class WakeCoalescingTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-coalesce-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
         pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
-        self.session = _Session(self.ws, FakePool(self.worker))
+        self.session = Connection(self.ws, FakePool(self.worker))
         self.here = self.session.store.new_session()
         self.session.store.save_session(self.here)
         self.session._active_session_id = self.here.id
@@ -1801,9 +1801,9 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
     """
 
     def setUp(self) -> None:
-        from mimir.client.ui.ws import ws_worker
+        from mimir.client.ui.ws.worker import worker as ws_worker
         self.ws_worker = ws_worker
-        self.worker = object.__new__(ws_worker._AgentWorker)
+        self.worker = object.__new__(ws_worker.AgentWorker)
         self.worker.jobs = JobWatcher(self.worker)
         self.worker.out_q = __import__("queue").Queue()
 
@@ -2033,14 +2033,14 @@ class CheckinDeliveryTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-checkin-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
         pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker(watching=["j1"])
-        self.session = _Session(self.ws, FakePool(self.worker))
+        self.session = Connection(self.ws, FakePool(self.worker))
         self.here = self.session.store.new_session()
         self.here.llm_history = [{"role": "user", "content": "build it"}]
         self.here.llm_history_full = list(self.here.llm_history)
@@ -2174,7 +2174,7 @@ class WakeDeliveryLossTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-wakeloss-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
@@ -2185,7 +2185,7 @@ class WakeDeliveryLossTests(unittest.TestCase):
         # single shared worker cannot tell apart.
         self.launcher, self.onscreen = _FakeWorker(), _FakeWorker()
         self.pool = FakePool(self.onscreen)
-        self.session = _Session(self.ws, self.pool)
+        self.session = Connection(self.ws, self.pool)
 
         self.a = self.session.store.new_session()       # launched the job
         self.a.title = "Build the toolchain"

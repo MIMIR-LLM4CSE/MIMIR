@@ -19,12 +19,12 @@ import unittest
 
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.job_watcher import JobWatcher
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.session import jobs_on_disk, journal
-from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.wake_router import WakeRouter
-from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.client.ui.ws.pool.bus import EventBus
+from mimir.client.ui.ws.pool.wakes import WakeRouter
+from mimir.client.ui.ws.pool.pool import AgentPool
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -73,8 +73,8 @@ class _WakeCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.store = SessionStore()
 
-    def _pool(self, workers: dict | None = None) -> _AgentPool:
-        pool = object.__new__(_AgentPool)
+    def _pool(self, workers: dict | None = None) -> AgentPool:
+        pool = object.__new__(AgentPool)
         pool.active_session_id = None
         pool._workers = dict(workers or {})
         pool._last_use = {}
@@ -87,7 +87,7 @@ class _WakeCase(unittest.TestCase):
         pool.conversations = Conversations(self.store)
         pool.store = self.store
         pool.wakes = WakeRouter(pool)
-        pool.bus = _EventBus(pool, commit=pool.commit_turn, durable=pool.wakes.consume,
+        pool.bus = EventBus(pool, commit=pool.commit_turn, durable=pool.wakes.consume,
                              steered=pool.wakes.steered)
         return pool
 
@@ -360,7 +360,7 @@ class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
         s = self._session()
         self._ended_job(s.id)
         pool = self._pool()                   # no agent for this conversation
-        with self.assertLogs("mimir.client.ui.ws.wake_router", "WARNING") as caught:
+        with self.assertLogs("mimir.client.ui.ws.pool.wakes", "WARNING") as caught:
             pool.wakes.consume(self._complete(s.id))
         self.assertIn("no agent", "".join(caught.output))
         self.assertEqual([j.job_key for j in jobs_on_disk.scan_session(s.id)], ["j1"])
@@ -448,12 +448,12 @@ class AViewThatEndsReleasesWhatItHoldsTests(_WakeCase):
     """
 
     def _view(self, pool, worker):
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
 
         async def _noop(*_a, **_k):
             return None
 
-        sess = object.__new__(_Session)
+        sess = object.__new__(Connection)
         sess.ws = _NoWS()
         sess.pool = pool
         sess.store = self.store

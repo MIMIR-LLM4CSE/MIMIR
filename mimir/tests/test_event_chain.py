@@ -7,8 +7,8 @@ cannot tell those apart: the pump never starting, the pump dying, a watermark sw
 what it delivers, and the agent emitting nothing all look like a conversation that went
 quiet.
 
-So this test is deliberately coarse. It builds a real ``_Session`` over a real
-``_EventBus`` and a real worker's queue, runs the handshake, sends a query, and asserts
+So this test is deliberately coarse. It builds a real ``Connection`` over a real
+``EventBus`` and a real worker's queue, runs the handshake, sends a query, and asserts
 that what the engine emitted arrived. Coarse on purpose: the joins are what a chat
 window cannot see.
 """
@@ -23,10 +23,10 @@ from unittest import mock
 
 from mimir.client.session import store as session_store
 from mimir.client.session import journal
-from mimir.client.ui.ws.ws_session import _Session
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.job_watcher import JobWatcher
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.connection.connection import Connection
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.jobs import JobWatcher
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests._fake_pool import FakePool
 from mimir.tests.support.state import pin_state_dir
 from mimir.client.core.turn_state import TurnState
@@ -61,9 +61,9 @@ class _WS:
         return _gen()
 
 
-def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
+def _worker(session_id: str, turn: list[dict] | None = None) -> AgentWorker:
     """A worker with no agent and no loop, whose query emits *turn*."""
-    w = object.__new__(_AgentWorker)
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w.jobs = JobWatcher(w)
     w.out_q = _queue.Queue()
@@ -116,7 +116,7 @@ class _ChainCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self._tmp.cleanup)
         pin_state_dir(self, self._tmp.name)
         # The summary refresh calls the backend; nothing here has one.
-        patcher = mock.patch.object(_Session, "_schedule_summary_refresh",
+        patcher = mock.patch.object(Connection, "_schedule_summary_refresh",
                                     lambda _self: None)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -154,7 +154,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         worker = _worker("s1")
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 
@@ -172,7 +172,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         worker = _worker("s1")
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 
@@ -185,7 +185,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         worker = _worker("s1")
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 
@@ -203,7 +203,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "first"}),
                   json.dumps({"type": "query", "text": "second"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 
@@ -221,7 +221,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         worker = _worker("s1")
         pool = FakePool(worker, active=None, store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
         sess._rendered_seq = 4321          # as a previous conversation would leave it
 
         await self._run(sess, pool, ws)
@@ -263,7 +263,7 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
         worker = _worker("s1", turn=self._turn_with_prose())
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "look around"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 
@@ -281,7 +281,7 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
         worker = _worker("s1", turn=self._turn_with_prose())
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "look around"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 
@@ -295,10 +295,10 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
         worker = _worker("s1", turn=self._turn_with_prose())
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         first = _WS([json.dumps({"type": "query", "text": "look around"})])
-        await self._run(_Session(first, pool), pool, first)
+        await self._run(Connection(first, pool), pool, first)
 
         second = _WS([], linger=0.3)
-        await self._run(_Session(second, pool), pool, second)
+        await self._run(Connection(second, pool), pool, second)
 
         frames = [m for m in second.sent if m.get("type") == "replay"]
         self.assertTrue(frames, "nothing was replayed")
@@ -332,7 +332,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
 
     def setUp(self) -> None:
         super().setUp()
-        from mimir.client.ui.ws import server_registry
+        from mimir.client.ui.ws.server import registry as server_registry
         pin_state_dir(self, self._tmp.name)
         self.registry = server_registry
 
@@ -353,7 +353,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         pool.apply_setting = lambda name, value: applied.append((name, value)) or []
         ws = _WS([], linger=0.3)
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 
@@ -373,7 +373,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([], linger=0.3)
 
-        await self._run(_Session(ws, pool), pool, ws)
+        await self._run(Connection(ws, pool), pool, ws)
 
         self.assertEqual(worker.setting("approval_mode"), "auto_all")
 
@@ -387,7 +387,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         pool.apply_setting = lambda name, value: applied.append((name, value)) or []
         ws = _WS([], linger=0.3)
 
-        await self._run(_Session(ws, pool), pool, ws)
+        await self._run(Connection(ws, pool), pool, ws)
 
         self.assertEqual([a for a in applied if a[0] == "approval_mode"], [])
 
@@ -401,7 +401,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([], linger=0.3)
 
-        await self._run(_Session(ws, pool), pool, ws)
+        await self._run(Connection(ws, pool), pool, ws)
 
         loaded = [m for m in ws.sent if m.get("type") == "session_loaded"]
         self.assertTrue(loaded)
@@ -414,7 +414,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([], linger=0.3)
 
-        await self._run(_Session(ws, pool), pool, ws)
+        await self._run(Connection(ws, pool), pool, ws)
 
         loaded = [m for m in ws.sent if m.get("type") == "session_loaded"]
         self.assertFalse(loaded[-1]["turn_running"])
@@ -426,7 +426,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
 
         first = _WS([json.dumps({"type": "query", "text": "a long one"})], linger=0.2)
-        await self._run(_Session(first, pool), pool, first)
+        await self._run(Connection(first, pool), pool, first)
 
         # Mid-turn output, produced while nothing is attached.
         worker._query_session_id = "s1"
@@ -434,7 +434,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
                           "session_id": "s1"})
 
         second = _WS([], linger=0.4)
-        await self._run(_Session(second, pool), pool, second)
+        await self._run(Connection(second, pool), pool, second)
 
         replayed = [e["type"] for m in second.sent if m.get("type") == "replay"
                     for e in m["events"]]
@@ -454,7 +454,7 @@ class WhenTheChatGoesQuietTests(_ChainCase):
         worker = _worker("s1")
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         # The turn stamps itself for another conversation, which is what a background
         # job's wake turn does: it runs in the session that launched the run, not in
@@ -484,7 +484,7 @@ class WhenTheChatGoesQuietTests(_ChainCase):
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "x"}),
                   json.dumps({"type": "command", "text": "/diag"})])
-        sess = _Session(ws, pool)
+        sess = Connection(ws, pool)
 
         await self._run(sess, pool, ws)
 

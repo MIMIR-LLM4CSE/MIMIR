@@ -16,7 +16,7 @@ Session JSON schema:
   "llm_history": [{"role": "...", "content": "..."}],      # working window sent to the LLM
   "llm_history_full": [...],  # same, never trimmed — the archive a resume falls back to
                               #   (a window that carries a compaction summary is what a
-                              #   resume reloads instead; see _Session._load_session)
+                              #   resume reloads instead; see Connection._load_session)
   "display_messages": [...],  # serialised UI ChatMessage objects
   "carry_context": {...},     # MimirAgent.carry (context.carry.CarryContext)
   "todos": [{"text": "...", "done": false}],
@@ -24,7 +24,7 @@ Session JSON schema:
                                        #   its answer resumes (query_engine.deferral)
   "context_mode": "full" | "compact"   # the window the session was running in, so a
                                        #   resume budgets it that way before its agent
-                                       #   exists (see _Session._ctx_budget)
+                                       #   exists (see Connection._ctx_budget)
 }
 """
 
@@ -236,7 +236,7 @@ class FullSession:
     # compact's 32k and a restored full-mode window read as overflowing.
     context_mode: str = "full"
     # Bumped on every save. Two things write a session file now — a connected
-    # ``_Session`` and, when none is connected, the pump's turn committer — and the
+    # ``Connection`` and, when none is connected, the pump's turn committer — and the
     # revision is what lets a save notice it is built on a copy someone else has
     # already superseded, instead of overwriting it with older history.
     rev: int = 0

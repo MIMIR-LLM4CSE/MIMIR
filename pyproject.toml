@@ -57,7 +57,7 @@ Source = "https://github.com/MIMIR-LLM4CSE/MIMIR"
 
 [project.scripts]
 mimir = "mimir.client.ui.cli.main:main_sync"
-mimir-server = "mimir.client.ui.ws.ws_server:main"
+mimir-server = "mimir.client.ui.ws.server.main:main"
 
 [tool.setuptools]
 # The MCP servers are launched as standalone scripts by absolute file path

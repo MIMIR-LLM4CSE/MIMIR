@@ -38,10 +38,13 @@ import logging
 import time
 from typing import Callable, Iterable
 
-from ...protocol.events import (
-    CONCLUSIVE_EVENTS, DURABLE_EVENTS, REPLAY_ONLY_EVENTS, pop_answer_extras,
+from ....protocol.events import (
+    CONCLUSIVE_EVENTS,
+    DURABLE_EVENTS,
+    REPLAY_ONLY_EVENTS,
+    pop_answer_extras,
 )
-from ...session.journal import TranscriptLog
+from ....session.journal import TranscriptLog
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +67,7 @@ class _Subscription:
     to make the server hold every event it has not read.
     """
 
-    def __init__(self, bus: "_EventBus", session_filter: Callable[[dict], bool] | None,
+    def __init__(self, bus: "EventBus", session_filter: Callable[[dict], bool] | None,
                  maxsize: int = _SUBSCRIBER_MAX) -> None:
         self._bus = bus
         self._filter = session_filter
@@ -153,7 +156,7 @@ class _Subscription:
         self._bus.unsubscribe(self)
 
 
-class _EventBus:
+class EventBus:
     """Drains every worker, journals what they emit, and fans it out.
 
     Owned by the pool, started by the server, and alive for the process — which is the

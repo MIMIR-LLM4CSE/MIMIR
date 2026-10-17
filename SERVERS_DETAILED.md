@@ -1326,7 +1326,7 @@ Tools:
   - `background=True` **detaches the child**: the call returns a `background_job`
     descriptor at once, the caller carries on, and the client's watcher resumes it with
     the answer when the child lands — the same machinery a detached shell command uses
-    (`query_engine/jobs/background.py`, `ws_worker._watch_job`), so nothing in the client
+    (`query_engine/jobs/background.py`, `worker.jobs` (the job watcher)), so nothing in the client
     knows this kind of job from that one. The descriptor's `status_op` and `summary_op`
     both point at `subagent_job`; the dispatch guard then refuses the *status* question
     (the wake answers it) while allowing the *result* one, which is progress.

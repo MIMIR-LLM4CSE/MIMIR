@@ -1,6 +1,6 @@
 """Leaving the server running without this window, taking it back, stopping it.
 
-A part of ``_Session`` (``ws_session``): a mixin over the connection's own state, so a
+A part of ``Connection``: a mixin over the connection's own state, so a
 handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
 types it answers.
 """
@@ -10,11 +10,11 @@ import json
 import logging
 import os
 
-from .. import server_registry
-from ....config import paths
-from ..detach import detach as detach_process
-from ....session.jobs_on_disk import establish_baseline, has_baseline, scan_all_sessions
-from ..ws_pool import idle_stop_reason
+from ...server import registry as server_registry
+from .....config import paths
+from ...server.detach import detach as detach_process
+from .....session.jobs_on_disk import establish_baseline, has_baseline, scan_all_sessions
+from ...pool.pool import idle_stop_reason
 
 logger = logging.getLogger(__name__)
 

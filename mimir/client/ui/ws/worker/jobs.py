@@ -18,11 +18,16 @@ from dataclasses import dataclass, field
 from itertools import chain, repeat
 from typing import TYPE_CHECKING
 
-from ...session.jobs_on_disk import establish_baseline, has_baseline, scan_session, subagent_sessions
-from ...query_engine.jobs import poll
+from ....session.jobs_on_disk import (
+    establish_baseline,
+    has_baseline,
+    scan_session,
+    subagent_sessions,
+)
+from ....query_engine.jobs import poll
 
 if TYPE_CHECKING:
-    from .ws_worker import _AgentWorker
+    from .worker import AgentWorker
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +86,7 @@ class _Watch:
 class JobWatcher:
     """One conversation's background runs and its check-in cycle."""
 
-    def __init__(self, worker: "_AgentWorker") -> None:
+    def __init__(self, worker: "AgentWorker") -> None:
         self.worker = worker
         # job_key -> _Watch(task, descriptor), polling a detached run to completion.
         # Written by ``register`` (the agent's hook) and read back by ``watched``,

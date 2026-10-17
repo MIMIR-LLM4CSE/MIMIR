@@ -1,6 +1,6 @@
 """The agent pool: one worker per conversation, built late and let go.
 
-One ``_AgentWorker`` per conversation, which is what lets a turn keep running in one
+One ``AgentWorker`` per conversation, which is what lets a turn keep running in one
 nobody is reading. Three properties make that affordable, and each has a failure mode
 worth pinning:
 
@@ -22,10 +22,10 @@ import threading
 import time
 import unittest
 
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws import ws_pool
-from mimir.client.ui.ws.ws_pool import _AgentPool
-from mimir.client.ui.ws.ws_worker import _Outbox
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.pool import pool as ws_pool
+from mimir.client.ui.ws.pool.pool import AgentPool
+from mimir.client.ui.ws.worker.worker import _Outbox
 
 
 class _StubWorker:
@@ -71,7 +71,7 @@ class _StubWorker:
     def set_enabled(self, kind: str, name: str, enabled: bool) -> None:
         self.applied.append((kind, name, enabled))
 
-    # ── the pre-agent stand-in (see _AgentWorker.detached) ────────────────────
+    # ── the pre-agent stand-in (see AgentWorker.detached) ────────────────────
 
     @classmethod
     def detached(cls, model: str) -> "_StubWorker":
@@ -100,17 +100,17 @@ class _StubWorker:
 class _PoolCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         _StubWorker.built = 0
-        self._orig = ws_pool._AgentWorker
-        ws_pool._AgentWorker = _StubWorker
+        self._orig = ws_pool.AgentWorker
+        ws_pool.AgentWorker = _StubWorker
         # The stub stands in for the detached worker too: building the real one is cheap
         # but is not what these tests are about.
         self.addAsyncCleanup(self._restore)
 
     async def _restore(self) -> None:
-        ws_pool._AgentWorker = self._orig
+        ws_pool.AgentWorker = self._orig
 
-    def _pool(self, cap: int = 2, idle_ttl: float = 1000.0) -> _AgentPool:
-        pool = _AgentPool("test-model", cap=cap, idle_ttl=idle_ttl)
+    def _pool(self, cap: int = 2, idle_ttl: float = 1000.0) -> AgentPool:
+        pool = AgentPool("test-model", cap=cap, idle_ttl=idle_ttl)
         self.addAsyncCleanup(pool.aclose_all)
         return pool
 
@@ -155,12 +155,12 @@ class LazyBuildTests(_PoolCase):
         def _boom(model, session_id=None):
             raise RuntimeError("backend never answered")
 
-        ws_pool._AgentWorker = _boom
+        ws_pool.AgentWorker = _boom
         with self.assertRaises(RuntimeError):
             await pool.worker_for("s1")
         self.assertNotIn("s1", pool)
         # And the conversation can try again once the backend is up.
-        ws_pool._AgentWorker = _StubWorker
+        ws_pool.AgentWorker = _StubWorker
         self.assertIsNotNone(await pool.worker_for("s1"))
 
 
@@ -385,7 +385,7 @@ class SettingsTests(_PoolCase):
     async def test_the_greeting_reports_a_choice_made_before_any_agent(self) -> None:
         """Reporting the bare default would show "agent" to a user who picked plan — and
         the choice is real: the pool replays it as soon as an agent exists."""
-        pool = _AgentPool("test-model", cap=1)
+        pool = AgentPool("test-model", cap=1)
         self.addAsyncCleanup(pool.aclose_all)
         pool.apply_setting("context_mode", "full")
         self.assertEqual(pool.ui_state(None)["context_mode"], "full")
@@ -454,12 +454,12 @@ class AdmissionLatencyTests(_PoolCase):
     async def test_the_session_reports_the_admission(self) -> None:
         """Said out loud: the queue notice is still on screen until something replaces it."""
         import inspect
-        from mimir.client.ui.ws import ws_session
-        source = inspect.getsource(ws_session._Session._admit_waiting)
+        from mimir.client.ui.ws.connection import connection as ws_session
+        source = inspect.getsource(ws_session.Connection._admit_waiting)
         self.assertIn("pool.pump()", source)
         self.assertIn("starting", source)
         # Both the ending of a turn in this conversation and in another one admit.
-        from mimir.client.ui.ws import event_router
+        from mimir.client.ui.ws.connection import router as event_router
         router = inspect.getsource(event_router.EventRouter)
         self.assertGreaterEqual(router.count("_admit_waiting()"), 2)
 
@@ -560,19 +560,25 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         history of ten would hit the cap on the fourth click.
         """
         import inspect
-        from mimir.client.ui.ws import ws_session
-        from mimir.client.ui.ws.handlers import cards, conversations, detach, panel, turns
+        from mimir.client.ui.ws.connection import connection as ws_session
+        from mimir.client.ui.ws.connection.handlers import (
+            cards,
+            conversations,
+            detach,
+            panel,
+            turns,
+        )
         # The session layer is the connection and its handler mixins.
         source = "".join(inspect.getsource(m) for m in
                          (ws_session, cards, conversations, detach, panel, turns))
         self.assertEqual(source.count("self._ensure_worker()"), 2)
         # The query waits for its agent — it has nothing to say without one.
         self.assertIn("worker = await self._ensure_worker()",
-                      inspect.getsource(ws_session._Session._handle_query))
+                      inspect.getsource(ws_session.Connection._handle_query))
         # The drawer does not: it answers with what there is, and the build runs off the
         # socket's read loop so the user can keep typing through it.
         self.assertIn("self._schedule(self._report_panel_once_built(self._ensure_worker()))",
-                      inspect.getsource(ws_session._Session._handle_list_panel))
+                      inspect.getsource(ws_session.Connection._handle_list_panel))
 
     async def test_returning_to_a_conversation_reuses_its_agent(self) -> None:
         """Its context is live, so coming back is instant and costs no rebuild."""

@@ -26,9 +26,9 @@ import threading
 import time
 import unittest
 
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.job_watcher import JobWatcher
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.jobs import JobWatcher
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
 
 
@@ -49,9 +49,9 @@ class _FakeAgent:
         self.closed_on = threading.get_ident()
 
 
-def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thread, int]:
+def _worker_with_loop(agent: object | None) -> tuple[AgentWorker, threading.Thread, int]:
     """A worker whose loop really runs on its own thread, without building an agent."""
-    w = object.__new__(_AgentWorker)
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w.jobs = JobWatcher(w)
     w.session_id = "s1"
@@ -70,7 +70,7 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
     ident: dict[str, int] = {}
 
     async def _live() -> None:
-        """The shape of _AgentWorker._live: serve until the sentinel, then close.
+        """The shape of AgentWorker._live: serve until the sentinel, then close.
 
         One task for both halves, which is the property under test: the close runs where
         the servers were opened.
@@ -103,8 +103,8 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
 
 
 class OwnSessionTests(unittest.TestCase):
-    def _bare(self, session_id=None) -> _AgentWorker:
-        w = object.__new__(_AgentWorker)
+    def _bare(self, session_id=None) -> AgentWorker:
+        w = object.__new__(AgentWorker)
         w.human = HumanBridge(w)
         w.jobs = JobWatcher(w)
         w.session_id = session_id
@@ -146,7 +146,7 @@ class ACloseTests(unittest.TestCase):
         agent = _FakeAgent(hang=True)
         w, thread, _ = _worker_with_loop(agent)
         started = time.monotonic()
-        with self.assertLogs("mimir.client.ui.ws.ws_worker", "WARNING") as log:
+        with self.assertLogs("mimir.client.ui.ws.worker.worker", "WARNING") as log:
             w.aclose(timeout=0.3)
         waited = time.monotonic() - started
         self.assertLess(waited, 2.0, f"held the caller for {waited:.1f}s")
@@ -179,7 +179,7 @@ class TheQueryLoopWaitsTests(unittest.TestCase):
     """It used to wake every 20 ms, through a thread of the executor, to look."""
 
     def test_a_turn_queued_from_another_thread_starts_at_once(self) -> None:
-        w = object.__new__(_AgentWorker)
+        w = object.__new__(AgentWorker)
         w.human = HumanBridge(w)
         w.jobs = JobWatcher(w)
         w.session_id = "s1"

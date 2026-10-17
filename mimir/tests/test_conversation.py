@@ -13,13 +13,13 @@ from unittest import mock
 
 from mimir.client.session.conversation import Conversation, Conversations, turn_messages
 from mimir.client.session.store import SessionStore, StaleSessionWrite
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.state import pin_state_dir
 
 
-def _bare_worker(session_id: str) -> _AgentWorker:
-    w = object.__new__(_AgentWorker)
+def _bare_worker(session_id: str) -> AgentWorker:
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w.out_q = _queue.Queue()
     w.session_id = session_id

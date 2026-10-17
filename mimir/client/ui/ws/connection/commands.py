@@ -11,10 +11,17 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from ...session.commands import COMMANDS, Command, CommandHost, CommandRegistry, CommandResult, Item
+from ....session.commands import (
+    COMMANDS,
+    Command,
+    CommandHost,
+    CommandRegistry,
+    CommandResult,
+    Item,
+)
 
 if TYPE_CHECKING:
-    from .ws_session import _Session
+    from .connection import Connection
 
 
 class WsCommandHost(CommandHost):
@@ -22,7 +29,7 @@ class WsCommandHost(CommandHost):
 
     surface = "ws"
 
-    def __init__(self, session: "_Session") -> None:
+    def __init__(self, session: "Connection") -> None:
         self.session = session
 
     def apply(self, name: str, value: Any) -> str:

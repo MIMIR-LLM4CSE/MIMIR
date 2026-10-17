@@ -7,15 +7,16 @@ event loop.
 
 This module is the entry point (``main``). It imports nothing of the client until
 the command line is applied: ``--cwd`` has to be in force before ``config.paths`` and
-the backend factory resolve the workspace root, which they do at import time. The
-implementation is split across sibling modules:
-  - ``serving``     — ``serve``: model resolution, bind, the shutdown path.
-  - ``_ws_runtime`` — shared foundation (stdout router, todo helpers, context-budget
-    constants).
-  - ``ws_worker``   — ``_AgentWorker``, the background agent thread.
-  - ``ws_pool``     — ``_AgentPool``, one worker per conversation: built on that
-                      conversation's first query, released when it goes idle.
-  - ``ws_session``  — ``_Session``, one WebSocket connection.
+the backend factory resolve the workspace root, which they do at import time.
+The server is laid out by role:
+  - ``server/``     — this entry point; ``serving.serve`` (model resolution, bind, the
+                      shutdown path); the registry file other windows find it by.
+  - ``connection/`` — ``Connection``, one WebSocket connection, and its handlers.
+  - ``pool/``       — ``AgentPool``, one worker per conversation, built on its first
+                      query and released when idle; the event bus; the wake router.
+  - ``worker/``     — ``AgentWorker``, one conversation's agent on its own thread.
+  - ``runtime``     — what they share: the stdout router, the todo file, the context
+                      budget.
 
 Protocol — all messages are JSON objects, one per send/recv:
 

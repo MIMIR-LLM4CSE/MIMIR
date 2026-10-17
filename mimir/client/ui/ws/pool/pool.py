@@ -38,16 +38,16 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Callable, Iterator
 
-from . import server_registry
-from ._ws_runtime import _todo_file_for_session
-from .event_bus import _EventBus
-from ...session.jobs_on_disk import has_baseline, scan_all_sessions
-from .wake_router import WakeRouter
-from .human_bridge import _detach_grace
-from .ws_worker import _AgentWorker
-from ...context.todo import load_todo_deps, load_todo_items
-from ...core.settings import parse_setting
-from ...session.conversation import Conversation, Conversations
+from ..server import registry as server_registry
+from ..runtime import _todo_file_for_session
+from .bus import EventBus
+from ....session.jobs_on_disk import has_baseline, scan_all_sessions
+from .wakes import WakeRouter
+from ..worker.human import _detach_grace
+from ..worker.worker import AgentWorker
+from ....context.todo import load_todo_deps, load_todo_items
+from ....core.settings import parse_setting
+from ....session.conversation import Conversation, Conversations
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def _idle_ttl() -> float:
         return _DEFAULT_IDLE_TTL
 
 
-class _Settings:
+class SettingsRecord:
     """The choices a newly built worker must start from.
 
     A worker is built long after the user makes these, so it has to arrive already
@@ -138,7 +138,7 @@ class _Settings:
         self.toggles: dict[tuple[str, str], bool] = {}
         self.non_interactive = False
 
-    def replay(self, worker: _AgentWorker) -> None:
+    def replay(self, worker: AgentWorker) -> None:
         for name, value in self.values.items():
             error = worker.apply_setting(name, value)
             if error:
@@ -153,7 +153,7 @@ class _Settings:
             worker.set_non_interactive(True)
 
 
-class _AgentPool:
+class AgentPool:
     """The live workers, keyed by the session each one works for."""
 
     def __init__(self, model: str, *, cap: int | None = None,
@@ -164,20 +164,20 @@ class _AgentPool:
         # The session the front-end is showing — a property of the view, not of any one
         # worker, which is why it lives on the pool.
         self.active_session_id: str | None = None
-        self.settings = _Settings()
+        self.settings = SettingsRecord()
 
         # The stand-in for a conversation with no agent yet, which is the ordinary state
         # until its first query. One per pool, shared: it holds no session's state because
         # it holds no state at all beyond the model.
-        self._detached = _AgentWorker.detached(model)
+        self._detached = AgentWorker.detached(model)
 
-        self._workers: dict[str, _AgentWorker] = {}
+        self._workers: dict[str, AgentWorker] = {}
         self._last_use: dict[str, float] = {}
         # Sessions whose worker is being built right now, so two queries arriving
         # together do not build two agents for one conversation.
         self._building: dict[str, asyncio.Future] = {}
         # Submissions waiting for a slot: (session_id, callable taking the worker).
-        self._queue: deque[tuple[str, Callable[[_AgentWorker], None]]] = deque()
+        self._queue: deque[tuple[str, Callable[[AgentWorker], None]]] = deque()
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
 
@@ -190,7 +190,7 @@ class _AgentPool:
         self.conversations = Conversations()
         self.store = self.conversations.store
         self.wakes = WakeRouter(self)
-        self.bus = _EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,
+        self.bus = EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,
                              steered=self.wakes.steered)
 
         # Resolved when this process decides it is no longer needed. Awaited beside the
@@ -364,7 +364,7 @@ class _AgentPool:
                 "deferred": extras.get("_deferred"),
                 "steer_turn": steering}
 
-    def submit_turn(self, conversation: Conversation, worker: _AgentWorker,
+    def submit_turn(self, conversation: Conversation, worker: AgentWorker,
                     text: str) -> bool:
         """Open a turn of *conversation* with *text* and queue it on its own agent.
 
@@ -409,7 +409,7 @@ class _AgentPool:
 
     # ── Looking up ────────────────────────────────────────────────────────────
 
-    def get(self, session_id: str | None) -> _AgentWorker | None:
+    def get(self, session_id: str | None) -> AgentWorker | None:
         """The live worker for *session_id*, or None. Never builds one."""
         if not session_id:
             return None
@@ -418,7 +418,7 @@ class _AgentPool:
             self._last_use[session_id] = time.monotonic()
         return worker
 
-    def worker_or_detached(self, session_id: str | None) -> _AgentWorker:
+    def worker_or_detached(self, session_id: str | None) -> AgentWorker:
         """The live worker for *session_id*, or the detached stand-in.
 
         What the session reads for everything that is not a query: the settings behind
@@ -429,7 +429,7 @@ class _AgentPool:
         """
         return self.get(session_id) or self._detached
 
-    def items(self) -> Iterator[tuple[str, _AgentWorker]]:
+    def items(self) -> Iterator[tuple[str, AgentWorker]]:
         """Every live worker, as (session_id, worker). A snapshot: the caller may drain."""
         return iter(list(self._workers.items()))
 
@@ -449,7 +449,7 @@ class _AgentPool:
     # ── Building ──────────────────────────────────────────────────────────────
 
     async def worker_for(self, session_id: str, *,
-                         on_wait: Callable[[], Any] | None = None) -> _AgentWorker | None:
+                         on_wait: Callable[[], Any] | None = None) -> AgentWorker | None:
         """The worker for *session_id*, building one if there is room.
 
         None means "no slot right now" — the caller queues its submission with
@@ -513,16 +513,16 @@ class _AgentPool:
         self.ensure_pump()
         return worker
 
-    async def _build(self, session_id: str) -> _AgentWorker:
+    async def _build(self, session_id: str) -> AgentWorker:
         """Construct a worker off the event loop.
 
-        ``_AgentWorker.__init__`` blocks until its agent is up — the LLM backend first,
+        ``AgentWorker.__init__`` blocks until its agent is up — the LLM backend first,
         then ~19 MCP servers — so building it inline would stop the drain loops of every
         other conversation for the duration.
         """
         loop = asyncio.get_running_loop()
         worker = await loop.run_in_executor(
-            None, lambda: _AgentWorker(self.model, session_id=session_id))
+            None, lambda: AgentWorker(self.model, session_id=session_id))
         # Every event the worker emits wakes the pump, from whichever thread emits it.
         # Anything it said while being built is picked up by the pump's own tick.
         worker.out_q.on_put = lambda: loop.call_soon_threadsafe(self.bus.nudge)
@@ -560,7 +560,7 @@ class _AgentPool:
 
     # ── Queueing past the cap ─────────────────────────────────────────────────
 
-    def enqueue(self, session_id: str, submit: Callable[[_AgentWorker], None]) -> int:
+    def enqueue(self, session_id: str, submit: Callable[[AgentWorker], None]) -> int:
         """Hold *submit* until a slot frees. Returns its 1-based place in the line."""
         self._queue.append((session_id, submit))
         self.ensure_reaper()
@@ -666,7 +666,7 @@ class _AgentPool:
     def idle_for(self, session_id: str) -> float:
         return time.monotonic() - self._last_use.get(session_id, 0.0)
 
-    def _take_one_idle_locked(self) -> _AgentWorker | None:
+    def _take_one_idle_locked(self) -> AgentWorker | None:
         """Take out the longest-idle releasable worker, to free its slot. Caller holds
         the lock, and closes what it is given once it has let go of it.
 
@@ -686,7 +686,7 @@ class _AgentPool:
     async def release_idle(self) -> list[str]:
         """Close every releasable worker idle past the TTL. Returns the sessions closed."""
         closed: list[str] = []
-        taken: list[_AgentWorker] = []
+        taken: list[AgentWorker] = []
         async with self._lock:
             for session_id in list(self._workers):
                 if not self.releasable(session_id):
@@ -712,7 +712,7 @@ class _AgentPool:
         if worker is not None:
             await self._close_workers([worker])
 
-    def _take_locked(self, session_id: str, *, reason: str) -> _AgentWorker | None:
+    def _take_locked(self, session_id: str, *, reason: str) -> AgentWorker | None:
         """Remove *session_id*'s worker from the pool, freeing its slot. Caller holds the
         lock; the worker is closed after it is released (:meth:`_close_workers`)."""
         worker = self._workers.pop(session_id, None)
@@ -721,7 +721,7 @@ class _AgentPool:
             logger.info("pool: releasing the agent of session %s (%s)", session_id, reason)
         return worker
 
-    async def _close_workers(self, workers: list[_AgentWorker]) -> None:
+    async def _close_workers(self, workers: list[AgentWorker]) -> None:
         """Close workers taken out of the pool, all at once and outside its lock.
 
         Outside the lock: a close waits for the MCP servers to go — seconds of

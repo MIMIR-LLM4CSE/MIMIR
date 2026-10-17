@@ -11,7 +11,7 @@ import unittest
 
 import websockets
 
-from mimir.client.ui.ws.serving import _announced_url
+from mimir.client.ui.ws.server.serving import _announced_url
 
 
 class _Sock:
@@ -61,7 +61,7 @@ class EntryPointTests(unittest.TestCase):
         """
         import subprocess
         import sys
-        code = ("import sys; import mimir.client.ui.ws.ws_server; "
+        code = ("import sys; import mimir.client.ui.ws.server.main; "
                 "print(any(m.startswith('mimir.client.config') for m in sys.modules))")
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True,

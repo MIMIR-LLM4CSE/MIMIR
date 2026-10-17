@@ -17,8 +17,8 @@ import threading
 import time
 import unittest
 
-from mimir.client.ui.ws.human_bridge import TIMED_OUT, HumanBridge
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.human import TIMED_OUT, HumanBridge
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
 
 
@@ -28,8 +28,8 @@ class _StubAgent:
         self.turn.cancel_flag = threading.Event()
 
 
-def _make_worker() -> _AgentWorker:
-    w = _AgentWorker.__new__(_AgentWorker)  # bypass __init__ (spawns a thread)
+def _make_worker() -> AgentWorker:
+    w = AgentWorker.__new__(AgentWorker)  # bypass __init__ (spawns a thread)
     w.human = HumanBridge(w)
     w._agent = _StubAgent()
     w.out_q = _queue.Queue()
@@ -143,7 +143,7 @@ class TwoCardsAtOnceTests(unittest.TestCase):
         self.assertEqual((w.human._pending_prompt or {}).get("id"), "c2")
 
     def test_an_answer_to_a_card_that_is_gone_settles_nothing(self) -> None:
-        """The hazard _Session._answer_deferred already guards for a stale card: an
+        """The hazard Connection._answer_deferred already guards for a stale card: an
         answer nobody is waiting on would otherwise settle the next prompt."""
         w = _make_worker()
         results: dict = {}

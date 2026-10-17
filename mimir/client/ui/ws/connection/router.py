@@ -21,12 +21,12 @@ import os
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from ._ws_runtime import _todo_file_for_session
-from ...protocol.events import DURABLE_EVENTS
-from ...tool_execution import run_channel
+from ..runtime import _todo_file_for_session
+from ....protocol.events import DURABLE_EVENTS
+from ....tool_execution import run_channel
 
 if TYPE_CHECKING:
-    from .ws_session import _Session
+    from .connection import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class _SocketGone(Exception):
 class EventRouter:
     """Forwards a session's subscription to its socket, one handler per event type."""
 
-    def __init__(self, session: "_Session") -> None:
+    def __init__(self, session: "Connection") -> None:
         self.session = session
         self._todo_mtime: float | None = None
         self._last_tick = 0.0

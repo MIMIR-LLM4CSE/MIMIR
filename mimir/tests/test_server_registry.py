@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 from mimir.servers._shared.processes import proc_starttime
-from mimir.client.ui.ws import server_registry
+from mimir.client.ui.ws.server import registry as server_registry
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -222,7 +222,7 @@ class OneServerPerWorkspaceTests(_RegistryCase):
             sys.path.insert(0, {json.dumps(os.getcwd())})
             os.environ["MIMIR_STATE_DIR"] = {json.dumps(self._tmp.name)}
             from unittest import mock
-            from mimir.client.ui.ws import server_registry as r
+            from mimir.client.ui.ws.server import registry as r
             mock.patch("mimir.client.config.paths.STATE_DIR", {json.dumps(self._tmp.name)}).start()
             print("HELD" if r.acquire() else "REFUSED", flush=True)
             time.sleep(10)
@@ -232,7 +232,7 @@ class OneServerPerWorkspaceTests(_RegistryCase):
             sys.path.insert(0, {json.dumps(os.getcwd())})
             os.environ["MIMIR_STATE_DIR"] = {json.dumps(self._tmp.name)}
             from unittest import mock
-            from mimir.client.ui.ws import server_registry as r
+            from mimir.client.ui.ws.server import registry as r
             mock.patch("mimir.client.config.paths.STATE_DIR", {json.dumps(self._tmp.name)}).start()
             print("HELD" if r.acquire() else "REFUSED", flush=True)
         """)
@@ -260,7 +260,7 @@ class OneServerPerWorkspaceTests(_RegistryCase):
             import os, sys, time
             sys.path.insert(0, {json.dumps(os.getcwd())})
             from unittest import mock
-            from mimir.client.ui.ws import server_registry as r
+            from mimir.client.ui.ws.server import registry as r
             mock.patch("mimir.client.config.paths.STATE_DIR", {json.dumps(self._tmp.name)}).start()
             print("HELD" if r.acquire() else "REFUSED", flush=True)
             time.sleep(30)

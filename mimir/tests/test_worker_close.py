@@ -18,7 +18,7 @@ import asyncio
 import threading
 import unittest
 
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.worker import AgentWorker
 
 
 class _StubAgent:
@@ -31,9 +31,9 @@ class _StubAgent:
         self.closed_in = asyncio.current_task()
 
 
-def _bare_worker() -> _AgentWorker:
+def _bare_worker() -> AgentWorker:
     """A worker with its fields but no thread — ``detached`` with a session."""
-    worker = _AgentWorker.detached("test-model")
+    worker = AgentWorker.detached("test-model")
     worker.session_id = "s1"
     return worker
 

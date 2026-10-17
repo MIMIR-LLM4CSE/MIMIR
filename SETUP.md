@@ -78,7 +78,7 @@ What the base install covers:
 |-------|----------|---------|
 | Core client + MCP | `mcp`, `httpx` | agent loop, all server transports |
 | LLM backends | `ollama`, `openai` | Ollama backend; vLLM and Ray Serve (OpenAI-compatible) backends |
-| WebSocket frontend | `websockets` | `ws_server.py` (VS Code extension) |
+| WebSocket frontend | `websockets` | `server/main.py` (VS Code extension) |
 | Scientific / utility servers | `numpy`, `sympy`, `psutil` | `math`, `symbolic_math`, `platform`, `system` servers |
 
 Optional extras (declared in `pyproject.toml`):
@@ -154,7 +154,7 @@ Then point the agent at it:
 mimir-server \
     --backend vllm \
     --vllm-base-url http://<host>:8000
-    # `python -m mimir.client.ui.ws.ws_server ...` also works if not pip-installed
+    # `python -m mimir.client.ui.ws.server.main ...` also works if not pip-installed
     # --model is optional; omit it to use whatever the endpoint serves
 ```
 
@@ -247,7 +247,7 @@ mimir
 or, for the WS server the extension starts:
 
 ```bash
-python -m mimir.client.ui.ws.ws_server \
+python -m mimir.client.ui.ws.server.main \
     --backend ray \
     --ray-base-url http://<head-node>:8000
 ```

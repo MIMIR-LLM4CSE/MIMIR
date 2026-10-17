@@ -29,8 +29,8 @@ import types
 import unittest
 
 from mimir.client.protocol.events import pop_answer_extras
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.worker import AgentWorker
 
 from mimir.tests._fake_pool import FakePool
 from mimir.tests.support.state import pin_state_dir
@@ -55,9 +55,9 @@ class _FakeAgent:
         return "done"
 
 
-def _worker() -> _AgentWorker:
+def _worker() -> AgentWorker:
     """A worker with just the state ``_run_query`` touches."""
-    w = object.__new__(_AgentWorker)
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w.session_id = "s1"
     w._query_session_id = "s1"
@@ -72,7 +72,7 @@ def _worker() -> _AgentWorker:
     return w
 
 
-def _answer(w: _AgentWorker) -> dict:
+def _answer(w: AgentWorker) -> dict:
     """The answer event of one run of *w*."""
     asyncio.run(w._run_query({"text": "do it", "history": []}))
     events = list(w.out_q.queue)
@@ -121,7 +121,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
         self.assertNotIn("_unconsumed_steer", ev)
 
 
-async def _read_then_answer(w: _AgentWorker) -> str:
+async def _read_then_answer(w: AgentWorker) -> str:
     w._agent.poll_steer()
     return "done"
 
@@ -162,14 +162,14 @@ class TheCatchUpTurnTests(unittest.TestCase):
     """What becomes of steering the run handed back unread."""
 
     def setUp(self) -> None:
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-steer-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
         pin_state_dir(self, self._tmp)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
-        self.session = _Session(self.ws, FakePool(self.worker))
+        self.session = Connection(self.ws, FakePool(self.worker))
         conv = self.session.pool.conversations.new()
         conv.history = [{"role": "user", "content": "do it"}]
         conv.record.llm_history_full = list(conv.history)
@@ -280,7 +280,7 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-steer-late-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
@@ -293,7 +293,7 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
         # under test here: the history fits, and there are no @-mentions to resolve.
         self.worker.get_context_mode = lambda *_a: "flat"
         self.worker.context_overhead_tokens = lambda: 0
-        self.session = _Session(self.ws, FakePool(self.worker))
+        self.session = Connection(self.ws, FakePool(self.worker))
         conv = self.session.pool.conversations.new()
         conv.history = [{"role": "user", "content": "do it"}]
         conv.record.llm_history_full = list(conv.history)

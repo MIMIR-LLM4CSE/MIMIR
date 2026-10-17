@@ -16,7 +16,7 @@ import types
 from pathlib import Path
 from unittest import mock
 
-from mimir.client.ui.ws.job_watcher import JobWatcher
+from mimir.client.ui.ws.worker.jobs import JobWatcher
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "hpc", SERVERS_DIR / "proxy"):
@@ -113,9 +113,9 @@ def _drain(loop, future):
 def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch):
     """One server that cannot answer costs its own section, never the panel."""
     import asyncio
-    from mimir.client.ui.ws.ws_worker import _AgentWorker
+    from mimir.client.ui.ws.worker.worker import AgentWorker
 
-    class _Session:
+    class Connection:
         def __init__(self, payload=None, boom=False):
             self.payload, self.boom = payload, boom
 
@@ -129,9 +129,9 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
         tool_caps=_caps(good={"section": "Optimisation", "order": 10},
                         bad={"section": "Machine", "order": 20}),
         tool_owner={"good": "proxy", "bad": "platform"},
-        sessions={"proxy": _Session(payload="x"), "platform": _Session(boom=True)},turn=TurnState())
+        sessions={"proxy": Connection(payload="x"), "platform": Connection(boom=True)},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(_AgentWorker)
+    worker = object.__new__(AgentWorker)
     worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
@@ -153,12 +153,12 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
     of those waits; asked at once it costs the longest of them.
     """
     import asyncio
-    from mimir.client.ui.ws.ws_worker import _AgentWorker
+    from mimir.client.ui.ws.worker.worker import AgentWorker
 
     started: list[str] = []
     release = []
 
-    class _Session:
+    class Connection:
         async def call_tool(self, tool, args):
             started.append(tool)
             await release[0]          # nobody answers until everyone has asked
@@ -169,10 +169,10 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
                         cluster={"section": "Cluster", "order": 20},
                         proxy={"section": "Optimisation", "order": 30}),
         tool_owner={"machine": "platform", "cluster": "hpc", "proxy": "proxy"},
-        sessions={"platform": _Session(), "hpc": _Session(), "proxy": _Session()},turn=TurnState())
+        sessions={"platform": Connection(), "hpc": Connection(), "proxy": Connection()},turn=TurnState())
     loop = asyncio.new_event_loop()
     release.append(loop.create_future())
-    worker = object.__new__(_AgentWorker)
+    worker = object.__new__(AgentWorker)
     worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
@@ -196,11 +196,11 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
     sets it for that press and for nothing else.
     """
     import asyncio
-    from mimir.client.ui.ws.ws_worker import _AgentWorker
+    from mimir.client.ui.ws.worker.worker import AgentWorker
 
     seen: list[dict] = []
 
-    class _Session:
+    class Connection:
         async def call_tool(self, tool, args):
             seen.append({"tool": tool, **args})
             return _mcp({"lines": [{"label": "l", "value": "v"}]})
@@ -210,9 +210,9 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
                                  "refresh_arg": "refresh"},
                         machine={"section": "Machine", "order": 20}),
         tool_owner={"cluster": "hpc", "machine": "platform"},
-        sessions={"hpc": _Session(), "platform": _Session()},turn=TurnState())
+        sessions={"hpc": Connection(), "platform": Connection()},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(_AgentWorker)
+    worker = object.__new__(AgentWorker)
     worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
@@ -303,7 +303,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
     and still appears.
     """
     import asyncio
-    from mimir.client.ui.ws.ws_worker import _AgentWorker
+    from mimir.client.ui.ws.worker.worker import AgentWorker
 
     payloads = {
         "empty": {"title": "Cluster", "lines": []},
@@ -311,7 +311,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
                        "detail": "No optimisation session in this workspace."},
     }
 
-    class _Session:
+    class Connection:
         def __init__(self, tool):
             self.tool = tool
 
@@ -322,9 +322,9 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
         tool_caps=_caps(empty={"section": "Cluster", "order": 10},
                         spoken_for={"section": "Optimisation", "order": 20}),
         tool_owner={"empty": "hpc", "spoken_for": "proxy"},
-        sessions={"hpc": _Session("empty"), "proxy": _Session("spoken_for")},turn=TurnState())
+        sessions={"hpc": Connection("empty"), "proxy": Connection("spoken_for")},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(_AgentWorker)
+    worker = object.__new__(AgentWorker)
     worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
@@ -344,21 +344,21 @@ def test_a_section_that_only_has_groups_is_kept():
     server answering with a nested shape and nothing flat is the opposite case.
     """
     import asyncio
-    from mimir.client.ui.ws.ws_worker import _AgentWorker
+    from mimir.client.ui.ws.worker.worker import AgentWorker
 
     payload = {"title": "Cluster", "lines": [],
                "groups": [{"id": "host:local", "label": "local"}]}
 
-    class _Session:
+    class Connection:
         async def call_tool(self, tool, args):
             return _mcp(payload)
 
     agent = types.SimpleNamespace(
         tool_caps=_caps(tree={"section": "Cluster", "order": 10}),
         tool_owner={"tree": "hpc"},
-        sessions={"hpc": _Session()},turn=TurnState())
+        sessions={"hpc": Connection()},turn=TurnState())
     loop = asyncio.new_event_loop()
-    worker = object.__new__(_AgentWorker)
+    worker = object.__new__(AgentWorker)
     worker.jobs = JobWatcher(worker)
     worker._agent = agent
     worker._loop = loop
@@ -522,7 +522,7 @@ def _sections_with_hosts():
 
 def test_recorded_clusters_are_shown_before_any_agent_is_up(tmp_path):
     """The registry is the workspace's; the first query should not be what reveals it."""
-    from mimir.client.ui.ws.panel_runs import recorded_hosts_sections
+    from mimir.client.ui.ws.connection.panel_runs import recorded_hosts_sections
     assert recorded_hosts_sections(str(tmp_path)) == []
     (tmp_path / "slurm_hosts").write_text("hpc1\n\nhpc2\nhpc1\n")
     [section] = recorded_hosts_sections(str(tmp_path))
@@ -533,7 +533,7 @@ def test_recorded_clusters_are_shown_before_any_agent_is_up(tmp_path):
 
 def test_a_shell_run_lands_on_this_machine():
     """It has no scheduler to name, which is exactly what says it is here."""
-    from mimir.client.ui.ws.panel_runs import attach_runs
+    from mimir.client.ui.ws.connection.panel_runs import attach_runs
     run = {"job_key": "k1", "kind": "shell-command", "state": "running",
            "pid": 4242, "command": "make -j64", "origin": {"kind": "main"}}
     sections, unplaced = attach_runs(_sections_with_hosts(), [run])
@@ -546,7 +546,7 @@ def test_a_shell_run_lands_on_this_machine():
 
 def test_a_cluster_run_lands_on_its_host_and_on_its_node():
     """Two questions, two places: which cluster is busy, and which machine is."""
-    from mimir.client.ui.ws.panel_runs import attach_runs
+    from mimir.client.ui.ws.connection.panel_runs import attach_runs
     run = {"job_key": "15306620", "kind": "slurm-batch", "state": "running",
            "scheduler": "hpc1", "nodes": ["gpu007"], "job_id": "15306620"}
     sections, unplaced = attach_runs(_sections_with_hosts(), [run])
@@ -563,7 +563,7 @@ def test_a_run_on_a_node_outside_the_sample_still_lands_on_its_host():
     The host row is the one that must never miss a run; which kind of machine it got is
     a detail the run itself carries.
     """
-    from mimir.client.ui.ws.panel_runs import attach_runs
+    from mimir.client.ui.ws.connection.panel_runs import attach_runs
     run = {"job_key": "j9", "state": "running", "scheduler": "hpc1",
            "nodes": ["gpu042"]}
     sections, _ = attach_runs(_sections_with_hosts(), [run])
@@ -574,7 +574,7 @@ def test_a_run_on_a_node_outside_the_sample_still_lands_on_its_host():
 
 def test_a_run_on_an_unknown_scheduler_is_still_shown_somewhere():
     """Unplaced, not dropped: a run the user cannot see is the worse failure."""
-    from mimir.client.ui.ws.panel_runs import attach_runs
+    from mimir.client.ui.ws.connection.panel_runs import attach_runs
     run = {"job_key": "j7", "state": "running", "scheduler": "hpc9"}
     sections, unplaced = attach_runs(_sections_with_hosts(), [run])
     assert all("badges" not in g for g in sections[0]["groups"])
@@ -583,7 +583,7 @@ def test_a_run_on_an_unknown_scheduler_is_still_shown_somewhere():
 
 def test_a_badge_says_which_agent_launched_the_run():
     """A job on a node is worth little to read if it does not say whose."""
-    from mimir.client.ui.ws.panel_runs import attach_runs
+    from mimir.client.ui.ws.connection.panel_runs import attach_runs
     origin = {"kind": "subagent", "label": "port the solver to AVX-512",
               "session": "parent/subagents/sub-1a2b"}
     run = {"job_key": "k1", "state": "running", "origin": origin}
@@ -597,15 +597,15 @@ def test_the_worker_reports_what_its_poll_learned():
     Where a run is and how far it has got were read on every tick and then dropped on
     the way out, so the panel could only ever say that something was running.
     """
-    from mimir.client.ui.ws.job_watcher import _Watch
-    from mimir.client.ui.ws.ws_worker import _AgentWorker
+    from mimir.client.ui.ws.worker.jobs import _Watch
+    from mimir.client.ui.ws.worker.worker import AgentWorker
 
     class _Task:
         @staticmethod
         def done():
             return False
 
-    worker = object.__new__(_AgentWorker)
+    worker = object.__new__(AgentWorker)
 
     worker.jobs = JobWatcher(worker)
     worker.jobs._bg_jobs = {"15306620": _Watch(

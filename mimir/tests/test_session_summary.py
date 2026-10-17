@@ -209,12 +209,12 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
     """The WS glue: stale summaries are hidden, fresh ones are pushed."""
 
     def _session(self, store):
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws.connection.connection import Connection
         from mimir.client.session.conversation import Conversations
         pool = FakePool(type("W", (), {"model": "m"})())
         pool.conversations = Conversations(store)
         pool.store = store
-        sess = object.__new__(_Session)
+        sess = object.__new__(Connection)
         sess.ws = _FakeWS()
         sess.pool = pool
         sess.store = store

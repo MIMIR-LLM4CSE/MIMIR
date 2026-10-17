@@ -38,7 +38,7 @@ SERVERS: dict[str, str] = {
 }
 
 # One-line, human-readable purpose per server. Surfaced as tooltips in the
-# server/skill toggle panel (ws_server `toggles_list`). Keyed by SERVERS name.
+# server/skill toggle panel (the WebSocket server's `toggles_list`). Keyed by SERVERS name.
 SERVER_DESCRIPTIONS: dict[str, str] = {
     "math": "Safe math expression evaluation (evaluate).",
     "strings": "String operations: case, strip, replace, split, search (string_op).",

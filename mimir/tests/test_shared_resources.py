@@ -256,6 +256,7 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
     def test_building_the_review_diff_is_what_records_the_digest(self) -> None:
         """The two ends of the seam, so neither can drift from the other."""
         import inspect
-        from mimir.client.ui.ws import ws_worker, ws_session
-        self.assertIn("note_reviewed", inspect.getsource(ws_worker._AgentWorker._build_batch_status))
-        self.assertIn("reviewed_matches", inspect.getsource(ws_session._Session._revert_one))
+        from mimir.client.ui.ws.worker import worker as ws_worker
+        from mimir.client.ui.ws.connection import connection as ws_session
+        self.assertIn("note_reviewed", inspect.getsource(ws_worker.AgentWorker._build_batch_status))
+        self.assertIn("reviewed_matches", inspect.getsource(ws_session.Connection._revert_one))

@@ -1,6 +1,6 @@
 """Hermetic tests for the registry-driven pre-write diff previews.
 
-``ui/ws/file_preview.py`` reconstructs a proposed post-write diff from a tool call's
+``ui/ws/worker/file_preview.py`` reconstructs a proposed post-write diff from a tool call's
 arguments, dispatching on the generic ``preview`` kind the tool declares — no
 tool names in shipped code. These tests build small registries via the real
 server-side descriptor helper so declaration and consumption are exercised
@@ -13,7 +13,7 @@ import types
 import unittest
 
 from mimir.client.context import capabilities as caps
-from mimir.client.ui.ws import file_preview
+from mimir.client.ui.ws.worker import file_preview
 from mimir.servers._shared import capabilities as srv
 from mimir.tests import _golden_caps as golden
 

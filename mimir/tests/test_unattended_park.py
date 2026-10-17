@@ -22,16 +22,16 @@ from unittest import mock
 
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
-from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.human_bridge import HumanBridge, _detach_grace
-from mimir.client.ui.ws.job_watcher import JobWatcher
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.pool.bus import EventBus
+from mimir.client.ui.ws.worker.human import HumanBridge, _detach_grace
+from mimir.client.ui.ws.worker.jobs import JobWatcher
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
 
 
-def _worker(session_id: str = "s1") -> _AgentWorker:
+def _worker(session_id: str = "s1") -> AgentWorker:
     """A worker with only what the wait touches: no agent loop, no MCP servers."""
-    w = object.__new__(_AgentWorker)
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w.jobs = JobWatcher(w)
     w.out_q = _queue.Queue()
@@ -42,7 +42,7 @@ def _worker(session_id: str = "s1") -> _AgentWorker:
     return w
 
 
-def _card(w: _AgentWorker, req_id: str = "a1", kind: str = "approval") -> str:
+def _card(w: AgentWorker, req_id: str = "a1", kind: str = "approval") -> str:
     """Raise one card on *w* and answer with the id the wait names."""
     w.human._emit_prompt({"type": kind, "id": req_id, "tool": "bash_run"},
                    questions=[] if kind == "user_question" else None)
@@ -133,7 +133,7 @@ class TheWaitTests(unittest.TestCase):
         # an answer the model has already been promised.
         w = _worker()
         w.human.unattended_since = time.monotonic() - (_detach_grace() + 1)
-        from mimir.client.ui.ws.human_bridge import TIMED_OUT
+        from mimir.client.ui.ws.worker.human import TIMED_OUT
         req = _card(w, "q1", "user_question")
         self.assertIs(w.human._await_response(req, timeout_secs=0.05), TIMED_OUT)
         self.assertFalse(w.human.has_deferral)
@@ -178,7 +178,7 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
     def test_an_attached_bus_reports_nobody_waiting(self):
         async def run():
             w = _worker()
-            bus = _EventBus(_FakePool({"s1": w}))
+            bus = EventBus(_FakePool({"s1": w}))
             bus.subscribe()
             bus.pump_once()
             self.assertIsNone(w.human.unattended_since)
@@ -186,14 +186,14 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
 
     def test_a_bus_with_no_subscriber_starts_the_clock(self):
         w = _worker()
-        bus = _EventBus(_FakePool({"s1": w}))
+        bus = EventBus(_FakePool({"s1": w}))
         bus.pump_once()
         self.assertIsNotNone(w.human.unattended_since)
 
     def test_the_clock_does_not_restart_on_every_tick(self):
         # Otherwise the grace never elapses and the card waits for ever anyway.
         w = _worker()
-        bus = _EventBus(_FakePool({"s1": w}))
+        bus = EventBus(_FakePool({"s1": w}))
         bus.pump_once()
         first = w.human.unattended_since
         time.sleep(0.02)
@@ -203,7 +203,7 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
     def test_a_client_arriving_stops_the_clock(self):
         async def run():
             w = _worker()
-            bus = _EventBus(_FakePool({"s1": w}))
+            bus = EventBus(_FakePool({"s1": w}))
             bus.pump_once()
             self.assertIsNotNone(w.human.unattended_since)
             bus.subscribe()
@@ -214,7 +214,7 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
     def test_a_client_leaving_restarts_it(self):
         async def run():
             w = _worker()
-            bus = _EventBus(_FakePool({"s1": w}))
+            bus = EventBus(_FakePool({"s1": w}))
             sub = bus.subscribe()
             bus.pump_once()
             sub.close()
@@ -226,7 +226,7 @@ class ThePumpPublishesAttachmentTests(unittest.TestCase):
         # The thing being reported is the absence of events, so it cannot be carried
         # by one.
         w = _worker()
-        bus = _EventBus(_FakePool({"s1": w}))
+        bus = EventBus(_FakePool({"s1": w}))
         self.assertEqual(bus.pump_once(), 0)
         self.assertIsNotNone(w.human.unattended_since)
 
@@ -235,8 +235,8 @@ class TheReaperTests(unittest.TestCase):
     """A deferred turn has no pending card, so nothing else would protect it."""
 
     def _pool(self, worker):
-        from mimir.client.ui.ws.ws_pool import _AgentPool
-        pool = object.__new__(_AgentPool)
+        from mimir.client.ui.ws.pool.pool import AgentPool
+        pool = object.__new__(AgentPool)
         pool.active_session_id = None
         pool._workers = {"s1": worker}
         pool._last_use = {"s1": 0.0}

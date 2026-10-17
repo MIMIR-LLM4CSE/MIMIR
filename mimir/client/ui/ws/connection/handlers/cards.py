@@ -1,6 +1,6 @@
 """The cards a turn parks on, their answers, and the review of the files it wrote.
 
-A part of ``_Session`` (``ws_session``): a mixin over the connection's own state, so a
+A part of ``Connection``: a mixin over the connection's own state, so a
 handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
 types it answers.
 """
@@ -10,8 +10,8 @@ import json
 import logging
 import os
 
-from ....query_engine.deferral import KIND_CALLS, take_deferred_calls
-from ..ws_worker import _AgentWorker
+from .....query_engine.deferral import KIND_CALLS, take_deferred_calls
+from ...worker.worker import AgentWorker
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class CardHandlers:
                 logger.debug("_resend_parked_prompt: the client went away mid-send", exc_info=True)
                 return
 
-    def _worker_for_answer(self, msg: dict) -> _AgentWorker | None:
+    def _worker_for_answer(self, msg: dict) -> AgentWorker | None:
         """The agent an answered card belongs to, or None if it belongs to nobody.
 
         The most consequential routing decision here. A card says which conversation asked

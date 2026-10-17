@@ -1,6 +1,6 @@
 """The conversations of this connection: listing, opening, creating, deleting, saving.
 
-A part of ``_Session`` (``ws_session``): a mixin over the connection's own state, so a
+A part of ``Connection``: a mixin over the connection's own state, so a
 handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
 types it answers.
 """
@@ -12,14 +12,11 @@ import logging
 import os
 from datetime import datetime
 
-from .._ws_runtime import (
-    _todo_file_for_session,
-    _write_active_session,
-)
-from ....session.jobs_on_disk import is_settled
-from ....session.summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
-from .....servers._shared.state_paths import session_dir
-from ....config import paths
+from ...runtime import _todo_file_for_session, _write_active_session
+from .....session.jobs_on_disk import is_settled
+from .....session.summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
+from ......servers._shared.state_paths import session_dir
+from .....config import paths
 
 logger = logging.getLogger(__name__)
 

@@ -1,10 +1,8 @@
-"""Shared runtime foundation for the WebSocket-server modules.
+"""What the WebSocket server's parts share: the stdout router, the todo file of a
+session, the context-budget constants.
 
-Split out so ``_AgentWorker`` (``ws_worker``) and ``_Session`` (``ws_session``) can
-share the stdout router, the session-scoped todo helpers and the context-budget
-constants without a circular import. Importing it changes nothing: the router is
-installed by ``serve``, and ``--cwd`` is applied by ``ws_server.main`` before any of
-this is imported.
+Importing it changes nothing: the router is installed by ``serve``, and ``--cwd`` is
+applied by ``server.main`` before any of this is imported.
 """
 
 from __future__ import annotations

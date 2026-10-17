@@ -17,8 +17,8 @@ from unittest import mock
 from mimir.servers._shared.processes import proc_starttime
 from mimir.client.session import jobs_on_disk
 from mimir.client.session.jobs_on_disk import DetachedJob, scan_all_sessions, scan_session
-from mimir.client.ui.ws.job_watcher import JobWatcher
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.jobs import JobWatcher
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -280,7 +280,7 @@ class ScanTests(_ScanCase):
         self.assertTrue(d["run_dir"].endswith("/s1/jobs/j1"))
 
 
-class _RearmWorker(_AgentWorker):
+class _RearmWorker(AgentWorker):
     """A worker with only what the re-arm path touches."""
 
     def __init__(self, session_id: str) -> None:   # noqa: D107 - no agent, no loop

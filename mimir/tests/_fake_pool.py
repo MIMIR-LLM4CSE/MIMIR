@@ -1,6 +1,6 @@
-"""A one-worker stand-in for ``_AgentPool``, for tests that build a bare ``_Session``.
+"""A one-worker stand-in for ``AgentPool``, for tests that build a bare ``Connection``.
 
-``_Session.worker`` is a property: it resolves the agent of the conversation on screen
+``Connection.worker`` is a property: it resolves the agent of the conversation on screen
 through the pool, there being one agent per conversation. A test that only needs "a
 worker" cannot assign to that property, and should not have to care how the lookup works.
 
@@ -21,9 +21,9 @@ from typing import Any, Iterator
 from mimir.client.core.settings import read_setting
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
-from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.wake_router import WakeRouter
-from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.client.ui.ws.pool.bus import EventBus
+from mimir.client.ui.ws.pool.wakes import WakeRouter
+from mimir.client.ui.ws.pool.pool import AgentPool
 
 
 class FakePool:
@@ -57,13 +57,13 @@ class FakePool:
         self.conversations = Conversations(store)
         self.store = store
         self.wakes = WakeRouter(self)
-        self.bus = _EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,
+        self.bus = EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,
                              steered=self.wakes.steered)
 
     # The pool's own: how a conversation is written is not what a stand-in may vary.
-    commit_turn = _AgentPool.commit_turn
-    submit_turn = _AgentPool.submit_turn
-    save_conversation = _AgentPool.save_conversation
+    commit_turn = AgentPool.commit_turn
+    submit_turn = AgentPool.submit_turn
+    save_conversation = AgentPool.save_conversation
 
     def _for(self, session_id: str | None) -> Any:
         """The agent of *session_id*: the per-session table when there is one."""
@@ -71,7 +71,7 @@ class FakePool:
             return self.workers.get(session_id)
         return self.worker
 
-    # ── what _Session reads ───────────────────────────────────────────────────
+    # ── what Connection reads ───────────────────────────────────────────────────
 
     def get(self, session_id: str | None) -> Any:
         return self._for(session_id)

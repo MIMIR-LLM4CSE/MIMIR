@@ -1,10 +1,9 @@
 """The background agent worker for the WebSocket server.
 
-``_AgentWorker`` runs MimirAgent in a dedicated thread with its own asyncio event
+``AgentWorker`` runs MimirAgent in a dedicated thread with its own asyncio event
 loop so blocking approval prompts never freeze the WebSocket event loop. It talks
-to the WS layer (``_Session`` in ``ws_session``) exclusively through thread-safe
-queues. Split out of ``ws_server.py``; see that module's docstring for the wire
-protocol.
+to the connections exclusively through thread-safe queues. The wire protocol is
+documented in ``server.main``.
 """
 
 from __future__ import annotations
@@ -19,24 +18,24 @@ import queue as _queue
 import threading
 from typing import Any, Callable
 
-from ....servers._shared.embed import verify_ssl
-from ....servers._shared.responses import err
-from ...agent_core import MimirAgent, build_base_system_content
-from ...config import TEMPERATURE_BACKENDS
-from ...config.models import thinking_can_disable, thinking_profile
-from ...config.preferences import load_temperature
-from ...context.capabilities import panel_sections as _declared
-from ...context.todo import load_todo_items
-from ...core.settings import read_setting
-from ...extensions import all_servers
-from ...protocol.tool_result import normalize_tool_content
-from ...query_engine import token_calibration
-from ...query_engine.backends.factory import get_backend
-from ...tool_execution.direct import NO_AGENT, call_tool_directly
+from .....servers._shared.embed import verify_ssl
+from .....servers._shared.responses import err
+from ....agent_core import MimirAgent, build_base_system_content
+from ....config import TEMPERATURE_BACKENDS
+from ....config.models import thinking_can_disable, thinking_profile
+from ....config.preferences import load_temperature
+from ....context.capabilities import panel_sections as _declared
+from ....context.todo import load_todo_items
+from ....core.settings import read_setting
+from ....extensions import all_servers
+from ....protocol.tool_result import normalize_tool_content
+from ....query_engine import token_calibration
+from ....query_engine.backends.factory import get_backend
+from ....tool_execution.direct import NO_AGENT, call_tool_directly
 
 # Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
-from ._ws_runtime import (
+from ..runtime import (
     _ORIGINAL_STDOUT,
     _ROUTER,
     _todo_file_for_session,
@@ -44,8 +43,8 @@ from ._ws_runtime import (
 )
 
 # After the runtime: it reads the workspace root that the bootstrap above pins.
-from .human_bridge import HumanBridge
-from .job_watcher import JobWatcher
+from .human import HumanBridge
+from .jobs import JobWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -76,18 +75,18 @@ class _Outbox(_queue.Queue):
                 pass   # the loop is closing; there is no pump left to wake
 
 
-class _AgentWorker:
+class AgentWorker:
     """Runs MimirAgent in a dedicated background thread with its own event loop.
 
     Thread-safe queues carry events to the WS layer and approval responses back.
     """
 
     @classmethod
-    def detached(cls, model: str) -> "_AgentWorker":
+    def detached(cls, model: str) -> "AgentWorker":
         """A worker that never builds an agent: no thread, no servers, no LLM wait.
 
         The stand-in for "this conversation has no agent yet", which is the ordinary state
-        until its first query. A real ``_AgentWorker`` rather than a parallel null class, on
+        until its first query. A real ``AgentWorker`` rather than a parallel null class, on
         purpose: every getter here answers for ``_agent is None`` (``setting("context_mode")`` →
         the default its caller passes, ``get_temperature_state`` → the stored preference,
         ``toggles_state`` → empty) and every setter is a no-op in that state. A separate
@@ -136,7 +135,7 @@ class _AgentWorker:
         # where everything session-scoped falls back to the active-session pointer.
         self.session_id: str | None = session_id
         # This conversation's title, for cards raised while the user is reading another.
-        # Pushed in by _Session, which is the side that knows what the session is called.
+        # Pushed in by Connection, which is the side that knows what the session is called.
         self.session_title: str = ""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._agent: Any = None

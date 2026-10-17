@@ -19,7 +19,7 @@ import difflib
 import os
 from typing import Callable
 
-from ...context.capabilities import ToolCaps, path_args, preview_spec
+from ....context.capabilities import ToolCaps, path_args, preview_spec
 
 
 def _first(arguments: dict, names: tuple[str, ...]) -> str:

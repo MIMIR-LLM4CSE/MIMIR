@@ -696,7 +696,7 @@ def _sub_session_id() -> str:
 #   * ONE AT A TIME. Several children can be working at once; several cards at once is
 #     a pile nobody can answer in order. They queue on this lock, so a card is shown,
 #     answered, and only then is the next one raised. The client enforces the same rule
-#     across every source (ws_worker._show_next) — this lock keeps a fan-out from
+#     across every source (the WebSocket worker's _show_next) — this lock keeps a fan-out from
 #     filling that queue in the first place.
 #   * WHO IS ASKING. Every card carries its sub-agent and its task as `origin`,
 #     because "allow this command?" from an unnamed process is a question the user
@@ -1348,7 +1348,7 @@ def _settle_job(job_key: str, state: str, result: dict | None) -> None:
 
 
 # What a card's own word means to a watcher, whose vocabulary is running/done/
-# crashed/unknown and nothing else (ws_worker._watch_job: any other word is read as
+# crashed/unknown and nothing else (the WebSocket job watcher: any other word is read as
 # "still going" and polled for ever). "abandoned" maps to crashed because that is what
 # it is from here — a run that ended without delivering; the card's own word travels
 # beside it as `outcome`, so the report never loses what actually happened.

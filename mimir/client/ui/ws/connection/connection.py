@@ -1,10 +1,10 @@
-"""The per-connection WebSocket session for the WS server.
+"""One WebSocket connection.
 
-``_Session`` owns one WebSocket connection: which conversation it shows, the drain
+``Connection`` owns one WebSocket connection: which conversation it shows, the drain
 loop that forwards the stream to the client, and the inbound-message dispatch table.
 The conversation itself is the pool's (``session.conversation``): this view writes
-what the user does to it, and renders what the agents did. Split out of
-``ws_server.py``; see that module's docstring for the wire protocol.
+what the user does to it, and renders what the agents did. The wire protocol is
+documented in ``server.main``.
 """
 
 from __future__ import annotations
@@ -14,16 +14,16 @@ import json
 import logging
 from typing import Any
 
-from .event_router import EventRouter
-from ...session.journal import read_since
-from .ws_pool import _AgentPool
-from .ws_worker import _AgentWorker
+from .router import EventRouter
+from ....session.journal import read_since
+from ..pool.pool import AgentPool
+from ..worker.worker import AgentWorker
 from .handlers.cards import CardHandlers
 from .handlers.conversations import ConversationHandlers
 from .handlers.detach import DetachHandlers
 from .handlers.panel import PanelHandlers
 from .handlers.turns import TurnHandlers
-from ...session.conversation import Conversation
+from ....session.conversation import Conversation
 
 # The websocket connection handle passed in by the server (websockets library type
 # varies by version); kept as an untyped alias so the annotation resolves.
@@ -51,11 +51,11 @@ _REPLAY_CHUNK = 500
 # webview's reducer is how a twelve-hour absence wedges the panel.
 _REPLAY_MAX_EVENTS = 5000
 
-class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
+class Connection(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
                PanelHandlers):
     """One WebSocket connection — owns a chat history and talks to the worker."""
 
-    def __init__(self, ws: "_WS", pool: "_AgentPool") -> None:
+    def __init__(self, ws: "_WS", pool: "AgentPool") -> None:
         self.ws = ws
         self.pool = pool
         # The conversation on screen — the pool's own object for it, shared with
@@ -102,7 +102,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
         self._panel_again: dict | None = None
 
     @property
-    def worker(self) -> _AgentWorker:
+    def worker(self) -> AgentWorker:
         """The agent of the conversation on screen, or None if it has none yet.
 
         A property, not a field: there is one worker per conversation, built on that
@@ -238,7 +238,7 @@ class _Session(ConversationHandlers, TurnHandlers, CardHandlers, DetachHandlers,
         """
         await EventRouter(self).run()
 
-    # Maps an inbound WS message "type" to the _Session handler method that serves it.
+    # Maps an inbound WS message "type" to the Connection handler method that serves it.
     # Replaces the former 13-branch ``if mtype == …`` chain in _handle.
 
     # Inbound message type -> the method that serves it, from every handler mixin.

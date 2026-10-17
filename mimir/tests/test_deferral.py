@@ -33,9 +33,9 @@ from mimir.client.query_engine.deferral import (
     end_deferred_calls,
     take_deferred_calls,
 )
-from mimir.client.ui.ws.ws_session import _Session
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.connection.connection import Connection
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests._fake_backend import ScriptedBackend
 from mimir.tests.test_agent_loop import RunAgentQueryNonInteractiveTests, _tool_call
 import mimir.client.query_engine.loop_base as loop_base_module
@@ -46,8 +46,8 @@ from mimir.client.core.turn_state import TurnState
 _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}
 
 
-def _worker() -> _AgentWorker:
-    w = object.__new__(_AgentWorker)
+def _worker() -> AgentWorker:
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w.out_q = _queue.Queue()
     w._current_task = object()
@@ -249,7 +249,7 @@ class _FakeWorker:
         self.calls.append(("resolve", choice, req_id))
 
 
-def _session(worker) -> _Session:
+def _session(worker) -> Connection:
     sess = bare_session(FakePool(worker))
     sess._save = lambda: None
     return sess

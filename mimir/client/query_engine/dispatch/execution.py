@@ -221,7 +221,7 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
                 # `keepends=True` lines already carry their newline, so the default
                 # lineterm plus `"".join` is the pairing that yields one newline per
                 # line. With `lineterm=""` and a `"\n".join` every line came out
-                # doubled. Same pairing as the batch-status diff in ws_worker.
+                # doubled. Same pairing as the batch-status diff in the WebSocket worker.
                 diff_lines = list(difflib.unified_diff(
                     before_lines, after_lines,
                     fromfile=f"a/{rel}", tofile=f"b/{rel}",

@@ -22,11 +22,11 @@ import unittest
 
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
-from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.ws_session import _Session
-from mimir.client.ui.ws.human_bridge import HumanBridge
-from mimir.client.ui.ws.job_watcher import JobWatcher
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.pool.bus import EventBus
+from mimir.client.ui.ws.connection.connection import Connection
+from mimir.client.ui.ws.worker.human import HumanBridge
+from mimir.client.ui.ws.worker.jobs import JobWatcher
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests._session import bare_session
 from mimir.tests.support.state import pin_state_dir
 
@@ -50,8 +50,8 @@ class _FakeWS:
         self.sent.append(json.loads(payload))
 
 
-def _worker(session_id: str, title: str = "") -> _AgentWorker:
-    w = object.__new__(_AgentWorker)
+def _worker(session_id: str, title: str = "") -> AgentWorker:
+    w = object.__new__(AgentWorker)
     w.human = HumanBridge(w)
     w.jobs = JobWatcher(w)
     w.out_q = _queue.Queue()
@@ -79,7 +79,7 @@ class _ManyPool:
         self.cap = 3
         # The real bus over this stand-in: what carries a worker's output to a session
         # is the seam under test, so faking it would test the call and not the seam.
-        self.bus = _EventBus(self)
+        self.bus = EventBus(self)
         self._tmp = tempfile.TemporaryDirectory()
         self.conversations = Conversations(SessionStore(self._tmp.name))
 
@@ -107,7 +107,7 @@ class _ManyPool:
         self.active_session_id = session_id
 
 
-def _session(pool: _ManyPool, active: str) -> _Session:
+def _session(pool: _ManyPool, active: str) -> Connection:
     sess = bare_session(pool, active=active, ws=_FakeWS())
     pool.set_active(active)
     return sess
@@ -120,7 +120,7 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
         self.pool = _ManyPool({"s1": self.a, "s2": self.b})
         self.sess = _session(self.pool, active="s1")
 
-    def _park(self, worker: _AgentWorker, card_id: str) -> dict:
+    def _park(self, worker: AgentWorker, card_id: str) -> dict:
         worker._query_session_id = worker.session_id
         worker.human._emit_prompt({"type": "approval", "id": card_id, "tool": "bash_run"})
         return worker.out_q.get_nowait()
@@ -245,7 +245,7 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(tmp.cleanup)
         pin_state_dir(self, tmp.name)
 
-    def _session(self) -> _Session:
+    def _session(self) -> Connection:
         self.a = _worker("s1")
         pool = _ManyPool({"s1": self.a})
         sess = _session(pool, active="s2")

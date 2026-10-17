@@ -22,12 +22,12 @@ from mimir.client.config import THINKING_DEPTH_LABELS
 from mimir.client.core.settings import read_setting
 from mimir.client.session.commands import CommandHost, CommandResult
 from mimir.client.ui.cli.chat_commands import CLI_COMMANDS
-from mimir.client.ui.ws.ws_commands import WS_COMMANDS
+from mimir.client.ui.ws.connection.commands import WS_COMMANDS
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SLASH_UTILS = os.path.join(
     _ROOT, "vscode-extension", "webview", "src", "components", "slashUtils.ts")
-_WS_SESSION = os.path.join(_ROOT, "client", "ui", "ws", "handlers", "panel.py")
+_WS_SESSION = os.path.join(_ROOT, "client", "ui", "ws", "connection", "handlers", "panel.py")
 
 
 def _advertised() -> list[str]:

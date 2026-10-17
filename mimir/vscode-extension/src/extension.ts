@@ -1360,7 +1360,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     const quotedLog = `'${serverLog.replace(/'/g, "'\\''")}'`;
     const spawnCmd =
       `mkdir -p -- "$(dirname -- ${quotedLog})" && ` +
-      `exec ${pythonPath} -m mimir.client.ui.ws.ws_server --port 0` +
+      `exec ${pythonPath} -m mimir.client.ui.ws.server.main --port 0` +
       `${model ? ` --model ${model}` : ""}${backendArgs} >> ${quotedLog} 2>&1`;
     // Log the command only — the Claude API key is injected via env below and is
     // deliberately kept out of this string so it never lands in the output channel.
@@ -1850,7 +1850,7 @@ function startServer(context: vscode.ExtensionContext): void {
   // point `mimir.wsUrl` at, and an OS-assigned port could not be written down in a
   // setting. If 8765 is taken, the bind error shows up in the output channel.
   // `exec` so the process we track — and later kill — is the server, not the shell.
-  const spawnCmd = `exec ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765`;
+  const spawnCmd = `exec ${pythonPath} -m mimir.client.ui.ws.server.main --port 8765`;
 
   // Endpoints that do not report max_model_len in /v1/models would otherwise leave
   // the client on its static 200K default; honor the same override the Connect path

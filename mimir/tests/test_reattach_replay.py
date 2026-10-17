@@ -17,7 +17,7 @@ import os
 
 from mimir.servers._shared.processes import proc_starttime
 from mimir.client.session import jobs_on_disk
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests._fake_pool import FakePool
 from mimir.tests._session import bare_session
 from mimir.tests.support.state import pin_state_dir
@@ -31,8 +31,8 @@ class _FakeWS:
         self.sent.append(json.loads(payload))
 
 
-def _bare_worker(session_id: str = "s1") -> _AgentWorker:
-    w = object.__new__(_AgentWorker)
+def _bare_worker(session_id: str = "s1") -> AgentWorker:
+    w = object.__new__(AgentWorker)
     w.out_q = _queue.Queue()
     w.session_id = session_id
     w._query_session_id = None
@@ -144,7 +144,7 @@ class NoDuplicateNoGapTests(_ReplayCase):
 
 class FramingTests(_ReplayCase):
     async def test_a_long_run_is_sent_in_several_frames(self):
-        with mock.patch("mimir.client.ui.ws.ws_session._REPLAY_CHUNK", 2):
+        with mock.patch("mimir.client.ui.ws.connection.connection._REPLAY_CHUNK", 2):
             self._produce("a", "b", "c", "d", "e")
             self._attach()
             await self.sess._send_replay()
@@ -157,7 +157,7 @@ class FramingTests(_ReplayCase):
     async def test_a_capped_replay_keeps_the_end_and_says_it_truncated(self):
         # What a returning user needs is the end of the run; an unbounded replay into
         # the webview's reducer is how a twelve-hour absence wedges the panel.
-        with mock.patch("mimir.client.ui.ws.ws_session._REPLAY_MAX_EVENTS", 3):
+        with mock.patch("mimir.client.ui.ws.connection.connection._REPLAY_MAX_EVENTS", 3):
             self._produce("a", "b", "c", "d", "e")
             self._attach()
             await self.sess._send_replay()

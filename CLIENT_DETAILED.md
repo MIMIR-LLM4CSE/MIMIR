@@ -219,7 +219,7 @@ The contracts the layers above agree on.
 | `human.py` | the two `HumanIO`s that need nothing but the agent: `TerminalHuman` (stdin; EOF answers no) and `Unattended` (the benchmark runner) |
 
 Each front-end puts its own `HumanIO` on the agent (`agent.human`): the WebSocket's is
-`ui/ws/human_bridge.HumanBridge`, the sub-agent server's relays to the delegating session.
+`ui/ws/worker/human.HumanBridge`, the sub-agent server's relays to the delegating session.
 What a front-end lends a turn besides — `poll_steer`, `register_background_job`,
 `watched_background_jobs` — are declared attributes of the agent, `None` where it lends
 nothing.
@@ -731,7 +731,7 @@ not in another project.
 ### The scientific-computing panel
 
 `context.capabilities.panel_sections()` lists the tools that declared `PANEL_REPORT` with
-a `panel` spec (`{section, order, args}`), and `ws_worker.panel_sections()` calls each one
+a `panel` spec (`{section, order, args}`), and `AgentWorker.panel_sections()` calls each one
 straight on its owning session — read-only, no observations, like the background watcher's
 probes. Each server answers with render-ready content (`{title, lines, groups?, detail}`):
 the panel renders what it is given and interprets nothing, which is what lets a plugin
@@ -743,7 +743,7 @@ one. Recursive, and passed through unread exactly as `lines` are. A section is d
 when it has none of the three, so a facility this machine does not have grows no heading;
 one that answers with a tree and nothing flat is kept.
 
-`panel_runs.attach_runs()` then hangs the runs the watcher is holding on the machines they
+`connection/panel_runs.attach_runs()` then hangs the runs the watcher is holding on the machines they
 are running on, which is the one place both halves exist: what a cluster is made of came
 from a server, and what is running on it is this client's own watcher state that no MCP
 server can see. A run lands on its host's row and on the row of the node kind whose nodes
@@ -1132,18 +1132,19 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 
 | Module | Holds |
 |---|---|
-| `ws_server.py` | the entry point: the command line, `--cwd`, then `serving` |
-| `serving.py` | `serve`: model resolution, the one-server-per-workspace lock, bind, the shutdown path |
-| `ws_session.py` | `_Session`, one connection: the handshake, the dispatch, the replay. Its handlers are mixins in `handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel` — each declaring the message types it serves |
-| `event_router.py` | `EventRouter`: the connection's share of the stream, sent to its client, one handler per event type |
-| `event_bus.py` | the pump: drains every worker, journals, hands answers and finished runs to the pool, fans out to subscriptions |
-| `ws_pool.py` | `_AgentPool`: one worker per conversation, built on demand, released when idle; owns the `Conversations` and commits every turn |
-| `wake_router.py` | `WakeRouter`: finished runs, bulletins, and unread steering, each to a turn of its conversation |
-| `ws_worker.py` | `_AgentWorker`: the agent's thread and loop, the query loop, the outbox that wakes the pump |
-| `human_bridge.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
-| `job_watcher.py` | `JobWatcher`: a conversation's detached runs and the check-in cycle |
-| `ws_commands.py` | the socket's side of the slash commands: `WsCommandHost`, `/cancel`, `/diag` |
-| `panel_runs.py`, `server_registry.py`, `detach.py`, `file_preview.py`, `_ws_runtime.py` | runs on disk and their wakes, the panel, the registry of live servers, detachment, descriptions, the journal, diff previews, the stdout router |
+| `server/main.py` | the entry point: the command line, `--cwd`, then `serving` |
+| `server/serving.py` | `serve`: model resolution, bind, the shutdown path |
+| `server/registry.py`, `server/detach.py` | the registry of live servers other windows find this one by; detaching from the terminal |
+| `connection/connection.py` | `Connection`, one connection: the handshake, the dispatch, the replay. Its handlers are mixins in `connection/handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel` |
+| `connection/router.py` | `EventRouter`: the connection's share of the stream, sent to its client, one handler per event type |
+| `connection/commands.py`, `connection/panel_runs.py` | the socket's side of the slash commands (`WsCommandHost`, `/cancel`, `/diag`); the runs the panel shows |
+| `pool/bus.py` | the pump: drains every worker, journals, hands answers and finished runs to the pool, fans out to subscriptions |
+| `pool/pool.py` | `AgentPool`: one worker per conversation, built on demand, released when idle; owns the `Conversations` and commits every turn |
+| `pool/wakes.py` | `WakeRouter`: finished runs, bulletins, and unread steering, each to a turn of its conversation |
+| `worker/worker.py` | `AgentWorker`: the agent's thread and loop, the query loop, the outbox that wakes the pump |
+| `worker/human.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
+| `worker/jobs.py` | `JobWatcher`: a conversation's detached runs and the check-in cycle |
+| `worker/file_preview.py`, `runtime.py` | the diff a write would make; what the parts share (stdout router, todo file, context budget) |
 
 What belongs here are the invariants that are not obvious from the protocol:
 
@@ -1308,7 +1309,7 @@ lived in the connection's drain loop, which is created per connection and cancel
 socket goes. A disconnected run wrote nothing, grew `out_q` for the length of the
 disconnection, and lost its answer if it finished while away.
 
-So the WebSocket is no longer the bus. `_EventBus` (`event_bus.py`), owned by the pool and
+So the WebSocket is no longer the bus. `EventBus` (`pool/bus.py`), owned by the pool and
 started by `serve()`, is the one pump for the process: it drains every worker through
 `drain()` — already the single choke point for everything the engine emits — writes each
 event to that session's `transcript.jsonl` under a monotonic `seq`, hands each answer and
@@ -1357,7 +1358,7 @@ writers — the connection showing it held its history in memory, the pool wrote
 copy when nobody was connected — and a claim on every answer decided which acted, with a
 grace window of first refusal for the socket, a reload when the pool won, and a revision
 check on save for when the arbitration failed. There is one copy now (`session.conversation`):
-the pump hands every `answer` to `_AgentPool.commit_turn` before any socket sees it,
+the pump hands every `answer` to `AgentPool.commit_turn` before any socket sees it,
 attached or not, and `Conversation.commit_answer` writes it. A connection renders what is
 already written; what the pool did travels to it in the event's extras (`_committed`: the
 title, the interaction now awaited, the steering given a turn).
@@ -1391,7 +1392,7 @@ neither started a turn, the bulletin it held back — dropped if its runs have s
 finished. What the loop left unread is on the answer (`_unconsumed_steer`, the worker's own
 record); a run steered in and not named there was read, and is settled.
 
-The subscription is still released on every way a view ends (everything in `_Session.run`
+The subscription is still released on every way a view ends (everything in `Connection.run`
 from the subscription onward is under one `finally`): it is what tells the pool a client is
 attached, which keeps a parked card waiting rather than set aside.
 
@@ -1597,7 +1598,7 @@ it exists, its start time matches the one recorded, and it is not a zombie.
 
 **Being findable at all.** A spawned server's port is learned by regexing its stdout, which
 works exactly as long as the extension host is the parent holding that pipe. One meant to
-outlive that window has to leave its address on disk, so `server_registry.py` writes
+outlive that window has to leave its address on disk, so `server/registry.py` writes
 `<STATE_DIR>/server.json` once the socket is actually bound — with `--port 0` the argument
 was a placeholder and only the bound socket knows the answer. The choice of directory *is*
 "one server per workspace": `STATE_DIR` is already `<state home>/<basename>-<sha1(realpath)[:8]>`,
@@ -1719,7 +1720,7 @@ is no third: a server a window has merely attached to is one it has taken back, 
 to sit there was the fragile case — nobody's to kill, still writing to a pipe whose reader had
 gone. It kept working, unobserved,
 and nobody had asked it to. So a server no conversation claims stops once its last client has
-been gone for the grace, whoever started it — `_AgentPool._nobody_asked_to_keep_it`, checked
+been gone for the grace, whoever started it — `AgentPool._nobody_asked_to_keep_it`, checked
 ahead of the idle predicate because a server nobody wants has no reason to live whatever it is
 in the middle of.
 
@@ -1800,7 +1801,7 @@ act*.)
 **When a detached server stops.** The unclaimed case is settled above and never reaches
 here. What remains is a server conversations *did* ask to keep: it is no longer killed by
 closing the window, so it needs its own answer to "am I still needed", and
-`_AgentPool.idle_report()` is that answer in one interrogable place — read by the idle shutdown and by anyone asking whether this window
+`AgentPool.idle_report()` is that answer in one interrogable place — read by the idle shutdown and by anyone asking whether this window
 has anything worth leaving running.
 
 The criterion is **positive**. "Not busy" is not "has finished": a worker is also not busy
@@ -1857,7 +1858,7 @@ the replay.
 session, which is why leaving a conversation had to cancel its turn — or defer it when it was
 parked on a person. That was never a policy: a single worker cannot stream two conversations
 anywhere the user can see, and a card it was parked on would have been answered from the next
-conversation's UI. `_AgentPool` gives each conversation its own agent, so leaving one leaves
+conversation's UI. `AgentPool` gives each conversation its own agent, so leaving one leaves
 its turn running; its output goes to its own transcript — written by the pump, so it is
 written whether or not anyone is attached — which is what makes coming back show the whole
 turn rather than only the answer that ended it.
@@ -1890,7 +1891,7 @@ already freed.
 anchors its anyio cancel scope to the entering task: exiting the exit stack from any other
 task raises and leaves it half-unwound — the streams closed, the subprocess alive — so
 nothing is reaped and a turn still running on that agent fails its next tool call on a dead
-stream. `_AgentWorker` therefore holds setup, the query loop and the close in one task
+stream. `AgentWorker` therefore holds setup, the query loop and the close in one task
 (`_live`), and the close runs in that loop's `finally`, which is after any turn. `aclose`
 only sends the sentinel and waits, cancelling a turn in flight first so shutdown does not
 cost the rest of a turn per conversation. Eviction asks `has_work_pending` rather than
@@ -1998,4 +1999,4 @@ installed.
 
 Documented in its own reference: [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). On the
 Python side the emission paths are `emit()` / `event_sink.py` and the drain loop in
-`ws_server.py`.
+`server/main.py`.

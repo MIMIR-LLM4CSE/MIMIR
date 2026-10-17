@@ -39,7 +39,7 @@ User types query
 webview (React)  ──postMessage({type:"ws_send", payload:JSON})──▶  extension host (extension.ts)
                                                                          │
                                                                          ▼
-                                                                   Python ws_server.py
+                                                                   Python server/main.py
                                                                          │  (WebSocket)
                                                                          ▼
                                                                    MimirAgent core
@@ -126,7 +126,7 @@ control's rungs. The rungs are the served family's own (a token ladder for
 sent back is always a `THINKING_DEPTH` index, so the rest of the protocol is
 unchanged.
 
-There are two emission paths into the WS layer. Messages originated by `ws_server.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line, preserving the original behaviour. The legacy `sys.stdout` router is retained only as a defensive catch-all for stray prints.
+There are two emission paths into the WS layer. Messages originated by `server/main.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line, preserving the original behaviour. The legacy `sys.stdout` router is retained only as a defensive catch-all for stray prints.
 
 ---
 
@@ -360,7 +360,7 @@ below it.
      break;
    ```
 
-4. **Emit it from Python** (`ws_server.py` drain loop or `_handle()`):
+4. **Emit it from Python** (`server/main.py` drain loop or `_handle()`):
    ```python
    await self.ws.send(json.dumps({"type": "my_custom", "value": 42, "label": "hello"}))
    ```
@@ -393,10 +393,10 @@ below it.
    vscodePostMessage({ type: "ws_send", payload: JSON.stringify({ type: "my_action", param: "foo" }) });
    ```
 
-4. **Handle it in Python** (`ws_server.py`): `_Session._handle()` is a dispatch table — add a handler
+4. **Handle it in Python** (`server/main.py`): `Connection._handle()` is a dispatch table — add a handler
    method and register it in the `_MSG_HANDLERS` map (no `if/elif` chain to edit):
    ```python
-   # in _Session._MSG_HANDLERS:
+   # in Connection._MSG_HANDLERS:
    "my_action": "_handle_my_action",
 
    async def _handle_my_action(self, msg: dict) -> None:
@@ -441,7 +441,7 @@ holds none until its first query, and without this the drawer was empty until so
 had been asked of the model. The build is never awaited — the report goes out saying
 `agent_ready: false`, the drawer says so, and the worker's own `ready` is the cue to ask
 again. Meanwhile that report carries the Cluster section as the workspace registry has it
-(`panel_runs.recorded_hosts_sections`, from `slurm_hosts` in the state directory): names
+(`connection/panel_runs.recorded_hosts_sections`, from `slurm_hosts` in the state directory): names
 only, with the server's own ids, so the rows a reader opens survive the swap.
 
 The sections are asked all at once rather than in turn: they are owned by different
@@ -463,7 +463,7 @@ the answer survives a refresh; native `<details>` would lose it, since the drawe
 re-renders on every `panel_report`.
 
 **Badges are the runs, on the machines they are running on.** The client joins them in
-`panel_runs.attach_runs` before the message goes out, because that is the one place both
+`connection/panel_runs.attach_runs` before the message goes out, because that is the one place both
 halves exist. A badge names the node, and opens as a row *inside* the tree showing the
 job id or pid, the command, its state and phase, how long it has been going, and which
 agent launched it — a tooltip would be unreachable by keyboard and too small for a
@@ -641,7 +641,7 @@ into a `kind:"tools"` message.
 
 A call that blocks the turn for twenty minutes cannot report on itself: it does not
 answer until it is over. Two events fill the gap, and they are the two halves of one
-run's life. While the call blocks, `ws_session` polls the run channel once a second and
+run's life. While the call blocks, the connection polls the run channel once a second and
 sends `tool_progress {id, phase, percent}`. Once the run is detached, the watcher's own
 status poll is the only thing still asking, and it sends `job_progress {job_key, phase,
 percent}`. Neither is written to the transcript — they describe a moment, and a watcher
@@ -779,9 +779,9 @@ In any component that receives `send` as a prop:
 
 ### Example 6 — Persist a new piece of UI state across sessions
 
-1. Add the field to the `session_loaded` Python payload in `ws_server.py`.
+1. Add the field to the `session_loaded` Python payload in `server/main.py`.
 2. Read it in the `"session_loaded"` case in `App.tsx` and call the appropriate `setState`.
-3. Save it back in `_autosave_session()` in `ws_server.py`.
+3. Save it back in `_autosave_session()` in `server/main.py`.
 
 ---
 

@@ -198,7 +198,7 @@ CONFIRM_GATE_ARGS = {
 }
 
 # preview kind: the generic diff-shape a file-mutating tool declares so the WS UI
-# reconstructs a pre-write diff (ui/ws/file_preview.py) and auto-approves the call
+# reconstructs a pre-write diff (ui/ws/worker/file_preview.py) and auto-approves the call
 # without naming tools. A tool with no preview spec gets the normal approval flow.
 PREVIEW_KIND_BY_TOOL = {
     "write_file": "content",

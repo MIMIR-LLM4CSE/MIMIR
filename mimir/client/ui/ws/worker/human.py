@@ -20,20 +20,20 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ... import human_pause
-from ...context.capabilities import (
+from .... import human_pause
+from ....context.capabilities import (
     IRREVERSIBLE,
     kind_for,
     label_for,
     preview_spec,
     reversibility_of,
 )
-from ...query_engine.deferral import CURRENT_CALL_ID
-from ...context.tool_display import shorten_display_args
+from ....query_engine.deferral import CURRENT_CALL_ID
+from ....context.tool_display import shorten_display_args
 from .file_preview import build_preview_diffs
 
 if TYPE_CHECKING:
-    from .ws_worker import _AgentWorker
+    from .worker import AgentWorker
 
 # What a bounded prompt wait returns when its wall passes with nothing answered. A
 # unique instance compared with ``is``, never read as a response: ``None`` already
@@ -78,7 +78,7 @@ def _detach_grace() -> float:
 class HumanBridge:
     """Every card one worker's agent raises, and the answers that settle them."""
 
-    def __init__(self, worker: "_AgentWorker") -> None:
+    def __init__(self, worker: "AgentWorker") -> None:
         self.worker = worker
         # Cards waiting on the user, oldest first, each holding the slot the thread
         # that raised it blocks on. One is shown at a time and each is answered by its
@@ -170,7 +170,7 @@ class HumanBridge:
         answer nobody can give. This agent's query loop is serial, so every later query of
         *this conversation* queues behind that wait and it reads as hung, with nothing on
         screen to explain it. Kept here, the card goes back in front of whoever reconnects
-        (``_Session._resend_parked_prompt``).
+        (``Connection._resend_parked_prompt``).
 
         Cards queue rather than overwrite one another: one card on screen at a time, in
         the order they were raised, each answered by its own id (:meth:`_deliver`). A
@@ -237,7 +237,7 @@ class HumanBridge:
         Matched by id — which the front-end has always sent back and this had always
         thrown away. An answer put on a queue shared by kind settles whatever prompt is
         listening, which with two cards in flight is not necessarily the one the user
-        was reading. ``_Session._answer_deferred`` already refuses a stale answer on
+        was reading. ``Connection._answer_deferred`` already refuses a stale answer on
         exactly this reasoning; this is the same rule for a live one.
 
         An answer carrying no id at all goes to the card on screen of that kind — the

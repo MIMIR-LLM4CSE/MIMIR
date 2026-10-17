@@ -24,6 +24,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The client is reorganised** (`mimir/client/`): settings, commands and
   conversations each have one home shared by both front-ends, and the WebSocket server
   no longer polls — an idle window costs nothing. See [ARCHITECTURE.md](ARCHITECTURE.md).
+- **The WebSocket server module moved.** Launching it by hand is now
+  `python -m mimir.client.ui.ws.server.main` (it was `…ui.ws.ws_server`); the
+  `mimir-server` command and the VS Code extension are unchanged for the user.
 - **Extension packs belong to their workspace.** The policies, nudges and post-tool
   hooks of `.mimir/plugins/` apply to the agents of that workspace only, instead of to
   every agent of the process. A pack registered from code (an embedding application)
