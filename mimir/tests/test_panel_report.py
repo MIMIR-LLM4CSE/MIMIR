@@ -265,7 +265,7 @@ def test_a_profile_landing_shows_without_a_refresh(tmp_path):
     host_dir.mkdir()
 
     with mock.patch.object(hpc, "slurm_hosts", return_value=[""]), \
-         mock.patch.object(hpc, "_profile_host_dir", return_value=str(host_dir)), \
+         mock.patch.object(hpc, "profile_host_dir", return_value=str(host_dir)), \
          mock.patch.object(hpc, "_queue_line", return_value=None), \
          mock.patch.object(hpc, "_partition_lines", return_value=[]):
         with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "before"}]):
@@ -390,7 +390,7 @@ def _tree(hosts, digests, profiles=None):
     hpc._PANEL_CACHE.clear()
     with mock.patch.object(hpc, "slurm_hosts", return_value=hosts), \
          mock.patch.object(hpc, "_cluster_digest", side_effect=lambda h: digests[h]), \
-         mock.patch.object(hpc, "_read_node_profile",
+         mock.patch.object(hpc, "read_node_profile",
                            side_effect=lambda node, host: (profiles or {}).get(node)):
         return hpc._host_tree()
 
@@ -425,7 +425,7 @@ def test_the_schedulers_are_all_reached_at_once():
 
     with mock.patch.object(hpc, "slurm_hosts", return_value=hosts), \
          mock.patch.object(hpc, "_cluster_digest", side_effect=_slow), \
-         mock.patch.object(hpc, "_read_node_profile", return_value=None):
+         mock.patch.object(hpc, "read_node_profile", return_value=None):
         tree = hpc._host_tree()
     assert [g["label"] for g in tree] == hosts
 
@@ -648,7 +648,7 @@ def test_a_host_without_a_scheduler_reports_no_cluster_at_all():
     # its own question — a workspace can have registered a cluster over ssh while the
     # machine the panel runs on has no Slurm at all — so it is emptied explicitly
     # rather than left to whatever this test host happens to have installed.
-    with mock.patch.object(hpc, "_run_bash",
+    with mock.patch.object(hpc.cli, "run_bash",
                            return_value={"status": "error", "error": "no sinfo here"}), \
          mock.patch.object(hpc, "slurm_hosts", return_value=[]):
         out = _report(hpc)
@@ -672,7 +672,7 @@ def test_the_queue_and_the_room_are_what_the_cluster_section_says():
         return {"status": "ok", "stdout": "gpu|up|1-00|4|idle|32|64000\n"
                                           "gpu|up|1-00|6|alloc|32|64000\n"}
 
-    with mock.patch.object(hpc, "_run_bash", _bash), \
+    with mock.patch.object(hpc.cli, "run_bash", _bash), \
             mock.patch.object(slurm_site, "_HAS_SLURM", True), \
             mock.patch.object(hpc, "_recorded_jobs", return_value={}), \
             mock.patch.object(hpc, "_host_tree", return_value=[]):

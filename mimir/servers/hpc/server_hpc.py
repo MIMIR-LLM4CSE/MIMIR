@@ -34,8 +34,6 @@ import os
 import re
 import shlex
 import socket
-import subprocess
-import sys
 import threading
 import time
 
@@ -49,10 +47,7 @@ from .._shared.capabilities import (
     IRREVERSIBLE,
     PANEL_REPORT,
 )
-from .._shared.atomic import write_json
-from .._shared.launcher import launch_argv
 from .._shared.responses import err, ok
-from .._shared.state_paths import sessions_root, state_dir
 from .._shared.slurm_site import (
     ADOPTED_FILE as _ADOPTED_FILE,
     HOST_FILE as _HOST_FILE,
@@ -61,21 +56,15 @@ from .._shared.slurm_site import (
     LOCAL_NAME as _LOCAL_NAME,
     covered_by as _covered_by,
     hosts as slurm_hosts,
-    job_host as _job_host,
     name_of as _host_name,
     jobs_dir as _hpc_jobs_dir,
     new_job_dir as _new_job_dir,
     owned_job_hosts as _owned_job_hosts,
     record_job_dir as _record_job_dir,
     recorded_jobs as _recorded_jobs,
-    resolve_host as _resolve_host,
-    argv_for as slurm_argv,
-    exec_argv as slurm_exec_argv,
-    queued_by_host as slurm_queued_by_host,
     record_host as _record_host,
     forget_host as _forget_host,
     unwatched as slurm_unwatched,
-    unwatched_by_host as slurm_unwatched_by_host,
     unwatched_hint as slurm_unwatched_hint,
 )
 from .._shared.slurm_digest import (
@@ -85,222 +74,63 @@ from .._shared.slurm_digest import (
 from .._shared.slurm_nodes import (
     HARDWARE_FIELDS as _HARDWARE_FIELDS,
     SCONTROL_NODES_ARGV as _SCONTROL_NODES_ARGV,
-    SINFO_NODES_FORMAT as _SINFO_NODES_FORMAT,
     aggregate_node_types as _aggregate_node_types,
     as_int as _as_int,
     hardware_key as _hardware_key,
     parse_pipe_table as _parse_pipe_table,
     parse_scontrol_nodes as _parse_scontrol_nodes,
-    parse_sinfo_nodes as _parse_sinfo_nodes,
 )
-from .._shared.slurm_script import node_python_lines, sbatch_header, validate_target
+from .._shared.slurm_script import sbatch_header, validate_target
 from .._shared import build_progress
 from .._shared import cpu_facts
+from . import cli
+from .cli import (
+    TIMEOUT_ALLOC,
+    TIMEOUT_READ,
+    TIMEOUT_SUBMIT,
+    chosen_host,
+    no_scheduler_hint,
+    sinfo_nodes,
+    validate_comment,
+    validate_mem,
+    validate_time,
+)
+from . import jobs
+from .jobs import (
+    JOB_ID_RE,
+    LOG_FILE,
+    LOG_NAME,
+    TERMINAL_STATES,
+    add_unwatched,
+    find_job_dir,
+    locate_job,
+    record_job_host,
+    record_terminal_state,
+    recorded_log,
+    recorded_terminal_state,
+    salloc_argv,
+    slurm_background_job,
+)
+from . import node_profiles
+from .node_profiles import (
+    FULL_PROFILE_TYPES,
+    PROBE_MARKER,
+    compare_with_host,
+    hardware_of,
+    harvest_probes,
+    probe_script,
+    profile_host_dir,
+    read_node_profile,
+    slurm_facts,
+    summary,
+    write_node_profile,
+)
 
 mcp = FastMCP(
     "HPCServer",
     debug=False,
     log_level="ERROR",
 )
-
-_TIMEOUT_READ = 15
-_TIMEOUT_ALLOC = 20
-_TIMEOUT_SUBMIT = 30
-_MAX_OUTPUT = 128 * 1024
-
-# Where a batch submission's own bookkeeping lives — the script, the id, the state a
-# poll settled it at — under the submitting session's state dir, like every other
-# artefact belonging to a conversation (env-overridable for tests).
-#
-# Not the job's output: that goes where the job runs, which is the only directory it is
-# certain to be able to write. See _shared/slurm_script.sbatch_header.
-#
-# Per session, resolved per call. A Slurm job outlives its session, sometimes by days,
-# which is the one way these differ from detached shell jobs — so a job is never
-# *unreachable* from another conversation: _find_job_dir below looks in the sibling
-# sessions read-only and says where it came from. Per session buys two things: two
-# conversations submitting at the same moment cannot land on each other's directory, and a
-# conversation's submissions go with it when it is deleted.
-def _no_scheduler_hint(host: str = _LOCAL_HOST) -> str:
-    """What to do when a Slurm command did not answer. Self-documenting on purpose.
-
-    Two different failures, and the cure is only ever offered for the one it fits. A
-    scheduler that was *named* and did not answer is a host to check — the inventory is
-    not the problem. Nothing reachable at all is the case this learning exists for, and
-    there the answer has to be a thing the user is about to do anyway: reach a
-    scheduler over ``ssh`` once, which adds it.
-    """
-    known = slurm_hosts()
-    if host:
-        return (f"That went to {host}; check the host answers — "
-                "slurm_schedulers() lists what this workspace reaches.")
-    if known:
-        return ("No Slurm command answered on this host. Reachable instead: "
-                + ", ".join(_host_name(h) for h in known)
-                + " — pass one as scheduler=.")
-    return ("No Slurm command answered on this host, and no other scheduler has been "
-            "reached yet. If one lives elsewhere, read its queue through the shell "
-            "once — ssh <host> \"squeue -u $USER\" — and it joins this workspace's "
-            "schedulers, or name it with slurm_schedulers(add=\"<host>\").")
-
-
-def _add_unwatched(payload: dict) -> None:
-    """Name the user's running jobs that no descriptor covers, if any.
-
-    Attached to the answers of the two tools that *record* a job — a submission and an
-    adoption — because those are the moments the model is holding job ids and can act
-    on it in the same turn. Deliberately not to ``slurm_job_status``: that one is the
-    watcher's poll target, called on a timer for the life of every watched run, and a
-    per-user queue read on it would be paid for ever.
-
-    Asked of every scheduler this workspace reaches, because work nobody is watching
-    is not more acceptable for being on the other cluster — and because the model
-    holding these ids has just chosen between those schedulers and can act on either.
-
-    Best effort: a scheduler that will not answer leaves the payload alone rather than
-    turning a successful submission into an error.
-    """
-    by_host = slurm_unwatched_by_host(slurm_queued_by_host(_TIMEOUT_READ))
-    if not by_host:
-        return
-    # Flat, and in inventory order: the client's nudge reads a list of ids, and the
-    # hint is what says which scheduler to name when there is more than one.
-    payload["unwatched"] = [job_id for ids in by_host.values() for job_id in ids]
-    payload["unwatched_hint"] = slurm_unwatched_hint(by_host)
-
-
-def _find_job_dir(job_id: str) -> tuple[str, str]:
-    """Where *job_id* was recorded, and which session recorded it ("" for this one).
-
-    Looks in this session's directory first, then — read-only — in the sibling sessions'.
-    A Slurm job can outlive the conversation that submitted it and still need checking from
-    another one, so filing it per session must not make it unfindable. Returns ``("", "")``
-    when no session recorded it.
-    """
-    def _match(base: str) -> str:
-        try:
-            names = os.listdir(base)
-        except OSError:
-            return ""
-        for name in names:
-            try:
-                with open(os.path.join(base, name, _ID_FILE)) as fh:
-                    if fh.read().strip() == job_id:
-                        return os.path.join(base, name)
-            except OSError:
-                continue
-        return ""
-
-    found = _match(_hpc_jobs_dir())
-    if found:
-        return found, ""
-    sessions = sessions_root()
-    try:
-        others = sorted(os.listdir(sessions))
-    except OSError:
-        return "", ""
-    for sid in others:
-        found = _match(os.path.join(sessions, sid, "hpc_jobs"))
-        if found:
-            return found, sid
-    return "", ""
-
-
-# What a job's own output is called, beside the work it did. ``%j`` is Slurm's, and the
-# id is not knowable until the submission answers.
-_LOG_NAME = "slurm-%j.log"
-
-# Where that resolved path is written down, so a later status answer can name the file
-# instead of re-deriving a rule that may have changed since the job was submitted.
-_LOG_FILE = "log"
-
-
-def _slurm_background_job(job_id: str) -> dict:
-    """The handle a client watcher polls this job with.
-
-    One author: the three producers — a submission, an adoption, and a status answer
-    re-arming its own job — were each writing this literal, so a new field or a renamed
-    status op had three places to be remembered in.
-    """
-    return {
-        "server":    "hpc",
-        "job_key":   job_id,
-        "kind":      "slurm-batch",
-        "status_op": {"tool": "slurm_job_status", "args": {"job_id": job_id}},
-    }
-
-
-# The word a poll writes into a submission's directory once Slurm has stopped having an
-# opinion about the job. This is the counterpart of a detached shell job's exit-code
-# trap, and it exists for the same reader: whoever asks later whether this workspace
-# still has work running has nothing but the descriptors on disk, and cannot ask Slurm.
-# Without it a submission's directory says "there is a job" for ever — the one thing it
-# records is an id, and an id never stops existing.
-_STATE_FILE = "slurm_state"
-
-# The states that mean Slurm is done answering for a job. ``unknown`` belongs here and is
-# not a failure: it is what a job that has left both squeue and sacct reads as — the
-# scheduler has forgotten it — and it is already what the client's watcher treats as
-# terminal. Recording it keeps the directory saying what the watcher concluded, where
-# leaving it blank would read as "still running" for ever.
-_TERMINAL_STATES = ("done", "crashed", "unknown")
-
-
-def _recorded_log(job_dir: str) -> str:
-    """Where this submission told its job to write, as the submission wrote it down.
-
-    Falls back to the name a batch job's log had when it lived in the submission's own
-    directory: a job submitted by an earlier build has no record of its path, and the
-    rule it was submitted under is the only thing that can find its output.
-    """
-    try:
-        with open(os.path.join(job_dir, _LOG_FILE)) as fh:
-            recorded = fh.read().strip()
-    except OSError:
-        recorded = ""
-    if recorded:
-        return recorded
-    legacy = os.path.join(job_dir, "slurm.log")
-    return legacy if os.path.exists(legacy) else ""
-
-
-def _record_terminal_state(job_dir: str, state: str) -> None:
-    """Settle *job_dir* at the first poll that finds Slurm has let the job go.
-
-    Write-once, and that is the point: the first observation of a terminal state is the
-    truest one available. A later poll of the same job reads ``unknown`` once sacct's
-    retention window has passed, and letting that overwrite a recorded ``crashed`` would
-    turn every outcome into "the scheduler has forgotten it" given enough time.
-
-    Best-effort, like the markers in ``session.jobs_on_disk``: a status answer is worth more than the
-    record of it, so a directory that cannot be written costs a settled descriptor, never
-    the reply. Written for another conversation's job too — the record belongs to the job,
-    not to whoever happened to look, and the reader that needs it most is scanning
-    sessions that may have no agent at all.
-    """
-    try:
-        with open(os.path.join(job_dir, _STATE_FILE), "x") as fh:
-            fh.write(state)
-    except FileExistsError:
-        pass
-    except OSError:
-        pass
-
-
-def _recorded_terminal_state(job_dir: str) -> str:
-    """The terminal state a poll wrote in *job_dir*, or "" while it has none.
-
-    The counterpart of :func:`_record_terminal_state`, and the same question the client
-    scan asks of the same file (``jobs_on_disk.is_settled``). What it buys here is an answer
-    about a recorded job without asking Slurm: over ssh a sweep is two round trips per
-    scheduler, and "has this one already ended?" is on disk.
-    """
-    try:
-        with open(os.path.join(job_dir, _STATE_FILE)) as fh:
-            word = fh.read().strip()
-    except OSError:
-        return ""
-    return word if word in _TERMINAL_STATES else ""
 
 
 # ── Which scheduler a call goes to ────────────────────────────────────────────
@@ -314,174 +144,11 @@ def _recorded_terminal_state(job_dir: str) -> str:
 # Two regimes here, and they are different questions. A tool that *acts* resolves a
 # host from what it was given (``_resolve_host``), and refuses rather than defaulting
 # when the inventory leaves a real choice open. A tool that acts on an *existing job*
-# does not choose at all: it finds where that job already is (``_locate_job``), because
+# does not choose at all: it finds where that job already is (``locate_job``), because
 # a job is not something a scheduler owns — it is something one of them is running.
 #
 # One seam either way: every Slurm command this server runs goes through ``slurm_argv``
 # or ``slurm_exec_argv`` with that host. Nothing else in this file knows about ssh.
-
-
-def _record_job_host(job_dir: str, host: str) -> None:
-    """Write down which scheduler a job is on, so the next poll asks only it.
-
-    A cache and not a binding: it is written when a job is submitted and whenever a
-    sweep has just found one, and :func:`_locate_job` sweeps again whenever it is
-    absent or wrong. Best effort — a directory that cannot be written costs one extra
-    ssh per poll, never the answer.
-    """
-    if not job_dir:
-        return
-    try:
-        with open(os.path.join(job_dir, _HOST_FILE), "w") as fh:
-            fh.write(host)
-    except OSError:
-        pass
-
-
-def _chosen_host(scheduler: str) -> tuple[str, dict | None]:
-    """The scheduler a call goes to, or the refusal naming the choice left to make.
-
-    The refusal is the useful half: with two schedulers reachable, "which one" is a
-    decision about the work — where the inputs are, which has the GPUs — and this says
-    so rather than picking one. See ``slurm_site.resolve_host``.
-    """
-    host, refusal = _resolve_host(scheduler)
-    return host, (err(refusal) if refusal else None)
-
-
-def _locate_job(job_id: str, requested: str = "",
-                job_dir: str = "") -> tuple[str, str, str, list[str]]:
-    """Find *job_id*: ``(host, state, raw, nodes)``, among the schedulers reached.
-
-    The hint first — the descriptor's own record, which makes the common case one call
-    — then every other reachable scheduler until one knows the id. That fallback is
-    what keeps a job trackable without being owned: an adoption of somebody's job, a
-    descriptor from before the host was written down, a watcher re-armed from disk
-    after a window reload (which polls by id alone, having no host to pass), all land
-    here and are answered.
-
-    *requested* skips the search when a caller already knows — a sweep refused for one
-    job is not worth paying twice. *job_dir* is for the caller that has already found
-    the descriptor, so the sessions tree is walked once per call rather than twice.
-    ``("", "unknown", "", [])`` when nothing has heard of it.
-    """
-    if requested:
-        state, raw, nodes = _normalized_job_state(job_id, host=requested)
-        return requested, state, raw, nodes
-    if not job_dir:
-        job_dir, _ = _find_job_dir(job_id)
-    hint = _job_host(job_dir) if job_dir else None
-    order = [hint] if hint is not None else []
-    order += [host for host in slurm_hosts() if host != hint]
-    for host in order:
-        state, raw, nodes = _normalized_job_state(job_id, host=host)
-        if state != "unknown":
-            # Found, so the next poll of this job is one call rather than a sweep. A
-            # recorded host is never replaced: it is what slurm_cancel trusts.
-            if job_dir and hint is None:
-                _record_job_host(job_dir, host)
-            return host, state, raw, nodes
-    return "", "unknown", "", []
-
-
-def _run_bash(script: str, timeout: int, stdin: str | None = None, *,
-              host: str = _LOCAL_HOST) -> dict:
-    """Run *script* on *host*'s scheduler, optionally feeding it *stdin*.
-
-    Without *stdin* the command gets none at all: the server's own is its MCP protocol
-    pipe, and a command that reads it (``cat``, an ``ssh`` without ``-n``) eats the
-    client's traffic. With it, the text is handed over on a pipe we opened — which is
-    how a batch script reaches ``sbatch`` without any file having to exist on the host
-    that runs it.
-    """
-    try:
-        res = subprocess.run(
-            slurm_argv(script, host=host, piped=stdin is not None),
-            input=stdin,
-            stdin=None if stdin is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-        )
-        return _command_result(res)
-    except subprocess.TimeoutExpired:
-        return err(f"Command timed out after {timeout}s.",
-                   hint="Narrow the query or increase timeout.")
-    except Exception as e:
-        return err(str(e))
-
-
-def _command_result(res: subprocess.CompletedProcess) -> dict:
-    """A finished command as a tool answer; a non-zero exit is an error."""
-    fields = {"returncode": res.returncode,
-              "stdout": res.stdout[:_MAX_OUTPUT], "stderr": res.stderr[:_MAX_OUTPUT]}
-    if len(res.stdout) > _MAX_OUTPUT or len(res.stderr) > _MAX_OUTPUT:
-        fields["truncated"] = True
-    if res.returncode == 0:
-        return ok(fields)
-    return err(res.stderr.strip() or f"Exited with code {res.returncode}.", **fields)
-
-
-def _validate_time(value: str) -> bool:
-    # Accept Slurm-like forms: MM, MM:SS, HH:MM:SS, D-HH, D-HH:MM, D-HH:MM:SS
-    return bool(re.fullmatch(r"\d+(-\d{1,2}(:\d{2}(:\d{2})?)?|(:\d{2}){0,2})", value))
-
-
-def _validate_mem(value: str) -> bool:
-    # Examples: 8G, 32000M, 2T
-    return bool(re.fullmatch(r"\d+[KMGTP]", value.upper()))
-
-
-_COMMENT_MAX = 512
-
-
-def _validate_comment(value: str) -> str | None:
-    """Return why *value* cannot be a Slurm --comment, or None when it can.
-
-    Free text, so the only hard rules are a length Slurm will store and a single
-    line: a newline in a value that lands in a ``#SBATCH`` directive turns the rest
-    of it into directives of the caller's choosing, and sacct renders the field on
-    one line regardless.
-    """
-    if not value:
-        return None
-    if len(value) > _COMMENT_MAX:
-        return f"comment is too long ({len(value)} chars). Keep it under {_COMMENT_MAX}."
-    bad = [ch for ch in value if ord(ch) < 0x20 or ord(ch) == 0x7F]
-    if bad:
-        return ("Invalid comment: control characters are not allowed "
-                f"(found {bad[0]!r}). Keep it to a single line of plain text.")
-    return None
-
-
-def _hardware_of(host: str) -> dict:
-    """What *host*'s machines are, for the listing a scheduler is chosen from.
-
-    A summary and the stable node types, never occupancy. A host that said nothing
-    carries neither and says so, because a cluster described as having no hardware
-    reads as a cluster not worth submitting to.
-    """
-    digest = _cluster_digest(host)
-    if not digest["source"]:
-        return {"hardware": "",
-                "hardware_note": "Did not answer; its hardware is unknown, not absent."}
-    types = digest["node_types"]
-    arches = sorted({t["arch"] for t in types if t["arch"]})
-    # The model, not the whole gres: a site with ten GPU shapes makes a line nobody
-    # scans, and the counts are on each node type below for whoever needs them.
-    gpus = sorted({t["gres"].split(":")[1] for t in types
-                   if t["gres"].startswith("gpu:") and t["gres"].count(":") >= 1})
-    parts = [f"{len(types)} node type{'s' if len(types) != 1 else ''}"]
-    if arches:
-        parts.append("/".join(arches))
-    if gpus:
-        parts.append(", ".join(gpus))
-    parts.append(f"{len(digest['partitions'])} partitions")
-    summary = {"hardware": " · ".join(parts), "node_types": types}
-    if digest["degraded"]:
-        summary["degraded"] = digest["degraded"]
-    return summary
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
@@ -518,7 +185,7 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
     added: dict | None = None
     if add.strip():
         host = add.strip()
-        probe = _run_bash("command -v sbatch", _TIMEOUT_READ, host=host)
+        probe = cli.run_bash("command -v sbatch", TIMEOUT_READ, host=host)
         if probe.get("status") != "ok":
             return err(f"No Slurm on {host}: {probe.get('stderr') or probe.get('error') or 'sbatch did not answer'}",
                        hint="Nothing was recorded. Check the host answers "
@@ -551,7 +218,7 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
         "local": not host,
         "reached": "Slurm answers on this host" if not host
                    else f"over ssh to {host}",
-        **_hardware_of(host),
+        **hardware_of(host),
     } for host in known]
     payload: dict = {"schedulers": listed, "count": len(listed)}
     if added:
@@ -582,33 +249,20 @@ def slurm_partitions(scheduler: str = "") -> dict:
             a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
     """
-    host, refusal = _chosen_host(scheduler)
+    host, refusal = chosen_host(scheduler)
     if refusal:
         return refusal
     cmd = "sinfo -h -o '%P|%a|%l|%D|%t|%c|%m'"
-    result = _run_bash(cmd, _TIMEOUT_READ, host=host)
+    result = cli.run_bash(cmd, TIMEOUT_READ, host=host)
     if result["status"] != "ok":
         return err(result.get("stderr") or result.get("error", "sinfo failed"),
-                    hint=_no_scheduler_hint(host))
+                    hint=no_scheduler_hint(host))
     rows = _parse_pipe_table(
         result.get("stdout", ""),
         ["partition", "availability", "time_limit", "nodes", "state", "cpus_per_node", "mem_mb_per_node"],
     )
     return ok({"partitions": rows, "count": len(rows),
                "scheduler": _host_name(host)})
-
-
-def _sinfo_nodes(host: str = _LOCAL_HOST) -> list[dict]:
-    """Degraded node list for a cluster whose `scontrol show node` is restricted.
-
-    sinfo is readable everywhere but does not carry the architecture, so callers are
-    told the field is unknown rather than being handed a wrong default.
-    """
-    result = _run_bash(f"sinfo -N -h -o '{_SINFO_NODES_FORMAT}'",
-                       _TIMEOUT_READ, host=host)
-    if result["status"] != "ok":
-        return []
-    return _parse_sinfo_nodes(result.get("stdout", ""))
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
@@ -635,19 +289,19 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
             a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
     """
-    host, refusal = _chosen_host(scheduler)
+    host, refusal = chosen_host(scheduler)
     if refusal:
         return refusal
     degraded = ""
-    result = _run_argv(_SCONTROL_NODES_ARGV, _TIMEOUT_READ, host=host)
+    result = cli.run_argv(_SCONTROL_NODES_ARGV, TIMEOUT_READ, host=host)
     if result["status"] == "ok":
         nodes = _parse_scontrol_nodes(result.get("stdout", ""))
     else:
-        nodes = _sinfo_nodes(host)
+        nodes = sinfo_nodes(host)
         degraded = "scontrol unavailable: architecture and live CPU occupancy are unknown."
     if not nodes:
         return err(result.get("stderr") or result.get("error", "node query failed"),
-                   hint=_no_scheduler_hint(host))
+                   hint=no_scheduler_hint(host))
 
     if node:
         wanted = {n.strip() for n in node.split(",") if n.strip()}
@@ -693,16 +347,16 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
             a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
     """
-    host, refusal = _chosen_host(scheduler)
+    host, refusal = chosen_host(scheduler)
     if refusal:
         return refusal
     user_flag = " -u $USER" if user_only else ""
     state_flag = f" -t {shlex.quote(states)}" if states else ""
     cmd = f"squeue -h{user_flag}{state_flag} -o '%i|%u|%T|%M|%l|%D|%R|%j'"
-    result = _run_bash(cmd, _TIMEOUT_READ, host=host)
+    result = cli.run_bash(cmd, TIMEOUT_READ, host=host)
     if result["status"] != "ok":
         return err(result.get("stderr") or result.get("error", "squeue failed"),
-                   hint=_no_scheduler_hint(host))
+                   hint=no_scheduler_hint(host))
     rows = _parse_pipe_table(
         result.get("stdout", ""),
         ["job_id", "user", "state", "elapsed", "time_limit", "nodes", "reason_or_node", "name"],
@@ -737,71 +391,6 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
     return ok(payload)
 
 
-def _run_argv(argv: list[str], timeout: int, *, host: str = _LOCAL_HOST) -> dict:
-    """Run a command as argv on *host* — no shell, so no argument can inject a second one.
-
-    With a remote controller one shell is unavoidable: ``ssh`` has no argv to hand over,
-    only a command line for the far side to parse. So each element is quoted on the way
-    out and the property survives in the form that matters — what the remote shell
-    splits is exactly the argv built here, and an argument cannot become a command.
-    """
-    try:
-        res = subprocess.run(
-            slurm_exec_argv(argv, host=host), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
-        )
-        return _command_result(res)
-    except subprocess.TimeoutExpired:
-        return err(f"Command timed out after {timeout}s.")
-    except Exception as e:
-        return err(str(e))
-
-
-def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int,
-                 cpus_per_task: int, mem: str, time: str, gres: str, constraint: str,
-                 job_name: str, extra_args: str,
-                 comment: str = "") -> tuple[list[str], dict | None]:
-    """Build a validated salloc argv, or return the rejection."""
-    if not partition.strip():
-        return [], err("partition is required.", hint="Use slurm_partitions() to list them.")
-    if nodes < 1 or ntasks < 1 or cpus_per_task < 1:
-        return [], err("nodes, ntasks, and cpus_per_task must be >= 1")
-    if time and not _validate_time(time):
-        return [], err("Invalid Slurm time format", hint="Use HH:MM:SS or D-HH:MM:SS")
-    if mem and not _validate_mem(mem):
-        return [], err("Invalid mem format", hint="Use values like 8G, 32000M, 1T")
-    comment_err = _validate_comment(comment)
-    if comment_err:
-        return [], err(comment_err)
-
-    argv = [
-        "salloc",
-        f"--partition={partition}",
-        f"--nodes={nodes}",
-        f"--ntasks={ntasks}",
-        f"--cpus-per-task={cpus_per_task}",
-        f"--time={time}",
-        f"--job-name={job_name}",
-    ]
-    for flag, value in (("account", account), ("qos", qos), ("mem", mem),
-                        ("gres", gres), ("constraint", constraint),
-                        ("comment", comment)):
-        if value:
-            argv.append(f"--{flag}={value}")
-    if extra_args:
-        # argv never reaches a shell, so metacharacters cannot inject; requiring a
-        # leading dash is what stops extra_args smuggling in a *command* to allocate for.
-        try:
-            extra = shlex.split(extra_args)
-        except ValueError as exc:
-            return [], err(f"Could not parse extra_args: {exc}")
-        if any(not tok.startswith("-") for tok in extra):
-            return [], err("extra_args accepts salloc flags only.",
-                           hint="Every token must start with '-'; pass resources via the named arguments.")
-        argv += extra
-    return argv, None
-
-
 @mcp.tool(**tool_caps(kind="slurm",
     caps=[PLAN_BLOCKED, CLUSTER_SUBMIT], reversibility=IRREVERSIBLE, non_batch=True,
     risk_note="requests Slurm resource allocation",
@@ -820,7 +409,7 @@ def salloc_submit(
     comment: str = "",
     job_name: str = "mimir-interactive",
     confirm: bool = False,
-    timeout_seconds: int = _TIMEOUT_ALLOC,
+    timeout_seconds: int = TIMEOUT_ALLOC,
     extra_args: str = "",
     scheduler: str = "",
 ) -> dict:
@@ -851,7 +440,7 @@ def salloc_submit(
             allocation needs a terminal on the host that has the scheduler, which
             ssh does not give — for a remote one, use sbatch_submit.
     """
-    argv, error = _salloc_argv(partition, account, qos, nodes, ntasks, cpus_per_task,
+    argv, error = salloc_argv(partition, account, qos, nodes, ntasks, cpus_per_task,
                                mem, time, gres, constraint, job_name, extra_args,
                                comment)
     if error:
@@ -867,7 +456,7 @@ def salloc_submit(
     # shell to run in it, and give it straight back — spending the request and
     # reporting success at having done nothing. Refused rather than attempted, because
     # a silent no-op is worse than a plain no.
-    host, refusal = _chosen_host(scheduler)
+    host, refusal = chosen_host(scheduler)
     if refusal:
         return refusal
     if host:
@@ -878,7 +467,7 @@ def salloc_submit(
                         "completion.",
                    command=preview)
 
-    result = _run_argv(argv, max(5, min(timeout_seconds, 120)), host=host)
+    result = cli.run_argv(argv, max(5, min(timeout_seconds, 120)), host=host)
     if result["status"] == "ok":
         return ok({
             "command": preview,
@@ -898,113 +487,6 @@ def salloc_submit(
 
 # ── async batch submission (backgroundable) ──────────────────────────────────
 
-_SACCT_CRASH_PREFIXES = (
-    "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
-    "BOOT_FAIL", "DEADLINE", "PREEMPTED",
-)
-
-
-_ACTIVE_STATES = ("RUNNING", "COMPLETING")
-_WAITING_STATES = ("PENDING", "CONFIGURING", "REQUEUED")
-
-# A job is over when it says so, wherever it says it. squeue reports the same words
-# sacct does and keeps a finished job for a while — a cancelled one can sit there
-# saying CANCELLED — so these are read from either answer. Prefixes because Slurm
-# qualifies some of them ("CANCELLED by 1234").
-_DONE_PREFIXES = ("COMPLETED",)
-
-
-def _is_crash_state(state: str) -> bool:
-    return any(state.startswith(prefix) for prefix in _SACCT_CRASH_PREFIXES)
-
-
-def _is_done_state(state: str) -> bool:
-    return any(state.startswith(prefix) for prefix in _DONE_PREFIXES)
-
-
-def _lines(result: dict) -> list[str]:
-    """The non-empty lines of a command's output, upper-cased. [] when it failed."""
-    if result.get("status") != "ok":
-        return []
-    return [line.strip().upper()
-            for line in (result.get("stdout") or "").splitlines() if line.strip()]
-
-
-def _normalized_job_state(job_id: str, *,
-                          host: str = _LOCAL_HOST) -> tuple[str, str, list[str]]:
-    """Map a Slurm job's state to the shared vocab: running|pending|done|crashed|unknown.
-
-    Active jobs come from ``squeue``; finished jobs have left the queue, so their
-    terminal state is read from ``sacct``. Returns ``(state, raw, nodes)``. Missing
-    tools or an unknown job yield ``("unknown", "", [])`` — a terminal signal for the
-    watcher.
-
-    A job the queue already reports as finished — COMPLETED, FAILED, CANCELLED — is
-    settled from that answer alone. Nothing is gained by following it further, and a
-    site without accounting has no second answer to settle it with.
-
-    *nodes* is where the job is actually running, read from the same ``squeue`` call
-    rather than a second one. Slurm's ``%R`` column is the nodelist for a running job
-    and the *reason it is waiting* for a pending one, so it is only read as nodes when
-    the job is running — a pending job has no node yet, which is the honest answer and
-    not an empty one to be filled in later.
-
-    **One id can be many jobs.** An array submits as ``15306621`` and runs as
-    ``15306621_1 … _8``, and both commands answer for every element: ``squeue`` prints
-    a line each, ``sacct`` likewise. Read as one line that is a job whose first element
-    has finished while seven still run — which is reported as finished, waking its
-    conversation on a run that has barely started. So the answer is taken over the
-    whole set: anything still going keeps the job live, and a terminal verdict is the
-    worst outcome among the elements, since an array where one task failed is not an
-    array that completed.
-    """
-    rows = _lines(_run_bash(f"squeue -j {shlex.quote(job_id)} -h -o '%T|%R'",
-                            _TIMEOUT_READ, host=host))
-    queued, where = [], []
-    for row in rows:
-        state, _, reason_or_node = row.partition("|")
-        queued.append(state.strip())
-        where.append(reason_or_node.strip())
-    raw = ",".join(sorted(set(queued)))
-    if any(state in _ACTIVE_STATES for state in queued):
-        nodes = sorted({node
-                        for state, expr in zip(queued, where)
-                        if state in _ACTIVE_STATES
-                        for node in cpu_facts.expand_hostlist(expr) if node})
-        return "running", raw, nodes
-    if queued and all(state in _WAITING_STATES for state in queued):
-        return "pending", raw, []
-    # Over, by the queue's own answer. Read before sacct is asked, for two reasons: it
-    # saves a round trip in the ordinary case, and it is the only thing that settles a
-    # job on a site with no accounting at all — where ``sacct`` answers nothing and the
-    # fallthrough below reads "in the queue with a state I do not recognise" as still
-    # running. For a CANCELLED job that is a watcher polling, for as long as the process
-    # lives, something that will never change again.
-    if queued and all(_is_done_state(s) or _is_crash_state(s) for s in queued):
-        # The worst outcome among the elements, as below: an array where one task was
-        # cancelled is not an array that completed.
-        if any(_is_crash_state(s) for s in queued):
-            return "crashed", raw, []
-        return "done", raw, []
-
-    accounted = _lines(_run_bash(f"sacct -j {shlex.quote(job_id)} -n -X -o State",
-                                 _TIMEOUT_READ, host=host))
-    sraw = ",".join(sorted(set(accounted)))
-    # Ahead of the "anything not COMPLETED is crashed" fallback below, which is where
-    # most of these land anyway. What this earns is the one case the fallback cannot
-    # reach: a terminal crash line present *while* squeue still reports a state that is
-    # neither active nor waiting, which the clause below would read as running.
-    crashed = [state for state in accounted if _is_crash_state(state)]
-    if crashed:
-        return "crashed", sraw, []
-    if accounted and all(_is_done_state(state) for state in accounted):
-        return "done", sraw, []
-    if queued:                    # in the queue with a non-standard active state
-        return "running", raw, []
-    if accounted:                 # some other terminal state we don't classify
-        return "crashed", sraw, []
-    return "unknown", "", []
-
 
 @mcp.tool(**tool_caps(kind="slurm"))
 def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
@@ -1014,7 +496,7 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     jobs, sacct for finished ones) plus the raw Slurm state string.
 
     A terminal answer also settles the submission's directory, so that the readers which
-    cannot ask Slurm stop reading the job as live — see :func:`_record_terminal_state`.
+    cannot ask Slurm stop reading the job as live — see :func:`record_terminal_state`.
 
     The id is enough. Which scheduler is running the job is found — the descriptor's
     own record first, then every other one this workspace reaches — so a poll works
@@ -1032,8 +514,8 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     # Where the submission was recorded, so the script and the log stay reachable. A
     # Slurm job outlives its conversation, so the sibling sessions are searched too and the
     # answer says when the job came from another one.
-    job_dir, from_session = _find_job_dir(job_id)
-    host, state, raw, nodes = _locate_job(job_id, scheduler, job_dir)
+    job_dir, from_session = find_job_dir(job_id)
+    host, state, raw, nodes = locate_job(job_id, scheduler, job_dir)
     payload = {"job_id": job_id, "state": state, "raw_state": raw}
     if host or state != "unknown":
         payload["scheduler"] = _host_name(host)
@@ -1046,7 +528,7 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
         # Read, not re-derived: the submission wrote down where it told the job to
         # write, and that answer has to survive a change of rule between versions —
         # a job submitted by an older build still has its log where that build put it.
-        log = _recorded_log(job_dir)
+        log = recorded_log(job_dir)
         if log:
             payload["log"] = log
             if state == "running":
@@ -1055,11 +537,11 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
                     payload["log_tail"] = tail
         if from_session:
             payload["submitted_by_another_session"] = from_session
-        # And if Slurm has let go, say so in the directory. See _record_terminal_state:
+        # And if Slurm has let go, say so in the directory. See record_terminal_state:
         # this poll is the only thing that will ever know, and the readers that decide
         # whether a workspace still has work running cannot ask the scheduler.
-        if state in _TERMINAL_STATES:
-            _record_terminal_state(job_dir, state)
+        if state in TERMINAL_STATES:
+            record_terminal_state(job_dir, state)
             # A finished job whose log never appeared says something specific, and it
             # is not about the job: the directory it was told to write to is not one
             # the node that ran it could write. Named here because this is where it
@@ -1080,13 +562,9 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     # agent registered it, so re-arming here would deliver another conversation's
     # result into this one. Reading a sibling's job stays allowed; adopting it does not.
     if state in ("running", "pending") and not from_session:
-        payload["background_jobs"] = [_slurm_background_job(job_id)]
+        payload["background_jobs"] = [slurm_background_job(job_id)]
     return ok(payload)
 
-
-# A job, or one task of a job array. Anything wider — a user, a partition, a name — is
-# what `scancel` would also take, and is not something to approve from one card.
-_JOB_ID_RE = re.compile(r"\d+(_\d+)?")
 
 @mcp.tool(**tool_caps(kind="slurm"))
 def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
@@ -1115,7 +593,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
         return err("job_id is required.",
                    hint="Use the id the submission printed, or slurm_queue() to list "
                         "what is running.")
-    if not _JOB_ID_RE.fullmatch(job_id):
+    if not JOB_ID_RE.fullmatch(job_id):
         return err(f"{job_id!r} is not a Slurm job id.",
                    hint="One job, or one array task: 15306620 or 15306621_3.")
 
@@ -1123,9 +601,9 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # already recorded is the common answer when a model adopts an array task by task,
     # and polling Slurm to tell it "nothing to adopt" buys nothing — over ssh it is two
     # round trips, per scheduler swept, for an answer the directory already has.
-    existing, from_session = _find_job_dir(job_id)
+    existing, from_session = find_job_dir(job_id)
     if existing:
-        settled = _recorded_terminal_state(existing)
+        settled = recorded_terminal_state(existing)
         payload = {
             "job_id": job_id,
             "job_dir": existing,
@@ -1147,7 +625,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
         # conversation whose agent registered it, and adopting another's delivers its
         # result into this one.
         if not settled and not from_session:
-            payload["background_jobs"] = [_slurm_background_job(job_id)]
+            payload["background_jobs"] = [slurm_background_job(job_id)]
         return ok(payload)
 
     # Asked before anything is written, because a descriptor for a job no scheduler has
@@ -1155,7 +633,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # staleness horizon for a run that does not exist. And asked of each of them, which
     # is what makes an id enough — the caller holding a number from a launcher's output
     # has no reason to know which cluster printed it.
-    host, state, raw, nodes = _locate_job(job_id, scheduler)
+    host, state, raw, nodes = locate_job(job_id, scheduler)
     if state == "unknown":
         known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
         return err(f"No scheduler this workspace reaches knows job {job_id} ({known}).",
@@ -1186,10 +664,10 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # keeps what its poll learned, and "on which node" is what a badge says.
     if nodes:
         payload["nodes"] = nodes
-    if state in _TERMINAL_STATES:
+    if state in TERMINAL_STATES:
         # Already over. Settled rather than watched: a watcher put on a finished job
         # reports it at its first poll, which is a wake for news the caller is holding.
-        _record_terminal_state(job_dir, state)
+        record_terminal_state(job_dir, state)
         payload["headline"] = (f"Job {job_id} has already finished ({state}); "
                                "recorded, with nothing left to watch.")
         return ok(payload)
@@ -1204,20 +682,12 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # nothing, it hands over a run already going. Singular says "this call started it",
     # which is what gates it behind BACKGROUNDABLE — a capability an adopter has no
     # business claiming, and whose absence here is why nothing ever read the descriptor.
-    payload["background_jobs"] = [_slurm_background_job(job_id)]
+    payload["background_jobs"] = [slurm_background_job(job_id)]
     # What is still unaccounted for, named here because this is the moment the model is
     # holding the ids: a launcher prints a server job and a client array, and adopting
     # the first is the usual place to stop.
-    _add_unwatched(payload)
+    add_unwatched(payload)
     return ok(payload)
-
-
-def _current_user() -> str:
-    import getpass
-    try:
-        return getpass.getuser()
-    except Exception:
-        return os.environ.get("USER", "")
 
 
 @mcp.tool(**tool_caps(kind="slurm",
@@ -1246,7 +716,7 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
             scheduler the job was submitted to.
     """
     job_id = str(job_id or "").strip()
-    if not _JOB_ID_RE.fullmatch(job_id):
+    if not JOB_ID_RE.fullmatch(job_id):
         return err("job_id must be one Slurm job ID, e.g. '1234' or '1234_5'.",
                    hint="List your jobs with slurm_queue().")
     if not confirm:
@@ -1270,13 +740,13 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
                    hint="Name the one to cancel on with scheduler=.")
     # Only the scheduler it was submitted to: the same id elsewhere is another job.
     host = next(iter(owned))
-    located, located_raw, _nodes = _normalized_job_state(job_id, host=host)
+    located, located_raw, _nodes = jobs.normalized_job_state(job_id, host=host)
     if located == "unknown":
         return err(f"{_host_name(host)} no longer knows job {job_id}, "
                    "so there is nothing to cancel.",
                    hint="List what is running with slurm_queue(scheduler=...).")
 
-    q = _run_argv(["squeue", "-h", "-j", job_id, "-o", "%u|%T"], _TIMEOUT_READ,
+    q = cli.run_argv(["squeue", "-h", "-j", job_id, "-o", "%u|%T"], TIMEOUT_READ,
                   host=host)
     line = (q.get("stdout") or "").strip().splitlines()
     if q.get("status") != "ok" or not line:
@@ -1284,12 +754,12 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
                    "nothing to cancel.",
                    hint=f"Its last known state: {located_raw or located}.")
     owner, _, queued_state = line[0].partition("|")
-    user = _current_user()
+    user = cli.current_user()
     if user and owner.strip() != user:
         return err(f"Job {job_id} belongs to '{owner.strip()}', not to you ('{user}').",
                    hint="Only your own jobs can be cancelled from here.")
 
-    res = _run_argv(["scancel", job_id], _TIMEOUT_SUBMIT, host=host)
+    res = cli.run_argv(["scancel", job_id], TIMEOUT_SUBMIT, host=host)
     if res.get("status") != "ok":
         return err(res.get("stderr") or res.get("error", "scancel failed"))
     return ok({
@@ -1375,23 +845,23 @@ def sbatch_submit(
         return err("command is required.")
     if not partition.strip():
         return err("partition is required.")
-    if wall_time and not _validate_time(wall_time):
+    if wall_time and not validate_time(wall_time):
         return err("Invalid Slurm time format.", hint="Use HH:MM:SS or D-HH:MM:SS")
-    if mem and not _validate_mem(mem):
+    if mem and not validate_mem(mem):
         return err("Invalid mem format.", hint="Use values like 8G, 32000M, 1T")
     if cpus_per_task < 1 or gpus < 0:
         return err("cpus_per_task must be >= 1 and gpus >= 0.")
     target_err = validate_target(constraint, nodelist, nodes or None, ntasks or None)
     if target_err:
         return err(target_err)
-    comment_err = _validate_comment(comment)
+    comment_err = validate_comment(comment)
     if comment_err:
         return err(comment_err)
     if not confirm:
         return err("Submission not confirmed.",
                    hint="Set confirm=True only after user approval.")
 
-    host, refusal = _chosen_host(scheduler)
+    host, refusal = chosen_host(scheduler)
     if refusal:
         return refusal
 
@@ -1421,7 +891,7 @@ def sbatch_submit(
     script_path = os.path.join(job_dir, "batch_script.sh")
     header = sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
-        wall_time=wall_time, log_file=os.path.join(work_dir, _LOG_NAME),
+        wall_time=wall_time, log_file=os.path.join(work_dir, LOG_NAME),
         work_dir=work_dir, mem=mem, gpus=gpus, account=account,
         nodes=nodes or None, ntasks=ntasks or None, constraint=constraint,
         nodelist=nodelist, exclusive=exclusive, comment=comment,
@@ -1439,21 +909,21 @@ def sbatch_submit(
     # no file, which means nothing of ours has to exist on the host running it — the one
     # thing a scheduler behind ``ssh`` cannot promise. The command line is one word, so
     # there is no path to quote either.
-    res = _run_bash("sbatch", _TIMEOUT_SUBMIT, stdin=script, host=host)
+    res = cli.run_bash("sbatch", TIMEOUT_SUBMIT, stdin=script, host=host)
     if res.get("status") != "ok":
         return err(res.get("stderr") or res.get("error", "sbatch failed"),
                    hint="Check partition, account/qos, and requested resources. "
-                        + _no_scheduler_hint(host))
+                        + no_scheduler_hint(host))
     match = re.search(r"(\d+)", res.get("stdout", ""))
     if not match:
         return err("Could not parse a job id from sbatch output.",
                    hint=f"sbatch said: {res.get('stdout', '').strip()[:200]}")
     job_id = match.group(1)
-    log_file = os.path.join(work_dir, _LOG_NAME.replace("%j", job_id))
+    log_file = os.path.join(work_dir, LOG_NAME.replace("%j", job_id))
     try:
         with open(os.path.join(job_dir, _ID_FILE), "w") as fh:
             fh.write(job_id)
-        with open(os.path.join(job_dir, _LOG_FILE), "w") as fh:
+        with open(os.path.join(job_dir, LOG_FILE), "w") as fh:
             fh.write(log_file)
     except OSError:
         pass
@@ -1461,7 +931,7 @@ def sbatch_submit(
     # instead of sweeping. And into the session's inventory: a submission that
     # succeeded is proof this host reaches that scheduler, which is the same evidence
     # a queue read gives, from the call that mattered more.
-    _record_job_host(job_dir, host)
+    record_job_host(job_dir, host)
     if host:
         _record_host(host)
 
@@ -1476,11 +946,11 @@ def sbatch_submit(
         "comment":      comment or None,
         "note":         f"Slurm job {job_id} submitted to '{partition}' on "
                         f"{_host_name(host)}.",
-        "background_job": _slurm_background_job(job_id),
+        "background_job": slurm_background_job(job_id),
     }
     # The submission is the other moment the model holds job ids: what else of the
     # user's is running unaccounted for can be acted on here, in the same turn.
-    _add_unwatched(payload)
+    add_unwatched(payload)
     return ok(payload)
 
 
@@ -1492,279 +962,6 @@ def sbatch_submit(
 # node. So a short job reads them there, with the very collectors that describe the
 # login node (server_platform --profile-json), and the answer is kept per node until
 # Slurm's own description of that node changes. No TTL: hardware does not age.
-
-_PLATFORM_PROFILE = launch_argv("mimir.servers.hpc.server_platform", "--profile-json")
-_NODE_PROFILES_DIR = os.environ.get(
-    "MIMIR_NODE_PROFILES_DIR", os.path.join(state_dir(), "hpc", "node_profiles"))
-_PROBE_MARKER = "probe.json"
-
-
-def _profile_host_dir(host: str) -> str:
-    """Where this scheduler's node profiles are filed.
-
-    Per host, because Slurm's own node names are per cluster: two schedulers each with
-    a ``node01`` are two different machines, and a single flat directory had the second
-    one overwrite the first. The segment is the scheduler's own name — ``local``, or the
-    hostname — reduced to what a directory name can hold.
-
-    Profiles already sitting at the root of the profiles directory are not read for any
-    host. A root file records no scheduler, and reading it as the local one would be a
-    guess of exactly the kind the per-host keying exists to stop; there is no TTL and a
-    probe is a five-minute job, so a node re-profiles on demand instead.
-    """
-    name = _host_name(host) or _LOCAL_NAME
-    return os.path.join(_NODE_PROFILES_DIR, re.sub(r"[^A-Za-z0-9._-]", "_", name))
-
-
-def _node_profile_path(node: str, host: str) -> str:
-    return os.path.join(_profile_host_dir(host), f"{node}.json")
-
-
-def _read_node_profile(node: str, host: str) -> dict | None:
-    return _read_json(_node_profile_path(node, host))
-
-# Fallback when no MIMIR Python runs on the node: raw sections, parsed server-side
-# by the same cpu_facts parsers. Everything that needs no Python is still read.
-_FALLBACK_SECTIONS = (
-    ("uname", "uname -m"),
-    ("lscpu", "LC_ALL=C lscpu"),
-    ("march", cpu_facts.MARCH_QUERY + " 2>/dev/null"),
-    ("gpu", cpu_facts.GPU_QUERY + " 2>/dev/null"),
-    ("os", "cat /etc/os-release 2>/dev/null"),
-    ("ldd", "ldd --version 2>&1 | head -n 1"),
-    ("nproc", "nproc --all"),
-)
-
-
-def _probe_script(work_dir: str, header: list[str], *, make_dir: bool = False) -> str:
-    """The probe, as a script. *work_dir* is where it writes, on the node that runs it.
-
-    For a local scheduler that is the submission's own directory, which already exists.
-    For one reached over ssh it is a path on the far side that nothing here can create,
-    so the script makes it itself — the first thing on the node, before anything it
-    would write there.
-    """
-    q = shlex.quote
-    fallback = [f'  echo "=={name}"; {cmd}' for name, cmd in _FALLBACK_SECTIONS]
-    return "\n".join(header + [
-        "",
-        *([f"mkdir -p {q(work_dir)} || exit 1"] if make_dir else []),
-        f"cd {q(work_dir)} || exit 1",
-        'echo "${SLURMD_NODENAME:-$(hostname -s)}" > node',
-        *node_python_lines(),
-        f'if [ -n "$_MIMIR_PY" ] && "$_MIMIR_PY" {shlex.join(_PLATFORM_PROFILE)}'
-        " > profile.json 2> profile.err; then",
-        "  echo full > mode",
-        "else",
-        "  rm -f profile.json",
-        "  {",
-        *fallback,
-        "  } > fallback.txt 2>&1",
-        "  echo partial > mode",
-        "fi",
-        "",
-    ])
-
-
-def _split_sections(text: str, names) -> dict[str, str]:
-    """Split output that labels its parts with ``==<name>`` lines.
-
-    The probe script writes its fallback sections this way, and a remote harvest reads
-    a probe's whole directory the same way — one round trip instead of one per file.
-    Lines before the first marker, and markers nobody asked for, are dropped.
-    """
-    wanted = set(names)
-    sections: dict[str, list[str]] = {}
-    current = None
-    for line in text.splitlines():
-        if line.startswith("==") and line[2:].strip() in wanted:
-            current = line[2:].strip()
-            sections[current] = []
-        elif current is not None:
-            sections[current].append(line)
-    return {k: "\n".join(v) for k, v in sections.items()}
-
-
-# What a probe leaves behind, read whether its directory is on this filesystem or on
-# the far side of an ssh. ``mode`` is written last by the script, so its presence is
-# what says the probe finished — no scheduler has to have caught up.
-_PROBE_FILES = ("mode", "node", "profile.json", "fallback.txt")
-
-
-def _probe_results(work_dir: str, host: str) -> dict[str, str]:
-    """The probe's own files, by name. Absent files are simply missing keys."""
-    if not host:
-        out = {}
-        for name in _PROBE_FILES:
-            try:
-                with open(os.path.join(work_dir, name)) as fh:
-                    out[name] = fh.read()
-            except OSError:
-                continue
-        return out
-    # One round trip for all of them: a file per call would be four ssh connections
-    # per probe, per panel refresh. Missing files contribute an empty section rather
-    # than an error, which is the same answer the local branch gives.
-    q = shlex.quote
-    script = "; ".join(
-        [f"cd {q(work_dir)} || exit 0"] +
-        [f'echo "=={name}"; cat {q(name)} 2>/dev/null' for name in _PROBE_FILES])
-    res = _run_bash(script, _TIMEOUT_READ, host=host)
-    if res.get("status") != "ok":
-        return {}
-    found = _split_sections(res.get("stdout", ""), _PROBE_FILES)
-    return {k: v for k, v in found.items() if v.strip()}
-
-
-def _fallback_profile(text: str) -> dict:
-    """A profile from the raw sections — what the node could say without Python."""
-    sec = _split_sections(text, dict(_FALLBACK_SECTIONS))
-    arch = sec.get("uname", "").strip()
-    gpus = cpu_facts.parse_nvidia_csv(sec.get("gpu", ""))
-    os_facts = cpu_facts.parse_os_release(sec.get("os", ""))
-    glibc = cpu_facts.parse_ldd_version(sec.get("ldd", ""))
-    if glibc:
-        os_facts["glibc"] = glibc
-    cpu = {"arch": arch, "logical_cpus": _as_int(sec.get("nproc", "").strip()),
-           **cpu_facts.cpu_facts(arch, sec.get("lscpu", ""))}
-    return {
-        "os": os_facts,
-        "cpu": cpu,
-        "march": cpu_facts.parse_march(sec.get("march", "")),
-        "gpu": {"available": bool(gpus), "count": len(gpus), "devices": gpus},
-        "machine_signature": cpu_facts.machine_signature(arch, cpu, [g["name"] for g in gpus]),
-    }
-
-
-def _slurm_facts(node: dict) -> dict:
-    return {k: node.get(k) for k in _HARDWARE_FIELDS}
-
-
-def _read_json(path: str) -> dict | None:
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-
-def _write_node_profile(node: str, record: dict, host: str = _LOCAL_HOST) -> None:
-    write_json(os.path.join(_profile_host_dir(host), f"{node}.json"), record,
-               indent=2, ensure_ascii=False)
-
-
-def _harvest_probes(nodes_by_name: dict[str, dict],
-                    host: str = _LOCAL_HOST) -> list[dict]:
-    """Turn finished probe jobs into node profiles; report the ones not finished.
-
-    A probe is finished when its script wrote ``mode`` — its own last act, so the
-    answer never depends on squeue/sacct having caught up. Only a probe without it
-    asks the scheduler where it stands.
-
-    *host* is the scheduler whose nodes are being harvested, and it decides where each
-    profile is filed. A probe's own directory records the host it was submitted to, so
-    one left by an earlier call is harvested for that scheduler rather than for
-    whichever one this call is asking about.
-    """
-    pending = []
-    try:
-        entries = sorted(os.listdir(_hpc_jobs_dir()))
-    except OSError:
-        return pending
-    for entry in entries:
-        job_dir = os.path.join(_hpc_jobs_dir(), entry)
-        meta = _read_json(os.path.join(job_dir, _PROBE_MARKER))
-        if not meta or meta.get("harvested"):
-            continue
-        # The scheduler this probe was submitted to, which is not necessarily the one
-        # being asked about now, and the directory its result is in — on this
-        # filesystem for a local scheduler, on the far side for one reached over ssh.
-        probe_host = meta.get("host", host)
-        work_dir = meta.get("work_dir") or job_dir
-        files = _probe_results(work_dir, probe_host)
-        if "mode" not in files:
-            state, raw, _nodes = _normalized_job_state(str(meta.get("job_id", "")),
-                                                       host=probe_host)
-            if state in ("running", "pending"):
-                pending.append({"job_id": meta.get("job_id"), "state": state,
-                                "partition": meta.get("partition", ""),
-                                "scheduler": _host_name(probe_host)})
-                continue
-            meta.update(harvested=True, outcome=f"no result ({raw or state})")
-        else:
-            mode = files["mode"].strip()
-            node = files.get("node", "").strip()
-            if not node:
-                meta.update(harvested=True, outcome="no node name recorded")
-                with open(os.path.join(job_dir, _PROBE_MARKER), "w") as fh:
-                    json.dump(meta, fh)
-                continue
-            if mode == "full":
-                try:
-                    profile = json.loads(files.get("profile.json") or "")
-                except ValueError:
-                    profile = {}
-                partial = not profile
-            else:
-                profile = _fallback_profile(files.get("fallback.txt") or "")
-                partial = True
-            record = {
-                "node": node, "probed_at": meta.get("submitted_at", ""),
-                "job_id": meta.get("job_id"), "source": "probe job",
-                "scheduler": _host_name(probe_host),
-                "slurm": _slurm_facts(nodes_by_name.get(node, {})),
-                "partial": partial, "profile": profile,
-            }
-            if partial:
-                record["partial_reason"] = (
-                    "No MIMIR Python runs on this node (no .venv-<os>-<arch> for it), so "
-                    "only what the shell can read was collected: CPU, -march, GPU, OS. "
-                    "Toolchains, modules and Python environments are missing."
-                    + (" This scheduler is reached over ssh, where MIMIR's own "
-                       "collectors are not installed unless the checkout is shared."
-                       if probe_host else ""))
-            _write_node_profile(node, record, probe_host)
-            meta.update(harvested=True, outcome=f"profiled {node}")
-        with open(os.path.join(job_dir, _PROBE_MARKER), "w") as fh:
-            json.dump(meta, fh)
-    return pending
-
-
-def _local_profile_record(node: dict) -> dict | None:
-    """This host's own profile, when this host is an allocated compute node."""
-    res = _run_argv([sys.executable, *_PLATFORM_PROFILE], 90)
-    try:
-        profile = json.loads(res.get("stdout") or "")
-    except ValueError:
-        return None
-    return {"node": node.get("node", ""), "probed_at": profile.get("timestamp", ""),
-            "source": "this host (inside the allocation)", "slurm": _slurm_facts(node),
-            "partial": False, "profile": profile}
-
-
-def _host_identity() -> dict:
-    """What the host MIMIR runs on is, in the terms a node profile is compared on."""
-    lscpu = _run_argv(["env", "LC_ALL=C", "lscpu"], _TIMEOUT_READ)
-    import platform as _platform
-    arch = _platform.machine()
-    cpu = cpu_facts.cpu_facts(arch, lscpu.get("stdout", "") if lscpu.get("status") == "ok" else "")
-    return {"arch": arch, "cpu": cpu, "os": cpu_facts.local_os()}
-
-
-def _compare_with_host(profile: dict, host: dict) -> dict:
-    """Which of the facts that decide a build differ between this host and the node."""
-    cpu = profile.get("cpu") or {}
-    node_os, host_os = profile.get("os") or {}, host["os"]
-    checks = {
-        "arch": (cpu.get("arch"), host["arch"]),
-        "cpu_model": (cpu.get("model"), host["cpu"].get("model")),
-        "simd": (sorted(k for k, v in (cpu.get("simd") or {}).items() if v),
-                 sorted(k for k, v in (host["cpu"].get("simd") or {}).items() if v)),
-        "os": ((node_os.get("id"), node_os.get("version")), (host_os.get("id"), host_os.get("version"))),
-        "glibc": (node_os.get("glibc"), host_os.get("glibc")),
-    }
-    differs = [k for k, (a, b) in checks.items() if a and b and a != b]
-    return {"same": not differs, "differs": differs}
 
 
 @mcp.tool(**tool_caps(kind="slurm",
@@ -1806,7 +1003,7 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
     target_err = validate_target(constraint, nodelist)
     if target_err:
         return err(target_err)
-    host, refusal = _chosen_host(scheduler)
+    host, refusal = chosen_host(scheduler)
     if refusal:
         return refusal
     if not confirm:
@@ -1837,7 +1034,7 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
         wall_time="00:05:00", log_file=log_file, account=account, nodes=1, ntasks=1,
         constraint=constraint, nodelist=nodelist,
     )
-    script = _probe_script(work_dir, header, make_dir=bool(host))
+    script = probe_script(work_dir, header, make_dir=bool(host))
     # Written locally whatever the scheduler, for a reader: the submission's directory
     # is where someone goes to see what was actually asked for.
     script_path = os.path.join(job_dir, "probe.sh")
@@ -1849,7 +1046,7 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
 
     # On stdin, not by path: a remote scheduler cannot read a file on this machine,
     # and the local one does not need to.
-    res = _run_bash("sbatch", _TIMEOUT_SUBMIT, stdin=script, host=host)
+    res = cli.run_bash("sbatch", TIMEOUT_SUBMIT, stdin=script, host=host)
     if res.get("status") != "ok":
         return err(res.get("stderr") or res.get("error", "sbatch failed"),
                    hint="Check partition, account and constraint.")
@@ -1861,8 +1058,8 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
     # The host is recorded twice on purpose: in the marker the harvest reads, and in
     # the descriptor's own host file, which is what every other cluster tool resolves a
     # job's scheduler from.
-    _record_job_host(job_dir, host)
-    with open(os.path.join(job_dir, _PROBE_MARKER), "w") as fh:
+    record_job_host(job_dir, host)
+    with open(os.path.join(job_dir, PROBE_MARKER), "w") as fh:
         json.dump({"job_id": job_id, "partition": partition, "constraint": constraint,
                    "nodelist": nodelist, "submitted_at": stamp,
                    "host": host, "work_dir": work_dir}, fh)
@@ -1879,24 +1076,6 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
             "status_op": {"tool": "slurm_job_status", "args": {"job_id": job_id}},
         },
     })
-
-
-# Above this many node types, only the facts that decide a build are shown per type;
-# a full profile each (toolchains, environments, modules) would drown the answer.
-_FULL_PROFILE_TYPES = 3
-
-
-def _summary(profile: dict) -> dict:
-    cpu = profile.get("cpu") or {}
-    return {
-        "cpu_model": cpu.get("model", ""),
-        "simd": sorted(k for k, v in (cpu.get("simd") or {}).items() if v),
-        "caches": cpu.get("caches", {}),
-        "march": profile.get("march", {}),
-        "gpu": [{k: d.get(k) for k in ("name", "compute_cap") if d.get(k)}
-                for d in (profile.get("gpu") or {}).get("devices", [])],
-        "os": profile.get("os", {}),
-    }
 
 
 @mcp.tool()
@@ -1934,27 +1113,27 @@ def slurm_node_profile(partition: str = "", node: str = "",
             reaches more than one. A profile belongs to the scheduler it was read on
             and is never read for another.
     """
-    sched_host, refusal = _chosen_host(scheduler)
+    sched_host, refusal = chosen_host(scheduler)
     if refusal:
         return refusal
-    result = _run_argv(["scontrol", "show", "node", "-o"], _TIMEOUT_READ,
+    result = cli.run_argv(["scontrol", "show", "node", "-o"], TIMEOUT_READ,
                        host=sched_host)
     if result.get("status") != "ok":
         return err(result.get("stderr") or result.get("error", "scontrol failed"),
                    hint=f"Needs Slurm's scontrol on {_host_name(sched_host)}.")
     all_nodes = _parse_scontrol_nodes(result.get("stdout", ""))
     by_name = {n["node"]: n for n in all_nodes}
-    pending = _harvest_probes(by_name, sched_host)
+    pending = harvest_probes(by_name, sched_host)
 
     ctx = cpu_facts.execution_context(has_slurm=True)
     if ctx["context"] == "in_allocation":
         here = by_name.get(socket.gethostname().split(".")[0])
         if here:
-            cached = _read_node_profile(here["node"], sched_host)
-            if not cached or cached.get("slurm") != _slurm_facts(here):
-                record = _local_profile_record(here)
+            cached = read_node_profile(here["node"], sched_host)
+            if not cached or cached.get("slurm") != slurm_facts(here):
+                record = node_profiles.local_profile_record(here)
                 if record:
-                    _write_node_profile(here["node"], record, sched_host)
+                    write_node_profile(here["node"], record, sched_host)
 
     nodes = all_nodes
     if node:
@@ -1964,21 +1143,21 @@ def slurm_node_profile(partition: str = "", node: str = "",
     if not nodes:
         return ok({"node_types": [], "note": "No node matched.", "pending_probes": pending})
 
-    host = _host_identity()
+    host = node_profiles.host_identity()
     members: dict[tuple, list[dict]] = {}
     for n in nodes:
         members.setdefault(_hardware_key(n), []).append(n)
     types = _aggregate_node_types(nodes)
-    full = bool(node) or len(types) <= _FULL_PROFILE_TYPES
+    full = bool(node) or len(types) <= FULL_PROFILE_TYPES
     out = []
     for t in types:
         group = members.get(_hardware_key(t), [])
         fresh, stale = [], []
         for n in group:
-            rec = _read_node_profile(n["node"], sched_host)
+            rec = read_node_profile(n["node"], sched_host)
             if not rec:
                 continue
-            (fresh if rec.get("slurm") == _slurm_facts(n) else stale).append(rec)
+            (fresh if rec.get("slurm") == slurm_facts(n) else stale).append(rec)
         entry = {k: t.get(k) for k in ("arch", "cpus", "mem_gb", "gres", "sockets",
                                        "cores_per_socket", "threads_per_core", "features",
                                        "partitions", "nodes_total", "by_state", "example_nodes")}
@@ -1995,8 +1174,8 @@ def slurm_node_profile(partition: str = "", node: str = "",
                 "profiled_on": rec.get("node"),
                 "profiled_at": rec.get("probed_at"),
                 "source": rec.get("source"),
-                "matches_this_host": _compare_with_host(profile, host),
-                "profile": profile if full else _summary(profile),
+                "matches_this_host": compare_with_host(profile, host),
+                "profile": profile if full else summary(profile),
             })
             if rec.get("partial"):
                 entry["partial"] = rec.get("partial_reason", True)
@@ -2207,7 +1386,7 @@ def _profiled_kind_lines(kind: dict, host: str) -> tuple[list[dict], str]:
     same discipline the rest of this panel keeps.
     """
     for node in kind.get("example_nodes") or []:
-        record = _read_node_profile(node, host)
+        record = read_node_profile(node, host)
         if not record or not record.get("profile"):
             continue
         profile = record["profile"]
@@ -2283,7 +1462,7 @@ def _host_tree() -> list[dict]:
                  "value": "unknown, not absent", "state": "warn"})
             groups.append(group)
             continue
-        hardware = _hardware_of(host)
+        hardware = hardware_of(host)
         group["value"] = hardware.get("hardware", "")
         partitions = [str(p.get("partition") or "") for p in digest["partitions"]]
         if partitions:
@@ -2347,7 +1526,7 @@ def _host_tree_cached() -> list[dict]:
     stamps = []
     for host in hosts:
         try:
-            stamps.append(os.stat(_profile_host_dir(host)).st_mtime_ns)
+            stamps.append(os.stat(profile_host_dir(host)).st_mtime_ns)
         except OSError:
             stamps.append(0)
     key = (tuple(hosts), tuple(stamps))
