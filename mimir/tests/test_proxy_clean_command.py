@@ -13,6 +13,7 @@ import os
 import sys
 import types
 import unittest
+from mimir.client.core.turn_state import TurnState
 
 _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "proxy")
 sys.path.insert(0, os.path.abspath(_PROXY))
@@ -57,7 +58,7 @@ class ProxyCleanCommandTests(unittest.TestCase):
 
     def test_a_disconnected_proxy_server_says_so(self) -> None:
         from mimir.tests._commands import cli
-        msg = cli("/proxy clean wave2d", types.SimpleNamespace(tool_owner={}, sessions={}))
+        msg = cli("/proxy clean wave2d", types.SimpleNamespace(tool_owner={}, sessions={}, turn=TurnState()))
         self.assertIn("not connected", msg)
 
     def test_usage_without_a_name(self) -> None:

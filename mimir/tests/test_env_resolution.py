@@ -22,6 +22,7 @@ from mimir.client.context.execution_context import build_execution_context
 from mimir.client.guardrails.nudges import maybe_append_nudge, maybe_inject_env_resolution
 from mimir.tests._golden_caps import build_declared_registry
 from mimir.client.guardrails.observations import Call  # noqa: E402
+from mimir.client.core.turn_state import TurnState
 
 _REGISTRY = build_declared_registry()
 
@@ -30,8 +31,7 @@ def _agent():
     return types.SimpleNamespace(
         tool_caps=_REGISTRY,
         enforcement="strict",
-        normalize_workspace_path=lambda p: p or "",
-    )
+        normalize_workspace_path=lambda p: p or "",turn=TurnState())
 
 
 def _env_discovery_tool() -> str:
@@ -146,8 +146,7 @@ class EnvCleanupNudgeTests(unittest.TestCase):
         # correcting side effect); it is cut only at "off". light/off exercised below.
         agent = types.SimpleNamespace(
             tool_caps=_REGISTRY, enforcement=enforcement,
-            normalize_workspace_path=lambda p: p or "",
-        )
+            normalize_workspace_path=lambda p: p or "",turn=TurnState())
         messages: list[dict] = []
         maybe_append_nudge(
             agent=agent, query="check this file", active_mode="agent",
@@ -201,8 +200,7 @@ class EnvResolutionNudgeTests(unittest.TestCase):
         # the default agent is "strict"; light/off are exercised explicitly below.
         agent = types.SimpleNamespace(
             tool_caps=_REGISTRY, enforcement=enforcement,
-            normalize_workspace_path=lambda p: p or "",
-        )
+            normalize_workspace_path=lambda p: p or "",turn=TurnState())
         messages: list[dict] = []
         maybe_append_nudge(
             agent=agent, query="check this file", active_mode="agent",
@@ -257,8 +255,7 @@ class MidLoopEnvResolutionTests(unittest.TestCase):
     def _agent(self, enforcement="strict"):
         return types.SimpleNamespace(
             tool_caps=_REGISTRY, enforcement=enforcement,
-            normalize_workspace_path=lambda p: p or "",
-        )
+            normalize_workspace_path=lambda p: p or "",turn=TurnState())
 
     def test_fires_immediately_after_a_failing_call(self) -> None:
         ctx = build_execution_context()

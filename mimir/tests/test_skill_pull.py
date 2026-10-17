@@ -28,6 +28,7 @@ from mimir.client.query_engine.history import (
     _trim_tool_history,
 )
 from mimir.client.protocol.messages import reconcile_tool_pairs
+from mimir.client.core.turn_state import TurnState
 
 
 def _agent(disabled: set[str] = frozenset()) -> types.SimpleNamespace:
@@ -45,8 +46,7 @@ def _agent(disabled: set[str] = frozenset()) -> types.SimpleNamespace:
         skill_enabled=lambda name: name not in disabled,
         _json_error_payload=lambda message, hint="", **kw: json.dumps(
             {"status": "error", "error": message, "hint": hint}
-        ),
-    )
+        ),turn=TurnState())
     agent.model_invocable_skills = lambda: [
         (name, meta["description"]) for name, meta in sorted(skills.items())
         if agent.skill_enabled(name) and meta["model_invocable"]

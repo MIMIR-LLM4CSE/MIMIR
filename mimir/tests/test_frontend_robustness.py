@@ -8,6 +8,7 @@ import unittest
 
 from mimir.client.core.settings import read_setting
 from mimir.client.ui.ws.ws_session import _Session
+from mimir.client.core.turn_state import TurnState
 
 
 class _FakeWS:
@@ -160,7 +161,7 @@ class CliCommandFailureTests(unittest.TestCase):
                 batch_mode=False, approval_mode="manual", trust_tool=None,
                 untrust_tool=None, trusted_tools_view=lambda: []),
             context_mode="full", enforcement="strict", thinking_depth=0, temperature=None,
-            apply_setting=None)
+            apply_setting=None, turn=TurnState())
         printed: list[str] = []
 
         async def _boom(*_a, **_kw):
@@ -187,16 +188,13 @@ class CliTurnTests(unittest.TestCase):
 
         async def _run_turn(query, history, **_kw):
             handed.append(list(history))
-            agent._last_full_messages = list(history) + [
+            agent.turn.last_full_messages = list(history) + [
                 {"role": "user", "content": query},
                 {"role": "assistant", "content": f"answer to {query}"}]
-            agent._last_turn_start = len(history)
+            agent.turn.last_turn_start = len(history)
             return f"answer to {query}"
 
-        agent = types.SimpleNamespace(
-            tool_caps={}, mode="agent", thinking=False, streaming=False,
-            context_mode=context_mode, model="m", run=_run_turn,
-            _last_full_messages=None, _last_turn_start=None)
+        agent = types.SimpleNamespace(tool_caps={}, mode="agent", thinking=False, streaming=False, context_mode=context_mode, model="m", run=_run_turn, turn=TurnState(last_full_messages=None, last_turn_start=None))
         backend = types.SimpleNamespace(
             count_messages_tokens=lambda _m, msgs: 10 * len(msgs),
             message_token_counts=lambda _m, msgs: [10] * len(msgs))

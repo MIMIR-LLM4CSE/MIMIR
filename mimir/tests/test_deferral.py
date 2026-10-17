@@ -41,6 +41,7 @@ from mimir.tests.test_agent_loop import RunAgentQueryNonInteractiveTests, _tool_
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.tests._loops import run_plan
+from mimir.client.core.turn_state import TurnState
 
 _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}
 
@@ -53,7 +54,7 @@ def _worker() -> _AgentWorker:
     w.session_id = "s1"
     w.session_title = ""
     w._query_session_id = "s1"
-    w._agent = types.SimpleNamespace(_cancel_flag=threading.Event(), _deferred_prompts=[])
+    w._agent = types.SimpleNamespace(turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=[]))
     return w
 
 
@@ -68,7 +69,7 @@ class WorkerDeferralTests(unittest.TestCase):
         finally:
             CURRENT_CALL_ID.reset(token)
         self.assertEqual(
-            w._agent._deferred_prompts,
+            w._agent.turn.deferred_prompts,
             [{"call_id": "call-7",
               "prompt": {**_PROMPT, "session_id": "s1", "session_title": ""},
               "questions": []}])
@@ -111,27 +112,27 @@ class LoopDeferralTests(unittest.TestCase):
 
     def test_a_deferred_call_ends_the_turn_and_resumes_on_its_answer(self) -> None:
         agent = RunAgentQueryNonInteractiveTests._query_agent(self)
-        agent._deferred_prompts = []
+        agent.turn.deferred_prompts = []
 
         async def _defer(tool_calls, agent, messages, execution_context):
             for tc in tool_calls:
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "denied"})
-            agent._deferred_prompts = [{"call_id": "a", "prompt": _PROMPT}]
+            agent.turn.deferred_prompts = [{"call_id": "a", "prompt": _PROMPT}]
 
         result, backend = self._run(
             agent, [{"content": "", "tool_calls": [_tool_call("bash_run", call_id="a")]}],
             _defer, history=[{"role": "user", "content": "q"}])
         self.assertEqual(result, "")
         self.assertEqual(len(backend.calls), 1)  # no model call after the deferral
-        record = agent._deferred_turn
+        record = agent.turn.deferred_turn
         self.assertEqual((record["kind"], record["call_ids"]), (KIND_CALLS, ["a"]))
-        parked = [m for m in agent._last_full_messages if m.get("role") == "tool"]
+        parked = [m for m in agent.turn.last_full_messages if m.get("role") == "tool"]
         self.assertEqual(parked[0]["content"], DEFERRED_RESULT)
 
         # The user comes back and approves: the call runs, then the model continues.
-        history = list(agent._last_full_messages)
-        agent._deferred_prompts = []
-        agent._deferred_turn = None
+        history = list(agent.turn.last_full_messages)
+        agent.turn.deferred_prompts = []
+        agent.turn.deferred_turn = None
         ran = []
 
         async def _run_it(tool_calls, agent, messages, execution_context):
@@ -155,8 +156,7 @@ class PlanDecisionDeferralTests(unittest.TestCase):
         from mimir.client.query_engine import plan_loop as plan_loop_module
 
         backend = ScriptedBackend([])
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps={},
-                                      _deferred_prompts=[], request_user_question=None)
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps={}, request_user_question=None, turn=TurnState(deferred_prompts=[]))
         agent.request_user_question = lambda questions: ask(agent)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -187,24 +187,24 @@ class PlanDecisionDeferralTests(unittest.TestCase):
 
     def test_leaving_again_defers_the_decision_again(self) -> None:
         def _leave(agent):
-            agent._deferred_prompts = [{"call_id": None, "prompt": {"id": "q1"}}]
+            agent.turn.deferred_prompts = [{"call_id": None, "prompt": {"id": "q1"}}]
             return {"answers": []}
 
         _, backend, agent, _ = self._run_plan(_leave)
-        self.assertEqual(agent._deferred_turn["kind"], KIND_PLAN_DECISION)
+        self.assertEqual(agent.turn.deferred_turn["kind"], KIND_PLAN_DECISION)
         self.assertEqual(backend.calls, [])
 
 
 class AttributionTests(unittest.TestCase):
     def test_a_question_is_matched_to_the_call_that_carries_it(self) -> None:
-        agent = types.SimpleNamespace(_deferred_prompts=[
-            {"call_id": None, "prompt": {}, "questions": [{"question": "Quelle base ?"}]}])
+        agent = types.SimpleNamespace(turn=TurnState(deferred_prompts=[
+            {"call_id": None, "prompt": {}, "questions": [{"question": "Quelle base ?"}]}]))
         calls = [_tool_call("read_file", '{"path": "x"}', call_id="r"),
                  _tool_call("ask", '{"questions": [{"question": "Quelle base ?"}]}', call_id="q")]
         messages = [{"role": "tool", "tool_call_id": "r", "content": "x"},
                     {"role": "tool", "tool_call_id": "q", "content": "declined"}]
         self.assertTrue(end_deferred_calls(agent, messages, calls, query="q", mode="agent"))
-        self.assertEqual(agent._deferred_turn["call_ids"], ["q"])
+        self.assertEqual(agent.turn.deferred_turn["call_ids"], ["q"])
         self.assertEqual(messages[0]["content"], "x")
         self.assertEqual(messages[1]["content"], DEFERRED_RESULT)
 

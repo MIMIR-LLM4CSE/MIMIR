@@ -478,7 +478,7 @@ async def execute_tool_call(
     execution_context = evaluation.execution_context
 
     # Serve read-only tool calls from the per-query cache.
-    cache: dict = getattr(agent, "_tool_cache", {})
+    cache: dict = agent.turn.tool_cache
     cache_key: tuple | None = None
     cache_stamp: tuple | None = None
     if has_cap(tool_name, CACHEABLE, agent.tool_caps):

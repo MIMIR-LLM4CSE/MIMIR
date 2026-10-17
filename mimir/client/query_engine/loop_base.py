@@ -384,7 +384,7 @@ class StepLoop:
             msg = _stream_chat(
                 self.turn.model, self.messages, tools, self.thinking,
                 self.turn.streaming, self.step_options(),
-                cancel_flag=getattr(self.agent, "_cancel_flag", None),
+                cancel_flag=self.agent.turn.cancel_flag,
                 on_retry=hold.discard if hold else None,
                 **step_callbacks,
             )

@@ -29,16 +29,18 @@ import unittest
 from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.core.turn_state import TurnState
 
 
 class _FakeAgent:
     """Records that it was closed, and on which thread."""
 
     def __init__(self, hang: bool = False) -> None:
+        self.turn = TurnState()
         self.closed = False
         self.closed_on: int | None = None
         self._hang = hang
-        self._cancel_flag = threading.Event()
+        self.turn.cancel_flag = threading.Event()
 
     async def cleanup(self) -> None:
         if self._hang:

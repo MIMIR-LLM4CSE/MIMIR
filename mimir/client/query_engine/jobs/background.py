@@ -157,7 +157,7 @@ def maybe_register_background_job(
 
     Registration is delegated to the optional front-end hook
     ``agent.register_background_job`` (the WebSocket worker sets it; CLI does not),
-    mirroring the ``poll_steer``/``_cancel_flag`` optional-hook pattern.
+    mirroring the ``poll_steer``/``turn.cancel_flag`` optional-hook pattern.
 
     Returns ``(result, registered)``. The result carries the "you were backgrounded,
     end your turn" note **only when a watcher is actually holding the run**, and
@@ -245,7 +245,7 @@ async def await_background_job(descriptor: dict, agent: AgentPort, result_text: 
         # Stop ends it at the next tick.
         call_timeout=poll.STATUS_CALL_TIMEOUT,
         unreadable_limit=poll.UNREADABLE_POLL_LIMIT,
-        cancel_flag=getattr(agent, "_cancel_flag", None),
+        cancel_flag=agent.turn.cancel_flag,
         on_tick=_tick)
 
     summary_text = ""

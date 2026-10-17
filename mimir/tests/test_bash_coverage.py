@@ -38,6 +38,7 @@ from mimir.client.context.execution_context import build_execution_context, unse
 from mimir.client.guardrails import observations as _observations
 from mimir.client.guardrails.observations import record_tool_observation
 from mimir.client.context.bash_classify import classify_bash_command
+from mimir.client.core.turn_state import TurnState
 
 BASH_TOOL = "bash_run"
 
@@ -59,8 +60,7 @@ def _stub_agent():
     return types.SimpleNamespace(
         tool_caps=caps,
         normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-        is_code_filepath=lambda p: os.path.splitext(p)[1].lower() in SOURCE_FILE_EXTENSIONS,
-    )
+        is_code_filepath=lambda p: os.path.splitext(p)[1].lower() in SOURCE_FILE_EXTENSIONS,turn=TurnState())
 
 
 def _run(command: str, *, status: str = "ok", stdout: str = "out",

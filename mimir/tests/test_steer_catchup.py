@@ -34,17 +34,19 @@ from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 from mimir.tests._fake_pool import FakePool
 from mimir.tests.support.state import pin_state_dir
+from mimir.client.core.turn_state import TurnState
 
 
 class _FakeAgent:
     """Runs a turn that reads no steer, the way a final-answer step does."""
 
     def __init__(self) -> None:
-        self._cancel_flag = threading.Event()
-        self._deferred_prompts: list = []
-        self._deferred_turn = None
-        self._last_full_messages = None
-        self._last_turn_start = None
+        self.turn = TurnState()
+        self.turn.cancel_flag = threading.Event()
+        self.turn.deferred_prompts: list = []
+        self.turn.deferred_turn = None
+        self.turn.last_full_messages = None
+        self.turn.last_turn_start = None
         self.context_mode = "flat"
         self.streaming = False
         self.thinking = False

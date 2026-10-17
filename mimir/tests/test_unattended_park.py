@@ -26,6 +26,7 @@ from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.human_bridge import HumanBridge, _detach_grace
 from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.core.turn_state import TurnState
 
 
 def _worker(session_id: str = "s1") -> _AgentWorker:
@@ -37,10 +38,7 @@ def _worker(session_id: str = "s1") -> _AgentWorker:
     w.session_id = session_id
     w.session_title = ""
     w._query_session_id = session_id
-    w._agent = types.SimpleNamespace(
-        _cancel_flag=threading.Event(), _deferred_prompts=None, _deferred_turn=None,
-        non_interactive=False,
-    )
+    w._agent = types.SimpleNamespace(non_interactive=False, turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=None, deferred_turn=None))
     return w
 
 
@@ -121,7 +119,7 @@ class TheWaitTests(unittest.TestCase):
         self.assertTrue(w.human._deferring())
         self.assertTrue(w.human.has_deferral)
         self.assertEqual(
-            [p["prompt"]["id"] for p in w._agent._deferred_prompts], ["a1"])
+            [p["prompt"]["id"] for p in w._agent.turn.deferred_prompts], ["a1"])
 
     def test_the_card_is_let_go_of_so_nothing_resends_it(self):
         w = _worker()

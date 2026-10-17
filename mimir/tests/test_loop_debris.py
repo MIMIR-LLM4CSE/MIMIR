@@ -31,6 +31,7 @@ from mimir.tests.test_agent_loop import (
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.tests._loops import run_plan
+from mimir.client.core.turn_state import TurnState
 
 
 def _is_empty_assistant(m: dict) -> bool:
@@ -54,7 +55,7 @@ class _LoopRunner(unittest.TestCase):
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
             result = asyncio.run(turn_module.run_agent_query(agent=agent, query="q", max_steps=max_steps))
         # What the session would persist for this turn.
-        return result, backend, emitted, list(agent._last_full_messages)
+        return result, backend, emitted, list(agent.turn.last_full_messages)
 
 
 class EmptyTurnDebrisTests(_LoopRunner):
@@ -188,16 +189,16 @@ class InterruptedTurnRecordTests(unittest.TestCase):
 
     Session ``505d43a3``: after each stop + "continue", the model replayed the same
     "Excellent résultat" message. The stopped turn had left the *previous* turn's
-    transcript in ``_last_full_messages``; the front-end rolled its history back to it,
+    transcript in ``turn.last_full_messages``; the front-end rolled its history back to it,
     archived that turn a second time, and "continue" resumed from before the work.
     """
 
     def _run_cancelled(self):
         agent = RunAgentQueryNonInteractiveTests._query_agent(self)
         # What the slot held from a turn of another session.
-        agent._last_full_messages = [{"role": "user", "content": "older task"},
+        agent.turn.last_full_messages = [{"role": "user", "content": "older task"},
                                      {"role": "assistant", "content": "older answer"}]
-        agent._last_turn_start = 7
+        agent.turn.last_turn_start = 7
         backend = _CancelsOnSecondCall([{"tool_calls": [_tool_call("read_file")]}])
 
         async def _dispatch(tool_calls, agent, messages, execution_context):
@@ -216,16 +217,16 @@ class InterruptedTurnRecordTests(unittest.TestCase):
 
     def test_the_stopped_turn_is_what_is_recorded(self) -> None:
         agent = self._run_cancelled()
-        contents = [m.get("content") for m in agent._last_full_messages]
+        contents = [m.get("content") for m in agent.turn.last_full_messages]
         self.assertNotIn("older task", contents)
-        self.assertEqual(agent._last_full_messages[0]["content"], "this task")
+        self.assertEqual(agent.turn.last_full_messages[0]["content"], "this task")
         # The tool call it made and its result are kept, paired.
-        roles = [m["role"] for m in agent._last_full_messages]
+        roles = [m["role"] for m in agent.turn.last_full_messages]
         self.assertEqual(roles, ["user", "assistant", "tool"])
 
     def test_the_turn_boundary_points_past_its_opening(self) -> None:
         agent = self._run_cancelled()
-        self.assertEqual(agent._last_turn_start, 1)
+        self.assertEqual(agent.turn.last_turn_start, 1)
 
 
 class InterleavedReasoningTests(unittest.TestCase):
@@ -272,7 +273,7 @@ class InterleavedReasoningTests(unittest.TestCase):
         self.assertNotIn("reasoning", [k for x in sent for k in x])
         # The caller's own dicts are left as they were.
         self.assertEqual(earlier[1]["reasoning"], "old thoughts")
-        kept = [x for x in agent._last_full_messages if x.get("reasoning")]
+        kept = [x for x in agent.turn.last_full_messages if x.get("reasoning")]
         self.assertEqual([x["reasoning"] for x in kept], ["GPU 7 is idle", "wrap up"])
 
 
@@ -368,7 +369,7 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \

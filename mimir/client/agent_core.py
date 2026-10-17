@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import threading
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from typing import Any
@@ -60,6 +59,7 @@ from .core.ports import HumanIO
 from .core.settings import apply_setting
 from .event_sink import reset_event_sink, set_event_sink
 from .core.extension_set import AMBIENT, ExtensionSet
+from .core.turn_state import TurnState
 from .extensions import all_server_descriptions, all_servers, load_plugins, resolve_skills_dir
 from .guardrails.policy.approval import ApprovalManager, denial_kind
 from .guardrails.toollist import tools_for_readonly_mode
@@ -255,26 +255,15 @@ class MimirAgent:
         self.last_plan_query: str = ""
         # Fields carried forward from previous queries within this session.
         self._carry_context: dict[str, Any] = {}
-        # Per-query read-only tool result cache; reset at the start of each query.
-        self._tool_cache: dict = {}
-        # Full message list from the last completed query (system message excluded).
-        # Used by chat_session in full-context mode to keep tool results in history.
-        self._last_full_messages: list[dict] = []
-        # Where the last completed turn's own messages begin in ``_last_full_messages``
-        # (None when the turn's opening message did not survive compaction), and the
-        # object that boundary is resolved against. Set by the loop and its finalizer;
-        # read by a front-end that keeps a record of its own. See finalize._turn_start_index.
-        self._last_turn_start: int | None = None
-        self._turn_opening_message: dict | None = None
-        # Reference to the message list of the query currently running (system message
-        # INCLUDED, index 0). Front-ends read it to report context usage mid-turn.
-        self._live_messages: list[dict] | None = None
+        # The turn in flight and the last finished one (core.turn_state).
+        self.turn = TurnState()
+        # Bounds below the model's own, 0 meaning none: a sub-agent is held to a smaller
+        # window and a shorter answer than the model allows.
+        self.max_context_tokens: int = 0
+        self.max_answer_tokens: int = 0
         # Context mode: "full" (the default — keep every tool message in history) or
         # "compact" (aggressive compaction, for a small context window).
         self.context_mode: str = "full"
-        # Cancellation flag: set by ws_server when the user presses Stop.
-        # _stream_chat checks this on every LLM chunk so streaming aborts immediately.
-        self._cancel_flag = threading.Event()
 
         self.skills: dict[str, dict[str, Any]] = {}
         self.load_skills(SKILL_BASE)

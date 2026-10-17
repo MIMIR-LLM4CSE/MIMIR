@@ -23,6 +23,7 @@ from mimir.client.tool_execution import bash_effect as be
 from mimir.client.tool_execution import executor as ex
 from mimir.client.protocol.tool_result import normalize_tool_content, parse_tool_payload
 from mimir.tests._golden_caps import build_declared_registry
+from mimir.client.core.turn_state import TurnState
 
 _DECLARED_REGISTRY = build_declared_registry()
 
@@ -102,8 +103,7 @@ def _agent():
     }
     return types.SimpleNamespace(
         normalize_workspace_path=lambda p: p or "",
-        tool_caps=caps,
-    )
+        tool_caps=caps,turn=TurnState())
 
 
 def _created(path: str) -> str:
@@ -332,8 +332,7 @@ class BashEffectTests(unittest.TestCase):
             workspace_root=self.tmp,
             tool_caps=dict(_DECLARED_REGISTRY),
             normalize_workspace_path=lambda p: (
-                p if os.path.isabs(p) else os.path.join(self.tmp, p)),
-        )
+                p if os.path.isabs(p) else os.path.join(self.tmp, p)),turn=TurnState())
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)

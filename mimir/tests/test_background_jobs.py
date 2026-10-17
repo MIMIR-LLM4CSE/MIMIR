@@ -30,6 +30,7 @@ from mimir.client.query_engine.jobs.background import (
 )
 from mimir.tests._proxy_fixtures import (_TmpStorageTest, pin_local_scheduler, server_proxy)
 from mimir.tests.support.state import pin_state_dir
+from mimir.client.core.turn_state import TurnState
 
 
 def _eval(*args, **kwargs):
@@ -112,6 +113,7 @@ class BackgroundDescriptorTests(_TmpStorageTest):
 
 class _FakeAgent:
     def __init__(self, cap: bool, with_hook: bool, outcome: object = True) -> None:
+        self.turn = TurnState()
         caps = frozenset({BACKGROUNDABLE}) if cap else frozenset()
         self.tool_caps = {"proxy_eval": ToolCaps(name="proxy_eval", capabilities=caps)}
         self.registered: list[dict] = []
@@ -278,8 +280,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
         registered: list[dict] = []
         agent = types.SimpleNamespace(
             tool_caps=registry,
-            register_background_job=lambda d: bool(registered.append(d) or True),
-        )
+            register_background_job=lambda d: bool(registered.append(d) or True),turn=TurnState())
         out, was_registered = maybe_register_background_job(
             "bash_run", json.dumps(result), agent)
 
@@ -327,8 +328,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
         agent = types.SimpleNamespace(
             tool_caps=registry,
             watched_background_jobs=lambda: [],
-            register_background_job=lambda d: bool(registered.append(d) or True),
-        )
+            register_background_job=lambda d: bool(registered.append(d) or True),turn=TurnState())
         out = maybe_rewatch_background_jobs("bash_watch", json.dumps(result), agent)
 
         self.assertEqual([d["job_key"] for d in registered], [job_key])
@@ -392,6 +392,7 @@ class _ScriptedAgent:
     """
 
     def __init__(self, states: list[str], summary: dict) -> None:
+        self.turn = TurnState()
         self._states = list(states)
         self._summary = summary
         self.status_calls = 0
@@ -416,6 +417,7 @@ class _MuteAgent:
     """
 
     def __init__(self, payload: dict | None = None, raises: bool = False) -> None:
+        self.turn = TurnState()
         self._payload = payload if payload is not None else {"status": "error",
                                                              "error": "policy: refused"}
         self._raises = raises
@@ -800,8 +802,7 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
             approvals=approvals,
             run_tool=run_tool,
             rewrite_tool_for_context=lambda n, a: (n, a),
-            registered=[],
-        )
+            registered=[],turn=TurnState())
 
     @staticmethod
     def _descriptor(key: str) -> dict:
@@ -1193,8 +1194,8 @@ class AwaitBackgroundJobTests(unittest.TestCase):
         import threading
 
         agent = _ScriptedAgent(states=["running"] * 50, summary={})
-        agent._cancel_flag = threading.Event()
-        agent._cancel_flag.set()
+        agent.turn.cancel_flag = threading.Event()
+        agent.turn.cancel_flag.set()
         with self.assertRaises(asyncio.CancelledError):
             self._run(agent, self._descriptor(), '{"status":"ok"}')
         self.assertEqual(agent.status_calls, 0)
@@ -2360,8 +2361,7 @@ class RewatchDetectionTests(unittest.TestCase):
         self.agent = types.SimpleNamespace(
             tool_caps={},
             register_background_job=lambda d: (self.registered.append(d), True)[1],
-            watched_background_jobs=lambda: [],
-        )
+            watched_background_jobs=lambda: [],turn=TurnState())
 
     def _result(self, *descriptors: dict) -> str:
         return json.dumps({"status": "ok", "state": "running",

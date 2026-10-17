@@ -279,13 +279,13 @@ async def run_chat_session(agent: Any) -> None:
             # Written by the rule the WebSocket front-end uses: in full-context mode the
             # turn's whole transcript (tool calls and results included) becomes the
             # window, otherwise the question and the answer alone.
-            full = agent._last_full_messages if agent.context_mode == "full" else None
+            full = agent.turn.last_full_messages if agent.context_mode == "full" else None
             if full is None:
                 conversation.add_user_message(query)
             conversation.commit_answer(
                 {"text": answer},
                 {"_full": list(full) if full else None,
-                 "_turn_start": agent._last_turn_start, "_submitted_len": submitted,
+                 "_turn_start": agent.turn.last_turn_start, "_submitted_len": submitted,
                  "_context_mode": agent.context_mode})
 
             if full is not None:

@@ -19,6 +19,7 @@ from unittest import mock
 
 from mimir.client.event_sink import event_sink
 from mimir.client.tool_execution import executor as ex
+from mimir.client.core.turn_state import TurnState
 
 
 def _drive(cb, payload) -> None:
@@ -132,19 +133,8 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
                 captured.update(kwargs)
                 return types.SimpleNamespace(content=[])
 
-        agent = types.SimpleNamespace(
-            model="served/model",
-            sessions={"srv": _Session()},
-            tool_owner={"delegate": "srv", "read_thing": "srv"},
-            mode="agent",
-            tool_caps=tool_caps or {},
-            disabled_servers=set(),
-            _tool_cache={},
-            approvals=types.SimpleNamespace(batch_mode=False, approval_mode="auto"),
-            normalize_workspace_path=lambda p: p,
-            tools=[{"type": "function", "function": {"name": n}}
-                   for n in ("delegate", "read_thing")],
-        )
+        agent = types.SimpleNamespace(model="served/model", sessions={"srv": _Session()}, tool_owner={"delegate": "srv", "read_thing": "srv"}, mode="agent", tool_caps=tool_caps or {}, disabled_servers=set(), approvals=types.SimpleNamespace(batch_mode=False, approval_mode="auto"), normalize_workspace_path=lambda p: p, tools=[{"type": "function", "function": {"name": n}}
+                   for n in ("delegate", "read_thing")], turn=TurnState(tool_cache={}))
         agent.advertised_tools = lambda: agent.tools
         evaluation = types.SimpleNamespace(
             violation=None, tool_name="delegate", arguments={}, execution_context=build_execution_context(),

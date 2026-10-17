@@ -72,9 +72,9 @@ def _record_turn(agent: AgentPort, messages: list[dict], *, repair: bool = True)
     """
     if repair:
         messages[:] = reconcile_tool_pairs(messages)
-    agent._last_turn_start = _turn_start_index(agent, messages)
-    _drop_earlier_reasoning(messages, agent._last_turn_start)
-    agent._last_full_messages = messages[1:]
+    agent.turn.last_turn_start = _turn_start_index(agent, messages)
+    _drop_earlier_reasoning(messages, agent.turn.last_turn_start)
+    agent.turn.last_full_messages = messages[1:]
 
 
 def _drop_earlier_reasoning(messages: list[dict], turn_start: int | None) -> None:
@@ -93,7 +93,7 @@ def _drop_earlier_reasoning(messages: list[dict], turn_start: int | None) -> Non
 
 
 def _turn_start_index(agent: AgentPort, messages: list[dict]) -> int | None:
-    """Where this turn's own messages begin in ``_last_full_messages``, or None.
+    """Where this turn's own messages begin in ``turn.last_full_messages``, or None.
 
     Resolved by identity against the message the loop recorded as this turn's opening
     (see ``AgentLoop.run``), because that is the only thing about the list that the
@@ -109,7 +109,7 @@ def _turn_start_index(agent: AgentPort, messages: list[dict]) -> int | None:
     give. A caller must fall back rather than guess, which is the whole point of
     saying so instead of returning a number that looks usable.
     """
-    opening = getattr(agent, "_turn_opening_message", None)
+    opening = agent.turn.opening_message
     if opening is None:
         return None
     for i, m in enumerate(messages):

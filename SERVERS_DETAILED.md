@@ -1369,7 +1369,7 @@ Tools:
     own that nothing can kill, so a budget that expires used to return to the caller and
     leave the thread working: it went on spending model calls on an answer nobody would
     read, and wrote its card as a clean `finished` minutes later. The timeout branch now
-    sets the agent's `_cancel_flag` — the same cooperative flag the WebSocket worker uses
+    sets the agent's `turn.cancel_flag` — the same cooperative flag the WebSocket worker uses
     to interrupt a turn — and marks the card `abandoned`, which outranks `finished` even
     when the thread does reach a clean result. The card's four terminal states are
     therefore `finished`, `abandoned`, `failed` and `unknown`. The line handed back to

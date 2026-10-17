@@ -15,6 +15,7 @@ from mimir.client.config import paths
 from mimir.client.core.extension_set import ExtensionSet
 from mimir.client.agent_core import MimirAgent
 from mimir.tests._commands import cli
+from mimir.client.core.turn_state import TurnState
 
 
 def _fake_agent(**overrides):
@@ -25,8 +26,7 @@ def _fake_agent(**overrides):
         disabled_servers=set(),
         disabled_skills=set(),
         skills={},
-        extensions=ExtensionSet(),
-    )
+        extensions=ExtensionSet(),turn=TurnState())
     for k, v in overrides.items():
         setattr(fake, k, v)
     return fake

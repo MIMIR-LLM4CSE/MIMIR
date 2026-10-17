@@ -19,6 +19,7 @@ from mimir.client.context.capabilities import (
     SENSITIVE,
     TASK_PLANNING,
 )
+from mimir.client.core.turn_state import TurnState
 
 
 class BashCommandReadonlyTests(unittest.TestCase):
@@ -366,7 +367,7 @@ class ReadonlyInvocationTests(unittest.TestCase):
         from types import SimpleNamespace
         from mimir.client.guardrails.policy.readonly_exempt import readonly_bash_exempt
 
-        agent = SimpleNamespace(tool_caps=self._caps())
+        agent = SimpleNamespace(tool_caps=self._caps(), turn=TurnState())
         self.assertTrue(readonly_bash_exempt(agent, "jobs", {"op": "list"}))
         self.assertTrue(readonly_bash_exempt(agent, "jobs", {}))
         self.assertFalse(readonly_bash_exempt(agent, "jobs", {"op": "cancel"}))

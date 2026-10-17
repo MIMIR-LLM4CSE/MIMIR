@@ -38,6 +38,7 @@ def _report(hpc, **kwargs) -> dict:
 import slurm_site  # noqa: E402
 
 from mimir.client.context.capabilities import PANEL_REPORT, ToolCaps, panel_sections
+from mimir.client.core.turn_state import TurnState
 
 
 def _mcp(payload: dict) -> types.SimpleNamespace:
@@ -128,8 +129,7 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
         tool_caps=_caps(good={"section": "Optimisation", "order": 10},
                         bad={"section": "Machine", "order": 20}),
         tool_owner={"good": "proxy", "bad": "platform"},
-        sessions={"proxy": _Session(payload="x"), "platform": _Session(boom=True)},
-    )
+        sessions={"proxy": _Session(payload="x"), "platform": _Session(boom=True)},turn=TurnState())
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
     worker.jobs = JobWatcher(worker)
@@ -169,8 +169,7 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
                         cluster={"section": "Cluster", "order": 20},
                         proxy={"section": "Optimisation", "order": 30}),
         tool_owner={"machine": "platform", "cluster": "hpc", "proxy": "proxy"},
-        sessions={"platform": _Session(), "hpc": _Session(), "proxy": _Session()},
-    )
+        sessions={"platform": _Session(), "hpc": _Session(), "proxy": _Session()},turn=TurnState())
     loop = asyncio.new_event_loop()
     release.append(loop.create_future())
     worker = object.__new__(_AgentWorker)
@@ -211,8 +210,7 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
                                  "refresh_arg": "refresh"},
                         machine={"section": "Machine", "order": 20}),
         tool_owner={"cluster": "hpc", "machine": "platform"},
-        sessions={"hpc": _Session(), "platform": _Session()},
-    )
+        sessions={"hpc": _Session(), "platform": _Session()},turn=TurnState())
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
     worker.jobs = JobWatcher(worker)
@@ -324,8 +322,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
         tool_caps=_caps(empty={"section": "Cluster", "order": 10},
                         spoken_for={"section": "Optimisation", "order": 20}),
         tool_owner={"empty": "hpc", "spoken_for": "proxy"},
-        sessions={"hpc": _Session("empty"), "proxy": _Session("spoken_for")},
-    )
+        sessions={"hpc": _Session("empty"), "proxy": _Session("spoken_for")},turn=TurnState())
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
     worker.jobs = JobWatcher(worker)
@@ -359,8 +356,7 @@ def test_a_section_that_only_has_groups_is_kept():
     agent = types.SimpleNamespace(
         tool_caps=_caps(tree={"section": "Cluster", "order": 10}),
         tool_owner={"tree": "hpc"},
-        sessions={"hpc": _Session()},
-    )
+        sessions={"hpc": _Session()},turn=TurnState())
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
     worker.jobs = JobWatcher(worker)

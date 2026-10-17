@@ -101,7 +101,7 @@ async def run_agent_query(
     plan-mode or agent-mode loop. The two loops (and every exit path) share
     ``_finalize_answer`` for end-of-query bookkeeping.
     """
-    agent._tool_cache = {}
+    agent.turn.tool_cache = {}
     execution_context = agent.new_execution_context()
     # Set here rather than passed in: a front-end's stand-in agent supplies its own
     # zero-argument factory, and the root is a fact about the agent either way.
@@ -161,14 +161,14 @@ async def run_agent_query(
         take_deferred_calls(messages, list(resume.get("call_ids") or []))
         if resume is not None and resume.get("kind") == KIND_CALLS else []
     )
-    agent._turn_opening_message = messages[-1] if messages else None
+    agent.turn.opening_message = messages[-1] if messages else None
     # This turn owns the transcript slot from here on: an earlier turn's (or an earlier
     # session's) must never be read back as this one's, whatever way this one ends.
     _record_turn(agent, messages, repair=False)
 
     # Every loop below mutates this exact list in place, so handing the reference out
     # is enough for a front-end to read the in-flight context without polling the agent.
-    agent._live_messages = messages
+    agent.turn.live_messages = messages
 
     # -------------------------------------------------------
     # Skill invoked by the user: /skill-name
@@ -254,7 +254,7 @@ async def run_agent_query(
         _emit_interrupted_state(execution_context)
         raise
     finally:
-        agent._live_messages = None
+        agent.turn.live_messages = None
         # A cancelled or failed turn never reaches _finalize_answer; record what it did
         # so the front-end keeps its work instead of rolling back to the turn before.
         _record_turn(agent, messages)

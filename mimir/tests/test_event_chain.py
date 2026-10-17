@@ -29,6 +29,7 @@ from mimir.client.ui.ws.job_watcher import JobWatcher
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
 from mimir.tests.support.state import pin_state_dir
+from mimir.client.core.turn_state import TurnState
 
 # What a turn that runs one tool actually puts on the queue, in order.
 _TURN = [
@@ -73,12 +74,7 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     # A stand-in agent with the surface the worker actually calls on it. `_approvals`
     # is what the policy engine reads afresh at each gate, so setting the mode is a
     # rebind and nothing has to be queued.
-    w._agent = types.SimpleNamespace(
-        _cancel_flag=threading.Event(), _deferred_prompts=None, _deferred_turn=None,
-        context_mode="full", enforcement="light", non_interactive=False,
-        approvals=types.SimpleNamespace(approval_mode="manual"),
-        apply_setting=lambda name, mode: setattr(w._agent.approvals, name, mode),
-        toggles_state=lambda: {"servers": [], "skills": [], "nudges": []})
+    w._agent = types.SimpleNamespace(context_mode="full", enforcement="light", non_interactive=False, approvals=types.SimpleNamespace(approval_mode="manual"), apply_setting=lambda name, mode: setattr(w._agent.approvals, name, mode), toggles_state=lambda: {"servers": [], "skills": [], "nudges": []}, turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=None, deferred_turn=None))
     w._expired_prompt_ids = set()
     w.jobs._bg_jobs = {}
     w.is_busy = lambda: w._query_session_id is not None

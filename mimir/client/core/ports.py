@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Protocol
 
 from ..context.execution_context import ExecutionContext
+from .turn_state import TurnState
 
 
 class AgentPort(Protocol):
@@ -41,14 +42,8 @@ class AgentPort(Protocol):
     max_context_tokens: int
     max_answer_tokens: int
 
-    # ── The turn in flight, as the front-ends read it ──────────────────────────
-    _live_messages: list[dict] | None
-    _turn_opening_message: dict | None
-    _last_turn_start: int | None
-    _last_full_messages: list[dict] | None
-    _tool_cache: dict
-    _cancel_flag: Any                    # threading.Event the user's Stop sets
-    _deferred_prompts: list[dict]
+    # ── The turn in flight, and the last one that finished ─────────────────────
+    turn: TurnState
 
     # ── What a front-end lends the turn (None where it lends nothing) ─────────
     # Messages the user typed while the turn runs, drained at each step boundary.

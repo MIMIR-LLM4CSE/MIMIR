@@ -43,7 +43,7 @@ DEFERRED_RESULT = json.dumps({
 
 def deferred_prompts(agent: AgentPort) -> list[dict]:
     """The prompts set aside during this turn, as ``{"call_id", "prompt", "questions"}``."""
-    return list(getattr(agent, "_deferred_prompts", None) or [])
+    return list(agent.turn.deferred_prompts or [])
 
 
 def park_results(messages: list[dict], call_ids: list[str]) -> None:
@@ -57,7 +57,7 @@ def park_results(messages: list[dict], call_ids: list[str]) -> None:
 def mark_deferred(agent: AgentPort, *, kind: str, query: str, mode: str,
                   call_ids: list[str] | None = None) -> None:
     """Record that this turn ended deferred, for the front-end to store."""
-    agent._deferred_turn = {
+    agent.turn.deferred_turn = {
         "kind": kind,
         "query": query,
         "mode": mode,

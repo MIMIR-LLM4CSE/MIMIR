@@ -19,11 +19,13 @@ import unittest
 
 from mimir.client.ui.ws.human_bridge import TIMED_OUT, HumanBridge
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.core.turn_state import TurnState
 
 
 class _StubAgent:
     def __init__(self) -> None:
-        self._cancel_flag = threading.Event()
+        self.turn = TurnState()
+        self.turn.cancel_flag = threading.Event()
 
 
 def _make_worker() -> _AgentWorker:
@@ -80,7 +82,7 @@ class AwaitResponseTests(unittest.TestCase):
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         time.sleep(0.05)
-        w._agent._cancel_flag.set()
+        w._agent.turn.cancel_flag.set()
         t.join(timeout=2.0)
         self.assertFalse(t.is_alive())
         self.assertEqual(result, [None])
@@ -242,13 +244,13 @@ class ExpiryIsNotRefusalTests(unittest.TestCase):
     def test_being_cancelled_is_not(self) -> None:
         """Stop means the person is gone, not that they delegated the choice."""
         w = _make_worker()
-        w._agent._cancel_flag.set()
+        w._agent.turn.cancel_flag.set()
         out = w.human.ask(w._agent, [{"question": "which?"}], None, 30)
         self.assertEqual(out, {"answers": []})
 
     def test_a_shim_with_no_deadline_never_reports_a_timeout(self) -> None:
         w = _make_worker()
-        w._agent._cancel_flag.set()
+        w._agent.turn.cancel_flag.set()
         self.assertEqual(w.human.ask(w._agent, [{"question": "which?"}]), {"answers": []})
 
 

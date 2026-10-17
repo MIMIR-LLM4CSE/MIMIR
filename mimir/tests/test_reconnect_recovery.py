@@ -17,6 +17,7 @@ from mimir.client.session import journal
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFencingTests
 from mimir.tests.support.state import pin_state_dir
+from mimir.client.core.turn_state import TurnState
 
 
 def _parked_worker(prompt: dict | None = None, session_id: str = "s1",
@@ -85,11 +86,9 @@ class PendingPromptTests(unittest.TestCase):
 
     def test_a_cancelled_wait_ends_the_park(self):
         class _Cancelled:
-            class _Flag:
-                @staticmethod
-                def is_set():
-                    return True
-            _cancel_flag = _Flag()
+            def __init__(self) -> None:
+                self.turn = TurnState()
+                self.turn.cancel_flag.set()
 
         w = _parked_worker({"type": "approval", "id": "a1"})
         w._agent = _Cancelled()

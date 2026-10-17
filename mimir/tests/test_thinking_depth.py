@@ -25,6 +25,7 @@ from mimir.client.agent_core import MimirAgent
 from mimir.client.prompt import system_prompt as sp
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
+from mimir.client.core.turn_state import TurnState
 
 
 class _Agent:
@@ -142,11 +143,11 @@ class _LoopAgent:
     tool_owner: dict = {}
     tool_caps: dict = {}
     thinking_budget = -1
-    _cancel_flag = None
     apply_setting = MimirAgent.apply_setting
     approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
     def __init__(self):
+        self.turn = TurnState()
         self.thinking_depth = DEFAULT_THINKING_DEPTH
         self.thinking = True
         self.thinking_budget = -1

@@ -43,6 +43,7 @@ from mimir.tests._loops import run_agent
 
 # Provide a module-compatible namespace so existing test references work.
 import types
+from mimir.client.core.turn_state import TurnState
 client_module = types.SimpleNamespace(
     MimirAgent=MimirAgent,
     SERVERS=__import__('mimir.client.config', fromlist=['SERVERS']).SERVERS,
@@ -323,8 +324,7 @@ class ClientHelperTests(unittest.TestCase):
             tool_caps={"delete_file": ToolCaps(
                 name="delete_file", capabilities=frozenset({REMOVE}))},
             normalize_workspace_path=lambda p: p or "",
-            discard_carry_path=lambda p: None,
-        )
+            discard_carry_path=lambda p: None,turn=TurnState())
         observations.files.delete(Call(
             agent=agent, tool_name="delete_file", arguments={"path": "doomed.py"}, status="ok",
             execution_context=ec,
@@ -636,6 +636,10 @@ class ClientHelperTests(unittest.TestCase):
         messages: list = []
 
         class _FakeAgent:
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             model = "big-model"
             enforcement = "off"
 
@@ -776,6 +780,10 @@ class ClientHelperTests(unittest.TestCase):
         captured_context = {}
 
         class _QueryAgent:
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             mode = "agent"
             model = "dummy"
             tools = []
@@ -869,8 +877,7 @@ class ClientHelperTests(unittest.TestCase):
             tool_caps={},
             thinking_budget=-1,
             update_carry_context=lambda ec: None,
-            approvals=types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True)),
-        )
+            approvals=types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True)),turn=TurnState())
 
         m = agent_loop_module
         with patch.object(loop_base_module, "_stream_chat", _fake_stream), \
@@ -1561,6 +1568,10 @@ class ClientHelperTests(unittest.TestCase):
         class _FakeAgent:
             # These nudges live in the guidance layer, which `light` (the default)
             # drops — the test is about the nudge, so it states the level it needs.
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             enforcement = "strict"
 
         execution_context = build_execution_context(workflow_state="edit", code_mutation_started=False, searched=True, inspected_dirs={"mimir/servers/utilities"}, read_files={"mimir/servers/utilities/server_math.py"}, existing_paths=set(), search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"mimir/servers/server_science.py"})
@@ -1585,7 +1596,7 @@ class ClientHelperTests(unittest.TestCase):
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
-        agent = types.SimpleNamespace(enforcement="strict", tool_caps={})
+        agent = types.SimpleNamespace(enforcement="strict", tool_caps={}, turn=TurnState())
         events: list = []
         with event_sink_module.event_sink(events.append):
             probe = nudge_logic.nudge_pending(
@@ -1631,6 +1642,10 @@ class ClientHelperTests(unittest.TestCase):
         class _FakeAgent:
             # These nudges live in the guidance layer, which `light` (the default)
             # drops — the test is about the nudge, so it states the level it needs.
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             enforcement = "strict"
 
         execution_context = build_execution_context(workflow_state="edit", code_mutation_started=False, searched=True, read_files={"ref.py"}, search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"helper.py"})
@@ -1687,6 +1702,10 @@ class ClientHelperTests(unittest.TestCase):
         class _FakeAgent:
             # These nudges live in the guidance layer, which `light` (the default)
             # drops — the test is about the nudge, so it states the level it needs.
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             enforcement = "strict"
 
         execution_context = build_execution_context(workflow_state="discover", code_mutation_started=False, searched=True, inspected_dirs={"mimir/scripts"}, read_files={"pyproject.toml", "mimir/requirements.txt"}, existing_paths=set(), search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets=set())
@@ -1771,7 +1790,7 @@ class ClientHelperTests(unittest.TestCase):
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
-        agent = types.SimpleNamespace(enforcement="strict", tool_caps={})
+        agent = types.SimpleNamespace(enforcement="strict", tool_caps={}, turn=TurnState())
         ctx = (build_execution_context(runs={"python solver.py": {"completed": True, "verdict": ""}}))
         messages: list[dict] = []
         fired = nudge_logic.maybe_append_nudge(
@@ -1860,6 +1879,10 @@ class ClientHelperTests(unittest.TestCase):
         execution_context = build_execution_context(workflow_state="discover", denied_tool_calls=[], dirty_written_files=set(), validated_files=set())
 
         class _FakeAgent:
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             model = "big-model"
 
         for level in ("light", "off"):
@@ -1886,6 +1909,10 @@ class ClientHelperTests(unittest.TestCase):
         messages: list = []
 
         class _FakeAgent:
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             model = "big-model"
             enforcement = "off"
 
@@ -1906,6 +1933,7 @@ class ClientHelperTests(unittest.TestCase):
 
         class _FakeAgent:
             def __init__(self, enforcement: str) -> None:
+                self.turn = TurnState()
                 self.model = "big-model"
                 self.enforcement = enforcement
 
@@ -2044,6 +2072,10 @@ class ClientHelperTests(unittest.TestCase):
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             model = "big-model"
             enforcement = "off"
 
@@ -2066,6 +2098,10 @@ class ClientHelperTests(unittest.TestCase):
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             model = "big-model"
             enforcement = "off"
 

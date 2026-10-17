@@ -23,6 +23,7 @@ import types
 import unittest
 
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.core.turn_state import TurnState
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,8 +49,7 @@ def _worker_stub(session: _FakeSession, loop) -> types.SimpleNamespace:
     agent = types.SimpleNamespace(
         tool_owner={"memory_list_all": "memory"},
         sessions={"memory": session},
-        run_tool=_boom,
-    )
+        run_tool=_boom,turn=TurnState())
     return types.SimpleNamespace(_agent=agent, _loop=loop)
 
 
@@ -118,7 +118,7 @@ class ProxyListTests(unittest.TestCase):
         from mimir.tests._commands import cli
         session = _FakeSession('{"status": "ok", "proxies": [{"name": "wave2d"}]}')
         agent = types.SimpleNamespace(tool_owner={"proxy_get": "proxy"},
-                                      sessions={"proxy": session})
+                                      sessions={"proxy": session}, turn=TurnState())
         self.assertIn("wave2d", cli("/proxy list", agent))
         self.assertEqual(session.calls, [("proxy_get", {"op": "proxies"})])
 

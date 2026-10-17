@@ -35,6 +35,7 @@ from mimir.servers._shared.capabilities import build_descriptor  # noqa: E402
 from mimir.servers.proxy._lib import store  # noqa: E402
 from mimir.servers._shared.atomic import write_json  # noqa: E402
 from mimir.client.guardrails.observations import Call  # noqa: E402
+from mimir.client.core.turn_state import TurnState
 
 # The shape server_proxy declares, restated here so a change to it fails a test rather
 # than silently redefining what these assertions mean.
@@ -51,7 +52,7 @@ ROWS_OUTCOME = {**OUTCOME,
 
 def _agent(**caps) -> types.SimpleNamespace:
     return types.SimpleNamespace(
-        tool_caps=caps, normalize_workspace_path=lambda p: p or "")
+        tool_caps=caps, normalize_workspace_path=lambda p: p or "", turn=TurnState())
 
 
 def _runner_agent():

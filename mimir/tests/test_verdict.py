@@ -28,6 +28,7 @@ from mimir.client.context.capabilities import JUDGE, ToolCaps
 from mimir.client.context.execution_context import build_execution_context, record_run
 from mimir.client.event_sink import event_sink
 from mimir.client.guardrails.verdict import apply_verdict
+from mimir.client.core.turn_state import TurnState
 
 
 class ApplyVerdictTests(unittest.TestCase):
@@ -300,8 +301,7 @@ class VerdictToolTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            normalize_workspace_path=lambda p: p or "",
-        )
+            normalize_workspace_path=lambda p: p or "",turn=TurnState())
 
     def _ctx(self):
         ec = build_execution_context()
@@ -351,7 +351,7 @@ class VerdictDueHintTests(unittest.TestCase):
         reg = {}
         if judge_name:
             reg[judge_name] = ToolCaps(name=judge_name, capabilities=frozenset({JUDGE}))
-        return types.SimpleNamespace(tool_caps=reg)
+        return types.SimpleNamespace(tool_caps=reg, turn=TurnState())
 
     def _ctx(self, commands):
         ec = build_execution_context()
@@ -448,7 +448,7 @@ class ImputationDueHintTests(unittest.TestCase):
         reg = {}
         if judge_name:
             reg[judge_name] = ToolCaps(name=judge_name, capabilities=frozenset({JUDGE}))
-        return types.SimpleNamespace(tool_caps=reg)
+        return types.SimpleNamespace(tool_caps=reg, turn=TurnState())
 
     def _ctx(self, command="make", completed=False):
         ec = build_execution_context()

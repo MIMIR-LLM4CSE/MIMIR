@@ -421,12 +421,12 @@ class _AgentWorker:
             mode = resume.get("mode")
         self.human.begin_turn(resume, item.get("answer"))
         if self._agent is not None:
-            self._agent._deferred_prompts = []
-            self._agent._deferred_turn = None
+            self._agent.turn.deferred_prompts = []
+            self._agent.turn.deferred_turn = None
 
         # Clear cancel flag from any previous cancellation before starting.
         if self._agent is not None:
-            self._agent._cancel_flag.clear()
+            self._agent.turn.cancel_flag.clear()
         tid = threading.get_ident()
         _ROUTER.register(tid, lambda text: self.out_q.put({"type": "output", "text": text}))
 
@@ -510,7 +510,7 @@ class _AgentWorker:
             # bleed into the next query (race: user cancels then immediately
             # sends a new message before _run_query starts again).
             if self._agent is not None:
-                self._agent._cancel_flag.clear()
+                self._agent.turn.cancel_flag.clear()
             self.human.end_turn()
 
         # The answer carries the closing block in full, so whatever is still buffered
@@ -527,9 +527,9 @@ class _AgentWorker:
         # it may already be the next turn's: a queued turn starts, and resets it, as
         # soon as this one ends. Private keys — the session strips them before sending.
         if self._agent is not None:
-            full = getattr(self._agent, "_last_full_messages", None)
+            full = self._agent.turn.last_full_messages
             answer_ev["_full"] = list(full) if full else None
-            answer_ev["_turn_start"] = getattr(self._agent, "_last_turn_start", None)
+            answer_ev["_turn_start"] = self._agent.turn.last_turn_start
             # This turn's agent, not whichever one is on screen: several conversations
             # answer at once, and their modes need not agree.
             answer_ev["_context_mode"] = getattr(self._agent, "context_mode", "full")
@@ -684,7 +684,7 @@ class _AgentWorker:
         """
         if self._agent is None:
             return None
-        msgs = getattr(self._agent, "_last_full_messages", None)
+        msgs = self._agent.turn.last_full_messages
         return list(msgs) if msgs else None
 
     def last_turn_start(self) -> int | None:
@@ -697,7 +697,7 @@ class _AgentWorker:
         """
         if self._agent is None:
             return None
-        start = getattr(self._agent, "_last_turn_start", None)
+        start = self._agent.turn.last_turn_start
         return start if isinstance(start, int) else None
 
     def live_history(self) -> list | None:
@@ -709,7 +709,7 @@ class _AgentWorker:
         """
         if self._agent is None:
             return None
-        msgs = getattr(self._agent, "_live_messages", None)
+        msgs = self._agent.turn.live_messages
         if not msgs:
             return None
         return list(msgs)[1:]  # drop the system message (counted as overhead)
@@ -1183,7 +1183,7 @@ class _AgentWorker:
         # Set the cancel flag first so _stream_chat aborts mid-chunk immediately,
         # without waiting for the next asyncio await point.
         if self._agent is not None:
-            self._agent._cancel_flag.set()
+            self._agent.turn.cancel_flag.set()
         task = self._current_task
         if task is not None and not task.done() and self._loop is not None:
             self._loop.call_soon_threadsafe(task.cancel)

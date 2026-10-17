@@ -46,6 +46,7 @@ from mimir.tests._fake_backend import ScriptedBackend
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.tests._loops import as_loop_run, run_plan
+from mimir.client.core.turn_state import TurnState
 
 
 def _reminder_calls(backend, text: str) -> list[int]:
@@ -299,8 +300,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         agent = types.SimpleNamespace(
             tool_owner={},
             run_tool=lambda *a, **k: "{}",
-            update_carry_context=lambda ec: carry.__setitem__("n", carry["n"] + 1),
-        )
+            update_carry_context=lambda ec: carry.__setitem__("n", carry["n"] + 1),turn=TurnState())
         return agent, carry
 
     def test_annotates_and_saves_carry(self) -> None:
@@ -322,7 +322,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         # listing them (the old "[Files written this query: …]" behaviour).
         self.assertIn("not checked", result)
         self.assertEqual(carry["n"], 1)                      # carry context saved
-        self.assertEqual(agent._last_full_messages, messages[1:])  # system stripped
+        self.assertEqual(agent.turn.last_full_messages, messages[1:])  # system stripped
 
     def test_the_turn_boundary_survives_a_rewrite_of_the_prefix(self) -> None:
         """The index is resolved by identity, so an in-turn rewrite cannot shift it.
@@ -341,7 +341,7 @@ class FinalizeAnswerTests(unittest.TestCase):
             opening,
             {"role": "assistant", "content": "done"},
         ]
-        agent._turn_opening_message = opening
+        agent.turn.opening_message = opening
         start = finalize_module._turn_start_index(agent, messages)
         # messages[1:] is what the front-end sees; the turn's own work starts after
         # the opening message, which sits at index 2 there.
@@ -353,7 +353,7 @@ class FinalizeAnswerTests(unittest.TestCase):
     def test_a_turn_whose_opening_was_summarized_away_has_no_boundary(self) -> None:
         """Compaction can swallow a long turn's own start. Saying None beats guessing."""
         agent, _ = self._agent()
-        agent._turn_opening_message = {"role": "user", "content": "gone"}
+        agent.turn.opening_message = {"role": "user", "content": "gone"}
         messages = [{"role": "system", "content": "S"},
                     {"role": "assistant", "content": "[Context summary — 90 compacted]"}]
         self.assertIsNone(finalize_module._turn_start_index(agent, messages))
@@ -367,7 +367,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         agent, _ = self._agent()
         opening = {"role": "user", "content": "job J1 finished"}
         twin = {"role": "user", "content": "job J1 finished"}
-        agent._turn_opening_message = opening
+        agent.turn.opening_message = opening
         messages = [{"role": "system", "content": "S"}, twin,
                     {"role": "assistant", "content": "a"}, opening,
                     {"role": "assistant", "content": "done"}]
@@ -431,8 +431,7 @@ class PlanModeContextBudgetTests(unittest.TestCase):
         ]
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
-            compact_messages=lambda middle: [{"role": "assistant", "content": "SUMMARY"}],
-        )
+            compact_messages=lambda middle: [{"role": "assistant", "content": "SUMMARY"}],turn=TurnState())
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
@@ -468,7 +467,7 @@ class RunPlanModeTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -515,7 +514,7 @@ class RunPlanModeTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -556,7 +555,7 @@ class RunPlanModeTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -601,7 +600,7 @@ class RunPlanModeTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -639,7 +638,7 @@ class RunPlanModeTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -682,7 +681,7 @@ class RunPlanModeTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -720,7 +719,7 @@ class RunPlanModeTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -765,8 +764,7 @@ class RunPlanModeTests(unittest.TestCase):
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
             request_user_question=lambda qs: {"answers": [{"selected": [plan_loop_module._PLAN_ACCEPT], "other_text": None}]},
             build_system_content=_build_system,
-            apply_setting=lambda name, v: mode_calls.append(v),
-        )
+            apply_setting=lambda name, v: mode_calls.append(v),turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -821,8 +819,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
-            request_user_question=_ask, build_system_content=_build_system,
-        )
+            request_user_question=_ask, build_system_content=_build_system,turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -883,8 +880,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
-            request_user_question=_ask, build_system_content=_build_system,
-        )
+            request_user_question=_ask, build_system_content=_build_system,turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -925,8 +921,7 @@ class RunPlanModeTests(unittest.TestCase):
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
             request_user_question=lambda qs: {
                 "answers": [{"selected": [plan_loop_module._PLAN_REJECT], "other_text": None}]
-            },
-        )
+            },turn=TurnState())
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -995,7 +990,7 @@ class RunPlanModeTests(unittest.TestCase):
             {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         query = "refactor the solver in the repo"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
 
@@ -1021,7 +1016,7 @@ class RunPlanModeTests(unittest.TestCase):
         script = [{"content": "looking", "tool_calls": [_tool_call("grep_files")]}] * 12
         script.append({"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]})
         script.append({"content": "Here is the plan."})
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
         query = "refactor the solver in the repo"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
         backend = ScriptedBackend(script)
@@ -1053,7 +1048,7 @@ class RunPlanModeTests(unittest.TestCase):
         # enforcement "off" skips the explore phase, so the nudge owed here is the
         # record-the-document one and no read has to be faked to reach it.
         agent = types.SimpleNamespace(
-            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off")
+            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off", turn=TurnState())
         query = "add a flag to the solver module"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
         backend = ScriptedBackend(script)
@@ -1074,8 +1069,7 @@ class RunPlanModeTests(unittest.TestCase):
             {"content": "Here is the plan."},
         ])
         agent = types.SimpleNamespace(
-            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off",
-        )
+            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off",turn=TurnState())
         query = "refactor the solver in the repo"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
 
@@ -1092,13 +1086,16 @@ class RunPlanModeTests(unittest.TestCase):
 class RunAgentQueryNonInteractiveTests(unittest.TestCase):
     def _query_agent(self):
         class _QueryAgent:
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                self.turn = TurnState()
+
             mode = "agent"
             model = "dummy"
             tools = []
             tool_owner = {}
             tool_caps = {}
             thinking_budget = -1
-            _cancel_flag = None
 
             @staticmethod
             def new_execution_context():
@@ -1243,7 +1240,7 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
             return None
 
         async def _snapshot(*a, **k):
-            seen.append(len(agent._live_messages or []))
+            seen.append(len(agent.turn.live_messages or []))
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -1257,7 +1254,7 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
 
         self.assertEqual(len(seen), 1)
         self.assertGreaterEqual(seen[0], 3)  # system + user + assistant turn
-        self.assertIsNone(agent._live_messages)
+        self.assertIsNone(agent.turn.live_messages)
 
 
 class DrainSteerTests(unittest.TestCase):
@@ -1743,8 +1740,7 @@ class PlanLoopModeSwitchTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps={}, mode="agent",
-            build_system_content=_build,
-        )
+            build_system_content=_build,turn=TurnState())
         messages = [{"role": "system", "content": "system:plan"},
                     {"role": "user", "content": "plan it"}]
         # The user already flipped to agent: the loop was entered observing "plan".
@@ -1835,8 +1831,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
             get_tool_file_targets=lambda n, a: [],
             approvals=approvals,
             run_tool=run_tool,
-            rewrite_tool_for_context=lambda n, a: (n, a),
-        )
+            rewrite_tool_for_context=lambda n, a: (n, a),turn=TurnState())
 
     def _dispatch(self, agent, ec):
         msgs: list[dict] = []
@@ -1953,8 +1948,7 @@ class WriteDiffEmitTests(unittest.TestCase):
             get_tool_file_targets=lambda n, a: [a["path"]],
             approvals=approvals,
             run_tool=run_tool,
-            rewrite_tool_for_context=lambda n, a: (n, a),
-        )
+            rewrite_tool_for_context=lambda n, a: (n, a),turn=TurnState())
 
     def _dispatch_capture(self, agent, path: str):
         events: list[dict] = []
@@ -2151,8 +2145,7 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
             get_tool_file_targets=lambda name, args: [],
             is_write_tool=lambda name: False,
             rewrite_tool_for_context=lambda name, args: (name, args),
-            run_tool=run_tool,
-        )
+            run_tool=run_tool,turn=TurnState())
         return agent, calls
 
     def _dispatch(self, agent, messages, ec, name="bash_run", args=None):
@@ -2210,7 +2203,7 @@ class BatchReviewTests(unittest.TestCase):
 
     def test_an_agent_without_approvals_ends_its_turn(self) -> None:
         # Running out of steps flushed the batch review unguarded, and raised.
-        agent = types.SimpleNamespace(approvals=None)
+        agent = types.SimpleNamespace(approvals=None, turn=TurnState())
         self.assertEqual(agent_loop_module._review_batch(agent, "done", []), "done")
 
     def test_a_pending_batch_is_reviewed_and_its_outcome_told(self) -> None:
@@ -2218,7 +2211,7 @@ class BatchReviewTests(unittest.TestCase):
             pending=[{"tool": "write_file"}], flush=lambda: False))
         messages: list[dict] = []
         answer = agent_loop_module._review_batch(
-            types.SimpleNamespace(approvals=approvals), "done", messages)
+            types.SimpleNamespace(approvals=approvals, turn=TurnState()), "done", messages)
         self.assertEqual(answer, "done\nChanges reverted.")
         self.assertEqual(messages[-1]["content"], "Changes reverted.")
 

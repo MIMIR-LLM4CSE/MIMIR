@@ -232,7 +232,7 @@ def _abandon_child(child: dict) -> None:
     """Tell a child that overran its budget to stop, and mark its record abandoned.
 
     The child runs ``asyncio.run()`` on a thread of its own, so there is nothing here
-    to cancel — only the cooperative flag its loop already honours (``_cancel_flag``,
+    to cancel — only the cooperative flag its loop already honours (``turn.cancel_flag``,
     read by the backend mid-stream and at every step boundary). Setting it aborts the
     turn in flight; the child's own ``finally`` then writes its record, and the mark
     left here is how that write tells a run its caller dropped from one it waited for.
@@ -245,7 +245,8 @@ def _abandon_child(child: dict) -> None:
     between steps stops one step later, and one mid-teardown may not stop at all.
     """
     child["abandoned"] = True
-    flag = getattr(child.get("agent"), "_cancel_flag", None)
+    agent = child.get("agent")
+    flag = agent.turn.cancel_flag if agent is not None else None
     if flag is None:
         return
     try:

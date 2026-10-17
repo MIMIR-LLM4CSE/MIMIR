@@ -145,8 +145,8 @@ class HumanBridge:
         the first prompt deferred, whose id the answer will come back with.
         """
         agent = self.worker._agent
-        turn = getattr(agent, "_deferred_turn", None) if agent is not None else None
-        prompts = getattr(agent, "_deferred_prompts", None) if agent is not None else None
+        turn = agent.turn.deferred_turn if agent is not None else None
+        prompts = agent.turn.deferred_prompts if agent is not None else None
         if not turn or not prompts:
             return None
         return {**turn, "prompt": prompts[0]["prompt"]}
@@ -337,7 +337,7 @@ class HumanBridge:
             with human_pause.human_pause():
                 while True:
                     agent = self.worker._agent
-                    if agent is not None and agent._cancel_flag.is_set():
+                    if agent is not None and agent.turn.cancel_flag.is_set():
                         return None
                     if self._deferring():
                         self._record_deferral(prompt)
@@ -380,7 +380,7 @@ class HumanBridge:
         agent = self.worker._agent
         if agent is None:
             return
-        agent._deferred_prompts = [*(getattr(agent, "_deferred_prompts", None) or []), {
+        agent.turn.deferred_prompts = [*(agent.turn.deferred_prompts or []), {
             "call_id": CURRENT_CALL_ID.get(),
             "prompt": dict(prompt.payload),
             "questions": list(prompt.questions or []),

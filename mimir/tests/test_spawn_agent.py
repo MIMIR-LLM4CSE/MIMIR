@@ -21,6 +21,7 @@ import types
 import unittest
 from unittest import mock
 from pathlib import Path
+from mimir.client.core.turn_state import TurnState
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "agent_state"):
@@ -61,6 +62,7 @@ class _FakeAgent:
     """A MimirAgent stand-in recording what the spawn server does to it."""
 
     def __init__(self, answer: str = "done", session_id: str | None = None):
+        self.turn = TurnState()
         self.connected: list[str] = []
         self.model = "parent/model"
         # Taken at construction, as MimirAgent takes it: the approval manager below is
@@ -1754,7 +1756,7 @@ class AbandonedChildTests(unittest.TestCase):
 
     def test_abandoning_sets_the_flag_the_child_s_loop_reads(self):
         flag = threading.Event()
-        child = {"agent": types.SimpleNamespace(_cancel_flag=flag)}
+        child = {"agent": types.SimpleNamespace(turn=TurnState(cancel_flag=flag))}
         spawn._abandon_child(child)
         self.assertTrue(flag.is_set())
         self.assertTrue(child["abandoned"])
@@ -1833,7 +1835,8 @@ class BudgetTimeoutAdviceTests(unittest.TestCase):
         interesting.
         """
         child = {"agent": types.SimpleNamespace(
-            _carry_context={"read_files": {"/w/a.py"}, "last_query_written_files": set()})}
+            _carry_context={"read_files": {"/w/a.py"}, "last_query_written_files": set()},
+            turn=TurnState())}
         entry = {"state": "running", "started": time.time() - 9000, "budget": 7200,
                  "task": "optimise the kernel", "session": "s/subagents/sub-1",
                  "model": "m", "tools": ["write_file"], "phase": "", "result": None,

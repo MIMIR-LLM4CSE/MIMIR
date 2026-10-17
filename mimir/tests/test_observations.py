@@ -33,6 +33,7 @@ from mimir.client.context.execution_context import (
 )
 from mimir.client.guardrails.ladder import register_run_failure
 from mimir.client.guardrails.observations import Call  # noqa: E402
+from mimir.client.core.turn_state import TurnState
 
 
 # The authoritative dispatch order, mirroring record_tool_observation's body.
@@ -68,8 +69,7 @@ EXPECTED_ORDER = [
 def _stub_agent():
     return types.SimpleNamespace(
         normalize_workspace_path=lambda p: p or "",
-        tool_caps={},
-    )
+        tool_caps={},turn=TurnState())
 
 
 def _record_order() -> list[str]:
@@ -110,8 +110,7 @@ class ActionOpCountTests(unittest.TestCase):
             tool_caps={
                 "action_tool": ToolCaps(name="action_tool", capabilities=frozenset({PLAN_BLOCKED})),
                 "readonly_tool": ToolCaps(name="readonly_tool"),
-            },
-        )
+            },turn=TurnState())
 
     def test_plan_blocked_success_increments(self) -> None:
         agent = self._agent()
@@ -140,8 +139,7 @@ class DelegatedExplorationTests(unittest.TestCase):
                 "delegating_tool": ToolCaps(
                     name="delegating_tool", capabilities=frozenset({DELEGATE})),
                 "plain_tool": ToolCaps(name="plain_tool"),
-            },
-        )
+            },turn=TurnState())
 
     _OK = '{"status": "ok", "files_read": ["/w/a.py", "/w/b.py"]}'
 
@@ -207,8 +205,7 @@ class EditFailureStreakTests(unittest.TestCase):
             normalize_workspace_path=lambda p: p or "",
             is_write_tool=lambda n: n == "replace_in_file",
             is_code_filepath=lambda p: str(p).endswith(".py"),
-            tool_caps=caps,
-        )
+            tool_caps=caps,turn=TurnState())
 
     def _fail(self, agent, ec, old, new, path="mod.py"):
         runtime.record_tool_observation(
@@ -322,8 +319,7 @@ class BashCommandObservationTests(unittest.TestCase):
                     name="bash_run",
                     scope={"kind": "command_prefix", "args": ["command"]},
                 ),
-            },
-        )
+            },turn=TurnState())
 
     def _run(self, command, status="ok", stdout="out"):
         agent = self._agent()
@@ -411,8 +407,7 @@ class BashValidationObservationTests(unittest.TestCase):
         return types.SimpleNamespace(
             tool_caps=reg,
             normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            is_code_filepath=lambda p: str(p).endswith(".py"),
-        )
+            is_code_filepath=lambda p: str(p).endswith(".py"),turn=TurnState())
 
     def _ctx(self, dirty):
         ec = build_execution_context()
@@ -703,8 +698,7 @@ class RedTestRunObservationTests(unittest.TestCase):
         return types.SimpleNamespace(
             tool_caps=reg,
             normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            is_code_filepath=lambda p: str(p).endswith(".py"),
-        )
+            is_code_filepath=lambda p: str(p).endswith(".py"),turn=TurnState())
 
     def _ctx(self, dirty=("tests/test_x.py",)):
         ec = build_execution_context()
@@ -878,8 +872,7 @@ class ExitAttributionTests(unittest.TestCase):
                 name="bash_run",
                 scope={"kind": "command_prefix", "args": ["command"]})},
             normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            is_code_filepath=lambda p: str(p).endswith(".py"),
-        )
+            is_code_filepath=lambda p: str(p).endswith(".py"),turn=TurnState())
 
     def _attributable(self, command):
         with patch.object(runtime.shell, "any_command_on_path", lambda cmds: True):
@@ -989,8 +982,7 @@ class PluginValidatorObservationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-        )
+            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",turn=TurnState())
 
     def _ctx(self, dirty):
         ec = build_execution_context()
@@ -1030,8 +1022,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
         return types.SimpleNamespace(
             tool_caps=reg,
             normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            is_code_filepath=lambda p: str(p).endswith(".py"),
-        )
+            is_code_filepath=lambda p: str(p).endswith(".py"),turn=TurnState())
 
     def _ctx(self, dirty=()):
         ec = build_execution_context()
@@ -1308,8 +1299,7 @@ class MissingCommandImputationTests(unittest.TestCase):
         return types.SimpleNamespace(
             tool_caps=reg,
             normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            is_code_filepath=lambda p: str(p).endswith(".py"),
-        )
+            is_code_filepath=lambda p: str(p).endswith(".py"),turn=TurnState())
 
     def _red(self, command, dirty={"solver.c"}, absent=()):
         """Run *command* red, with *absent* commands taken off PATH."""
@@ -1386,8 +1376,7 @@ class DeclaredEditSetTests(unittest.TestCase):
                     capabilities=frozenset({TASK_PLANNING}),
                     arg_roles={"plan_steps": ("steps",)},
                 ),
-            },
-        )
+            },turn=TurnState())
 
     def _declare(self, ec, steps):
         runtime.plan.declared_edit_set(Call(
@@ -1455,8 +1444,7 @@ class UnwatchedRunObservationTests(unittest.TestCase):
         return types.SimpleNamespace(
             normalize_workspace_path=lambda p: p or "",
             is_code_filepath=lambda p: False,
-            tool_caps={},
-        )
+            tool_caps={},turn=TurnState())
 
     def _run(self, payload: dict, *, tool="slurm_queue", ec=None, args=None):
         ec = ec if ec is not None else build_execution_context()

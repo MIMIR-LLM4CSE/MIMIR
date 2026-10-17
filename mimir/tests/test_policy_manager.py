@@ -10,6 +10,7 @@ import mimir.client.guardrails.policy.engine as policy_manager_module
 from mimir.client.context.bash_classify import bash_command_is_readonly
 from mimir.client.guardrails import toollist
 from mimir.tests._golden_caps import build_declared_registry
+from mimir.client.core.turn_state import TurnState
 
 # Per-agent registry, built once from the server declarations (what connect_server
 # produces at runtime), so policy decisions match production classification.
@@ -28,6 +29,7 @@ def _fake_approvals(is_sensitive, *, mode: str = "manual") -> SimpleNamespace:
 
 class _FakeAgent:
     def __init__(self) -> None:
+        self.turn = TurnState()
         self.tool_owner = {"read_file_lines": "search", "replace_in_file": "search"}
         self.tool_caps = dict(_DECLARED_REGISTRY)
         self.approvals = _fake_approvals(lambda tool, args: False)

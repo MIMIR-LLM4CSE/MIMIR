@@ -33,6 +33,7 @@ from mimir.client.guardrails.nudges import maybe_append_nudge
 from mimir.client.tool_execution.executor import run_post_tool_annotations
 from mimir.client.extensions.plugins import load_plugins
 from mimir.tests.test_policy_manager import _FakeAgent
+from mimir.client.core.turn_state import TurnState
 
 
 def _block_payload(msg: str) -> str:
@@ -218,8 +219,7 @@ class PostToolPluginTests(ExtensionRegistryResetMixin):
         return types.SimpleNamespace(
             tool_caps={},
             normalize_workspace_path=lambda p: p or "",
-            extensions=self.extensions,
-        )
+            extensions=self.extensions,turn=TurnState())
 
     def _annotate(self, result: str = "{}") -> str:
         return asyncio.run(run_post_tool_annotations(

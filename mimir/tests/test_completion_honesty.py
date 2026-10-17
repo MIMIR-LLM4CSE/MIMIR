@@ -59,6 +59,7 @@ from mimir.client.query_engine.verification import (
     parse_ledger_block,
     split_answer_ledger,
 )
+from mimir.client.core.turn_state import TurnState
 
 
 def _ctx(**over):
@@ -378,7 +379,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         if judge_tool:
             reg["report_verdict"] = ToolCaps(
                 name="report_verdict", capabilities=frozenset({JUDGE}))
-        return types.SimpleNamespace(tool_caps=reg, enforcement="strict", model="test")
+        return types.SimpleNamespace(tool_caps=reg, enforcement="strict", model="test", turn=TurnState())
 
     def _fired(self, ec, *, agent=None):
         """The category of the one nudge this call fires, or "" for none.
@@ -899,8 +900,7 @@ class ExerciseRouteTests(unittest.TestCase):
         return types.SimpleNamespace(
             tool_caps={"bash_run": ToolCaps(
                 name="bash_run", capabilities=frozenset({CODE_EXEC}))},
-            enforcement="strict", model="test",
-        )
+            enforcement="strict", model="test",turn=TurnState())
 
     def _route(self, dirty, *, seen=(), absent=()):
         from mimir.client.guardrails.nudges import exercise

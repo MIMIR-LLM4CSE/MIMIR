@@ -38,6 +38,7 @@ from mimir.client.guardrails.nudges.predicates import (
 from mimir.client.guardrails.nudges.messages import stuck_repair_nudge_message
 from mimir.client.guardrails.ladder import register_run_failure
 from mimir.client.context.execution_context import run_ledger_key
+from mimir.client.core.turn_state import TurnState
 
 
 def _ctx(command="pytest -q solver.py", failures=0, fired=0):
@@ -196,8 +197,7 @@ class FiringPathTests(unittest.TestCase):
                 "report_verdict": ToolCaps(
                     name="report_verdict", capabilities=frozenset({JUDGE})),
             },
-            enforcement="strict", model="test",
-        )
+            enforcement="strict", model="test",turn=TurnState())
 
     def _fire(self, ec):
         """The category of the one nudge this call injects, plus the text."""

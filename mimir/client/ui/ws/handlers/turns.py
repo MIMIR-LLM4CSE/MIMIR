@@ -247,7 +247,7 @@ class TurnHandlers:
         # Resolve @<uri> mentions on the worker's loop (where the MCP sessions live),
         # then submit the augmented text. History and display keep the RAW `text`, so
         # the attachment is per-turn. Caveat: in full-context mode the augmented message
-        # persists in the worker's `_last_full_messages`.
+        # persists in the agent's `turn.last_full_messages`.
         effective_text = text
         # Built here, before anything is submitted: resolving @-mentions needs the
         # worker's own loop, where the MCP sessions live. None means the pool is full,
