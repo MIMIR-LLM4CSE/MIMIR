@@ -304,7 +304,7 @@ class PlanLoop(StepLoop):
             if ended is not None:
                 return ended
             # Whether a plan exists is the execution context's call, never a second
-            # derivation from tool names here (observations._observe_todo_flags records
+            # derivation from tool names here (observations.plan.todo_flags records
             # `plan_written` for the prose document — the only form plan mode produces).
             if self.ec.plan_written:
                 self.plan_title = self.plan_title or _plan_document_title(tool_calls, self.agent)

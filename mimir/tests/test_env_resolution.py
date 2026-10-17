@@ -3,9 +3,9 @@
 Covers the two reality signals the cascade rests on and the verification-layer
 nudge they drive:
 
-* ``_observe_missing_module`` — a failing import-check or a failing run whose output
+* ``env.missing_module`` — a failing import-check or a failing run whose output
   names a missing module flips ``unresolved_modules``; a successful call never does.
-* ``_observe_env_probe`` — calling any ENV_DISCOVERY tool flips ``env_probed``.
+* ``env.env_probe`` — calling any ENV_DISCOVERY tool flips ``env_probed``.
 * the ``env_resolution`` nudge fires once while a module is unresolved and no env has
   been probed, and stops once the agent probes the environments.
 
@@ -24,6 +24,7 @@ from mimir.client.guardrails.nudges.engine import (
     maybe_inject_env_resolution,
 )
 from mimir.tests._golden_caps import build_declared_registry
+from mimir.client.guardrails.observations import Call  # noqa: E402
 
 _REGISTRY = build_declared_registry()
 
@@ -49,37 +50,51 @@ class MissingModuleObserverTests(unittest.TestCase):
         # `pytest` failures carry the same ModuleNotFoundError / unresolved-import text).
         ctx = build_execution_context()
         payload = {"stderr": "unresolved import: scipy"}
-        runtime._observe_missing_module(_agent(), "code_run", payload, "error", ctx)
+        runtime.env.missing_module(Call(
+            agent=_agent(), tool_name="code_run", payload=payload, status="error",
+            execution_context=ctx,
+        ))
         self.assertIn("scipy", ctx.unresolved_modules)
 
     def test_module_not_found_in_failing_run_flags_unresolved(self) -> None:
         ctx = build_execution_context()
         payload = {"stderr": "ModuleNotFoundError: No module named 'numpy'"}
-        runtime._observe_missing_module(_agent(), "code_run", payload, "error", ctx)
+        runtime.env.missing_module(Call(
+            agent=_agent(), tool_name="code_run", payload=payload, status="error",
+            execution_context=ctx,
+        ))
         self.assertIn("numpy", ctx.unresolved_modules)
 
     def test_success_never_flags(self) -> None:
         ctx = build_execution_context()
         payload = {"stdout": "ModuleNotFoundError mentioned in a file we read"}
-        runtime._observe_missing_module(_agent(), "code_run", payload, "ok", ctx)
+        runtime.env.missing_module(Call(
+            agent=_agent(), tool_name="code_run", payload=payload, status="ok",
+            execution_context=ctx,
+        ))
         self.assertFalse(ctx.unresolved_modules)
 
     def test_unrelated_failure_does_not_flag(self) -> None:
         ctx = build_execution_context()
         payload = {"stderr": "SyntaxError: invalid syntax"}
-        runtime._observe_missing_module(_agent(), "code_run", payload, "error", ctx)
+        runtime.env.missing_module(Call(
+            agent=_agent(), tool_name="code_run", payload=payload, status="error",
+            execution_context=ctx,
+        ))
         self.assertFalse(ctx.unresolved_modules)
 
 
 class EnvProbeObserverTests(unittest.TestCase):
     def test_env_discovery_tool_flips_flag(self) -> None:
         ctx = build_execution_context()
-        runtime._observe_env_probe(_agent(), _env_discovery_tool(), ctx)
+        runtime.env.env_probe(Call(
+            agent=_agent(), tool_name=_env_discovery_tool(), execution_context=ctx,
+        ))
         self.assertTrue(ctx.env_probed)
 
     def test_other_tool_does_not_flip_flag(self) -> None:
         ctx = build_execution_context()
-        runtime._observe_env_probe(_agent(), "code_run", ctx)
+        runtime.env.env_probe(Call(agent=_agent(), tool_name="code_run", execution_context=ctx))
         self.assertFalse(ctx.env_probed)
 
 
@@ -92,26 +107,39 @@ class EnvMutationObserverTests(unittest.TestCase):
     def test_successful_install_records_cleanup_obligation(self) -> None:
         ctx = build_execution_context()
         payload = {"installed": ["numpy"], "python": "/envs/foo/bin/python"}
-        runtime._observe_env_mutation(_agent(), self._mutate_tool(), payload, "ok", ctx)
+        runtime.env.env_mutation(Call(
+            agent=_agent(), tool_name=self._mutate_tool(), payload=payload, status="ok",
+            execution_context=ctx,
+        ))
         self.assertEqual(len(ctx.env_mutations), 1)
         self.assertEqual(ctx.env_mutations[0]["installed"], ["numpy"])
 
     def test_failed_mutation_records_nothing(self) -> None:
         ctx = build_execution_context()
-        runtime._observe_env_mutation(_agent(), self._mutate_tool(), {}, "error", ctx)
+        runtime.env.env_mutation(Call(
+            agent=_agent(), tool_name=self._mutate_tool(), payload={}, status="error",
+            execution_context=ctx,
+        ))
         self.assertFalse(ctx.env_mutations)
 
     def test_non_mutating_tool_records_nothing(self) -> None:
         ctx = build_execution_context()
-        runtime._observe_env_mutation(_agent(), "code_run", {"installed": ["x"]}, "ok", ctx)
+        runtime.env.env_mutation(Call(
+            agent=_agent(), tool_name="code_run", payload={"installed": ["x"]}, status="ok",
+            execution_context=ctx,
+        ))
         self.assertFalse(ctx.env_mutations)
 
     def test_duplicate_mutation_not_double_recorded(self) -> None:
         ctx = build_execution_context()
         payload = {"installed": ["numpy"], "python": "/envs/foo/bin/python"}
         tool = self._mutate_tool()
-        runtime._observe_env_mutation(_agent(), tool, payload, "ok", ctx)
-        runtime._observe_env_mutation(_agent(), tool, payload, "ok", ctx)
+        runtime.env.env_mutation(Call(
+            agent=_agent(), tool_name=tool, payload=payload, status="ok", execution_context=ctx,
+        ))
+        runtime.env.env_mutation(Call(
+            agent=_agent(), tool_name=tool, payload=payload, status="ok", execution_context=ctx,
+        ))
         self.assertEqual(len(ctx.env_mutations), 1)
 
 
@@ -297,11 +325,15 @@ class ResolvedEnvironmentRearmsExerciseTests(unittest.TestCase):
         ctx = build_execution_context()
         agent = _agent()
         tool = self._exec_tool()
-        runtime._observe_missing_module(
-            agent, tool, {"stderr": "No module named 'torch'"}, "error", ctx,
-        )
+        runtime.env.missing_module(Call(
+            agent=agent, tool_name=tool, payload={"stderr": "No module named 'torch'"},
+            status="error", execution_context=ctx,
+        ))
         self.assertIn("torch", ctx.unresolved_modules)
-        runtime._observe_missing_module(agent, tool, {"stdout": "ok"}, "ok", ctx)
+        runtime.env.missing_module(Call(
+            agent=agent, tool_name=tool, payload={"stdout": "ok"}, status="ok",
+            execution_context=ctx,
+        ))
         self.assertFalse(ctx.unresolved_modules)
 
     def test_non_execution_success_leaves_it_alone(self) -> None:
@@ -309,10 +341,14 @@ class ResolvedEnvironmentRearmsExerciseTests(unittest.TestCase):
         # interpreter the check failed under.
         ctx = build_execution_context()
         agent = _agent()
-        runtime._observe_missing_module(
-            agent, self._exec_tool(), {"stderr": "No module named 'torch'"}, "error", ctx,
-        )
-        runtime._observe_missing_module(agent, "read_file", {"stdout": "ok"}, "ok", ctx)
+        runtime.env.missing_module(Call(
+            agent=agent, tool_name=self._exec_tool(),
+            payload={"stderr": "No module named 'torch'"}, status="error", execution_context=ctx,
+        ))
+        runtime.env.missing_module(Call(
+            agent=agent, tool_name="read_file", payload={"stdout": "ok"}, status="ok",
+            execution_context=ctx,
+        ))
         self.assertIn("torch", ctx.unresolved_modules)
 
 

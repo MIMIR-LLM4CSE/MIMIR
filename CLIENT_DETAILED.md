@@ -636,26 +636,27 @@ is why it sits at the root.
   checked" is a missing fact at the moment the prose is written, not a rhetoric problem to
   police afterwards.
 
-### `observations.py` (root)
+### `observations/`
 
 The writer of the `execution_context` blackboard, shared by policy and nudges.
-`record_tool_observation()` is decomposed into ordered `_observe_*` handlers dispatched in a
-fixed, load-bearing order pinned by `test_observations.py`.
+`record_tool_observation()` builds one `Call` and hands it to each observer of `ORDER`, a
+fixed order pinned by `test_observations.py`. The observers live by domain: `files`,
+`discovery`, `plan`, `env`, `shell`, `runs`, `evidence`.
 
-- `_observe_edit_outcome` merges edit success and repeated-failure tracking.
-- `_observe_command` classifies each bash segment and credits the blackboard on success.
-- `_observe_bash_validation` runs status-agnostically and drives **two axes from one
+- `files.edit_outcome` merges edit success and repeated-failure tracking.
+- `shell.command` classifies each bash segment and credits the blackboard on success.
+- `shell.bash_validation` runs status-agnostically and drives **two axes from one
   command, never mixed** — neither of them the mandatory one, which no command performs any
   more. A *checker* on a dirty file it names marks it validated on exit 0 and charges its
   retry budget on a non-zero one. A *reformat* credits nothing: it rewrites the file and
   exits 0 whether or not the code is correct. An *execution* validates no file at all.
-- `_observe_declared_edit_set` scrapes source paths out of the checklist's step text and
+- `plan.declared_edit_set` scrapes source paths out of the checklist's step text and
   **replaces** the declared set, mirroring the checklist tool's own contract.
-- `_observe_run_outcome` reads a server's declared `run_outcome` spec — the floor under a
+- `runs.run_outcome` reads a server's declared `run_outcome` spec — the floor under a
   model's stated verdict, which withholds credit and never grants it.
-- `_register_run_failure` charges a run's failure against the repair budget and steers back
-  to `edit`, but only where code was actually mutated. Past the budget it releases to
-  `conclude` rather than wedging.
+- `ladder.register_run_failure` charges a run's failure against the repair budget and
+  steers back to `edit`, but only where code was actually mutated. Past the budget it
+  releases to `conclude` rather than wedging.
 
 ### `verdict.py` (root)
 
@@ -786,7 +787,7 @@ ends, and the server stops on its idle TTL with the run still going. Silent at b
 a night lost. The tempting predicate is a pattern over the command text, and it is a guess:
 it fires on a `grep sbatch` and misses every wrapper ever written. So the fact is established
 where it can be: a server that can ask the scheduler and read the submission directories —
-and `_observe_unwatched_runs` records it, payload-driven rather than keyed on a tool name (it
+and `runs.unwatched_runs` records it, payload-driven rather than keyed on a tool name (it
 is not even handed one), so any server reporting the same field earns the same reminder.
 Which is what makes it reach the *ordinary* case: the job goes out through a site launcher
 and is checked with a `squeue` a second later, neither of them a typed cluster tool, so the
@@ -878,7 +879,7 @@ to hand back is by definition still calling tools. The five, and the fact that o
 ### `plan_loop.py`
 
 - **"Is a plan recorded"** is read from `plan_written` in the execution context, where
-  `_observe_todo_flags` sets it by telling the two `TASK_PLANNING` forms apart via the
+  `plan.todo_flags` sets it by telling the two `TASK_PLANNING` forms apart via the
   `plan_steps` arg-role. The prose document is the **only** form plan mode produces: the
   ordered checklist is written after the user approves, at the start of execution.
   `toollist.hidden_planning_tools()` decides by capability which writers a read-only mode

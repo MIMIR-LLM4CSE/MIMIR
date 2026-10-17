@@ -7,7 +7,7 @@ operands are dropped rather than guessed.
 """
 import unittest
 
-from mimir.client.guardrails.observations import _PROJECT_VALIDATORS, _VALIDATOR_TIER
+from mimir.client.guardrails.observations.shell import PROJECT_VALIDATORS, VALIDATOR_TIER
 from mimir.client.context.bash_classify import (
     Kind,
     bash_command_is_readonly,
@@ -143,7 +143,7 @@ class PipelineAndOpaqueTests(unittest.TestCase):
 class ValidationCommandTests(unittest.TestCase):
     """Exec/validation commands classify EXEC and credit only their file operand.
 
-    Feeds observations._observe_command, which marks a written file 'validated' when
+    Feeds observations.shell.command, which marks a written file 'validated' when
     the model runs py_compile / pytest / ruff / mypy on it via bash.
     """
 
@@ -210,9 +210,9 @@ class ExecEffectTests(unittest.TestCase):
         )
 
     def test_the_tier_tables_only_ever_grade_validators(self):
-        # A head absent from _VALIDATOR_TIER credits nothing; a head present in it that
+        # A head absent from VALIDATOR_TIER credits nothing; a head present in it that
         # is not declared a validator would grade something that was never a check.
-        for head in (*_VALIDATOR_TIER, *_PROJECT_VALIDATORS):
+        for head in (*VALIDATOR_TIER, *PROJECT_VALIDATORS):
             self.assertEqual(EXEC_EFFECTS.get(head), EFFECT_VALIDATE, head)
 
 

@@ -91,13 +91,13 @@ def _head_installed(present: bool):
     runs the suite as ``python -m pytest``. Stating which of the two is meant is what
     keeps the answer the same everywhere.
     """
-    return patch.object(_observations, "_any_command_on_path", lambda heads: present)
+    return patch.object(_observations.shell, "any_command_on_path", lambda heads: present)
 
 
 # ── What a credited command must have taught the blackboard ───────────────────
 #
 # Each entry is (command, expectation). The expectation keys map to the fields
-# ``_observe_command`` / ``_observe_bash_validation`` write, and only the keys present
+# ``shell.command`` / ``shell.bash_validation`` write, and only the keys present
 # are asserted — an entry states what the command *must* establish, not everything it
 # happens to touch.
 #

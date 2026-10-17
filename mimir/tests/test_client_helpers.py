@@ -1,3 +1,4 @@
+from mimir.client.guardrails.observations import Call
 from mimir.client.context.execution_context import build_execution_context
 import contextlib
 import io
@@ -326,9 +327,10 @@ class ClientHelperTests(unittest.TestCase):
             normalize_workspace_path=lambda p: p or "",
             discard_carry_path=lambda p: None,
         )
-        observations._observe_delete(
-            agent, "delete_file", {"path": "doomed.py"}, "ok", ec,
-        )
+        observations.files.delete(Call(
+            agent=agent, tool_name="delete_file", arguments={"path": "doomed.py"}, status="ok",
+            execution_context=ec,
+        ))
 
         for field in m.fields_with(m.FILE_PATH):
             with self.subTest(field=field):
@@ -597,7 +599,8 @@ class ClientHelperTests(unittest.TestCase):
         # denied_tool_calls is the open set and gets cleared when the action later
         # succeeds; denial_history is what the ladder counts and must survive that,
         # or a refusal followed by an unrelated success would reset the escalation.
-        from mimir.client.guardrails.observations import _observe_denial_clearing
+        from mimir.client.guardrails.observations import Call
+        from mimir.client.guardrails.observations.evidence import denial_clearing
         from mimir.client.guardrails.workflow import denial_stage
 
         agent = client_module.MimirAgent()
@@ -612,7 +615,10 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(execution_context.denial_history[0]["kind"], "denied")
         self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
 
-        _observe_denial_clearing(agent, "bash_run", args, "ok", execution_context)
+        denial_clearing(Call(
+            agent=agent, tool_name="bash_run", arguments=args, status="ok",
+            execution_context=execution_context,
+        ))
 
         self.assertEqual(execution_context.denied_tool_calls, [])
         self.assertEqual(len(execution_context.denial_history), 2)

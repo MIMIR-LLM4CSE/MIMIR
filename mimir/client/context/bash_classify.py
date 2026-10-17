@@ -13,7 +13,7 @@ Consumers:
 - ``bash_command_is_readonly`` (below) — a command is read-only/side-effect-free
   iff every segment is a read-only/discovery kind (see :data:`READONLY_KINDS`); used
   by plan mode and by the all-mode approval exemption.
-- ``observations._observe_command`` — credits the blackboard per segment kind.
+- ``observations.shell.command`` — credits the blackboard per segment kind.
 
 Conservative by design: any parse ambiguity, a substitution, or an unrecognised
 leading command yields ``None`` (opaque → not classifiable), and an ambiguous operand

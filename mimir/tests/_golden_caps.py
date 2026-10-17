@@ -164,7 +164,7 @@ FALLBACK_TOOLS = {
 }
 
 # edit_sig arg-role: the args a server declares as identifying an edit (used by the
-# dedup-signature builder in guardrails/observations.py instead of hardcoded branches).
+# dedup-signature builder in guardrails/observations/ instead of hardcoded branches).
 EDIT_SIG_ARGS = {
     "write_file": ("content",),
     "append_file": ("content",),

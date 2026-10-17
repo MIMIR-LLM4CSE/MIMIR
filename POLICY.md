@@ -285,7 +285,7 @@ target **already exists** — a file that does not exist yet has no callers to b
 | `guardrails/policy/approval.py` | `ApprovalManager`: prompts, `always` grants, batch mode, snapshots, revert |
 | `context/bash_classify.py` | classifies a shell command into kinds (read/search/inspect/write/exec/env) |
 | `guardrails/policy/readonly_exempt.py` | waives the prompt for a read-only dual-use shell command, in any mode |
-| `guardrails/observations.py` | the blackboard writer: `record_tool_observation` and the `_observe_*` handlers |
+| `guardrails/observations/` | the blackboard writer: `record_tool_observation` and the observers in `ORDER` |
 | `guardrails/workflow.py` | the state model, the denial ladder, the completion report |
 | `guardrails/nudges/engine.py` | `maybe_append_nudge`, the `_CORE_NUDGES` table, the pack registry |
 | `guardrails/nudges/messages.py` | every nudge's message text |
@@ -298,7 +298,7 @@ A few notes worth keeping:
   sits outside the enforcement dial that exists to tune exactly that. The pre-edit
   planning gate was removed on that ground. The risk it gestured at — concluding with
   open steps — is covered by the `unfinished_plan` nudge, from disk state.
-- **`observations.py` credits shell commands like dedicated tools.** `bash_classify`
+- **`observations/` credits shell commands like dedicated tools.** `bash_classify`
   reads the command, so a `cat`/`grep`/`sed -i` feeds `read_files`, `searched`,
   `inspected_dirs`, `dirty_written_files` and `action_op_count` the same way the file and
   search tools do. It is not a security boundary: the bash server validates every call
@@ -724,7 +724,7 @@ file the floor cannot read as text at all — a binary, or bytes that are not UT
 
 ### Checks and runs are two axes
 
-`observations._observe_bash_validation` drives both from one command, status-agnostically.
+`shell.bash_validation` drives both from one command, status-agnostically.
 Neither is the mandatory axis; everything here describes what a command the model *chose*
 to run adds on top.
 
@@ -1598,7 +1598,7 @@ Non-JSON violations pass through unchanged.
 
 When changing policy behaviour, update:
 
-1. the code — `guardrails/policy/write.py`, `guardrails/observations.py`,
+1. the code — `guardrails/policy/write.py`, `guardrails/observations/`,
    `guardrails/policy/state_machine.py`, `guardrails/policy/engine.py`, or
    `guardrails/nudges/engine.py`;
 2. targeted tests in `mimir/tests/`;

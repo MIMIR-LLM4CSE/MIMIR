@@ -1775,17 +1775,17 @@ class BashServerTests(unittest.TestCase):
         # classifier cannot tag EXEC) never clears a pending file. `py_compile` runs as
         # `python -m py_compile`, which _exec_head reports as the module name.
         self.assertEqual(
-            sorted(obs._PROJECT_VALIDATORS & set(DENIED_COMMANDS)), [],
+            sorted(obs.shell.PROJECT_VALIDATORS & set(DENIED_COMMANDS)), [],
             "project validators the bash server will not run")
         self.assertEqual(
-            sorted(obs._PROJECT_VALIDATORS - set(EXEC_COMMANDS) - {"py_compile"}), [],
+            sorted(obs.shell.PROJECT_VALIDATORS - set(EXEC_COMMANDS) - {"py_compile"}), [],
             "project validators the classifier does not tag as exec")
         # And the invariant the split into checks-vs-runs added: a head absent from
         # _VALIDATOR_TIER is an execution, for which _bash_validation_scan never reaches
         # the whole-project test — so listing one here is dead weight that reads like a
         # rule. `pytest` and `ctest` sat here unreachable for exactly that reason.
         self.assertEqual(
-            sorted(obs._PROJECT_VALIDATORS - set(obs._VALIDATOR_TIER)), [],
+            sorted(obs.shell.PROJECT_VALIDATORS - set(obs.shell.VALIDATOR_TIER)), [],
             "project checkers absent from _VALIDATOR_TIER are unreachable")
 
     def test_the_header_table_is_the_denylist(self) -> None:

@@ -34,6 +34,7 @@ from mimir.client.guardrails.verdict import apply_verdict  # noqa: E402
 from mimir.servers._shared.capabilities import build_descriptor  # noqa: E402
 from mimir.servers.proxy._lib import store  # noqa: E402
 from mimir.servers._shared.atomic import write_json  # noqa: E402
+from mimir.client.guardrails.observations import Call  # noqa: E402
 
 # The shape server_proxy declares, restated here so a change to it fails a test rather
 # than silently redefining what these assertions mean.
@@ -64,8 +65,13 @@ def _runner_agent():
 
 
 def _observe(agent, ec, tool: str, payload: dict, status: str = "ok") -> None:
-    O._observe_tool_run(agent, tool, {}, status, ec, "call", payload)
-    O._observe_run_outcome(agent, tool, payload, ec, "call")
+    O.runs.tool_run(Call(
+        agent=agent, tool_name=tool, arguments={}, status=status, execution_context=ec,
+        call_id="call", payload=payload,
+    ))
+    O.runs.run_outcome(Call(
+        agent=agent, tool_name=tool, payload=payload, execution_context=ec, call_id="call",
+    ))
 
 
 class DescriptorRoundTripTests(unittest.TestCase):
@@ -189,17 +195,20 @@ class MeasuredTierTests(unittest.TestCase):
         # A launched or diverted run reports status ok with whatever it had printed
         # so far. Judged as a result, a whole-project check would credit every pending
         # file at the instant the suite was started, before it had proved anything.
-        O._observe_bash_validation(
-            self.agent, "bash_run", {"command": f"ruff check {self.source}"},
-            "ok",
-            {"stdout": "", "background_job": {"job_key": "20260101T120000Z-ab12"}},
-            self.ec, "call")
+        O.shell.bash_validation(Call(
+            agent=self.agent, tool_name="bash_run",
+            arguments={"command": f"ruff check {self.source}"}, status="ok",
+            payload={"stdout": "", "background_job": {"job_key": "20260101T120000Z-ab12"}},
+            execution_context=self.ec, call_id="call",
+        ))
         self.assertIsNone(validation_tier(self.ec, self.source))
 
     def test_a_static_check_alone_does_not_reach_measured(self) -> None:
-        O._observe_bash_validation(
-            self.agent, "bash_run", {"command": f"ruff check {self.source}"},
-            "ok", {"stdout": ""}, self.ec, "call")
+        O.shell.bash_validation(Call(
+            agent=self.agent, tool_name="bash_run",
+            arguments={"command": f"ruff check {self.source}"}, status="ok",
+            payload={"stdout": ""}, execution_context=self.ec, call_id="call",
+        ))
         self.assertEqual(validation_tier(self.ec, self.source), "static")
 
     def test_crashed_and_infeasible_runs_credit_nothing(self) -> None:
@@ -214,9 +223,11 @@ class MeasuredTierTests(unittest.TestCase):
         self.assertIsNone(validation_tier(self.ec, self.source))
 
     def test_report_names_an_unmeasured_source_and_raises_risk(self) -> None:
-        O._observe_bash_validation(
-            self.agent, "bash_run", {"command": f"ruff check {self.source}"},
-            "ok", {"stdout": ""}, self.ec, "call")
+        O.shell.bash_validation(Call(
+            agent=self.agent, tool_name="bash_run",
+            arguments={"command": f"ruff check {self.source}"}, status="ok",
+            payload={"stdout": ""}, execution_context=self.ec, call_id="call",
+        ))
         lines = workflow.unmeasured_proxy_source_lines(self.ec)
         self.assertEqual(len(lines), 1)
         self.assertIn("never measured", lines[0])
@@ -273,8 +284,10 @@ class RefusedCallTests(unittest.TestCase):
         self.ec = build_execution_context()
 
     def _observe_bash(self, command: str, status: str, payload: dict) -> None:
-        O._observe_bash_validation(
-            self.agent, "bash_run", {"command": command}, status, payload, self.ec, "call")
+        O.shell.bash_validation(Call(
+            agent=self.agent, tool_name="bash_run", arguments={"command": command}, status=status,
+            payload=payload, execution_context=self.ec, call_id="call",
+        ))
 
     def test_a_comment_in_a_heredoc_is_not_a_run(self) -> None:
         """`//` is path-like and names no program; only the second test is the barrier."""

@@ -5,8 +5,10 @@ Layout::
     guardrails/
       workflow.py       shared state model (discover→edit→validate→conclude) +
                         its predicates + the agent-loop plan/loop message copy
-      observations.py   the execution_context blackboard WRITER (record_tool_
-                        observation + _observe_*); run by the executor after each call
+      ladder.py         the repair ladder: what a passing or failing check or run
+                        does to the workflow
+      observations/     the execution_context blackboard WRITER: the observers of
+                        ``ORDER``, run by the executor after each call
       policy/           HARD guardrails — call-time preconditions that BLOCK a tool
                         (engine/write/gates/approval + bash_classify/readonly_exempt
                         + the state_machine guard)

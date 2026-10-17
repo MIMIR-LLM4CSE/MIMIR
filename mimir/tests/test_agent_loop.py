@@ -36,7 +36,8 @@ from mimir.client.config.limits import (
 )
 from mimir.client.context.execution_context import build_execution_context
 from mimir.client.core.settings import normalize_mode
-from mimir.client.guardrails.observations import _observe_todo_flags
+from mimir.client.guardrails.observations import Call
+from mimir.client.guardrails.observations.plan import todo_flags
 from mimir.client.protocol.tool_call import as_dict
 from mimir.client.tool_execution.normalizer import make_hashable
 from mimir.client.protocol.tool_call import normalize_arguments
@@ -102,7 +103,9 @@ def _record_plan_flags(tool_calls, agent, execution_context) -> None:
     """
     for tc in tool_calls:
         name = as_dict(as_dict(tc).get("function", {})).get("name", "")
-        _observe_todo_flags(agent, name, "ok", execution_context)
+        todo_flags(Call(
+            agent=agent, tool_name=name, status="ok", execution_context=execution_context,
+        ))
 
 
 class MaybeCompactIntraQueryTests(unittest.TestCase):

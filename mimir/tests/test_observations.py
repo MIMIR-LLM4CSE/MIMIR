@@ -1,9 +1,7 @@
-"""Regression guard for the load-bearing observer dispatch in record_tool_observation.
+"""The observer dispatch of record_tool_observation, and what each observer records.
 
-The ``_observe_*`` handlers run in a fixed order (see observations.py) and each one
-decides for itself whether the call is its business. That ordering is the real
-fragility of the observation layer — these tests pin it so a future reorder/insert
-can't silently break it.
+The observers run in the fixed order of ``observations.ORDER``, and each one decides
+for itself whether the call is its business. These tests pin that order.
 
 Pure-Python + stubs (no live model/servers): runs on x86 and ARM.
 """
@@ -14,7 +12,6 @@ import os
 import tempfile
 import types
 import unittest
-from contextlib import ExitStack
 from unittest.mock import patch
 
 import mimir.client.guardrails.observations as runtime
@@ -35,35 +32,36 @@ from mimir.client.context.execution_context import (
     unwritten_declared_files,
 )
 from mimir.client.guardrails.ladder import register_run_failure
+from mimir.client.guardrails.observations import Call  # noqa: E402
 
 
 # The authoritative dispatch order, mirroring record_tool_observation's body.
 EXPECTED_ORDER = [
-    "_observe_edit_outcome",
-    "_observe_todo_flags",
-    "_observe_replacement_tracking",
-    "_observe_validation_tool",
-    "_observe_missing_module",
-    "_observe_env_probe",
-    "_observe_env_mutation",
-    "_observe_unwatched_runs",
-    "_observe_denial_clearing",
-    "_observe_edit_loop_clear",
-    "_observe_delete",
-    "_observe_search_flags",
-    "_observe_discover_transition",
-    "_observe_candidates",
-    "_observe_dir_inspect",
-    "_observe_existence_check",
-    "_observe_read",
-    "_observe_delegated_exploration",
-    "_observe_declared_edit_set",
-    "_observe_bash_validation",
-    "_observe_command",
-    "_observe_action_op",
-    "_observe_tool_run",
-    "_observe_run_outcome",
-    "_observe_verdict_tool",
+    "files.edit_outcome",
+    "plan.todo_flags",
+    "files.replacement_tracking",
+    "runs.validation_tool",
+    "env.missing_module",
+    "env.env_probe",
+    "env.env_mutation",
+    "runs.unwatched_runs",
+    "evidence.denial_clearing",
+    "files.edit_loop_clear",
+    "files.delete",
+    "discovery.search_flags",
+    "discovery.discover_transition",
+    "discovery.candidates",
+    "discovery.dir_inspect",
+    "discovery.existence_check",
+    "files.read",
+    "files.delegated_exploration",
+    "plan.declared_edit_set",
+    "shell.bash_validation",
+    "shell.command",
+    "runs.action_op",
+    "runs.tool_run",
+    "runs.run_outcome",
+    "evidence.verdict_tool",
 ]
 
 
@@ -75,17 +73,15 @@ def _stub_agent():
 
 
 def _record_order() -> list[str]:
-    """Patch every _observe_* with a recorder, run the dispatcher, return call order."""
+    """Run the dispatcher with every observer replaced by a recorder; the call order."""
     order: list[str] = []
 
-    def _make_recorder(name: str):
-        def _rec(*_a, **_k):
-            order.append(name)
-        return _rec
+    def _make_recorder(observer):
+        name = f"{observer.__module__.rsplit('.', 1)[-1]}.{observer.__name__}"
+        return lambda _call: order.append(name)
 
-    with ExitStack() as stack:
-        for name in EXPECTED_ORDER:
-            stack.enter_context(patch.object(runtime, name, _make_recorder(name)))
+    recorders = tuple(_make_recorder(o) for o in runtime.ORDER)
+    with patch.object(runtime, "ORDER", recorders):
         runtime.record_tool_observation(
             _stub_agent(), "any_tool", {}, "{}", build_execution_context(),
         )
@@ -310,7 +306,7 @@ class EditFailureStreakTests(unittest.TestCase):
 class BashCommandObservationTests(unittest.TestCase):
     """A shell-command tool feeds the blackboard by classified capability.
 
-    ``_observe_command`` classifies the ``command`` string (registry-driven off the
+    ``shell.command`` classifies the ``command`` string (registry-driven off the
     ``command_prefix`` scope kind) and credits the same execution_context fields the
     dedicated file/search tools would — so a bash ``cat``/``grep``/``sed -i`` is no
     longer invisible to the policy/nudge layer.
@@ -403,7 +399,7 @@ class BashValidationObservationTests(unittest.TestCase):
         # These cases are about the check/run split, never about a missing toolchain, so
         # whether this host happens to have `make` or `gfortran` must not decide them.
         # The missing-command imputation has its own class below.
-        patcher = patch.object(runtime, "_any_command_on_path", lambda cmds: True)
+        patcher = patch.object(runtime.shell, "any_command_on_path", lambda cmds: True)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -695,7 +691,7 @@ class RedTestRunObservationTests(unittest.TestCase):
     def setUp(self):
         # Whether this host has `pytest` on PATH must not decide these cases; the
         # missing-command imputation has its own class.
-        patcher = patch.object(runtime, "_any_command_on_path", lambda cmds: True)
+        patcher = patch.object(runtime.shell, "any_command_on_path", lambda cmds: True)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -886,8 +882,8 @@ class ExitAttributionTests(unittest.TestCase):
         )
 
     def _attributable(self, command):
-        with patch.object(runtime, "_any_command_on_path", lambda cmds: True):
-            return runtime._bash_validation_scan(self._agent(), command)[-1]
+        with patch.object(runtime.shell, "any_command_on_path", lambda cmds: True):
+            return runtime.shell.bash_validation_scan(self._agent(), command)[-1]
 
     def test_a_pipeline_tail_owns_the_status(self):
         self.assertFalse(self._attributable("pytest tests/t.py -q 2>&1 | tail -15"))
@@ -903,7 +899,7 @@ class ExitAttributionTests(unittest.TestCase):
     def test_a_piped_build_is_denied_the_auto_pass(self):
         # `make` green auto-settles because a build's exit code IS the finding — but
         # only when that exit code is the build's. Behind a pager it is not.
-        with patch.object(runtime, "_any_command_on_path", lambda cmds: True):
+        with patch.object(runtime.shell, "any_command_on_path", lambda cmds: True):
             for cmd, settled in (("make", "pass"), ("make 2>&1 | tail -20", "")):
                 ec = build_execution_context()
                 runtime.record_tool_observation(
@@ -1023,7 +1019,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
 
     Split by *surface*, not by purpose: a shell tool's calls differ in kind call by call
     (`cat` reads, `python` executes), so only the command text can decide and
-    `_observe_bash_validation` owns it. A tool like `proxy_exec` has no such variation —
+    `shell.bash_validation` owns it. A tool like `proxy_exec` has no such variation —
     the call *is* the execution — so the declared capability decides. The two must stay
     mutually exclusive, or a bash run gets registered twice.
     """
@@ -1182,22 +1178,22 @@ class ValidationTierTests(unittest.TestCase):
 
     def test_reedit_retracts_the_tier(self):
         # Evidence is about a specific revision of the file.
-        from mimir.client.guardrails.observations import _record_code_edit
+        from mimir.client.guardrails.observations.files import record_code_edit
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "ruff check foo.py", ec)
         self.assertEqual(self.tier(ec), "static")
-        _record_code_edit(ec, "foo.py")
+        record_code_edit(ec, "foo.py")
         self.assertIsNone(self.tier(ec))
         self.assertNotIn("foo.py", ec.validated_files)
 
     def test_reedit_does_not_retract_a_run(self):
         # A run is a past event and its verdict is a statement about what that event
         # showed; re-editing does not undo either, it only makes them out of date.
-        from mimir.client.guardrails.observations import _record_code_edit
+        from mimir.client.guardrails.observations.files import record_code_edit
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python foo.py", ec)
         self._judge(ec)
-        _record_code_edit(ec, "foo.py")
+        record_code_edit(ec, "foo.py")
         self.assertEqual(ec.runs["python foo.py"]["verdict"], "pass")
 
     def test_failed_validation_retracts_the_tier(self):
@@ -1243,7 +1239,7 @@ class UncheckableFileTests(unittest.TestCase):
         with open(path, mode) as handle:
             handle.write(content)
         ec = self._ctx(set())
-        observations._record_code_edit(ec, name)
+        observations.files.record_code_edit(ec, name)
         sweep_builtin_checks(ec, lambda p: os.path.join(directory, p))
         return ec, path
 
@@ -1270,7 +1266,7 @@ class UncheckableFileTests(unittest.TestCase):
     def test_re_editing_retracts_the_previous_answer(self):
         from mimir.client.guardrails import observations
         ec, _ = self._sweep("kernel.cu", "__global__ void k() {\n")
-        observations._record_code_edit(ec, "kernel.cu")
+        observations.files.record_code_edit(ec, "kernel.cu")
         self.assertEqual(ec.builtin_check_findings, {})
         self.assertEqual(ec.builtin_check_stamp, {})
 
@@ -1320,15 +1316,15 @@ class MissingCommandImputationTests(unittest.TestCase):
         ec = build_execution_context()
         ec.dirty_written_files = set(dirty)
         ec.code_mutation_started = True
-        real = runtime._any_command_on_path
-        runtime._any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
+        real = runtime.shell.any_command_on_path
+        runtime.shell.any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
         try:
             runtime.record_tool_observation(
                 self._agent(), "bash_run", {"command": command},
                 json.dumps({"status": "error", "stdout": "", "stderr": "boom"}), ec,
             )
         finally:
-            runtime._any_command_on_path = real
+            runtime.shell.any_command_on_path = real
         return ec
 
     def test_a_command_that_is_not_installed_is_not_a_defect_in_the_patch(self):
@@ -1394,9 +1390,10 @@ class DeclaredEditSetTests(unittest.TestCase):
         )
 
     def _declare(self, ec, steps):
-        runtime._observe_declared_edit_set(
-            self._agent(), "todo_write", {"steps": steps}, "ok", ec,
-        )
+        runtime.plan.declared_edit_set(Call(
+            agent=self._agent(), tool_name="todo_write", arguments={"steps": steps}, status="ok",
+            execution_context=ec,
+        ))
 
     def test_a_checklist_declares_the_paths_it_names(self):
         ec = build_execution_context()

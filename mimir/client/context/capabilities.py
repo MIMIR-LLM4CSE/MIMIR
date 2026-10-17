@@ -43,14 +43,14 @@ from ..config.limits import TOOL_CALL_TIMEOUT_MAX_SECS, TOOL_CALL_TIMEOUT_SECS
 
 # --- Discovery: reads, searches, inspections the policy tracks as evidence -
 # Feeds edit/delete preconditions and the "did exploration happen" nudges.
-READ = "read"                          # _observe_read -> read_files (edit/overwrite precondition; evidence)
-SEARCH = "search"                      # _observe_search_flags (evidence; blast-radius)
+READ = "read"                          # files.read -> read_files (edit/overwrite precondition; evidence)
+SEARCH = "search"                      # discovery.search_flags (evidence; blast-radius)
 SEARCH_WITH_PATH = "search_with_path"  # results locate hits by path and line
-CANDIDATE_SEARCH = "candidate_search"  # _observe_candidates -> path-clarification
-INSPECT_DIR = "inspect_dir"            # _observe_dir_inspect -> delete context
-CHECK_EXISTENCE = "check_existence"    # _observe_existence_check -> weaker delete context
+CANDIDATE_SEARCH = "candidate_search"  # discovery.candidates -> path-clarification
+INSPECT_DIR = "inspect_dir"            # discovery.dir_inspect -> delete context
+CHECK_EXISTENCE = "check_existence"    # discovery.existence_check -> weaker delete context
 CODE_NAV = "code_nav"                  # symbol nav; relevance-cap "core keep" set
-ENV_DISCOVERY = "env_discovery"        # _observe_env_probe -> env-resolution nudge (enumerates conda/venv interpreters)
+ENV_DISCOVERY = "env_discovery"        # env.env_probe -> env-resolution nudge (enumerates conda/venv interpreters)
 CACHEABLE = "cacheable"                # executor result cache + invalidation
 
 # --- Mutation: kinds the write policy treats distinctly --------------------
@@ -59,14 +59,14 @@ CACHEABLE = "cacheable"                # executor result cache + invalidation
 EDIT = "edit"                          # any file writer/editor (state machine, dirty tracking, validation entry)
 CONTENT_WRITE = "content_write"        # create/append whole files (query-intent create-vs-edit filter)
 OVERWRITE = "overwrite"                # replaces an existing file's entire content (subset of content_write)
-REMOVE = "remove"                      # deletes a file (needs context; _observe_delete)
-REPLACEMENT_TRACK = "replacement_track"  # _observe_replacement_tracking -> cross-file completeness
+REMOVE = "remove"                      # deletes a file (needs context; files.delete)
+REPLACEMENT_TRACK = "replacement_track"  # files.replacement_tracking -> cross-file completeness
 
 # --- Validation ------------------------------------------------------------
 # Validates code (syntax/lint/typecheck/test). No first-party tool carries this — the
 # stack validates through the bash server — but the flag stays so an extension-pack
 # server can ship its own validator, with the same conclude-gate contribution a bash
-# validation makes (`_observe_validation_tool` + `clears_edit_loop`).
+# validation makes (`runs.validation_tool` + `clears_edit_loop`).
 VALIDATE = "validate"
 
 # --- Task planning ---------------------------------------------------------
@@ -76,7 +76,7 @@ TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or p
 
 # --- Verdict ---------------------------------------------------------------
 # The channel through which the model states what a run's output showed
-# (_observe_verdict_tool -> guardrails/verdict.apply_verdict). Every consumer that has
+# (evidence.verdict_tool -> guardrails/verdict.apply_verdict). Every consumer that has
 # to name the tool to the model resolves it from here, so the name lives in one place
 # — the server's declaration — and never in prompt or nudge copy.
 JUDGE = "judge"                        # records the model's verdict on a run's output
@@ -137,7 +137,7 @@ CODE_EXEC = "code_exec"                # runs a program/shell command/code paylo
 # --- Reach & cost ----------------------------------------------------------
 EXTERNAL_FETCH = "external_fetch"      # reaches outside the workspace (e.g. GitHub API)
 CLUSTER_SUBMIT = "cluster_submit"      # expensive cluster launch (Slurm submit / batch run)
-ENV_MUTATE = "env_mutate"              # _observe_env_mutation -> conclude-phase cleanup-offer nudge
+ENV_MUTATE = "env_mutate"              # env.env_mutation -> conclude-phase cleanup-offer nudge
 BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result may carry a
                                        # background_job descriptor a watcher polls to completion
 DIVERTIBLE = "divertible"              # publishes a run channel under its own name while it

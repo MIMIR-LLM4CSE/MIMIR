@@ -335,12 +335,12 @@ class VerdictToolTests(unittest.TestCase):
     def test_the_settled_row_is_announced_to_the_ui(self) -> None:
         ec = self._ctx()
         events: list[dict] = []
-        original = observations.emit
-        observations.emit = events.append
+        original = observations.evidence.emit
+        observations.evidence.emit = events.append
         try:
             self._call(ec, {"outcome": "fail", "why": "energy grows", "which": ""})
         finally:
-            observations.emit = original
+            observations.evidence.emit = original
         self.assertEqual(events, [{"type": "verdict", "id": "c1", "verdict": "fail"}])
 
 

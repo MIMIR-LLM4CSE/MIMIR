@@ -447,7 +447,7 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 #
 #   WRITER                                   FIELDS WRITTEN                              READ BY
 #   guardrails.observations.record_tool_observation   searched, read_files, inspected_dirs,      engine (tools_for_context,
-#     (the ordered _observe_* handlers,        checked_paths, existing_paths,             _missing_evidence, guards),
+#     (the observers of ORDER,                 checked_paths, existing_paths,             _missing_evidence, guards),
 #      run after every tool call)              search_tool_calls,                          runtime (check_write_policy),
 #                                              similar_candidates_by_dir,                 state_machine (guards),
 #                                              dirty_written_files, declared_edit_set,    nudge_logic (all nudges),
@@ -461,7 +461,7 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 #                                              todo_written, plan_written
 #   guardrails.verdict.apply_verdict           runs[cmd].verdict/reason/failures,        verification (ledger rows),
 #     (runs on the judging tool's call,        attempts                                   workflow (completion report)
-#      via _observe_verdict_tool)
+#      via evidence.verdict_tool)
 #   context/workflow.set_workflow_state       workflow_state                             every layer's state gates
 #   query_engine/nudge_logic._fire_nudge      nudge_counts[<category>]                    nudge_logic (per-category caps)
 #   query_engine/agent_loop                   steps_since_last_edit (increment),          nudge_logic (idle gates),
@@ -485,7 +485,7 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 # was the source of cross-layer coherence bugs.
 #
 # Every signal below is only ever set by the model's own tool calls this query (see
-# guardrails.observations._observe_*), so presence is the whole test. Nothing seeds
+# guardrails.observations), so presence is the whole test. Nothing seeds
 # these fields any more: a structural snapshot used to pre-fill ``inspected_dirs``,
 # which meant a gate could be satisfied before the model had done anything, and the
 # discount that existed to undo it was itself a field only some consumers applied.
@@ -715,7 +715,7 @@ def files_below_tier(execution_context: ExecutionContext, tier: str) -> list[str
 # time_s=0.064247 > best 0.055586" — and `fail` charges the repair budget and addresses
 # every outstanding run at once, so one honest sentence about a thread count marked
 # thirteen unrelated runs as defects and asked whose fault a healthy run was. The
-# machine side already knew better: `observations._settle_from_machine` declines to
+# machine side already knew better: `observations.runs._settle_from_machine` declines to
 # charge a run that measured correctly without improving, "the ordinary outcome of an
 # experiment, and charging it would punish most of them". This is the same judgement,
 # made available to the only party that can actually recognise it.
