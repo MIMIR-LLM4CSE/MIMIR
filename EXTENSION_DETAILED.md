@@ -486,7 +486,7 @@ second way to start an irreversible call.
 
 A command's output only exists once it has finished. Building the panel from the
 result alone therefore put the whole thing on screen at the end, and until then the
-user watched a spinner that never said what was running. So `dispatch.py` sends the
+user watched a spinner that never said what was running. So `query_engine/dispatch/` sends the
 IN half on the `tool_call` event: the command, with empty streams. The reducer stores
 it on the row like any other `exec`, the row opens on it, and the result replaces it
 with the complete panel.
@@ -612,7 +612,7 @@ holds, so the link inside would never fire. It uses `aria-disabled` instead.
 
 A tool row in `ToolActivityList.tsx` carries one control that talks to the server:
 while a row is `running` and the server marked it `divertible` (the `divertible`
-capability, read off the tool registry in `dispatch.py` — the webview never learns
+capability, read off the tool registry in `query_engine/dispatch/` — the webview never learns
 which tool is a shell), an icon appears beside the head on hover or focus. It sends
 `{type: "divert_to_background", id}`; the sentence lives in the tooltip, since the row
 is already a dense line.

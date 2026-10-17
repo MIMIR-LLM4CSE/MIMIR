@@ -67,7 +67,7 @@ The README is an overview; the authoritative detail lives in dedicated docs:
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev environment, running the tests, opening a PR |
 
 Tunable thresholds (timeouts, history/compaction budgets, context sizes) are
-centralized in [`client/config/constants.py`](mimir/client/config/constants.py).
+centralized in [`client/config/limits.py`](mimir/client/config/limits.py).
 
 ## Quick start
 
@@ -260,7 +260,7 @@ flowchart TD
 ## Registered Servers
 
 The client registers 20 servers by default; the authoritative registry lives in
-[`constants.py`](mimir/client/config/constants.py). Per-server tool details are in
+[`servers.py`](mimir/client/config/servers.py). Per-server tool details are in
 [`SERVERS_DETAILED.md`](SERVERS_DETAILED.md).
 
 | Name | Main capabilities |

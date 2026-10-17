@@ -1419,7 +1419,7 @@ Execution model:
 - The tool is synchronous from the model's point of view but runs the sub-agent in a
   dedicated thread with its own event loop, so it is safe to call from inside the parent's
   running asyncio loop. Several `spawn_agent` calls emitted in one model step are
-  dispatched **concurrently** by the parent's `asyncio.gather` in `dispatch.py` — which is
+  dispatched **concurrently** by the parent's `asyncio.gather` in `query_engine/dispatch/` — which is
   why the prompt asks for the fan-out in a single response.
 - The per-call budget is enforced here, up to `SUBAGENT_HARD_CAP_SECS` (1140 s). The tool
   *declares* a larger wall to the dispatcher (`timeout_secs`, read by
@@ -1502,7 +1502,7 @@ These are two different "pause and involve the user" mechanisms; don't conflate 
 
 | Need | Mechanism | Examples |
 |---|---|---|
-| "Is the agent *allowed* to do this risky/irreversible action?" | **Approval system** (`mimir/client/guardrails/policy/` + the WS `_approval_shim`) — risk/scope classification, yes / no / **always**, pre-write diffs, batch revert | bash commands, file writes/deletes, proxy run/eval tools |
+| "Is the agent *allowed* to do this risky/irreversible action?" | **Approval system** (`mimir/client/guardrails/policy/` + the WS `HumanBridge`) — risk/scope classification, yes / no / **always**, pre-write diffs, batch revert | bash commands, file writes/deletes, proxy run/eval tools |
 | "I don't know what the user *wants*; the answer changes what I do" | **Elicitation** (`ask_user_question` / `ctx.session.elicit_form`) — a structured form prompt | architectural forks ("Postgres or SQLite?"), ambiguous requirements, disambiguating an under-specified argument |
 
 Guidance:
@@ -1644,7 +1644,7 @@ If adding shared helper code used by multiple servers, put it in `_shared/`
 or a new group-local `_shared_<domain>.py` module — never duplicate it.
 
 If the client registration set changes, also update:
-- `mimir/client/config/constants.py` (`SERVERS` **and** `SERVER_DESCRIPTIONS`)
+- `mimir/client/config/servers.py` (`SERVERS` **and** `SERVER_DESCRIPTIONS`)
 - the *Registered Servers* table in `README.md` (and its server count)
 - the *Registered-by-default servers* list above
 

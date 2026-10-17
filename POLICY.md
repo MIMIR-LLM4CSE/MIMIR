@@ -73,7 +73,7 @@ then applies its own mode condition on top:
 is why `strict` + `plan` is a shorter list than "everything". Ask mode neither plans nor
 edits, so no guidance row has anything to guard.
 
-Every nudge has a per-query cap (`NUDGE_MAX_*` in `config/constants.py`), mostly 1 or 2.
+Every nudge has a per-query cap (`NUDGE_MAX_*` in `config/limits.py`), mostly 1 or 2.
 `regression` and `unexercised` share one budget: they are two phrasings of "does anything
 show this works?", and separate budgets turned one conclusion into several re-prompts.
 
@@ -705,7 +705,7 @@ returns the workflow to `edit`; the validation nudge then reports the file and t
 instead of asking for a command.
 
 **The retry budget bounds the whole thing.** `VALIDATION_RETRY_BUDGET`
-(`config/constants.py`, currently 5) caps how many times one file may fail its check
+(`config/limits.py`, currently 5) caps how many times one file may fail its check
 before the workflow auto-escapes to `conclude`. The same exhausted count arms the state
 guard's anti-thrashing stop and drives the finalize buckets. After an auto-escape, the
 residual risk must be stated clearly, and further validation and state nudges are

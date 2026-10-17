@@ -15,66 +15,81 @@ about structure and flow. The VS Code frontend has its own file,
 
 | Package | Owns |
 |---|---|
-| `config/` | constants, per-model and per-mode resolution, the toggle preferences store |
-| `context/` | the execution-context schema, tool capabilities, query signals, `@`-mention attach |
+| `config/` | the vocabulary: `paths`, `limits`, `settings` (the closed sets of each user setting), `servers`, `models` and the model catalogue, the `preferences` store |
+| `protocol/` | the shapes that cross a boundary: `events` (event types, the private answer extras), `messages` (chat-message invariants, `reconcile_tool_pairs`), `tool_call`, `tool_result` |
+| `context/` | the `ExecutionContext` dataclass, tool capabilities, query signals, `@`-mention attach, the checklist file |
+| `core/` | the contracts: `ports` (`AgentPort`, `HumanIO`), `settings` (`apply_setting` / `read_setting`), `human` (`TerminalHuman`, `Unattended`) |
 | `prompt/` | system-prompt construction |
 | `extensions/` | everything the user drops in the workspace `.mimir/` — servers, skills, plugin packs |
 | `integration/` | server lifecycle: spawn, tool discovery |
-| `guardrails/` | behaviour governance — `policy/` blocks, `nudges/` advises, the root holds what both read |
-| `query_engine/` | the per-query loop, plus `backends/` for the LLM adapters |
-| `tool_execution/` | argument normalization, path rewriting, post-write checks, result formatting |
-| `ui/` | the frontends — `ui/cli/` and `ui/ws/`, which share nothing |
-| `agent_core.py` | **`MimirAgent`**, the engine every frontend pilots. Not UI |
-| `human_pause.py` | the one blocking-prompt seam (approvals, plan approval, elicitation) |
+| `guardrails/` | behaviour governance — `policy/` blocks (a pipeline of gates), `nudges/` advises (one cascade), the root holds what both read |
+| `query_engine/` | a turn: the loops, tool dispatch, history and budget, plus `backends/` for the LLM adapters |
+| `tool_execution/` | argument normalization, path rewriting, post-write checks, result formatting, `direct` (a tool call the user made themselves) |
+| `session/` | a conversation independent of its front-end: `conversation` (`Conversation`, `Conversations`), `store` (`SessionStore`), `commands/` (the slash commands both front-ends share) |
+| `ui/` | the front-ends — `ui/cli/` and `ui/ws/` |
+| `agent_core.py` | **`MimirAgent`**, the engine every front-end pilots; implements `AgentPort`. Not UI |
+| `human_pause.py` | marks time spent waiting on a person, so it is not charged to a tool's timeout |
 | `event_sink.py` | `emit()` — structured events to a bound callback (WS) or JSON on stdout (CLI) |
 | `mimir/runner/` | the headless batch engine. A sibling of `client/`, not under it |
 
-### The per-query loop
-
-One orchestrator plus focused siblings, all under `query_engine/`:
+### A turn
 
 | Module | Owns |
 |---|---|
-| `agent_loop.py` | orchestrator: `run_agent_query`, `_run_agent_loop`, `_advertised_tools`, `_drain_steer`, `_sync_checklist` |
-| `plan_loop.py` | `_run_plan_mode`, `_request_plan_decision`, the `_PLAN_*` labels. Tail-calls `_run_agent_loop` (lazy import — the only cycle point) |
+| `turn.py` | `run_agent_query` and `run_loops`, the driver: a mode switch returned by a loop (`ModeSwitch`) selects the next strategy, without recursion |
+| `loop_base.py` | `StepLoop`, the template every loop is: drain steering → budget → call the model (with retry and the draft hold) → text-only or tool-call step |
+| `agent_loop.py` | `AgentLoop` — the autonomous strategy |
+| `plan_loop.py` | `PlanLoop` — read-only exploration, the plan document, the approval that switches to agent mode |
 | `readonly_guard.py` | `filter_readonly_tool_calls` — the call-time write/exec guard the read-only modes share |
-| `dispatch.py` | `_dispatch_tool_calls`, `_post_dispatch_inject`, the spin and dedup guards |
+| `dispatch/` | `ToolDispatcher`: `admission` (dedup, read-only, backstop), `execution` (one call, its timeout, its post-processing), `inject` (what is put back in front of the model) |
 | `history.py` | context budgeting: trim → compact → force-fit → repair, plus the compaction marker |
-| `streaming.py` | `_stream_chat` (retry/backoff), `_process_response`, the single `get_backend` handle |
-| `toollist.py` | per-query tool-list construction |
+| `context_budget.py` | `context_budget_for(model, mode)` — the window a model actually has |
+| `streaming.py` | the model call (retry/backoff), `_process_response`, the single `get_backend` handle |
 | `background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
 | `job_poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
+| `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
 | `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
 | `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
+| `backends/` | `LLMBackend.chat` is a template (`_complete` per backend); `OpenAICompatBackend` with `VllmBackend` and `RayBackend` as subclasses, `AnthropicBackend`, `OllamaBackend`, the `ThinkTagParser` |
 
 ### Slash commands
 
-The CLI table is `ui/cli/chat_commands.handle_chat_command`. The webview has its own,
-separate handler.
+One registry, `session/commands`: a `Command` parses its arguments and returns a
+`CommandResult` — a setting's new state, a card (a listing, something irreversible), or
+an error — and each front-end renders it (`ui/cli/chat_commands.render_text`;
+`ui/ws/handlers/panel._send_command_result`). `/think` = `/thinking` =
+`/thinking-depth`, `/stream` = `/streaming`.
 
-| Command | Does |
-|---|---|
-| `/help`, `/status` | usage; current model, mode, depth, approvals, trusted tools |
-| `/mode [agent\|plan\|ask]` | switch session mode |
-| `/think <depth>` | `off` · `auto` · `quick` · `medium` · `deep` · `max` |
-| `/temperature <0-2>\|default` | sampling temperature for the current model; `default` sends none |
-| `/enforcement strict\|light\|off` | the guidance-nudge dial ([POLICY.md](POLICY.md#nudges-by-enforcement-level)) |
-| `/approvals manual\|auto\|all` | who answers the approval cards ([POLICY.md](POLICY.md#policy-gates-by-approval-mode)) |
-| `/batch on\|off` | queue write approvals until the end of the turn |
-| `/trust <tool>`, `/untrust <tool>` | session-wide trust for one tool |
-| `/context compact\|full`, `/compact` | window policy, and compact now |
-| `/ledger` | expand the last answer's verification ledger |
-| `/undo` | revert the last write |
-| `/memory` | the memory store |
-| `/servers`, `/skills`, `/nudges` | list or toggle, persisted in `preferences.json`. A switched-off skill is hidden from both `/<name>` and the index the model loads from |
-| `/resources` | what `@`-mention can attach |
-| `/modules` | module-catalogue status, `refresh`, or a search term. Status never builds |
-| `/proxy clean <name>` | delete a proxy's runs, state and snapshots, and say what it removed |
-| `/stream` | toggle token streaming |
+| Command | Where | Does |
+|---|---|---|
+| `/help`, `/status` | CLI | usage; current mode, depth, approvals, trusted tools |
+| `/mode [agent\|plan\|ask]` | both | switch session mode |
+| `/thinking <depth>` | both | `off` · `auto` · `quick` · `medium` · `deep` · `max`, or the rung's index |
+| `/temperature <0-2>\|default` | both | sampling temperature for the current model; `default` sends none |
+| `/enforcement strict\|light\|off` | both | the guidance-nudge dial ([POLICY.md](POLICY.md#nudges-by-enforcement-level)) |
+| `/approvals manual\|auto\|all` | both | who answers the approval cards ([POLICY.md](POLICY.md#policy-gates-by-approval-mode)) |
+| `/batch on\|off` | both | queue write approvals until the end of the turn |
+| `/streaming on\|off` | both | token streaming |
+| `/context compact\|full` | both | window policy |
+| `/subagents explore\|build` | both | how far a sub-agent may go |
+| `/backend ollama\|vllm\|ray` | both | switch the LLM backend (process-wide) |
+| `/memory list\|clear\|delete <name>` | both | the memory store |
+| `/proxy list\|clean <name>` | both | name the proxies; delete one's runs, state and snapshots, and say what was kept |
+| `/modules [refresh\|<term>]` | both | module-catalogue status, rebuild, or search. Status never builds |
+| `/trust <tool>`, `/untrust <tool>` | CLI | session-wide trust for one tool |
+| `/servers`, `/skills`, `/nudges` | CLI | list or toggle, persisted in `preferences.json` (the webview has a panel) |
+| `/resources` | CLI | what `@`-mention can attach |
+| `/undo` | CLI | revert the last turn's writes |
+| `/compact [threshold <N>]`, `/ledger` | CLI | compact now; expand the last answer's verification ledger |
+| `/cancel`, `/diag` | WS | stop the run in flight; what the event chain has done |
+
+A setting is checked by `core.settings.parse_setting` before anything changes, so a
+value refused is refused at once — also before any agent exists, when the pool would
+otherwise record it and fail at replay.
 
 ### Key constants
 
-All in `config/constants.py` unless noted.
+All in `config/limits.py`.
 
 | Constant | Value | Bounds |
 |---|---|---|
@@ -86,7 +101,7 @@ All in `config/constants.py` unless noted.
 | `DISCOVERY_EVIDENCE_MIN_DISTINCT` | 2 | distinct signals clearing the `discover` gate |
 | `PLAN_EVIDENCE_MIN_FILES_READ` | 1 | files read before plan mode offers the document tool |
 | `PLAN_EXPLORE_MAX_TURNS` | 8 | after which the document tool unlocks regardless |
-| `LLM_RETRY_ATTEMPTS` | 3 | transient backend failures retried with backoff |
+| `LLM_RETRY_ATTEMPTS` | 8 | transient backend failures retried with backoff (1 + 8 attempts) |
 
 ---
 
@@ -105,14 +120,19 @@ The client orchestrates the local MCP stack:
 
 ## config
 
-Constants and per-model resolution. No logic.
+The vocabulary and per-model resolution. No logic beyond parsing.
 
-### `constants.py`
+### `paths.py`, `limits.py`, `servers.py`, `settings.py`
 
-The tuning knobs and the bundled server registry. Exports `DEFAULT_MODEL`, `LLM_BACKEND`,
-the vLLM endpoint settings, `SERVERS`, `SERVER_DESCRIPTIONS`, `VALID_MODES`,
-`READONLY_MODES`, `SERVER_BASE`, `STATE_DIR`, plus the step, timeout, history and nudge
-constants listed [above](#key-constants).
+`paths` resolves where things are — `WORKSPACE_ROOT`, the workspace `.mimir/`
+(`MIMIR_DIR`), the per-workspace `STATE_DIR` kept outside the repository, `SERVER_BASE`,
+`SKILL_BASE`. It resolves them **as it is imported**, which is why the WebSocket entry
+point applies `--cwd` before importing anything that imports it. `limits` holds the step,
+timeout, history and nudge constants listed [above](#key-constants). `servers` is the
+bundled server registry (`SERVERS`, `SERVER_DESCRIPTIONS`). `settings` is the closed set
+of each user setting — `CONTEXT_MODES`, `ENFORCEMENT_LEVELS`, `APPROVAL_MODES` and the
+spoken `all`, `BACKENDS`, the sub-agent rungs, the temperature bounds — and their
+parsing; applying one to an agent is `core.settings`.
 
 **The thinking-depth ladder.** `THINKING_DEPTH_LABELS` is `off · auto · quick · medium ·
 deep · max`, with budgets `(-1, -1, 512, 4096, 16384, -1)` where `-1` means no token
@@ -122,8 +142,8 @@ only where the task is genuinely uncertain, rather than a classifier deciding fo
 fixed rungs impose a budget instead, which the loop's per-phase scaling then modulates;
 `max` is on and unbudgeted *without* the calibration directive.
 
-The depth is **live**: it travels in the backend payload and is read per step, so `/think`
-mid-run lands on the very next one. `agent_loop._sync_thinking_directive()` rebuilds
+The depth is **live**: it travels in the backend payload and is read per step, so `/thinking`
+mid-run lands on the very next one. `loop_base._sync_thinking_directive()` rebuilds
 `messages[0]` only when the run enters or leaves the `auto` rung, since that is the only
 rung whose directive lives in the system prompt — one deliberate prefix-cache miss on an
 explicit user action, and a single comparison in steady state. `on` stays accepted as an
@@ -180,18 +200,53 @@ a user extension, which is why it lives under the state dir rather than the work
 
 The same file holds `temperatures`: the sampling temperature the user chose, per served
 model name. A model absent from it sends **no** temperature, and the server applies the
-model's own `generation_config`. The agent loads the value at construction and again on
-`set_model`, so each model keeps its own and a sub-agent of the same model starts from it.
+model's own `generation_config`. The agent loads the value at construction and again when
+the model is switched (`apply_setting(agent, "model", …)`), so each model keeps its own and a sub-agent of the same model starts from it.
 Both loops read `agent.temperature` before each call, so a change lands on the next step.
 Only vLLM, Ray and Ollama forward it. Anthropic's extended thinking requires 1, so the
 webview hides the control there. Each save rewrites only its own keys and keeps the rest.
 
 ---
 
+## core
+
+The contracts the layers above agree on.
+
+| Module | Holds |
+|---|---|
+| `ports.py` | `AgentPort` — everything the engine, the guardrails and the executor may call on an agent, as a `Protocol`, so a test hands in any object with those members. `HumanIO` — how the agent reaches a person: `approve_tool`, `approve_paths`, `ask` |
+| `settings.py` | one table, `SETTINGS`: per setting, how to `parse` it (raising `ValueError` with the message to show), how to `store` it on an agent, how to `read` it, and what is in force with no agent. `apply_setting(agent, name, value)` and `read_setting(agent, name)` are the only way any front-end changes or reads a setting |
+| `human.py` | the two `HumanIO`s that need nothing but the agent: `TerminalHuman` (stdin; EOF answers no) and `Unattended` (the benchmark runner) |
+
+Each front-end puts its own `HumanIO` on the agent (`agent.human`): the WebSocket's is
+`ui/ws/human_bridge.HumanBridge`, the sub-agent server's relays to the delegating session.
+What a front-end lends a turn besides — `poll_steer`, `register_background_job`,
+`watched_background_jobs` — are declared attributes of the agent, `None` where it lends
+nothing.
+
+---
+
+## session
+
+A conversation, independent of the front-end showing it.
+
+| Module | Holds |
+|---|---|
+| `conversation.py` | `Conversation`: the working window (`history`), the untrimmed record (`history_full`), the transcript (`display`), what the running turn inherited (`submitted_len`), and what is owed between turns — finished runs not yet given a turn, the check-in held back, the live steering. `commit_answer` writes a finished turn by the one rule both front-ends use. `Conversations` hands every asker the same object per id. `trim_front` is the front-trim both front-ends fall back to |
+| `store.py` | `SessionStore` — `<STATE_DIR>/sessions/<id>.json`, atomic writes, a revision that refuses a stale save, sub-agent cards |
+| `commands/` | the slash commands ([above](#slash-commands)): `base` (`Command`, `CommandRegistry`, `CommandResult`, `CommandHost`), `settings`, `housekeeping`, `agent` |
+
+**One copy per conversation.** A connection and the pool used to keep a copy each, and
+the event bus arbitrated them with a claim on every answer and every finished run. The
+pool owns the `Conversations` now; a connection holds a reference to the one on screen,
+and both write the same object, on the server's one event loop.
+
+---
+
 ## extensions
 
 The single home for everything the user drops into the workspace `.mimir/`. One module per
-extension type, env-overridable, fail-open. `config/constants.py` keeps only the path
+extension type, env-overridable, fail-open. `config/paths.py` keeps only the path
 primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME` / `*_DIR_ENV` constants).
 
 | Module | Provides |
@@ -548,7 +603,7 @@ is why it sits at the root.
   Counted from `denial_history`, which is append-only *precisely because*
   `denied_tool_calls` is cleared when an action later succeeds. `approval_is_settled` is the
   one predicate the policy engine consults to decline re-prompting. Thresholds in
-  `config/constants.py`. See [POLICY.md](POLICY.md#if-approval-is-refused).
+  `config/limits.py`. See [POLICY.md](POLICY.md#if-approval-is-refused).
 - `turn_made_commitments(ctx)` / `unhonoured_commitments(ctx)` — did this turn commit to
   producing something, and is some of it still undone? Three signals, all per-query: an edit
   happened, a set of target files was declared, or a checklist was written. The completeness
@@ -559,7 +614,7 @@ is why it sits at the root.
   a checklist behaves exactly as before rather than having an obligation invented for it.
   Optional steps are tagged, not filtered.
 - The agent-loop and plan-loop copy, including the loop-control correctives, whose *firing*
-  decision lives in `agent_loop.py` / `dispatch.py`.
+  decision lives in the loops and `query_engine/dispatch/`.
 - `finalize_incomplete_answer(answer, ctx, termination)` returns the model's prose followed
   by the report as a **marked block**, the same contract the ledger uses: the front-ends lift
   it off and render it collapsed. It picks one of three headlines — see
@@ -751,14 +806,17 @@ pack guidance rules are tier-gated by `rule_tier_enabled()`, suppressed when the
 ## query_engine
 
 The step loop: call the model, dispatch tools, trim history, inject reminders. The module
-split is [above](#the-per-query-loop).
+split is [above](#a-turn).
 
-### `agent_loop.py`
+### The loops: `turn.py`, `loop_base.py`, `agent_loop.py`
 
-`run_agent_query()` is a thin orchestrator — shared setup, then dispatch to
-`_run_plan_mode()` or `_run_agent_loop()`. Every exit path routes end-of-query bookkeeping
-through `_finalize_answer()`: annotate the answer, save carry context, stash
-the full messages. Nothing is written to memory there: that is the model's call, made during the run.
+`run_agent_query()` (in `turn.py`) does the shared setup into a `TurnContext` — the agent
+(as an `AgentPort`), the execution context, the messages, the callbacks, the options — and
+`run_loops()` runs the strategy for the mode: an `AgentLoop` or a `PlanLoop`, both
+`StepLoop`s. A loop that has to change mode (the plan approved, say) returns a
+`ModeSwitch` and the driver starts the other strategy on the same turn; there is no
+recursion between the two. Every exit path routes end-of-query bookkeeping through
+`_finalize_answer()`: annotate the answer, save carry context, stash the full messages. Nothing is written to memory there: that is the model's call, made during the run.
 
 **Completion is `if not tool_calls:`** — the model emitted no tool call. There is no goal
 check, so the honesty surface is the verification ledger appended to every answer. Full
@@ -769,7 +827,7 @@ format in [POLICY.md](POLICY.md#verification-ledger).
 - **`_stream_chat()`** — iterative streaming backend calls, retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
   blocks stream for live display but are **excluded from history**: reasoning is never
   re-fed. UI events go through `emit()`.
-- **`_dispatch_tool_calls()`** — takes the model's per-call `doing` description out of the
+- **`ToolDispatcher`** (`dispatch/`) — takes the model's per-call `doing` description out of the
   arguments first (the client adds that parameter to every tool's schema; no server declares
   or receives it), *before* the dedup key, so two identical calls with reworded descriptions
   stay one call instead of walking past the repeat guards. Then dedups `(name, args)` within
@@ -878,7 +936,7 @@ A second compaction feeds the previous summary back through the summariser, so t
 always `[system, task, exactly one summary, last two exchanges]` and never a stack of them.
 
 **A step is bounded before it is appended, not after.** `bound_step_results()` clamps one
-step's tool results — per result, and per step together — and `dispatch.py` calls it in the
+step's tool results — per result, and per step together — and `query_engine/dispatch/` calls it in the
 loop that appends them. Everything else here runs too late to help: `_trim_tool_history`
 deliberately exempts the current step from eviction (a sub-agent's whole answer is one of
 those results), so the only thing that could touch them was the force-fit backstop, and only
@@ -1054,19 +1112,34 @@ Two independent frontends that share nothing.
 
 `main.py` builds the agent, connects servers, runs the session, cleans up; `main_sync()`
 wraps it for the `mimir` console script. `chat_session.py` is the async REPL — nothing is
-probed or scanned at startup, so it is ready as soon as the servers connect. It also splits
-the ledger block off the answer for a one-line summary, expanded on `/ledger`, while the
-block stays in history for the model. `chat_commands.py` is the slash-command table
-[above](#slash-commands).
+probed or scanned at startup, so it is ready as soon as the servers connect. It writes its
+turns into a `Conversation` (in memory) by the same commit as the socket, and trims to the
+budget `context_budget_for` gives the model. It also splits the ledger block off the answer
+for a one-line summary, expanded on `/ledger`, while the block stays in history for the
+model. `chat_commands.py` is the terminal's side of the [slash commands](#slash-commands):
+its `CliHost`, `/compact` and `/ledger`, and the text rendering.
 
 ### `ui/ws/`
 
-The WebSocket / VS Code bridge: `ws_server.py`, `ws_worker.py`, `ws_pool.py`,
-`ws_session.py`, `event_bus.py`, `turn_commit.py`, `job_scan.py`, `panel_runs.py`,
-`server_registry.py`, `detach.py`, `_ws_runtime.py`, `session_store.py`,
-`session_summary.py`, `transcript_log.py`, `file_preview.py`. The message protocol and the React frontend are documented in
-[`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). What belongs here are the invariants that
-are not obvious from the protocol:
+The WebSocket / VS Code bridge. The message protocol and the React frontend are documented
+in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
+
+| Module | Holds |
+|---|---|
+| `ws_server.py` | the entry point: the command line, `--cwd`, then `serving` |
+| `serving.py` | `serve`: model resolution, the one-server-per-workspace lock, bind, the shutdown path |
+| `ws_session.py` | `_Session`, one connection: the handshake, the dispatch, the replay. Its handlers are mixins in `handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel` — each declaring the message types it serves |
+| `event_router.py` | `EventRouter`: the connection's share of the stream, sent to its client, one handler per event type |
+| `event_bus.py` | the pump: drains every worker, journals, hands answers and finished runs to the pool, fans out to subscriptions |
+| `ws_pool.py` | `_AgentPool`: one worker per conversation, built on demand, released when idle; owns the `Conversations` and commits every turn |
+| `wake_router.py` | `WakeRouter`: finished runs, bulletins, and unread steering, each to a turn of its conversation |
+| `ws_worker.py` | `_AgentWorker`: the agent's thread and loop, the query loop, the outbox that wakes the pump |
+| `human_bridge.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
+| `job_watcher.py` | `JobWatcher`: a conversation's detached runs and the check-in cycle |
+| `ws_commands.py` | the socket's side of the slash commands: `WsCommandHost`, `/cancel`, `/diag` |
+| `job_scan.py`, `job_wakes.py`, `panel_runs.py`, `server_registry.py`, `detach.py`, `session_summary.py`, `transcript_log.py`, `file_preview.py`, `_ws_runtime.py` | runs on disk and their wakes, the panel, the registry of live servers, detachment, descriptions, the journal, diff previews, the stdout router |
+
+What belongs here are the invariants that are not obvious from the protocol:
 
 **Three lists, three audiences.** `display_messages` is the chat: never trimmed, never
 compacted, and sent back in full on load — the person reading always sees the whole
@@ -1089,8 +1162,8 @@ first query. So the mode is saved with the session (`context_mode`) and is what
 session, called a 60k window an overflow, and compacted and trimmed to fit 32k.
 
 **Progress is pushed, never recorded.** A tool call that blocks the turn cannot report
-on itself, so the session polls the blocking run's channel once a second
-(`_tick_run_channels`, reading `tool_execution/run_channel.py`) and pushes a
+on itself, so the router reads the blocking run's channel once a second while that turn
+is live (`EventRouter._push_run_progress`, reading `tool_execution/run_channel.py`) and pushes a
 `tool_progress` for the row; once the run is detached, the watcher's own status poll
 sends `job_progress` instead. Neither reaches `transcript` or any of the three lists
 above: they describe a moment, and a watcher ticking for an hour would otherwise fill
@@ -1111,8 +1184,9 @@ window was amputated where it could have been summarised.
 
 **A background-job wake belongs to the session that launched it.** A two-hour build outlives
 the conversation on screen, so the job records its session at launch and the completion event
-carries it back. When it names the active session the wake lands in the live history as any
-turn would; otherwise it is appended to *that* session's stored history and submitted there.
+carries it back. The pool's `WakeRouter` hands it to that conversation — steered into its
+running turn, or as a turn of its own — whichever conversation is on screen, and whether or
+not any window is open.
 
 **A wake carries the record, not a paraphrase of it.** The client does not know what a job
 does, so it hands over what the server wrote rather than interpreting it. What it chooses is
@@ -1175,8 +1249,8 @@ beside it.
 carries "nothing to report", and steering that in makes the agent answer about the job
 instead of the question it was asked — while the silence it exists to break is not there at
 all with the user watching it work. So an owner that is busy, or parked on a card a person
-has to answer, gets nothing then: the bulletin waits in `_held_checkin`, one slot per
-conversation so the next one replaces it, and goes out after the answer lands. It is dropped
+has to answer, gets nothing then: the bulletin waits in `Conversation.held_checkin`, one slot
+per conversation so the next one replaces it, and goes out after the answer lands. It is dropped
 rather than delivered if the runs have since finished — their wakes say more — or if a wake
 of that conversation is itself pending.
 
@@ -1224,21 +1298,22 @@ it than no wake.
 An agent outlives the connections that read it, so a socket that dies mid-run leaves a turn
 working with nobody watching. What used to be true as well is that nothing *recorded* that
 work: the draining, the journal tee and the writing-back of a finished turn's answer all
-lived in `_Session._drain_loop`, which is created per connection and cancelled when the
+lived in the connection's drain loop, which is created per connection and cancelled when the
 socket goes. A disconnected run wrote nothing, grew `out_q` for the length of the
 disconnection, and lost its answer if it finished while away.
 
 So the WebSocket is no longer the bus. `_EventBus` (`event_bus.py`), owned by the pool and
 started by `serve()`, is the one pump for the process: it drains every worker through
 `drain()` — already the single choke point for everything the engine emits — writes each
-event to that session's `transcript.jsonl` under a monotonic `seq`, hands `answer` and
-`error` to whatever commits a turn, and only then fans the event out to however many
-subscriptions are attached, zero included.
+event to that session's `transcript.jsonl` under a monotonic `seq`, hands each answer and
+each finished run to the pool, and only then fans the event out to however many
+subscriptions are attached, zero included. It is woken by every event a worker puts on its
+outbox (`call_soon_threadsafe`), and otherwise ticks once a second for housekeeping.
 
 ```
 worker.out_q ──(pump)──► seq ──► transcript.jsonl      (durable, authoritative)
                            │
-                           ├──► turn committer         (the session file)
+                           ├──► the pool               (the conversation; a run's wake)
                            └──► 0..N subscriber queues ──► sockets
 ```
 
@@ -1271,98 +1346,61 @@ been watched — the same draft-and-boundary logic decides where the block sits 
 cards that followed. Reasoning is still not kept: it is the one thing a replay deliberately
 sacrifices, and the one the aggregate is not worth paying for.
 
-**Who writes a finished turn down.** The answer carries the turn's own transcript, and
-unpacking it into the session file used to be `_Session._persist_detached_answer` — on the
-drain loop, so a turn that finished unattended was never written. `turn_commit.py` holds that
-logic now with no socket and no session object: it takes the store, the session id, the
-answer, the private extras the pump took off it, where the turn began and the context mode.
-The announcing stayed behind, because notifying the user, refreshing the session list and
-flushing the wakes that piled up are things a *connection* does; a commit that insisted on
-them would be back where it started.
+**Who writes a finished turn down: the pool, always.** A conversation used to have two
+writers — the connection showing it held its history in memory, the pool wrote the stored
+copy when nobody was connected — and a claim on every answer decided which acted, with a
+grace window of first refusal for the socket, a reload when the pool won, and a revision
+check on save for when the arbitration failed. There is one copy now (`session.conversation`):
+the pump hands every `answer` to `_AgentPool.commit_turn` before any socket sees it,
+attached or not, and `Conversation.commit_answer` writes it. A connection renders what is
+already written; what the pool did travels to it in the event's extras (`_committed`: the
+title, the interaction now awaited, the steering given a turn).
 
-Two of the arguments used to be read off the wrong place. The boundary — how long the history
-was when the turn was submitted — lived on the session, per socket, which for a turn that
-outlives its socket is a boundary nobody has; the worker records it when it takes the turn off
-its queue and carries it on the answer. And `context_mode` was read off whichever worker was
-on screen, which is the wrong agent whenever the turn belongs to another conversation; it
-rides on the answer too.
+Two of the commit's inputs ride on the answer itself: the boundary (how long the history
+was when the turn was submitted, recorded by the worker as it takes the turn off its queue)
+and `context_mode` (of the agent that ran *this* turn — read off whichever worker is on
+screen it was the wrong agent whenever the turn belonged elsewhere). The revision on the
+session file stays as a belt: `save_session` refuses a save whose base is behind what is
+on disk, raising `StaleSessionWrite` rather than overwriting newer history with older.
 
-The pump **offers** the answer and the committer takes it if nobody else does. A connected
-`_Session` writes this itself — into `self.history` for the conversation on screen, through
-`_persist_detached_answer` for any other — and two live writers of one file lose history
-silently, so exactly one of them may write. What elects it is a claim rather than a count of
-subscribers: see *Who is allowed to act* below, which is the same mechanism and the same
-reason. A view that loses the claim re-reads the conversation the committer wrote instead of
-appending its own copy of the turn. The belt to that braces is a
-revision on the session file: `save_session` bumps `rev` and refuses a save whose base is
-behind what is on disk, raising `StaleSessionWrite` rather than overwriting newer history with
-older. A successful save carries the new revision back onto the object, so an owner that holds
-one session and writes it as a turn progresses is never refused — only a second writer that
-loaded earlier is, and the committer says so in the log instead of dropping the turn quietly.
+**Who starts the turn a wake asks for: the pool's `WakeRouter`, always.** A watcher outlives
+every connection — a task on a worker's loop, and `releasable` refuses to free a worker that
+holds one — so a detached run reports in whether or not a panel is open. The pump hands each
+`job_complete` and `job_checkin` to `WakeRouter.consume` inside the tick that drained it,
+before any socket sees it: the router writes the 🔔 the user finds on their return,
+journals a `job_wake`, and starts a turn of the conversation that launched the run on that
+conversation's own agent — then settles the run. A busy or parked conversation gets the
+wake steered into its running turn instead, kept pending until the loop says it read it
+(`steer_injected`); a bulletin is held rather than steered, because "nothing to report"
+must not make the agent answer about the job instead of the work. Whether a turn started
+travels to the sockets in the extras (`_started`), which is what lets the chat mark itself
+busy for a turn nobody pressed send for.
 
-**Who starts the turn a wake asks for.** The committer's twin, and the other half of
-"nobody is looking". A watcher outlives every connection — it is a task on a worker's loop,
-and `releasable` refuses to free a worker that holds one — so a detached run reports in
-whether or not a panel is open, and the pump journals what it says. Acting on that report is
-`_AgentPool.consume_durable_event`, reached for `job_complete` and `job_checkin` through the
-claim below.
+**Writing the answer down is only half of what a turn landing means.** The other half is
+carrying on — the difference between a chain of steps that runs overnight and one that
+stops at its first link. `WakeRouter.after_turn`, on every answer: the user's own steering
+the loop never read gets a turn of its own (its live copies move to the end of the history,
+by identity); the runs that finished meanwhile go out together, as one turn; and only if
+neither started a turn, the bulletin it held back — dropped if its runs have since
+finished. What the loop left unread is on the answer (`_unconsumed_steer`, the worker's own
+record); a run steered in and not named there was read, and is settled.
 
-A wake only a connection can route is a conversation that waits out the night for a job that
-finished in three minutes. So the pool does what the session does, minus the socket: loads the
-conversation that launched the run, appends the wake to its stored history, writes the 🔔 the
-user finds on their return, journals a `job_wake` where the turn begins, and queues the turn on
-that conversation's own agent — then settles the run. All of it synchronous, inside the pump
-tick that drained the event, because loading, saving and `submit_query` are plain calls. The
-answer is written back by the committer off the same pump, against the boundary the worker
-carried on it: a wake taken in this way is a complete turn, asked, answered and persisted,
-with no connection anywhere in the path. A busy conversation gets the wake steered into its
-running turn instead, and keeps it pending until that turn says it read it; a bulletin is
-held rather than steered, because "nothing to report" must not make the agent answer about
-the job instead of the work.
-
-**Writing the answer down is only half of what a connection does when a turn lands.** The
-other half is carrying on, and a detached process that did only the first half answers the
-step that finished and stops there — which is the difference between a chain of steps that
-runs overnight and one that stops at its first link. On every answer a socket puts the
-steering the loop never read to a new turn, starts a turn for every run that finished while
-it was busy, and delivers the bulletin it was holding. `_AgentPool._carry_on_after_turn` is
-that, with no socket: it reads `_unconsumed_steer` off the answer — what the loop ended
-without taking in, and the only place that is knowable — settles the wakes the turn did read,
-and gives the rest one turn between them. A burst that finished together is one piece of news,
-not three turns that answer the first and then re-answer it twice.
-
-**Who is allowed to act.** Two consumers can now act on a finished run or a finished turn,
-and only one of them may. The first rule was a test on the subscriber list — act only when
-`bus.attached()` is zero — which answers a different question than the one that matters: a
-subscription says a socket *exists*, not that it will route anything. A view whose drain loop
-returned on a failed send, or that ended without closing its subscription, is a promise nobody
-is keeping, and because nothing re-emits a wake the run it was holding then waits for someone
-to open the panel and ask. One leaked subscription silenced the committer, every wake and
-every check-in for the life of the process. (The leak itself is closed too: everything in
-`_Session.run` from the subscription onward is under one `finally`, because every step of that
-handshake sends on a socket that can close under it — a window shut mid-replay raises there —
-which makes an unguarded exit the ordinary case rather than the exotic one.)
-
-So the bus *offers* each such event and the pool acts on what nobody claimed. An attached
-socket gets first refusal for `_CLAIM_GRACE`; the drain loop claims an event before doing
-anything with it, and `_sweep_unclaimed` at the end of each tick claims whatever is past its
-deadline and runs the pool's handler for it. With no subscription the deadline is now, so the
-detached case keeps the latency it had. `claim()` is true for exactly one caller, and grants an
-event this bus never offered — something that reached a consumer by another route reached only
-that one. The grace is a latency bound on the handover, not a correctness condition: whichever
-consumer claims first is the only one that acts, whatever the timing.
+The subscription is still released on every way a view ends (everything in `_Session.run`
+from the subscription onward is under one `finally`): it is what tells the pool a client is
+attached, which keeps a parked card waiting rather than set aside.
 
 **And an agent is never released while anything of its is unresolved**, which is what makes a
 wake for a closed agent impossible rather than merely handled. Idleness is counted from the
 last time the pool was asked for the worker, so a conversation waiting on an overnight run has
 been "idle" for hours throughout — the clock never protects it, and `releasable()` is the whole
 of what does. Its clauses are the list of what *unresolved* means: on screen, a turn running or
-queued, a job watched, a card up, a deferral owed, a wake owed, output undrained, an event still
-to be claimed. The last three close the window a watcher opens by dropping its job the instant
+queued, a job watched, a card up, a deferral owed, a wake owed, output undrained. The last two
+close the window a watcher opens by dropping its job the instant
 it reports it finished — the one moment at which the agent is needed most. Every emitter of a
 durable event runs on a worker's own loop, so with those clauses a wake cannot arrive for a
-conversation whose agent is closed; `consume_durable_event` logs that invariant as broken rather
-than rebuilding anything, and leaves the run unsettled so the next agent built announces it.
+conversation whose agent is closed; the router logs that case rather than rebuilding
+anything, keeps the wake for the conversation's next turn, and leaves the run unsettled on
+disk.
 
 An owed wake also holds the process open. `idle_report` counts a finished run whose wake
 nothing has taken in alongside one still going — the same debt one step later — so the server
@@ -1922,14 +1960,16 @@ installed.
 | `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
 | `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
 | `test_event_chain.py` | coming back to a running turn — the conversation restored under the level it was left on, a rebuilt worker coming up on it too, an ordinary connect deciding nothing about it, a turn in flight reported as running and an idle one not, and what the turn produced while away coming back — that an absence keeps the prose: the record interleaving what was said with what was called, the aggregate not being sent to a client that already had the deltas, a reconnect replaying both, and a blank block not recorded — plus the whole chain with the real objects: handshake, query, and the turn's `status` / `tool_call` / `tool_result` / `answer` arriving, nothing lost to the watermark, the journal holding the same turn the client saw, a second turn arriving, a brand-new conversation not silenced by an inherited watermark, the approval card reaching the client and its answer coming back — plus the ways a chat *can* go quiet, pinned so each is deliberate |
-| `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* — the private keys reaching the committer once its first refusal expires, since an attached view is given the chance to write the turn itself |
-| `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits what no attached view claimed and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
+| `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that an error writes nothing, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* |
+| `test_conversation.py` | one conversation, one copy: `commit_answer` (the full transcript or the answer alone, a deferral stored as the card to put back, an empty answer adding no bubble), `Conversations` handing every asker the same object and saving a new one only once it has something in it, the resume window, unread steering moved by identity — and the pump committing every answer, attached or not, a cancelled turn included, once — then the store's revision guard |
 | `test_reattach_replay.py` | that the gate cannot silence a stream — a watermark above the journal is not honoured, the stream still arrives after one, a filtered event is counted rather than vanishing, and a stream delta bypasses the gate (which is why the failure looks like a half-working chat) — and that a new conversation clears the watermark instead of inheriting it, and that one conversation's gate never silences another's live events while still holding for its own; then the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |
 | `test_job_rearm.py` | the baseline — a first scan reporting nothing while recording that it looked, a job ending *after* it reported, a live run re-armed either way, and a watcher's own report marking the run so a restart does not repeat it — then the scan: a live run reported live, a recorded exit code winning over whatever the pid looks like, a dead pid with no code reading `unknown` rather than `done`, a recycled pid not mistaken for the job, an ephemeral scratch buffer skipped, a Slurm job live until Slurm says otherwise and over once a poll has written down that it is — `done`, `crashed`, and the scheduler having forgotten it, which claims no outcome — an unreadable state word settling nothing, a submission nothing can settle ageing out, the status op naming a tool the HPC server really registers, and a marker landing in the submission's own directory while one written under the bare id still counts — then the re-arm itself, the wake going to the session that launched the run, a run already watched left alone, and the report-once marker — and finally a run watched by its own server: the scan re-arming the watcher it recorded rather than the stock poll, an ordinary submission still getting that poll, its end still settled by the Slurm record, the live watcher and a late scan settling one directory between them, and a local run keeping its own tree |
 | `test_server_registry.py` | one server per workspace, with real contending subprocesses because `flock` is a kernel object a mock would not exercise: a second process is refused while the first holds the claim, the lock is free again once the holder is *killed* rather than stopped, and two workspaces do not contend — then the registry: a published entry reading back with its pid and start time, an unreadable or wrong-protocol file reading as nothing, a failed write leaving no half file — and liveness over real sockets and real pids: a live pid whose listener has gone is *not* alive (while the process-only answer still says yes), a recycled pid is not mistaken for the server, `clear()` retires our own entry and leaves a stranger's |
 | `test_hot_detach.py` | detaching, exercised against the real system calls because a fake `dup2` would prove nothing about the thing that breaks: output following the descriptors into the log while the parent's pipe sees only what preceded the redirect, a child **surviving two hundred writes after its reader is gone**, a second detachment appending rather than truncating, `setsid` succeeding for a non-leader and declining for a leader without cancelling the redirect — then the handler: per-session autonomy touching only the sessions named, naming none recording it pool-wide, an unknown level refused with nothing detached, the registry entry keeping the address it was serving on, and that there is no terminal whichever conversations are named — then the claim, per conversation: each one coming back under its own level, taking one back leaving the others running, taking the last one back making the server mortal again — then coming back as the take-back: every claim dropped on arrival, the panel told the server is attached, and the level still restored when the registry refuses the write — and what coming back says: the level named, informatively rather than as a warning, with no explanation of a control already on screen, the ownership said even under `manual` where there is no level to name, and the notice not kept in the conversation — and what *leaving* says: what is being kept named row by row, a detachment with nothing owed saying that instead, conditionally and quietly, and the window never counted as the work it is asking about |
 | `test_unattended_park.py` | the parking: a card with somebody there still waiting for ever, one with nobody there deferred through the pre-built mechanism, the grace period leaving room for a window reload, a wait with its own deadline left alone — **an answer already in hand, or landing during the poll, winning over the grace** (the bug this file found) — the pump publishing attachment on ticks that move nothing and not restarting the clock each tick, and `releasable()` refusing a session that holds a deferral |
-| `test_wake_claim.py` | who is allowed to act, and that somebody always does: a wake taken in within the tick that drained it with nothing attached, an attached view given first refusal and the pool standing down, a claim granted to exactly one caller and to one this bus never offered, a view that routes nothing not costing the run its turn (with the take-over counted and logged), the run settled by whoever ends up delivering it, bulletins going the same way — then what a turn landing carries on: a steered wake the turn never read getting its own turn, one the turn did read settled instead of told twice, a burst arriving as one turn, the 🔔 of a steered wake, and a held bulletin delivered after the answer or dropped once its runs have finished — then the release invariant: an agent watching a run, owed a wake, holding an event still to be claimed or output still unread is never released while one with nothing outstanding still gives up its slot, so a wake for a closed agent cannot arise and is logged as a broken invariant if it does — and the subscription's lifetime: released on a handshake that raises, on a greeting that cannot be sent, and on an ordinary end, with a run finishing afterwards still answered for |
+| `test_wake_router.py` | that somebody always takes a finished run in: within the tick that drained it, with or without a view attached (which is told whether a turn started), settled as it is delivered, a run announced twice starting one turn, bulletins going the same way — then what a turn landing carries on: a steered wake the turn never read getting its own turn, one it did read settled instead of told twice, a burst arriving as one turn, the 🔔 of a steered wake, a held bulletin delivered after the answer or dropped once its runs have finished — then the release invariant (an agent watching a run, owed a wake or with output unread is never released; one with nothing outstanding gives up its slot) and the subscription released on every way a view ends |
+| `test_event_router.py` | a connection that costs nothing idle: it waits on its subscription with no timeout, refreshes once a tick only while a turn on screen is live, and per event type keeps the divertible rows, pushes the review bar only when there is one, withholds another conversation's event and counts it, says whether a wake started a turn here, and sends the checklist only when its file changed |
+| `test_session_commands.py` / `test_slash_commands.py` | the command registry: one grammar for both front-ends, the old spellings kept, a setting applied through the host and reported as state never as prose, a refusal or an invalid value an error with nothing changed, listings and erasures as cards; the webview's list matching the socket's registry both ways |
 | `test_idle_predicate.py` | what counts as finished: a concluded conversation with no jobs idle, one that never answered *not* idle, an error counting as an ending, a live run on disk holding the process open even for a session with no agent, an unreadable state dir counting as busy, and a Slurm submission holding it open until a poll has settled it, still holding it while its wake is owed, and letting go when nothing can ever settle it — plus each prohibition (attached client, parked card, owed answer, queued turn, agent being built, a worker that cannot be asked), and the clock: it starts rather than stopping at once, stops on the TTL, and is reset by activity rather than shortened — then the state that must not exist, a server nobody claimed and nobody is watching: a window still here keeping it whatever the claims, a reload not counting as a departure, gone past the grace with no claim ending it, one conversation's claim being enough for the whole process, a server never yet connected to having lost nothing, and claims that cannot be read not reading as nobody, and that both stops are written into the conversations they were keeping — stamped, journaled, and saying what the idleness consisted of |
 | `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), that a reconnect throws nothing away, and re-arming a watcher from a status result — plus the fourth and quietest way, a tool call that never answers: a status op that hangs ending the run as `unknown` rather than polling for ever, a timed-out probe reported as `unreadable` rather than as still running, and a summary op that hangs not withholding the wake |
 | `test_policy_manager.py` | the gates and the state guard |
