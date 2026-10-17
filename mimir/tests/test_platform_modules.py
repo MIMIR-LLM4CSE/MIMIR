@@ -10,6 +10,7 @@ Three contracts drive most of what is asserted here:
   module name must still return the right modules in the right order.
 """
 
+from mimir.servers.hpc import platform_parsers
 from mimir.tests.support.stubs import stub_attr
 import importlib.util
 import json
@@ -235,7 +236,7 @@ class NoModuleSystemTests(CatalogueTestCase):
 
 class AvailParsingTests(CatalogueTestCase):
     def test_headers_defaults_and_noise(self):
-        entries = self.mod._parse_avail_terse(AVAIL_LMOD)
+        entries = platform_parsers.parse_avail_terse(AVAIL_LMOD)
         loads = [e["load"] for e in entries]
         self.assertEqual(
             loads, ["cuda/11.8", "cuda/12.2", "gcc/11.3.0", "openmpi/4.1.5", "hdf5/1.14.0"])
@@ -250,13 +251,13 @@ class AvailParsingTests(CatalogueTestCase):
         self.assertEqual(by_load["gcc/11.3.0"]["version"], "11.3.0")
 
     def test_loaded_and_default_markers(self):
-        entries = self.mod._parse_avail_terse("root:\ncuda/12.2(L,D)\nfoo/1.0(L)\n")
+        entries = platform_parsers.parse_avail_terse("root:\ncuda/12.2(L,D)\nfoo/1.0(L)\n")
         by_load = {e["load"]: e for e in entries}
         self.assertTrue(by_load["cuda/12.2"]["default"])
         self.assertFalse(by_load["foo/1.0"]["default"])
 
     def test_versionless_module(self):
-        entries = self.mod._parse_avail_terse("root:\ncmake\n")
+        entries = platform_parsers.parse_avail_terse("root:\ncmake\n")
         self.assertEqual(entries[0]["name"], "cmake")
         self.assertEqual(entries[0]["version"], "")
 
@@ -295,7 +296,7 @@ class TierSelectionTests(CatalogueTestCase):
         self.assertIn("gpu", top["keywords"])
 
     def test_spider_mapping_shape_also_parses(self):
-        parsed = self.mod._parse_spider_json(SPIDER_MAPPING)
+        parsed = platform_parsers.parse_spider_json(SPIDER_MAPPING)
         self.assertIn("cuda/12.2", parsed)
         self.assertTrue(parsed["cuda/12.2"]["default"])
 
@@ -411,12 +412,12 @@ class SearchTests(CatalogueTestCase):
         self.assertFalse(os.path.exists(self.mod._EMBEDDINGS_FILE))
 
     def test_newest_version_first_among_non_defaults(self):
-        entries = self.mod._parse_avail_terse("root:\nfoo/1.9\nfoo/1.10\nfoo/1.2\n")
+        entries = platform_parsers.parse_avail_terse("root:\nfoo/1.9\nfoo/1.10\nfoo/1.2\n")
         ordered = [e["load"] for e in self.mod._name_matches(entries, "foo")]
         self.assertEqual(ordered, ["foo/1.10", "foo/1.9", "foo/1.2"])
 
     def test_exact_name_beats_substring(self):
-        entries = self.mod._parse_avail_terse("root:\nmpi/1.0\nopenmpi/4.1.5\n")
+        entries = platform_parsers.parse_avail_terse("root:\nmpi/1.0\nopenmpi/4.1.5\n")
         ordered = [e["load"] for e in self.mod._name_matches(entries, "mpi")]
         self.assertEqual(ordered[0], "mpi/1.0")
 
