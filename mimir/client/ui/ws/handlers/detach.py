@@ -18,7 +18,6 @@ from ..detach import detach as detach_process
 from ..job_scan import establish_baseline, has_baseline, scan_all_sessions
 from ..ws_pool import idle_stop_reason
 
-
 logger = logging.getLogger(__name__)
 
 

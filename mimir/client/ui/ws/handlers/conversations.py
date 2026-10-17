@@ -18,7 +18,6 @@ from .._ws_runtime import (
 )
 from ..job_scan import is_settled
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -327,7 +326,9 @@ class ConversationHandlers:
             from .session_summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
         except ImportError:
             from mimir.client.ui.ws.session_summary import (
-                PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary,
+                PROVISIONAL_VERSION,
+                SUMMARY_VERSION,
+                generate_summary,
             )
         try:
             conv = self.pool.conversations.get(session_id)

@@ -13,6 +13,8 @@ from ...query_engine.history import (
 )
 from ...query_engine.verification import parse_ledger_block, split_answer_ledger
 from ...query_engine.context_budget import context_budget_for
+from ...session.conversation import Conversation, trim_front
+from ...session.store import FullSession
 from ...config.paths import STATE_DIR
 from ...guardrails.workflow import (
     is_incomplete_answer, parse_completion_block, split_answer_completion,
@@ -147,7 +149,10 @@ async def run_chat_session(agent: Any) -> None:
         "/approvals manual|auto|all, /help\n"
     )
 
-    history: list[dict[str, str]] = []
+    # The conversation, in memory only: the terminal keeps no session store. The
+    # same object the WebSocket front-end writes, with the same commit rule.
+    conversation = Conversation(FullSession(id="cli", title="", created_at="",
+                                            updated_at=""), saved=False)
     # Session-local auto-compact threshold; starts from the module default.
     auto_compact_threshold = AUTO_COMPACT_THRESHOLD
     # Cooldown: number of queries to skip auto-compact after one fires.
@@ -158,6 +163,7 @@ async def run_chat_session(agent: Any) -> None:
     async def do_compact() -> None:
         """Summarize history in-place, replacing all prior messages with one summary."""
         nonlocal _compact_cooldown
+        history = conversation.history
         if not history:
             print("  ↳ Nothing to compact.")
             return
@@ -229,8 +235,9 @@ async def run_chat_session(agent: Any) -> None:
         ctx_total, ctx_reserved, _, _ = context_budget_for(agent.model, agent.context_mode)
         # Exact token count (vLLM /tokenize) when available, heuristic otherwise.
         # CLI runs in-process, so a blocking tokenize round-trip here is fine.
-        history_tokens = get_backend().count_messages_tokens(agent.model, history)
-        if history_tokens >= ctx_total - ctx_reserved and history:
+        history_tokens = get_backend().count_messages_tokens(agent.model,
+                                                            conversation.history)
+        if history_tokens >= ctx_total - ctx_reserved and conversation.history:
             print(f"  ⚡ Context budget reached ({history_tokens:,}/{ctx_total - ctx_reserved:,} tokens) — auto-compacting…")
             await do_compact()
 
@@ -248,9 +255,10 @@ async def run_chat_session(agent: Any) -> None:
         try:
             role_label = "Agent"
             print(f"\n🟩 {role_label}:\n")
+            submitted = len(conversation.history)
             answer = await agent.run(
                 effective_query,
-                history=history,
+                history=conversation.history,
                 thinking=agent.thinking,
                 streaming=agent.streaming,
             )
@@ -271,51 +279,33 @@ async def run_chat_session(agent: Any) -> None:
             if ledger:
                 print(format_ledger_summary(last_ledger))
 
-            if agent.context_mode == "full":
-                # Full-context mode: replace history with the complete accumulated
-                # transcript from this query. agent._last_full_messages is
-                # messages[1:], which was built as [old_history + new_user_msg +
-                # tool_calls/results + final_assistant], so it already carries
-                # everything from all prior queries. No duplication occurs.
-                #
-                # Intelligent trimming: evict the oldest messages when we exceed
-                # the budget. Budget = 120 000 tokens (safe headroom inside a 200K
-                # window; leaves room for the system message, new query, and
-                # generation). Token counts are exact (vLLM) or heuristic (Ollama).
-                FULL_CTX_TOKEN_BUDGET = 120_000
+            # Written by the rule the WebSocket front-end uses: in full-context mode the
+            # turn's whole transcript (tool calls and results included) becomes the
+            # window, otherwise the question and the answer alone.
+            full = agent._last_full_messages if agent.context_mode == "full" else None
+            if full is None:
+                conversation.add_user_message(query)
+            conversation.commit_answer(
+                {"text": answer},
+                {"_full": list(full) if full else None,
+                 "_turn_start": agent._last_turn_start, "_submitted_len": submitted,
+                 "_context_mode": agent.context_mode})
 
-                history.clear()
-                history.extend(agent._last_full_messages)
-
-                # Trim from the front until we're within budget. Per-message counts
-                # are computed once (cached) and decremented as we pop.
-                backend = get_backend()
-                counts = backend.message_token_counts(agent.model, history)
-                total_tokens = sum(counts)
-                idx = 0
-                while total_tokens > FULL_CTX_TOKEN_BUDGET and len(history) > 1 and idx < len(counts):
-                    history.pop(0)
-                    total_tokens -= counts[idx]
-                    idx += 1
-                # Front-trimming can orphan a {"role": "tool"} whose assistant tool_call
-                # was popped, which a strict tokenizer rejects — so drop leading
-                # tool messages until history starts on a valid turn boundary. Mirrors
-                # the same guard in the WebSocket session's pre-query trim.
-                while history and history[0].get("role") == "tool":
-                    history.pop(0)
+            if full is not None:
+                # Evict the oldest messages past the window the model actually has —
+                # its own context budget, not a figure written here.
+                total, reserved, _, _ = context_budget_for(agent.model, "full")
+                history = conversation.history
+                counts = get_backend().message_token_counts(agent.model, history)
+                trim_front(history, counts, max(1, total - reserved))
             else:
-                # Compact mode: only keep the final user/assistant text in history,
-                # then compact when genuinely needed.
-                history.append({"role": "user", "content": query})
-                history.append({"role": "assistant", "content": answer})
-
                 # Decrement cooldown each turn so write-bursts don't re-compact
                 # immediately after a recent compact.
                 if _compact_cooldown > 0:
                     _compact_cooldown -= 1
 
                 wrote_files = bool(ledger and ledger["files"])
-                n_exchanges = len(history) // 2
+                n_exchanges = len(conversation.history) // 2
                 # Compact when:
                 #   - plan was executed (always worth summarising)
                 #   - files were written AND we have ≥2 exchanges AND no cooldown

@@ -51,6 +51,28 @@ def turn_messages(full: list[dict], submitted: int | None = None,
     return added or full[-1:]
 
 
+def trim_front(history: list[dict], counts: list[int], usable: int) -> int:
+    """Drop the oldest messages of *history*, in place, until it fits in *usable* tokens.
+
+    *counts* are the per-message token counts of *history*, computed once by the caller.
+    The front-trim is the fallback when a window cannot be compacted: it forgets the
+    oldest turns outright, which is why the untrimmed record is kept beside the window.
+    A trim can leave a ``role: "tool"`` result whose assistant call was dropped, and
+    strict tokenizers reject that, so the window then starts on the next turn boundary.
+    Keeps at least one message. Returns how many were dropped.
+    """
+    before = len(history)
+    total = sum(counts)
+    idx = 0
+    while total > usable and len(history) > 1 and idx < len(counts):
+        history.pop(0)
+        total -= counts[idx]
+        idx += 1
+    while history and history[0].get("role") == "tool":
+        history.pop(0)
+    return before - len(history)
+
+
 def _resume_window(record: FullSession) -> list[dict]:
     """The window the model resumes on, from what was stored.
 

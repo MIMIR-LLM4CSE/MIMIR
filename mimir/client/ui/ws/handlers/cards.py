@@ -10,9 +10,8 @@ import json
 import logging
 import os
 
-from ..ws_worker import _AgentWorker
 from ....query_engine.deferral import KIND_CALLS, take_deferred_calls
-
+from ..ws_worker import _AgentWorker
 
 logger = logging.getLogger(__name__)
 

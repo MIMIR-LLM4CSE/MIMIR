@@ -10,14 +10,14 @@ import asyncio
 import json
 import logging
 
+from ....protocol.messages import reconcile_tool_pairs
+from ....session.conversation import trim_front
+from ....tool_execution import run_channel
 from .._ws_runtime import (
     context_budget_for,
     get_backend,
 )
 from ..ws_worker import _AgentWorker
-from ....protocol.messages import reconcile_tool_pairs
-from ....tool_execution import run_channel
-
 
 logger = logging.getLogger(__name__)
 
@@ -219,24 +219,12 @@ class TurnHandlers:
         if used_tokens >= usable_tokens and len(history) > 1:
             await self.ws.send(json.dumps({"type": "output",
                 "text": "  ⚡ Context budget reached — trimming oldest history…\n"}))
-            # Per-message counts computed once; decrement as we pop the front.
-            dropped_before = len(history)
-            total_tokens = used_tokens
-            idx = 0
-            while total_tokens > usable_tokens and len(history) > 1 and idx < len(counts):
-                history.pop(0)
-                total_tokens -= counts[idx]
-                idx += 1
-            # Front-trimming can orphan a ``{"role": "tool"}`` whose assistant tool_call
-            # was popped, which a strict tokenizer rejects — so drop leading
-            # tool messages until history starts on a valid turn boundary.
-            while history and history[0].get("role") == "tool":
-                history.pop(0)
+            dropped = trim_front(history, counts, usable_tokens)
             # `history_full` is deliberately untouched above — this records what the
             # window lost, so the log stays the one complete account of the session.
             self.pool.bus.record_client_event(self._active_session_id, {
                 "type": "context_trim",
-                "dropped": dropped_before - len(history),
+                "dropped": dropped,
                 "kept": len(history),
                 "archived": len(self.conv.history_full),
             })

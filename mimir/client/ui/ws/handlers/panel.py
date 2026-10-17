@@ -11,11 +11,11 @@ import json
 import logging
 from typing import Any
 
+from ....session.commands import CommandResult
+from ....session.store import list_subagents as _list_subagents
+from ....session.store import read_subagent as _read_subagent
 from ..panel_runs import attach_runs, recorded_hosts_sections
 from ..ws_commands import WS_COMMANDS, WsCommandHost
-from ....session.commands import CommandResult
-from ....session.store import list_subagents as _list_subagents, read_subagent as _read_subagent
-
 
 logger = logging.getLogger(__name__)
 

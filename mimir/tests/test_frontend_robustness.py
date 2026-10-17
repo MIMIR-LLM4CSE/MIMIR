@@ -173,5 +173,51 @@ class CliCommandFailureTests(unittest.TestCase):
         self.assertTrue(any("/memory failed" in line for line in printed))
 
 
+
+class CliTurnTests(unittest.TestCase):
+    """The terminal writes its turns by the same rule as the socket."""
+
+    def _run(self, context_mode: str) -> list:
+        import types
+        from unittest import mock
+        from mimir.client.ui.cli import chat_session
+
+        prompts = iter(["first question", "second question", "quit"])
+        handed: list = []
+
+        async def _run_turn(query, history, **_kw):
+            handed.append(list(history))
+            agent._last_full_messages = list(history) + [
+                {"role": "user", "content": query},
+                {"role": "assistant", "content": f"answer to {query}"}]
+            agent._last_turn_start = len(history)
+            return f"answer to {query}"
+
+        agent = types.SimpleNamespace(
+            tool_caps={}, mode="agent", thinking=False, streaming=False,
+            context_mode=context_mode, model="m", run=_run_turn,
+            _last_full_messages=None, _last_turn_start=None)
+        backend = types.SimpleNamespace(
+            count_messages_tokens=lambda _m, msgs: 10 * len(msgs),
+            message_token_counts=lambda _m, msgs: [10] * len(msgs))
+        with mock.patch("builtins.input", lambda _p: next(prompts)), \
+             mock.patch("builtins.print", lambda *a, **k: None), \
+             mock.patch.object(chat_session, "get_backend", lambda: backend), \
+             mock.patch.object(chat_session, "augment_query_with_resources",
+                               mock.AsyncMock(side_effect=lambda _a, q: (q, []))):
+            asyncio.run(chat_session.run_chat_session(agent))
+        return handed
+
+    def test_the_next_turn_is_handed_the_last_one_in_full_mode(self) -> None:
+        handed = self._run("full")
+        self.assertEqual(handed[0], [])
+        self.assertEqual([m["content"] for m in handed[1]],
+                         ["first question", "answer to first question"])
+
+    def test_and_in_compact_mode_too(self) -> None:
+        handed = self._run("compact")
+        self.assertEqual([m["content"] for m in handed[1]],
+                         ["first question", "answer to first question"])
+
 if __name__ == "__main__":
     unittest.main()
