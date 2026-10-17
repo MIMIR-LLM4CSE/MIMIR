@@ -35,7 +35,6 @@ Workflow:
 import os
 import json
 import re
-from datetime import datetime, timezone
 from typing import NamedTuple
 
 
@@ -46,6 +45,7 @@ from .._shared.responses import err, ok
 from .._shared.state_paths import global_state_dir, state_dir
 from .._shared.text_tools import yaml_scalar, yaml_unquote
 from .._shared import embed as _embed
+from .._shared.clock import utc_minute
 
 WORKSPACE = "workspace"
 GLOBAL = "global"
@@ -140,12 +140,6 @@ def _bad_scope(scope: str, *, allow_all: bool = False, allow_any: bool = False) 
 _FRONTMATTER_RE = re.compile(r'^---\n(.*?)\n---\n?(.*)$', re.DOTALL)
 
 
-def _now_display() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-
-
-def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _slugify(text: str) -> str:
@@ -204,7 +198,7 @@ def _serialize(entry: dict) -> str:
         "---\n"
         f"name: {yaml_scalar(entry['name'])}\n"
         f"description: {yaml_scalar(entry.get('description', ''))}\n"
-        f"date: {yaml_scalar(entry.get('date', _now_display()))}\n"
+        f"date: {yaml_scalar(entry.get('date', utc_minute()))}\n"
         f"tags: {tags_line}\n"
         "---\n\n"
         f"{entry.get('text', '').strip()}\n"
@@ -501,7 +495,7 @@ def memory_add(text: str, scope: str = "", description: str = None, tags: list =
         "name":        name,
         "scope":       scope,
         "description": desc,
-        "date":        _now_display(),
+        "date":        utc_minute(),
         "tags":        tags or [],
         "text":        text,
     }
@@ -639,7 +633,7 @@ def memory_update(
         entry["description"] = desc
     if tags is not None:
         entry["tags"] = tags
-    entry["date"] = _now_display()
+    entry["date"] = utc_minute()
 
     store = _store(entry["scope"])
     path = os.path.join(store.dir, f"{name}.md")

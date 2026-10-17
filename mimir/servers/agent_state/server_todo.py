@@ -32,7 +32,6 @@ Tools:
 
 import os
 import re
-from datetime import datetime, timezone
 
 
 from mcp.server.fastmcp import FastMCP
@@ -40,6 +39,7 @@ from .._shared.capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERA
 from .._shared.responses import err, ok
 from .._shared.state_paths import TODO_FILENAME, session_state_dir, state_dir
 from .._shared.text_tools import yaml_scalar, yaml_unquote
+from .._shared.clock import utc_date, utc_minute
 
 # Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager; legacy
 # <workspace>/.mimir fallback for standalone/tests). Todos and plans are per-session
@@ -97,12 +97,6 @@ def _slugify(text: str) -> str:
     return '-'.join(w for w in slug.split('-') if w)[:60].strip('-') or "plan"
 
 
-def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def _now_display() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 def _parse_plan(content: str) -> dict:
@@ -315,12 +309,12 @@ def todo_set_plan(text: str, title: str) -> dict:
     """
     if not title or not title.strip():
         return err("title is required — give the plan a short descriptive title.")
-    name = f"{_today()}-{_slugify(title)}"
+    name = f"{utc_date()}-{_slugify(title)}"
     pdir = _plans_dir()
     os.makedirs(pdir, exist_ok=True)
     body = text.strip()
     content = (
-        f"---\ntitle: {yaml_scalar(title)}\ndate: {yaml_scalar(_now_display())}\n"
+        f"---\ntitle: {yaml_scalar(title)}\ndate: {yaml_scalar(utc_minute())}\n"
         f"---\n\n{body}\n"
     )
     plan_path = os.path.abspath(os.path.join(pdir, f"{name}.md"))

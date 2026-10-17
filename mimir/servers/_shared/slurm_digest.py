@@ -30,7 +30,6 @@ can be on another host; the parsers it calls do not.
 from __future__ import annotations
 
 import shlex
-from datetime import datetime, timezone
 
 from .slurm_nodes import (
     SCONTROL_NODES_ARGV,
@@ -45,6 +44,7 @@ from .slurm_nodes import (
 from .slurm_site import LOCAL, argv_for, name_of, slurm_is_local
 
 import subprocess
+from .clock import utc_stamp
 
 # Long enough for ``scontrol show node`` on a cluster of a few thousand nodes, short
 # enough that a host which has stopped answering does not hold up a listing built from
@@ -65,9 +65,6 @@ _DEGRADED = "scontrol unavailable: architecture and node features are unknown."
 # that was down for one call must not be silent until the server restarts.
 _MEMO: dict[str, dict] = {}
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _capture(script: str, host: str, timeout: int) -> str | None:
@@ -92,7 +89,7 @@ def _capture(script: str, host: str, timeout: int) -> str | None:
 
 
 def _empty(host: str) -> dict:
-    return {"scheduler": name_of(host), "built_at": _now(), "node_types": [],
+    return {"scheduler": name_of(host), "built_at": utc_stamp(), "node_types": [],
             "partitions": [], "signature": "", "source": "", "degraded": ""}
 
 

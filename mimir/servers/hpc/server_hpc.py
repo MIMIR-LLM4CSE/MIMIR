@@ -1078,7 +1078,7 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
     })
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="slurm"))
 def slurm_node_profile(partition: str = "", node: str = "",
                        scheduler: str = "") -> dict:
     """What the compute nodes are, as the machines code will be built for and run on.

@@ -35,7 +35,6 @@ import sys
 import threading
 import time
 import json
-from datetime import datetime, timezone
 from functools import lru_cache
 
 
@@ -69,9 +68,7 @@ from .platform_parsers import (
     parse_whatis_bulk,
     parse_whatis_flat,
 )
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+from .._shared.clock import utc_stamp
 
 
 mcp = FastMCP(
@@ -521,7 +518,7 @@ def _build_digest() -> dict:
     cpu = _collect_cpu()
     cluster = cached_cluster_digest()
     return {
-        "built_at": now_iso(),
+        "built_at": utc_stamp(),
         "host": {
             "hostname": socket.gethostname(),
             "arch": cpu.get("arch", ""),
@@ -560,7 +557,7 @@ def _save_catalogue(catalogue: dict) -> None:
 
 def _empty_catalogue(flavour: str) -> dict:
     return {
-        "schema": _CATALOGUE_SCHEMA, "built_at": now_iso(),
+        "schema": _CATALOGUE_SCHEMA, "built_at": utc_stamp(),
         "hostname": socket.gethostname(), "flavour": flavour,
         "tier": "none", "partial": False, "enrich_done": True,
         "signal": {}, "count": 0, "modules": [],
@@ -615,7 +612,7 @@ def _enrich(base: dict) -> None:
 
         enriched = {
             **base,
-            "built_at": now_iso(),
+            "built_at": utc_stamp(),
             "tier": tier,
             "partial": any(e["tier"] == "name" for e in entries),
             "enrich_done": True,
@@ -637,7 +634,7 @@ def _build_tier_c(flavour: str, signal: dict) -> dict:
     entries = _collect_tier_c()
     return {
         "schema": _CATALOGUE_SCHEMA,
-        "built_at": now_iso(),
+        "built_at": utc_stamp(),
         "hostname": socket.gethostname(),
         "flavour": flavour,
         "tier": "name",
@@ -879,7 +876,7 @@ def _build_profile() -> dict:
     workspace_root = os.getcwd()
     cpu, gpu = _collect_cpu(), _collect_gpu()
     return {
-        "timestamp": now_iso(),
+        "timestamp": utc_stamp(),
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
         "execution_context": execution_context(has_slurm=_cmd_exists("sinfo")),
@@ -1041,7 +1038,7 @@ _PANEL_LOCK = threading.Lock()
 def _build_panel_profile() -> dict:
     """The fields the panel shows. The full profile costs ~15 s (modules, digest, march)."""
     return {
-        "timestamp": now_iso(),
+        "timestamp": utc_stamp(),
         "hostname": socket.gethostname(),
         "cpu": _collect_cpu(),
         "gpu": _collect_gpu(),
