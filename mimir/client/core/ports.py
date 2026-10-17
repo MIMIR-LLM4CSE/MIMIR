@@ -8,11 +8,17 @@ by inheritance.
 from __future__ import annotations
 
 from contextlib import AsyncExitStack
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
-from ..context.execution_context import ExecutionContext
+from ..config.toggles import Toggles
+from ..context.capabilities import ToolCaps
 from ..context.carry import CarryContext
+from ..context.execution_context import ExecutionContext
+from .extension_set import ExtensionSet
 from .turn_state import TurnState
+
+if TYPE_CHECKING:
+    from ..guardrails.policy.approval import ApprovalManager
 
 
 class AgentPort(Protocol):
@@ -22,7 +28,7 @@ class AgentPort(Protocol):
     session_id: str | None
     workspace_root: str
     # The live tool registry: name -> declared capabilities, and name -> its server.
-    tool_caps: dict[str, Any]
+    tool_caps: dict[str, ToolCaps]
     tool_owner: dict[str, str]
     tools: list[dict[str, Any]]
     sessions: dict[str, Any]
@@ -30,8 +36,8 @@ class AgentPort(Protocol):
     resources: dict[str, Any]
     # The MCP sessions' lifetimes, closed with the agent.
     exit_stack: AsyncExitStack
-    approvals: Any                       # guardrails.policy.approval.ApprovalManager
-    extensions: Any                      # core.extension_set.ExtensionSet
+    approvals: ApprovalManager
+    extensions: ExtensionSet
 
     # ── Settings read live, at every step ──────────────────────────────────────
     thinking: bool
@@ -41,7 +47,7 @@ class AgentPort(Protocol):
     context_mode: str
     enforcement: str
     subagent_level: str
-    toggles: Any                         # config.toggles.Toggles
+    toggles: Toggles
     # Bounds a caller may set (a sub-agent is held below the model's window).
     max_context_tokens: int
     max_answer_tokens: int

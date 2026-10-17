@@ -21,7 +21,6 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import types
 import copy
 import unittest
 from unittest import mock
@@ -60,6 +59,7 @@ from mimir.client.query_engine.verification import (
     split_answer_ledger,
 )
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 def _ctx(**over):
@@ -379,7 +379,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         if judge_tool:
             reg["report_verdict"] = ToolCaps(
                 name="report_verdict", capabilities=frozenset({JUDGE}))
-        return types.SimpleNamespace(tool_caps=reg, enforcement="strict", model="test", turn=TurnState())
+        return fake_agent(tool_caps=reg, enforcement="strict", model="test")
 
     def _fired(self, ec, *, agent=None):
         """The category of the one nudge this call fires, or "" for none.
@@ -897,7 +897,7 @@ class ExerciseRouteTests(unittest.TestCase):
     """
 
     def _agent(self):
-        return types.SimpleNamespace(
+        return fake_agent(
             tool_caps={"bash_run": ToolCaps(
                 name="bash_run", capabilities=frozenset({CODE_EXEC}))},
             enforcement="strict", model="test",turn=TurnState())

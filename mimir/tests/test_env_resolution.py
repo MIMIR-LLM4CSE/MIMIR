@@ -13,7 +13,6 @@ Pure-Python + stubs (no live model/servers): runs on x86 and ARM.
 """
 from __future__ import annotations
 
-import types
 import unittest
 
 import mimir.client.guardrails.observations as runtime
@@ -23,12 +22,13 @@ from mimir.client.guardrails.nudges import maybe_append_nudge, maybe_inject_env_
 from mimir.tests.support.golden_caps import build_declared_registry
 from mimir.client.guardrails.observations import Call  # noqa: E402
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 _REGISTRY = build_declared_registry()
 
 
 def _agent():
-    return types.SimpleNamespace(
+    return fake_agent(
         tool_caps=_REGISTRY,
         enforcement="strict",
         normalize_workspace_path=lambda p: p or "",turn=TurnState())
@@ -144,7 +144,7 @@ class EnvCleanupNudgeTests(unittest.TestCase):
     def _fire(self, ctx, enforcement="strict") -> list[dict]:
         # The env-cleanup nudge survives into "light" (it guards a real, non-self-
         # correcting side effect); it is cut only at "off". light/off exercised below.
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             tool_caps=_REGISTRY, enforcement=enforcement,
             normalize_workspace_path=lambda p: p or "",turn=TurnState())
         messages: list[dict] = []
@@ -198,7 +198,7 @@ class EnvResolutionNudgeTests(unittest.TestCase):
     def _fire(self, ctx, enforcement="strict") -> list[dict]:
         # The env-resolution nudge is strict-only guidance (discovery-flavoured), so
         # the default agent is "strict"; light/off are exercised explicitly below.
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             tool_caps=_REGISTRY, enforcement=enforcement,
             normalize_workspace_path=lambda p: p or "",turn=TurnState())
         messages: list[dict] = []
@@ -253,7 +253,7 @@ class MidLoopEnvResolutionTests(unittest.TestCase):
     """
 
     def _agent(self, enforcement="strict"):
-        return types.SimpleNamespace(
+        return fake_agent(
             tool_caps=_REGISTRY, enforcement=enforcement,
             normalize_workspace_path=lambda p: p or "",turn=TurnState())
 

@@ -14,7 +14,6 @@ import asyncio
 import json
 import os
 import tempfile
-import types
 import unittest
 from unittest import mock
 
@@ -35,6 +34,7 @@ from mimir.client.tool_execution.executor import run_post_tool_annotations
 from mimir.client.extensions.plugins import load_plugins
 from mimir.tests.test_policy_manager import _FakeAgent
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 def _block_payload(msg: str) -> str:
@@ -217,7 +217,7 @@ class PostToolPluginTests(ExtensionRegistryResetMixin):
     """The seam between a call and the turn's end: react to what a tool produced."""
 
     def _agent(self):
-        return types.SimpleNamespace(
+        return fake_agent(
             tool_caps={},
             normalize_workspace_path=lambda p: p or "",
             extensions=self.extensions,turn=TurnState())

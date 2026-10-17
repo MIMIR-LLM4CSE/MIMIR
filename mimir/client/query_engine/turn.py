@@ -112,7 +112,7 @@ async def run_agent_query(
     # Baseline for the live-mode check: only a *later* change to agent.mode is a
     # user switching mid-run. Seeded from the agent, not from active_mode, so an
     # explicit per-query override never registers as one. See _live_mode.
-    execution_context.observed_agent_mode = getattr(agent, "mode", active_mode)
+    execution_context.observed_agent_mode = agent.mode
 
     system_content = await agent.build_system_content(active_mode=active_mode)
 

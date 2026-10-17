@@ -39,6 +39,7 @@ from mimir.servers._shared.state_paths import (
     sessions_root,
     subagents_dir,
 )
+from mimir.tests.support.agents import fake_agent
 
 
 class _StateDirCase(unittest.TestCase):
@@ -241,9 +242,8 @@ class AgentCarriesItsSessionTests(_StateDirCase):
 
     def test_servers_are_told_which_session_they_serve(self):
         """What makes every server-side state path per-conversation."""
-        import types
         from mimir.client.integration import server_manager
-        agent = types.SimpleNamespace(session_id="mine", model="m", backend="vllm",
+        agent = fake_agent(session_id="mine", model="m", backend="vllm",
                                       workspace_root="/w", server_env={})
         self.assertEqual(server_manager.server_environment(agent)["MIMIR_SESSION_ID"], "mine")
         agent.session_id = None

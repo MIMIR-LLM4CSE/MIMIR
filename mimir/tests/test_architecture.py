@@ -229,7 +229,9 @@ def _port_members() -> tuple[set[str], set[str]]:
 
 
 class AgentPortConformanceTests(unittest.TestCase):
-    """MimirAgent is what every layer is handed as an AgentPort: it must be one."""
+    """MimirAgent is what every layer is handed as an AgentPort: it must be one.
+
+    mypy proves it statically (``agent_core``); these check it at run time."""
 
     def setUp(self) -> None:
         state = tempfile.TemporaryDirectory()

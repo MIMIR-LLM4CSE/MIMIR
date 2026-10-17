@@ -8,7 +8,6 @@ just the values.
 """
 
 import json
-import types
 import os
 import tempfile
 import time
@@ -23,11 +22,12 @@ from mimir.client.context.execution_context import (
     build_execution_context,
 )
 from mimir.client.context.carry import CarryContext
+from mimir.tests.support.agents import fake_agent
 
 
 def _bare_agent():
     """What these tests use of an agent: its carry context."""
-    return types.SimpleNamespace(carry=CarryContext())
+    return fake_agent(carry=CarryContext())
 
 
 class CarrySchemaTests(unittest.TestCase):

@@ -155,7 +155,7 @@ def grantable_tools(agent: AgentPort) -> dict[str, str]:
     hidden = reserved_for_main(agent.tool_caps)
     tools = agent.advertised_tools()
     level = getattr(agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
-    mode = getattr(agent, "mode", "")
+    mode = agent.mode
     if mode in READONLY_MODES or not subagent_level_allows(level, "build"):
         tools = tools_for_readonly_mode(
             tools, agent.tool_caps, mode=mode if mode in READONLY_MODES else "ask")

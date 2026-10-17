@@ -188,7 +188,7 @@ def capture(
 ) -> _Probe | None:
     """Snapshot enough state to report what this call changes, or None to skip it."""
     try:
-        command = shell_command_of(tool_name, arguments, getattr(agent, "tool_caps", None))
+        command = shell_command_of(tool_name, arguments, agent.tool_caps)
         if not command or bash_command_is_readonly(command):
             return None
         root = getattr(agent, "workspace_root", "") or os.getcwd()

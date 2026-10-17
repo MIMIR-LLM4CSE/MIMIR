@@ -74,7 +74,7 @@ def clarify_path(
     # capability registry (EDIT or REMOVE) rather than a hardcoded tool list, so
     # adding/merging/renaming file tools needs no change here. Batch-edit tools
     # (no single `path` arg) never reach this branch — see the caller's path gate.
-    registry = getattr(agent, "tool_caps", None)
+    registry = agent.tool_caps
     if not (has_cap(tool_name, EDIT, registry) or has_cap(tool_name, REMOVE, registry)):
         return None
 

@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import os
 import tempfile
-import types
 
 from mimir.client.context.capabilities import ToolCaps, reserved_for_main
 from mimir.client.guardrails.toollist import grantable_tools
 from mimir.servers._shared.state_paths import active_session_id
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 # name -> (owning server, declared capabilities)
 _TOOLS = {
@@ -38,7 +38,7 @@ def _agent(mode: str = "agent", disabled: set[str] | None = None,
     tools = [{"type": "function", "function": {"name": n}} for n in _TOOLS]
     owner = {n: s for n, (s, _) in _TOOLS.items()}
     caps = {n: ToolCaps(name=n, capabilities=frozenset(c)) for n, (_, c) in _TOOLS.items()}
-    agent = types.SimpleNamespace(mode=mode, tool_owner=owner, tool_caps=caps, tools=tools,
+    agent = fake_agent(mode=mode, tool_owner=owner, tool_caps=caps, tools=tools,
                                   subagent_level=level, turn=TurnState())
     agent.advertised_tools = lambda: [
         t for t in tools if owner.get(t["function"]["name"]) not in disabled

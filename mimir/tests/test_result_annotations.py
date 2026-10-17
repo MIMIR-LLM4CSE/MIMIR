@@ -24,6 +24,7 @@ from mimir.client.tool_execution import executor as ex
 from mimir.client.protocol.tool_result import normalize_tool_content, parse_tool_payload
 from mimir.tests.support.golden_caps import build_declared_registry
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 _DECLARED_REGISTRY = build_declared_registry()
 
@@ -328,7 +329,7 @@ class BashEffectTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp()
-        self.agent = types.SimpleNamespace(
+        self.agent = fake_agent(
             workspace_root=self.tmp,
             tool_caps=dict(_DECLARED_REGISTRY),
             normalize_workspace_path=lambda p: (

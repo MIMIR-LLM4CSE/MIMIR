@@ -24,6 +24,7 @@ from mimir.client.context.resource_context import (
 )
 from mimir.client.integration.server_manager import register_resources
 from mimir.client.agent_core import MimirAgent
+from mimir.tests.support.agents import fake_agent
 
 
 def _run(coro):
@@ -188,7 +189,7 @@ class ReadResourceTests(unittest.TestCase):
 
 class RegisterResourcesTests(unittest.TestCase):
     def test_populates_registry_with_owner(self):
-        agent = types.SimpleNamespace(resources={})
+        agent = fake_agent(resources={})
         session = _FakeSession(resources=[
             _FakeResource("memory://all", name="memory", description="d", mimeType="text/plain"),
         ])
@@ -202,14 +203,14 @@ class RegisterResourcesTests(unittest.TestCase):
         })
 
     def test_unsupported_capability_is_noop(self):
-        agent = types.SimpleNamespace(resources={})
+        agent = fake_agent(resources={})
         session = _FakeSession(raise_list=True)
         n = _run(register_resources(agent=agent, name="s", session=session))
         self.assertEqual(n, 0)
         self.assertEqual(agent.resources, {})
 
     def test_name_defaults_to_uri(self):
-        agent = types.SimpleNamespace(resources={})
+        agent = fake_agent(resources={})
         session = _FakeSession(resources=[_FakeResource("x://y", name="")])
         _run(register_resources(agent=agent, name="s", session=session))
         self.assertEqual(agent.resources["x://y"]["name"], "x://y")
@@ -334,7 +335,7 @@ class AugmentFileTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_file_attach_without_registry(self):
-        agent = types.SimpleNamespace(resources={})
+        agent = fake_agent(resources={})
         eff, labels = asyncio.run(
             augment_query_with_resources(agent, "explain @a.py:1-2", cwd=self.root)
         )
@@ -347,7 +348,7 @@ class AugmentFileTests(unittest.TestCase):
 
     def test_mixed_resource_and_file(self):
         session = _FakeSession(contents_by_uri={"memory://all": [_FakeContent("mem body")]})
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             sessions={"mem": session},
             resources={"memory://all": {"name": "memory", "session": "mem"}},
         )
@@ -360,7 +361,7 @@ class AugmentFileTests(unittest.TestCase):
         self.assertIn("alpha", eff)
 
     def test_no_mention_unchanged(self):
-        agent = types.SimpleNamespace(resources={})
+        agent = fake_agent(resources={})
         eff, labels = asyncio.run(
             augment_query_with_resources(agent, "no attachments", cwd=self.root)
         )

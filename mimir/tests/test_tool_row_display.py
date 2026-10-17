@@ -26,6 +26,7 @@ from mimir.client.context.tool_display import (
     shorten_display_args,
     tool_arg_preview,
 )
+from mimir.tests.support.agents import fake_agent
 
 _REG = {"read_file_lines": ToolCaps(name="read_file_lines",
                                     capabilities=frozenset({READ}))}
@@ -505,7 +506,7 @@ class RowPathsAreShortenedTests(unittest.TestCase):
             raise _Raised
 
         bridge = bare_worker().human
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             tool_owner={}, tool_caps={},
             approvals=types.SimpleNamespace(describe_risk=lambda tool: ""))
         paths = ["/far/away/data.csv", "/elsewhere/out.log"]

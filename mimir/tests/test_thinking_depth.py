@@ -27,15 +27,17 @@ import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
+from mimir.tests.support.agents import FakeAgent
 
 
-class _Agent:
+class _Agent(FakeAgent):
     """Minimal stand-in: the real setters over just the thinking state, so the
     ladder is exercised without standing up a whole agent (servers, backend…)."""
 
     apply_setting = MimirAgent.apply_setting
 
     def __init__(self):
+        super().__init__()
         self.thinking_depth = DEFAULT_THINKING_DEPTH
         self.thinking = self.thinking_depth > 0
         self.thinking_budget = THINKING_DEPTH_BUDGETS[self.thinking_depth]
@@ -136,7 +138,7 @@ class PromptDirectiveTest(unittest.TestCase):
 # Live (mid-query) rung changes
 # --------------------------------------------------------------------------
 
-class _LoopAgent:
+class _LoopAgent(FakeAgent):
     """Stub with the real depth setters, enough surface to drive run_agent_query."""
     mode = "agent"
     model = "dummy"
@@ -148,6 +150,7 @@ class _LoopAgent:
     approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
     def __init__(self):
+        super().__init__()
         self.turn = TurnState()
         self.carry = CarryContext()
         self.thinking_depth = DEFAULT_THINKING_DEPTH

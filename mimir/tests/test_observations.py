@@ -34,6 +34,7 @@ from mimir.client.context.execution_context import (
 from mimir.client.guardrails.ladder import register_run_failure
 from mimir.client.guardrails.observations import Call  # noqa: E402
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 # The authoritative dispatch order, mirroring record_tool_observation's body.
@@ -67,7 +68,7 @@ EXPECTED_ORDER = [
 
 
 def _stub_agent():
-    return types.SimpleNamespace(
+    return fake_agent(
         normalize_workspace_path=lambda p: p or "",
         tool_caps={},turn=TurnState())
 
@@ -1441,7 +1442,7 @@ class UnwatchedRunObservationTests(unittest.TestCase):
     """
 
     def _agent(self):
-        return types.SimpleNamespace(
+        return fake_agent(
             normalize_workspace_path=lambda p: p or "",
             is_code_filepath=lambda p: False,
             tool_caps={},turn=TurnState())

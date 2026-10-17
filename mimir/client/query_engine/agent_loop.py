@@ -280,7 +280,7 @@ def _review_batch(agent: AgentPort, answer: str, messages: list[dict]) -> str:
     Both ways out of the loop end here — an answer, and running out of steps — so a
     batch is never left unreviewed, and never reviewed without the outcome being told.
     """
-    batch = getattr(getattr(agent, "approvals", None), "batch", None)
+    batch = agent.approvals.batch
     if not batch or not batch.pending:
         return answer
     confirm_msg = "Changes applied." if batch.flush() else "Changes reverted."

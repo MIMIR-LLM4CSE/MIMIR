@@ -31,7 +31,7 @@ from mimir.tests.test_agent_loop import (
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.tests.support.loops import run_plan
-from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 def _is_empty_assistant(m: dict) -> bool:
@@ -357,7 +357,6 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
     """
 
     def _run(self, script):
-        import types
         from mimir.client.context.execution_context import build_execution_context
         from mimir.client.query_engine import plan_loop as plan_loop_module
 
@@ -369,7 +368,7 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
 
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), turn=TurnState())
+        agent = fake_agent(model="m", mode="plan", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \

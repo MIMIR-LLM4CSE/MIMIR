@@ -12,12 +12,6 @@ from .preferences import load_disabled, save_disabled
 TOGGLE_KINDS = ("server", "skill", "nudge")
 
 
-def is_enabled(holder: object, kind: str, name: str) -> bool:
-    """Whether *holder*'s toggles leave *name* on; nothing is off without toggles."""
-    toggles = getattr(holder, "toggles", None)
-    return toggles is None or toggles.enabled(kind, name)
-
-
 class Toggles:
     def __init__(self, disabled: dict[str, set[str]] | None = None, *,
                  persist: bool = True) -> None:

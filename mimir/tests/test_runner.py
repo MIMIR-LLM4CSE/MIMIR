@@ -20,6 +20,7 @@ import unittest
 from mimir.runner import BenchTask, CheckContext, run_benchmark
 from mimir.runner.engine import _install_auto_approve
 from mimir.tests.support.backend import ScriptedBackend
+from mimir.tests.support.agents import fake_agent
 
 
 def _scripted_override():
@@ -113,8 +114,7 @@ class IsolationTests(unittest.TestCase):
 
 class AutoApproveTests(unittest.TestCase):
     def test_install_auto_approve_approves_any_tool(self) -> None:
-        import types
-        agent = types.SimpleNamespace()
+        agent = fake_agent()
         _install_auto_approve(agent)
         # Any tool — including ones that would normally block (non-batch) — is approved,
         # and nobody is asked.

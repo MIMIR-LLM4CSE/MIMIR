@@ -24,6 +24,7 @@ import unittest
 
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -46,7 +47,7 @@ def _worker_stub(session: _FakeSession, loop) -> types.SimpleNamespace:
         raise AssertionError(
             "the guardrail pipeline was entered for a user-typed command")
 
-    agent = types.SimpleNamespace(
+    agent = fake_agent(
         tool_owner={"memory_list_all": "memory"},
         sessions={"memory": session},
         run_tool=_boom,turn=TurnState())
@@ -117,7 +118,7 @@ class ProxyListTests(unittest.TestCase):
     def test_it_lists_through_the_registry_tool(self) -> None:
         from mimir.tests.support.commands import cli
         session = _FakeSession('{"status": "ok", "proxies": [{"name": "wave2d"}]}')
-        agent = types.SimpleNamespace(tool_owner={"proxy_get": "proxy"},
+        agent = fake_agent(tool_owner={"proxy_get": "proxy"},
                                       sessions={"proxy": session}, turn=TurnState())
         self.assertIn("wave2d", cli("/proxy list", agent))
         self.assertEqual(session.calls, [("proxy_get", {"op": "proxies"})])

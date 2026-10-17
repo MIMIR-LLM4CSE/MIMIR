@@ -29,6 +29,7 @@ from mimir.client.query_engine.history import (
 )
 from mimir.client.protocol.messages import reconcile_tool_pairs
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 def _agent(disabled: set[str] = frozenset()) -> types.SimpleNamespace:
@@ -40,7 +41,7 @@ def _agent(disabled: set[str] = frozenset()) -> types.SimpleNamespace:
         "refactor-code": {"description": "restructure", "model_invocable": True},
         "prepare-pr": {"description": "open a PR", "model_invocable": False},
     }
-    agent = types.SimpleNamespace(
+    agent = fake_agent(
         skills=skills,
         tool_caps={},
         skill_enabled=lambda name: name not in disabled,

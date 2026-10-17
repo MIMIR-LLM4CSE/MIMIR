@@ -40,6 +40,7 @@ import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
 from mimir.tests.support.loops import run_plan
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}
 
@@ -151,7 +152,7 @@ class PlanDecisionDeferralTests(unittest.TestCase):
         from mimir.client.query_engine import plan_loop as plan_loop_module
 
         backend = ScriptedBackend([])
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps={}, request_user_question=None, turn=TurnState(deferred_prompts=[]))
+        agent = fake_agent(model="m", tools=[], tool_caps={}, request_user_question=None, turn=TurnState(deferred_prompts=[]))
         agent.request_user_question = lambda questions: ask(agent)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -192,7 +193,7 @@ class PlanDecisionDeferralTests(unittest.TestCase):
 
 class AttributionTests(unittest.TestCase):
     def test_a_question_is_matched_to_the_call_that_carries_it(self) -> None:
-        agent = types.SimpleNamespace(turn=TurnState(deferred_prompts=[
+        agent = fake_agent(turn=TurnState(deferred_prompts=[
             {"call_id": None, "prompt": {}, "questions": [{"question": "Quelle base ?"}]}]))
         calls = [_tool_call("read_file", '{"path": "x"}', call_id="r"),
                  _tool_call("ask", '{"questions": [{"question": "Quelle base ?"}]}', call_id="q")]

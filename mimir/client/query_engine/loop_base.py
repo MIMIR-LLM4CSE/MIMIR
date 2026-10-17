@@ -105,12 +105,13 @@ def _live_mode(agent: AgentPort, active_mode: str, execution_context: ExecutionC
     query in an explicit mode without touching the agent's own (sub-agents and the
     runner do), and that must not read as the user switching. So the last observed
     value is kept in the execution context, seeded at query start, and the change is
-    consumed here. Returns *active_mode* unchanged when nothing moved.
+    consumed here. Returns *active_mode* unchanged when nothing moved; a context
+    never seeded takes the agent's mode as it stands.
     """
-    val = getattr(agent, "mode", None)
-    if not isinstance(val, str):
+    val = agent.mode.strip().lower()
+    if execution_context.observed_agent_mode is None:
+        execution_context.observed_agent_mode = val
         return active_mode
-    val = val.strip().lower()
     if val not in VALID_MODES or val == execution_context.observed_agent_mode:
         return active_mode
     execution_context.observed_agent_mode = val

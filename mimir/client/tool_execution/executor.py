@@ -37,7 +37,6 @@ from ..guardrails.toollist import grantable_tools, grantable_writers
 from ..protocol.tool_result import json_error_payload, normalize_tool_content, parse_tool_payload
 from . import bash_effect
 from .normalizer import make_hashable
-from ..core.extension_set import extensions_of
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +357,7 @@ async def run_post_tool_annotations(
     a nudge pack, for the same reason.
     """
     text = await run_post_write_validation(agent, tool_name, arguments, execution_context)
-    for rule in extensions_of(agent).post_tool_rules():
+    for rule in agent.extensions.post_tool_rules():
         try:
             produced = rule.run(agent, tool_name, arguments, result + text, execution_context)
             if inspect.isawaitable(produced):
@@ -520,7 +519,7 @@ async def execute_tool_call(
     # that spawns an agent of its own (a sub-agent) must run it in the mode the user
     # chose and default to the model in use, and both change mid-session while a
     # server's environment is frozen at spawn.
-    call_meta = {APPROVAL_MODE_META: agent.approvals.approval_mode,
+    call_meta: dict[str, Any] = {APPROVAL_MODE_META: agent.approvals.approval_mode,
                  CALLER_MODEL_META: agent.model}
     if has_cap(tool_name, DELEGATE, agent.tool_caps):
         # Only the delegation channel gets these, and only because it hands them on:
@@ -528,12 +527,10 @@ async def execute_tool_call(
         # computed under. Sent per call rather than declared once, because both move
         # with the user (a mode switch, a server toggled off) while the server that
         # spawns the child keeps the environment it started with.
-        # Imported here, not at module scope: query_engine's package init pulls the
-        # agent loop, which pulls this module back.
         granted = grantable_tools(agent)
         call_meta[GRANTABLE_TOOLS_META] = granted
         call_meta[GRANTABLE_WRITERS_META] = grantable_writers(agent, granted)
-        call_meta[CALLER_MODE_META] = getattr(agent, "mode", "")
+        call_meta[CALLER_MODE_META] = agent.mode
         call_meta[SUBAGENT_LEVEL_META] = getattr(
             agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
     result = await session.call_tool(

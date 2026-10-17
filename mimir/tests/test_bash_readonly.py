@@ -19,7 +19,7 @@ from mimir.client.context.capabilities import (
     SENSITIVE,
     TASK_PLANNING,
 )
-from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 class BashCommandReadonlyTests(unittest.TestCase):
@@ -364,10 +364,9 @@ class ReadonlyInvocationTests(unittest.TestCase):
 
     def test_a_declared_readonly_call_needs_no_approval_in_any_mode(self) -> None:
         # Plan mode ran op=list unasked; agent mode prompted for the very same call.
-        from types import SimpleNamespace
         from mimir.client.guardrails.policy.readonly_exempt import readonly_bash_exempt
 
-        agent = SimpleNamespace(tool_caps=self._caps(), turn=TurnState())
+        agent = fake_agent(tool_caps=self._caps())
         self.assertTrue(readonly_bash_exempt(agent, "jobs", {"op": "list"}))
         self.assertTrue(readonly_bash_exempt(agent, "jobs", {}))
         self.assertFalse(readonly_bash_exempt(agent, "jobs", {"op": "cancel"}))

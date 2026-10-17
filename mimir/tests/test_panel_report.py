@@ -15,6 +15,7 @@ import json
 import types
 from pathlib import Path
 from unittest import mock
+from mimir.tests.support.agents import fake_agent
 
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
@@ -121,7 +122,7 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
             return _mcp({"title": "Optimisation",
                          "lines": [{"label": "state", "value": "running"}]})
 
-    agent = types.SimpleNamespace(
+    agent = fake_agent(
         tool_caps=_caps(good={"section": "Optimisation", "order": 10},
                         bad={"section": "Machine", "order": 20}),
         tool_owner={"good": "proxy", "bad": "platform"},
@@ -159,7 +160,7 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
             await release[0]          # nobody answers until everyone has asked
             return _mcp({"lines": [{"label": "l", "value": "v"}]})
 
-    agent = types.SimpleNamespace(
+    agent = fake_agent(
         tool_caps=_caps(machine={"section": "Machine", "order": 10},
                         cluster={"section": "Cluster", "order": 20},
                         proxy={"section": "Optimisation", "order": 30}),
@@ -199,7 +200,7 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
             seen.append({"tool": tool, **args})
             return _mcp({"lines": [{"label": "l", "value": "v"}]})
 
-    agent = types.SimpleNamespace(
+    agent = fake_agent(
         tool_caps=_caps(cluster={"section": "Cluster", "order": 10,
                                  "refresh_arg": "refresh"},
                         machine={"section": "Machine", "order": 20}),
@@ -311,7 +312,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
         async def call_tool(self, tool, args):
             return _mcp(payloads[self.tool])
 
-    agent = types.SimpleNamespace(
+    agent = fake_agent(
         tool_caps=_caps(empty={"section": "Cluster", "order": 10},
                         spoken_for={"section": "Optimisation", "order": 20}),
         tool_owner={"empty": "hpc", "spoken_for": "proxy"},
@@ -345,7 +346,7 @@ def test_a_section_that_only_has_groups_is_kept():
         async def call_tool(self, tool, args):
             return _mcp(payload)
 
-    agent = types.SimpleNamespace(
+    agent = fake_agent(
         tool_caps=_caps(tree={"section": "Cluster", "order": 10}),
         tool_owner={"tree": "hpc"},
         sessions={"hpc": Connection()},turn=TurnState())

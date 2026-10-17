@@ -25,6 +25,7 @@ from pathlib import Path
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
 from mimir.tests.support.modules import spec_for
+from mimir.tests.support.agents import fake_agent
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
@@ -1428,7 +1429,7 @@ class BackgroundTests(unittest.TestCase):
             _asks_whether_a_watched_run_is_done,
         )
         descriptor = spawn_jobs.job_descriptor("sub-ab12cd34")
-        agent = types.SimpleNamespace(watched_background_jobs=lambda: [descriptor])
+        agent = fake_agent(watched_background_jobs=lambda: [descriptor])
         status = descriptor["status_op"]
         summary = descriptor["summary_op"]
         self.assertEqual(
@@ -1738,7 +1739,7 @@ class ReportedPathTests(unittest.TestCase):
     def test_a_handoff_past_the_budget_uses_the_same_names(self):
         # The evidence of a child that overran is read off the agent, not its result —
         # the other half of the report, and it must not speak a different language.
-        agent = types.SimpleNamespace(carry=CarryContext({
+        agent = fake_agent(carry=CarryContext({
             "read_files": ["/tmp/wt/child/src/solver.c"],
             "last_query_written_files": ["/tmp/wt/child/src/solver.c"],
         }))

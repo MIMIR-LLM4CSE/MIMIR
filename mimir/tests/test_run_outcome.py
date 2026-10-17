@@ -33,6 +33,7 @@ from mimir.servers.proxy._lib import store
 from mimir.servers._shared.atomic import write_json
 from mimir.client.guardrails.observations import Call
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 # The shape server_proxy declares, restated here so a change to it fails a test rather
 # than silently redefining what these assertions mean.
@@ -48,7 +49,7 @@ ROWS_OUTCOME = {**OUTCOME,
 
 
 def _agent(**caps) -> types.SimpleNamespace:
-    return types.SimpleNamespace(
+    return fake_agent(
         tool_caps=caps, normalize_workspace_path=lambda p: p or "", turn=TurnState())
 
 

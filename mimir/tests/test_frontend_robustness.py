@@ -11,6 +11,7 @@ from mimir.client.core.settings import read_setting
 from mimir.client.ui.ws.connection.connection import Connection
 from mimir.tests.support.pools import FakePool
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 class _FakeWS:
@@ -155,7 +156,7 @@ class CliCommandFailureTests(unittest.TestCase):
         from mimir.client.ui.cli import chat_session
 
         prompts = iter(["/memory list", "quit"])
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             tool_caps={}, mode="agent", thinking=False, streaming=False,
             approvals=types.SimpleNamespace(
                 batch_mode=False, approval_mode="manual", trust_tool=None,
@@ -194,7 +195,7 @@ class CliTurnTests(unittest.TestCase):
             agent.turn.last_turn_start = len(history)
             return f"answer to {query}"
 
-        agent = types.SimpleNamespace(tool_caps={}, mode="agent", thinking=False, streaming=False, context_mode=context_mode, model="m", run=_run_turn, turn=TurnState(last_full_messages=None, last_turn_start=None))
+        agent = fake_agent(tool_caps={}, mode="agent", thinking=False, streaming=False, context_mode=context_mode, model="m", run=_run_turn, turn=TurnState(last_full_messages=None, last_turn_start=None))
         backend = types.SimpleNamespace(
             count_messages_tokens=lambda _m, msgs: 10 * len(msgs),
             message_token_counts=lambda _m, msgs: [10] * len(msgs))

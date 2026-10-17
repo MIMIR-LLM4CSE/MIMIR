@@ -93,7 +93,7 @@ def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tup
 
     if execution_context.unresolved_modules:
         return _blocked("an import could not be resolved in the interpreter that was used")
-    if not names_with_cap(CODE_EXEC, getattr(agent, "tool_caps", None)):
+    if not names_with_cap(CODE_EXEC, agent.tool_caps):
         return _blocked("no execution tool is connected to this session")
 
     # 1. A test that already covers the edit: the cheapest route there is, and the one the

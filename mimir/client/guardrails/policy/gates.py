@@ -143,7 +143,7 @@ def _shell_path_targets(agent: AgentPort, tool_name: str, arguments: dict, base:
     what makes "asked about" and "confined" the same set of paths. A command
     ``parse_segments`` itself refuses never reaches a shell, so it needs no prompt.
     """
-    if shell_command_args(tool_name, getattr(agent, "tool_caps", None)) is None:
+    if shell_command_args(tool_name, agent.tool_caps) is None:
         return []
 
     out: list[str] = []
@@ -190,7 +190,7 @@ def _call_base(agent: AgentPort, tool_name: str, arguments: dict) -> tuple[str, 
     # The bash server has no cwd role — every call starts at the workspace root — so
     # this normally leaves the base at the root.
     base = root
-    for a in arg_role(tool_name, "cwd", getattr(agent, "tool_caps", None)):
+    for a in arg_role(tool_name, "cwd", agent.tool_caps):
         v = arguments.get(a)
         if isinstance(v, str) and v.strip():
             base = os.path.realpath(absolute_workspace_path(v, cwd=root))
@@ -214,7 +214,7 @@ def out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict) 
     except Exception:
         logger.debug("out_of_workspace_targets: a best-effort step failed and was skipped", exc_info=True)
     # A declared cwd is itself a place the call goes.
-    for a in arg_role(tool_name, "cwd", getattr(agent, "tool_caps", None)):
+    for a in arg_role(tool_name, "cwd", agent.tool_caps):
         v = arguments.get(a)
         if isinstance(v, str) and v.strip():
             raw.append(v)
@@ -447,7 +447,7 @@ def check_proxy_exec(
     by pasting its body inline into a fresh script is a narrower, documented residual
     gap; the reserved-metrics guard still prevents forging an accepted result there.
     """
-    if shell_command_args(tool_name, getattr(agent, "tool_caps", None)) is None:
+    if shell_command_args(tool_name, agent.tool_caps) is None:
         return None
     try:
         targets = _proxy_exec_targets(getattr(agent, "session_id", None))

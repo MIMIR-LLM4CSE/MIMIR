@@ -376,7 +376,7 @@ def server_environment(agent: AgentPort) -> dict[str, str]:
         "MIMIR_GLOBAL_STATE_DIR": GLOBAL_STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
         "MIMIR_SESSION_ID": getattr(agent, "session_id", "") or "",
-        "MIMIR_DEFAULT_MODEL": getattr(agent, "model", "") or "",
+        "MIMIR_DEFAULT_MODEL": agent.model,
         "LLM_BACKEND": getattr(agent, "backend", "") or os.environ.get("LLM_BACKEND", ""),
         **(getattr(agent, "server_env", None) or {}),
     }

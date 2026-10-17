@@ -16,7 +16,6 @@ what the task is made of. ``test_agent_loop.SkillResolutionTests`` is what holds
 import asyncio
 import io
 import sys
-import types
 import unittest
 from contextlib import redirect_stdout
 from typing import Any, Callable
@@ -27,6 +26,7 @@ from mimir.client.query_engine.backends.base import LLMBackend
 from mimir.client.query_engine.backends.tag_parser import ThinkTagParser
 
 from mimir.tests.support.backend import ScriptedBackend
+from mimir.tests.support.agents import fake_agent
 
 
 class EchoingBackend(LLMBackend):
@@ -90,7 +90,7 @@ _HISTORY = [
 
 class CompactHistoryTests(unittest.TestCase):
     def _agent(self) -> Any:
-        return types.SimpleNamespace(model="some-model")
+        return fake_agent(model="some-model")
 
     def test_summary_comes_from_the_configured_backend(self) -> None:
         backend = ScriptedBackend([{"content": "HANDOFF: retry added."}])
@@ -135,7 +135,7 @@ class TokenSinkTests(unittest.TestCase):
 
     def test_internal_calls_pass_a_token_sink(self) -> None:
         backend = ScriptedBackend([{"content": "HANDOFF"}])
-        agent = types.SimpleNamespace(model="m")
+        agent = fake_agent(model="m")
         with _BackendPatch(backend):
             asyncio.run(MimirAgent.compact_history(agent, _HISTORY))
         self.assertTrue(backend.calls)

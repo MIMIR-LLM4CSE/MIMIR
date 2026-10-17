@@ -19,6 +19,7 @@ from mimir.tests import test_session_isolation as _iso
 from mimir.tests import test_thinking_depth as _depth
 from mimir.tests.test_session_isolation import _bare_worker
 from mimir.tests.test_thinking_depth import _LoopAgent, _tool_call
+from mimir.tests.support.agents import FakeAgent
 
 
 class _StateDir:
@@ -35,12 +36,13 @@ class _StateDir:
         self._tmp.cleanup()
 
 
-class _Agent:
+class _Agent(FakeAgent):
     """The real setter over just the model and temperature."""
 
     apply_setting = MimirAgent.apply_setting
 
     def __init__(self, model="qwen3"):
+        super().__init__()
         self.model = model
         self.temperature = preferences.load_temperature(model)
 
@@ -148,10 +150,11 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(backend.calls[1]["options"]["temperature"], 0.7)
 
 
-class _CliAgent:
+class _CliAgent(FakeAgent):
     """The two attributes the command reads, and the one setting it applies."""
 
     def __init__(self, temperature, setter):
+        super().__init__()
         self.temperature = temperature
         self.backend = os.environ.get("LLM_BACKEND", "vllm")
         self._setter = setter

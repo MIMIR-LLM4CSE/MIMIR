@@ -15,6 +15,7 @@ import types
 import unittest
 from pathlib import Path
 from mimir.tests.support.modules import spec_for
+from mimir.tests.support.agents import fake_agent
 
 SERVER_PATH = (
     Path(__file__).resolve().parents[1]
@@ -204,7 +205,7 @@ class ElicitationTransportTests(unittest.TestCase):
             {"selected": ["Postgres"], "other_text": None},
             {"selected": ["Auth", "Cache"], "other_text": None},
         ]
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
         )
         params = types.SimpleNamespace(
@@ -229,7 +230,7 @@ class ElicitationTransportTests(unittest.TestCase):
             {"selected": ["Postgres"], "other_text": None},
             {"selected": ["Ray Serve"], "other_text": "Ray Serve"},
         ]
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
         )
         params = types.SimpleNamespace(
@@ -254,7 +255,7 @@ class ElicitationTransportTests(unittest.TestCase):
         """Nobody answered in time: proceed, not stop. The opposite of a cancel."""
         from mimir.client.integration.server_manager import _make_elicitation_callback
 
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             request_user_question=lambda questions, timeout_secs=None: {
                 "answers": [], "timed_out": True, "timeout_secs": timeout_secs,
             }
@@ -279,7 +280,7 @@ class ElicitationTransportTests(unittest.TestCase):
         """The other empty-handed ending, which must not be read as 'go ahead'."""
         from mimir.client.integration.server_manager import _make_elicitation_callback
 
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             request_user_question=lambda questions, timeout_secs=None: {"answers": []}
         )
         params = types.SimpleNamespace(
@@ -387,7 +388,7 @@ class ElicitationOriginTests(unittest.TestCase):
             seen["timeout_secs"] = timeout_secs
             return {"answers": [{"selected": ["ok"], "other_text": None}]}
 
-        agent = types.SimpleNamespace(request_user_question=_ask)
+        agent = fake_agent(request_user_question=_ask)
         params = types.SimpleNamespace(requestedSchema={"x_mimir": x_mimir})
         return asyncio.run(_make_elicitation_callback(agent)(None, params))
 
@@ -430,7 +431,7 @@ class QuestionDeadlineTests(unittest.TestCase):
             seen["timeout_secs"] = timeout_secs
             return answer
 
-        agent = types.SimpleNamespace(request_user_question=_ask)
+        agent = fake_agent(request_user_question=_ask)
         params = types.SimpleNamespace(requestedSchema={
             "x_mimir": {"kind": "user_question", "questions": [_Q_DB],
                         "timeout_secs": 300},
@@ -452,7 +453,7 @@ class QuestionDeadlineTests(unittest.TestCase):
             seen["timeout_secs"] = timeout_secs
             return {"answers": [{"selected": ["Postgres"]}]}
 
-        agent = types.SimpleNamespace(request_user_question=_ask)
+        agent = fake_agent(request_user_question=_ask)
         params = types.SimpleNamespace(requestedSchema={
             "x_mimir": {"kind": "user_question", "questions": [_Q_DB]}})
         asyncio.run(_make_elicitation_callback(agent)(None, params))

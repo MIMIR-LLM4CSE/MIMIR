@@ -31,6 +31,7 @@ from mimir.client.query_engine.jobs.background import (
 from mimir.tests.support.proxy import _TmpStorageTest, pin_local_scheduler, server_proxy
 from mimir.tests.support.state import pin_state_dir
 from mimir.client.core.turn_state import TurnState
+from mimir.tests.support.agents import fake_agent
 
 
 def _eval(*args, **kwargs):
@@ -267,7 +268,6 @@ class LiveRegistrySeamTests(unittest.TestCase):
         return {tool_name: infer_tool_caps(tool)}
 
     def test_a_backgroundable_launch_is_detected_and_the_watcher_promised(self) -> None:
-        import types
         registry = self._live_registry("bash_run")
         self.assertIn(BACKGROUNDABLE, registry["bash_run"].capabilities,
                       "bash_run must advertise 'backgroundable' in the _meta it sends: "
@@ -278,7 +278,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
         self.addCleanup(self._bash_jobs.stop, job_key)
 
         registered: list[dict] = []
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             tool_caps=registry,
             register_background_job=lambda d: bool(registered.append(d) or True),turn=TurnState())
         out, was_registered = maybe_register_background_job(
@@ -307,7 +307,6 @@ class LiveRegistrySeamTests(unittest.TestCase):
         """
         import subprocess
         import sys
-        import types
         registry = self._live_registry("bash_watch")
         self.assertNotIn(
             BACKGROUNDABLE, registry["bash_watch"].capabilities,
@@ -325,7 +324,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
         job_key = result["background_jobs"][0]["job_key"]
 
         registered: list[dict] = []
-        agent = types.SimpleNamespace(
+        agent = fake_agent(
             tool_caps=registry,
             watched_background_jobs=lambda: [],
             register_background_job=lambda d: bool(registered.append(d) or True),turn=TurnState())
@@ -2320,7 +2319,7 @@ class RewatchDetectionTests(unittest.TestCase):
         from mimir.client.query_engine.jobs import background
         self.background = background
         self.registered: list[dict] = []
-        self.agent = types.SimpleNamespace(
+        self.agent = fake_agent(
             tool_caps={},
             register_background_job=lambda d: (self.registered.append(d), True)[1],
             watched_background_jobs=lambda: [],turn=TurnState())

@@ -30,6 +30,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mimir.client.config import paths
+from mimir.tests.support.agents import fake_agent
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
@@ -258,7 +259,7 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
         from mimir.tests.support.workers import bare_worker
         approvals = self._manager()
         approvals.batch.snapshots[path] = original
-        worker = bare_worker(agent=types.SimpleNamespace(approvals=approvals))
+        worker = bare_worker(agent=fake_agent(approvals=approvals))
         worker._build_batch_status()
         return types.SimpleNamespace(worker=worker)
 

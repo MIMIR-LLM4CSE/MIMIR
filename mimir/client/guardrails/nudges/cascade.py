@@ -25,8 +25,6 @@ from ...config.models import resolve_enforcement
 from ...config.limits import (
     EXERCISE_BUDGET,
 )
-from ...config.toggles import is_enabled
-from ...core.extension_set import extensions_of
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from .exercise import exercise_hint, should_nudge_regression, should_nudge_unexercised_code
@@ -197,14 +195,14 @@ class Nudge(Protocol):
 
 
 def _enabled(agent: AgentPort, name: str) -> bool:
-    return is_enabled(agent, "nudge", name)
+    return agent.toggles.enabled("nudge", name)
 
 
 def _cascade(agent: AgentPort, layer: str) -> list[Nudge]:
     """The enabled nudges of *layer*, in the order they are tried: the core table, then
     the packs, so a built-in reality check always wins over an application's."""
     nudges: list[Nudge] = [n for n in CORE_NUDGES if n.layer == layer]
-    nudges += extensions_of(agent).nudge_rules(layer)
+    nudges += agent.extensions.nudge_rules(layer)
     return [n for n in nudges if _enabled(agent, n.name)]
 
 

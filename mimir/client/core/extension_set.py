@@ -89,8 +89,3 @@ def registering_into(extensions: ExtensionSet) -> Iterator[ExtensionSet]:
         yield extensions
     finally:
         _target.reset(token)
-
-
-def extensions_of(agent: object) -> ExtensionSet:
-    """The agent's extension set; an agent without one runs with the ambient set."""
-    return getattr(agent, "extensions", None) or AMBIENT

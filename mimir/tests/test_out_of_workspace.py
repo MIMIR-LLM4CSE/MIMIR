@@ -18,6 +18,7 @@ from mimir.client.context.capabilities import ToolCaps, CODE_EXEC, READ, EDIT
 from mimir.client.guardrails.policy import approval as approval_mod
 from mimir.client.guardrails.policy import engine, gates
 import mimir.client.config.paths as paths
+from mimir.tests.support.agents import FakeAgent
 
 
 class _TmpStateDir(unittest.TestCase):
@@ -89,8 +90,9 @@ class GrantPathTests(_TmpStateDir):
         self.assertIn(os.path.realpath("/tmp/data/run.log"), ar.approved_roots())
 
 
-class _FakeAgent:
+class _FakeAgent(FakeAgent):
     def __init__(self, mgr, *, cap, script) -> None:
+        super().__init__()
         self.approvals = mgr
         self.tool_caps = {"read_file_lines": ToolCaps(name="read_file_lines",
                                                        capabilities=frozenset({cap}))}

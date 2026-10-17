@@ -234,7 +234,7 @@ def _waits_by_blocking_the_turn(agent: AgentPort, name: str, args: dict) -> bool
     ``make; sleep 1`` has already done the work; neither is a turn spent waiting.
     Fail-open on a command the shared parser refuses, as every other shell guard does.
     """
-    command_args = shell_command_args(name, getattr(agent, "tool_caps", None))
+    command_args = shell_command_args(name, agent.tool_caps)
     if command_args is None:
         return False
     for arg in command_args:

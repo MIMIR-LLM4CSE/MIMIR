@@ -4,7 +4,7 @@ import logging
 import os
 from collections.abc import Callable
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp import ClientSession
 from pydantic import AnyUrl
@@ -849,6 +849,13 @@ class MimirAgent:
 
     def load_state(self, state: dict[str, Any]) -> None:
         self.carry = CarryContext.from_json(state.get("carry_context", {}))
+
+
+if TYPE_CHECKING:
+    from .core.ports import AgentPort
+
+    # mypy holds MimirAgent to the port every layer is handed.
+    _agent_is_a_port: type[AgentPort] = MimirAgent
 
 
 __all__ = ["MimirAgent", "SERVERS", "_BASE"]
