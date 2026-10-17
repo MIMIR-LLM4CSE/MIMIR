@@ -561,7 +561,10 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         """
         import inspect
         from mimir.client.ui.ws import ws_session
-        source = inspect.getsource(ws_session)
+        from mimir.client.ui.ws.handlers import cards, conversations, detach, panel, turns
+        # The session layer is the connection and its handler mixins.
+        source = "".join(inspect.getsource(m) for m in
+                         (ws_session, cards, conversations, detach, panel, turns))
         self.assertEqual(source.count("self._ensure_worker()"), 2)
         # The query waits for its agent — it has nothing to say without one.
         self.assertIn("worker = await self._ensure_worker()",

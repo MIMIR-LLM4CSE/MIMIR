@@ -23,6 +23,7 @@ from unittest import mock
 
 from mimir.client.session import store as session_store
 from mimir.client.ui.ws import job_scan, transcript_log, ws_session
+from mimir.client.ui.ws.handlers import conversations as ws_conversations
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.human_bridge import HumanBridge
 from mimir.client.ui.ws.job_watcher import JobWatcher
@@ -120,7 +121,7 @@ class _ChainCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self._tmp.cleanup)
         for target, attr in ((transcript_log, "_MIMIR_DIR_WS"),
                              (session_store, "STATE_DIR"),
-                             (ws_session, "_MIMIR_DIR_WS"),
+                             (ws_conversations, "_MIMIR_DIR_WS"),
                              (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp.name)
             patcher.start()

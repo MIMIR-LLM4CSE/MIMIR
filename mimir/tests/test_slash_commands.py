@@ -27,7 +27,7 @@ from mimir.client.ui.ws.ws_commands import WS_COMMANDS
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SLASH_UTILS = os.path.join(
     _ROOT, "vscode-extension", "webview", "src", "components", "slashUtils.ts")
-_WS_SESSION = os.path.join(_ROOT, "client", "ui", "ws", "ws_session.py")
+_WS_SESSION = os.path.join(_ROOT, "client", "ui", "ws", "handlers", "panel.py")
 
 
 def _advertised() -> list[str]:

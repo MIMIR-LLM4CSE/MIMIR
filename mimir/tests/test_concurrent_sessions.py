@@ -241,7 +241,7 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         # The job dirs are read off disk: a real state dir with an "s1" of its own leaks in.
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import ws_session as ws
+        from mimir.client.ui.ws.handlers import conversations as ws
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -282,7 +282,7 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         import os
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import ws_session as ws
+        from mimir.client.ui.ws.handlers import conversations as ws
 
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(ws, "_MIMIR_DIR_WS", tmp):

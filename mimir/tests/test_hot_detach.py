@@ -212,7 +212,8 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         from unittest import mock
-        from mimir.client.ui.ws import server_registry, ws_session
+        from mimir.client.ui.ws import server_registry
+        from mimir.client.ui.ws.handlers import detach as ws_session
         from mimir.client.ui.ws.ws_session import _Session
         from mimir.tests._fake_pool import FakePool
 
@@ -385,7 +386,8 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         from unittest import mock
-        from mimir.client.ui.ws import server_registry, ws_session
+        from mimir.client.ui.ws import server_registry
+        from mimir.client.ui.ws.handlers import detach as ws_session
         from mimir.client.ui.ws.ws_session import _Session
         from mimir.tests._fake_pool import FakePool
 
