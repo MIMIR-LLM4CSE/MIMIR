@@ -159,7 +159,7 @@ def _body_full(page: str) -> str:
 class ReservedHintKeyTests(unittest.TestCase):
     """`hint` belongs to error payloads, and success payloads silently drop it.
 
-    ``responses._drop_reserved_fields`` strips ``status``/``error``/``hint`` from
+    ``responses.ok`` strips ``status``/``error``/``hint`` from
     anything handed to ``ok()``. Five separate tools had written guidance under that
     key — "fetch a more specific URL", "call again with confirm=True", "load one with
     module load", "update old_text to match" — and not one of those lines had ever

@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ...servers._shared.responses import err
+
 
 # Payload keys whose value is a block of program text — a file's contents, a run's
 # output — rather than a datum.
@@ -76,15 +78,8 @@ def truncate_text(text: str, limit: int = 20000) -> str:
 
 
 def json_error_payload(message: str, hint: str = "", **extra: Any) -> str:
-    payload: dict[str, Any] = {
-        "status": "error",
-        "error": message,
-    }
-    if hint:
-        payload["hint"] = hint
-    if extra:
-        payload.update(extra)
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+    """An error answer as the model reads it, with *message* kept verbatim."""
+    return json.dumps(err(message, hint, tidy=False, **extra), indent=2, ensure_ascii=False)
 
 
 def parse_tool_payload(result_text: str) -> dict[str, Any] | None:

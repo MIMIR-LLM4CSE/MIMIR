@@ -1,8 +1,7 @@
-"""Shared response helpers for MCP servers.
+"""The shape of every tool answer: ``{"status": "ok", ...}`` or ``{"status": "error", ...}``.
 
-Current response API contract:
-- success: {"status": "ok", ...domain fields...}
-- error:   {"status": "error", "error": "...", "hint"?: "...", ...}
+An error always carries ``error`` (the message) and may carry ``hint`` (what to try
+next). Other fields are the tool's own; they cannot override these three.
 """
 
 from __future__ import annotations
@@ -10,29 +9,24 @@ from __future__ import annotations
 from typing import Any
 
 _MAX_ERR_LEN = 4096
+_RESERVED = frozenset({"status", "error", "hint"})
 
 
-def _drop_reserved_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Remove reserved protocol keys from payload overrides."""
-    return {
-        key: value
-        for key, value in data.items()
-        if key not in {"status", "error", "hint"}
-    }
+def _own_fields(data: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in data.items() if key not in _RESERVED}
 
 
-def _normalize_message(message: Any) -> str:
-    text = str(message).strip()
+def _tidy(message: Any) -> str:
+    """One line, bounded: the model reads it inside a JSON payload."""
+    text = " ".join(str(message).split())
     if not text:
         return "Unknown error."
-    # Collapse internal whitespace to keep errors compact and consistent.
-    text = " ".join(text.split())
     if len(text) > _MAX_ERR_LEN:
         text = text[:_MAX_ERR_LEN] + " ... [truncated]"
     return text
 
 
-def _auto_hint_for_error(message: str) -> str:
+def _default_hint(message: str) -> str:
     lower = message.lower()
     if "outside" in lower and "root" in lower:
         return "Use a path inside the allowed workspace or sandbox root."
@@ -50,33 +44,25 @@ def _auto_hint_for_error(message: str) -> str:
 
 
 def ok(data: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
-    """Build a success payload with stable API shape.
-
-    Backward-compatible usage:
-    - ok({"result": 1})
-    - ok(result=1, count=3)
-    """
+    """A success: ``ok({"result": 1})`` or ``ok(result=1, count=3)``."""
     payload: dict[str, Any] = {"status": "ok"}
     if data:
-        payload.update(_drop_reserved_fields(data))
+        payload.update(_own_fields(data))
     if extra:
-        payload.update(_drop_reserved_fields(extra))
+        payload.update(_own_fields(extra))
     return payload
 
 
-def err(message: Any, hint: str = "", **extra: Any) -> dict[str, Any]:
-    """Build an error payload with stable API shape."""
-    normalized_message = _normalize_message(message)
-    normalized_hint = str(hint).strip() if hint else ""
-    if not normalized_hint:
-        normalized_hint = _auto_hint_for_error(normalized_message)
-
-    payload: dict[str, Any] = {
-        "status": "error",
-        "error": normalized_message,
-    }
-    if normalized_hint:
-        payload["hint"] = normalized_hint
+def err(message: Any, hint: str = "", *, tidy: bool = True, **extra: Any) -> dict[str, Any]:
+    """A failure. With *tidy*, the message is put on one bounded line and a missing
+    hint is guessed from it; without, both are kept exactly as given."""
+    text = _tidy(message) if tidy else str(message)
+    hint = str(hint).strip() if hint else ""
+    if not hint and tidy:
+        hint = _default_hint(text)
+    payload: dict[str, Any] = {"status": "error", "error": text}
+    if hint:
+        payload["hint"] = hint
     if extra:
-        payload.update(_drop_reserved_fields(extra))
+        payload.update(_own_fields(extra))
     return payload

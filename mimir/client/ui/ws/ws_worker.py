@@ -20,6 +20,7 @@ import threading
 from typing import Any, Callable
 
 from ....servers._shared.embed import verify_ssl
+from ....servers._shared.responses import err
 from ...agent_core import MimirAgent, build_base_system_content
 from ...config import TEMPERATURE_BACKENDS
 from ...config.models import thinking_can_disable, thinking_profile
@@ -31,7 +32,7 @@ from ...extensions import all_servers
 from ...protocol.tool_result import normalize_tool_content
 from ...query_engine import token_calibration
 from ...query_engine.backends.factory import get_backend
-from ...tool_execution.direct import call_tool_directly
+from ...tool_execution.direct import NO_AGENT, call_tool_directly
 
 # Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
@@ -946,7 +947,7 @@ class _AgentWorker:
         """
         if self._agent is None or self._loop is None:
             fut: Any = concurrent.futures.Future()
-            fut.set_result({"status": "error", "error": "No agent session is running."})
+            fut.set_result(err(NO_AGENT))
             return fut
         return asyncio.run_coroutine_threadsafe(
             call_tool_directly(self._agent, tool, args), self._loop)

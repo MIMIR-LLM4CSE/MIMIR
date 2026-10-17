@@ -398,25 +398,23 @@ def _run_bash(script: str, timeout: int, stdin: str | None = None, *,
             text=True,
             timeout=timeout,
         )
-        stdout = res.stdout[:_MAX_OUTPUT]
-        stderr = res.stderr[:_MAX_OUTPUT]
-        payload = {
-            "status": "ok" if res.returncode == 0 else "error",
-            "returncode": res.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-        if len(res.stdout) > _MAX_OUTPUT or len(res.stderr) > _MAX_OUTPUT:
-            payload["truncated"] = True
-        return payload
+        return _command_result(res)
     except subprocess.TimeoutExpired:
-        return {
-            "status": "error",
-            "error": f"Command timed out after {timeout}s.",
-            "hint": "Narrow the query or increase timeout.",
-        }
+        return err(f"Command timed out after {timeout}s.",
+                   hint="Narrow the query or increase timeout.")
     except Exception as e:
         return err(str(e))
+
+
+def _command_result(res: subprocess.CompletedProcess) -> dict:
+    """A finished command as a tool answer; a non-zero exit is an error."""
+    fields = {"returncode": res.returncode,
+              "stdout": res.stdout[:_MAX_OUTPUT], "stderr": res.stderr[:_MAX_OUTPUT]}
+    if len(res.stdout) > _MAX_OUTPUT or len(res.stderr) > _MAX_OUTPUT:
+        fields["truncated"] = True
+    if res.returncode == 0:
+        return ok(fields)
+    return err(res.stderr.strip() or f"Exited with code {res.returncode}.", **fields)
 
 
 def _validate_time(value: str) -> bool:
@@ -746,14 +744,9 @@ def _run_argv(argv: list[str], timeout: int, *, host: str = _LOCAL_HOST) -> dict
             slurm_exec_argv(argv, host=host), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
         )
-        return {
-            "status": "ok" if res.returncode == 0 else "error",
-            "returncode": res.returncode,
-            "stdout": res.stdout[:_MAX_OUTPUT],
-            "stderr": res.stderr[:_MAX_OUTPUT],
-        }
+        return _command_result(res)
     except subprocess.TimeoutExpired:
-        return {"status": "error", "error": f"Command timed out after {timeout}s."}
+        return err(f"Command timed out after {timeout}s.")
     except Exception as e:
         return err(str(e))
 
