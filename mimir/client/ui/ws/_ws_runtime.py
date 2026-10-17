@@ -20,6 +20,7 @@ from ...config.paths import STATE_DIR
 from ...context.resource_context import augment_query_with_resources
 from ...query_engine.backends.factory import get_backend
 from ...query_engine.context_budget import context_budget_for
+from ....servers._shared.state_paths import TODO_FILENAME, session_file
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,8 @@ _MIMIR_DIR_WS = STATE_DIR
 
 
 def _todo_file_for_session(session_id: str | None) -> str:
-    """Return the session-scoped todo file path."""
-    if session_id:
-        return os.path.join(_MIMIR_DIR_WS, "sessions", session_id, "todo_list.md")
-    return os.path.join(_MIMIR_DIR_WS, "todo_list.md")
+    """The todo file of *session_id*, or the state root's without one."""
+    return session_file(TODO_FILENAME, session_id, _MIMIR_DIR_WS)
 
 
 def _write_active_session(session_id: str | None) -> None:

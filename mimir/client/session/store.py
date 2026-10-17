@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 
 from ..config.paths import STATE_DIR
 from ..util.files import write_json_atomic
+from ...servers._shared.state_paths import ACTIVITY_FILENAME, SUBAGENTS_DIRNAME, TODO_FILENAME, sessions_root
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def _now_iso() -> str:
 
 def _sessions_dir() -> str:
     """Return (and create if needed) the central <STATE_DIR>/sessions/ directory."""
-    base = os.path.join(STATE_DIR, "sessions")
+    base = sessions_root(STATE_DIR)
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -63,8 +64,6 @@ def _sessions_dir() -> str:
 # of sessions/, and a sub-session writes only directories), and deleting a session takes
 # its children with it (delete_session drops the whole sidecar).
 
-_SUBAGENTS_DIRNAME = "subagents"
-
 # What a card carries of the child's answer. The whole answer is on disk and the detail
 # view serves it whole; the list goes out as one message holding every card of the
 # session, and a handful of multi-kilobyte answers in it is a payload nobody reads.
@@ -72,7 +71,7 @@ _CARD_ANSWER_CHARS = 400
 
 
 def _subagents_dir(session_id: str) -> str:
-    return os.path.join(_sessions_dir(), os.path.basename(session_id), _SUBAGENTS_DIRNAME)
+    return os.path.join(_sessions_dir(), os.path.basename(session_id), SUBAGENTS_DIRNAME)
 
 
 def _still_running(card: dict) -> bool:
@@ -151,7 +150,7 @@ def _activity_tail(directory: str, limit: int = 120) -> list[dict]:
     """
     rows: list[dict] = []
     try:
-        with open(os.path.join(directory, "activity.jsonl"), "r", encoding="utf-8") as f:
+        with open(os.path.join(directory, ACTIVITY_FILENAME), "r", encoding="utf-8") as f:
             lines = f.readlines()[-limit:]
     except OSError:
         return []
@@ -185,7 +184,7 @@ def read_subagent(session_id: str, sub_id: str) -> dict:
         pass
     card["id"] = os.path.basename(sub_id)
     try:
-        with open(os.path.join(directory, "todo_list.md"), "r", encoding="utf-8") as f:
+        with open(os.path.join(directory, TODO_FILENAME), "r", encoding="utf-8") as f:
             card["todo"] = f.read()
     except OSError:
         card["todo"] = ""
@@ -319,7 +318,7 @@ class SessionStore:
     def _dir(self) -> str:
         if self._root is None:
             return _sessions_dir()
-        base = os.path.join(self._root, "sessions")
+        base = sessions_root(self._root)
         os.makedirs(base, exist_ok=True)
         return base
 

@@ -33,7 +33,11 @@ from mimir.servers._shared.state_paths import (
     active_session_id,
     global_state_dir,
     scratch_dir,
+    session_dir,
+    session_file,
     session_state_dir,
+    sessions_root,
+    subagents_dir,
 )
 
 
@@ -105,6 +109,24 @@ class SessionStateDirTests(_StateDirCase):
         """A read-only path check must not materialise directories."""
         session_state_dir(self.state, "ghost")
         self.assertFalse(os.path.exists(os.path.join(self.state, "sessions")))
+
+
+class LayoutTests(_StateDirCase):
+    """Where each piece of a conversation lives, named in one place."""
+
+    def test_a_conversation_and_its_sub_agents(self):
+        self.assertEqual(sessions_root(self.state), os.path.join(self.state, "sessions"))
+        self.assertEqual(session_dir("s1", self.state),
+                         os.path.join(self.state, "sessions", "s1"))
+        self.assertEqual(subagents_dir("s1", self.state),
+                         os.path.join(self.state, "sessions", "s1", "subagents"))
+
+    def test_a_file_of_no_session_is_in_the_root_whatever_the_pointer_says(self):
+        self.write_pointer("pointed-at")
+        self.assertEqual(session_file("todo_list.md", None, self.state),
+                         os.path.join(self.state, "todo_list.md"))
+        self.assertEqual(session_file("todo_list.md", "s1", self.state),
+                         os.path.join(self.state, "sessions", "s1", "todo_list.md"))
 
 
 class ScratchIsolationTests(_StateDirCase):

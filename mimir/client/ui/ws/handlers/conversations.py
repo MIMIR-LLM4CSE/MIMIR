@@ -19,6 +19,7 @@ from .._ws_runtime import (
 )
 from ..job_scan import is_settled
 from ..session_summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
+from .....servers._shared.state_paths import session_dir
 
 logger = logging.getLogger(__name__)
 
@@ -431,7 +432,7 @@ class ConversationHandlers:
         a conversation ever submitted as still running. Neither is a certainty, which is
         why this reports and does not act.
         """
-        base = os.path.join(_MIMIR_DIR_WS, "sessions", session_id)
+        base = session_dir(session_id, _MIMIR_DIR_WS)
         live = []
         for kind in ("jobs", "hpc_jobs"):
             root = os.path.join(base, kind)

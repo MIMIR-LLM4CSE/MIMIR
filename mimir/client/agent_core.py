@@ -10,7 +10,12 @@ from typing import Any
 
 from mcp import ClientSession
 
-from ..servers._shared.state_paths import ensure_scratch_home, scratch_home, session_state_dir
+from ..servers._shared.state_paths import (
+    TODO_FILENAME,
+    ensure_scratch_home,
+    scratch_home,
+    session_state_dir,
+)
 from .config import (
         DEFAULT_MODEL,
         DEFAULT_THINKING_DEPTH,
@@ -441,7 +446,7 @@ class MimirAgent:
         if not names_with_cap(TASK_PLANNING, self.tool_caps):
             return ""
         return os.path.join(
-            session_state_dir(STATE_DIR, self.session_id), "todo_list.md"
+            session_state_dir(STATE_DIR, self.session_id), TODO_FILENAME
         )
 
     async def build_system_content(self, active_mode: str) -> str:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from .chat_commands import CliHost, run_cli_command
@@ -15,12 +14,10 @@ from ...query_engine.verification import parse_ledger_block, split_answer_ledger
 from ...query_engine.context_budget import context_budget_for
 from ...session.conversation import Conversation, trim_front
 from ...session.store import FullSession
-from ...config.paths import STATE_DIR
 from ...guardrails.workflow import (
     is_incomplete_answer, parse_completion_block, split_answer_completion,
 )
 
-_TODO_FILE = os.path.join(STATE_DIR, "todo_list.md")
 
 # Ledger status → glyph. The ledger stays a one-liner unless the user asks for it,
 # so the glyph carries the whole verdict at a glance.
@@ -98,9 +95,9 @@ def _is_proceed_signal(query: str) -> bool:
     return any(sig in q for sig in _PROCEED_SIGNALS)
 
 
-def _confirm_plan_execution() -> bool:
+def _confirm_plan_execution(todo_file: str) -> bool:
     """Display pending plan steps and ask the user to confirm before executing."""
-    items = load_todo_items(_TODO_FILE)
+    items = load_todo_items(todo_file)
     pending = [it for it in items if not it.get("done")]
     if not pending:
         return True  # Nothing to show; proceed silently.
@@ -117,9 +114,9 @@ def _confirm_plan_execution() -> bool:
     return answer in ("y", "yes")
 
 
-def _offer_session_resume() -> bool:
+def _offer_session_resume(todo_file: str) -> bool:
     """If a previous plan exists on disk, show it and ask whether to resume."""
-    items = load_todo_items(_TODO_FILE)
+    items = load_todo_items(todo_file)
     pending = [it for it in items if not it.get("done")]
     if not pending:
         return False
@@ -139,7 +136,7 @@ def _offer_session_resume() -> bool:
 async def run_chat_session(agent: Any) -> None:
     checklist_tool = name_with_arg_role("plan_steps", agent.tool_caps)
     if checklist_tool:
-        if not _offer_session_resume():
+        if not _offer_session_resume(agent.todo_file()):
             await agent.run_tool(checklist_tool, {"steps": []})
 
     print("\n✅ MIMIR ready. Type 'quit' to exit.")
@@ -242,7 +239,7 @@ async def run_chat_session(agent: Any) -> None:
             await do_compact()
 
         if was_plan_mode and _is_proceed_signal(query):
-            if not _confirm_plan_execution():
+            if not _confirm_plan_execution(agent.todo_file()):
                 print("  ↳ Execution cancelled.")
                 continue
 

@@ -200,8 +200,8 @@ def _write_record(session: str, record: dict) -> None:
     if not session:
         return
     try:
-        from state_paths import state_dir
-        directory = os.path.join(state_dir(), "sessions", session)
+        from state_paths import session_dir
+        directory = session_dir(session)
         os.makedirs(directory, exist_ok=True)
         tmp = os.path.join(directory, "subagent.json.tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -483,8 +483,8 @@ def _compact_event(ev: dict) -> dict | None:
 
 
 def _activity_path(session: str) -> str:
-    from state_paths import state_dir
-    return os.path.join(state_dir(), "sessions", session, "activity.jsonl")
+    from state_paths import ACTIVITY_FILENAME, session_dir
+    return os.path.join(session_dir(session), ACTIVITY_FILENAME)
 
 
 def _append_activity(session: str, event: dict) -> None:
@@ -938,8 +938,8 @@ def _sibling_cards(session: str) -> tuple[str, list[dict]]:
     if not parent:
         return "", []
     try:
-        from state_paths import state_dir
-        base = os.path.join(state_dir(), "sessions", parent, "subagents")
+        from state_paths import subagents_dir
+        base = subagents_dir(parent)
         names = sorted(os.listdir(base))
     except Exception:
         return "", []
@@ -1084,8 +1084,8 @@ def _sweep_orphan_copies(repo: str) -> None:
     registered = {line.split(" ", 1)[1] for line in listed.splitlines()
                   if ok and line.startswith("worktree ")}
     try:
-        from state_paths import state_dir
-        sessions = os.path.join(state_dir(), "sessions")
+        from state_paths import sessions_root
+        sessions = sessions_root()
     except Exception:
         return
     for name in sorted(os.listdir(base)):
@@ -1399,10 +1399,8 @@ def _entry_from_card(job_key: str) -> dict | None:
     if not job_key:
         return None
     try:
-        from state_paths import active_session_id, state_dir
-        parent = active_session_id()
-        path = os.path.join(state_dir(), "sessions", parent, "subagents", job_key,
-                            "subagent.json")
+        from state_paths import active_session_id, subagents_dir
+        path = os.path.join(subagents_dir(active_session_id()), job_key, "subagent.json")
         with open(path, encoding="utf-8") as fh:
             card = json.load(fh)
     except Exception:

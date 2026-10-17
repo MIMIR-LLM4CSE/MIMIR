@@ -148,6 +148,40 @@ def session_state_dir(base: str | None = None, session_id: str | None = None) ->
     return os.path.join(root, "sessions", sid) if sid else root
 
 
+# The layout of a conversation's directory. Named here only: every end that reads or
+# writes one of these goes through the helpers below.
+SESSIONS_DIRNAME = "sessions"
+SUBAGENTS_DIRNAME = "subagents"
+TODO_FILENAME = "todo_list.md"
+TODO_DEPS_FILENAME = "todo_deps.json"
+JOURNAL_FILENAME = "transcript.jsonl"
+ACTIVITY_FILENAME = "activity.jsonl"
+
+
+def sessions_root(base: str | None = None) -> str:
+    """``<state_dir>/sessions``: one directory per conversation."""
+    return os.path.join(base or state_dir(), SESSIONS_DIRNAME)
+
+
+def session_dir(session_id: str, base: str | None = None) -> str:
+    """The directory of conversation *session_id*, which must be given."""
+    return os.path.join(sessions_root(base), session_id)
+
+
+def subagents_dir(parent_id: str, base: str | None = None) -> str:
+    """Where the sub-agent sessions of conversation *parent_id* live."""
+    return os.path.join(session_dir(parent_id, base), SUBAGENTS_DIRNAME)
+
+
+def session_file(filename: str, session_id: str | None, base: str | None = None) -> str:
+    """*filename* in a conversation's directory, or in the state root without one.
+
+    ``None`` and ``""`` both mean "no session" here: the caller names the session
+    outright, so the active-session sidecar is never consulted.
+    """
+    return os.path.join(session_state_dir(base, session_id or ""), filename)
+
+
 def scratch_home() -> str:
     """Root of the agent's scratchpad, under the system temp dir.
 

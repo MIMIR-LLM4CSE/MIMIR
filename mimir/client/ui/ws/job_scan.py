@@ -39,6 +39,7 @@ import time
 from dataclasses import dataclass
 
 from ._ws_runtime import _MIMIR_DIR_WS
+from ....servers._shared.state_paths import sessions_root, subagents_dir
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +239,7 @@ def _read_exit_code(job_dir: str) -> int | None:
 
 
 def _sessions_root() -> str:
-    return os.path.join(_MIMIR_DIR_WS, "sessions")
+    return sessions_root(_MIMIR_DIR_WS)
 
 
 def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
@@ -573,7 +574,7 @@ def subagent_sessions(session_id: str) -> list[str]:
     is never a third level to walk, and walking arbitrary depth would make the scan's
     cost a property of someone's directory tree.
     """
-    root = os.path.join(_sessions_root(), session_id, "subagents")
+    root = subagents_dir(session_id, _MIMIR_DIR_WS)
     if not os.path.isdir(root):
         return []
     try:

@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
 from responses import err, ok
-from state_paths import session_state_dir, state_dir
+from state_paths import TODO_FILENAME, session_state_dir, state_dir
 from text_tools import yaml_scalar, yaml_unquote
 
 # Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager; legacy
@@ -49,7 +49,7 @@ from text_tools import yaml_scalar, yaml_unquote
 # See state_paths.
 _MIMIR_DIR = state_dir()
 # Legacy fallback path (used when this server belongs to no session at all).
-_LEGACY_TODO_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, "todo_list.md"))
+_LEGACY_TODO_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, TODO_FILENAME))
 
 
 def _get_todo_file() -> str:
@@ -69,7 +69,7 @@ def _get_todo_file() -> str:
         os.makedirs(base, exist_ok=True)
     except OSError:
         return _LEGACY_TODO_FILE
-    return os.path.join(base, "todo_list.md")
+    return os.path.join(base, TODO_FILENAME)
 
 
 # ── named plan history ──────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ import os
 from datetime import datetime, timezone
 
 from ._ws_runtime import _MIMIR_DIR_WS
+from ....servers._shared.state_paths import JOURNAL_FILENAME, session_file
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def transcript_path(session_id: str | None) -> str | None:
     """Path of a session's JSONL log, or None when there is no session to log to."""
     if not session_id:
         return None
-    return os.path.join(_MIMIR_DIR_WS, "sessions", session_id, "transcript.jsonl")
+    return session_file(JOURNAL_FILENAME, session_id, _MIMIR_DIR_WS)
 
 
 class TranscriptLog:

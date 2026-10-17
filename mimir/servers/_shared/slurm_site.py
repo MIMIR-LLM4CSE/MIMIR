@@ -47,7 +47,7 @@ import shlex
 import subprocess
 import time
 
-from state_paths import session_state_dir, state_dir
+from state_paths import SUBAGENTS_DIRNAME, session_state_dir, sessions_root, state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
 # of these, and that succeeded, proves the far side has a scheduler — no other host
@@ -489,7 +489,7 @@ def recorded_jobs() -> set[tuple[str | None, str]]:
     :func:`record_job_dir` is the only writer there is.
     """
     roots = [jobs_dir()]
-    sessions = os.path.join(state_dir(), "sessions")
+    sessions = sessions_root()
     try:
         roots += [os.path.join(sessions, sid, _JOBS_SUBDIR)
                   for sid in sorted(os.listdir(sessions))]
@@ -533,7 +533,7 @@ def _owned_jobs_roots() -> list[str]:
         return roots
     pending = [session_state_dir()]
     while pending:
-        sub = os.path.join(pending.pop(), "subagents")
+        sub = os.path.join(pending.pop(), SUBAGENTS_DIRNAME)
         try:
             children = sorted(os.listdir(sub))
         except OSError:

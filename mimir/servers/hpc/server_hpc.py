@@ -45,7 +45,7 @@ from mcp.server.fastmcp import FastMCP
 from capabilities import (tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE,
                           IRREVERSIBLE, PANEL_REPORT)
 from responses import err, ok
-from state_paths import state_dir
+from state_paths import sessions_root, state_dir
 from slurm_site import (
     ADOPTED_FILE as _ADOPTED_FILE,
     HOST_FILE as _HOST_FILE,
@@ -187,7 +187,7 @@ def _find_job_dir(job_id: str) -> tuple[str, str]:
     found = _match(_hpc_jobs_dir())
     if found:
         return found, ""
-    sessions = os.path.join(state_dir(), "sessions")
+    sessions = sessions_root()
     try:
         others = sorted(os.listdir(sessions))
     except OSError:
