@@ -17,7 +17,7 @@ import mimir.client.event_sink as event_sink_module
 from mimir.client.query_engine.backends.base import PromptTooLongError
 from mimir.client.protocol.messages import message_wire_form
 from mimir.client.query_engine.backends.vllm_backend import VllmBackend
-from mimir.tests._fake_backend import ScriptedBackend
+from mimir.tests.support.backend import ScriptedBackend
 
 import mimir.client.guardrails.policy.state_machine as policy_state_machine_module
 import mimir.client.guardrails.policy.write as policy_runtime_module
@@ -36,10 +36,10 @@ import mimir.client.ui.cli.chat_session as chat_session_module
 from mimir.client.agent_core import MimirAgent
 from mimir.client.tool_execution.validation import auto_validate_written_file
 from mimir.client.context.capabilities import path_args
-from mimir.tests._golden_caps import build_declared_registry
+from mimir.tests.support.golden_caps import build_declared_registry
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
-from mimir.tests._loops import run_agent
+from mimir.tests.support.loops import run_agent
 
 # Provide a module-compatible namespace so existing test references work.
 import types
@@ -2385,7 +2385,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertIn("/ledger", line)
 
     def test_ledger_command_expands_the_last_ledger(self) -> None:
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
 
         block = self._ledger_block()
         message = cli("/ledger", ledger=lambda: chat_session_module.format_ledger_full(block))
@@ -2526,7 +2526,7 @@ class ModulesCommandTests(unittest.TestCase):
             self.sessions = {"platform": self.session}
 
     def _run(self, query, agent):
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
         return cli(query, agent)
 
     def test_status_reports_the_index_without_searching(self):

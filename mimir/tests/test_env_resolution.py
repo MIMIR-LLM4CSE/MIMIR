@@ -20,7 +20,7 @@ import mimir.client.guardrails.observations as runtime
 from mimir.client.context import capabilities as caps
 from mimir.client.context.execution_context import build_execution_context
 from mimir.client.guardrails.nudges import maybe_append_nudge, maybe_inject_env_resolution
-from mimir.tests._golden_caps import build_declared_registry
+from mimir.tests.support.golden_caps import build_declared_registry
 from mimir.client.guardrails.observations import Call  # noqa: E402
 from mimir.client.core.turn_state import TurnState
 

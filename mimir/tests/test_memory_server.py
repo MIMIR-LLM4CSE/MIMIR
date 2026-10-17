@@ -15,7 +15,7 @@ import os
 import tempfile
 import unittest
 
-from _memory_fixtures import load_memory_server, point_stores
+from mimir.tests.support.memory import load_memory_server, point_stores
 
 
 class _MemoryTestCase(unittest.TestCase):

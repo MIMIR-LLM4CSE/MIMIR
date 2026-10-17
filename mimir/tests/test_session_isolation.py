@@ -8,8 +8,8 @@ import json
 import queue as _queue
 import unittest
 
-from mimir.tests._fake_pool import FakePool
-from mimir.tests._session import bare_session
+from mimir.tests.support.pools import FakePool
+from mimir.tests.support.connections import bare_session
 
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.worker import AgentWorker

@@ -80,7 +80,7 @@ class TestTheServersThatFillIt:
     """The two first-party sections, read off the real declarations."""
 
     def _declared(self):
-        from mimir.tests import _golden_caps as golden
+        from mimir.tests.support import golden_caps as golden
         return golden.build_declared_registry()
 
     def test_the_proxy_and_the_platform_each_own_a_section(self):
@@ -630,7 +630,7 @@ def test_the_sections_read_from_the_machine_outwards():
     so the drawer says something true before any scheduler has been asked anything; the
     optimisation is last because it is the section a workspace most often has none of.
     """
-    from mimir.tests import _golden_caps as golden
+    from mimir.tests.support import golden_caps as golden
     declared = panel_sections(golden.build_declared_registry())
     assert [spec["section"] for _, spec in declared] == [
         "Machine", "Cluster", "Optimisation"]

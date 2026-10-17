@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mimir.tests._proxy_fixtures import eval_session, server_proxy
+from mimir.tests.support.proxy import eval_session, server_proxy
 
 _LAUNCHED = {
     "status":         "ok",

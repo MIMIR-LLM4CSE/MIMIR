@@ -16,7 +16,7 @@ from mimir.client.config import paths
 from mimir.client.config.toggles import Toggles
 from mimir.client.core.extension_set import ExtensionSet
 from mimir.client.agent_core import MimirAgent
-from mimir.tests._commands import cli
+from mimir.tests.support.commands import cli
 from mimir.client.core.turn_state import TurnState
 
 

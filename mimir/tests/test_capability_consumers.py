@@ -13,7 +13,7 @@ consumer in a plugin, not in core. Scanning core alone reported such a capabilit
 orphan, pushing toward deleting the seam rather than the dead code.
 
 Static AST scan (no runtime / model / mcp deps) so it runs on the x86 build host,
-same approach as ``_golden_caps.build_declared_registry``.
+same approach as ``support.golden_caps.build_declared_registry``.
 
 Scope / caveat: this catches *declared-but-never-referenced* drift — the common,
 cheap case (you removed the last consumer but left the constant). It deliberately

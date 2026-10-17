@@ -1856,7 +1856,7 @@ class BudgetTimeoutAdviceTests(unittest.TestCase):
 
 class DeclaredBudgetTests(unittest.TestCase):
     def _descriptor(self):
-        from mimir.tests import _golden_caps as golden
+        from mimir.tests.support import golden_caps as golden
         return golden.build_declared_registry()["spawn_agent"]
 
     def test_declared_wall_exceeds_the_tool_s_own_cap(self):

@@ -12,7 +12,7 @@ import asyncio
 import os
 import time
 
-from mimir.tests._proxy_fixtures import _TmpStorageTest, _call, server_proxy, store
+from mimir.tests.support.proxy import _TmpStorageTest, _call, server_proxy, store
 from mimir.servers.proxy._ops import exec_jobs, references, runs  # noqa: E402
 
 

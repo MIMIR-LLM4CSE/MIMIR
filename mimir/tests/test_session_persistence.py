@@ -20,8 +20,8 @@ import os
 import tempfile
 import unittest
 
-from mimir.tests._fake_pool import FakePool
-from mimir.tests._session import bare_session
+from mimir.tests.support.pools import FakePool
+from mimir.tests.support.connections import bare_session
 from datetime import datetime, timezone
 from unittest import mock
 

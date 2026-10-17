@@ -213,7 +213,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         from mimir.client.ui.ws.connection.connection import Connection
-        from mimir.tests._fake_pool import FakePool
+        from mimir.tests.support.pools import FakePool
 
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -383,7 +383,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         from unittest import mock
         from mimir.client.ui.ws.connection.handlers import detach as ws_session
         from mimir.client.ui.ws.connection.connection import Connection
-        from mimir.tests._fake_pool import FakePool
+        from mimir.tests.support.pools import FakePool
 
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -495,7 +495,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         """
         from mimir.client.ui.ws.server import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
-        from mimir.tests._fake_pool import FakePool
+        from mimir.tests.support.pools import FakePool
         self.sess.store = _StoreWith(["asleep"])
         self.sess.pool = FakePool(self.a, active="s1", workers={})
 
@@ -508,7 +508,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # A window detached the moment it opened claimed nothing at all: agents are
         # built on the first query, so the pool was empty and "all of them" was none.
         from mimir.client.ui.ws.server import registry as server_registry
-        from mimir.tests._fake_pool import FakePool
+        from mimir.tests.support.pools import FakePool
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
         self.sess.pool = FakePool(self.a, active="s1", workers={})
 

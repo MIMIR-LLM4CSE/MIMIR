@@ -19,8 +19,8 @@ import types
 import unittest
 
 from mimir.client.event_sink import event_sink as capture_events
-from mimir.tests._fake_pool import FakePool
-from mimir.tests._session import bare_session
+from mimir.tests.support.pools import FakePool
+from mimir.tests.support.connections import bare_session
 from unittest.mock import patch
 
 from mimir.client.query_engine import agent_loop as agent_loop_module
@@ -36,11 +36,11 @@ from mimir.client.query_engine.deferral import (
 from mimir.client.ui.ws.connection.connection import Connection
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.worker import AgentWorker
-from mimir.tests._fake_backend import ScriptedBackend
+from mimir.tests.support.backend import ScriptedBackend
 from mimir.tests.test_agent_loop import RunAgentQueryNonInteractiveTests, _tool_call
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
-from mimir.tests._loops import run_plan
+from mimir.tests.support.loops import run_plan
 from mimir.client.core.turn_state import TurnState
 
 _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}

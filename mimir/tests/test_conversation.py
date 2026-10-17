@@ -156,7 +156,7 @@ class ThePumpCommitsEveryAnswerTests(_CommitCase):
     """One conversation object, so one writer: the pump, attached or not."""
 
     def _pool_with_bus(self, session_id: str):
-        from mimir.tests._fake_pool import FakePool
+        from mimir.tests.support.pools import FakePool
         worker = _bare_worker(session_id)
         pool = FakePool(worker, workers={session_id: worker})
         pool.conversations = self.conversations

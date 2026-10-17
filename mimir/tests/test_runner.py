@@ -19,7 +19,7 @@ import unittest
 
 from mimir.runner import BenchTask, CheckContext, run_benchmark
 from mimir.runner.engine import _install_auto_approve
-from mimir.tests._fake_backend import ScriptedBackend
+from mimir.tests.support.backend import ScriptedBackend
 
 
 def _scripted_override():

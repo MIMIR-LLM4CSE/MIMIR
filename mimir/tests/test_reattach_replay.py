@@ -18,8 +18,8 @@ import os
 from mimir.servers._shared.processes import proc_starttime
 from mimir.client.session import jobs_on_disk
 from mimir.client.ui.ws.worker.worker import AgentWorker
-from mimir.tests._fake_pool import FakePool
-from mimir.tests._session import bare_session
+from mimir.tests.support.pools import FakePool
+from mimir.tests.support.connections import bare_session
 from mimir.tests.support.state import pin_state_dir
 
 

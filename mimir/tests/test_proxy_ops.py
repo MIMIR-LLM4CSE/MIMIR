@@ -11,9 +11,7 @@ Run:
 import os
 import unittest
 
-from mimir.tests._proxy_fixtures import (
-    _TmpStorageTest, _call, _eval, server_proxy, store,
-)
+from mimir.tests.support.proxy import _TmpStorageTest, _call, _eval, server_proxy, store
 
 
 class DispatchTests(_TmpStorageTest):

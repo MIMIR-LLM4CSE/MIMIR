@@ -26,7 +26,7 @@ from mimir.client.agent_core import MimirAgent
 from mimir.client.query_engine.backends.base import LLMBackend
 from mimir.client.query_engine.backends.tag_parser import ThinkTagParser
 
-from _fake_backend import ScriptedBackend
+from mimir.tests.support.backend import ScriptedBackend
 
 
 class EchoingBackend(LLMBackend):

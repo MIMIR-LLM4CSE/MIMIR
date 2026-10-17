@@ -24,8 +24,8 @@ from mimir.client.query_engine import token_calibration
 from mimir.client.query_engine.backends.base import LLMBackend
 from mimir.client.session.store import FullSession
 from mimir.client.ui.ws.connection.connection import Connection
-from mimir.tests._fake_pool import FakePool
-from mimir.tests._session import bare_session
+from mimir.tests.support.pools import FakePool
+from mimir.tests.support.connections import bare_session
 from mimir.tests.support.workers import bare_worker
 
 

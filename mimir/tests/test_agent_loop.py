@@ -42,10 +42,10 @@ from mimir.client.protocol.tool_call import as_dict
 from mimir.client.tool_execution.normalizer import make_hashable
 from mimir.client.protocol.tool_call import normalize_arguments
 from mimir.client.agent_core import MimirAgent
-from mimir.tests._fake_backend import ScriptedBackend
+from mimir.tests.support.backend import ScriptedBackend
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
-from mimir.tests._loops import as_loop_run, run_plan
+from mimir.tests.support.loops import as_loop_run, run_plan
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
 

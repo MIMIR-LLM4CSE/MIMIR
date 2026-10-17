@@ -23,7 +23,7 @@ import types
 from mimir.client.context.capabilities import infer_tool_caps
 from mimir.servers._shared import capabilities as srv
 
-SERVERS_DIR = pathlib.Path(__file__).resolve().parents[1] / "servers"
+SERVERS_DIR = pathlib.Path(__file__).resolve().parents[2] / "servers"
 
 # tool_caps() accepts annotation-only kwargs (read_only, destructive) that set
 # ToolAnnotations and are deliberately NOT forwarded to build_descriptor (they

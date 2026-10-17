@@ -14,7 +14,7 @@ _SHARED = _ROOT / "mimir" / "servers" / "_shared"
 
 from mimir.servers._shared import embed
 
-from _memory_fixtures import load_memory_server, point_stores
+from mimir.tests.support.memory import load_memory_server, point_stores
 
 
 def _tool(name: str, description: str) -> dict:

@@ -13,7 +13,7 @@ from unittest.mock import patch
 from mimir.client.config import paths
 from mimir.client.agent_core import MimirAgent
 from mimir.client.config import parse_temperature, preferences
-from mimir.tests._commands import cli
+from mimir.tests.support.commands import cli
 # Modules, not their TestCase classes: an imported class would be collected twice.
 from mimir.tests import test_session_isolation as _iso
 from mimir.tests import test_thinking_depth as _depth

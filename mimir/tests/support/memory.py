@@ -12,7 +12,7 @@ import importlib.util
 from pathlib import Path
 from mimir.tests.support.modules import spec_for
 
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[3]
 _SHARED = _ROOT / "mimir" / "servers" / "_shared"
 
 

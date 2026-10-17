@@ -24,7 +24,7 @@ from pathlib import Path
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
 from mimir.servers.proxy._lib import execute, metrics, procs, ratchet, report, store
-from mimir.tests._proxy_fixtures import _TmpStorageTest, pin_local_scheduler
+from mimir.tests.support.proxy import _TmpStorageTest, pin_local_scheduler
 from mimir.servers._shared.atomic import write_json
 
 try:

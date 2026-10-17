@@ -1,6 +1,6 @@
 """Unit tests for the tool-capability registry (context/capabilities.py).
 
-The *expected classification* now lives in ``_golden_caps.py`` and is verified
+The *expected classification* now lives in ``support/golden_caps.py`` and is verified
 against the live server declarations by ``test_phase_b_servers.py``. This file
 covers the registry's pure logic: ``infer_tool_caps`` precedence, the server-side
 ``tool_caps`` helper round-trip, the unannotated-tool report, and ``explorer_servers``.

@@ -8,7 +8,7 @@ from mimir.client.guardrails.workflow import approval_is_settled
 from mimir.client.context.capabilities import (
     NON_BATCH, SENSITIVE, ToolCaps, fallbacks, names_with_cap,
 )
-from mimir.tests import _golden_caps as golden
+from mimir.tests.support import golden_caps as golden
 
 # Provide a module-compatible namespace so existing test references work.
 approval_module = types.SimpleNamespace(ApprovalManager=_ApprovalManager)

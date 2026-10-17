@@ -20,7 +20,7 @@ from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.jobs import JobWatcher, _Watch
 from unittest import mock
 
-from mimir.tests._fake_pool import FakePool
+from mimir.tests.support.pools import FakePool
 
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
 from mimir.client.query_engine.jobs import poll as job_poll
@@ -28,7 +28,7 @@ from mimir.client.query_engine.jobs.background import (
     maybe_register_background_job,
     maybe_rewatch_background_jobs,
 )
-from mimir.tests._proxy_fixtures import (_TmpStorageTest, pin_local_scheduler, server_proxy)
+from mimir.tests.support.proxy import _TmpStorageTest, pin_local_scheduler, server_proxy
 from mimir.tests.support.state import pin_state_dir
 from mimir.client.core.turn_state import TurnState
 
@@ -1065,7 +1065,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
 
     def test_eval_background_attaches_descriptor(self) -> None:
         from unittest import mock
-        from mimir.tests._proxy_fixtures import slurm as slurm_ops
+        from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
         with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4242, None)):
             res = server_proxy.proxy_slurm(op="eval", partition="cpu",
@@ -1088,7 +1088,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         never resumed when the job landed.
         """
         from unittest import mock
-        from mimir.tests._proxy_fixtures import slurm as slurm_ops
+        from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
         with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4243, None)):
             res = server_proxy.proxy_slurm(op="eval", partition="cpu",
@@ -1105,7 +1105,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         shape the watcher tests for a terminal value.
         """
         from unittest import mock
-        from mimir.tests._proxy_fixtures import slurm as slurm_ops
+        from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
         with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4244, None)):
             res = server_proxy.proxy_slurm(op="run", partition="cpu",

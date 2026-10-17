@@ -27,7 +27,7 @@ from mimir.client.ui.ws.connection.connection import Connection
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.ui.ws.worker.worker import AgentWorker
-from mimir.tests._session import bare_session
+from mimir.tests.support.connections import bare_session
 from mimir.tests.support.state import pin_state_dir
 
 

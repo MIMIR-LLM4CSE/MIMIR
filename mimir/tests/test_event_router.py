@@ -17,8 +17,8 @@ from unittest import mock
 
 from mimir.client.ui.ws.connection import router as event_router
 from mimir.client.ui.ws.connection.router import EventRouter
-from mimir.tests._fake_pool import FakePool
-from mimir.tests._session import bare_session
+from mimir.tests.support.pools import FakePool
+from mimir.tests.support.connections import bare_session
 
 
 class _Worker:

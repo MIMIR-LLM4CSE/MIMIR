@@ -19,15 +19,12 @@ import os
 import tempfile
 import unittest
 
-from mimir.servers.proxy import server_proxy  # noqa: E402
-from mimir.servers._shared import slurm_site  # noqa: E402,F401
+from mimir.servers.proxy import server_proxy
+from mimir.servers._shared import slurm_site  # noqa: F401
 
-from mimir.tests.support.scheduler import local_slurm  # noqa: E402
-from mimir.servers.proxy._lib import build, procs, ratchet, store, tree_snapshot  # noqa: E402,F401
-from mimir.servers.proxy._ops import (  # noqa: E402,F401
-    _eval_ratchet, _eval_validate, eval_session, references, registry, runs,
-    scaffold, slurm, suites,
-)
+from mimir.tests.support.scheduler import local_slurm
+from mimir.servers.proxy._lib import build, procs, ratchet, store, tree_snapshot  # noqa: F401
+from mimir.servers.proxy._ops import _eval_ratchet, _eval_validate, eval_session, references, registry, runs, scaffold, slurm, suites  # noqa: F401
 
 
 def pin_local_scheduler(case: unittest.TestCase) -> None:

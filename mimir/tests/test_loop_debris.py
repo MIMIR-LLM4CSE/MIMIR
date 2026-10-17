@@ -21,7 +21,7 @@ from mimir.client.guardrails.nudges.messages import EMPTY_TURN_OPENING
 from mimir.client.query_engine import agent_loop as agent_loop_module
 from mimir.client.query_engine import streaming as streaming_module
 from mimir.client.protocol.messages import merge_consecutive_user_messages
-from mimir.tests._fake_backend import ScriptedBackend
+from mimir.tests.support.backend import ScriptedBackend
 from mimir.tests.test_agent_loop import (
     RunAgentQueryNonInteractiveTests,
     _CHECKLIST_CAPS,
@@ -30,7 +30,7 @@ from mimir.tests.test_agent_loop import (
 )
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
-from mimir.tests._loops import run_plan
+from mimir.tests.support.loops import run_plan
 from mimir.client.core.turn_state import TurnState
 
 

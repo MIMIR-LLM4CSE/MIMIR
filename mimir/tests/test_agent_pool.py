@@ -453,7 +453,7 @@ class AdmissionLatencyTests(_PoolCase):
 
     async def test_the_session_reports_the_admission(self) -> None:
         """Said out loud: the queue notice is still on screen until something replaces it."""
-        from mimir.tests._session import bare_session
+        from mimir.tests.support.connections import bare_session
         pool = self._pool(cap=1)
         held = await pool.worker_for("s1")
         held.busy = True
@@ -575,7 +575,7 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         history of ten would hit the cap on the fourth click.
         """
         import asyncio
-        from mimir.tests._session import bare_session
+        from mimir.tests.support.connections import bare_session
         pool = self._pool(cap=2)
         sess = bare_session(pool, active="s1")
         sess._request_panel = lambda **_kw: None   # the report itself is not under test

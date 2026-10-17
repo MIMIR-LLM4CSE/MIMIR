@@ -9,7 +9,7 @@ backend is stubbed.
 import json
 import unittest
 
-from mimir.tests._fake_pool import FakePool
+from mimir.tests.support.pools import FakePool
 from unittest.mock import patch
 
 from mimir.client.session import summary as ss

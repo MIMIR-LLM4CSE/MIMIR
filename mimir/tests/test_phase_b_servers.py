@@ -5,7 +5,7 @@ its tools' capabilities via ``@mcp.tool(**tool_caps(...))`` and the client reads
 them from the per-agent registry. This test parses every server's decorator **from
 source via AST** (no ``mcp`` import, so it runs on the x86 build host), builds the
 ``{name: ToolCaps}`` registry exactly as ``connect_server`` would, and asserts it
-reproduces the golden expected classification (``mimir/tests/_golden_caps.py``).
+reproduces the golden expected classification (``mimir/tests/support/golden_caps.py``).
 
 End-to-end ``meta`` serialization through FastMCP/``list_tools`` is covered by
 ``pytest mimir`` + a live agent start on the ARM client.
@@ -14,7 +14,7 @@ End-to-end ``meta`` serialization through FastMCP/``list_tools`` is covered by
 import unittest
 
 from mimir.client.context import capabilities as caps
-from mimir.tests import _golden_caps as golden
+from mimir.tests.support import golden_caps as golden
 
 
 class DeclaredClassificationTest(unittest.TestCase):

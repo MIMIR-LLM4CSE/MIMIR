@@ -17,8 +17,13 @@ import os
 import unittest
 from unittest import mock
 
-from mimir.tests._proxy_fixtures import (  # noqa: F401
-    _FakeSbatchTest, _TmpStorageTest, build, procs, server_proxy, store,
+from mimir.tests.support.proxy import (
+    _FakeSbatchTest,
+    _TmpStorageTest,
+    build,
+    procs,
+    server_proxy,
+    store,
 )
 from mimir.servers._shared import slurm_site
 

@@ -84,7 +84,7 @@ class TruncationNoticeTests(unittest.TestCase):
 
 class ScriptedBackendTests(unittest.TestCase):
     def test_a_scripted_turn_can_carry_a_finish_reason(self) -> None:
-        from mimir.tests._fake_backend import ScriptedBackend
+        from mimir.tests.support.backend import ScriptedBackend
 
         backend = ScriptedBackend([{"content": "cut off", "finish_reason": "length"}])
         out = backend.chat("m", [], [], False, False, {})

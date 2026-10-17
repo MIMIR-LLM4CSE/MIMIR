@@ -115,7 +115,7 @@ class ProxyListTests(unittest.TestCase):
             self.assertIsNotNone(registry.find("/proxy list"))
 
     def test_it_lists_through_the_registry_tool(self) -> None:
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
         session = _FakeSession('{"status": "ok", "proxies": [{"name": "wave2d"}]}')
         agent = types.SimpleNamespace(tool_owner={"proxy_get": "proxy"},
                                       sessions={"proxy": session}, turn=TurnState())
@@ -132,7 +132,7 @@ class ProxyListTests(unittest.TestCase):
 
     def test_the_usage_line_names_both_subcommands(self) -> None:
         # A usage line that omits one is how a working command stays undiscovered.
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
         usage = cli("/proxy", object())
         self.assertIn("/proxy list", usage)
         self.assertIn("/proxy clean <name>", usage)

@@ -29,7 +29,7 @@ class ProxyCleanCommandTests(unittest.TestCase):
     def _run(self, query: str, payload: dict):
         from unittest import mock
         from mimir.client.ui.cli import chat_commands
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
 
         async def _fake(agent, tool, arguments):
             self.assertEqual(tool, "proxy_manage")
@@ -54,17 +54,17 @@ class ProxyCleanCommandTests(unittest.TestCase):
         self.assertIn("sealed references", msg)
 
     def test_a_disconnected_proxy_server_says_so(self) -> None:
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
         msg = cli("/proxy clean wave2d", types.SimpleNamespace(tool_owner={}, sessions={}, turn=TurnState()))
         self.assertIn("not connected", msg)
 
     def test_usage_without_a_name(self) -> None:
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
         msg = cli("/proxy", object())
         self.assertIn("/proxy clean <name>", msg)
 
     def test_the_command_is_listed_in_help(self) -> None:
-        from mimir.tests._commands import cli
+        from mimir.tests.support.commands import cli
         self.assertIn("/proxy clean", cli("/help"))
 
 

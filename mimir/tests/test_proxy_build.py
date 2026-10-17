@@ -19,9 +19,17 @@ import sys
 import time
 import unittest
 
-from mimir.tests._proxy_fixtures import (  # noqa: F401
-    _TmpStorageTest, _script, build, eval_session, procs, ratchet, registry,
-    server_proxy, store, tree_snapshot,
+from mimir.tests.support.proxy import (
+    _TmpStorageTest,
+    _script,
+    build,
+    eval_session,
+    procs,
+    ratchet,
+    registry,
+    server_proxy,
+    store,
+    tree_snapshot,
 )
 from mimir.tests.support.modules import spec_for
 

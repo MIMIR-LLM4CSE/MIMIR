@@ -22,7 +22,7 @@ from mimir.client.context.execution_context import build_execution_context
 from mimir.client.tool_execution import bash_effect as be
 from mimir.client.tool_execution import executor as ex
 from mimir.client.protocol.tool_result import normalize_tool_content, parse_tool_payload
-from mimir.tests._golden_caps import build_declared_registry
+from mimir.tests.support.golden_caps import build_declared_registry
 from mimir.client.core.turn_state import TurnState
 
 _DECLARED_REGISTRY = build_declared_registry()

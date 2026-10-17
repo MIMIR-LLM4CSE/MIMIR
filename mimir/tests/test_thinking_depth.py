@@ -9,7 +9,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from mimir.tests._fake_backend import ScriptedBackend
+from mimir.tests.support.backend import ScriptedBackend
 from mimir.client.query_engine import agent_loop as agent_loop_module
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine import streaming as streaming_module

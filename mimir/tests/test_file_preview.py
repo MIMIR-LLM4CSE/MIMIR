@@ -15,7 +15,7 @@ import unittest
 from mimir.client.context import capabilities as caps
 from mimir.client.ui.ws.worker import file_preview
 from mimir.servers._shared import capabilities as srv
-from mimir.tests import _golden_caps as golden
+from mimir.tests.support import golden_caps as golden
 
 
 def _tool(name: str, **descriptor_kwargs) -> dict:
