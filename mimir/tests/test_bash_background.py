@@ -29,6 +29,8 @@ for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "workspace"]:
 
 import run_channel  # noqa: E402
 import slurm_site  # noqa: E402
+
+from mimir.tests.support.scheduler import local_slurm  # noqa: E402
 import _bash_jobs  # noqa: E402
 import server_bash  # noqa: E402
 
@@ -797,9 +799,7 @@ class LearnedSchedulersTests(unittest.TestCase):
 
     def _local(self, present: bool) -> None:
         """Answer the local-Slurm probe with *present* for the rest of this test."""
-        orig = slurm_site._HAS_SLURM
-        slurm_site._HAS_SLURM = present
-        self.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
+        local_slurm(self, present)
 
     def _ran(self, argv: list[str], *, ok: bool = True,
              queued: list[str] | None = None) -> dict:

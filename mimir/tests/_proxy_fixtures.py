@@ -28,7 +28,9 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
         sys.path.insert(0, _ps)
 
 import server_proxy  # noqa: E402
-import slurm_site  # noqa: E402
+import slurm_site  # noqa: E402,F401
+
+from mimir.tests.support.scheduler import local_slurm  # noqa: E402
 from _lib import build, procs, ratchet, store, tree_snapshot  # noqa: E402,F401
 from _ops import (  # noqa: E402,F401
     _eval_ratchet, _eval_validate, eval_session, references, registry, runs,
@@ -37,18 +39,7 @@ from _ops import (  # noqa: E402,F401
 
 
 def pin_local_scheduler(case: unittest.TestCase) -> None:
-    """Make this machine's own Slurm the one scheduler for the rest of *case*.
-
-    A submission resolves which scheduler it goes to against the session's inventory —
-    the local probe plus whatever has been learned — and refuses when that leaves a
-    real choice. A test that does not pin it reads the developer's machine: with no
-    ``sbatch`` on it the inventory is empty and every submission is refused for having
-    nowhere to go. The probe is memoised in the module, so it is set rather than
-    mocked per call, and restored afterwards.
-    """
-    orig = slurm_site._HAS_SLURM
-    slurm_site._HAS_SLURM = True
-    case.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
+    local_slurm(case)
 
 
 def _eval(*args, **kwargs):

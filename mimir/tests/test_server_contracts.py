@@ -1584,12 +1584,11 @@ class BashServerTests(unittest.TestCase):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "error", cmd)
 
     def test_which_reports_absence_as_a_conclusive_answer(self) -> None:
-        # `which` returns how many names it did not find, so the standard multi-name
-        # capability probe exits 4, not 1 — and was reported as a failure telling the
-        # agent to re-read stderr for a problem that does not exist.
+        # GNU `which` exits with the number of names it did not find (4 here); the
+        # Debian one exits 1. Either way the probe answered, and nothing failed.
         payload = server_bash.bash_run("which nolatex nopdflatex noxelatex nolualatex")
         self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["returncode"], 4)
+        self.assertIn(payload["returncode"], (1, 4))
         self.assertEqual(payload["matches"], 0)
         # grep keeps its stricter rule: 1 is no-match, 2 is a real error.
         self.assertEqual(

@@ -30,7 +30,8 @@ from mimir.servers._shared import embed, slurm_nodes
 # would be different module objects, and a stub on one would leave the other probing a
 # real scheduler.
 import slurm_digest  # noqa: E402
-import slurm_site  # noqa: E402
+
+from mimir.tests.support.scheduler import local_slurm  # noqa: E402
 
 
 def _load_server_platform():
@@ -573,9 +574,7 @@ class DigestTests(CatalogueTestCase):
         self._real_capture = slurm_digest._capture
         slurm_digest._capture = self._capture
         self.addCleanup(setattr, slurm_digest, "_capture", self._real_capture)
-        self._had_slurm = slurm_site._HAS_SLURM
-        slurm_site._HAS_SLURM = True
-        self.addCleanup(setattr, slurm_site, "_HAS_SLURM", self._had_slurm)
+        local_slurm(self)
         slurm_digest.forget_cluster_digest()
         self.addCleanup(slurm_digest.forget_cluster_digest)
 
@@ -629,7 +628,7 @@ class DigestTests(CatalogueTestCase):
         """
         asked = []
         slurm_digest._capture = lambda script, host, timeout: asked.append(script)
-        slurm_site._HAS_SLURM = False
+        local_slurm(self, False)
         slurm_digest.forget_cluster_digest()
         digest = self.mod._build_digest()
         self.assertEqual(digest["node_types"], [])

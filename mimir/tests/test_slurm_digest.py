@@ -21,6 +21,8 @@ for _p in (_SERVERS / "_shared",):
 import slurm_digest  # noqa: E402
 import slurm_site  # noqa: E402
 
+from mimir.tests.support.scheduler import local_slurm  # noqa: E402
+
 
 SCONTROL = (
     "NodeName=cn001 Arch=x86_64 CPUTot=64 CPUAlloc=0 RealMemory=256000 "
@@ -68,9 +70,7 @@ class _DigestTestCase(unittest.TestCase):
         self.addCleanup(setattr, slurm_digest, "_capture", self._real)
         slurm_digest.forget_cluster_digest()
         self.addCleanup(slurm_digest.forget_cluster_digest)
-        self._had = slurm_site._HAS_SLURM
-        slurm_site._HAS_SLURM = True
-        self.addCleanup(setattr, slurm_site, "_HAS_SLURM", self._had)
+        local_slurm(self)
 
 
 class DigestTests(_DigestTestCase):
@@ -137,14 +137,14 @@ class DigestTests(_DigestTestCase):
         ``slurm_is_local`` is the memoised answer to the same question, already paid
         for by the inventory, so the local branch is decided before any probe.
         """
-        slurm_site._HAS_SLURM = False
+        local_slurm(self, False)
         digest = slurm_digest.cluster_digest(slurm_site.LOCAL)
         self.assertEqual(digest["scheduler"], "local")
         self.assertEqual(digest["source"], "")
         self.assertEqual(self.capture.scripts, [])
 
     def test_a_remote_host_is_probed_whatever_this_machine_has(self):
-        slurm_site._HAS_SLURM = False
+        local_slurm(self, False)
         self.assertEqual(slurm_digest.cluster_digest("host-a")["source"], "scontrol")
 
 

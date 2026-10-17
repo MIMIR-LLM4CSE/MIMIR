@@ -28,7 +28,7 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
         sys.path.insert(0, _ps)
 
 from _lib import execute, metrics, procs, ratchet, report, store  # noqa: E402
-from mimir.tests._proxy_fixtures import _TmpStorageTest  # noqa: E402
+from mimir.tests._proxy_fixtures import _TmpStorageTest, pin_local_scheduler  # noqa: E402
 
 try:
     import numpy as _np
@@ -353,6 +353,7 @@ class CancelOwnershipTests(_TmpStorageTest):
         self._env.start()
         self.addCleanup(self._env.stop)
         super().setUp()
+        pin_local_scheduler(self)
         os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
         self.scancels: list[list[str]] = []
         orig = procs._slurm_run

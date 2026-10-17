@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 
 from mimir.client.session import store as session_store
-from mimir.client.ui.ws import job_scan, transcript_log, ws_session
+from mimir.client.ui.ws import job_scan, transcript_log
 from mimir.client.ui.ws.handlers import conversations as ws_conversations
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.human_bridge import HumanBridge

@@ -13,7 +13,8 @@ import json
 import os
 
 from mimir.tests._proxy_fixtures import (
-    _TmpStorageTest, _call, _eval, eval_session, procs, ratchet, server_proxy, store,
+    _TmpStorageTest, _call, _eval, eval_session, pin_local_scheduler, procs, ratchet,
+    server_proxy, store,
 )
 
 
@@ -552,6 +553,10 @@ class MachinePinningTests(_RatchetFixture):
 
 
 class ProxySlurmScriptTests(_RatchetFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        pin_local_scheduler(self)
+
     def test_header_keeps_one_node_and_adds_targeting(self) -> None:
         from _lib.command import _sbatch_header
         plain = _sbatch_header(job_name="j", partition="p", cpus_per_task=8,

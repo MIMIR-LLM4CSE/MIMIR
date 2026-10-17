@@ -28,19 +28,7 @@ import server_hpc  # noqa: E402
 import slurm_digest  # noqa: E402
 import slurm_site  # noqa: E402
 
-
-def _only_local(case: unittest.TestCase) -> None:
-    """Make this machine's own Slurm the one scheduler for the rest of *case*.
-
-    The inventory is the local probe plus whatever a session has learned, so a test
-    that does not pin it reads the developer's machine: with ``sbatch`` on the box the
-    answer is one scheduler, without it none, and a submission would be refused for
-    having nowhere to go. Pinned here so what the tests exercise is the resolution and
-    not the host they happen to run on.
-    """
-    orig = slurm_site._HAS_SLURM
-    slurm_site._HAS_SLURM = True
-    case.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
+from mimir.tests.support.scheduler import local_slurm  # noqa: E402
 
 
 def _canned(mapping: dict):
@@ -137,6 +125,7 @@ class NormalizedStateTests(unittest.TestCase):
 
 class SlurmJobStatusToolTests(unittest.TestCase):
     def setUp(self) -> None:
+        local_slurm(self)
         self._orig = server_hpc._run_bash
 
     def tearDown(self) -> None:
@@ -168,7 +157,7 @@ class SbatchSubmitTests(unittest.TestCase):
         # One scheduler, this machine's own, so resolution has nothing to refuse and
         # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
         # probe is a fact about the developer's machine, which a test may not inherit.
-        _only_local(self)
+        local_slurm(self)
         self._orig_run = server_hpc._run_argv
         # Everything a submission runs goes through _run_bash now — the submit itself
         # (the script on sbatch's stdin) and the question of what else of the user's is
@@ -396,6 +385,7 @@ class SallocSubmitTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        local_slurm(self)
         self._orig = server_hpc._run_argv
         server_hpc._run_argv = lambda argv, t, host='': {
             "status": "ok", "stdout": "salloc: Granted job allocation 77",
@@ -462,6 +452,7 @@ class SlurmNodesTests(unittest.TestCase):
     aarch64 compute node, and nothing else in the toolkit reports that."""
 
     def setUp(self) -> None:
+        local_slurm(self)
         self._orig = server_hpc._run_argv
         server_hpc._run_argv = lambda argv, t, host='': {
             "status": "ok", "stdout": _SCONTROL, "stderr": "", "returncode": 0}
@@ -525,7 +516,7 @@ class SbatchTargetingTests(unittest.TestCase):
         server_hpc.slurm_queued_by_host = lambda *_a, **_k: {"": []}
         self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_by_host",
                                         self._orig_queued))
-        _only_local(self)
+        local_slurm(self)
         self._orig_bash = server_hpc._run_bash
         self.piped: list[str] = []
 
@@ -595,6 +586,7 @@ class NodeProfileTests(unittest.TestCase):
     """Probing a compute node on the node, and reading the result back."""
 
     def setUp(self) -> None:
+        local_slurm(self)
         self._saved = {k: getattr(server_hpc, k) for k in (
             "_run_argv", "_run_bash", "_NODE_PROFILES_DIR",
             "_host_identity", "_local_profile_record")}
@@ -854,7 +846,7 @@ class SlurmCancelTests(unittest.TestCase):
         # the scheduler to answer "running" as well: a scancel aimed at a scheduler
         # that never heard of the id either hits nothing or, the number existing on
         # two clusters, somebody else's job.
-        _only_local(self)
+        local_slurm(self)
         server_hpc._run_bash = _canned({"squeue": ("ok", "RUNNING")})
 
         def fake_argv(argv, timeout, *, host=""):
@@ -1007,7 +999,7 @@ class WhereAJobsOutputGoesTests(unittest.TestCase):
         # One scheduler, this machine's own, so resolution has nothing to refuse and
         # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
         # probe is a fact about the developer's machine, which a test may not inherit.
-        _only_local(self)
+        local_slurm(self)
         self._orig = server_hpc._run_bash
         self.piped: list[str] = []
 
@@ -1175,7 +1167,7 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
     def test_an_interactive_allocation_is_allowed_where_slurm_is(self) -> None:
         # The other half: naming the local scheduler is not an ssh, so nothing is
         # refused — this one gets as far as actually running salloc.
-        _only_local(self)
+        local_slurm(self)
         ran: list[list[str]] = []
         orig = server_hpc._run_argv
         server_hpc._run_argv = lambda argv, t, host='': ran.append(argv) or {
@@ -1295,9 +1287,7 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
 
     def _reaching(self, *hosts: str) -> None:
         """Make the session reach exactly *hosts* ("" being this machine's own)."""
-        orig = slurm_site._HAS_SLURM
-        slurm_site._HAS_SLURM = "" in hosts
-        self.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
+        local_slurm(self, "" in hosts)
         for host in hosts:
             if host:
                 slurm_site.record_host(host)
@@ -1469,6 +1459,7 @@ class TheQueueSaysWhatIsWatchedTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        local_slurm(self)
         self._orig = server_hpc._run_bash
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -1585,7 +1576,7 @@ class SlurmWatchTests(unittest.TestCase):
         # One scheduler, this machine's own, so resolution has nothing to refuse and
         # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
         # probe is a fact about the developer's machine, which a test may not inherit.
-        _only_local(self)
+        local_slurm(self)
         self._orig = server_hpc._run_bash
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
