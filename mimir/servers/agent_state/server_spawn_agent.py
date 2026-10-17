@@ -28,22 +28,18 @@ client's model catalog and becomes the description of the ``model`` argument.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import os
 import queue
-import shutil
-import subprocess
 import sys
 import threading
 import time
 import uuid
 from concurrent.futures import Future
-from typing import Annotated, Any, Callable
+from typing import Annotated, Callable
 
 from . import _child_jobs
 from .._shared.approved_roots import approved_roots
-from .._shared.atomic import write_json, write_text
+from .._shared.atomic import write_json
 from .._shared.capabilities import (
     BACKGROUNDABLE,
     DELEGATE,
@@ -55,6 +51,11 @@ from .._shared.capabilities import (
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 from .._shared.responses import err, ok
+from . import spawn_limits
+from . import spawn_user_channel
+from . import spawn_worktree
+from . import spawn_jobs
+from . import spawn_output
 
 mcp = FastMCP("spawn_agent")
 
@@ -63,30 +64,6 @@ mcp = FastMCP("spawn_agent")
 # question, it does not draft a plan.
 _READONLY_CHILD_MODE = "ask"
 
-# Wall for one sub-agent run, by what the child was actually given to do. A child that
-# only reads answers a question and stops; a child that edits, compiles and measures is
-# doing the work this whole apparatus exists for, and ten minutes of it is a run cut off
-# for a reason that has nothing to do with the task.
-#
-# The rung the user set decides which applies, through the same test that decides
-# whether the child gets a copy of the repository — so "works in its own copy" and "has
-# hours to do it" can never disagree.
-SUBAGENT_EXPLORE_BUDGET_SECS = 600            # 10 min: read, search, conclude
-SUBAGENT_WORKING_BUDGET_SECS = 7200           # 2 h:   edit, build, measure, repeat
-SUBAGENT_MIN_BUDGET_SECS = 60
-
-# The longest a BLOCKING sub-agent call can last. The client caps any timeout a tool
-# declares at config.limits.TOOL_CALL_TIMEOUT_MAX_SECS (1200s, see
-# context.capabilities), so a call cannot hold a child for longer whatever this server
-# declares — a longer budget is detached instead (see spawn_agent). The margin below
-# that ceiling is what lets this server's own cap fire first and hand back what the
-# child had, rather than the dispatcher killing the call with nothing to show.
-SUBAGENT_HARD_CAP_SECS = 1140
-
-# What one child may spend in tool-call steps: nothing. A step ceiling cut a long run
-# off for a reason unrelated to its difficulty, and the wall that matters is the clock.
-# The agent loop reads 0 as "no ceiling" (query_engine.agent_loop).
-SUBAGENT_MAX_STEPS = 0
 
 # The request-_meta key the client sends its approval mode under (client
 # guardrails.policy.approval.APPROVAL_MODE_META). A child runs in that mode; absent or
@@ -323,24 +300,6 @@ def _partial_handoff(child: dict) -> dict:
         out["background_jobs"] = handed_over
     return out
 
-# Ceiling on what one step of a child may generate. The backend otherwise grants the
-# model's whole answer reserve, and a run that spends it is a single silent step.
-SUBAGENT_ANSWER_TOKENS = 8192
-
-# How much of the model's window one child may fill, by what the child was given.
-# Not the model's whole window: a child exists to keep its reading out of the caller's
-# context, and several of them on one endpoint each budgeting for the full window is
-# how a fan-out becomes the thing it was meant to avoid. Both numbers are ceilings —
-# a model with a smaller window still sizes the budget, and the trimming, eviction and
-# compaction all follow from the total.
-#
-# An explorer reads a handful of files and returns a conclusion, and a sweep wide
-# enough to be sure is what it is for — twice the compact budget, so breadth is not
-# what makes it hand back a half-answer. A working child is the other case — it reads
-# what it must to change code, runs it, and reports what came back — so it gets the
-# standing full-mode budget rather than a share of it.
-SUBAGENT_CONTEXT_TOKENS_EXPLORE = 64_000
-SUBAGENT_CONTEXT_TOKENS_WORKING = 200_000
 
 # What an explorer owes back. Its own mode prompt already asks for cited prose; this
 # says the part that is about the *parent*: a conclusion costs the caller a paragraph
@@ -390,191 +349,6 @@ _WORK_BRIEF = (
 # printed here corrupts the protocol. Two leaks are plugged: the child agent gets
 # an event sink (without one, event_sink.emit falls back to printing every event),
 # and stdout is pointed at stderr for whatever still prints.
-
-_CHILD_QUEUE_MAX = 256      # child events buffered between two forwarding ticks
-_MAX_EVENTS_PER_TICK = 8    # forwarded per tick, so a tool storm cannot hog the loop
-_MAX_EVENTS_PER_RUN = 500   # ceiling per child run; past it only the trailer is sent
-_POLL_SECS = 0.05
-# The child's activity log: enough to see what it has been doing, bounded so a long
-# run cannot fill a disk with rows nobody will scroll back to.
-_ACTIVITY_MAX_BYTES = 256_000
-_ACTIVITY_KEEP_LINES = 400
-# A child in a model turn emits nothing at all, and the caller's row has no way to
-# tell that from a hung run. Past this silence, say it is still there.
-_HEARTBEAT_SECS = 20.0
-
-_stdout_silenced = False
-
-
-def _silence_stdout_once() -> None:
-    """Point stdout at stderr, once, on first use — never at import time.
-
-    The stdio transport wraps ``sys.stdout.buffer`` once at startup; rebinding
-    before that would make it wrap *stderr* and the server would go mute. Doing it
-    afterwards is harmless (the transport holds its own reference), and it is never
-    restored: two concurrent children would restore each other's saved value.
-    """
-    global _stdout_silenced
-    if _stdout_silenced:
-        return
-    sys.stdout = sys.stderr
-    _stdout_silenced = True
-
-
-def _clip(value: Any, limit: int) -> str:
-    text = "" if value is None else str(value)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _compact_event(ev: dict) -> dict | None:
-    """One child engine event in wire form, or None when it is not worth forwarding.
-
-    The child's tool activity travels, and its step-level status lines with it:
-    tokens, thinking and diffs would cost far more than they show, and the caller
-    renders the rest as ordinary tool rows. Keys are short because each event rides
-    in a progress notification.
-
-    Status matters because a step is not one model call. An empty turn is retried, a
-    nudge is answered, a checklist refresh re-asks — each up to the child's whole
-    per-step ceiling, none of them a tool call. Dropped, they left a gap in the log
-    with nothing in it, and a child spending four minutes that way was indistinguishable
-    from a child that had hung. The loop already says what it is doing; forwarding it
-    is the difference between reading that and guessing at it.
-    """
-    kind = ev.get("type")
-    if kind == "tool_call":
-        return {
-            "v": 1, "t": "tc",
-            "i": str(ev.get("id") or ""),
-            "n": str(ev.get("name") or ""),
-            "l": _clip(ev.get("label"), 120),
-            "d": _clip(ev.get("detail"), 160),
-            # The row's work family and the child model's own sentence about the call —
-            # what a child row shows, exactly as a top-level one does. `w` for the
-            # second: `d` is already the argument preview.
-            "k": _clip(ev.get("kind"), 16),
-            "w": _clip(ev.get("doing"), 120),
-        }
-    if kind == "tool_result":
-        out = {
-            "v": 1, "t": "tr",
-            "i": str(ev.get("id") or ""),
-            "ok": bool(ev.get("ok")),
-            "s": _clip(ev.get("summary"), 160),
-        }
-        ms = ev.get("duration_ms")
-        if isinstance(ms, (int, float)):
-            out["ms"] = int(ms)
-        if isinstance(ev.get("target"), dict):
-            out["f"] = ev["target"]
-        return out
-    if kind == "status":
-        text = _clip(ev.get("text"), 160).strip()
-        # The loop emits a blank status as a spacer for a terminal that has rows to
-        # separate. This log has none, and a blank line here reads as a lost event.
-        return {"v": 1, "t": "st", "s": text} if text else None
-    return None
-
-
-def _activity_path(session: str) -> str:
-    from .._shared.state_paths import ACTIVITY_FILENAME, session_dir
-    return os.path.join(session_dir(session), ACTIVITY_FILENAME)
-
-
-def _append_activity(session: str, event: dict) -> None:
-    """Add one line to this child's activity log, trimming it when it grows.
-
-    The log is how anyone watches a sub-agent work. The progress channel only exists
-    while the call is open — a detached child would otherwise be invisible until it
-    lands — and a file is read the same way by both kinds of child, by the panel, and
-    after the fact. Best effort: a child's work must not fail over its own log.
-    """
-    if not session:
-        return
-    try:
-        path = _activity_path(session)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({**event, "at": time.time()}, separators=(",", ":")) + "\n")
-            trim = fh.tell() > _ACTIVITY_MAX_BYTES
-        if trim:
-            with open(path, "r", encoding="utf-8") as fh:
-                lines = fh.readlines()[-_ACTIVITY_KEEP_LINES:]
-            write_text(path, "".join(lines))
-    except Exception:
-        pass
-
-
-def _make_child_sink(q: queue.Queue, counters: dict,
-                     job_key: str = "", session: str = "") -> Callable[[dict], None]:
-    """The child's event_callback: enqueue, never block, never raise.
-
-    Raising here would put the child's engine back on emit()'s print fallback —
-    straight into the JSON-RPC pipe — so a full queue drops the event and counts it.
-
-    Three readers, one sink. The caller's progress channel gets every event while the
-    call is open; the child's activity log gets them all regardless, which is what lets
-    anyone watch a detached child; and a detached job records its last tool row as its
-    phase, the only sign of life the watcher can pass on once the call has returned.
-    """
-    def _sink(ev: dict) -> None:
-        try:
-            compact = _compact_event(ev)
-            if compact is None:
-                return
-            _append_activity(session, compact)
-            if job_key and compact.get("t") == "tc":
-                with _JOBS_LOCK:
-                    entry = _JOBS.get(job_key)
-                    if entry is not None:
-                        entry["phase"] = compact.get("l") or compact.get("n") or ""
-            q.put_nowait(compact)
-        except Exception:
-            counters["dropped"] = counters.get("dropped", 0) + 1
-    return _sink
-
-
-async def _report(ctx: Context | None, state: dict, payload: dict) -> None:
-    """Send one event to the caller. A dead pipe must not fail the child's run."""
-    if ctx is None:
-        return
-    state["sent"] = state.get("sent", 0) + 1
-    try:
-        await ctx.report_progress(
-            progress=state["sent"],
-            message=json.dumps(payload, separators=(",", ":")),
-        )
-    except Exception:
-        pass
-
-
-async def _forward_pending(ctx: Context | None, q: queue.Queue, state: dict) -> None:
-    """Drain a bounded slice of the child's events to the caller."""
-    for _ in range(_MAX_EVENTS_PER_TICK):
-        try:
-            ev = q.get_nowait()
-        except queue.Empty:
-            return
-        if state.get("sent", 0) >= _MAX_EVENTS_PER_RUN:
-            state["dropped"] = state.get("dropped", 0) + 1
-            continue
-        state["last_activity"] = time.monotonic()
-        await _report(ctx, state, ev)
-
-
-async def _maybe_heartbeat(ctx: Context | None, state: dict, started: float) -> None:
-    """Say the child is alive when it has been silent long enough to look hung.
-
-    Silence is the normal shape of a model turn — no tool call, nothing to forward —
-    and a delegated turn can be minutes of it. Heartbeats are exempt from the per-run
-    event ceiling: the one moment the caller most needs a sign of life is the run that
-    already spent its budget on child steps.
-    """
-    now = time.monotonic()
-    if now - state.get("last_activity", started) < _HEARTBEAT_SECS:
-        return
-    state["last_activity"] = now
-    await _report(ctx, state, {"v": 1, "t": "hb", "s": int(now - started)})
 
 
 def _caller_approval_mode(ctx: Context | None) -> str:
@@ -683,536 +457,11 @@ def _sub_session_id() -> str:
     return f"{parent}/subagents/{child}" if parent else child
 
 
-# ── Reaching the user from inside a sub-agent ─────────────────────────────────
-# A child that needs an approval, or has a question, must be able to reach the person
-# — otherwise the work stops on a step nobody was asked about. The route is the MCP
-# session, which is one per stdio connection and not one per request: it is there for
-# a detached child exactly as much as for a blocking one, and the client renders the
-# card it already renders for any other server.
-#
-# Two rules the relay owes the user:
-#   * ONE AT A TIME. Several children can be working at once; several cards at once is
-#     a pile nobody can answer in order. They queue on this lock, so a card is shown,
-#     answered, and only then is the next one raised. The client enforces the same rule
-#     across every source (the WebSocket worker's _show_next) — this lock keeps a fan-out from
-#     filling that queue in the first place.
-#   * WHO IS ASKING. Every card carries its sub-agent and its task as `origin`,
-#     because "allow this command?" from an unnamed process is a question the user
-#     cannot weigh.
-_ASK_LOCK = asyncio.Lock()
-
-def _child_origin(agent, task: str) -> dict:
-    """Which child this is, as data — for a card it raises and a run it leaves behind.
-
-    Every approval card carries it, because "allow this command?" from an unnamed
-    process is a question the user cannot weigh, and because several children can be
-    working at once. A badge on a run carries the same dict for the same reason: a job
-    on a node is worth nothing to read if it does not say whose.
-    """
-    label = task.strip().splitlines()[0][:60] if task.strip() else "a sub-agent"
-    return {"kind": "subagent", "label": label,
-            "session": getattr(agent, "session_id", "") or ""}
-
-
-_APPROVAL_OPTIONS = [
-    {"label": "Allow once", "description": "Run it this time."},
-    {"label": "Allow for the session",
-     "description": "Stop asking for this kind of call until the session ends."},
-    {"label": "Refuse", "description": "Do not run it; the sub-agent carries on without."},
-]
-
-
-async def _ask_the_user(session, header: str, question: str, options: list[dict],
-                        origin: dict | None = None) -> str:
-    """Put one card to the user and return the label they chose, or "" .
-
-    Queued behind every other sub-agent's card, so the answers cannot be attributed to
-    the wrong question. A channel that fails is silence, not an answer: the caller
-    reads "" as "they did not say", which every caller here treats as a refusal.
-
-    *session* is the MCP ``ServerSession`` — one per stdio connection, not one per
-    request — which is why this still reaches the user after the delegating call has
-    returned. *origin* says who is asking, and travels as data rather than as a prefix
-    glued to the question text: the front end shows it as a badge, and a badge is
-    something a person can read at a glance and the interface can style.
-    """
-    spec_questions = [{
-        "question": question,
-        "header": header[:24],
-        "options": options,
-        "multi_select": False,
-    }]
-    x_mimir: dict = {"kind": "user_question", "questions": spec_questions}
-    if origin:
-        x_mimir["origin"] = origin
-    schema = {
-        "type": "object",
-        "title": header[:24] or "Sub-agent",
-        "x_mimir": x_mimir,
-        "properties": {"answers": {"type": "array", "items": {"type": "object"}}},
-        "required": [],
-    }
-    async with _ASK_LOCK:
-        try:
-            result = await session.elicit_form(message=question, requestedSchema=schema)
-        except Exception as exc:
-            print(f"spawn_agent: could not reach the user: {exc}", file=sys.stderr)
-            return ""
-    if getattr(result, "action", "") != "accept":
-        return ""
-    content = getattr(result, "content", None) or {}
-    try:
-        answers = json.loads(content.get("answers") or "[]")
-        selected = (answers[0] or {}).get("selected") or []
-        return str(selected[0]) if selected else str((answers[0] or {}).get("other_text") or "")
-    except Exception:
-        return ""
-
-
-# Seconds a child has spent in front of the user, by session. A card can sit for as
-# long as the person takes, and that wait happens outside every clock that would
-# normally exempt it: `human_pause` is thread-local and the wait lands on whichever
-# thread the client's elicitation callback runs on. Uncounted, a child parked on a
-# question ages out of its own budget and is reported lost while its card is still on
-# screen. This is where the cards are raised, so this is where the clock is kept.
-_PAUSED: dict[str, float] = {}
-_PAUSED_LOCK = threading.Lock()
-
-
-def _record_pause(session: str, seconds: float) -> None:
-    if not session or seconds <= 0:
-        return
-    with _PAUSED_LOCK:
-        _PAUSED[session] = _PAUSED.get(session, 0.0) + seconds
-
-
-def _paused_secs(session: str) -> float:
-    with _PAUSED_LOCK:
-        return _PAUSED.get(session, 0.0)
-
-
-class _RelayedHuman:
-    """The user of the session that delegated this child, reached through the caller
-    (``core.ports.HumanIO``). *ask* puts one question to them and returns the option
-    they chose, or "" when nobody answered."""
-
-    def __init__(self, ask) -> None:
-        self._ask = ask
-
-    def approve_tool(self, agent, tool_name: str, arguments: dict,
-                     max_attempts: int = 3) -> tuple[bool, str]:
-        detail = json.dumps(arguments, ensure_ascii=False, default=str)[:400]
-        # The name of the child is in the origin, not repeated here: the card shows it
-        # as a badge, and saying it twice on one card reads as two different facts.
-        answer = self._ask("Sub-agent", f"Run {tool_name}?\n{detail}", _APPROVAL_OPTIONS)
-        if answer.startswith("Allow for the session"):
-            # Recorded under the same key a front-end "always" uses, so a grant given
-            # here narrows the way theirs does — a command family rather than the whole
-            # tool. A call whose scope cannot be derived falls back to trusting the tool
-            # itself, which is what the coarse path has always meant.
-            scope = agent.approval_scope(tool_name, arguments)
-            if scope:
-                agent.approvals.approved_scopes.add(scope)
-            else:
-                agent.approvals.trust_tool(tool_name, agent.tool_owner.get(tool_name))
-            return True, "approved for this session"
-        if answer.startswith("Allow"):
-            return True, "approved once"
-        return False, "the user refused"
-
-    def approve_paths(self, agent, paths: list[str], tool_name: str,
-                      arguments: dict | None = None) -> tuple[bool, bool]:
-        shown = ", ".join(paths[:5]) + ("…" if len(paths) > 5 else "")
-        answer = self._ask("Outside", f"Reach outside the workspace: {shown}",
-                           _APPROVAL_OPTIONS)
-        if answer.startswith("Allow for the session"):
-            return True, True
-        return (answer.startswith("Allow"), False)
-
-    def ask(self, agent, questions: list, origin: dict | None = None,
-            timeout_secs: float | None = None) -> dict:
-        answers = []
-        for q in questions or []:
-            chosen = self._ask(str(q.get("header") or "Sub-agent"),
-                               str(q.get("question") or ""),
-                               list(q.get("options") or []))
-            answers.append({"header": q.get("header", ""),
-                            "selected": [chosen] if chosen else [],
-                            "other_text": None})
-        return {"answers": answers}
-
-
-def _install_user_channel(agent, session, loop, task: str) -> None:
-    """Route this child's approvals and questions to the user, through the caller.
-
-    Installed for every child, detached or not. *session* is the MCP ``ServerSession``
-    — one per stdio connection, not one per request — so it still reaches the user
-    after the delegating call has returned; the client registers its elicitation
-    callback on connect, not per call, and routes whatever arrives to the front end.
-
-    The child runs in its own thread with its own event loop, so each relay hops back
-    onto the server's loop and blocks its own thread until the user answers. Blocking
-    is correct here: the child has nothing to do until it has its answer.
-    """
-    origin = _child_origin(agent, task)
-
-    def _ask(header: str, question: str, options: list[dict]) -> str:
-        future = asyncio.run_coroutine_threadsafe(
-            _ask_the_user(session, header, question, options, origin), loop)
-        started = time.monotonic()
-        try:
-            return future.result(timeout=SUBAGENT_HARD_CAP_SECS)
-        except Exception:
-            return ""
-        finally:
-            _record_pause(origin["session"], time.monotonic() - started)
-
-    agent.human = _RelayedHuman(_ask)
-    # It is no longer unattended: there is a person at the end of the channel, and the
-    # mode gate must ask them rather than refuse on their behalf.
-    agent.approvals.unattended = False
-
-
 # ── A copy of the code, for an axis of its own ────────────────────────────────
 # A sub-agent asked for one gets a git worktree: the same repository, its own branch
 # and its own directory, so it can edit, build and measure without the run next door
 # reading its files. Only worth it when several axes run at once — hence a rung the
 # user sets, and an argument the caller passes.
-
-# On the local disk, not in the state dir: a home under quota cannot hold a checkout
-# plus everything a build writes. Deliberately NOT under the scratchpad either — that
-# path is writable without approval (state_paths.standing_roots), and a copy placed
-# there would take every edit the child makes out of the approval layer.
-_WORKTREE_BASE = os.path.join(
-    os.path.abspath(os.environ.get("TMPDIR") or "/tmp"),
-    f"mimir-worktrees-{os.getuid()}",
-)
-
-_GIT_TIMEOUT_SECS = 120
-
-# How many *finished* copies one session keeps, the copy being made not counted. A
-# finished copy is worth keeping — it holds the build tree, which git never had and
-# which cost the axis its compile — but nothing reclaims /tmp on its own, so this count
-# is the bound: making the next copy drops the oldest beyond it.
-SUBAGENT_WORKTREES_KEPT = 3
-
-
-def _git(args: list[str], cwd: str) -> tuple[bool, str]:
-    """Run one git command. Returns (ok, output) and never raises."""
-    try:
-        done = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True,
-            timeout=_GIT_TIMEOUT_SECS,
-        )
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    out = (done.stdout or "") + (done.stderr or "")
-    return done.returncode == 0, out.strip()
-
-
-def _repo_root() -> str:
-    """The git repository this agent works in, or "" when there is none."""
-    root = os.environ.get("MCP_FILES_ROOT") or os.getcwd()
-    ok, out = _git(["rev-parse", "--show-toplevel"], root)
-    return out if ok and out else ""
-
-
-def _sibling_cards(session: str) -> tuple[str, list[dict]]:
-    """The cards of every child of this one's parent session, newest first.
-
-    The card is the registry: it is written for the panel anyway, and it is the only
-    place that remembers where a finished child's copy was put. Best effort throughout
-    — a session whose cards cannot be read reclaims nothing, which costs disk and
-    breaks nothing.
-    """
-    parent = session.rsplit("/subagents/", 1)[0] if "/subagents/" in session else ""
-    if not parent:
-        return "", []
-    try:
-        from .._shared.state_paths import subagents_dir
-        base = subagents_dir(parent)
-        names = sorted(os.listdir(base))
-    except Exception:
-        return "", []
-    # Newest first, by the card's own clock and then by when it was last written. The
-    # timestamp has second resolution and a fan-out starts its children inside one
-    # second, so on its own it would leave the order of a tie to the filesystem.
-    rows = []
-    for name in names:
-        card_path = os.path.join(base, name, "subagent.json")
-        try:
-            with open(card_path, encoding="utf-8") as fh:
-                card = json.load(fh)
-            rows.append((card.get("started_at", ""), os.path.getmtime(card_path), card))
-        except Exception:
-            continue
-    rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
-    return base, [row[2] for row in rows]
-
-
-def _card_is_live(card: dict) -> bool:
-    """Whether a card that says "running" still belongs to a living process.
-
-    A child runs in a thread of the server that spawned it, so its card is only ever
-    finished by that process: one killed mid-run leaves a card saying "running" for
-    good, and a copy that nothing would ever reclaim. The pid it recorded is the test.
-    A card from before pids were recorded, or one belonging to another user's process,
-    counts as live — erring towards keeping a copy rather than removing one that is
-    still being written.
-    """
-    if card.get("state") != "running":
-        return False
-    pid = card.get("pid")
-    if not isinstance(pid, int):
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
-
-
-def _commit_copy(path: str, message: str) -> tuple[list[str], str]:
-    """Stage and commit whatever the copy holds. Returns (files, diffstat).
-
-    The one place work leaves a copy for good, and it is called from both ends: when
-    the child finishes, and again before a copy is reclaimed. The second caller is why
-    this exists as a function — a copy dropped with uncommitted work in it is work
-    destroyed, and the reclaimer would have done it silently, three axes later.
-    """
-    _git(["add", "-A"], path)
-    ok, changed = _git(["diff", "--cached", "--name-only"], path)
-    files = [f for f in changed.splitlines() if f] if ok else []
-    ok, stat = _git(["diff", "--cached", "--stat"], path)
-    diffstat = stat if ok else ""
-    if files:
-        _git(["-c", "user.name=MIMIR", "-c", "user.email=mimir@localhost",
-              "commit", "-m", message], path)
-    return files, diffstat
-
-
-def _drop_branch_if_empty(repo: str, branch: str, base: str) -> bool:
-    """Delete *branch* when it is still exactly where it was cut from. Did it go?
-
-    The test is against the commit recorded when the copy was made, not against the
-    repository's HEAD: HEAD moves while a child works, and ``git branch -d`` would then
-    refuse a branch that carries nothing simply because the ground shifted under it —
-    leaving behind the litter this exists to remove. Emptiness established that way,
-    ``-D`` is the honest way to say it: there is nothing left to protect.
-
-    Without a recorded base — a card written before this — nothing is deleted. A branch
-    kept for nothing costs a line in ``git branch``; one deleted wrongly costs an axis.
-    """
-    if not branch or not base:
-        return False
-    ok, tip = _git(["rev-parse", branch], repo)
-    if not ok or tip != base:
-        return False
-    deleted, _ = _git(["branch", "-D", branch], repo)
-    return deleted
-
-
-def _marker_path(repo: str, child_key: str) -> str:
-    """Where a copy's marker lives: beside the copy, never inside it.
-
-    Inside, ``git add -A`` would commit it into the axis. Beside, it survives the copy
-    being emptied and stays out of every diff.
-    """
-    return os.path.join(_WORKTREE_BASE, os.path.basename(repo), f"{child_key}.mimir.json")
-
-
-def _write_marker(path: str, marker: dict) -> None:
-    """Record who a copy belongs to, before it can be used. Best effort."""
-    try:
-        write_json(path, marker)
-    except OSError:
-        pass
-
-
-def _drop_copy(wt: dict, child_key: str = "") -> bool:
-    """Commit whatever the copy holds, remove it, and drop a branch that carries nothing.
-
-    The single way a copy ever goes, so the commit can never be skipped by one caller
-    and not the other: a copy taken with uncommitted work in it is work destroyed.
-    """
-    path, repo = wt.get("path", ""), wt.get("repo", "")
-    if not path or not repo:
-        return False
-    _commit_copy(path, f"sub-agent {os.path.basename(path)}: reclaimed unfinished work")
-    removed, _ = _git(["worktree", "remove", "--force", path], repo)
-    _git(["worktree", "prune"], repo)
-    if not removed:
-        return False
-    _drop_branch_if_empty(repo, wt.get("branch") or "", wt.get("base") or "")
-    with contextlib.suppress(OSError):
-        os.remove(_marker_path(repo, child_key or os.path.basename(path)))
-    return True
-
-
-def _sweep_orphan_copies(repo: str) -> None:
-    """Drop copies of this repository that nothing remembers any more.
-
-    The cards reclaim a session's own copies, but they are stored *with* the session:
-    deleting a conversation takes the registry away and leaves the copies on disk, where
-    the per-session rule can no longer reach them. What survives that is the copy's
-    marker, written beside it before it could be used.
-
-    A copy is an orphan when its owner is gone *and* its card is gone — both, because
-    either alone is a copy that is simply between states: a child still running holds
-    its pid, and a card is written a moment after the copy is made. One with no marker
-    at all predates this and is judged by git alone: a directory git does not register
-    is not a worktree anybody is using.
-    """
-    base = os.path.join(_WORKTREE_BASE, os.path.basename(repo))
-    if not os.path.isdir(base):
-        return
-    ok, listed = _git(["worktree", "list", "--porcelain"], repo)
-    registered = {line.split(" ", 1)[1] for line in listed.splitlines()
-                  if ok and line.startswith("worktree ")}
-    try:
-        from .._shared.state_paths import sessions_root
-        sessions = sessions_root()
-    except Exception:
-        return
-    for name in sorted(os.listdir(base)):
-        path = os.path.join(base, name)
-        if not os.path.isdir(path):
-            continue
-        marker = _marker_path(repo, name)
-        try:
-            with open(marker, encoding="utf-8") as fh:
-                owner = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            if os.path.realpath(path) not in {os.path.realpath(p) for p in registered}:
-                shutil.rmtree(path, ignore_errors=True)
-            continue
-        if _card_is_live({"state": "running", "pid": owner.get("pid")}):
-            continue
-        if os.path.isdir(os.path.join(sessions, owner.get("session", ""))):
-            continue          # its session still holds its card; the per-session rule owns it
-        _drop_copy(owner, name)
-
-
-def _reclaim_worktrees(session: str, keep: int) -> None:
-    """Drop this session's finished copies beyond the *keep* most recent.
-
-    Called when the next copy is about to be made, which is the moment the disk is
-    known to be wanted — so a session holds *keep* finished copies plus the one being
-    made. A child still running is never counted, and a copy git refuses to remove is
-    left where it is.
-
-    Only copies that are actually on disk take a place: cards from before copies were
-    kept name a directory that is long gone, and counting those would push out a copy
-    that exists.
-
-    "Still running" is read off the pid on the card, not off the word: a server killed
-    mid-run leaves its card saying "running" for ever, and taking that at face value
-    would exempt its copy from reclamation forever after.
-    """
-    _, cards = _sibling_cards(session)
-    copies = [w for w in (c.get("workspace") or {} for c in cards if not _card_is_live(c))
-              if w.get("path") and w.get("repo") and os.path.isdir(w["path"])]
-    for wt in copies[keep:]:
-        _drop_copy(wt)
-
-
-def _create_worktree(child_key: str, session: str = "") -> tuple[dict | None, str]:
-    """Add a worktree for this child. Returns (descriptor, error message)."""
-    repo = _repo_root()
-    if not repo:
-        return None, (
-            "a sub-agent that writes needs a copy of the repository, and this workspace "
-            "is not a git repository — so there is none to make. Delegate the reading "
-            "and do the writing yourself."
-        )
-    branch = f"mimir/{child_key}"
-    path = os.path.join(_WORKTREE_BASE, os.path.basename(repo), child_key)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # Before adding one, not after: the copies this session is done with are what makes
-    # room for this one, and reclaiming them later would mean nothing ever did.
-    if session:
-        _reclaim_worktrees(session, SUBAGENT_WORKTREES_KEPT)
-    # A copy whose directory went without git being told still holds its registration,
-    # and those accumulate in .git/worktrees/ where only this ever looks.
-    _git(["worktree", "prune"], repo)
-    # And the ones no session remembers any more: a deleted conversation takes its cards
-    # with it, and the per-session rule above can no longer see what it left behind.
-    _sweep_orphan_copies(repo)
-    # From HEAD, not from the working tree: a worktree cannot carry uncommitted changes,
-    # and saying so beats a child hunting for code it cannot find.
-    ok, out = _git(["worktree", "add", "-b", branch, path, "HEAD"], repo)
-    if not ok:
-        return None, f"could not create the working copy: {out.splitlines()[-1] if out else 'git failed'}"
-    # The commit it was cut from, kept as long as the copy is: it is what later tells a
-    # branch carrying an axis from one carrying nothing, whatever the repository's HEAD
-    # has moved on to by then.
-    based, base = _git(["rev-parse", "HEAD"], path)
-    descriptor = {"repo": repo, "branch": branch, "path": path,
-                  "base": base if based else ""}
-    # Written before the copy is handed over, so no sweep can ever find it unowned: the
-    # card that says the same thing lands a moment later, in the child's own thread.
-    _write_marker(_marker_path(repo, child_key),
-                  {**descriptor, "session": session, "pid": os.getpid()})
-    return descriptor, ""
-
-
-def _finish_worktree(wt: dict, task: str, succeeded: bool) -> dict:
-    """Commit the axis and keep the copy.
-
-    The branch is what carries the *code*: a worktree shares the repository's object
-    store, so a commit survives the directory. Which is why the commit is made here
-    rather than asked of the child — a copy removed with uncommitted work in it is work
-    destroyed, and that must not depend on the model remembering.
-
-    But the copy carries what git never had: the build tree. Dropping it here threw
-    away the compile the axis had just paid for, and left behind a branch that, for
-    every child that wrote nothing, pointed at HEAD and said nothing. So the directory
-    stays — bounded by :func:`_reclaim_worktrees`, which drops the oldest when the next
-    child needs room — and it is the empty branch that goes instead.
-    """
-    path, branch, repo = wt["path"], wt["branch"], wt["repo"]
-    base = wt.get("base", "")
-    report = {"branch": branch, "path": path, "repo": repo, "base": base,
-              "files_changed": [], "diffstat": "", "kept": True}
-
-    if not succeeded:
-        # Staged, not committed: a run that stopped early is continued in its copy, and
-        # a commit taken mid-edit would have to be undone before that could start.
-        _git(["add", "-A"], path)
-        ok, changed = _git(["diff", "--cached", "--name-only"], path)
-        report["files_changed"] = [f for f in changed.splitlines() if f] if ok else []
-        ok, stat = _git(["diff", "--cached", "--stat"], path)
-        report["diffstat"] = stat if ok else ""
-        report["note"] = (
-            f"The run did not finish. Its copy is at {path}, with its uncommitted state "
-            f"left as it was — that state is the only place that work exists.")
-        return report
-
-    files, diffstat = _commit_copy(
-        path, f"sub-agent {os.path.basename(path)}: {task[:120]}")
-    report["files_changed"], report["diffstat"] = files, diffstat
-    if files:
-        report["committed"] = True
-        report["note"] = (
-            f"Its work is committed on {branch}, and the copy is still at {path}. Git "
-            f"refuses to check that branch out anywhere else while the copy holds it, "
-            f"so bring the work over with merge or cherry-pick, not checkout.")
-        return report
-
-    # Nothing written: the branch is still at the commit it was cut from and carries
-    # nothing. Detaching first is what lets it go — git will not delete a branch a
-    # worktree has checked out, and the copy itself is worth keeping either way. If
-    # either step fails the branch is still there, and the report has to keep saying so.
-    _git(["checkout", "--detach"], path)
-    if _drop_branch_if_empty(repo, branch, base):
-        report["branch"] = ""
-        report["note"] = f"It changed no file, so it has no branch. Its copy is at {path}."
-    else:
-        report["note"] = (f"It changed no file. Its copy is at {path}, and {branch} is "
-                          f"still where it was cut from.")
-    return report
 
 
 # ── Detached sub-agents ───────────────────────────────────────────────────────
@@ -1224,223 +473,6 @@ def _finish_worktree(wt: dict, task: str, succeeded: bool) -> dict:
 #
 # The registry is this process's memory of those children. Written from the tool's
 # thread and read from the server loop, so every access takes the lock.
-
-_JOBS: dict[str, dict] = {}
-_JOBS_LOCK = threading.Lock()
-
-# Enough to answer for the children of one session; past it the oldest finished entry
-# goes. A run is never dropped while it is still running.
-_JOBS_MAX = 64
-
-
-# ── How many at once ──────────────────────────────────────────────────────────
-# Nothing else bounds a fan-out: the client dispatches every non-writing call of one
-# model step concurrently, so a model that emits eight delegations gets eight — eight
-# threads, their MCP server subprocesses, and eight concurrent streams on one endpoint,
-# each budgeting for its own share of the window. The prompt asks for one to three;
-# that is guidance, and this is the bound.
-#
-# It lives here rather than in the client's dispatcher because this process owns what
-# is being protected, and because it sees a DETACHED child for its whole life — a
-# dispatcher-side limit would lose sight of one the moment its call returned.
-SUBAGENT_MAX_CONCURRENT = int(os.environ.get("MIMIR_SUBAGENT_MAX_CONCURRENT") or 3)
-
-# How long a call waits for a slot before giving up. Working children run for hours, so
-# a full house can stay full for hours; a caller that simply queued behind that would
-# freeze the turn it belongs to with nothing on screen to explain it. Better to say
-# what is running and let the model do something else meanwhile.
-SUBAGENT_SLOT_WAIT_SECS = 20
-
-# A threading semaphore, not an asyncio one. A detached child gives its slot back from
-# its own thread, long after the loop its call ran on has gone; an asyncio semaphore
-# would have to be released through that loop, and releasing through a closed loop
-# silently leaks the slot until the server is restarted. This one is released from
-# wherever the child happens to end.
-_SLOTS = threading.Semaphore(SUBAGENT_MAX_CONCURRENT)
-# Who holds a slot: {session: (task, started_at)}. Kept beside the semaphore rather
-# than read off _JOBS, which only knows the detached ones — a refusal that listed half
-# of what is running would send the caller looking for the rest.
-_SLOT_HOLDERS: dict[str, tuple[str, float]] = {}
-
-# Child threads carry this prefix. A slot is released from the child's own thread,
-# which can outlive the call that started it, so "no live thread with this prefix"
-# is the only reliable way to know every release has already landed.
-_THREAD_NAME_PREFIX = "mimir-subagent-"
-
-
-def _take_slot(session: str, task: str) -> None:
-    with _JOBS_LOCK:
-        _SLOT_HOLDERS[session] = (task.strip().splitlines()[0][:60], time.time())
-
-
-async def _wait_for_slot() -> bool:
-    """Take a slot, waiting up to SUBAGENT_SLOT_WAIT_SECS. False when none came free.
-
-    The blocking acquire runs on a worker thread so this server's loop keeps answering
-    while a caller queues — including the very calls that would free a slot.
-    """
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None, _SLOTS.acquire, True, SUBAGENT_SLOT_WAIT_SECS)
-
-
-def _free_slot(session: str) -> None:
-    """Give the slot back. Called once, from the child's thread, whatever happened."""
-    with _JOBS_LOCK:
-        _SLOT_HOLDERS.pop(session, None)
-    _SLOTS.release()
-
-
-def _busy_with() -> str:
-    """What is holding the slots right now, for a caller that could not get one."""
-    with _JOBS_LOCK:
-        held = list(_SLOT_HOLDERS.values())
-    if not held:
-        return "nothing this server still remembers"
-    now = time.time()
-    return "; ".join(f"{task!r} ({int(now - started)}s so far)" for task, started in held)
-
-
-def _job_descriptor(job_key: str) -> dict:
-    """The handle the client's watcher polls.
-
-    Data, not a tool name in loop code: the client reads ``status_op`` / ``summary_op``
-    off it and polls them generically, which is how a detached run gets watched
-    without the caller spending a model call per poll. ``summary_op`` is also what the
-    caller may read *while* the child works — the dispatch guard refuses the status
-    question, never the progress one.
-    """
-    return {
-        "server": "agent",
-        "kind": "sub-agent",
-        "job_key": job_key,
-        "status_op": {"tool": "subagent_job", "args": {"job_key": job_key}},
-        "summary_op": {"tool": "subagent_job",
-                       "args": {"op": "result", "job_key": job_key}},
-    }
-
-
-def _register_job(job_key: str, entry: dict) -> None:
-    with _JOBS_LOCK:
-        if len(_JOBS) >= _JOBS_MAX:
-            for key, old in sorted(_JOBS.items(), key=lambda kv: kv[1].get("started", 0)):
-                if old.get("state") != "running":
-                    _JOBS.pop(key, None)
-                    break
-        _JOBS[job_key] = entry
-
-
-def _job_snapshot(job_key: str) -> dict | None:
-    with _JOBS_LOCK:
-        entry = _JOBS.get(job_key)
-        return dict(entry) if entry else None
-
-
-def _settle_job(job_key: str, state: str, result: dict | None) -> None:
-    with _JOBS_LOCK:
-        entry = _JOBS.get(job_key)
-        if entry is not None:
-            entry["state"] = state
-            entry["result"] = result
-            entry["ended"] = time.time()
-
-
-# What a card's own word means to a watcher, whose vocabulary is running/done/
-# crashed/unknown and nothing else (the WebSocket job watcher: any other word is read as
-# "still going" and polled for ever). "abandoned" maps to crashed because that is what
-# it is from here — a run that ended without delivering; the card's own word travels
-# beside it as `outcome`, so the report never loses what actually happened.
-_CARD_STATE_TO_JOB = {
-    "finished": "done",
-    "failed": "crashed",
-    "abandoned": "crashed",
-}
-
-
-def _card_epoch(stamp: str | None) -> float:
-    """A card's timestamp as seconds, or 0 when it has none that parses.
-
-    The cards write local time without an offset, and both ends of an elapsed time come
-    from the same card — so a naive parse subtracts correctly, and a stamp that does not
-    parse yields 0 rather than failing a read.
-    """
-    try:
-        return time.mktime(time.strptime(str(stamp), "%Y-%m-%dT%H:%M:%S"))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _entry_from_card(job_key: str) -> dict | None:
-    """Rebuild a forgotten job from the card its sub-agent left, or None.
-
-    ``_JOBS`` is this process's memory: a spawn server restarted since the run was
-    detached knows nothing about it, while the card on disk still holds the task, the
-    grant, the final state and the whole answer. The card is reachable without an index
-    because the job key IS the last segment of the child's session
-    (``<parent>/subagents/<job_key>``), so the parent session is the only thing to
-    resolve.
-
-    A card still saying "running" is judged by its pid like everywhere else here: the
-    process that would have finished it is gone, so the honest state is "unknown", not
-    a run the watcher would poll for ever.
-    """
-    if not job_key:
-        return None
-    try:
-        from .._shared.state_paths import active_session_id, subagents_dir
-        path = os.path.join(subagents_dir(active_session_id()), job_key, "subagent.json")
-        with open(path, encoding="utf-8") as fh:
-            card = json.load(fh)
-    except Exception:
-        return None
-    state = str(card.get("state") or "unknown")
-    if state == "running":
-        job_state = "running" if _card_is_live(card) else "unknown"
-    else:
-        job_state = _CARD_STATE_TO_JOB.get(state, "unknown")
-    return {
-        "state": job_state,
-        "outcome": state,
-        "started": _card_epoch(card.get("started_at")),
-        "ended": _card_epoch(card.get("ended_at")) or None,
-        "budget": card.get("budget_secs", SUBAGENT_HARD_CAP_SECS),
-        "task": card.get("task", ""),
-        "session": card.get("session", ""),
-        "model": card.get("model", ""),
-        "tools": card.get("tools", []),
-        "phase": "",
-        "from_card": True,
-        "result": None if job_state == "running" else {
-            "answer": card.get("answer", ""),
-            "completed": bool(card.get("completed")),
-            "files_read": [],
-            "files_written": card.get("files_written", []),
-            "blocked_by_mode": [],
-            "workspace": card.get("workspace", {}),
-        },
-    }
-
-
-def _job_state(entry: dict) -> str:
-    """The state the watcher acts on: running, done, crashed — or unknown past the budget.
-
-    A child that overruns keeps going in its own thread, so "unknown" is the honest
-    answer: the run was let go, and what it had done is still reported.
-    """
-    if entry.get("state") != "running":
-        return entry["state"]
-    if entry.get("from_card"):
-        # Read off a card, not off this process's clock: its pid said the run is still
-        # being written, and there is no start time here to time it out against.
-        return "running"
-    # Time the child spent in front of the user is not time it spent working. Without
-    # this, a run parked on its own approval card ages out of its budget and is
-    # reported lost to the watcher — which treats "unknown" as terminal — while the
-    # card it is waiting on is still on screen.
-    working = (time.time() - entry.get("started", 0)) - _paused_secs(entry.get("session", ""))
-    if working > entry.get("budget", SUBAGENT_HARD_CAP_SECS):
-        return "unknown"
-    return "running"
 
 
 # ── Tool ──────────────────────────────────────────────────────────────────────
@@ -1458,7 +490,7 @@ def _job_state(entry: dict) -> str:
     # Deliberately above the tool's own SUBAGENT_HARD_CAP_SECS, so the inner cap fires
     # first and returns what the child had instead of the dispatcher killing the call
     # with nothing to show.
-    timeout_secs=SUBAGENT_HARD_CAP_SECS + 60,
+    timeout_secs=spawn_limits.SUBAGENT_HARD_CAP_SECS + 60,
     label="Sub-agent: {task}",
     read_only=False,
 ))
@@ -1466,7 +498,7 @@ async def spawn_agent(
     task: str,
     context: str = "",
     tools: Annotated[list[str], Field(description=_TOOLS_DESCRIPTION)] = [],
-    max_steps: int = SUBAGENT_MAX_STEPS,
+    max_steps: int = spawn_limits.SUBAGENT_MAX_STEPS,
     time_budget_secs: int = 0,
     background: bool = False,
     model: Annotated[str, Field(description=_MODEL_DESCRIPTION)] = "",
@@ -1560,9 +592,9 @@ async def spawn_agent(
     # because the budget has to be known before the run starts, and the tool
     # classification that _drive_sub_agent uses is not available until it has connected.
     working = _level_allows(level, "build") and bool(set(requested) & _caller_writers(ctx))
-    ceiling = (SUBAGENT_WORKING_BUDGET_SECS if working
-               else SUBAGENT_EXPLORE_BUDGET_SECS)
-    budget = max(SUBAGENT_MIN_BUDGET_SECS,
+    ceiling = (spawn_limits.SUBAGENT_WORKING_BUDGET_SECS if working
+               else spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
+    budget = max(spawn_limits.SUBAGENT_MIN_BUDGET_SECS,
                  min(int(time_budget_secs or ceiling), ceiling))
 
     caller_model = _caller_model(ctx)
@@ -1574,7 +606,7 @@ async def spawn_agent(
     else:
         model = caller_model
 
-    _silence_stdout_once()
+    spawn_output.silence_stdout_once()
     approval_mode = _caller_approval_mode(ctx)
     session = _sub_session_id()
     child_key = session.rsplit("/", 1)[-1]
@@ -1583,30 +615,30 @@ async def spawn_agent(
     # TOOL_CALL_TIMEOUT_MAX_SECS, so a two-hour child held in a blocking call would be
     # killed at twenty minutes with nothing to show — and the model, which knows
     # nothing of that ceiling, cannot choose correctly here.
-    detached_for_length = budget > SUBAGENT_HARD_CAP_SECS
+    detached_for_length = budget > spawn_limits.SUBAGENT_HARD_CAP_SECS
     background = background or detached_for_length
     job_key = child_key if background else ""
 
     # A slot, before anything is created and before any clock starts: the wait for one
     # is not the child's time, and a copy of the repository cut for a child that never
     # gets to run is litter.
-    if not await _wait_for_slot():
+    if not await spawn_jobs.wait_for_slot():
         return err(
-            f"no room to start another sub-agent: {SUBAGENT_MAX_CONCURRENT} are already "
-            f"running ({_busy_with()}). Do something else and delegate this when one "
+            f"no room to start another sub-agent: {spawn_jobs.SUBAGENT_MAX_CONCURRENT} are already "
+            f"running ({spawn_jobs.busy_with()}). Do something else and delegate this when one "
             f"lands — you are resumed as each finishes — or do it yourself. Do not "
             f"retry this call immediately: nothing will have changed.",
             answer="", completed=False, files_read=[], files_written=[],
         )
     slot_held = True
-    _take_slot(session, task)
+    spawn_jobs.take_slot(session, task)
 
     def _release_slot() -> None:
         """Give the slot back exactly once, whichever way the run ended."""
         nonlocal slot_held
         if slot_held:
             slot_held = False
-            _free_slot(session)
+            spawn_jobs.free_slot(session)
 
     # A child that was granted anything writing or executing gets a copy of the
     # repository — always, and not because it asked. Several of them editing one tree
@@ -1615,7 +647,7 @@ async def spawn_agent(
     # where it can do no harm.
     worktree: dict | None = None
     if working:
-        worktree, refusal = _create_worktree(child_key, session)
+        worktree, refusal = spawn_worktree.create_worktree(child_key, session)
         if worktree is None:
             _release_slot()
             return err(refusal, answer="", completed=False, files_read=[], files_written=[])
@@ -1625,7 +657,7 @@ async def spawn_agent(
     # below must not become a task cancellation in the middle of a stdio_client.
     # This tool stays async so waiting on that thread never blocks this server's
     # loop — that is what makes a fan-out of several calls actually concurrent.
-    events: queue.Queue = queue.Queue(maxsize=_CHILD_QUEUE_MAX)
+    events: queue.Queue = queue.Queue(maxsize=spawn_output.CHILD_QUEUE_MAX)
     counters: dict = {"dropped": 0}
     state: dict = {"sent": 0, "dropped": 0}
     future: Future[dict] = Future()
@@ -1645,7 +677,7 @@ async def spawn_agent(
         try:
             result = asyncio.run(_run_sub_agent(
                 task, context, requested, grantable, max_steps, approval_mode,
-                on_event=_make_child_sink(events, counters, job_key, session),
+                on_event=spawn_output.make_child_sink(events, counters, job_key, session),
                 model=model, session=session, budget=budget, child=child,
                 level=level, worktree=worktree,
                 # Detached or not, the child can reach the person. What ends when the
@@ -1657,12 +689,12 @@ async def spawn_agent(
             ))
             future.set_result(result)
             if job_key:
-                _settle_job(job_key, "done" if not result.get("error") else "crashed",
+                spawn_jobs.settle_job(job_key, "done" if not result.get("error") else "crashed",
                             result)
         except Exception as exc:
             future.set_exception(exc)
             if job_key:
-                _settle_job(job_key, "crashed", {"answer": "", "completed": False,
+                spawn_jobs.settle_job(job_key, "crashed", {"answer": "", "completed": False,
                                                  "error": str(exc)})
         finally:
             # From the child's own thread, so a detached one keeps its slot for its
@@ -1674,7 +706,7 @@ async def spawn_agent(
         # Registered before the thread starts: the caller is handed the key on the next
         # line, and a watcher that polled a key this process did not yet know would read
         # it as a job that never existed.
-        _register_job(job_key, {
+        spawn_jobs.register_job(job_key, {
             "state": "running", "started": time.time(), "budget": budget,
             "task": task, "session": session, "model": model, "tools": requested,
             "phase": "", "result": None, "child": child,
@@ -1685,7 +717,7 @@ async def spawn_agent(
     # after the caller's future has resolved, so a child can still be finishing when
     # its call has already returned.
     t = threading.Thread(target=_thread_main, daemon=True,
-                         name=_THREAD_NAME_PREFIX + child_key)
+                         name=spawn_jobs.THREAD_NAME_PREFIX + child_key)
     t.start()
 
     if job_key:
@@ -1694,7 +726,7 @@ async def spawn_agent(
             "completed": False,
             "files_read": [], "files_written": [], "blocked_by_mode": [],
             "model": model, "tools": requested, "session": session,
-            "background_job": _job_descriptor(job_key),
+            "background_job": spawn_jobs.job_descriptor(job_key),
             "workspace": {"branch": worktree["branch"], "path": worktree["path"]}
                          if worktree else {},
             "note": (
@@ -1709,16 +741,16 @@ async def spawn_agent(
     started = time.monotonic()
     state["last_activity"] = started
     deadline = loop.time() + budget
-    while not future.done() and loop.time() < deadline + _paused_secs(session):
-        await _forward_pending(ctx, events, state)
-        await _maybe_heartbeat(ctx, state, started)
-        await asyncio.sleep(_POLL_SECS)
+    while not future.done() and loop.time() < deadline + spawn_user_channel.paused_secs(session):
+        await spawn_output.forward_pending(ctx, events, state)
+        await spawn_output.maybe_heartbeat(ctx, state, started)
+        await asyncio.sleep(spawn_output.POLL_SECS)
     # One last drain, before the timeout branch too: the child's final tool result
     # is what tells the caller where a run that ran out of time actually stopped.
-    await _forward_pending(ctx, events, state)
+    await spawn_output.forward_pending(ctx, events, state)
     dropped = counters.get("dropped", 0) + state.get("dropped", 0)
     if dropped:
-        await _report(ctx, state, {"v": 1, "t": "end", "dropped": dropped})
+        await spawn_output.report(ctx, state, {"v": 1, "t": "end", "dropped": dropped})
 
     if not future.done():
         # Out of time, with the child still running in its own thread: its answer will
@@ -1824,22 +856,22 @@ def subagent_job(
     """
     op = (op or "status").strip().lower()
     if op == "list":
-        with _JOBS_LOCK:
+        with spawn_jobs.JOBS_LOCK:
             jobs = [
-                {"job_key": key, "state": _job_state(entry), "task": entry.get("task", ""),
+                {"job_key": key, "state": spawn_jobs.job_state(entry), "task": entry.get("task", ""),
                  "session": entry.get("session", ""),
                  "elapsed_secs": int(time.time() - entry.get("started", 0))}
-                for key, entry in _JOBS.items()
+                for key, entry in spawn_jobs.JOBS.items()
             ]
         jobs.sort(key=lambda j: j["elapsed_secs"])
         return ok({"jobs": jobs, "count": len(jobs)})
 
-    entry = _job_snapshot(job_key) or _entry_from_card(job_key)
+    entry = spawn_jobs.job_snapshot(job_key) or spawn_jobs.entry_from_card(job_key)
     if entry is None:
         return err(f"unknown sub-agent job {job_key!r}: no sub-agent of this session "
                    f"was started under that handle, and none left a card under it. Use "
                    f"op='list' to see the ones this server still holds.")
-    state = _job_state(entry)
+    state = spawn_jobs.job_state(entry)
     if state == "unknown" and not entry.get("from_card"):
         # Past its budget and still going in its own thread. Nothing else notices:
         # the blocking path stops a child on its deadline, this one had no deadline to
@@ -1879,7 +911,7 @@ def subagent_job(
         # as a conclusion is the whole failure this guards against.
         partial = _partial_handoff(entry.get("child") or {})
         if state == "unknown":
-            budget = int(entry.get("budget") or SUBAGENT_HARD_CAP_SECS)
+            budget = int(entry.get("budget") or spawn_limits.SUBAGENT_HARD_CAP_SECS)
             partial["answer"] = (_overrun_note(budget) + " " + partial["answer"]).strip()
             partial["ended_on_budget"] = True
         return ok({**base, **partial, "completed": False})
@@ -1896,7 +928,7 @@ async def _run_sub_agent(
     on_event: Callable[[dict], None] | None = None,
     model: str = "",
     session: str = "",
-    budget: int = SUBAGENT_EXPLORE_BUDGET_SECS,
+    budget: int = spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS,
     child: dict | None = None,
     level: str = _DEFAULT_SUBAGENT_LEVEL,
     worktree: dict | None = None,
@@ -1939,7 +971,7 @@ async def _run_sub_agent(
     # and a run that outlives the budget outlives the only thing watching it. The child
     # hears about it through its steer channel, at its next step boundary.
     watcher = _child_jobs.ChildWatcher(
-        agent=agent, origin=_child_origin(agent, task), on_activity=on_event)
+        agent=agent, origin=spawn_user_channel.child_origin(agent, task), on_activity=on_event)
     agent.register_background_job = watcher.register
     agent.watched_background_jobs = watcher.live_descriptors
     agent.poll_steer = watcher.drain_steers
@@ -1979,9 +1011,9 @@ async def _run_sub_agent(
         if worktree is not None:
             # Committed on a clean run, left staged when it did not finish: an
             # unfinished axis has its state nowhere else. The copy itself stays either
-            # way — see _finish_worktree.
+            # way — see finish_worktree.
             clean = bool(result) and not result.get("error")
-            record["workspace"] = _finish_worktree(worktree, task, clean)
+            record["workspace"] = spawn_worktree.finish_worktree(worktree, task, clean)
             if result is not None:
                 result["workspace"] = record["workspace"]
             if child is not None:
@@ -2030,7 +1062,7 @@ async def _drive_sub_agent(
     max_steps: int,
     on_event: Callable[[dict], None] | None = None,
     approval_mode: str = "manual",
-    budget: int = SUBAGENT_EXPLORE_BUDGET_SECS,
+    budget: int = spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS,
     level: str = _DEFAULT_SUBAGENT_LEVEL,
     worktree: dict | None = None,
     ask_session=None,
@@ -2049,7 +1081,7 @@ async def _drive_sub_agent(
     # A conclusion is a paragraph, and a tool-call step is shorter still. Uncapped,
     # one step may claim the whole answer reserve — measured at ~40k tokens, i.e.
     # several minutes of generation during which the child emits nothing at all.
-    agent.max_answer_tokens = SUBAGENT_ANSWER_TOKENS
+    agent.max_answer_tokens = spawn_limits.SUBAGENT_ANSWER_TOKENS
     # The user's approval mode, not the default: the child acts for the same user. It
     # has no one to ask (its stdin is this server's JSON-RPC pipe), so what the mode
     # does not cover is refused without a prompt and reported back as blocked.
@@ -2058,7 +1090,7 @@ async def _drive_sub_agent(
     if ask_session is not None and ask_loop is not None:
         # There is a person at the end of this call: its approvals and its questions go
         # to them, queued behind any other child's and saying which child is asking.
-        _install_user_channel(agent, ask_session, ask_loop, task)
+        spawn_user_channel.install_user_channel(agent, ask_session, ask_loop, task)
     # The child writes the shared path allowlist too; starting from what is already
     # there keeps its writes from erasing the caller's grants.
     agent.approvals.paths.allowed.update(approved_roots())
@@ -2105,7 +1137,7 @@ async def _drive_sub_agent(
     # child may fill follows from what it was given, and that is not known until its
     # tools have been classified just above.
     agent.max_context_tokens = (
-        SUBAGENT_CONTEXT_TOKENS_WORKING if working else SUBAGENT_CONTEXT_TOKENS_EXPLORE
+        spawn_limits.SUBAGENT_CONTEXT_TOKENS_WORKING if working else spawn_limits.SUBAGENT_CONTEXT_TOKENS_EXPLORE
     )
 
     brief = (

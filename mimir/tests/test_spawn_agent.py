@@ -6,6 +6,7 @@ which tools a child may be given, the toolkit an exploration gets by default, th
 anti-recursion, and the time budget it declares to its caller — none of which any
 other test covered.
 """
+from mimir.servers.agent_state import spawn_jobs, spawn_limits, spawn_output, spawn_user_channel, spawn_worktree
 import asyncio
 import contextlib
 import tempfile
@@ -166,13 +167,13 @@ def _patched_agent(agent: _FakeAgent):
     agent_core.MimirAgent = _factory
     # The tool points stdout at stderr on first use (its stdout is the JSON-RPC pipe);
     # under a test runner that would swallow the rest of the session's output.
-    saved_stdout, spawn._stdout_silenced = sys.stdout, False
+    saved_stdout, spawn_output.stdout_silenced = sys.stdout, False
     try:
         yield agent
     finally:
         agent_core.MimirAgent = original
         sys.stdout = saved_stdout
-        spawn._stdout_silenced = False
+        spawn_output.stdout_silenced = False
 
 
 class ToolGrantTests(unittest.TestCase):
@@ -305,11 +306,11 @@ class ChildVisibilityTests(unittest.TestCase):
         with them: it is one line per step boundary, not one per token, and it is the
         only account of the model calls a step makes without calling a tool — see
         StatusForwardingTests."""
-        self.assertIsNone(spawn._compact_event({"type": "token", "text": "hello"}))
-        self.assertIsNone(spawn._compact_event({"type": "diff", "file": "a.py"}))
+        self.assertIsNone(spawn_output.compact_event({"type": "token", "text": "hello"}))
+        self.assertIsNone(spawn_output.compact_event({"type": "diff", "file": "a.py"}))
 
     def test_a_forwarded_event_is_clipped_to_a_notification_sized_payload(self):
-        out = spawn._compact_event({
+        out = spawn_output.compact_event({
             "type": "tool_call", "id": "c1", "name": "grep",
             "label": "x" * 500, "detail": "y" * 500,
         })
@@ -322,7 +323,7 @@ class ChildVisibilityTests(unittest.TestCase):
         import queue as _queue
         q = _queue.Queue(maxsize=1)
         counters: dict = {"dropped": 0}
-        sink = spawn._make_child_sink(q, counters)
+        sink = spawn_output.make_child_sink(q, counters)
         sink({"type": "tool_call", "id": "c1", "name": "grep"})
         sink({"type": "tool_call", "id": "c2", "name": "grep"})  # no room left
         self.assertEqual(q.qsize(), 1)
@@ -458,7 +459,7 @@ class UserChannelTests(unittest.TestCase):
         run_tool(agent, _MetaCtx("manual"))
         self.assertFalse(agent.approvals.unattended)
         # The person behind the child is the caller's user, reached through it.
-        self.assertIsInstance(agent.human, spawn._RelayedHuman)
+        self.assertIsInstance(agent.human, spawn_user_channel.RelayedHuman)
 
     def test_a_detached_child_can_reach_the_user_too(self):
         """What ends when the delegating call returns is the REQUEST, not the session.
@@ -522,8 +523,8 @@ class UserChannelTests(unittest.TestCase):
 
         async def _both():
             await asyncio.gather(
-                spawn._ask_the_user(_Ctx("a"), "h", "q", []),
-                spawn._ask_the_user(_Ctx("b"), "h", "q", []),
+                spawn_user_channel.ask_the_user(_Ctx("a"), "h", "q", []),
+                spawn_user_channel.ask_the_user(_Ctx("b"), "h", "q", []),
             )
 
         asyncio.run(_both())
@@ -554,7 +555,7 @@ class UserChannelTests(unittest.TestCase):
         agent.tool_owner["bash_run"] = "bash"
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
-        spawn._install_user_channel(agent, _Ctx(), loop, "build the axis")
+        spawn_user_channel.install_user_channel(agent, _Ctx(), loop, "build the axis")
         approved, note = agent.request_tool_approval("bash_run", {"command": "make -j"})
         loop.call_soon_threadsafe(loop.stop)
 
@@ -582,7 +583,7 @@ class UserChannelTests(unittest.TestCase):
         agent.session_id = "parent-1/subagents/sub-abc"
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
-        spawn._install_user_channel(agent, session, loop, "vectorise the inner loop")
+        spawn_user_channel.install_user_channel(agent, session, loop, "vectorise the inner loop")
         approved, _ = agent.request_tool_approval("write_file", {"path": "/w/a.c"})
         loop.call_soon_threadsafe(loop.stop)
 
@@ -600,7 +601,7 @@ class UserChannelTests(unittest.TestCase):
         agent = _FakeAgent()
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
-        spawn._install_user_channel(agent, session, loop, "measure the tiling")
+        spawn_user_channel.install_user_channel(agent, session, loop, "measure the tiling")
         out = agent.request_user_question(
             [{"header": "Layout", "question": "Row or column major?",
               "options": [{"label": "Option A"}]}])
@@ -622,28 +623,28 @@ class ParkedChildBudgetTests(unittest.TestCase):
     """
 
     def setUp(self):
-        spawn._PAUSED.clear()
-        self.addCleanup(spawn._PAUSED.clear)
+        spawn_user_channel.PAUSED.clear()
+        self.addCleanup(spawn_user_channel.PAUSED.clear)
 
     def _entry(self, elapsed: float):
         return {"state": "running", "started": time.time() - elapsed, "budget": 60,
                 "session": "s/subagents/sub-1"}
 
     def test_a_child_past_its_budget_is_reported_lost(self):
-        self.assertEqual(spawn._job_state(self._entry(120)), "unknown")
+        self.assertEqual(spawn_jobs.job_state(self._entry(120)), "unknown")
 
     def test_the_same_child_parked_on_a_card_is_not(self):
-        spawn._record_pause("s/subagents/sub-1", 100)
-        self.assertEqual(spawn._job_state(self._entry(120)), "running")
+        spawn_user_channel.record_pause("s/subagents/sub-1", 100)
+        self.assertEqual(spawn_jobs.job_state(self._entry(120)), "running")
 
     def test_the_wait_is_added_up_across_cards(self):
         for _ in range(4):
-            spawn._record_pause("s/subagents/sub-1", 30)
-        self.assertEqual(spawn._paused_secs("s/subagents/sub-1"), 120)
+            spawn_user_channel.record_pause("s/subagents/sub-1", 30)
+        self.assertEqual(spawn_user_channel.paused_secs("s/subagents/sub-1"), 120)
 
     def test_another_child_s_wait_is_not_this_one_s(self):
-        spawn._record_pause("s/subagents/sub-2", 100)
-        self.assertEqual(spawn._job_state(self._entry(120)), "unknown")
+        spawn_user_channel.record_pause("s/subagents/sub-2", 100)
+        self.assertEqual(spawn_jobs.job_state(self._entry(120)), "unknown")
 
     def test_no_or_unknown_mode_falls_back_to_manual(self):
         self.assertEqual(spawn._caller_approval_mode(None), "manual")
@@ -747,8 +748,8 @@ def _no_real_worktree():
     else that grant earns (its budget, its detachment) have no business creating one.
     """
     wt = {"repo": "/repo", "branch": "mimir/sub-test", "path": "/tmp/copy", "base": "b0"}
-    with mock.patch.object(spawn, "_create_worktree", return_value=(wt, "")), \
-            mock.patch.object(spawn, "_finish_worktree", return_value={"kept": True}):
+    with mock.patch.object(spawn_worktree, "create_worktree", return_value=(wt, "")), \
+            mock.patch.object(spawn_worktree, "finish_worktree", return_value={"kept": True}):
         yield
 
 
@@ -863,7 +864,7 @@ class ForgottenJobTests(unittest.TestCase):
 
     def _ask(self, card: dict, op: str = "result", job_key: str = "sub-abcd1234"):
         state, session = self._with_card(card, job_key)
-        with state, session, mock.patch.dict(spawn._JOBS, {}, clear=True):
+        with state, session, mock.patch.dict(spawn_jobs.JOBS, {}, clear=True):
             return spawn.subagent_job(op=op, job_key=job_key)
 
     def test_a_finished_run_answers_from_its_card(self):
@@ -902,7 +903,7 @@ class ForgottenJobTests(unittest.TestCase):
 
     def test_a_handle_with_no_card_at_all_is_still_refused(self):
         state, session = self._with_card({"state": "finished"}, "sub-aaaa1111")
-        with state, session, mock.patch.dict(spawn._JOBS, {}, clear=True):
+        with state, session, mock.patch.dict(spawn_jobs.JOBS, {}, clear=True):
             out = spawn.subagent_job(op="result", job_key="sub-bbbb2222")
         self.assertEqual(out["status"], "error")
         self.assertIn("sub-bbbb2222", out["error"])
@@ -915,7 +916,7 @@ class ForgottenJobTests(unittest.TestCase):
                  "phase": "reading", "result": None, "child": {}}
         state, session = self._with_card({"state": "finished", "answer": "stale"})
         with state, session, mock.patch.dict(
-                spawn._JOBS, {"sub-abcd1234": entry}, clear=True):
+                spawn_jobs.JOBS, {"sub-abcd1234": entry}, clear=True):
             out = spawn.subagent_job(op="status", job_key="sub-abcd1234")
         self.assertEqual(out["state"], "running")
         self.assertEqual(out["phase"], "reading")
@@ -974,7 +975,7 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
     @staticmethod
     def _watcher(agent, **kw):
         return _child_jobs.ChildWatcher(
-            agent=agent, origin=spawn._child_origin(agent, "port the solver to AVX-512"),
+            agent=agent, origin=spawn_user_channel.child_origin(agent, "port the solver to AVX-512"),
             **kw)
 
     def _run(self, body) -> None:
@@ -1230,19 +1231,19 @@ class TimeBudgetTests(unittest.TestCase):
 
     def test_a_reconnaissance_gets_ten_minutes(self):
         budget, _ = self._budget(_GrantCtx())
-        self.assertEqual(budget, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
+        self.assertEqual(budget, spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
         self.assertEqual(budget, 600)
 
     def test_a_child_that_writes_gets_two_hours(self):
         budget, _ = self._budget(_GrantCtx(level="build"), tools=["write_file"])
-        self.assertEqual(budget, spawn.SUBAGENT_WORKING_BUDGET_SECS)
+        self.assertEqual(budget, spawn_limits.SUBAGENT_WORKING_BUDGET_SECS)
         self.assertEqual(budget, 7200)
 
     def test_at_explore_a_writing_tool_buys_no_extra_time(self):
         """The rung is the user's decision; a grant that slipped through does not
         rewrite it, exactly as it does not buy a copy of the repository."""
         budget, _ = self._budget(_GrantCtx(level="explore"), tools=["write_file"])
-        self.assertEqual(budget, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
+        self.assertEqual(budget, spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
 
     def test_a_caller_may_ask_for_less(self):
         budget, _ = self._budget(_GrantCtx(), time_budget_secs=120)
@@ -1250,16 +1251,16 @@ class TimeBudgetTests(unittest.TestCase):
 
     def test_but_not_for_more_than_its_rung_allows(self):
         budget, _ = self._budget(_GrantCtx(), time_budget_secs=99999)
-        self.assertEqual(budget, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
+        self.assertEqual(budget, spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
 
     def test_nor_for_less_than_a_run_can_use(self):
         budget, _ = self._budget(_GrantCtx(), time_budget_secs=1)
-        self.assertEqual(budget, spawn.SUBAGENT_MIN_BUDGET_SECS)
+        self.assertEqual(budget, spawn_limits.SUBAGENT_MIN_BUDGET_SECS)
 
     def test_no_ceiling_on_tool_call_steps(self):
         """A step count cut long work off for a reason unrelated to its difficulty.
         The agent loop reads 0 as unbounded."""
-        self.assertEqual(spawn.SUBAGENT_MAX_STEPS, 0)
+        self.assertEqual(spawn_limits.SUBAGENT_MAX_STEPS, 0)
         agent = _FakeAgent()
         seen: dict = {}
 
@@ -1316,7 +1317,7 @@ class ForcedDetachmentTests(unittest.TestCase):
         """Or the dispatcher kills the call before this server's own cap can hand back
         what the child had."""
         from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
-        self.assertLess(spawn.SUBAGENT_HARD_CAP_SECS, TOOL_CALL_TIMEOUT_MAX_SECS)
+        self.assertLess(spawn_limits.SUBAGENT_HARD_CAP_SECS, TOOL_CALL_TIMEOUT_MAX_SECS)
 
     def test_a_child_out_of_time_hands_back_where_it_got_to(self):
         """Its answer is gone with the thread; what it touched is not, and that is what
@@ -1330,7 +1331,7 @@ class ForcedDetachmentTests(unittest.TestCase):
 
         with _patched_agent(agent), \
              mock.patch.object(spawn, "_drive_sub_agent", _never), \
-             mock.patch.object(spawn, "SUBAGENT_MIN_BUDGET_SECS", 1):
+             mock.patch.object(spawn_limits, "SUBAGENT_MIN_BUDGET_SECS", 1):
             out = asyncio.run(spawn.spawn_agent(
                 "optimise", ctx=_GrantCtx(), time_budget_secs=1))
         self.assertEqual(out["status"], "error")
@@ -1343,7 +1344,7 @@ class BackgroundTests(unittest.TestCase):
     """A detached sub-agent: the caller gets a handle and goes on working."""
 
     def setUp(self):
-        spawn._JOBS.clear()
+        spawn_jobs.JOBS.clear()
 
     @contextlib.contextmanager
     def _launched(self, agent, drive):
@@ -1426,7 +1427,7 @@ class BackgroundTests(unittest.TestCase):
         from mimir.client.query_engine.dispatch.admission import (
             _asks_whether_a_watched_run_is_done,
         )
-        descriptor = spawn._job_descriptor("sub-ab12cd34")
+        descriptor = spawn_jobs.job_descriptor("sub-ab12cd34")
         agent = types.SimpleNamespace(watched_background_jobs=lambda: [descriptor])
         status = descriptor["status_op"]
         summary = descriptor["summary_op"]
@@ -1460,7 +1461,7 @@ class WorktreeTests(unittest.TestCase):
         self._env = mock.patch.dict(os.environ, {"MCP_FILES_ROOT": self.repo})
         self._env.start()
         self.addCleanup(self._env.stop)
-        self._wt_base = mock.patch.object(spawn, "_WORKTREE_BASE", self.base)
+        self._wt_base = mock.patch.object(spawn_worktree, "WORKTREE_BASE", self.base)
         self._wt_base.start()
         self.addCleanup(self._wt_base.stop)
 
@@ -1562,7 +1563,7 @@ class WorktreeTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state,
                                           "MIMIR_SESSION_ID": "parent-session"}), \
-                mock.patch.object(spawn, "SUBAGENT_WORKTREES_KEPT", 1):
+                mock.patch.object(spawn_worktree, "SUBAGENT_WORKTREES_KEPT", 1):
             first = self._spawn()[0]["workspace"]["path"]
             second = self._spawn()[0]["workspace"]["path"]
             third = self._spawn()[0]["workspace"]["path"]
@@ -1578,13 +1579,13 @@ class WorktreeTests(unittest.TestCase):
     def test_a_copy_still_running_is_never_reclaimed(self):
         state = tempfile.mkdtemp(prefix="mimir-state-")
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
-        wt, _ = spawn._create_worktree("sub-live")
+        wt, _ = spawn_worktree.create_worktree("sub-live")
         self._card(state, "sub-live", {
             "state": "running", "pid": os.getpid(), "started_at": "2000-01-01T00:00:00",
             "workspace": wt,
         })
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
-            spawn._reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
+            spawn_worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
         self.assertTrue(os.path.isdir(wt["path"]))
 
     def test_a_card_left_saying_running_by_a_dead_process_is_reclaimed(self):
@@ -1594,13 +1595,13 @@ class WorktreeTests(unittest.TestCase):
         dead.wait()
         state = tempfile.mkdtemp(prefix="mimir-state-")
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
-        wt, _ = spawn._create_worktree("sub-orphan")
+        wt, _ = spawn_worktree.create_worktree("sub-orphan")
         self._card(state, "sub-orphan", {
             "state": "running", "pid": dead.pid, "started_at": "2000-01-01T00:00:00",
             "workspace": wt,
         })
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
-            spawn._reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
+            spawn_worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
         self.assertFalse(os.path.exists(wt["path"]))
 
     def test_reclaiming_a_copy_commits_what_it_had_not_committed(self):
@@ -1608,13 +1609,13 @@ class WorktreeTests(unittest.TestCase):
         # exactly the one whose work exists nowhere else. --force would take it silently.
         state = tempfile.mkdtemp(prefix="mimir-state-")
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
-        wt, _ = spawn._create_worktree("sub-halfway")
+        wt, _ = spawn_worktree.create_worktree("sub-halfway")
         Path(wt["path"], "solver.c").write_text("half done", encoding="utf-8")
         self._card(state, "sub-halfway", {
             "state": "finished", "started_at": "2000-01-01T00:00:00", "workspace": wt,
         })
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
-            spawn._reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
+            spawn_worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
         self.assertFalse(os.path.exists(wt["path"]))
         shown = subprocess.run(["git", "show", f"{wt['branch']}:solver.c"],
                                cwd=self.repo, capture_output=True, text=True)
@@ -1624,18 +1625,18 @@ class WorktreeTests(unittest.TestCase):
         # `git branch -d` asks whether the branch is merged into whatever HEAD is now,
         # and answers "no" for an empty branch as soon as the main tree commits again.
         # The recorded base commit is the question that actually holds.
-        wt, _ = spawn._create_worktree("sub-quiet")
+        wt, _ = spawn_worktree.create_worktree("sub-quiet")
         Path(self.repo, "other.c").write_text("moved on", encoding="utf-8")
         for args in (["add", "-A"], ["commit", "-qm", "main moved on"]):
             subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True)
-        report = spawn._finish_worktree(wt, "read the mesh", succeeded=True)
+        report = spawn_worktree.finish_worktree(wt, "read the mesh", succeeded=True)
         self.assertEqual(report["branch"], "")
         self.assertNotIn("mimir/sub-quiet", self._branches())
 
     def test_the_report_does_not_claim_a_branch_went_when_it_did_not(self):
-        wt, _ = spawn._create_worktree("sub-stuck")
-        with mock.patch.object(spawn, "_drop_branch_if_empty", return_value=False):
-            report = spawn._finish_worktree(wt, "read the mesh", succeeded=True)
+        wt, _ = spawn_worktree.create_worktree("sub-stuck")
+        with mock.patch.object(spawn_worktree, "drop_branch_if_empty", return_value=False):
+            report = spawn_worktree.finish_worktree(wt, "read the mesh", succeeded=True)
         self.assertEqual(report["branch"], "mimir/sub-stuck")
         self.assertIn("still where it was cut from", report["note"])
 
@@ -1648,11 +1649,11 @@ class WorktreeTests(unittest.TestCase):
         state = tempfile.mkdtemp(prefix="mimir-state-")
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
-            wt, _ = spawn._create_worktree("sub-gone", "deleted-session/subagents/sub-gone")
-            spawn._write_marker(spawn._marker_path(self.repo, "sub-gone"),
+            wt, _ = spawn_worktree.create_worktree("sub-gone", "deleted-session/subagents/sub-gone")
+            spawn_worktree.write_marker(spawn_worktree.marker_path(self.repo, "sub-gone"),
                                 {**wt, "session": "deleted-session/subagents/sub-gone",
                                  "pid": dead.pid})
-            spawn._sweep_orphan_copies(self.repo)
+            spawn_worktree.sweep_orphan_copies(self.repo)
         self.assertFalse(os.path.exists(wt["path"]))
 
     def test_a_copy_whose_session_still_has_its_card_is_left_to_that_rule(self):
@@ -1662,11 +1663,11 @@ class WorktreeTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
         session = "parent-session/subagents/sub-held"
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
-            wt, _ = spawn._create_worktree("sub-held", session)
-            spawn._write_marker(spawn._marker_path(self.repo, "sub-held"),
+            wt, _ = spawn_worktree.create_worktree("sub-held", session)
+            spawn_worktree.write_marker(spawn_worktree.marker_path(self.repo, "sub-held"),
                                 {**wt, "session": session, "pid": dead.pid})
             Path(state, "sessions", session).mkdir(parents=True)
-            spawn._sweep_orphan_copies(self.repo)
+            spawn_worktree.sweep_orphan_copies(self.repo)
         self.assertTrue(os.path.isdir(wt["path"]))
 
     def test_a_copy_whose_owner_is_still_alive_is_never_swept(self):
@@ -1675,8 +1676,8 @@ class WorktreeTests(unittest.TestCase):
         state = tempfile.mkdtemp(prefix="mimir-state-")
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
-            wt, _ = spawn._create_worktree("sub-young", "no-card-yet/subagents/sub-young")
-            spawn._sweep_orphan_copies(self.repo)
+            wt, _ = spawn_worktree.create_worktree("sub-young", "no-card-yet/subagents/sub-young")
+            spawn_worktree.sweep_orphan_copies(self.repo)
         self.assertTrue(os.path.isdir(wt["path"]))
 
     def test_a_directory_git_never_registered_is_not_a_copy_of_ours(self):
@@ -1686,13 +1687,13 @@ class WorktreeTests(unittest.TestCase):
         junk.mkdir(parents=True)
         (junk / "stale.o").write_text("", encoding="utf-8")
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
-            spawn._sweep_orphan_copies(self.repo)
+            spawn_worktree.sweep_orphan_copies(self.repo)
         self.assertFalse(junk.exists())
 
     def test_the_marker_sits_beside_the_copy_and_never_inside_it(self):
         # Inside, `git add -A` would commit it into the axis.
-        wt, _ = spawn._create_worktree("sub-marked", "s/subagents/sub-marked")
-        self.assertTrue(os.path.exists(spawn._marker_path(self.repo, "sub-marked")))
+        wt, _ = spawn_worktree.create_worktree("sub-marked", "s/subagents/sub-marked")
+        self.assertTrue(os.path.exists(spawn_worktree.marker_path(self.repo, "sub-marked")))
         self.assertFalse(os.path.exists(os.path.join(wt["path"], "sub-marked.mimir.json")))
         status = subprocess.run(["git", "status", "--porcelain"], cwd=wt["path"],
                                 capture_output=True, text=True)
@@ -1786,7 +1787,7 @@ class StatusForwardingTests(unittest.TestCase):
     """
 
     def test_a_status_line_is_forwarded_as_its_own_row(self):
-        out = spawn._compact_event(
+        out = spawn_output.compact_event(
             {"type": "status", "text": "  ↻ Empty turn from the model — retrying (1/3)."})
         self.assertEqual(out["t"], "st")
         self.assertIn("Empty turn", out["s"])
@@ -1794,16 +1795,16 @@ class StatusForwardingTests(unittest.TestCase):
     def test_a_blank_status_is_not_a_row(self):
         # The loop emits blank status as a spacer for a terminal; here it would read
         # as an event whose text went missing.
-        self.assertIsNone(spawn._compact_event({"type": "status", "text": "   "}))
-        self.assertIsNone(spawn._compact_event({"type": "status"}))
+        self.assertIsNone(spawn_output.compact_event({"type": "status", "text": "   "}))
+        self.assertIsNone(spawn_output.compact_event({"type": "status"}))
 
     def test_a_long_status_is_clipped_like_every_other_field(self):
-        out = spawn._compact_event({"type": "status", "text": "x" * 500})
+        out = spawn_output.compact_event({"type": "status", "text": "x" * 500})
         self.assertLessEqual(len(out["s"]), 160)
 
     def test_tokens_and_thinking_still_do_not_travel(self):
         for kind in ("token", "thinking", "diff"):
-            self.assertIsNone(spawn._compact_event({"type": kind, "text": "..."}))
+            self.assertIsNone(spawn_output.compact_event({"type": kind, "text": "..."}))
 
 
 class BudgetTimeoutAdviceTests(unittest.TestCase):
@@ -1840,7 +1841,7 @@ class BudgetTimeoutAdviceTests(unittest.TestCase):
                  "task": "optimise the kernel", "session": "s/subagents/sub-1",
                  "model": "m", "tools": ["write_file"], "phase": "", "result": None,
                  "child": child}
-        with mock.patch.dict(spawn._JOBS, {"sub-1": entry}, clear=True):
+        with mock.patch.dict(spawn_jobs.JOBS, {"sub-1": entry}, clear=True):
             out = spawn.subagent_job(op="result", job_key="sub-1")
 
         self.assertEqual(out["state"], "unknown")
@@ -1861,7 +1862,7 @@ class DeclaredBudgetTests(unittest.TestCase):
     def test_declared_wall_exceeds_the_tool_s_own_cap(self):
         """Whichever fires first owns the outcome. The inner cap hands back the child's
         partial answer; the dispatcher's timeout hands back a failure line."""
-        self.assertGreater(self._descriptor().timeout_secs, spawn.SUBAGENT_HARD_CAP_SECS)
+        self.assertGreater(self._descriptor().timeout_secs, spawn_limits.SUBAGENT_HARD_CAP_SECS)
 
     def test_the_dispatcher_reads_that_wall_and_not_the_global_default(self):
         from mimir.client.context.capabilities import timeout_for
@@ -1879,9 +1880,9 @@ class DeclaredBudgetTests(unittest.TestCase):
         blocking cap is detached instead of waited on.
         """
         from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
-        self.assertGreater(spawn.SUBAGENT_HARD_CAP_SECS, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
+        self.assertGreater(spawn_limits.SUBAGENT_HARD_CAP_SECS, spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
         self.assertLessEqual(self._descriptor().timeout_secs, TOOL_CALL_TIMEOUT_MAX_SECS)
-        self.assertGreater(spawn.SUBAGENT_WORKING_BUDGET_SECS, spawn.SUBAGENT_HARD_CAP_SECS)
+        self.assertGreater(spawn_limits.SUBAGENT_WORKING_BUDGET_SECS, spawn_limits.SUBAGENT_HARD_CAP_SECS)
 
     def test_delegation_is_no_longer_dual_use_by_argument(self):
         """Its read-only-ness is not an argument any more: in a read-only mode the
@@ -1896,7 +1897,7 @@ def _drain_child_threads(timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         alive = [t for t in threading.enumerate()
-                 if t.name.startswith(spawn._THREAD_NAME_PREFIX) and t.is_alive()]
+                 if t.name.startswith(spawn_jobs.THREAD_NAME_PREFIX) and t.is_alive()]
         if not alive:
             return
         for t in alive:
@@ -1920,17 +1921,17 @@ class ConcurrencyBoundTests(unittest.TestCase):
         # bound — which is a bound that never failed, measured against a semaphore that
         # was no longer the one being tested.
         _drain_child_threads()
-        self._saved = spawn.SUBAGENT_MAX_CONCURRENT
-        spawn.SUBAGENT_MAX_CONCURRENT = 2
-        spawn._SLOTS = threading.Semaphore(2)
-        spawn._SLOT_HOLDERS.clear()
+        self._saved = spawn_jobs.SUBAGENT_MAX_CONCURRENT
+        spawn_jobs.SUBAGENT_MAX_CONCURRENT = 2
+        spawn_jobs.SLOTS = threading.Semaphore(2)
+        spawn_jobs.SLOT_HOLDERS.clear()
         self.addCleanup(self._restore)
 
     def _restore(self):
         _drain_child_threads()
-        spawn.SUBAGENT_MAX_CONCURRENT = self._saved
-        spawn._SLOTS = threading.Semaphore(self._saved)
-        spawn._SLOT_HOLDERS.clear()
+        spawn_jobs.SUBAGENT_MAX_CONCURRENT = self._saved
+        spawn_jobs.SLOTS = threading.Semaphore(self._saved)
+        spawn_jobs.SLOT_HOLDERS.clear()
 
     def _spawn_many(self, count: int, hold: float = 0.4):
         """*count* children at once, each holding its slot for *hold* seconds."""
@@ -1977,14 +1978,14 @@ class ConcurrencyBoundTests(unittest.TestCase):
             for _ in range(3):        # more runs than slots
                 out = asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx()))
                 self.assertEqual(out["status"], "error")
-        self.assertEqual(spawn._SLOT_HOLDERS, {})
+        self.assertEqual(spawn_jobs.SLOT_HOLDERS, {})
 
     def test_a_full_house_is_refused_rather_than_queued_for_ever(self):
         """Working children run for hours, so a full house can stay full for hours; a
         caller that simply queued would freeze its turn with nothing to explain it."""
-        spawn._SLOTS = threading.Semaphore(0)         # every slot taken
-        spawn._SLOT_HOLDERS["s/subagents/sub-1"] = ("optimise the kernel", time.time())
-        with mock.patch.object(spawn, "SUBAGENT_SLOT_WAIT_SECS", 0.2):
+        spawn_jobs.SLOTS = threading.Semaphore(0)         # every slot taken
+        spawn_jobs.SLOT_HOLDERS["s/subagents/sub-1"] = ("optimise the kernel", time.time())
+        with mock.patch.object(spawn_jobs, "SUBAGENT_SLOT_WAIT_SECS", 0.2):
             out = asyncio.run(spawn.spawn_agent("another axis", ctx=_GrantCtx()))
         self.assertEqual(out["status"], "error")
         self.assertIn("no room to start another sub-agent", out["error"])
@@ -2008,13 +2009,13 @@ class ConcurrencyBoundTests(unittest.TestCase):
             out = asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx(), background=True))
             self.assertIn("background_job", out)
             self.assertTrue(started.wait(5))
-            self.assertEqual(len(spawn._SLOT_HOLDERS), 1)   # still held
+            self.assertEqual(len(spawn_jobs.SLOT_HOLDERS), 1)   # still held
             release.set()
             for _ in range(50):
-                if not spawn._SLOT_HOLDERS:
+                if not spawn_jobs.SLOT_HOLDERS:
                     break
                 time.sleep(0.05)
-        self.assertEqual(spawn._SLOT_HOLDERS, {})
+        self.assertEqual(spawn_jobs.SLOT_HOLDERS, {})
 
 
 if __name__ == "__main__":

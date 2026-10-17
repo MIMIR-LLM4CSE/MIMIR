@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from mimir.client.config.limits import CTX_RESERVED_RATIO, CTX_TOTAL_COMPACT, CTX_TOTAL_FULL
 from mimir.client.query_engine.context_budget import context_budget_for
+from mimir.servers.agent_state import spawn_limits
 
 
 class _WindowFixture(unittest.TestCase):
@@ -69,19 +70,8 @@ class UnknownWindowTests(_WindowFixture):
 
 
 class SubagentCeilingsTests(unittest.TestCase):
-    def _constants(self):
-        import pathlib
-        path = (pathlib.Path(__file__).resolve().parents[1]
-                / "servers" / "agent_state" / "server_spawn_agent.py")
-        source = path.read_text()
-        ns: dict = {}
-        for line in source.splitlines():
-            if line.startswith("SUBAGENT_CONTEXT_TOKENS_"):
-                exec(line, ns)  # noqa: S102 — two int literals, read off the module
-        return ns
-
     def test_an_explorer_gets_room_for_a_wide_sweep(self) -> None:
-        explore = self._constants()["SUBAGENT_CONTEXT_TOKENS_EXPLORE"]
+        explore = spawn_limits.SUBAGENT_CONTEXT_TOKENS_EXPLORE
         self.assertEqual(explore, 64_000)
         # Between the two standing budgets: more than a compact session, so breadth
         # is affordable; well under a working child, whose reading it must not match.
@@ -89,7 +79,7 @@ class SubagentCeilingsTests(unittest.TestCase):
         self.assertLess(explore, CTX_TOTAL_FULL)
 
     def test_a_working_child_gets_the_full_budget(self) -> None:
-        self.assertEqual(self._constants()["SUBAGENT_CONTEXT_TOKENS_WORKING"],
+        self.assertEqual(spawn_limits.SUBAGENT_CONTEXT_TOKENS_WORKING,
                          CTX_TOTAL_FULL)
 
 

@@ -291,6 +291,9 @@ def _literal(node, module_consts: dict | None = None):
         if node.id in consts:
             return consts[node.id]
         return getattr(srv, node.id)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        # A constant of a sibling module the server imports (``spawn_limits.X``).
+        return consts[f"{node.value.id}.{node.attr}"]
     if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
         return _BINOPS[type(node.op)](
             _literal(node.left, consts), _literal(node.right, consts),
@@ -323,6 +326,9 @@ def build_declared_registry() -> dict:
     for path in SERVERS_DIR.rglob("*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
         module_consts = _module_constants(tree)
+        for sibling in path.parent.glob("*.py"):
+            for name, value in _module_constants(ast.parse(sibling.read_text())).items():
+                module_consts[f"{sibling.stem}.{name}"] = value
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
