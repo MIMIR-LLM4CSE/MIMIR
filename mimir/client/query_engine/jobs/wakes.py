@@ -1,18 +1,11 @@
 """What a finished or still-running background job says to the model.
 
-Pure functions of one event, held apart from both consumers because there are two and
-they must say the same thing. A socket's ``_Session`` turns a wake into a turn while
-somebody is attached; the pool does it when nobody is
-(:meth:`_AgentPool.consume_durable_event`), and a run reported through one route must be
-indistinguishable from the same run reported through the other — the model has no way to
-tell which consumer woke it, and a wake worded differently by each is a conversation
-whose history depends on whether its user had the window open.
+Pure functions of one event. The connection and the pool both turn wakes into turns,
+and they must word them identically: the model cannot tell which one woke it.
 
-Nothing here interprets a job. The client does not know what a detached run *does* — it
-may be a two-hour compile, a Slurm batch, a proxy optimization — so the text states the
-fact and passes the recorded payload through under the server's own field names. The
-only tool names any of this may utter are ``status_op``'s and ``summary_op``'s, and only
-because those are registry data travelling on the descriptor.
+Nothing here interprets a job. The text states the fact and passes the recorded
+payload through under the server's own field names; the only tool names it utters are
+the descriptor's ``status_op`` and ``summary_op``.
 """
 
 from __future__ import annotations

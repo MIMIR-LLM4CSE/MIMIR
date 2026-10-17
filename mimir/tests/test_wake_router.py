@@ -238,7 +238,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
                 {"_unconsumed_steer": list(unread)})
 
     def test_a_steered_wake_the_turn_never_read_gets_its_own_turn(self):
-        from mimir.client.ui.ws.job_wakes import wake_text
+        from mimir.client.query_engine.jobs.wakes import wake_text
 
         s = self._session()
         w = _Worker(s.id)
@@ -268,7 +268,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
                          "a run the turn answered for was left owed")
 
     def test_several_runs_that_finished_during_the_turn_arrive_as_one_turn(self):
-        from mimir.client.ui.ws.job_wakes import wake_text
+        from mimir.client.query_engine.jobs.wakes import wake_text
 
         s = self._session()
         w = _Worker(s.id)

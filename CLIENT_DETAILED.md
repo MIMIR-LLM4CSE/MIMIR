@@ -46,7 +46,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `context_budget.py` | `context_budget_for(model, mode)` — the window a model actually has |
 | `streaming.py` | the model call (retry/backoff), `_process_response`, the single `get_backend` handle |
 | `background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
-| `job_poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
+| `jobs/poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
 | `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
 | `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
@@ -1137,7 +1137,7 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 | `human_bridge.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
 | `job_watcher.py` | `JobWatcher`: a conversation's detached runs and the check-in cycle |
 | `ws_commands.py` | the socket's side of the slash commands: `WsCommandHost`, `/cancel`, `/diag` |
-| `job_scan.py`, `job_wakes.py`, `panel_runs.py`, `server_registry.py`, `detach.py`, `session_summary.py`, `transcript_log.py`, `file_preview.py`, `_ws_runtime.py` | runs on disk and their wakes, the panel, the registry of live servers, detachment, descriptions, the journal, diff previews, the stdout router |
+| `job_scan.py`, `panel_runs.py`, `server_registry.py`, `detach.py`, `session_summary.py`, `transcript_log.py`, `file_preview.py`, `_ws_runtime.py` | runs on disk and their wakes, the panel, the registry of live servers, detachment, descriptions, the journal, diff previews, the stdout router |
 
 What belongs here are the invariants that are not obvious from the protocol:
 
@@ -1232,7 +1232,7 @@ anyway.
 one sent, clock and log excepted (`_checkin_fingerprint`, ignoring `_CHECKIN_VOLATILE`), is
 skipped. And the schedule is not the only trigger: the status ops of running bash, Slurm
 and proxy jobs carry `log_tail`, the run's last five lines, which the watcher scans on each
-poll (`job_poll.log_alerts`) for a non-finite value, an overflow, a traceback, a fatal
+poll (`jobs.poll.log_alerts`) for a non-finite value, an overflow, a traceback, a fatal
 signal or running out of memory. A category not yet seen on that job triggers a check-in
 at once; each is reported once per job.
 

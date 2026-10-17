@@ -20,12 +20,12 @@ from ...tool_execution.executor import run_post_tool_annotations
 from ...tool_execution.file_target import file_target
 from ...tool_execution.math_preview import extract_math_preview
 from ...context.tool_display import error_detail, summarize_tool_result
-from ..background import (
-    _await_background_job,
-    _detect_background_job,
-    _maybe_emit_open_editor,
-    _maybe_register_background_job,
-    _maybe_rewatch_background_jobs,
+from ..jobs.background import (
+    await_background_job,
+    detect_background_job,
+    maybe_emit_open_editor,
+    maybe_register_background_job,
+    maybe_rewatch_background_jobs,
 )
 from ..deferral import CURRENT_CALL_ID
 from .admission import Call, _reads_progress_of_a_watched_run, _watched_progress_note
@@ -245,12 +245,12 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
             math_info=extract_math_preview(result) if ok else None,
             target=file_target(name, args, result, agent.tool_caps) if ok else None,
         )
-        _maybe_emit_open_editor(result)
+        maybe_emit_open_editor(result)
         watched_key = (_reads_progress_of_a_watched_run(agent, name, args)
                        if ok and isinstance(result, str) else None)
         if watched_key:
             result += _watched_progress_note(watched_key)
-        descriptor = _detect_background_job(name, result, agent)
+        descriptor = detect_background_job(name, result, agent)
         if descriptor is not None:
             # Branching on the hook's *existence* left the WS front-end with no
             # fallback at all: it installs the hook unconditionally, so a
@@ -258,7 +258,7 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
             # no note — and the model, told nothing, polled the job by hand until
             # the step limit. What decides is whether a watcher is actually
             # holding the run.
-            result, registered = _maybe_register_background_job(
+            result, registered = maybe_register_background_job(
                 name, result, agent, descriptor)
             if registered:
                 # Tie the row to the run that outlived it. Without this a row
@@ -275,7 +275,7 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
             if not registered:
                 # No watcher (CLI, or a registration that declined): wait it out
                 # efficiently in-turn. Costs zero model calls either way.
-                result = await _await_background_job(descriptor, agent, result)
+                result = await await_background_job(descriptor, agent, result)
         if isinstance(result, str):
             # A result reporting runs that are still going: what a status op answers
             # about work an earlier call started, and what a sub-agent out of time
@@ -289,7 +289,7 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
             # an error. Adopting a watch trusts no state either way — a descriptor
             # must name a job and an op to poll it with (`_is_rewatchable`), and a
             # run that is not there is retired as unknown a few ticks later.
-            result = _maybe_rewatch_background_jobs(name, result, agent)
+            result = maybe_rewatch_background_jobs(name, result, agent)
         return result
 
     except asyncio.TimeoutError:

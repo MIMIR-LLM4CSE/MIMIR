@@ -3,7 +3,7 @@
 A child used to have no watcher at all. The hook pair the client installs
 (``register_background_job`` / ``watched_background_jobs``) is set on the agent the
 WebSocket worker owns, and a child's agent is built here instead, so every backgroundable
-launch inside a child fell through to ``background._await_background_job``: polled in-turn,
+launch inside a child fell through to ``background.await_background_job``: polled in-turn,
 on the child's own loop, inside its wall budget. Two consequences, both bad for a rung
 whose whole point is working in parallel — the child sat on a step waiting for a build
 rather than preparing the next one, and a run that outlived the budget outlived the only
@@ -16,7 +16,7 @@ none of that: no ``out_q``, no bus, and no turn loop to submit to — it is one
 by ``agent_loop._drain_steer`` and documented there as optional precisely for callers like
 this one. So a finished run reaches the child's reasoning the same way a user's mid-turn
 message reaches the parent's: as a user turn at the next step boundary, in the words
-``job_wakes.wake_text`` writes for every wake in the system.
+``jobs.wakes.wake_text`` writes for every wake in the system.
 
 **Two threads, two methods.** The child runs ``asyncio.run()`` on a thread of its own, so
 its watch tasks live on a loop no other thread may touch — the same constraint
@@ -32,8 +32,8 @@ import logging
 import threading
 from collections import deque
 
-from mimir.client.query_engine import job_poll
-from mimir.client.ui.ws.job_wakes import wake_text
+from mimir.client.query_engine.jobs import poll as job_poll
+from mimir.client.query_engine.jobs.wakes import wake_text
 
 logger = logging.getLogger(__name__)
 

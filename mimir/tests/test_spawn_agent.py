@@ -982,7 +982,7 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
     def test_the_hooks_the_client_installs_are_installed_on_a_child_too(self) -> None:
         """What makes the difference: with the hook present the launch is registered.
 
-        ``background._maybe_register_background_job`` branches on the hook, so this is
+        ``background.maybe_register_background_job`` branches on the hook, so this is
         the whole of why a child now ends its step instead of waiting.
         """
         async def _drive(*a, **kw):
@@ -1000,7 +1000,7 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
     def test_a_finished_run_reaches_the_child_as_a_steer(self) -> None:
         """And in the words every wake in the system is written in.
 
-        ``job_wakes.wake_text`` relays what the server recorded rather than inventing a
+        ``jobs.wakes.wake_text`` relays what the server recorded rather than inventing a
         next step, which is exactly as true for a child as for the conversation.
         """
         self._schedule(0.0)

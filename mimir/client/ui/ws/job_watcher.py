@@ -19,7 +19,7 @@ from itertools import chain, repeat
 from typing import TYPE_CHECKING
 
 from .job_scan import establish_baseline, has_baseline, scan_session, subagent_sessions
-from ...query_engine import job_poll
+from ...query_engine.jobs import poll
 
 if TYPE_CHECKING:
     from .ws_worker import _AgentWorker
@@ -358,7 +358,7 @@ class JobWatcher:
         single-threaded loop). The WS session handles the UI notification and the
         auto-resume (``WakeRouter``).
 
-        The poll itself is :func:`job_poll.poll_until_terminal`, shared with the in-turn
+        The poll itself is :func:`poll.poll_until_terminal`, shared with the in-turn
         fallback and with a sub-agent's own watcher; what belongs here is the schedule it
         is given, the check-in and progress it writes per tick, and the event below.
 
@@ -388,7 +388,7 @@ class JobWatcher:
         # Last (phase, percent) announced, so a poll that learned nothing says nothing.
         last_reported: tuple = ("", None)
 
-        def _tick(tick: job_poll.Tick) -> None:
+        def _tick(tick: poll.Tick) -> None:
             nonlocal last_reported
             # What a check-in reports, written by the poll that is running anyway. The
             # state goes with it: "running" and "its status stopped being readable" are
@@ -397,7 +397,7 @@ class JobWatcher:
             watch = self._bg_jobs.get(job_key)
             if watch is not None:
                 fresh = {k: v for k, v in
-                         job_poll.log_alerts(tick.fields.get("log_tail")).items()
+                         poll.log_alerts(tick.fields.get("log_tail")).items()
                          if k not in watch.alerts}
                 watch.alerts.update(fresh)
                 watch.status = {**tick.fields,
@@ -421,16 +421,16 @@ class JobWatcher:
                     "session_id": session_id,
                 })
 
-        state, reason = await job_poll.poll_until_terminal(
+        state, reason = await poll.poll_until_terminal(
             self.worker._agent.run_tool, status_op,
             interval=5.0, max_interval=30.0,
-            call_timeout=job_poll.STATUS_CALL_TIMEOUT,
-            unreadable_limit=job_poll.UNREADABLE_POLL_LIMIT,
+            call_timeout=poll.STATUS_CALL_TIMEOUT,
+            unreadable_limit=poll.UNREADABLE_POLL_LIMIT,
             on_tick=_tick, label=job_key)
 
-        summary = await job_poll.read_summary(
+        summary = await poll.read_summary(
             self.worker._agent.run_tool, summary_op,
-            call_timeout=job_poll.STATUS_CALL_TIMEOUT, label=job_key)
+            call_timeout=poll.STATUS_CALL_TIMEOUT, label=job_key)
 
         logger.info("background job %r of session %s finished (%s); waking it",
                     job_key, session_id, state)

@@ -1326,7 +1326,7 @@ Tools:
   - `background=True` **detaches the child**: the call returns a `background_job`
     descriptor at once, the caller carries on, and the client's watcher resumes it with
     the answer when the child lands — the same machinery a detached shell command uses
-    (`query_engine/background.py`, `ws_worker._watch_job`), so nothing in the client
+    (`query_engine/jobs/background.py`, `ws_worker._watch_job`), so nothing in the client
     knows this kind of job from that one. The descriptor's `status_op` and `summary_op`
     both point at `subagent_job`; the dispatch guard then refuses the *status* question
     (the wake answers it) while allowing the *result* one, which is progress.
@@ -1349,7 +1349,7 @@ Tools:
     `get_running_loop()` can hold one. The resume is a **steer**, not an event: a child
     has no `out_q` and no event bus, and no turn loop to submit to, so a finished run
     reaches its reasoning through `agent._poll_steer` at the next step boundary, in the
-    words `job_wakes.wake_text` writes for every wake in the system. Two threads, two
+    words `jobs.wakes.wake_text` writes for every wake in the system. Two threads, two
     methods: `handover()` is the only one a caller on another thread may use and cancels
     nothing, while `close()` does the cancelling from the child's own `finally` — a task
     still polling when `asyncio.run` returns is the one way the thread can be left

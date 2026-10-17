@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from ...protocol.events import DURABLE_EVENTS
 from ...session.conversation import Conversation
 from .job_scan import mark_wakes_reported, wake_reported
-from .job_wakes import checkin_text, wake_text
+from ...query_engine.jobs.wakes import checkin_text, wake_text
 from .ws_worker import _AgentWorker
 
 if TYPE_CHECKING:

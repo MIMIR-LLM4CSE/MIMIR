@@ -1,26 +1,25 @@
-"""Background-job handling for the agent loop.
+"""A tool call that launched a detached run, as the agent loop handles it.
 
-A tool that launches a long detached run returns a ``background_job`` descriptor
-(shape-driven, no tool name hard-coded). With a front-end watcher hook the loop
-registers it and tells the model to yield; without one (CLI) it awaits the run
-in-turn with ``asyncio.sleep`` (zero model calls). Also emits the ``open_editor``
-UI event when a result opts in. Extracted from ``agent_loop.py``.
+The tool returns a ``background_job`` descriptor. With a front-end watcher the loop
+registers it and tells the model to yield; without one (the CLI) it waits for the run
+in-turn, polling the descriptor's status op with no model calls. It also emits the
+``open_editor`` event when a result asks for it.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from ..event_sink import emit
-from ..context.capabilities import BACKGROUNDABLE, has_cap
-from ..protocol.tool_result import parse_tool_payload
-from . import job_poll
-from ..core.ports import AgentPort
+from ...event_sink import emit
+from ...context.capabilities import BACKGROUNDABLE, has_cap
+from ...protocol.tool_result import parse_tool_payload
+from . import poll
+from ...core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
 
-def _maybe_emit_open_editor(result_text: str) -> None:
+def maybe_emit_open_editor(result_text: str) -> None:
     """Emit an ``open_editor`` UI event when a tool result asks for a file to be
     opened in the editor.
 
@@ -42,10 +41,10 @@ def _maybe_emit_open_editor(result_text: str) -> None:
         emit({"type": "open_editor", "path": path})
 
 
-def _detect_background_job(name: str, result_text: str, agent: AgentPort) -> dict | None:
+def detect_background_job(name: str, result_text: str, agent: AgentPort) -> dict | None:
     """Return a ``background_job`` descriptor from a BACKGROUNDABLE tool result, else None.
 
-    Shape-driven like ``_maybe_emit_open_editor`` — no tool name is hard-coded, and
+    Shape-driven like ``maybe_emit_open_editor`` — no tool name is hard-coded, and
     the payload is read through ``parse_tool_payload`` for the same reason: a launched
     run must not stop being watched because something was appended after its JSON.
     """
@@ -62,7 +61,7 @@ def _detect_rewatchable_jobs(name: str, result_text: str, agent: AgentPort) -> l
     """Descriptors of runs a tool result says are still in flight.
 
     Shape-driven, and with no capability gate at all — like
-    ``_maybe_emit_open_editor`` and unlike ``_detect_background_job``. The tools that
+    ``maybe_emit_open_editor`` and unlike ``detect_background_job``. The tools that
     answer this way are readers: ``BACKGROUNDABLE`` says a tool *launches* a detached
     run, and hanging it on a status op to make a key readable would say something about
     those tools that is not true. What is actually being recognised is the payload, so
@@ -107,7 +106,7 @@ def _is_rewatchable(descriptor: Any) -> bool:
     return isinstance(status_op, dict) and bool(status_op.get("tool"))
 
 
-def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort) -> str:
+def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort) -> str:
     """Put watchers on the in-flight runs a result reported — a status answer's, or
     the one an adopter just handed over.
 
@@ -151,7 +150,7 @@ def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort
     return result_text + note
 
 
-def _maybe_register_background_job(
+def maybe_register_background_job(
     name: str, result_text: str, agent: AgentPort, descriptor: dict | None = None,
 ) -> tuple[str, bool]:
     """Register a completion watcher for a detached run and tell the model to yield.
@@ -164,7 +163,7 @@ def _maybe_register_background_job(
     end your turn" note **only when a watcher is actually holding the run**, and
     ``registered`` says so, because that is the one thing the caller cannot infer from
     the text: it decides whether the turn may end on the promise of a resume or must
-    fall back to ``_await_background_job``. Returning only the text is what let a
+    fall back to ``await_background_job``. Returning only the text is what let a
     declined registration read exactly like a successful one — see the caller.
 
     *descriptor* lets a caller that already detected one pass it in rather than have
@@ -175,7 +174,7 @@ def _maybe_register_background_job(
     run could finish into silence with nothing anywhere to explain it.
     """
     if descriptor is None:
-        descriptor = _detect_background_job(name, result_text, agent)
+        descriptor = detect_background_job(name, result_text, agent)
     if descriptor is None:
         return result_text, False
     job_key = descriptor.get("job_key", "?")
@@ -209,7 +208,7 @@ def _maybe_register_background_job(
     return result_text + note, True
 
 
-async def _await_background_job(descriptor: dict, agent: AgentPort, result_text: str) -> str:
+async def await_background_job(descriptor: dict, agent: AgentPort, result_text: str) -> str:
     """Efficiently wait out a detached run in-turn, then append its results.
 
     The CLI has no persistent worker loop to host a watcher, so instead of the agent
@@ -218,7 +217,7 @@ async def _await_background_job(descriptor: dict, agent: AgentPort, result_text:
     summary, and fold it into the tool result. The launch tool already returned, so
     this runs outside the per-tool timeout. Best-effort: failures return what we have.
 
-    The loop is :func:`job_poll.poll_until_terminal`, shared with the WebSocket
+    The loop is :func:`poll.poll_until_terminal`, shared with the WebSocket
     worker's watcher; what differs is the schedule — a turn waiting on a run asks more
     often than a watcher holding one across turns — and that the user's Stop ends it,
     since here the caller *is* the turn.
@@ -231,21 +230,21 @@ async def _await_background_job(descriptor: dict, agent: AgentPort, result_text:
     if not status_op.get("tool"):
         return result_text
 
-    def _tick(tick: job_poll.Tick) -> None:
+    def _tick(tick: poll.Tick) -> None:
         # Only what the op actually answered: a probe that raised is a tick nobody
         # asked about, and "background run: " with nothing after it is noise in the
         # one place the caller is watching this run from.
         if tick.answered:
             emit({"type": "status", "text": f"background run: {tick.state}"})
 
-    state, _reason = await job_poll.poll_until_terminal(
+    state, _reason = await poll.poll_until_terminal(
         agent.run_tool, status_op,
         interval=3.0, max_interval=20.0,
         # The same limits as a watcher's: a status op that hangs or keeps erroring ends
         # the wait as "unknown" instead of holding the turn for weeks, and the user's
         # Stop ends it at the next tick.
-        call_timeout=job_poll.STATUS_CALL_TIMEOUT,
-        unreadable_limit=job_poll.UNREADABLE_POLL_LIMIT,
+        call_timeout=poll.STATUS_CALL_TIMEOUT,
+        unreadable_limit=poll.UNREADABLE_POLL_LIMIT,
         cancel_flag=getattr(agent, "_cancel_flag", None),
         on_tick=_tick)
 

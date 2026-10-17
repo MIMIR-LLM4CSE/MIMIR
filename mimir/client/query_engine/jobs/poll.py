@@ -1,24 +1,15 @@
-"""Polling a detached run to a terminal state, for every caller that has to.
+"""Polling a detached run to a terminal state; the one loop every watcher uses.
 
-Three places need this loop: the WebSocket worker's watcher task, which holds a run
-across turns; the in-turn fallback in :mod:`background`, used where no watcher exists;
-and a sub-agent's own watcher, which is a watcher on a loop that lives only as long as
-the child. What they share is not the schedule — each picks its own, because a run held
-across turns can afford to ask rarely and a turn waiting on one cannot — but what a poll
-*means*:
+Its callers are the WebSocket worker's watcher, the in-turn wait in :mod:`.background`
+and a sub-agent's own watcher. Each picks its own schedule; what they share is what a
+poll means:
 
-* four words end a run (:data:`TERMINAL`), and every other answer is "still going";
-* a status answer is an envelope with text blocks and any appended annotation after it,
-  so it is read with ``parse_tool_payload`` and never with a bare ``json.loads``;
-* a tick that learned nothing new is a tick that says nothing, which is why what it
-  learned is handed to the caller rather than announced from here;
-* a status op that stops being readable is given up as lost rather than polled for ever,
-  because an honest "I lost track of it" reaches the user and another silent tick does
-  not.
+* four words end a run (:data:`TERMINAL`), every other answer is "still going";
+* a status answer is read with ``parse_tool_payload``, never a bare ``json.loads``;
+* what a tick learned is handed to the caller, which decides whether to say it;
+* a status op that stays unreadable is given up as lost rather than polled for ever.
 
-Shape-driven, like the descriptors it serves: nothing here names a tool. The op to call
-travels in the descriptor, and whatever that op chose to report about progress is passed
-on without being understood.
+Nothing here names a tool: the op to call travels in the descriptor.
 """
 from __future__ import annotations
 
@@ -28,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from ..protocol.tool_result import parse_tool_payload
+from ...protocol.tool_result import parse_tool_payload
 
 logger = logging.getLogger(__name__)
 

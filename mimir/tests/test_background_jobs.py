@@ -23,10 +23,10 @@ from unittest import mock
 from mimir.tests._fake_pool import FakePool
 
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
-from mimir.client.query_engine import job_poll
-from mimir.client.query_engine.background import (
-    _maybe_register_background_job,
-    _maybe_rewatch_background_jobs,
+from mimir.client.query_engine.jobs import poll as job_poll
+from mimir.client.query_engine.jobs.background import (
+    maybe_register_background_job,
+    maybe_rewatch_background_jobs,
 )
 from mimir.tests._proxy_fixtures import (_TmpStorageTest, pin_local_scheduler, server_proxy)
 
@@ -136,7 +136,7 @@ class RegisterBackgroundJobTests(unittest.TestCase):
 
     def test_registers_and_augments_when_hook_present(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True)
-        out, registered = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
+        out, registered = maybe_register_background_job("proxy_eval", self._RESULT, agent)
         self.assertEqual(len(agent.registered), 1)
         self.assertTrue(registered)
         self.assertIn("background job", out)
@@ -145,13 +145,13 @@ class RegisterBackgroundJobTests(unittest.TestCase):
     def test_no_hook_leaves_result_unchanged(self) -> None:
         # CLI path: no register_background_job hook → normal poll contract kept.
         agent = _FakeAgent(cap=True, with_hook=False)
-        out, registered = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
+        out, registered = maybe_register_background_job("proxy_eval", self._RESULT, agent)
         self.assertEqual(out, self._RESULT)
         self.assertFalse(registered)
 
     def test_without_capability_is_noop(self) -> None:
         agent = _FakeAgent(cap=False, with_hook=True)
-        out, registered = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
+        out, registered = maybe_register_background_job("proxy_eval", self._RESULT, agent)
         self.assertEqual(out, self._RESULT)
         self.assertFalse(registered)
         self.assertEqual(agent.registered, [])
@@ -159,14 +159,14 @@ class RegisterBackgroundJobTests(unittest.TestCase):
     def test_no_descriptor_is_noop(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True)
         plain = json.dumps({"status": "ok", "note": "no job here"})
-        out, registered = _maybe_register_background_job("proxy_eval", plain, agent)
+        out, registered = maybe_register_background_job("proxy_eval", plain, agent)
         self.assertEqual(out, plain)
         self.assertFalse(registered)
         self.assertEqual(agent.registered, [])
 
     def test_malformed_result_is_noop(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True)
-        out, registered = _maybe_register_background_job("proxy_eval", "not json", agent)
+        out, registered = maybe_register_background_job("proxy_eval", "not json", agent)
         self.assertEqual(out, "not json")
         self.assertFalse(registered)
 
@@ -175,8 +175,8 @@ class RegisterBackgroundJobTests(unittest.TestCase):
 
     def test_declined_registration_promises_nothing(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True, outcome=False)
-        with self.assertLogs("mimir.client.query_engine.background", "WARNING") as log:
-            out, registered = _maybe_register_background_job(
+        with self.assertLogs("mimir.client.query_engine.jobs.background", "WARNING") as log:
+            out, registered = maybe_register_background_job(
                 "proxy_eval", self._RESULT, agent)
         self.assertFalse(registered)
         # The note is the promise of a resume. A declined registration must not carry
@@ -186,8 +186,8 @@ class RegisterBackgroundJobTests(unittest.TestCase):
 
     def test_raising_hook_promises_nothing(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True, outcome=RuntimeError("no loop"))
-        with self.assertLogs("mimir.client.query_engine.background", "WARNING") as log:
-            out, registered = _maybe_register_background_job(
+        with self.assertLogs("mimir.client.query_engine.jobs.background", "WARNING") as log:
+            out, registered = maybe_register_background_job(
                 "proxy_eval", self._RESULT, agent)
         self.assertFalse(registered)
         self.assertEqual(out, self._RESULT)
@@ -202,23 +202,23 @@ class RegisterBackgroundJobTests(unittest.TestCase):
         is why detection goes through ``parse_tool_payload``, like every other
         consumer of a tool payload.
         """
-        from mimir.client.query_engine.background import _detect_background_job
+        from mimir.client.query_engine.jobs.background import detect_background_job
         agent = _FakeAgent(cap=True, with_hook=True)
         annotated = self._RESULT + "\n\nAUTO_VALIDATION\nlooks fine"
-        self.assertIsNotNone(_detect_background_job("proxy_eval", annotated, agent))
-        out, registered = _maybe_register_background_job("proxy_eval", annotated, agent)
+        self.assertIsNotNone(detect_background_job("proxy_eval", annotated, agent))
+        out, registered = maybe_register_background_job("proxy_eval", annotated, agent)
         self.assertTrue(registered)
         self.assertIn("[background]", out)
 
     def test_annotated_result_still_opens_the_editor(self) -> None:
         """Same defect, same fix, on the sibling that opens a written plan."""
-        from mimir.client.query_engine import background as bg
+        from mimir.client.query_engine.jobs import background as bg
         payload = json.dumps({"status": "ok", "name": "p",
                               "path": "/tmp/plan.md", "open_in_editor": True})
         seen: list[dict] = []
         orig, bg.emit = bg.emit, seen.append
         try:
-            bg._maybe_emit_open_editor(payload + "\n\nAUTO_VALIDATION\nlooks fine")
+            bg.maybe_emit_open_editor(payload + "\n\nAUTO_VALIDATION\nlooks fine")
         finally:
             bg.emit = orig
         self.assertEqual(seen, [{"type": "open_editor", "path": "/tmp/plan.md"}])
@@ -279,7 +279,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
             tool_caps=registry,
             register_background_job=lambda d: bool(registered.append(d) or True),
         )
-        out, was_registered = _maybe_register_background_job(
+        out, was_registered = maybe_register_background_job(
             "bash_run", json.dumps(result), agent)
 
         self.assertEqual(len(registered), 1)
@@ -328,7 +328,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
             watched_background_jobs=lambda: [],
             register_background_job=lambda d: bool(registered.append(d) or True),
         )
-        out = _maybe_rewatch_background_jobs("bash_watch", json.dumps(result), agent)
+        out = maybe_rewatch_background_jobs("bash_watch", json.dumps(result), agent)
 
         self.assertEqual([d["job_key"] for d in registered], [job_key])
         # The note is the only proof a watcher exists. Its absence is exactly what the
@@ -1041,7 +1041,7 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
 
     def test_dispatch_is_the_only_caller_that_consults_the_guards(self) -> None:
         import inspect
-        from mimir.client.query_engine import background, job_poll
+        from mimir.client.query_engine.jobs import background, poll as job_poll
         from mimir.client.ui.ws import ws_worker
         from mimir.servers.agent_state import _child_jobs
 
@@ -1054,7 +1054,7 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
             for guard in guard_names:
                 self.assertNotIn(guard, src, f"{module.__name__} must not gate its own probes")
         # And every probe path reaches the tool through run_tool, not the dispatcher.
-        for probe in (background._await_background_job,
+        for probe in (background.await_background_job,
                       JobWatcher._poll_to_completion,
                       _child_jobs.ChildWatcher._watch):
             src = inspect.getsource(probe)
@@ -1159,7 +1159,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
 
 class AwaitBackgroundJobTests(unittest.TestCase):
     def _run(self, agent, descriptor, result):
-        from mimir.client.query_engine import background as al
+        from mimir.client.query_engine.jobs import background as al
 
         async def _drive():
             orig = asyncio.sleep
@@ -1168,7 +1168,7 @@ class AwaitBackgroundJobTests(unittest.TestCase):
                 await orig(0)
             asyncio.sleep = _fast
             try:
-                return await al._await_background_job(descriptor, agent, result)
+                return await al.await_background_job(descriptor, agent, result)
             finally:
                 asyncio.sleep = orig
         return asyncio.run(_drive())
@@ -1208,7 +1208,7 @@ class AwaitBackgroundJobTests(unittest.TestCase):
 
 class WakeTextTests(unittest.TestCase):
     def _wake(self, ev: dict) -> str:
-        from mimir.client.ui.ws.job_wakes import wake_text
+        from mimir.client.query_engine.jobs.wakes import wake_text
         return wake_text(ev)
 
     def test_accept_summary_is_enriched(self) -> None:
@@ -2005,7 +2005,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_non_finite_value_in_the_log_is_an_alert_reported_at_once(self) -> None:
         """A run that blew up and keeps running must not wait for the next point."""
         from unittest import mock
-        from mimir.client.query_engine import job_poll
+        from mimir.client.query_engine.jobs import poll as job_poll
         self._watch("j1")
         self.worker.jobs._checkin_last = None
         ticks = [["it 10 residual = 1.2e-3"], ["it 11 residual = inf"],
@@ -2030,7 +2030,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("inf", alerts["non-finite value"])
 
     def test_alert_detection_ignores_ordinary_words(self) -> None:
-        from mimir.client.query_engine.job_poll import log_alerts
+        from mimir.client.query_engine.jobs.poll import log_alerts
         self.assertEqual(log_alerts(["INFO: step 3", "information", "infer x"]), {})
         self.assertEqual(set(log_alerts(["loss=-inf", "x = NaN"])), {"non-finite value"})
         self.assertIn("traceback", log_alerts(["Traceback (most recent call last):"]))
@@ -2388,7 +2388,7 @@ class RewatchDetectionTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from mimir.client.query_engine import background
+        from mimir.client.query_engine.jobs import background
         self.background = background
         self.registered: list[dict] = []
         self.agent = types.SimpleNamespace(
@@ -2406,14 +2406,14 @@ class RewatchDetectionTests(unittest.TestCase):
                 "status_op": {"tool": "bash_job", "args": {"job_key": key}}}
 
     def test_a_status_result_re_arms_the_run_it_reports(self) -> None:
-        out = self.background._maybe_rewatch_background_jobs(
+        out = self.background.maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("j1")), self.agent)
         self.assertEqual([d["job_key"] for d in self.registered], ["j1"])
         self.assertIn("Now tracking 'j1'", out)
         self.assertIn("do NOT poll", out)
 
     def test_a_listing_re_arms_every_run_still_going(self) -> None:
-        out = self.background._maybe_rewatch_background_jobs(
+        out = self.background.maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("jA"), self._descriptor("jB")),
             self.agent)
         self.assertEqual([d["job_key"] for d in self.registered], ["jA", "jB"])
@@ -2423,7 +2423,7 @@ class RewatchDetectionTests(unittest.TestCase):
         """A reader is a reader: BACKGROUNDABLE says a tool *launches* a run."""
         from mimir.client.context.capabilities import has_cap, BACKGROUNDABLE
         self.assertFalse(has_cap("bash_job", BACKGROUNDABLE, self.agent.tool_caps))
-        self.background._maybe_rewatch_background_jobs(
+        self.background.maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("j1")), self.agent)
         self.assertEqual(len(self.registered), 1)
 
@@ -2435,13 +2435,13 @@ class RewatchDetectionTests(unittest.TestCase):
                     {"job_key": "j1", "status_op": "bash_job"},
                     "not a descriptor"):
             with self.subTest(bad=bad):
-                self.background._maybe_rewatch_background_jobs(
+                self.background.maybe_rewatch_background_jobs(
                     "bash_job", json.dumps({"background_jobs": [bad]}), self.agent)
         self.assertEqual(self.registered, [])
 
     def test_a_run_already_watched_is_not_announced_again(self) -> None:
         self.agent.watched_background_jobs = lambda: [self._descriptor("j1")]
-        out = self.background._maybe_rewatch_background_jobs(
+        out = self.background.maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("j1")), self.agent)
         self.assertEqual(self.registered, [])
         self.assertNotIn("Now tracking", out)
@@ -2449,7 +2449,7 @@ class RewatchDetectionTests(unittest.TestCase):
     def test_the_singular_key_is_not_a_re_arm(self) -> None:
         """``background_job`` means *this call launched it* — a different story."""
         payload = json.dumps({"background_job": self._descriptor("j1")})
-        out = self.background._maybe_rewatch_background_jobs("bash_job", payload, self.agent)
+        out = self.background.maybe_rewatch_background_jobs("bash_job", payload, self.agent)
         self.assertEqual(self.registered, [])
         self.assertEqual(out, payload)
 
@@ -2458,7 +2458,7 @@ class RewatchDetectionTests(unittest.TestCase):
         del self.agent.register_background_job
         payload = self._result(self._descriptor("j1"))
         self.assertEqual(
-            self.background._maybe_rewatch_background_jobs("bash_job", payload, self.agent),
+            self.background.maybe_rewatch_background_jobs("bash_job", payload, self.agent),
             payload)
 
 
