@@ -22,14 +22,10 @@ import unittest.mock
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
-    _ps = str(_p)
-    if _ps not in sys.path:
-        sys.path.insert(0, _ps)
 
-from _lib import execute, metrics, procs, ratchet, report, store  # noqa: E402
-from mimir.tests._proxy_fixtures import _TmpStorageTest, pin_local_scheduler  # noqa: E402
-from mimir.servers._shared.atomic import write_json  # noqa: E402
+from mimir.servers.proxy._lib import execute, metrics, procs, ratchet, report, store
+from mimir.tests._proxy_fixtures import _TmpStorageTest, pin_local_scheduler
+from mimir.servers._shared.atomic import write_json
 
 try:
     import numpy as _np

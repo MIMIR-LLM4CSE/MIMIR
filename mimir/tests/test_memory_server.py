@@ -9,6 +9,7 @@ workspace, so it blocks a local copy of itself, is never aged out to make room, 
 survives a workspace wipe.
 """
 
+from mimir.tests.support.stubs import stub_attr
 import json
 import os
 import tempfile
@@ -27,7 +28,7 @@ class _MemoryTestCase(unittest.TestCase):
         self.ws_dir, self.global_dir = point_stores(self.mem, tmp.name)
         # Keep the suite hermetic: no embedding backend.
         original = self.mem._embed.is_available
-        self.mem._embed.is_available = lambda: False
+        stub_attr(self, self.mem._embed, "is_available", lambda: False)
         self.addCleanup(setattr, self.mem._embed, "is_available", original)
 
 
@@ -246,10 +247,10 @@ class MemoryScopedEmbeddingTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.mem = load_memory_server()
         self.ws_dir, self.global_dir = point_stores(self.mem, tmp.name)
-        self.mem._embed.is_available = lambda: True
-        self.mem._embed.embed_model_id = lambda: "fake-model"
-        self.mem._embed.embed_texts = lambda texts: [self._vec(t) for t in texts]
-        self.mem._embed.embed_one = lambda t: self._vec(t)
+        stub_attr(self, self.mem._embed, "is_available", lambda: True)
+        stub_attr(self, self.mem._embed, "embed_model_id", lambda: "fake-model")
+        stub_attr(self, self.mem._embed, "embed_texts", lambda texts: [self._vec(t) for t in texts])
+        stub_attr(self, self.mem._embed, "embed_one", lambda t: self._vec(t))
 
     @staticmethod
     def _vec(text: str):

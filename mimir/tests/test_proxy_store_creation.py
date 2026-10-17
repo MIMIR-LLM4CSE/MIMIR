@@ -14,19 +14,14 @@ Run:
 
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
-    _ps = str(_p)
-    if _ps not in sys.path:
-        sys.path.insert(0, _ps)
 
-import server_proxy  # noqa: E402
-from _lib import store  # noqa: E402
+from mimir.servers.proxy import server_proxy
+from mimir.servers.proxy._lib import store
 
 
 class StoreCreationTests(unittest.TestCase):
@@ -118,7 +113,7 @@ class StoreLocationTests(unittest.TestCase):
         os.environ["MCP_FILES_ROOT"] = wt
         os.environ.pop("MIMIR_PROXY_BENCH_DIR", None)
         self.addCleanup(os.environ.pop, "MCP_FILES_ROOT", None)
-        from _lib import store
+        from mimir.servers.proxy._lib import store
         importlib.reload(store)
         self.assertEqual(store.cache_dir(), os.path.join(wt, "proxy_bench"))
 
@@ -126,7 +121,7 @@ class StoreLocationTests(unittest.TestCase):
         import importlib
         os.environ["MIMIR_PROXY_BENCH_DIR"] = "/tmp/explicit_store"
         self.addCleanup(os.environ.pop, "MIMIR_PROXY_BENCH_DIR", None)
-        from _lib import store
+        from mimir.servers.proxy._lib import store
         importlib.reload(store)
         self.assertEqual(store.cache_dir(), "/tmp/explicit_store")
 

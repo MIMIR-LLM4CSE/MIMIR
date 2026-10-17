@@ -23,13 +23,11 @@ Tools:
 
 import os
 import re
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import CACHEABLE, tool_caps
-from extension_paths import (
+from .._shared.capabilities import CACHEABLE, tool_caps
+from .._shared.extension_paths import (
     MIMIR_DIRNAME,
     PLUGINS_DIR_ENV,
     PLUGINS_DIRNAME,
@@ -43,9 +41,9 @@ from extension_paths import (
     resolve_extension_dir,
     workspace_root,
 )
-from responses import err, ok
-from skill_file import model_invocable
-from text_tools import yaml_unquote
+from .._shared.responses import err, ok
+from .._shared.skill_file import model_invocable
+from .._shared.text_tools import yaml_unquote
 
 # The installed package root (``<...>/mimir/``): this file is mimir/servers/agent_state/.
 # Everything reported below is read from under it, so the answers describe the build

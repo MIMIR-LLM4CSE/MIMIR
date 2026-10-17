@@ -19,18 +19,14 @@ Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
-for _p in (_SERVERS / "_shared", _SERVERS / "workspace"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import server_files as sf  # noqa: E402
+from mimir.servers.workspace import server_files as sf
 
 
 class _WorkspaceFixture(unittest.TestCase):
@@ -147,7 +143,7 @@ class PreconditionDoesNotWeakenTheSandboxTests(_WorkspaceFixture):
         # The standing root must survive the new precondition. MIMIR_SCRATCH_DIR is
         # pointed at a temp dir so the hermetic suite never writes into the real
         # scratchpad under /tmp.
-        from state_paths import scratch_dir
+        from mimir.servers._shared.state_paths import scratch_dir
         state = tempfile.mkdtemp()
         scratch = tempfile.mkdtemp()
         for d in (state, scratch):
@@ -184,7 +180,7 @@ class ReadsAreAsStrictAsWritesTests(unittest.TestCase):
     """
 
     def test_a_relative_path_is_refused_with_the_absolute_one_it_meant(self):
-        import server_search as ss
+        from mimir.servers.workspace import server_search as ss
         old = ss.SEARCH_ROOT
         with tempfile.TemporaryDirectory() as d:
             ss.SEARCH_ROOT = d
@@ -200,7 +196,7 @@ class ReadsAreAsStrictAsWritesTests(unittest.TestCase):
 
     def test_directory_tools_keep_their_tolerant_default(self):
         # "." there means the workspace — no inference anyone can get wrong.
-        import server_search as ss
+        from mimir.servers.workspace import server_search as ss
         old = ss.SEARCH_ROOT
         with tempfile.TemporaryDirectory() as d:
             ss.SEARCH_ROOT = d
@@ -220,8 +216,8 @@ class ReadsReachWhereWritesReachTests(unittest.TestCase):
     """
 
     def test_every_read_server_admits_the_scratchpad(self):
-        import server_code_intel as ci
-        import server_search as ss
+        from mimir.servers.workspace import server_code_intel as ci
+        from mimir.servers.workspace import server_search as ss
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as ws, \
                 unittest.mock.patch.dict(os.environ, {"MIMIR_SCRATCH_DIR": home}):
@@ -250,7 +246,7 @@ class PathRoundTripTests(unittest.TestCase):
     """
 
     def test_search_returns_absolute_paths(self):
-        import server_search as ss
+        from mimir.servers.workspace import server_search as ss
         old = ss.SEARCH_ROOT
         with tempfile.TemporaryDirectory() as d:
             ss.SEARCH_ROOT = d
@@ -276,7 +272,7 @@ class PathRoundTripTests(unittest.TestCase):
 
     def test_a_searched_path_is_directly_writable(self):
         # The end-to-end property: copy what discovery returned into a file tool.
-        import server_search as ss
+        from mimir.servers.workspace import server_search as ss
         old_root = ss.SEARCH_ROOT
         with tempfile.TemporaryDirectory() as d:
             ss.SEARCH_ROOT = d

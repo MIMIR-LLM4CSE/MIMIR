@@ -6,16 +6,12 @@ Run:
 """
 
 import asyncio
-import sys
 import unittest
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
-for _p in (_SERVERS / "_shared", _SERVERS / "proxy"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import server_proxy  # noqa: E402
+from mimir.servers.proxy import server_proxy
 
 
 def _eval(*args, **kwargs):

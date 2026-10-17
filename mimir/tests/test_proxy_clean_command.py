@@ -10,14 +10,11 @@ Run:
 """
 
 import os
-import sys
 import types
 import unittest
 from mimir.client.core.turn_state import TurnState
 
 _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "proxy")
-sys.path.insert(0, os.path.abspath(_PROXY))
-sys.path.insert(0, os.path.abspath(os.path.join(_PROXY, "..", "_shared")))
 
 
 class ProxyCleanCommandTests(unittest.TestCase):

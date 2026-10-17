@@ -12,29 +12,26 @@ Run:
 """
 
 import os
-import sys
 import tempfile
 import types
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mimir.client.context.capabilities import (  # noqa: E402
+from mimir.client.context.capabilities import (
     CODE_EXEC, PLAN_BLOCKED, PLAN_READONLY, ToolCaps, infer_tool_caps, run_outcome_spec,
 )
-from mimir.client.context.execution_context import (  # noqa: E402
+from mimir.client.context.execution_context import (
     build_execution_context, validation_tier,
 )
-from mimir.client.context import failed_runs, unsettled_runs  # noqa: E402
-from mimir.client.guardrails import observations as O  # noqa: E402
-from mimir.client.guardrails import workflow  # noqa: E402
+from mimir.client.context import failed_runs, unsettled_runs
+from mimir.client.guardrails import observations as O
+from mimir.client.guardrails import workflow
 from mimir.client.context.bash_classify import opaque_command_executes
-from mimir.client.guardrails.verdict import apply_verdict  # noqa: E402
-from mimir.servers._shared.capabilities import build_descriptor  # noqa: E402
-from mimir.servers.proxy._lib import store  # noqa: E402
-from mimir.servers._shared.atomic import write_json  # noqa: E402
-from mimir.client.guardrails.observations import Call  # noqa: E402
+from mimir.client.guardrails.verdict import apply_verdict
+from mimir.servers._shared.capabilities import build_descriptor
+from mimir.servers.proxy._lib import store
+from mimir.servers._shared.atomic import write_json
+from mimir.client.guardrails.observations import Call
 from mimir.client.core.turn_state import TurnState
 
 # The shape server_proxy declares, restated here so a change to it fails a test rather

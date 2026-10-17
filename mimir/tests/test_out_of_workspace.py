@@ -11,10 +11,8 @@ from mimir.client.context.execution_context import build_execution_context
 
 import json
 import os
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 
 from mimir.client.context.capabilities import ToolCaps, CODE_EXEC, READ, EDIT
 from mimir.client.guardrails.policy import approval as approval_mod
@@ -83,11 +81,8 @@ class GrantPathTests(_TmpStateDir):
 
     def test_server_reads_client_sidecar(self) -> None:
         # End-to-end propagation: what the client writes, the server helper reads.
-        for p in (Path(__file__).resolve().parents[1] / "servers" / "_shared",):
-            if str(p) not in sys.path:
-                sys.path.insert(0, str(p))
         import importlib
-        import approved_roots as ar
+        from mimir.servers._shared import approved_roots as ar
         importlib.reload(ar)  # ensure it resolves state_dir() fresh
         m = self._mgr()
         m.paths.grant("/tmp/data/run.log", always=True)
@@ -440,8 +435,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         agent = self._agent(script=(True, True))
         gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd /tmp/granted && ls"}, {})
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "servers" / "_shared"))
-        import approved_roots
+        from mimir.servers._shared import approved_roots
         self.assertIn(os.path.realpath("/tmp/granted"), approved_roots.approved_roots())
 
     def test_non_exec_tool_is_not_scanned_for_cd(self) -> None:

@@ -27,21 +27,24 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import (
-    tool_caps, CACHEABLE, CANDIDATE_SEARCH, CODE_NAV, READ,
-    SEARCH, SEARCH_WITH_PATH,
+from .._shared.capabilities import (
+    tool_caps,
+    CACHEABLE,
+    CANDIDATE_SEARCH,
+    CODE_NAV,
+    READ,
+    SEARCH,
+    SEARCH_WITH_PATH,
 )
-from responses import err, ok
-from root_paths import require_absolute, resolve_path_in_root
-from approved_roots import approved_roots
-from state_paths import standing_roots
-from lsp_client import LSPPool, path_for
+from .._shared.responses import err, ok
+from .._shared.root_paths import require_absolute, resolve_path_in_root
+from .._shared.approved_roots import approved_roots
+from .._shared.state_paths import standing_roots
+from .._shared.lsp_client import LSPPool, path_for
 
 SEARCH_ROOT = os.environ.get(
     "SEARCH_ROOT",

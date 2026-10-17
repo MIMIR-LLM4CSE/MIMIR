@@ -3,8 +3,8 @@
 Invoked as a subprocess by the ``proxy_eval``/``proxy_slurm`` eval ops of
 server_proxy.py; not an MCP server.
 
-Usage:
-    python _proxy_runner.py --run-dir <path> [--phase all|build|run]
+Usage (through the launcher, ``_shared/launcher.launch_argv``):
+    python servers/_launch.py mimir.servers.proxy._proxy_runner --run-dir <path> [--phase all|build|run]
 
 Reads  <run-dir>/config.json, executes the full benchmark suite for the
 configured proxy, evaluates requirements, and writes
@@ -84,7 +84,7 @@ def _write_phase(run_dir: str, kind: str, text: str, **fields) -> None:
     a run must never die because it could not describe itself.
     """
     try:
-        from atomic import write_json
+        from .._shared.atomic import write_json
         write_json(os.path.join(run_dir, "phase.json"),
                            {"kind": kind, "text": text, **fields}, indent=2)
     except Exception:
@@ -186,7 +186,7 @@ def _build_phase(build_mod, tree_snapshot, reg: dict, suite: dict,
     # Makefile, a generated header listed in optimize_paths) leaves the measured
     # tree different from the one snapshotted at launch, so the run would be
     # recorded against code that is not what ran.
-    from _lib.store import _read_json
+    from ._lib.store import _read_json
     launch = _read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
     opt_paths = (cfg.get("optimize_paths") or launch.get("paths") or [])
     expected = launch.get("fingerprint", "")
@@ -243,21 +243,13 @@ def main() -> None:
     _log(f"[proxy_runner] benchmark_name={benchmark_name}")
     _log(f"[proxy_runner] requirements={len(requirements)}")
 
-    # ── locate the _lib helper package ───────────────────────────────────────
-    _this_dir = os.path.dirname(os.path.abspath(__file__))
-    _shared_dir = os.path.join(_this_dir, '..', '_shared')
-    if _this_dir not in sys.path:
-        sys.path.insert(0, _this_dir)
-    if _shared_dir not in sys.path:
-        sys.path.insert(0, _shared_dir)
-
     try:
-        from _lib import build as build_mod
-        from _lib import tree_snapshot
-        from _lib.execute import _run_benchmark_case
-        from _lib.metrics import _evaluate_requirements, _convergence_order
-        from _lib.ratchet import _select_best_case
-        from _lib.store import _load_registry, _load_suite, _read_json
+        from ._lib import build as build_mod
+        from ._lib import tree_snapshot
+        from ._lib.execute import _run_benchmark_case
+        from ._lib.metrics import _evaluate_requirements, _convergence_order
+        from ._lib.ratchet import _select_best_case
+        from ._lib.store import _load_registry, _load_suite, _read_json
     except ImportError as exc:
         _log(f"[proxy_runner] ERROR: cannot import _lib: {exc}")
         sys.exit(1)
@@ -267,7 +259,7 @@ def main() -> None:
     # allocation or in a batch job alike — so the ratchet can tell whether two timings
     # were taken on the same kind of machine before comparing them.
     try:
-        from cpu_facts import local_machine
+        from .._shared.cpu_facts import local_machine
         machine = local_machine()
         with open(os.path.join(run_dir, "machine.json"), "w") as fh:
             json.dump(machine, fh, indent=2)
@@ -520,8 +512,8 @@ def main() -> None:
     # results(): settle here, at completion. results() replays the frozen
     # outcome (idempotent, flock-serialized).
     try:
-        from _lib.store import _load_opt_config
-        from _ops._eval_ratchet import _ratchet_state
+        from ._lib.store import _load_opt_config
+        from ._ops._eval_ratchet import _ratchet_state
         cfg = _load_opt_config(proxy_name)
         if cfg and cfg.get("proxy_name") == proxy_name:
             outcome = _ratchet_state(proxy_name, run_dir, output, cfg)

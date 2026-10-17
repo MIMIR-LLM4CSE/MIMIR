@@ -13,12 +13,9 @@ signal, and the row's job is to say something *different* at each rung rather th
 """
 from __future__ import annotations
 
-import os
-import sys
 import types
 import unittest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from mimir.client.config.limits import (
     NUDGE_MAX_STUCK_REPAIR,

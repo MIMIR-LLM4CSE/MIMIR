@@ -54,9 +54,9 @@ import shutil
 import subprocess
 import time
 
-import proc_run
+from ..._shared import proc_run
 
-from _lib import procs, store
+from . import procs, store
 
 # Long enough for a real project's first build, bounded so a wedged build cannot
 # hold a run for the whole 24 h measurement budget. Half an hour was not: a GPU

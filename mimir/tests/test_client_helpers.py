@@ -45,6 +45,7 @@ from mimir.tests._loops import run_agent
 import types
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
+from mimir.tests.support.modules import spec_for
 client_module = types.SimpleNamespace(
     MimirAgent=MimirAgent,
     SERVERS=__import__('mimir.client.config', fromlist=['SERVERS']).SERVERS,
@@ -2489,14 +2490,9 @@ class SubAgentRungTests(unittest.TestCase):
         the previous version says "parallel" to a server of this one.
         """
         import importlib.util
-        import sys
         from pathlib import Path as _Path
         root = _Path(__file__).resolve().parents[1] / "servers"
-        for sub in ("_shared", "agent_state"):
-            if str(root / sub) not in sys.path:
-                sys.path.insert(0, str(root / sub))
-        spec = importlib.util.spec_from_file_location(
-            "server_spawn_agent_rungs", root / "agent_state" / "server_spawn_agent.py")
+        spec = spec_for(root / "agent_state" / "server_spawn_agent.py")
         spawn = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(spawn)
         self.assertEqual(spawn._SUBAGENT_LEVELS, ("explore", "build"))

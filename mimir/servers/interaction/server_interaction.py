@@ -27,15 +27,12 @@ back as ``{"answers": [{"selected": [...], "other_text": ...}, ...]}``.
 from __future__ import annotations
 
 import json
-import os
-import sys
 from typing import Any
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import Context, FastMCP
-from responses import err, ok
-from capabilities import tool_caps
+from .._shared.responses import err, ok
+from .._shared.capabilities import tool_caps
 
 mcp = FastMCP(
     "InteractionServer",

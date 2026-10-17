@@ -23,18 +23,15 @@ from unittest.mock import patch
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "workspace"]:
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import run_channel  # noqa: E402
-import slurm_site  # noqa: E402
+from mimir.servers._shared import run_channel
+from mimir.servers._shared import slurm_site
 
-from mimir.tests.support.scheduler import local_slurm  # noqa: E402
-import _bash_jobs  # noqa: E402
-import server_bash  # noqa: E402
+from mimir.tests.support.scheduler import local_slurm
+from mimir.servers.workspace import _bash_jobs
+from mimir.servers.workspace import server_bash
 
-from mimir.servers._shared.trusted_read_roots import trusted_read_roots  # noqa: E402
+from mimir.servers._shared.trusted_read_roots import trusted_read_roots
 
 
 def _jobs_on_disk() -> list[str]:

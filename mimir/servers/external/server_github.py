@@ -14,16 +14,14 @@ import base64
 import difflib
 import json
 import os
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, EXTERNAL_FETCH
-from responses import err, ok
+from .._shared.capabilities import tool_caps, EXTERNAL_FETCH
+from .._shared.responses import err, ok
 
 mcp = FastMCP(
     "GitHubServer",

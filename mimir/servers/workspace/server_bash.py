@@ -142,19 +142,24 @@ import shlex
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import (
-    tool_caps, PLAN_READONLY, PLAN_BLOCKED, CODE_EXEC, JUDGE, RECOVERABLE,
-    BACKGROUNDABLE, DIVERTIBLE,
+from .._shared.capabilities import (
+    tool_caps,
+    PLAN_READONLY,
+    PLAN_BLOCKED,
+    CODE_EXEC,
+    JUDGE,
+    RECOVERABLE,
+    BACKGROUNDABLE,
+    DIVERTIBLE,
 )
-from responses import err, ok
-from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
-import _bash_jobs
-import build_progress
-import run_channel
-from slurm_site import (
+from .._shared.responses import err, ok
+from .._shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
+from . import _bash_jobs
+from .._shared import build_progress
+from .._shared import run_channel
+from .._shared.slurm_site import (
     SLURM_COMMANDS,
     slurm_host_from_ssh,
     queued_by_host as slurm_queued_by_host,
@@ -162,7 +167,7 @@ from slurm_site import (
     unwatched_by_host as slurm_unwatched_by_host,
     unwatched_hint as slurm_unwatched_hint,
 )
-from shell_paths import (
+from .._shared.shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
     DESTRUCTIVE_COMMANDS,
     ENV_MANAGER_COMMANDS as _ENV_MANAGER_COMMANDS,
@@ -453,8 +458,8 @@ def _is_within_workspace(path: str) -> bool:
     # own standing grant (the scratchpad). Both read per-call: the server's env is
     # frozen at spawn, so the shared state dir is the only live channel.
     try:
-        from approved_roots import approved_roots
-        from state_paths import standing_roots
+        from .._shared.approved_roots import approved_roots
+        from .._shared.state_paths import standing_roots
         for extra in list(approved_roots()) + standing_roots():
             base = os.path.realpath(os.path.abspath(os.path.expanduser(extra)))
             if path == base or path.startswith(base + os.sep):
@@ -1230,7 +1235,7 @@ def _resolve_run_dir(run_dir: str, job_key: str) -> tuple[str, dict | None]:
     grants exactly this session's runs and its children's, and nothing else — another
     conversation's job directory is not under this session's, however well formed.
     """
-    from state_paths import session_state_dir
+    from .._shared.state_paths import session_state_dir
     resolved = os.path.realpath(os.path.expanduser(run_dir))
     root = os.path.realpath(session_state_dir())
     if os.path.commonpath([resolved, root]) != root:

@@ -1,7 +1,7 @@
 """Backend-aware text embedding with a lexical fallback.
 
-Shared by the MCP servers (which run in separate processes and import ``_shared``
-flat via ``sys.path``) and by the client policy layer. It reads the *same*
+Shared by the MCP servers (which run in separate processes) and by the client
+policy layer. It reads the *same*
 environment variables as the chat backend — ``LLM_BACKEND``, ``VLLM_BASE_URL`` /
 ``VLLM_API_KEY``, ``RAY_BASE_URL`` / ``RAY_API_KEY`` — so it behaves identically on
 both sides without importing any client config.

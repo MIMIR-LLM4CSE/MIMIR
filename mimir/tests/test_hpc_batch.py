@@ -12,7 +12,6 @@ Run:
 import json
 import os
 import shlex
-import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -20,15 +19,12 @@ from unittest.mock import patch
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
-for _p in (_SERVERS / "_shared", _SERVERS / "hpc"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import server_hpc  # noqa: E402
-import slurm_digest  # noqa: E402
-import slurm_site  # noqa: E402
+from mimir.servers.hpc import server_hpc
+from mimir.servers._shared import slurm_digest
+from mimir.servers._shared import slurm_site
 
-from mimir.tests.support.scheduler import local_slurm  # noqa: E402
+from mimir.tests.support.scheduler import local_slurm
 
 
 def _canned(mapping: dict):
@@ -637,7 +633,7 @@ class NodeProfileTests(unittest.TestCase):
         job_dir = self._submit(constraint="avx512")
         with open(os.path.join(job_dir, "probe.sh")) as fh:
             script = fh.read()
-        self.assertIn("server_platform.py", script)
+        self.assertIn("mimir.servers.hpc.server_platform --profile-json", script)
         self.assertIn("--profile-json", script)
         self.assertIn("--constraint=avx512", script)
         self.assertIn(".venv-", script)          # the node's own interpreter

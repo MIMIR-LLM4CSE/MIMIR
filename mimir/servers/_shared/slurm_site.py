@@ -47,7 +47,7 @@ import shlex
 import subprocess
 import time
 
-from state_paths import SUBAGENTS_DIRNAME, session_state_dir, sessions_root, state_dir
+from .state_paths import SUBAGENTS_DIRNAME, session_state_dir, sessions_root, state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
 # of these, and that succeeded, proves the far side has a scheduler — no other host

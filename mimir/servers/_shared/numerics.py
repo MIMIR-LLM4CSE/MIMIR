@@ -18,9 +18,6 @@ drags this module across the client/server line, and it hides two failures while
 — a grammar written to mirror the metrics parser's strictness rather than what harnesses
 actually print, with no test exercising it against a real one. What belongs here is the
 proxy's reserved vocabulary, which is all this module is for.
-
-Lives in ``_shared`` for the flat ``sys.path`` import the servers use
-(``from numerics import RESERVED_METRICS``).
 """
 
 from __future__ import annotations

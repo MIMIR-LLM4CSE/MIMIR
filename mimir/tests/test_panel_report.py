@@ -7,10 +7,10 @@ plugin server's section appears without a client edit.
 """
 from __future__ import annotations
 
+from mimir.tests.support.modules import spec_for
 import asyncio
 import importlib.util
 import os
-import sys
 import json
 import types
 from pathlib import Path
@@ -19,14 +19,11 @@ from unittest import mock
 from mimir.client.ui.ws.worker.jobs import JobWatcher
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "hpc", SERVERS_DIR / "proxy"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
 
 def _load(name: str, path: Path):
     """Load one server module by path, as its own subprocess would."""
-    spec = importlib.util.spec_from_file_location(name, path)
+    spec = spec_for(path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -35,7 +32,7 @@ def _load(name: str, path: Path):
 def _report(hpc, **kwargs) -> dict:
     return asyncio.run(hpc.hpc_panel_report(**kwargs))
 
-import slurm_site  # noqa: E402
+from mimir.servers._shared import slurm_site
 
 from mimir.client.context.capabilities import PANEL_REPORT, ToolCaps, panel_sections
 from mimir.client.core.turn_state import TurnState

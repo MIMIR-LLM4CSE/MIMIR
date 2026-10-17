@@ -15,16 +15,11 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
-_PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "proxy")
-sys.path.insert(0, os.path.abspath(_PROXY))
-sys.path.insert(0, os.path.abspath(os.path.join(_PROXY, "..", "_shared")))
-
-from _ops import _eval_ratchet, eval_session  # noqa: E402
+from mimir.servers.proxy._ops import _eval_ratchet, eval_session
 
 
 class _Ledgered(unittest.TestCase):
@@ -260,7 +255,7 @@ class PanelLinesTests(unittest.TestCase):
     """The same account in the drawer, so the user sees it without asking either."""
 
     def _lines(self, axes: dict):
-        import server_proxy
+        from mimir.servers.proxy import server_proxy
         with mock.patch.object(server_proxy.eval_session, "axes_tried",
                                return_value=axes):
             return server_proxy._axes_lines("solver")
@@ -278,14 +273,14 @@ class PanelLinesTests(unittest.TestCase):
     def test_a_settled_run_shows_up_on_the_next_refresh(self):
         """The lines are cached on the ledger's own mtime, so there is no staleness to
         reason about: the moment a run settles, the next refresh re-reads it."""
-        import server_proxy
+        from mimir.servers.proxy import server_proxy
         tmp = tempfile.mkdtemp()
         ledger = os.path.join(tmp, "ledger.jsonl")
         open(ledger, "w").close()
         answers = [{"tried": 1, "accepted": [], "rejected": ["unrolling"]},
                    {"tried": 2, "accepted": [], "rejected": ["unrolling", "simd"]}]
 
-        with mock.patch("_lib.store._opt_ledger_file", return_value=ledger), \
+        with mock.patch("mimir.servers.proxy._lib.store._opt_ledger_file", return_value=ledger), \
              mock.patch.object(server_proxy.eval_session, "axes_tried",
                                side_effect=answers):
             first = server_proxy._axes_lines("solver")
@@ -298,7 +293,7 @@ class PanelLinesTests(unittest.TestCase):
 
     def test_the_panel_survives_a_store_it_cannot_read(self):
         """One section that cannot answer costs its own lines, never the drawer."""
-        import server_proxy
+        from mimir.servers.proxy import server_proxy
         with mock.patch.object(server_proxy.eval_session, "axes_tried",
                                side_effect=RuntimeError("store is gone")):
             self.assertEqual(server_proxy._axes_lines("solver"), [])

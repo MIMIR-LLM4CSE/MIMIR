@@ -13,7 +13,7 @@ import os
 import time
 
 from mimir.tests._proxy_fixtures import _TmpStorageTest, _call, server_proxy, store
-from _ops import exec_jobs, references, runs  # noqa: E402
+from mimir.servers.proxy._ops import exec_jobs, references, runs  # noqa: E402
 
 
 class ExecJobTests(_TmpStorageTest):

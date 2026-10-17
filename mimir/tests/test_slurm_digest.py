@@ -9,19 +9,15 @@ Run:
     python -m unittest mimir.tests.test_slurm_digest -v
 """
 
-import sys
 import unittest
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
-for _p in (_SERVERS / "_shared",):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import slurm_digest  # noqa: E402
-import slurm_site  # noqa: E402
+from mimir.servers._shared import slurm_digest
+from mimir.servers._shared import slurm_site
 
-from mimir.tests.support.scheduler import local_slurm  # noqa: E402
+from mimir.tests.support.scheduler import local_slurm
 
 
 SCONTROL = (

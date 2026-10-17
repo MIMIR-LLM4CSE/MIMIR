@@ -8,13 +8,18 @@ import os
 import time
 from datetime import datetime, timezone
 
-from _ops import _check_name, _with_next, err, ok
-from _lib.execute import _REF_RUN_TIMEOUT, _run_benchmark_case, _seal_reference
-from _lib.store import (
-    refs_dir, suites_dir,
-    _entry_or_err, _load_registry_or_err,
-    _suite_path, _load_suite, _save_suite,
-    _suite_results_dir, _latest_suite_results,
+from . import _check_name, _with_next, err, ok
+from .._lib.execute import _REF_RUN_TIMEOUT, _run_benchmark_case, _seal_reference
+from .._lib.store import (
+    refs_dir,
+    suites_dir,
+    _entry_or_err,
+    _load_registry_or_err,
+    _suite_path,
+    _load_suite,
+    _save_suite,
+    _suite_results_dir,
+    _latest_suite_results,
     _read_json,
 )
 

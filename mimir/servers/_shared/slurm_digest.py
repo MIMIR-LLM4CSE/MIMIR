@@ -32,7 +32,7 @@ from __future__ import annotations
 import shlex
 from datetime import datetime, timezone
 
-from slurm_nodes import (
+from .slurm_nodes import (
     SCONTROL_NODES_ARGV,
     SINFO_NODES_FORMAT,
     aggregate_node_types,
@@ -42,7 +42,7 @@ from slurm_nodes import (
     stable_signature,
     stable_types,
 )
-from slurm_site import LOCAL, argv_for, name_of, slurm_is_local
+from .slurm_site import LOCAL, argv_for, name_of, slurm_is_local
 
 import subprocess
 

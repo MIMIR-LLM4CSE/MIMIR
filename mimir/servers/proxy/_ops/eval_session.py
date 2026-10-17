@@ -17,32 +17,52 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from _ops import _PROXY_DIR, _with_next, err, ok
-from _lib.procs import (
-    _log_path, _read_log, _run_state, background_descriptor,
-    _new_run_dir, _write_run_config, _launch_detached, _cancel_run,
-    _opt_active_run_dir, _update_opt_active_link,
+from ..._shared.launcher import launch_argv
+from . import _with_next, err, ok
+from .._lib.procs import (
+    _log_path,
+    _read_log,
+    _run_state,
+    background_descriptor,
+    _new_run_dir,
+    _write_run_config,
+    _launch_detached,
+    _cancel_run,
+    _opt_active_run_dir,
+    _update_opt_active_link,
 )
-from _lib.ratchet import _effective_repeat, _load_best
-from _lib.report import _diff_run_pair, parse_runner_log
-from _ops._eval_ratchet import _ratchet_state
-from _ops._eval_validate import (
-    _check_optimize_paths, _check_reference_requirements, _check_requirements,
+from .._lib.ratchet import _effective_repeat, _load_best
+from .._lib.report import _diff_run_pair, parse_runner_log
+from ._eval_ratchet import _ratchet_state
+from ._eval_validate import (
+    _check_optimize_paths,
+    _check_reference_requirements,
+    _check_requirements,
 )
-import build_progress
-import run_channel
-from _lib import build, procs, tree_snapshot
-from atomic import write_json
-from _lib.store import (
-    cache_dir, opt_git_dir, workspace_root,
-    _entry_or_err, _load_registry, _load_suite,
-    _load_opt_config, _save_opt_config,
-    _opt_session_runs_dir, _opt_ledger_file, _opt_best_file,
-    _resolve_proxy_name, _write_active_session, _clear_active_session,
-    _read_json, _run_dir_names,
+from ..._shared import build_progress
+from ..._shared import run_channel
+from .._lib import build, procs, tree_snapshot
+from ..._shared.atomic import write_json
+from .._lib.store import (
+    cache_dir,
+    opt_git_dir,
+    workspace_root,
+    _entry_or_err,
+    _load_registry,
+    _load_suite,
+    _load_opt_config,
+    _save_opt_config,
+    _opt_session_runs_dir,
+    _opt_ledger_file,
+    _opt_best_file,
+    _resolve_proxy_name,
+    _write_active_session,
+    _clear_active_session,
+    _read_json,
+    _run_dir_names,
 )
 
-_OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
+_OPT_RUNNER = "mimir.servers.proxy._proxy_runner"
 
 _NEXT_RUN       = "proxy_eval(op='run', confirm=True)"
 _NEXT_STATUS    = "proxy_eval_status() to monitor (state 'done' means finished)"
@@ -480,7 +500,7 @@ def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
     python_exe = cfg.get("python_executable") or sys.executable
 
     pid = _launch_detached(
-        [python_exe, _OPT_RUNNER, "--run-dir", run_dir], run_dir, log_file=log_file,
+        [python_exe, *launch_argv(_OPT_RUNNER, "--run-dir", run_dir)], run_dir, log_file=log_file,
     )
     _update_opt_active_link(name, run_dir)
 

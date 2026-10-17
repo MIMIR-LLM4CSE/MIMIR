@@ -18,26 +18,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # tree when the suite runs from the repo root and site-packages when it runs from
 # anywhere else — so the file would check one build while importing another. Anchored at
 # this file, it is always the tree this test belongs to.
-if str(_REPO_ROOT) not in sys.path[:1]:
-    sys.path.insert(0, str(_REPO_ROOT))
 
-from mimir.servers._shared import shell_paths as _shell_paths   # noqa: E402
+from mimir.servers._shared import shell_paths as _shell_paths 
+from mimir.tests.support.modules import spec_for
 
-# Add _shared/ and each group subdirectory to sys.path so modules can be
-# loaded via spec_from_file_location and their imports resolve correctly.
-for _p in [
-    _SHARED_DIR,
-    SERVERS_DIR / "workspace",
-    SERVERS_DIR / "utilities",
-    SERVERS_DIR / "agent_state",
-    SERVERS_DIR / "external",
-    SERVERS_DIR / "hpc",
-    SERVERS_DIR / "proxy",
-    SERVERS_DIR / "ml",
-]:
-    _ps = str(_p)
-    if _ps not in sys.path:
-        sys.path.insert(0, _ps)
 
 
 # Mapping from logical module name to (subdirectory, filename).
@@ -65,7 +49,7 @@ def _load_server_module(module_name: str):
         module_path = SERVERS_DIR / subdir / filename
     else:
         module_path = SERVERS_DIR / f"{module_name}.py"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    spec = spec_for(module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load module spec for {module_name}")
     module = importlib.util.module_from_spec(spec)

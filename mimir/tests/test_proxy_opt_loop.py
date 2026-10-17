@@ -94,8 +94,8 @@ class _RatchetFixture(_TmpStorageTest):
         with no recorded tree — rightly, since reset_to_best would have nothing to
         restore. Writing it here keeps the fixture faithful to the path runs take.
         """
-        from _lib import tree_snapshot
-        from _ops import eval_session as _es
+        from mimir.servers.proxy._lib import tree_snapshot
+        from mimir.servers.proxy._ops import eval_session as _es
         cfg = _es._load_opt_config(proxy_name) or {}
         paths = list(cfg.get("optimize_paths") or [])
         if not paths:
@@ -292,7 +292,7 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
         cfg, err_response, run_dir, _notice = eval_session._prepare_run("conv")
         self.assertIsNone(err_response)
 
-        import _proxy_runner
+        from mimir.servers.proxy import _proxy_runner
         with mock.patch.object(sys, "argv", ["_proxy_runner", "--run-dir", run_dir]):
             _proxy_runner.main()
 
@@ -357,7 +357,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         cfg, err_response, run_dir, _notice = eval_session._prepare_run("fast")
         self.assertIsNone(err_response)
         procs._update_opt_active_link("fast", run_dir)
-        import _proxy_runner
+        from mimir.servers.proxy import _proxy_runner
         with mock.patch.object(sys, "argv",
                                ["_proxy_runner", "--run-dir", run_dir]):
             _proxy_runner.main()
@@ -386,7 +386,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         with open(os.path.join(run_dir, "machine.json")) as fh:
             machine = json.load(fh)
         self.assertTrue(machine["machine_signature"])
-        from _ops import eval_session as _es
+        from mimir.servers.proxy._ops import eval_session as _es
         self.assertEqual(_es._load_opt_config("fast")["machine"]["machine_signature"],
                          machine["machine_signature"])
         # The accepted state is the TREE as it stood at launch, recorded for the whole
@@ -545,7 +545,7 @@ class MachinePinningTests(_RatchetFixture):
         self._on(base, "login1", "sig-login")
         self._results()
         _eval(op="rebaseline", confirm=True)
-        from _ops import eval_session as _es
+        from mimir.servers.proxy._ops import eval_session as _es
         self.assertNotIn("machine", _es._load_opt_config("tiny"))
         node = self._complete_run("20240101T000100Z", all_passed=True, time_s=3.0)
         self._on(node, "node07", "sig-node")
@@ -559,7 +559,7 @@ class ProxySlurmScriptTests(_RatchetFixture):
         pin_local_scheduler(self)
 
     def test_header_keeps_one_node_and_adds_targeting(self) -> None:
-        from _lib.command import _sbatch_header
+        from mimir.servers.proxy._lib.command import _sbatch_header
         plain = _sbatch_header(job_name="j", partition="p", cpus_per_task=8,
                                wall_time="01:00:00", mem="32G", log_file="/x/log")
         self.assertIn("#SBATCH --nodes=1", plain)
@@ -573,7 +573,7 @@ class ProxySlurmScriptTests(_RatchetFixture):
             self.assertIn(want, aimed)
 
     def test_eval_job_picks_its_python_on_the_node_and_is_exclusive(self) -> None:
-        from _ops import slurm as slurm_ops
+        from mimir.servers.proxy._ops import slurm as slurm_ops
         self._init()
         seen = {}
 
@@ -596,7 +596,7 @@ class ProxySlurmScriptTests(_RatchetFixture):
         self.assertIn('"$_MIMIR_PY" ', script)
 
     def test_single_run_is_not_exclusive_by_default(self) -> None:
-        from _ops import slurm as slurm_ops
+        from mimir.servers.proxy._ops import slurm as slurm_ops
         self._register()
         seen = {}
 

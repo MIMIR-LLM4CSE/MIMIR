@@ -11,6 +11,7 @@ Run:
     python -m unittest mimir.tests.test_proxy_build -v
 """
 
+from mimir.servers._shared.launcher import launch_argv
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ from mimir.tests._proxy_fixtures import (  # noqa: F401
     _TmpStorageTest, _script, build, eval_session, procs, ratchet, registry,
     server_proxy, store, tree_snapshot,
 )
+from mimir.tests.support.modules import spec_for
 
 class SpecTests(_TmpStorageTest):
     def test_no_build_cmd_is_no_build(self) -> None:
@@ -501,9 +503,7 @@ class RunnerPhaseTests(_TmpStorageTest):
 
     def _runner(self):
         import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "_proxy_runner_under_test",
-            os.path.join(os.path.dirname(os.path.dirname(store.__file__)),
+        spec = spec_for(os.path.join(os.path.dirname(os.path.dirname(store.__file__)),
                          "_proxy_runner.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -571,16 +571,13 @@ class SplitPhaseTests(_TmpStorageTest):
     refuse to measure anything the build half did not actually produce.
     """
 
-    _RUNNER = os.path.join(
-        os.path.dirname(os.path.dirname(store.__file__)), "_proxy_runner.py")
-
     def _run_phase(self, run_dir: str, phase: str):
         import subprocess
         env = {**os.environ,
                "MIMIR_PROXY_BENCH_DIR": store._CACHE_DIR,
                "MCP_FILES_ROOT": self.root}
         return subprocess.run(
-            [sys.executable, self._RUNNER, "--run-dir", run_dir, "--phase", phase],
+            [sys.executable, *launch_argv("mimir.servers.proxy._proxy_runner", "--run-dir", run_dir, "--phase", phase)],
             capture_output=True, text=True, env=env, timeout=120)
 
     def _session(self, build_body: str = "echo built\n"):

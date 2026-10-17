@@ -41,22 +41,20 @@ import uuid
 from concurrent.futures import Future
 from typing import Annotated, Any, Callable
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
-# Run as a subprocess MCP server, the package root is not on the path yet. Written
-# without a name for the path: a bare assignment here is code before the imports, and
-# ruff reads everything after it as an import out of place (E402), where it lets the
-# sys.path calls a server needs stand.
-if os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) not in sys.path:
-    sys.path.insert(
-        0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
-
-import _child_jobs
-from approved_roots import approved_roots
-from atomic import write_json, write_text
-from capabilities import BACKGROUNDABLE, DELEGATE, MAIN_ONLY, PLAN_READONLY, REVERSIBLE, tool_caps
+from . import _child_jobs
+from .._shared.approved_roots import approved_roots
+from .._shared.atomic import write_json, write_text
+from .._shared.capabilities import (
+    BACKGROUNDABLE,
+    DELEGATE,
+    MAIN_ONLY,
+    PLAN_READONLY,
+    REVERSIBLE,
+    tool_caps,
+)
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
-from responses import err, ok
+from .._shared.responses import err, ok
 
 mcp = FastMCP("spawn_agent")
 
@@ -201,7 +199,7 @@ def _write_record(session: str, record: dict) -> None:
     if not session:
         return
     try:
-        from state_paths import session_dir
+        from .._shared.state_paths import session_dir
         write_json(os.path.join(session_dir(session), "subagent.json"), record,
                    ensure_ascii=False, indent=2)
     except Exception as exc:
@@ -479,7 +477,7 @@ def _compact_event(ev: dict) -> dict | None:
 
 
 def _activity_path(session: str) -> str:
-    from state_paths import ACTIVITY_FILENAME, session_dir
+    from .._shared.state_paths import ACTIVITY_FILENAME, session_dir
     return os.path.join(session_dir(session), ACTIVITY_FILENAME)
 
 
@@ -678,7 +676,7 @@ def _sub_session_id() -> str:
     """
     child = f"sub-{uuid.uuid4().hex[:8]}"
     try:
-        from state_paths import active_session_id
+        from .._shared.state_paths import active_session_id
         parent = active_session_id()
     except Exception:
         parent = ""
@@ -931,7 +929,7 @@ def _sibling_cards(session: str) -> tuple[str, list[dict]]:
     if not parent:
         return "", []
     try:
-        from state_paths import subagents_dir
+        from .._shared.state_paths import subagents_dir
         base = subagents_dir(parent)
         names = sorted(os.listdir(base))
     except Exception:
@@ -1074,7 +1072,7 @@ def _sweep_orphan_copies(repo: str) -> None:
     registered = {line.split(" ", 1)[1] for line in listed.splitlines()
                   if ok and line.startswith("worktree ")}
     try:
-        from state_paths import sessions_root
+        from .._shared.state_paths import sessions_root
         sessions = sessions_root()
     except Exception:
         return
@@ -1389,7 +1387,7 @@ def _entry_from_card(job_key: str) -> dict | None:
     if not job_key:
         return None
     try:
-        from state_paths import active_session_id, subagents_dir
+        from .._shared.state_paths import active_session_id, subagents_dir
         path = os.path.join(subagents_dir(active_session_id()), job_key, "subagent.json")
         with open(path, encoding="utf-8") as fh:
             card = json.load(fh)
@@ -2039,7 +2037,6 @@ async def _drive_sub_agent(
     ask_loop=None,
 ) -> dict:
     """Configure the child agent, run it, and report what it did."""
-    # _run_sub_agent already fixed sys.path if needed, so a plain import is safe here.
     from mimir.client.extensions import all_servers
     from mimir.client.context.capabilities import (
         PLAN_BLOCKED, PLAN_READONLY, explorer_servers, has_cap,

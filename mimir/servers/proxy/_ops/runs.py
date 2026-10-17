@@ -6,18 +6,28 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from _ops import _PROXY_DIR, _with_next, err, ok
-from _ops import exec_jobs
-from _lib.command import _output_ext, _build_run_cmd
-from _lib.execute import _compare_to_reference
-from _lib.procs import (
-    _log_path, _run_state,
-    _new_run_dir, _write_run_config, _launch_detached, _cancel_run,
+from ..._shared.launcher import PACKAGE_PARENT
+from . import _with_next, err, ok
+from . import exec_jobs
+from .._lib.command import _output_ext, _build_run_cmd
+from .._lib.execute import _compare_to_reference
+from .._lib.procs import (
+    _log_path,
+    _run_state,
+    _new_run_dir,
+    _write_run_config,
+    _launch_detached,
+    _cancel_run,
     _update_active_link,
 )
-from _lib.report import _diff_run_pair, _row_with_extra
-from _lib.store import (
-    refs_dir, runs_dir, _entry_or_err, _load_registry_or_err, _proxy_runs_dir, _read_json,
+from .._lib.report import _diff_run_pair, _row_with_extra
+from .._lib.store import (
+    refs_dir,
+    runs_dir,
+    _entry_or_err,
+    _load_registry_or_err,
+    _proxy_runs_dir,
+    _read_json,
     _run_dir_names,
 )
 
@@ -264,8 +274,8 @@ def launch_run(
         f"        except Exception:\n"
         f"            _lf.write('\\n[proxy_run] launch failed:\\n' + traceback.format_exc())\n"
         f"    _wall = round(time.time() - _t0, 3)\n"
-        f"    sys.path.insert(0, {_PROXY_DIR!r})\n"
-        f"    from _lib.execute import _post_run_finalize\n"
+        f"    sys.path.insert(0, {PACKAGE_PARENT!r})\n"
+        f"    from mimir.servers.proxy._lib.execute import _post_run_finalize\n"
         f"    _post_run_finalize(\n"
         f"        run_dir={run_dir!r},\n"
         f"        proxy_name={proxy_name!r},\n"

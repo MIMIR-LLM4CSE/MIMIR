@@ -12,19 +12,17 @@ so it needs no approval and feeds the same discovery signals).
 """
 
 import os
-import sys
 import time
 from datetime import datetime
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, CACHEABLE, INSPECT_DIR, READ
-from responses import err, ok
-from root_paths import require_absolute, resolve_path_in_root
-from approved_roots import approved_roots
-from trusted_read_roots import trusted_read_roots
-from state_paths import standing_roots
+from .._shared.capabilities import tool_caps, CACHEABLE, INSPECT_DIR, READ
+from .._shared.responses import err, ok
+from .._shared.root_paths import require_absolute, resolve_path_in_root
+from .._shared.approved_roots import approved_roots
+from .._shared.trusted_read_roots import trusted_read_roots
+from .._shared.state_paths import standing_roots
 
 # Sandbox root — restrict all operations to this tree
 SEARCH_ROOT = os.environ.get(

@@ -25,10 +25,10 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from responses import err
-import proc_run
+from ..._shared.responses import err
+from ..._shared import proc_run
 
-from _lib import command, metrics as metrics_mod, procs, report, store
+from . import command, metrics as metrics_mod, procs, report, store
 
 _DEFAULT_MAX_OUTPUT_MB = 512
 _REF_RUN_TIMEOUT       = 3600         # seconds

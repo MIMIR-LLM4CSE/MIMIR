@@ -20,7 +20,8 @@ from .. import human_pause
 from ..context.capabilities import infer_tool_caps
 from ..protocol.tool_call import DOING_ARG
 from ..config import paths
-from ..config.paths import GLOBAL_STATE_DIR
+from ..config.paths import GLOBAL_STATE_DIR, SERVER_BASE
+from ...servers._shared.launcher import launch_argv
 from ..config.limits import USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 from ..core.ports import AgentPort
@@ -392,7 +393,7 @@ async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
         "LLM_BACKEND": getattr(agent, "backend", "") or os.environ.get("LLM_BACKEND", ""),
         **(getattr(agent, "server_env", None) or {}),
     }
-    params = StdioServerParameters(command=command, args=[script], env=server_env)
+    params = StdioServerParameters(command=command, args=server_args(script), env=server_env)
 
     transport = await agent.exit_stack.enter_async_context(stdio_client(params))
     stdio, write = transport
@@ -455,6 +456,17 @@ async def _handshake(session: Any) -> Any:
     """Complete the MCP handshake on *session* and return its tool listing."""
     await session.initialize()
     return await session.list_tools()
+
+
+def server_args(script: str) -> list[str]:
+    """The arguments that start *script*: a bundled server runs as its module through
+    the launcher (``servers/_shared/launcher``); anything else by its path."""
+    bundled = os.path.realpath(SERVER_BASE)
+    path = os.path.realpath(script)
+    if script.endswith(".py") and path.startswith(bundled + os.sep):
+        module = os.path.relpath(path, bundled)[:-3].replace(os.sep, ".")
+        return launch_argv(f"mimir.servers.{module}")
+    return [script]
 
 
 async def connect_server(*, agent: AgentPort, name: str, script: str) -> None:

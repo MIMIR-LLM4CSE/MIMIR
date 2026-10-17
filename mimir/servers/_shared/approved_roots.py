@@ -20,7 +20,7 @@ nothing extra is allowed), so a broken allowlist can never widen the sandbox.
 import json
 import os
 
-from state_paths import session_state_dir
+from .state_paths import session_state_dir
 
 _APPROVED_FILE = "approved_paths.json"
 

@@ -6,26 +6,36 @@ import os
 import shlex
 from datetime import datetime, timezone
 
-from _ops import _PROXY_DIR, _with_next, err, ok
-from _lib import build as build_mod
-from _lib import placement
-from _lib.command import _build_sbatch, _sbatch_header
-from slurm_script import node_python_lines
-from _lib.procs import (
-    _log_path, _scancel, background_descriptor,
-    _new_run_dir, _write_run_config, _update_run_config, _submit_sbatch,
-    _update_active_link, _update_opt_active_link,
+from ..._shared.launcher import launch_argv
+from . import _with_next, err, ok
+from .._lib import build as build_mod
+from .._lib import placement
+from .._lib.command import _build_sbatch, _sbatch_header
+from ..._shared.slurm_script import node_python_lines
+from .._lib.procs import (
+    _log_path,
+    _scancel,
+    background_descriptor,
+    _new_run_dir,
+    _write_run_config,
+    _update_run_config,
+    _submit_sbatch,
+    _update_active_link,
+    _update_opt_active_link,
 )
-from _lib.store import (
+from .._lib.store import (
     refs_dir,
-    _entry_or_err, _load_registry_or_err, _load_suite,
-    _proxy_runs_dir, _suite_results_dir,
+    _entry_or_err,
+    _load_registry_or_err,
+    _load_suite,
+    _proxy_runs_dir,
+    _suite_results_dir,
 )
-from _ops.eval_session import _prepare_run, _background_descriptor
-from slurm_site import resolve_host as _slurm_resolve_host
-from _ops.suites import _prevalidate_suite
+from .eval_session import _prepare_run, _background_descriptor
+from ..._shared.slurm_site import resolve_host as _slurm_resolve_host
+from .suites import _prevalidate_suite
 
-_OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
+_OPT_RUNNER = "mimir.servers.proxy._proxy_runner"
 
 
 def _resolve_scheduler(scheduler: str) -> tuple[str, dict | None]:
@@ -267,7 +277,7 @@ def _runner_script(
         dependency=dependency,
         kill_on_invalid_dep=bool(dependency),
     )
-    argv = [_OPT_RUNNER, "--run-dir", run_dir]
+    argv = launch_argv(_OPT_RUNNER, "--run-dir", run_dir)
     if phase != "all":
         argv += ["--phase", phase]
     # The runner starts on the node, so the interpreter is chosen there: the server's

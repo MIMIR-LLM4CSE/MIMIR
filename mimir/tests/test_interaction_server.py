@@ -14,6 +14,7 @@ import importlib.util
 import types
 import unittest
 from pathlib import Path
+from mimir.tests.support.modules import spec_for
 
 SERVER_PATH = (
     Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ SERVER_PATH = (
 
 
 def _load_server():
-    spec = importlib.util.spec_from_file_location("server_interaction", SERVER_PATH)
+    spec = spec_for(SERVER_PATH)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

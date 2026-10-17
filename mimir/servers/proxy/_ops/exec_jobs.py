@@ -14,17 +14,22 @@ from __future__ import annotations
 import os
 import sys
 
-from _ops import _PROXY_DIR, _with_next, err, ok
-from _ops.eval_session import _NEXT_DETACHED, _RUN_WAIT_BUDGET_S, _await_terminal_state
-from _lib import store
-from _lib.procs import (
-    _launch_detached, _log_path, _new_run_dir, _read_log, _run_state,
+from ..._shared.launcher import launch_argv
+from . import _with_next, err, ok
+from .eval_session import _NEXT_DETACHED, _RUN_WAIT_BUDGET_S, _await_terminal_state
+from .._lib import store
+from .._lib.procs import (
+    _launch_detached,
+    _log_path,
+    _new_run_dir,
+    _read_log,
+    _run_state,
     background_descriptor,
 )
-from _lib.store import _read_json
-from atomic import write_json
+from .._lib.store import _read_json
+from ..._shared.atomic import write_json
 
-_JOB_WORKER = os.path.join(_PROXY_DIR, "_proxy_job.py")
+_JOB_WORKER = "mimir.servers.proxy._proxy_job"
 JOB_FILE = "job.json"
 RESULT_FILE = "result.json"
 # The blocking tool's registered name, so the client can address the channel off the row.
@@ -89,7 +94,7 @@ async def run_awaited(op: str, args: dict, background: bool = False,
     write_json(os.path.join(job_dir, JOB_FILE), {"op": op, "args": args}, indent=2)
     # The tests (and any embedder) repoint the store in-process; the worker must follow.
     env = {**os.environ, "MIMIR_PROXY_BENCH_DIR": store.cache_dir()}
-    pid = _launch_detached([sys.executable, _JOB_WORKER, "--job-dir", job_dir],
+    pid = _launch_detached([sys.executable, *launch_argv(_JOB_WORKER, "--job-dir", job_dir)],
                            job_dir, log_file=_log_path(job_dir), env=env)
 
     if background:

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import os
 
-from _lib.metrics import _VALID_OPT_OPERATORS
-from _lib.store import workspace_root
+from .._lib.metrics import _VALID_OPT_OPERATORS
+from .._lib.store import workspace_root
 
 # Computed server-side from a sealed reference, so a requirement on one of these
 # can never be satisfied when a case has no reference — refuse it up front.

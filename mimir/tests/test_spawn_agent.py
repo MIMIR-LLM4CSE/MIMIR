@@ -23,15 +23,13 @@ from unittest import mock
 from pathlib import Path
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
+from mimir.tests.support.modules import spec_for
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "agent_state"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
 
 def _load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
+    spec = spec_for(path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -853,7 +851,7 @@ class ForgottenJobTests(unittest.TestCase):
     """
 
     def _with_card(self, card: dict, job_key: str = "sub-abcd1234"):
-        import state_paths
+        from mimir.servers._shared import state_paths
         tmp = tempfile.mkdtemp()
         directory = os.path.join(tmp, "sessions", "parent-1", "subagents", job_key)
         os.makedirs(directory, exist_ok=True)
@@ -1168,7 +1166,7 @@ class SubSessionTests(unittest.TestCase):
         self.assertEqual(agent.server_env, {"MIMIR_SESSION_ID": out["session"]})
 
     def test_a_sub_session_is_stored_under_its_parent(self):
-        import state_paths
+        from mimir.servers._shared import state_paths
         with mock.patch.object(state_paths, "active_session_id", return_value="parent-1"):
             out, _ = self._session_of()
         self.assertTrue(out["session"].startswith("parent-1/subagents/sub-"))
@@ -1185,7 +1183,7 @@ class SubSessionTests(unittest.TestCase):
         self.assertNotEqual(first["session"], second["session"])
 
     def test_the_run_is_recorded_for_the_panel(self):
-        import state_paths
+        from mimir.servers._shared import state_paths
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(state_paths, "state_dir", return_value=tmp), \
                  mock.patch.object(state_paths, "active_session_id", return_value="parent-1"):

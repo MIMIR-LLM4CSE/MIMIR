@@ -10,10 +10,10 @@ Three contracts drive most of what is asserted here:
   module name must still return the right modules in the right order.
 """
 
+from mimir.tests.support.stubs import stub_attr
 import importlib.util
 import json
 import os
-import sys
 import tempfile
 import time
 import unittest
@@ -21,24 +21,20 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SHARED = _ROOT / "mimir" / "servers" / "_shared"
-if str(_SHARED) not in sys.path:
-    sys.path.insert(0, str(_SHARED))
 
 from mimir.servers._shared import embed, slurm_nodes
 
 # Flat, the way the server under test imports them: reached through the package these
 # would be different module objects, and a stub on one would leave the other probing a
 # real scheduler.
-import slurm_digest  # noqa: E402
+from mimir.servers._shared import slurm_digest
 
-from mimir.tests.support.scheduler import local_slurm  # noqa: E402
+from mimir.tests.support.scheduler import local_slurm
+from mimir.tests.support.modules import spec_for
 
 
 def _load_server_platform():
-    spec = importlib.util.spec_from_file_location(
-        "server_platform_under_test",
-        _ROOT / "mimir" / "servers" / "hpc" / "server_platform.py",
-    )
+    spec = spec_for(_ROOT / "mimir" / "servers" / "hpc" / "server_platform.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -192,10 +188,9 @@ class CatalogueTestCase(unittest.TestCase):
 
         self._reset_module_state()
         embed._reset_availability_cache()
-        self.mod._embed.is_available = lambda: False
-
-    def tearDown(self):
-        embed._reset_availability_cache()
+        # Registered before the stub, so it runs after the stub is undone.
+        self.addCleanup(embed._reset_availability_cache)
+        stub_attr(self, self.mod._embed, "is_available", lambda: False)
 
     def _reset_module_state(self):
         self.mod._module_flavour.cache_clear()
@@ -441,10 +436,10 @@ class SearchTests(CatalogueTestCase):
             low = text.lower()
             return [1.0 if word in low else 0.0 for word in vocab]
 
-        self.mod._embed.is_available = lambda: True
-        self.mod._embed.embed_texts = lambda texts: [vec(t) for t in texts]
-        self.mod._embed.embed_one = vec
-        self.mod._embed.embed_model_id = lambda: "fake-model"
+        stub_attr(self, self.mod._embed, "is_available", lambda: True)
+        stub_attr(self, self.mod._embed, "embed_texts", lambda texts: [vec(t) for t in texts])
+        stub_attr(self, self.mod._embed, "embed_one", vec)
+        stub_attr(self, self.mod._embed, "embed_model_id", lambda: "fake-model")
 
         result = self.mod.platform_search("parallel IO library")
         top = result["modules"][0]
@@ -465,15 +460,15 @@ class SearchTests(CatalogueTestCase):
             low = text.lower()
             return [1.0 if w in low else 0.0 for w in vocab]
 
-        self.mod._embed.is_available = lambda: True
-        self.mod._embed.embed_texts = lambda texts: (calls.append(len(texts)) or
-                                                     [vec(t) for t in texts])
-        self.mod._embed.embed_one = vec
-        self.mod._embed.embed_model_id = lambda: "model-a"
+        stub_attr(self, self.mod._embed, "is_available", lambda: True)
+        stub_attr(self, self.mod._embed, "embed_texts", lambda texts: (calls.append(len(texts)) or
+                                                     [vec(t) for t in texts]))
+        stub_attr(self, self.mod._embed, "embed_one", vec)
+        stub_attr(self, self.mod._embed, "embed_model_id", lambda: "model-a")
         self.mod.platform_search("parallel IO")
         self.assertEqual(len(calls), 1)
 
-        self.mod._embed.embed_model_id = lambda: "model-b"
+        stub_attr(self, self.mod._embed, "embed_model_id", lambda: "model-b")
         self.mod.platform_search("parallel IO")
         self.assertEqual(len(calls), 2)  # vectors under the old model are not reused
         store = json.loads(Path(self.mod._EMBEDDINGS_FILE).read_text())

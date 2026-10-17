@@ -15,12 +15,11 @@ import unittest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _SHARED = _ROOT / "servers" / "_shared"
-import sys
-sys.path.insert(0, str(_SHARED))
+from mimir.tests.support.modules import spec_for
 
 
 def _load(name: str, rel: str):
-    spec = importlib.util.spec_from_file_location(name, str(_ROOT / rel))
+    spec = spec_for(str(_ROOT / rel))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

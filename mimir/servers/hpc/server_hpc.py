@@ -39,15 +39,21 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import (tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE,
-                          IRREVERSIBLE, PANEL_REPORT)
-from atomic import write_json
-from responses import err, ok
-from state_paths import sessions_root, state_dir
-from slurm_site import (
+from .._shared.capabilities import (
+    tool_caps,
+    PLAN_BLOCKED,
+    CLUSTER_SUBMIT,
+    BACKGROUNDABLE,
+    IRREVERSIBLE,
+    PANEL_REPORT,
+)
+from .._shared.atomic import write_json
+from .._shared.launcher import launch_argv
+from .._shared.responses import err, ok
+from .._shared.state_paths import sessions_root, state_dir
+from .._shared.slurm_site import (
     ADOPTED_FILE as _ADOPTED_FILE,
     HOST_FILE as _HOST_FILE,
     ID_FILE as _ID_FILE,
@@ -72,11 +78,11 @@ from slurm_site import (
     unwatched_by_host as slurm_unwatched_by_host,
     unwatched_hint as slurm_unwatched_hint,
 )
-from slurm_digest import (
+from .._shared.slurm_digest import (
     cached_cluster_digest as _cluster_digest,
     forget_cluster_digest as _forget_cluster_digest,
 )
-from slurm_nodes import (
+from .._shared.slurm_nodes import (
     HARDWARE_FIELDS as _HARDWARE_FIELDS,
     SCONTROL_NODES_ARGV as _SCONTROL_NODES_ARGV,
     SINFO_NODES_FORMAT as _SINFO_NODES_FORMAT,
@@ -87,9 +93,9 @@ from slurm_nodes import (
     parse_scontrol_nodes as _parse_scontrol_nodes,
     parse_sinfo_nodes as _parse_sinfo_nodes,
 )
-from slurm_script import node_python_lines, sbatch_header, validate_target
-import build_progress
-import cpu_facts
+from .._shared.slurm_script import node_python_lines, sbatch_header, validate_target
+from .._shared import build_progress
+from .._shared import cpu_facts
 
 mcp = FastMCP(
     "HPCServer",
@@ -1487,7 +1493,7 @@ def sbatch_submit(
 # login node (server_platform --profile-json), and the answer is kept per node until
 # Slurm's own description of that node changes. No TTL: hardware does not age.
 
-_PLATFORM_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_platform.py")
+_PLATFORM_PROFILE = launch_argv("mimir.servers.hpc.server_platform", "--profile-json")
 _NODE_PROFILES_DIR = os.environ.get(
     "MIMIR_NODE_PROFILES_DIR", os.path.join(state_dir(), "hpc", "node_profiles"))
 _PROBE_MARKER = "probe.json"
@@ -1546,7 +1552,7 @@ def _probe_script(work_dir: str, header: list[str], *, make_dir: bool = False) -
         f"cd {q(work_dir)} || exit 1",
         'echo "${SLURMD_NODENAME:-$(hostname -s)}" > node',
         *node_python_lines(),
-        f'if [ -n "$_MIMIR_PY" ] && "$_MIMIR_PY" {q(_PLATFORM_SCRIPT)} --profile-json'
+        f'if [ -n "$_MIMIR_PY" ] && "$_MIMIR_PY" {shlex.join(_PLATFORM_PROFILE)}'
         " > profile.json 2> profile.err; then",
         "  echo full > mode",
         "else",
@@ -1726,7 +1732,7 @@ def _harvest_probes(nodes_by_name: dict[str, dict],
 
 def _local_profile_record(node: dict) -> dict | None:
     """This host's own profile, when this host is an allocated compute node."""
-    res = _run_argv([sys.executable, _PLATFORM_SCRIPT, "--profile-json"], 90)
+    res = _run_argv([sys.executable, *_PLATFORM_PROFILE], 90)
     try:
         profile = json.loads(res.get("stdout") or "")
     except ValueError:

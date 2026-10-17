@@ -23,19 +23,14 @@ import unittest
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "workspace"]:
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
-
-import proc_run      # noqa: E402
-import server_bash   # noqa: E402
+from mimir.servers._shared import proc_run
+from mimir.servers.workspace import server_bash
 
 
 # A parent holding bytes on its own stdin, running a command through the layer under
 # test, then reporting whether the child took any of them and what is left.
 _PROBE = """
 import os, sys
-sys.path[:0] = [{servers!r} + "/_shared", {servers!r} + "/workspace"]
 {run}
 left = os.read(0, 64).decode()
 print("LEFT:" + left)
@@ -48,7 +43,7 @@ def _probe(run_snippet: str) -> str:
     The marker stands for a client request already in the pipe. Whatever the snippet
     launches must not be able to take it.
     """
-    source = _PROBE.format(servers=str(SERVERS_DIR), run=run_snippet)
+    source = _PROBE.format(package_parent=str(SERVERS_DIR.parents[1]), run=run_snippet)
     proc = subprocess.run(
         [sys.executable, "-c", source],
         input=b"REQUEST-BYTES\n", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -65,7 +60,7 @@ class ProcRunTests(unittest.TestCase):
 
     def test_a_child_cannot_read_the_parents_stdin(self) -> None:
         left = _probe(
-            "import proc_run\n"
+            "from mimir.servers._shared import proc_run\n"
             "r = proc_run.run(['cat'], timeout=20, stdout=-1)\n"
             "print('CHILD-SAW:' + r.stdout.decode().strip())\n"
         )
@@ -101,7 +96,7 @@ class BashJobTests(unittest.TestCase):
         """The shape of the real failure: ``ssh host "srun …"`` draining the pipe."""
         left = _probe(
             f"os.environ['MIMIR_STATE_DIR'] = {self._tmp!r}\n"
-            "import server_bash\n"
+            "from mimir.servers.workspace import server_bash\n"
             "server_bash.bash_run('timeout 5 cat', timeout=20)\n"
         )
         self.assertEqual(left, "REQUEST-BYTES", "bash_run's child ate the request")
@@ -110,7 +105,7 @@ class BashJobTests(unittest.TestCase):
         """A job outlives the call, so an inherited pipe would be held for its whole run."""
         left = _probe(
             f"os.environ['MIMIR_STATE_DIR'] = {self._tmp!r}\n"
-            "import time, server_bash\n"
+            "import time\nfrom mimir.servers.workspace import server_bash\n"
             "server_bash.bash_run('timeout 5 cat', background=True)\n"
             "time.sleep(2)\n"
         )

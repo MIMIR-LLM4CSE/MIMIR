@@ -13,15 +13,11 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
 
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "servers", "_shared"))
-
-import proc_run  # noqa: E402
+from mimir.servers._shared import proc_run
 
 
 def _forking_script(marker: str) -> str:

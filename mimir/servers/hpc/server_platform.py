@@ -38,21 +38,31 @@ import json
 from datetime import datetime, timezone
 from functools import lru_cache
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from atomic import write_json
-from module_env import module_probe_script
-from capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY, PANEL_REPORT
-from cpu_facts import (GPU_FIELDS, GPU_FIELDS_BASE, GPU_PROBES, GPU_QUERY, GPU_QUERY_BASE,
-                       MARCH_QUERY, cpu_facts, execution_context, local_os, machine_signature,
-                       parse_march, parse_nvidia_csv)
-from responses import ok
-from slurm_digest import cached_cluster_digest
-from slurm_site import hosts as slurm_hosts, name_of as _host_name
-from state_paths import state_dir
-import embed as _embed
-import vector_cache
+from .._shared.atomic import write_json
+from .._shared.module_env import module_probe_script
+from .._shared.capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY, PANEL_REPORT
+from .._shared.cpu_facts import (
+    GPU_FIELDS,
+    GPU_FIELDS_BASE,
+    GPU_PROBES,
+    GPU_QUERY,
+    GPU_QUERY_BASE,
+    MARCH_QUERY,
+    cpu_facts,
+    execution_context,
+    local_os,
+    machine_signature,
+    parse_march,
+    parse_nvidia_csv,
+)
+from .._shared.responses import ok
+from .._shared.slurm_digest import cached_cluster_digest
+from .._shared.slurm_site import hosts as slurm_hosts, name_of as _host_name
+from .._shared.state_paths import state_dir
+from .._shared import embed as _embed
+from .._shared import vector_cache
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

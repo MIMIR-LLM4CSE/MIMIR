@@ -10,18 +10,14 @@ Run:
 """
 
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 _SHARED = Path(__file__).resolve().parents[1] / "servers" / "_shared"
 _WORKSPACE = Path(__file__).resolve().parents[1] / "servers" / "workspace"
-for _p in (_SHARED, _WORKSPACE):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import root_paths  # noqa: E402
+from mimir.servers._shared import root_paths
 
 
 class ResolveExtraRootsTests(unittest.TestCase):
@@ -64,7 +60,7 @@ class SearchServerReadRootsTests(unittest.TestCase):
         proxy store moved into ``<workspace>/proxy_bench/``, and both kinds of job
         directory moved under the state dir, per session.
         """
-        import server_search as ss
+        from mimir.servers.workspace import server_search as ss
         with tempfile.TemporaryDirectory() as d:
             old = os.environ.get("MIMIR_STATE_DIR")
             os.environ["MIMIR_STATE_DIR"] = d
@@ -77,7 +73,7 @@ class SearchServerReadRootsTests(unittest.TestCase):
                     os.environ["MIMIR_STATE_DIR"] = old
 
     def test_env_extends_read_roots(self) -> None:
-        import server_search as ss
+        from mimir.servers.workspace import server_search as ss
         with tempfile.TemporaryDirectory() as d:
             old = os.environ.get("MIMIR_EXTRA_FILE_ROOTS")
             os.environ["MIMIR_EXTRA_FILE_ROOTS"] = d
@@ -91,7 +87,7 @@ class SearchServerReadRootsTests(unittest.TestCase):
 
     def test_write_server_stays_strict(self) -> None:
         # server_files._safe must NOT admit the proxy cache (writes stay in-workspace).
-        import server_files as sf
+        from mimir.servers.workspace import server_files as sf
         with self.assertRaises(ValueError):
             sf._safe(os.path.expanduser("~/.cache/proxy_bench/x.log"))
 

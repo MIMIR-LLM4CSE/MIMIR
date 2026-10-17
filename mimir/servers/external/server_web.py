@@ -9,18 +9,15 @@ Requests to loopback / link-local / private RFC-1918 addresses are blocked.
 import ipaddress
 from html.parser import HTMLParser
 import json
-import os
 import socket
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, EXTERNAL_FETCH, PLAN_BLOCKED, IRREVERSIBLE
-from responses import err, ok
+from .._shared.capabilities import tool_caps, EXTERNAL_FETCH, PLAN_BLOCKED, IRREVERSIBLE
+from .._shared.responses import err, ok
 
 mcp = FastMCP(
     "WebServer",
@@ -497,7 +494,7 @@ def _find_matches(text: str, query: str) -> list[dict]:
     """
     if not query.strip():
         return []
-    from embed import lexical_rank, relevance_tokens
+    from .._shared.embed import lexical_rank, relevance_tokens
 
     qtok = relevance_tokens(query)
     regions = _sections(text)

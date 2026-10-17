@@ -9,17 +9,16 @@ Run:
     python -m unittest mimir.tests.test_cpu_facts -v
 """
 
+from mimir.servers._shared.launcher import launch_argv
 import sys
 import unittest
 from pathlib import Path
 
 _SHARED = Path(__file__).resolve().parents[1] / "servers" / "_shared"
-if str(_SHARED) not in sys.path:
-    sys.path.insert(0, str(_SHARED))
 
-import cpu_facts  # noqa: E402
-import slurm_script  # noqa: E402
-from shell_paths import allocates_cluster  # noqa: E402
+from mimir.servers._shared import cpu_facts
+from mimir.servers._shared import slurm_script
+from mimir.servers._shared.shell_paths import allocates_cluster
 
 
 _LSCPU_X86 = """\
@@ -178,8 +177,8 @@ class ProfileJsonTests(unittest.TestCase):
     def test_prints_the_whole_profile_and_exits(self) -> None:
         import json
         import subprocess
-        script = Path(__file__).resolve().parents[1] / "servers" / "hpc" / "server_platform.py"
-        res = subprocess.run([sys.executable, str(script), "--profile-json"],
+        res = subprocess.run([sys.executable, *launch_argv("mimir.servers.hpc.server_platform",
+                                                            "--profile-json")],
                              capture_output=True, text=True, timeout=120)
         self.assertEqual(res.returncode, 0, res.stderr[-500:])
         profile = json.loads(res.stdout)

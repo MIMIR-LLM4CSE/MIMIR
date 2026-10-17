@@ -16,9 +16,9 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-import build_progress
-from responses import err
-from slurm_site import (
+from ..._shared import build_progress
+from ..._shared.responses import err
+from ..._shared.slurm_site import (
     WATCHER_FILE as _WATCHER_FILE,
     record_job_dir as _record_job_dir,
     HOST_FILE as _SLURM_HOST_FILE,
@@ -30,11 +30,11 @@ from slurm_site import (
     owns_job as _owns_slurm_job,
     record_host as _record_slurm_host,
 )
-from state_paths import active_session_id, session_owns
+from ..._shared.state_paths import active_session_id, session_owns
 
-from atomic import replace_symlink
-from processes import is_running, proc_starttime
-from _lib import store
+from ..._shared.atomic import replace_symlink
+from ..._shared.processes import is_running, proc_starttime
+from . import store
 
 _MAX_LOG = 256 * 1024   # bytes
 
@@ -307,7 +307,7 @@ def _build_job_failed(run_dir: str) -> bool:
     its verdict there before exiting, and a status a caller can act on ("which proxy,
     and how") only exists in the report.
     """
-    from _lib import build as build_mod
+    from . import build as build_mod
     report = build_mod.read_report(run_dir)
     if not report:
         return False
@@ -443,7 +443,7 @@ def _write_run_config(run_dir: str, config: dict) -> None:
 
 def _update_run_config(run_dir: str, updates: dict) -> None:
     """Merge *updates* into an existing run config, preserving every other key."""
-    from _lib.store import _read_json
+    from .store import _read_json
     cfg = _read_json(os.path.join(run_dir, "config.json"), {}) or {}
     cfg.update(updates)
     _write_run_config(run_dir, cfg)

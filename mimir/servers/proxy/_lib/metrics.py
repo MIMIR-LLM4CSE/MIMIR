@@ -14,7 +14,7 @@ import math
 import os
 import re
 
-from numerics import RESERVED_METRICS
+from ..._shared.numerics import RESERVED_METRICS
 
 # ── metrics-block parsing ─────────────────────────────────────────────────────
 

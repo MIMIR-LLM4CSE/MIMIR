@@ -35,19 +35,17 @@ Workflow:
 import os
 import json
 import re
-import sys
 from datetime import datetime, timezone
 from typing import NamedTuple
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from atomic import write_text
-from capabilities import tool_caps, MAIN_ONLY, PLAN_BLOCKED, RECOVERABLE
-from responses import err, ok
-from state_paths import global_state_dir, state_dir
-from text_tools import yaml_scalar, yaml_unquote
-import embed as _embed
+from .._shared.atomic import write_text
+from .._shared.capabilities import tool_caps, MAIN_ONLY, PLAN_BLOCKED, RECOVERABLE
+from .._shared.responses import err, ok
+from .._shared.state_paths import global_state_dir, state_dir
+from .._shared.text_tools import yaml_scalar, yaml_unquote
+from .._shared import embed as _embed
 
 WORKSPACE = "workspace"
 GLOBAL = "global"

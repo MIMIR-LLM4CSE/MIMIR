@@ -8,7 +8,6 @@ a build — that is the point: a ``make`` buried in a chain still prints its cou
 import json
 import os
 import shutil
-import sys
 import tempfile
 import threading
 import time
@@ -16,14 +15,11 @@ import unittest
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "workspace"]:
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import build_progress  # noqa: E402
-import run_channel  # noqa: E402
-import _bash_jobs  # noqa: E402
-import server_bash  # noqa: E402
+from mimir.servers._shared import build_progress
+from mimir.servers._shared import run_channel
+from mimir.servers.workspace import _bash_jobs
+from mimir.servers.workspace import server_bash
 
 
 class ParseTests(unittest.TestCase):

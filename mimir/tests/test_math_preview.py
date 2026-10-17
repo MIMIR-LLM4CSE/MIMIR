@@ -6,15 +6,12 @@ either: the extractor only looks at the payload.
 """
 
 import json
-import os
-import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "servers", "_shared"))
 
-from latex_display import number_latex, numeric_latex  # noqa: E402
+from mimir.servers._shared.latex_display import number_latex, numeric_latex
 
-from mimir.client.tool_execution.math_preview import (  # noqa: E402
+from mimir.client.tool_execution.math_preview import (
     _MAX_LATEX_CHARS,
     extract_math_preview,
 )

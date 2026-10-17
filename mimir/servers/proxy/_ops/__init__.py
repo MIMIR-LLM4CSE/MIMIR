@@ -7,14 +7,11 @@ Each module holds plain functions returning ``ok()``/``err()`` dicts — no
 
 import os
 import re
-import sys
 
+from ..._shared.responses import err, ok  # noqa: F401
+
+# The proxy server's directory: where a generated proxy script finds its helpers.
 _PROXY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _p in (os.path.join(_PROXY_DIR, "..", "_shared"), _PROXY_DIR):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-from responses import err, ok  # noqa: E402,F401
 
 
 def _with_next(payload: dict, next_step: str) -> dict:

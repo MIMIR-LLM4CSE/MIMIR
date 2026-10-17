@@ -3,17 +3,15 @@ import bisect
 import difflib
 import os
 import re
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from atomic import write_text
-from responses import err, ok
-from root_paths import require_absolute, resolve_path_in_root
-from approved_roots import approved_roots
-from state_paths import standing_roots
-from capabilities import (
+from .._shared.atomic import write_text
+from .._shared.responses import err, ok
+from .._shared.root_paths import require_absolute, resolve_path_in_root
+from .._shared.approved_roots import approved_roots
+from .._shared.state_paths import standing_roots
+from .._shared.capabilities import (
     tool_caps,
     CONTENT_WRITE,
     EDIT,

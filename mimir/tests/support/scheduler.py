@@ -5,16 +5,9 @@ A test that does not pin it depends on the host it runs on.
 """
 from __future__ import annotations
 
-import os
-import sys
 import unittest
 
-_SHARED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "servers", "_shared")
-if _SHARED not in sys.path:
-    sys.path.insert(0, _SHARED)
-
-import slurm_site  # noqa: E402
+from mimir.servers._shared import slurm_site
 
 
 def local_slurm(case: unittest.TestCase, present: bool = True) -> None:

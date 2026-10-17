@@ -10,26 +10,23 @@ the loader will scan. The rest covers the shapes a caller depends on.
 import importlib.util
 import os
 import pathlib
-import sys
 import tempfile
 import unittest
 from unittest import mock
 
 SERVERS_DIR = pathlib.Path(__file__).resolve().parents[1] / "servers"
-for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "agent_state"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-from mimir.client.config import paths as k                          # noqa: E402
-from mimir.client.config.servers import SERVERS                     # noqa: E402
-from mimir.client.context import capabilities as caps               # noqa: E402
-from mimir.client.extensions import resolve_skills_dir              # noqa: E402
-from mimir.servers._shared import extension_paths                   # noqa: E402
+from mimir.client.config import paths as k                        
+from mimir.client.config.servers import SERVERS                   
+from mimir.client.context import capabilities as caps             
+from mimir.client.extensions import resolve_skills_dir            
+from mimir.servers._shared import extension_paths                 
+from mimir.tests.support.modules import spec_for
 
 
 def _load():
     path = SERVERS_DIR / "agent_state" / "server_mimir_api.py"
-    spec = importlib.util.spec_from_file_location("server_mimir_api", path)
+    spec = spec_for(path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

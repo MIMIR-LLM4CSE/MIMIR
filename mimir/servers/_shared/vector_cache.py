@@ -17,8 +17,8 @@ read-only state dir or an unreachable embedding endpoint costs a fallback, not a
 import json
 from typing import Any, Callable, Iterable
 
-import embed as _embed
-from atomic import write_json
+from . import embed as _embed
+from .atomic import write_json
 
 
 def load_vectors(path: str) -> dict:

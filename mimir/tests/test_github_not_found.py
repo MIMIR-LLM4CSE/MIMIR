@@ -8,23 +8,10 @@ the next call is informed rather than another guess. Every request here is faked
 the test must never reach GitHub.
 """
 
-import importlib.util
-import sys
 import unittest
-from pathlib import Path
 
-SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "external"]:
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
-
-_spec = importlib.util.spec_from_file_location(
-    "server_github", SERVERS_DIR / "external" / "server_github.py"
-)
-server_github = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(server_github)
-
-from mimir.servers._shared.responses import err, ok  # noqa: E402
+from mimir.servers.external import server_github
+from mimir.servers._shared.responses import err, ok
 
 
 def _entries(*names: str) -> list[dict]:

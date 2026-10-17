@@ -3,17 +3,14 @@ graceful-degradation contract: with no embedding backend everything must fall ba
 to the pre-existing lexical / substring behaviour (keeps the suite hermetic).
 """
 
+from mimir.tests.support.stubs import stub_attr
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SHARED = _ROOT / "mimir" / "servers" / "_shared"
-for _p in (str(_SHARED),):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 from mimir.servers._shared import embed
 
@@ -121,10 +118,10 @@ class SemanticPathTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         mem = load_memory_server()
         point_stores(mem, tmp.name)
-        mem._embed.is_available = lambda: True
-        mem._embed.embed_texts = self._fake_embed_texts
-        mem._embed.embed_one = lambda t: _fake_vec(t, self.VOCAB)
-        mem._embed.embed_model_id = lambda: "fake-model"
+        stub_attr(self, mem._embed, "is_available", lambda: True)
+        stub_attr(self, mem._embed, "embed_texts", self._fake_embed_texts)
+        stub_attr(self, mem._embed, "embed_one", lambda t: _fake_vec(t, self.VOCAB))
+        stub_attr(self, mem._embed, "embed_model_id", lambda: "fake-model")
 
         mem.memory_add("cluster job slurm submission notes", scope="workspace", description="cluster jobs")
         mem.memory_add("date and time conversion", scope="workspace", description="dates")
@@ -146,7 +143,7 @@ class MemorySearchFallbackTests(unittest.TestCase):
         self.mem = load_memory_server()
         point_stores(self.mem, self._tmp.name)
         # Force the lexical fallback path.
-        self.mem._embed.is_available = lambda: False
+        stub_attr(self, self.mem._embed, "is_available", lambda: False)
 
     def tearDown(self):
         self._tmp.cleanup()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from _lib import store
+from . import store
 
 
 # ── roofline ──────────────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ def parse_runner_log(content: str) -> tuple[list[dict], dict]:
     ``[proxy_runner] summary ...`` at the end. Parsing them is not an op's job, and
     doing it inside one hid the fact that the log IS the interface.
     """
-    from _lib.metrics import _coerce
+    from .metrics import _coerce
 
     def _pairs(tokens: list[str]) -> dict:
         row: dict = {}

@@ -14,11 +14,3 @@
 Dependency direction: store <- procs/metrics/command/build/report/tree_snapshot/placement
 <- execute/ratchet.
 """
-
-import os
-import sys
-
-_PROXY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _p in (os.path.join(_PROXY_DIR, "..", "_shared"), _PROXY_DIR):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)

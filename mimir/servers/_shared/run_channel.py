@@ -40,7 +40,7 @@ import json
 import os
 import time
 
-from atomic import write_text
+from .atomic import write_text
 
 # How long a divert request stays meaningful. Past this it names a run that has
 # almost certainly ended, and consuming it would detach the *next* command instead.
@@ -48,7 +48,7 @@ _STALE_S = 60.0
 
 
 def _dir(channel: str) -> str:
-    from state_paths import session_state_dir
+    from .state_paths import session_state_dir
     return os.path.join(session_state_dir(), "runs", channel)
 
 

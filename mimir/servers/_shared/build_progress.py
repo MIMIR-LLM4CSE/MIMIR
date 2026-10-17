@@ -24,7 +24,7 @@ import os
 import re
 import shlex
 
-import shell_paths
+from . import shell_paths
 
 # Anchored at the start of a line: a compiler diagnostic quoting "[3/4]" mid-sentence
 # is not a progress report.

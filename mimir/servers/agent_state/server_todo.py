@@ -32,16 +32,14 @@ Tools:
 
 import os
 import re
-import sys
 from datetime import datetime, timezone
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
-from responses import err, ok
-from state_paths import TODO_FILENAME, session_state_dir, state_dir
-from text_tools import yaml_scalar, yaml_unquote
+from .._shared.capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
+from .._shared.responses import err, ok
+from .._shared.state_paths import TODO_FILENAME, session_state_dir, state_dir
+from .._shared.text_tools import yaml_scalar, yaml_unquote
 
 # Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager; legacy
 # <workspace>/.mimir fallback for standalone/tests). Todos and plans are per-session

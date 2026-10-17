@@ -1,7 +1,7 @@
 """Detached worker for proxy_exec's blocking ops; not an MCP server.
 
-Usage:
-    python _proxy_job.py --job-dir <path>
+Usage (through the launcher, ``_shared/launcher.launch_argv``):
+    python servers/_launch.py mimir.servers.proxy._proxy_job --job-dir <path>
 
 Reads ``<job-dir>/job.json`` (``{"op": ..., "args": {...}}``), runs the op and writes
 its reply to ``<job-dir>/result.json``. See ``_ops/exec_jobs.py``.
@@ -12,13 +12,8 @@ from __future__ import annotations
 import argparse
 import os
 import signal
-import sys
 import traceback
 
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-for _p in (os.path.join(_THIS_DIR, "..", "_shared"), _THIS_DIR):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 
 def _interrupt(_signum, _frame) -> None:
@@ -31,11 +26,11 @@ def main() -> None:
     parser.add_argument("--job-dir", required=True)
     job_dir = os.path.abspath(parser.parse_args().job_dir)
 
-    from responses import err
-    from atomic import write_json
-    from _lib.store import _read_json
-    from _ops import references, suites
-    from _ops.exec_jobs import JOB_FILE, RESULT_FILE
+    from .._shared.responses import err
+    from .._shared.atomic import write_json
+    from ._lib.store import _read_json
+    from ._ops import references, suites
+    from ._ops.exec_jobs import JOB_FILE, RESULT_FILE
 
     ops = {
         "reference":        references.create,

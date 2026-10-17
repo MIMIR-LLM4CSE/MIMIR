@@ -23,7 +23,6 @@ Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import threading
 import unittest
@@ -33,10 +32,6 @@ from unittest.mock import patch
 from mimir.client.config import paths
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "proxy" / "_lib",
-           SERVERS_DIR / "hpc"]:
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
 
 class ProxyActiveSessionPointerTests(unittest.TestCase):
@@ -96,7 +91,7 @@ class EnvCreateRaceTests(unittest.TestCase):
     """The name is claimed with the one operation the filesystem makes atomic."""
 
     def setUp(self) -> None:
-        import server_env
+        from mimir.servers.hpc import server_env
         self.server_env = server_env
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -164,7 +159,7 @@ class AtomicWriteTests(unittest.TestCase):
 
     def test_the_vector_cache_writes_through_a_rename(self) -> None:
         import json as _json
-        import vector_cache
+        from mimir.servers._shared import vector_cache
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "vectors.json")
             vector_cache.save_vectors(path, {"a": [1.0, 2.0]})
@@ -185,7 +180,7 @@ class WhatStaysSharedTests(unittest.TestCase):
     def test_workspace_goods_resolve_off_the_state_dir_root(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             with patch.dict(os.environ, {"MIMIR_STATE_DIR": d, "MIMIR_SESSION_ID": "s1"}):
-                from state_paths import session_state_dir, state_dir
+                from mimir.servers._shared.state_paths import session_state_dir, state_dir
                 self.assertEqual(state_dir(), d)
                 # The conversation's own corner is a subdirectory of it, not a
                 # replacement for it.

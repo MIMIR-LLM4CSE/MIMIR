@@ -13,15 +13,12 @@ Features:
 - Sequence and series operations
 """
 
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from responses import err, ok
-from capabilities import tool_caps
-from latex_display import sympy_latex
+from .._shared.responses import err, ok
+from .._shared.capabilities import tool_caps
+from .._shared.latex_display import sympy_latex
 
 mcp = FastMCP(
     "SymbolicMathServer",

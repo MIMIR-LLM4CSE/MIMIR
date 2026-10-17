@@ -90,26 +90,38 @@ Override the root with the ``MIMIR_PROXY_BENCH_DIR`` environment variable.
 from __future__ import annotations
 
 import os
-import sys
 import time
 from typing import Annotated
 
 from pydantic import Field
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import (tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT,
-                          BACKGROUNDABLE, DIVERTIBLE, IRREVERSIBLE, RECOVERABLE,
-                          PANEL_REPORT)
-from responses import err, ok
-from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
-from _lib.procs import (_validate_slurm_args, _validate_slurm_comment,
-                        _validate_slurm_token)
-from slurm_script import validate_target
-from _ops import (eval_session, exec_jobs, references, registry, runs,
-                  scaffold as scaffold_ops, slurm, suites)
+from .._shared.capabilities import (
+    tool_caps,
+    CODE_EXEC,
+    PLAN_BLOCKED,
+    CLUSTER_SUBMIT,
+    BACKGROUNDABLE,
+    DIVERTIBLE,
+    IRREVERSIBLE,
+    RECOVERABLE,
+    PANEL_REPORT,
+)
+from .._shared.responses import err, ok
+from ._lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
+from ._lib.procs import _validate_slurm_args, _validate_slurm_comment, _validate_slurm_token
+from .._shared.slurm_script import validate_target
+from ._ops import (
+    eval_session,
+    exec_jobs,
+    references,
+    registry,
+    runs,
+    scaffold as scaffold_ops,
+    slurm,
+    suites,
+)
 
 mcp = FastMCP(
     "ProxyServer",
@@ -979,7 +991,7 @@ def _this_machine() -> dict:
     now = time.time()
     if not _PANEL_MACHINE["value"] or now - _PANEL_MACHINE["at"] > _PANEL_MACHINE_TTL_SECS:
         try:
-            import cpu_facts
+            from .._shared import cpu_facts
             _PANEL_MACHINE["value"] = cpu_facts.local_machine()
             _PANEL_MACHINE["at"] = now
         except Exception:
@@ -1000,7 +1012,7 @@ def _axes_lines(proxy_name: str) -> list[dict]:
     Built from the ledger, so the user sees the shape of the search without the agent
     having to report it — and without anyone having to ask for it.
     """
-    from _lib.store import _opt_ledger_file
+    from ._lib.store import _opt_ledger_file
     try:
         key = (proxy_name, os.path.getmtime(_opt_ledger_file(proxy_name)))
     except OSError:
@@ -1032,7 +1044,7 @@ def _comparability_lines(cfg: dict, metric: str) -> list[dict]:
     anywhere, so pinning would be noise. Nothing is said at all until a baseline has
     pinned a machine — before that there is nothing to differ from.
     """
-    from _lib.ratchet import _NOISY_METRICS
+    from ._lib.ratchet import _NOISY_METRICS
 
     pinned = cfg.get("machine") or {}
     signature = pinned.get("machine_signature") or ""
@@ -1064,8 +1076,8 @@ def proxy_panel_report() -> dict:
     server's own words — the client renders the lines it is given and knows nothing
     about proxies, which is what lets another server add a section of its own.
     """
-    from _lib.store import _resolve_proxy_name, _load_registry
-    from _lib.ratchet import _load_best
+    from ._lib.store import _resolve_proxy_name, _load_registry
+    from ._lib.ratchet import _load_best
 
     name = _resolve_proxy_name("")
     if not name:

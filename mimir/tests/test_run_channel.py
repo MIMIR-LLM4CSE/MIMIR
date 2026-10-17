@@ -12,18 +12,14 @@ See servers/_shared/run_channel.py and client/tool_execution/run_channel.py.
 import importlib
 import os
 import shutil
-import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in [SERVERS_DIR / "_shared"]:
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import run_channel as server_side  # noqa: E402
+from mimir.servers._shared import run_channel as server_side
 
 _KEY = "20260101T120000Z-ab12"
 # Every case runs against both real channels: the properties below are about the

@@ -15,14 +15,17 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from _lib.ratchet import (
-    _NOISY_METRICS, _append_ledger, _effective_min_improvement, _load_best,
-    _ratchet_verdict, _run_primary_value, _save_best,
+from .._lib.ratchet import (
+    _NOISY_METRICS,
+    _append_ledger,
+    _effective_min_improvement,
+    _load_best,
+    _ratchet_verdict,
+    _run_primary_value,
+    _save_best,
 )
-from atomic import write_json
-from _lib.store import (
-    _file_lock, _opt_session_runs_dir, _read_json, _save_opt_config,
-)
+from ..._shared.atomic import write_json
+from .._lib.store import _file_lock, _opt_session_runs_dir, _read_json, _save_opt_config
 
 def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:
     """Compute the ratchet outcome for a completed run, persisting it once.

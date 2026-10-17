@@ -9,21 +9,16 @@ belongs in one place rather than in each test file's setUp.
 """
 
 import importlib.util
-import sys
 from pathlib import Path
+from mimir.tests.support.modules import spec_for
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SHARED = _ROOT / "mimir" / "servers" / "_shared"
-if str(_SHARED) not in sys.path:
-    sys.path.insert(0, str(_SHARED))
 
 
 def load_memory_server():
     """Import server_memory as a standalone module, the way the server itself runs."""
-    spec = importlib.util.spec_from_file_location(
-        "server_memory",
-        _ROOT / "mimir" / "servers" / "agent_state" / "server_memory.py",
-    )
+    spec = spec_for(_ROOT / "mimir" / "servers" / "agent_state" / "server_memory.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

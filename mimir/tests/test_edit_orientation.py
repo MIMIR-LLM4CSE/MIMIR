@@ -12,17 +12,13 @@ Run:
 """
 
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
-for _p in (_SERVERS / "_shared", _SERVERS / "workspace"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
-import server_files as sf  # noqa: E402
+from mimir.servers.workspace import server_files as sf
 
 
 class ChangedSpanTests(unittest.TestCase):

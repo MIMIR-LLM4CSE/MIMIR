@@ -16,23 +16,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
-import sys
 import tempfile
 import unittest
-from pathlib import Path
 
-SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
-    _ps = str(_p)
-    if _ps not in sys.path:
-        sys.path.insert(0, _ps)
-
-import server_proxy  # noqa: E402
-import slurm_site  # noqa: E402,F401
+from mimir.servers.proxy import server_proxy  # noqa: E402
+from mimir.servers._shared import slurm_site  # noqa: E402,F401
 
 from mimir.tests.support.scheduler import local_slurm  # noqa: E402
-from _lib import build, procs, ratchet, store, tree_snapshot  # noqa: E402,F401
-from _ops import (  # noqa: E402,F401
+from mimir.servers.proxy._lib import build, procs, ratchet, store, tree_snapshot  # noqa: E402,F401
+from mimir.servers.proxy._ops import (  # noqa: E402,F401
     _eval_ratchet, _eval_validate, eval_session, references, registry, runs,
     scaffold, slurm, suites,
 )

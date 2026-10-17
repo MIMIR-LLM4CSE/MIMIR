@@ -8,12 +8,13 @@ the command and the parameter-file template.
 
 from __future__ import annotations
 
+from ..._shared.launcher import PACKAGE_PARENT
 import os
 import re
 import shlex
 
-from _lib import procs
-from slurm_script import node_python_lines, sbatch_header
+from . import procs
+from ..._shared.slurm_script import node_python_lines, sbatch_header
 
 _PARAM_EXT: dict[str, str] = {
     "text":              "txt",
@@ -201,11 +202,10 @@ def _build_sbatch(
     proxy_name = entry.get("name", "")
     ref_arg    = compare_to_reference or ""
     fmt        = entry.get("output_format", "npz")
-    server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     postrun_script = (
         "import sys, os\n"
-        f"sys.path.insert(0, {server_dir!r})\n"
-        "from _lib.execute import _post_run_finalize\n"
+        f"sys.path.insert(0, {PACKAGE_PARENT!r})\n"
+        "from mimir.servers.proxy._lib.execute import _post_run_finalize\n"
         "_post_run_finalize(\n"
         f"    run_dir={run_dir!r},\n"
         f"    proxy_name={proxy_name!r},\n"

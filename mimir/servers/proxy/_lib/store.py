@@ -17,8 +17,8 @@ import os
 import shutil
 import threading
 
-from atomic import write_json, write_text
-from responses import err
+from ..._shared.atomic import write_json, write_text
+from ..._shared.responses import err
 
 # ── storage root ──────────────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ def _mimir_session_id() -> str:
     fixture) must keep working, and "no session" is the pre-existing behaviour.
     """
     try:
-        from state_paths import active_session_id
+        from ..._shared.state_paths import active_session_id
         return active_session_id()
     except Exception:
         return ""

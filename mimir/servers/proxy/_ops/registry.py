@@ -6,13 +6,15 @@ import os
 import shutil
 from datetime import datetime, timezone
 
-from _ops import _check_name, _with_next, err, ok
-from _lib import build
-from _lib.command import _PARAM_EXT
-from _lib.procs import _run_state
-from _lib import store
-from _lib.store import (
-    _load_registry_or_err, _save_registry, _registry_lock,
+from . import _check_name, _with_next, err, ok
+from .._lib import build
+from .._lib.command import _PARAM_EXT
+from .._lib.procs import _run_state
+from .._lib import store
+from .._lib.store import (
+    _load_registry_or_err,
+    _save_registry,
+    _registry_lock,
     _proxy_runs_dir,
     _read_json,
 )

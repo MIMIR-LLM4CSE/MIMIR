@@ -209,11 +209,7 @@ class RunChannelIsolationTests(_StateDirCase):
 
     def test_the_server_half_resolves_the_same_path_from_its_environment(self):
         """Server and client must name the same file, or a divert reaches nothing."""
-        import sys
-        sys.path.insert(0, os.path.join("mimir", "servers", "_shared"))
-        self.addCleanup(sys.path.pop, 0)
-        import importlib
-        server_side = importlib.import_module("run_channel")
+        from mimir.servers._shared import run_channel as server_side
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "aaa"}):
             self.assertEqual(
                 server_side._dir("bash_run"),

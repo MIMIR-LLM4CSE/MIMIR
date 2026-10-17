@@ -18,16 +18,14 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 
 _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "proxy")
-sys.path.insert(0, os.path.abspath(_PROXY))
-sys.path.insert(0, os.path.abspath(os.path.join(_PROXY, "..", "_shared")))
 
-from _lib import ratchet, store, tree_snapshot  # noqa: E402
-from mimir.servers._shared.atomic import write_json  # noqa: E402
+from mimir.servers.proxy._lib import ratchet, store, tree_snapshot
+from mimir.servers._shared.atomic import write_json
+from mimir.tests.support.modules import spec_for
 
 
 class _Workspace(unittest.TestCase):
@@ -70,7 +68,7 @@ class HarnessContractTests(_Workspace):
     """init refuses the shape that produced the duplicate."""
 
     def _check(self, paths, src=None):
-        from _ops import _eval_validate
+        from mimir.servers.proxy._ops import _eval_validate
         return _eval_validate._check_optimize_paths(paths, src or self.harness)
 
     def test_no_optimize_paths_is_refused(self) -> None:
@@ -210,7 +208,7 @@ class RebaselineTests(_Workspace):
     """
 
     def _session(self) -> tuple:
-        from _ops import eval_session
+        from mimir.servers.proxy._ops import eval_session
         cfg = {
             "proxy_name": "p", "benchmark_name": "b", "requirements": [],
             "proxy_source_path": self.harness,
@@ -275,7 +273,7 @@ class RebaselineTests(_Workspace):
         self.assertEqual(cfg["baseline_id"], "ORIGINAL")  # untouched by anything but rebaseline
 
     def test_rebaseline_without_a_session_is_a_structured_error(self) -> None:
-        from _ops import eval_session
+        from mimir.servers.proxy._ops import eval_session
         out = eval_session.rebaseline("nope")
         self.assertEqual(out["status"], "error")
 
@@ -310,7 +308,7 @@ class NoiseFloorTests(unittest.TestCase):
 
     def test_the_session_that_produced_this_would_now_reject_its_own_step(self) -> None:
         """The regression this whole lane exists for, with its real numbers."""
-        from _lib.ratchet import _is_improvement
+        from mimir.servers.proxy._lib.ratchet import _is_improvement
         baseline, fused = 0.179888, 0.17491          # what the two runs measured
         floor = abs(0.179888 - 0.174488) / 0.179888  # 3.1%, from the two baseline runs
         margin, _ = ratchet._effective_min_improvement(
@@ -322,7 +320,7 @@ class NoiseFloorTests(unittest.TestCase):
 
     def test_a_real_gain_still_clears_the_measured_floor(self) -> None:
         """The floor rejects noise, not results: float32 was a 22% win."""
-        from _lib.ratchet import _is_improvement
+        from mimir.servers.proxy._lib.ratchet import _is_improvement
         margin, _ = ratchet._effective_min_improvement(
             self._cfg(noise_floor=0.031))
         self.assertTrue(_is_improvement(0.136145, 0.17491, "min", margin))
@@ -346,7 +344,7 @@ class ReplicateAggregationTests(unittest.TestCase):
         import importlib.util
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "servers", "proxy", "_proxy_runner.py")
-        spec = importlib.util.spec_from_file_location("_proxy_runner_under_test", path)
+        spec = spec_for(path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
@@ -412,12 +410,12 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
                                   "tree_snapshot": snap})
 
     def _rollback(self, name: str):
-        from _ops import eval_session
+        from mimir.servers.proxy._ops import eval_session
         self._write(self.a, "SCRATCH\n")
         return eval_session.reset_to_best(name)
 
     def test_cleaning_one_leaves_the_other_able_to_roll_back(self) -> None:
-        from _ops import registry
+        from mimir.servers.proxy._ops import registry
         self._optimisation("bench", "BENCH_BEST")
         self._optimisation("abc", "ABC_BEST")
         self.assertEqual(self._rollback("abc")["status"], "ok")  # premise
@@ -429,7 +427,7 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
         self.assertEqual(self._read(self.a), "ABC_BEST")
 
     def test_and_says_it_kept_them_and_why(self) -> None:
-        from _ops import registry
+        from mimir.servers.proxy._ops import registry
         self._optimisation("bench", "BENCH_BEST")
         self._optimisation("abc", "ABC_BEST")
         out = registry.clean("bench")
@@ -440,20 +438,20 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
 
     def test_cleaning_the_last_one_still_removes_them(self) -> None:
         """Conservative, not hoarding: with nothing left to point in, they go."""
-        from _ops import registry
+        from mimir.servers.proxy._ops import registry
         self._optimisation("bench", "BENCH_BEST")
         registry.clean("bench")
         self.assertFalse(os.path.isdir(store.opt_git_dir()))
 
     def test_the_last_one_reports_the_removal(self) -> None:
-        from _ops import registry
+        from mimir.servers.proxy._ops import registry
         self._optimisation("bench", "BENCH_BEST")
         out = registry.clean("bench")
         self.assertIn("tree snapshots", out["removed"])
 
     def test_an_unregistered_proxy_still_counts_as_needing_them(self) -> None:
         """State on disk is what keeps a snapshot store alive, not registration."""
-        from _ops import registry
+        from mimir.servers.proxy._ops import registry
         self._optimisation("bench", "BENCH_BEST")
         self._optimisation("abc", "ABC_BEST")
         registry.clean("bench")
@@ -476,7 +474,7 @@ class ResumeNoticeTests(_Workspace):
     """
 
     def _session(self, *, measured: bool = True) -> None:
-        from _lib import procs
+        from mimir.servers.proxy._lib import procs
         self._write(self.a, "MEASURED_STATE\n")
         os.makedirs(store._opt_session_runs_dir("bench"), exist_ok=True)
         snap = tree_snapshot.snapshot(
@@ -497,7 +495,7 @@ class ResumeNoticeTests(_Workspace):
         procs._update_opt_active_link("bench", run_dir)
 
     def _notice(self) -> str:
-        from _ops import eval_session
+        from mimir.servers.proxy._ops import eval_session
         cfg = store._load_opt_config("bench")
         return eval_session._resume_notice(cfg, "bench", [self.a])
 
@@ -554,7 +552,7 @@ class ResumeNoticeTests(_Workspace):
         exactly where it matters.
         """
         import inspect
-        from _ops import eval_session
+        from mimir.servers.proxy._ops import eval_session
         carried = inspect.getsource(eval_session.run_awaited)
         self.assertIn('"resume_notice"', carried)
 

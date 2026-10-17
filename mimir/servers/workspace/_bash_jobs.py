@@ -42,8 +42,8 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-import build_progress
-from processes import is_running, proc_starttime
+from .._shared import build_progress
+from .._shared.processes import is_running, proc_starttime
 
 def jobs_root() -> str:
     """This session's job directory root, resolved per call.
@@ -53,7 +53,7 @@ def jobs_root() -> str:
     spawned by an agent, ``MIMIR_SESSION_ID`` is fixed for the process and the answer never
     moves.
     """
-    from state_paths import session_state_dir
+    from .._shared.state_paths import session_state_dir
     return os.path.join(session_state_dir(), "jobs")
 
 # A job key is used as a directory name and echoed back by the client watcher, so it is

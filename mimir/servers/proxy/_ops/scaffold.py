@@ -6,8 +6,8 @@ import ast
 import os
 import re
 
-from _ops import _with_next, err, ok
-from _lib.store import scaffolds_dir
+from . import _with_next, err, ok
+from .._lib.store import scaffolds_dir
 
 
 def scaffold(

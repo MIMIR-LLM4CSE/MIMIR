@@ -1,16 +1,13 @@
 import ast
-import os
 import signal
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 import numpy as np
 import operator
 from mcp.server.fastmcp import FastMCP
-from responses import err, ok
-from capabilities import tool_caps
-from latex_display import numeric_latex
+from .._shared.responses import err, ok
+from .._shared.capabilities import tool_caps
+from .._shared.latex_display import numeric_latex
 
 mcp = FastMCP(
     "MathServer",
