@@ -138,7 +138,7 @@ class TransientReminderTests(_LoopRunner):
         emitted: list[dict] = []
         messages: list[dict] = []
         ctx = build_execution_context()
-        with patch("mimir.client.guardrails.nudges.engine.emit", emitted.append):
+        with patch("mimir.client.guardrails.nudges.reminders.emit", emitted.append):
             inject_reminder(messages, "do the thing", category="empty_turn",
                             tagged=False, execution_context=ctx, step=4)
         drop_transient_reminders(messages, ctx)
@@ -152,7 +152,7 @@ class TransientReminderTests(_LoopRunner):
         """The pin sits after the reminders at call time; a tail pop would miss them."""
         messages: list[dict] = [{"role": "user", "content": "q"}]
         ctx = build_execution_context()
-        with patch("mimir.client.guardrails.nudges.engine.emit", lambda ev: None):
+        with patch("mimir.client.guardrails.nudges.reminders.emit", lambda ev: None):
             inject_reminder(messages, "first", category="a", tagged=False, execution_context=ctx)
             inject_reminder(messages, "second", category="b", tagged=False, execution_context=ctx)
         messages.append({"role": "user", "content": "the pin"})
@@ -162,14 +162,14 @@ class TransientReminderTests(_LoopRunner):
     def test_a_reminder_compaction_already_removed_is_not_an_error(self) -> None:
         messages: list[dict] = []
         ctx = build_execution_context()
-        with patch("mimir.client.guardrails.nudges.engine.emit", lambda ev: None):
+        with patch("mimir.client.guardrails.nudges.reminders.emit", lambda ev: None):
             inject_reminder(messages, "gone", category="a", tagged=False, execution_context=ctx)
         messages.clear()  # as intra-query compaction would
         self.assertEqual(drop_transient_reminders(messages, ctx), 0)
 
     def test_without_a_context_the_reminder_simply_stays(self) -> None:
         messages: list[dict] = []
-        with patch("mimir.client.guardrails.nudges.engine.emit", lambda ev: None):
+        with patch("mimir.client.guardrails.nudges.reminders.emit", lambda ev: None):
             inject_reminder(messages, "kept", category="a", tagged=False)
         self.assertEqual(len(messages), 1)
 

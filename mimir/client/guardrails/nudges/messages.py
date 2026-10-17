@@ -2,7 +2,7 @@
 
 The built-in nudge messages (discovery, state, validation, denial, doc, env,
 blast-radius, creation, todo, …) live here, in the nudges subsystem, rather than
-in the shared ``workflow`` module: they are consumed only by ``nudges.engine``.
+in the shared ``workflow`` module: only the cascade uses them.
 ``validation_nudge_message`` is a stateful renderer (reads validation progress);
 the rest are static text.
 """
@@ -84,11 +84,9 @@ def state_nudge_message(agent: AgentPort, execution_context: ExecutionContext) -
 def _validation_nudge_message(findings: dict[str, str]) -> str:
     """Report what the built-in check found, file by file.
 
-    The check itself is no longer asked for: it runs here, in-process, over every
-    modified file before the loop may conclude. So this message is not a request to go
-    validate — it is the result, and the only thing it asks for is the repair. It names
-    no tool for the same reason it names no command: nothing outside had to be installed
-    for the defect below to be found.
+    The check runs in-process over every modified file before the loop may conclude, so
+    this message is the result, and asks only for the repair. It names no tool and no
+    command: nothing outside had to be installed to find the defect.
     """
     lines = "\n".join(f"- {path}: {detail}" for path, detail in findings.items())
     return (
@@ -128,9 +126,7 @@ def denial_nudge_message(execution_context: ExecutionContext | None = None) -> s
 
 
 # --- Guidance-nudge copy ---------------------------------------------------
-# These build the message body for the reasoning-babysitting nudges in
-# guardrails.nudges.engine. The *when-to-fire* gating stays in nudge_logic; only
-# the wording lives here so all nudge copy is in one place.
+# The wording of the guidance nudges; when they fire is ``predicates``' business.
 
 def error_recovery_nudge_message(failing_path: str) -> str:
     return (
@@ -356,11 +352,8 @@ def todo_nudge_message(execution_context: ExecutionContext) -> str:
 def validation_nudge_message(agent: AgentPort, execution_context: ExecutionContext) -> str:
     """What the model is told about the files the built-in check rejected.
 
-    No longer a push toward doing the check — the loop already did it. The message is
-    the finding, so the branches that used to soften it (mid-refactor, just-edited)
-    are gone with the request they were softening.
+    The loop already ran the check: the message is the finding.
     """
-    
     findings = builtin_check_failures(execution_context)
     if not findings:
         # Nothing was rejected: the pending files are ones the sweep has not reached

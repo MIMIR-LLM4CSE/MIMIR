@@ -218,7 +218,7 @@ class EditFailureStreakTests(unittest.TestCase):
         )
 
     def test_varied_anchor_failures_escalate_without_evicting_the_file(self) -> None:
-        from mimir.client.guardrails.nudges import engine as nudge_logic
+        from mimir.client.guardrails import nudges as nudge_logic
         agent = self._agent()
         ec = build_execution_context()
         ec.read_files.add("mod.py")
@@ -231,7 +231,7 @@ class EditFailureStreakTests(unittest.TestCase):
         self.assertEqual(ec.edit_fail_streak_by_file["mod.py"], 2)
         # The escalation is the nudge, not a forged "you have not read this".
         self.assertIn("mod.py", ec.read_files)
-        self.assertEqual(nudge_logic._first_failing_edit_path(ec), "mod.py")
+        self.assertEqual(nudge_logic.predicates.first_failing_edit_path(ec), "mod.py")
 
     def test_success_resets_streak(self) -> None:
         agent = self._agent()

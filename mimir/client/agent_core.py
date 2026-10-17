@@ -814,10 +814,6 @@ class MimirAgent:
     def skill_enabled(self, name: str) -> bool:
         return name not in self.disabled_skills
 
-    def nudge_enabled(self, name: str) -> bool:
-        """True if an application nudge is active (consulted by the nudge dispatcher)."""
-        return name not in self.disabled_nudges
-
     def set_server_enabled(self, name: str, enabled: bool) -> None:
         """Enable/disable a server's tools and persist the choice."""
         if enabled:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..guardrails.nudges.engine import record_exercise_obstacle
+from ..guardrails.nudges import record_exercise_obstacle
 from ..protocol.messages import reconcile_tool_pairs
 from .verification import build_ledger, render_ledger
 from ..context.execution_context import ExecutionContext

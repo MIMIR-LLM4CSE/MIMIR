@@ -1,15 +1,14 @@
 """Pluggable nudges — the extension seam for application-specific guidance.
 
-The built-in nudge cascade in :mod:`guardrails.nudges.engine` (``maybe_append_nudge`` →
-a verification layer that is always on + a guidance layer gated by
-``_GUIDANCE_BY_LEVEL_MODE[(enforcement, mode)]``) is the fixed *core*. This module lets an
+The built-in nudge cascade in :mod:`guardrails.nudges.cascade` (``maybe_append_nudge``:
+a verification layer that is always on, and a guidance layer gated by
+``tiers.GUIDANCE_BY_LEVEL_MODE[(enforcement, mode)]``) is the fixed *core*. This module lets an
 application register **additional** nudges on top — e.g. an "confirm this action is
 authorized" reminder for a cybersecurity deployment — without editing core code.
 
 Custom nudges run *after* their matching core layer and preserve the core invariants:
 at most one nudge fires per ``maybe_append_nudge`` call, verification before guidance,
-each injected with the ``_NUDGE_TAG`` prefix and ``role:"user"`` via the shared
-``_fire_nudge`` helper. Unlike policies, nudges are **toggleable** (a disabled name in
+each injected with the automated-reminder tag and ``role:"user"`` by the cascade. Unlike policies, nudges are **toggleable** (a disabled name in
 ``.mimir/preferences.json`` suppresses the rule).
 
 A pack registers a :class:`NudgeRule` at import time::
@@ -65,18 +64,16 @@ class NudgeRule:
                 f"NudgeRule.layer must be one of {VALID_NUDGE_LAYERS}, got {self.layer!r}"
             )
 
-    # The interface every nudge of the cascade answers (see nudges.engine).
+    # The ``Nudge`` interface the cascade asks of every nudge.
 
     @property
     def budget_key(self) -> str:
         return self.name
 
     def fires(self, agent: AgentPort, query: str, mode: str, ec: ExecutionContext, level: str) -> bool:
-        """Whether the rule would fire now: not switched off, under its per-query cap,
-        in tier (guidance), and its predicate holds. A predicate that raises is "no": a
-        bad pack cannot break the loop — but it is logged."""
-        if self.name in (getattr(agent, "disabled_nudges", None) or set()):
-            return False
+        """Whether the rule would fire now: under its per-query cap, in tier (guidance),
+        and its predicate holds. A predicate that raises is "no", and is logged. The
+        cascade skips a rule the user switched off before asking."""
         if (ec.nudge_counts or {}).get(self.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
             return False
         if self.layer == "guidance" and not rule_tier_enabled(
@@ -98,7 +95,7 @@ class NudgeRule:
 
 # Default tier membership for a guidance rule that declares no explicit tiers: fire in
 # 'strict' only, in both agent and plan modes. Mirrors the core "strict babysits
-# everything" stance in nudges.engine._GUIDANCE_BY_LEVEL_MODE.
+# everything" stance in tiers.GUIDANCE_BY_LEVEL_MODE.
 _DEFAULT_TIERS: frozenset[tuple[str, str]] = frozenset({("strict", "agent"), ("strict", "plan")})
 
 

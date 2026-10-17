@@ -156,7 +156,7 @@ Per-model and per-mode resolution, read from the matched vLLM profile.
 `enforcement_level(model)` → `strict` | `light` (**default**) | `off`. It governs **only**
 the guidance nudge layer and the plan-mode explore phase — never the verification nudges,
 and never the approval, write or state guards. Which categories survive at each
-`(enforcement, mode)` is the `_GUIDANCE_BY_LEVEL_MODE` table in `guardrails/nudges/engine.py`;
+`(enforcement, mode)` is the `GUIDANCE_BY_LEVEL_MODE` table in `guardrails/nudges/tiers.py`;
 [POLICY.md](POLICY.md#nudges-by-enforcement-level) reproduces it with the reasoning.
 
 Resolved **once** at construction into `self.enforcement` — the model is immutable for an
@@ -751,24 +751,26 @@ a run the user cannot see is worse than one shown out of place.
 
 ### `nudges/`
 
-At most one reminder per step. `maybe_append_nudge()` walks the built-in table
-`_CORE_NUDGES` through the generic runner `_append_core_nudge()`; packs add rows through
-`_append_custom_nudge()`. Every row is `(name, layer, should_fire, render, budget_key)`,
-where `budget_key` defaults to the name and is what lets several rows ration one counter.
+At most one reminder per step. `cascade.maybe_append_nudge()` walks the built-in table
+`CORE_NUDGES`, then the packs' rules; both answer the `Nudge` protocol (`name`, `layer`,
+`budget_key`, `fires`, `text`), and a nudge the user switched off is skipped in that one
+place. `budget_key` defaults to the name and is what lets several rows ration one counter.
+The package splits by role: `reminders` (inject and drop), `tiers`, `predicates`,
+`exercise`, `cascade`, `messages`.
 
 The full per-nudge table, with what each fires on and which survive at each level, is in
 [POLICY.md](POLICY.md#nudges-by-enforcement-level). What belongs here is the shape:
 
 - **Verification layer** — runs at every enforcement level: `denial`, `error_recovery`,
   `stuck_repair`, `validation`, `regression`, `unexercised`, `unfinished_plan`.
-  `test_nudge_table.py` asserts this set is disjoint from `_ALL_GUIDANCE`, so a verification
+  `test_nudge_table.py` asserts this set is disjoint from `ALL_GUIDANCE`, so a verification
   row can never be silently switched off by enforcement.
 - **Guidance layer** — skipped entirely at `off`: `env_resolution`, `env_cleanup`, `doc`,
   `state`, `blast_radius`, `creation`, `todo`, `unwatched_run`.
 - **Order per step**: core verification → pack verification → *(stop if `off`)* → core
   guidance → pack guidance. The first row whose predicate holds wins.
-- `_GUIDANCE_BY_LEVEL_MODE` is the declarative `(enforcement, mode)` table, consulted
-  through `_guidance_enabled` inside each guidance predicate.
+- `tiers.GUIDANCE_BY_LEVEL_MODE` is the declarative `(enforcement, mode)` table, consulted
+  through `guidance_enabled` inside each guidance predicate.
 - `needs_incomplete_finalization()` blocks on the check axis, denials, and open non-optional
   checklist steps — the last checked **first**, because the other two conclude from
   validation alone, which is no evidence about steps the model never started. It reads

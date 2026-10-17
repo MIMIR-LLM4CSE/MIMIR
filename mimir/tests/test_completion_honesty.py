@@ -9,7 +9,7 @@ Three separate mechanisms are pinned here:
   * the completion issues/completed lists that feed the incomplete-answer
     finalizer (`workflow`),
   * `needs_incomplete_finalization`, the predicate that decides whether that
-    finalizer runs at all (`nudges.engine`).
+    finalizer runs at all (`nudges.cascade`).
 
 Everything degrades to today's behaviour when there is no checklist, which is the
 majority of runs — see the no-plan tests in each class.
@@ -34,7 +34,7 @@ from mimir.client.context.execution_context import (
     record_run,
 )
 from mimir.client.event_sink import reset_event_sink, set_event_sink
-from mimir.client.guardrails.nudges.engine import needs_incomplete_finalization
+from mimir.client.guardrails.nudges import needs_incomplete_finalization
 from mimir.client.guardrails.nudges import maybe_append_nudge
 from mimir.client.guardrails.nudges.messages import unexercised_code_nudge_message
 from mimir.client.guardrails.verdict import apply_verdict
@@ -721,8 +721,8 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
     """The one new nudge: verification layer, cap 1, two valid exits."""
 
     def _should(self, ec):
-        from mimir.client.guardrails.nudges.engine import _should_nudge_unfinished_plan
-        return _should_nudge_unfinished_plan(ec)
+        from mimir.client.guardrails.nudges.predicates import should_nudge_unfinished_plan
+        return should_nudge_unfinished_plan(ec)
 
     def test_fires_on_open_steps_after_code_was_written(self):
         ec = _written({"a.py"}, tier="static")
@@ -903,16 +903,16 @@ class ExerciseRouteTests(unittest.TestCase):
         )
 
     def _route(self, dirty, *, seen=(), absent=()):
-        from mimir.client.guardrails.nudges import engine
+        from mimir.client.guardrails.nudges import exercise
 
         ec = _ctx(dirty_written_files=set(dirty), code_mutation_started=True)
         ec.read_files = set(seen)
-        real = engine._any_command_on_path
-        engine._any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
+        real = exercise.any_command_on_path
+        exercise.any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
         try:
-            return engine.exercise_route(self._agent(), ec)
+            return exercise.exercise_route(self._agent(), ec)
         finally:
-            engine._any_command_on_path = real
+            exercise.any_command_on_path = real
 
     def test_a_compiled_edit_with_a_configured_build_is_a_route(self):
         # The branch a `.py`/`.sh` suffix test used to refuse by category, which left
@@ -930,18 +930,18 @@ class ExerciseRouteTests(unittest.TestCase):
     def test_asking_for_a_route_changes_nothing(self):
         # Asked from a nudge predicate, it wrote the obstacle into the context: probing
         # whether a nudge was pending changed what the ledger would say.
-        from mimir.client.guardrails.nudges import engine
+        from mimir.client.guardrails.nudges import exercise
 
         ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
         before = copy.deepcopy(vars(ec))
-        engine.exercise_route(self._agent(), ec)
+        exercise.exercise_route(self._agent(), ec)
         self.assertEqual(vars(ec), before)
 
     def test_the_obstacle_reaches_the_ledger_when_nothing_ran(self):
-        from mimir.client.guardrails.nudges import engine
+        from mimir.client.guardrails.nudges import exercise
 
         ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
-        engine.record_exercise_obstacle(self._agent(), ec)
+        exercise.record_exercise_obstacle(self._agent(), ec)
         self.assertTrue(ec.exercise_blocked_reason)
 
     def test_a_build_file_nobody_has_seen_is_not_a_route(self):

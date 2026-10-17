@@ -29,12 +29,11 @@ from mimir.client.config.limits import (
 from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import build_execution_context, record_run
 from mimir.client.event_sink import reset_event_sink, set_event_sink
-from mimir.client.guardrails.nudges.engine import (
-    _CORE_NUDGES,
-    maybe_append_nudge,
-    nudge_pending,
-    _should_nudge_stuck_repair,
-    _worst_run_failure_streak,
+from mimir.client.guardrails.nudges import maybe_append_nudge, nudge_pending
+from mimir.client.guardrails.nudges.cascade import CORE_NUDGES
+from mimir.client.guardrails.nudges.predicates import (
+    should_nudge_stuck_repair,
+    worst_run_failure_streak,
 )
 from mimir.client.guardrails.nudges.messages import stuck_repair_nudge_message
 from mimir.client.guardrails.ladder import register_run_failure
@@ -62,7 +61,7 @@ def _ctx(command="pytest -q solver.py", failures=0, fired=0):
 
 class StreakTests(unittest.TestCase):
     def test_no_failing_run_is_no_streak(self) -> None:
-        self.assertEqual(_worst_run_failure_streak(build_execution_context()), 0)
+        self.assertEqual(worst_run_failure_streak(build_execution_context()), 0)
 
     def test_the_streak_is_per_command_not_a_sum(self) -> None:
         # Two unrelated commands failing once each is ordinary early red, not a model
@@ -72,61 +71,61 @@ class StreakTests(unittest.TestCase):
         for cmd in ("make", "pytest -q"):
             record_run(ec, cmd, completed=False)
             register_run_failure(ec, cmd, "nope")
-        self.assertEqual(_worst_run_failure_streak(ec), 1)
+        self.assertEqual(worst_run_failure_streak(ec), 1)
 
     def test_a_re_run_keeps_climbing(self) -> None:
         # record_run carries `failures` over, which is what makes the streak survive
         # the model re-running the same command after each edit.
         ec = _ctx(failures=3)
-        self.assertEqual(_worst_run_failure_streak(ec), 3)
+        self.assertEqual(worst_run_failure_streak(ec), 3)
 
     def test_a_settled_run_leaves_the_streak(self) -> None:
         # A pass drops the run out of failed_runs, so the ladder disarms on its own.
         ec = _ctx(failures=4)
         ec.runs["pytest solver.py"]["completed"] = True
         ec.runs["pytest solver.py"]["verdict"] = "pass"
-        self.assertEqual(_worst_run_failure_streak(ec), 0)
-        self.assertFalse(_should_nudge_stuck_repair(ec))
+        self.assertEqual(worst_run_failure_streak(ec), 0)
+        self.assertFalse(should_nudge_stuck_repair(ec))
 
     def test_a_blocked_run_is_not_a_streak(self) -> None:
         # The environment putting up a wall is not the model repeating itself, and
         # failed_runs already excludes it.
         ec = _ctx(failures=4)
         ec.runs["pytest solver.py"]["blocked"] = "pytest not installed"
-        self.assertEqual(_worst_run_failure_streak(ec), 0)
+        self.assertEqual(worst_run_failure_streak(ec), 0)
 
 
 class LadderTests(unittest.TestCase):
     def test_it_stays_quiet_below_the_first_rung(self) -> None:
         for n in range(STUCK_REPAIR_ADVISE_AFTER):
             with self.subTest(failures=n):
-                self.assertFalse(_should_nudge_stuck_repair(_ctx(failures=n)))
+                self.assertFalse(should_nudge_stuck_repair(_ctx(failures=n)))
 
     def test_the_first_rung_speaks_on_the_second_failure(self) -> None:
-        self.assertTrue(_should_nudge_stuck_repair(_ctx(failures=STUCK_REPAIR_ADVISE_AFTER)))
+        self.assertTrue(should_nudge_stuck_repair(_ctx(failures=STUCK_REPAIR_ADVISE_AFTER)))
 
     def test_the_first_rung_never_speaks_twice(self) -> None:
         # The regression this row exists to avoid: a streak walking 2 -> 3 must not
         # re-say "look wider". A plain `count < MAX` cap would.
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER + 1, fired=1)
-        self.assertFalse(_should_nudge_stuck_repair(ec))
+        self.assertFalse(should_nudge_stuck_repair(ec))
 
     def test_the_second_rung_waits_for_its_own_threshold(self) -> None:
         ec = _ctx(failures=STUCK_REPAIR_CONSTRAIN_AFTER, fired=1)
-        self.assertTrue(_should_nudge_stuck_repair(ec))
+        self.assertTrue(should_nudge_stuck_repair(ec))
 
     def test_the_second_rung_is_never_reached_before_the_first_is_spoken(self) -> None:
         # Even on a streak that jumps straight past both thresholds, rung one goes first.
         ec = _ctx(failures=STUCK_REPAIR_CONSTRAIN_AFTER + 2, fired=0)
-        self.assertTrue(_should_nudge_stuck_repair(ec))
-        self.assertIn("failed", stuck_repair_nudge_message(_worst_run_failure_streak(ec)))
+        self.assertTrue(should_nudge_stuck_repair(ec))
+        self.assertIn("failed", stuck_repair_nudge_message(worst_run_failure_streak(ec)))
 
     def test_there_is_no_third_rung(self) -> None:
         # Past the two rungs the existing release takes over: at
         # VALIDATION_RETRY_BUDGET failures register_run_failure moves the workflow to
         # `conclude`. Saying it a third time would just be louder.
         ec = _ctx(failures=VALIDATION_RETRY_BUDGET, fired=NUDGE_MAX_STUCK_REPAIR)
-        self.assertFalse(_should_nudge_stuck_repair(ec))
+        self.assertFalse(should_nudge_stuck_repair(ec))
 
     def test_the_rungs_are_ordered_inside_the_repair_window(self) -> None:
         self.assertLess(STUCK_REPAIR_ADVISE_AFTER, STUCK_REPAIR_CONSTRAIN_AFTER)
@@ -170,13 +169,13 @@ class TablePlacementTests(unittest.TestCase):
     def test_it_speaks_before_validation(self) -> None:
         # A model going round the same failure is not stuck on whether it finished
         # checking; only one row speaks per turn, so order is the whole decision.
-        names = [n.name for n in _CORE_NUDGES]
+        names = [n.name for n in CORE_NUDGES]
         self.assertLess(names.index("stuck_repair"), names.index("validation"))
 
     def test_it_rations_its_own_budget(self) -> None:
         # Not the shared exercise budget: that one is a single ask about running the
         # code, and borrowing it would silence "nothing was exercised" for good.
-        row = next(n for n in _CORE_NUDGES if n.name == "stuck_repair")
+        row = next(n for n in CORE_NUDGES if n.name == "stuck_repair")
         self.assertEqual(row.budget_key, "")
         self.assertEqual(row.layer, "verification")
 

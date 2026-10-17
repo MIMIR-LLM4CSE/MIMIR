@@ -236,7 +236,6 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_known_existing_files_has_one_implementation(self) -> None:
         """Policy and nudges asked the same question with two separate walks."""
-        from mimir.client.guardrails.nudges import engine as nudge_engine
         ec = execution_context_module.build_execution_context()
         ec.read_files.add("a.py")
         ec.checked_paths.add("c.py")
@@ -244,7 +243,6 @@ class ClientHelperTests(unittest.TestCase):
         ec.dirty_written_files.add("written.py")  # written ≠ "encountered"
         shared = execution_context_module.known_existing_files(ec)
         self.assertEqual(shared, {"a.py", "c.py", "d.py"})
-        self.assertEqual(nudge_engine._known_existing_files(ec), shared)
 
     def test_a_read_says_nothing_about_how_much_was_read(self) -> None:
         """The predicate answers "was it read", and deliberately not "was it read whole".
@@ -630,7 +628,7 @@ class ClientHelperTests(unittest.TestCase):
         # the model going.
         import importlib
         from mimir.client.config.limits import NUDGE_MAX_DENIAL
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         execution_context = build_execution_context(workflow_state="edit", denied_tool_calls=[{"tool": "bash_run", "scope": "bash:bash_run:pip install"}], denial_history=[
                 {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"}
@@ -1558,7 +1556,7 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_creation_nudge_fires_when_query_signals_creation_but_nothing_written(self) -> None:
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
             # These nudges live in the guidance layer, which `light` (the default)
@@ -1585,7 +1583,7 @@ class ClientHelperTests(unittest.TestCase):
     def _pending_case(self, *, query, execution_context):
         """(probe, fired) for one context — the probe read first, then the real call."""
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         agent = types.SimpleNamespace(enforcement="strict", tool_caps={})
         events: list = []
@@ -1628,7 +1626,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_nudge_injection_is_surfaced_as_an_event(self) -> None:
         """Every injected nudge emits ``nudge_injected`` so the run stays readable."""
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
             # These nudges live in the guidance layer, which `light` (the default)
@@ -1684,7 +1682,7 @@ class ClientHelperTests(unittest.TestCase):
         finished answer and pushed the model into writing an unrequested script.
         """
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
             # These nudges live in the guidance layer, which `light` (the default)
@@ -1721,49 +1719,49 @@ class ClientHelperTests(unittest.TestCase):
         # A task that is many substantive operations but only ONE touched file still
         # warrants a checklist — the action_op_count trigger fires it.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         base = build_execution_context(workflow_state="edit", code_mutation_started=True, dirty_written_files={"module.py"}, planned_edit_targets=set(), todo_written=False, nudge_counts={})
         # Below the op threshold with one file: nothing warrants a checklist yet.
         below = dataclasses.replace(base, action_op_count=4)
         self.assertFalse(
-            nudge_logic._should_nudge_todo(below, level="strict", active_mode="agent")
+            nudge_logic.predicates.should_nudge_todo(below, level="strict", active_mode="agent")
         )
         # At the op threshold: the many-ops trigger fires even with a single file.
         at = dataclasses.replace(base, action_op_count=5)
         self.assertTrue(
-            nudge_logic._should_nudge_todo(at, level="strict", active_mode="agent")
+            nudge_logic.predicates.should_nudge_todo(at, level="strict", active_mode="agent")
         )
 
     def test_todo_nudge_suppressed_at_conclude(self) -> None:
         # A checklist emitted after the work is done guides nothing: the many-ops
         # trigger must not fire once the workflow has reached 'conclude'.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         concluding = build_execution_context(workflow_state="conclude", code_mutation_started=True, dirty_written_files={"module.py"}, planned_edit_targets=set(), action_op_count=50, todo_written=False, nudge_counts={})
         self.assertFalse(
-            nudge_logic._should_nudge_todo(concluding, level="strict", active_mode="agent")
+            nudge_logic.predicates.should_nudge_todo(concluding, level="strict", active_mode="agent")
         )
 
     def test_todo_nudge_multifile_trigger_unchanged(self) -> None:
         # The classic multi-file trigger keeps working with zero action ops recorded.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         ctx = build_execution_context(workflow_state="edit", code_mutation_started=True, dirty_written_files={"a.py", "b.py", "c.py"}, planned_edit_targets=set(), action_op_count=0, todo_written=False, nudge_counts={})
         self.assertTrue(
-            nudge_logic._should_nudge_todo(ctx, level="strict", active_mode="agent")
+            nudge_logic.predicates.should_nudge_todo(ctx, level="strict", active_mode="agent")
         )
 
     def test_todo_nudge_disabled_at_light(self) -> None:
         # "todo" guidance is a strict-only category; the op trigger must not leak into light.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         ctx = build_execution_context(workflow_state="edit", code_mutation_started=True, dirty_written_files={"module.py"}, planned_edit_targets=set(), action_op_count=20, todo_written=False, nudge_counts={})
         self.assertFalse(
-            nudge_logic._should_nudge_todo(ctx, level="light", active_mode="agent")
+            nudge_logic.predicates.should_nudge_todo(ctx, level="light", active_mode="agent")
         )
 
     def test_an_unjudged_run_alone_nudges_nothing(self) -> None:
@@ -1771,7 +1769,7 @@ class ClientHelperTests(unittest.TestCase):
         # path (edit, run green, answer), discarded a finished answer, and bought a
         # label the ledger already prints. The run is reported unjudged instead.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         agent = types.SimpleNamespace(enforcement="strict", tool_caps={})
         ctx = (build_execution_context(runs={"python solver.py": {"completed": True, "verdict": ""}}))
@@ -1787,15 +1785,15 @@ class ClientHelperTests(unittest.TestCase):
         # The two axes do not interact: an unjudged run leaves the file exactly as
         # un-checked as it was, so the validation nudge has nothing to defer to.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         ctx = build_execution_context(workflow_state="validate", code_mutation_started=True, dirty_written_files={"solver.py"}, validated_files=set(), declared_edit_set=set(), steps_since_last_edit=5, runs={"python solver.py": {"completed": True, "verdict": ""}}, builtin_check_findings={"solver.py": "line 3: '{' is never closed"}, nudge_counts={})
         self.assertTrue(
-            nudge_logic._should_nudge_validation(ctx)
+            nudge_logic.predicates.should_nudge_validation(ctx)
         )
         ctx.validated_files = {"solver.py"}
         self.assertFalse(
-            nudge_logic._should_nudge_validation(ctx)
+            nudge_logic.predicates.should_nudge_validation(ctx)
         )
 
     def test_discovery_evidence_requires_two_distinct_signals(self) -> None:
@@ -1858,7 +1856,7 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_discovery_nudge_suppressed_when_not_strict(self) -> None:
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
         execution_context = build_execution_context(workflow_state="discover", denied_tool_calls=[], dirty_written_files=set(), validated_files=set())
 
         class _FakeAgent:
@@ -1883,7 +1881,7 @@ class ClientHelperTests(unittest.TestCase):
         # Verification reminders check reality (here: a blocking denial) and must run
         # regardless of model strength — they are NOT gated by enforcement level.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
         execution_context = build_execution_context(workflow_state="edit", denied_tool_calls=[{"tool": "write_file"}], dirty_written_files=set(), validated_files=set(), nudge_counts={})
         messages: list = []
 
@@ -1904,7 +1902,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_guidance_nudge_gated_by_enforcement_off(self) -> None:
         # A guidance nudge (creation) fires at strict but is fully suppressed at off.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
             def __init__(self, enforcement: str) -> None:
@@ -1953,7 +1951,7 @@ class ClientHelperTests(unittest.TestCase):
         the request was worded unexpectedly. The arbiter is now the workspace.
         """
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _Agent:
             model = "big-model"
@@ -1989,7 +1987,7 @@ class ClientHelperTests(unittest.TestCase):
         # The deliberate "light" line (agent mode): procedural nudges (creation/state/
         # todo/doc) are dropped, while blast_radius (and env_cleanup) survive.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _Agent:
             model = "big-model"
@@ -2024,7 +2022,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_light_plan_fires_no_guidance(self) -> None:
         # light-plan = no guidance nudges (plan relies on its explore phase).
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _Agent:
             model = "big-model"
@@ -2043,7 +2041,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_regression_nudge_fires_for_untested_edited_source(self) -> None:
         # Edited source with an existing, un-run test → verification nudge, even at off.
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
             model = "big-model"
@@ -2065,7 +2063,7 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_regression_nudge_silent_when_test_was_run(self) -> None:
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
         class _FakeAgent:
             model = "big-model"

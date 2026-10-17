@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # section, is followed; what is repeated three times is noise.
 #
 # INVARIANT — coverage vs. the nudge layer. Guidance nudges are enforcement-gated
-# (``guardrails/nudges/engine._GUIDANCE_BY_LEVEL_MODE``): at "light" only a subset
+# (``guardrails/nudges/tiers.GUIDANCE_BY_LEVEL_MODE``): at "light" only a subset
 # fires, at "off" none do. So every guidance nudge's *obligation* must also exist
 # here, in one line, or it silently disappears for strong models — the prompt is the
 # only carrier that survives every enforcement level. The nudge stays the detailed,

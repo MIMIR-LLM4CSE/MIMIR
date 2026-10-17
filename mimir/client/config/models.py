@@ -194,7 +194,7 @@ def enforcement_level(model: str) -> str:
     state, blast-radius, creation, todo) plus the plan-mode explore phase — never
     safety, approval, write-policy or verification guards, which run at every level.
     Which categories survive per level and mode is the single table
-    ``_GUIDANCE_BY_LEVEL_MODE`` in ``guardrails/nudges/engine.py``:
+    ``GUIDANCE_BY_LEVEL_MODE`` in ``guardrails/nudges/tiers.py``:
       - "strict": every guidance category.
       - "light":  only the ones guarding a costly, hard-to-detect, non-self-correcting
                   mistake — blast-radius and env cleanup.

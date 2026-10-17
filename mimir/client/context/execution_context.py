@@ -450,7 +450,7 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 #     (the observers of ORDER,                 checked_paths, existing_paths,             _missing_evidence, guards),
 #      run after every tool call)              search_tool_calls,                          runtime (check_write_policy),
 #                                              similar_candidates_by_dir,                 state_machine (guards),
-#                                              dirty_written_files, declared_edit_set,    nudge_logic (all nudges),
+#                                              dirty_written_files, declared_edit_set,    nudges (all nudges),
 #                                              edit_loop_state, edit_fail_streak_by_file,  agent_loop (correctives)
 #                                              last_replace_*,
 #                                              code_mutation_started, validated_files,
@@ -463,14 +463,14 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 #     (runs on the judging tool's call,        attempts                                   workflow (completion report)
 #      via evidence.verdict_tool)
 #   context/workflow.set_workflow_state       workflow_state                             every layer's state gates
-#   query_engine/nudge_logic._fire_nudge      nudge_counts[<category>]                    nudge_logic (per-category caps)
-#   query_engine/agent_loop                   steps_since_last_edit (increment),          nudge_logic (idle gates),
+#   guardrails/nudges/cascade           nudge_counts[<category>]                    nudges (per-category caps)
+#   query_engine/agent_loop                   steps_since_last_edit (increment),          nudges (idle gates),
 #     (loop body + loop-control correctives)    LoopControlState (the private             agent_loop (dedup +
 #                                              _loop_control object: write_calls,          repeated-failure guard)
 #                                              call_fails, repeat_warned),
 #                                              evidence_handback_used                      agent_loop (once per query)
 #   policy/engine + agent_core (approval)  denied_tool_calls, denial_history          state_machine (blocking denials),
-#                                                                                         nudge_logic (denial nudge),
+#                                                                                         nudges (denial nudge),
 #                                                                                         workflow (escalation ladder)
 #
 # Rule of thumb: fields are WRITTEN in exactly one place (the observation pass or the
@@ -605,7 +605,7 @@ def declared_edit_set_complete(execution_context: ExecutionContext) -> bool:
 
     The single definition of "the planned multi-file refactor is finished writing"
     — read by the edit→validate transition (runtime), the validation state guard
-    (state_machine), and the validation/state nudges (nudge_logic). An empty
+    (state_machine), and the validation/state nudges (nudges). An empty
     declared set (no explicit plan) is vacuously complete.
     """
     return not unwritten_declared_files(execution_context)

@@ -27,7 +27,7 @@ from mimir.client.extensions import (
     register_post_tool,
 )
 from mimir.client.guardrails.policy.plugins import PolicyRegistry
-from mimir.client.guardrails.nudges.engine import maybe_append_nudge
+from mimir.client.guardrails.nudges import maybe_append_nudge
 from mimir.client.guardrails.nudges.plugins import NudgeRegistry
 from mimir.client.tool_execution.executor import run_post_tool_annotations
 from mimir.client.tool_execution.plugins import PostToolRegistry

@@ -60,7 +60,7 @@ does unprompted, and every nudge costs tokens and interrupts the model's own pla
 `vllm_model_profiles.json`, and is marked from observation — a profile that already
 carries a recorded workaround is a model seen struggling.
 
-The authority is `_GUIDANCE_BY_LEVEL_MODE` in `guardrails/nudges/engine.py`. Each row
+The authority is `GUIDANCE_BY_LEVEL_MODE` in `guardrails/nudges/tiers.py`. Each row
 then applies its own mode condition on top:
 
 | | `agent` | `plan` | `ask` |
@@ -287,7 +287,7 @@ target **already exists** — a file that does not exist yet has no callers to b
 | `guardrails/policy/readonly_exempt.py` | waives the prompt for a read-only dual-use shell command, in any mode |
 | `guardrails/observations/` | the blackboard writer: `record_tool_observation` and the observers in `ORDER` |
 | `guardrails/workflow.py` | the state model, the denial ladder, the completion report |
-| `guardrails/nudges/engine.py` | `maybe_append_nudge`, the `_CORE_NUDGES` table, the pack registry |
+| `guardrails/nudges/` | `cascade` (`maybe_append_nudge`, the `CORE_NUDGES` table), `predicates`, `tiers`, `exercise`, `reminders`, the pack registry |
 | `guardrails/nudges/messages.py` | every nudge's message text |
 | `guardrails/builtin_check.py` | the in-process check that every modified file owes |
 
@@ -647,7 +647,7 @@ can close the gap. Neither is ever a completion issue.
 
 The state layer carries this on both sides of an attempt:
 
-- **Before.** `_exercise_route` returns the one direct command it can find, in descending
+- **Before.** `exercise_route` returns the one direct command it can find, in descending
   order of what it proves: a test that already covers the edit; a file this box starts
   directly; a suite already registered (`CTestTestfile.cmake` present, `ctest` on PATH); a
   build already configured (`Makefile`/`CMakeCache.txt` seen this session, driver on
@@ -1600,7 +1600,7 @@ When changing policy behaviour, update:
 
 1. the code — `guardrails/policy/write.py`, `guardrails/observations/`,
    `guardrails/policy/state_machine.py`, `guardrails/policy/engine.py`, or
-   `guardrails/nudges/engine.py`;
+   `guardrails/nudges/`;
 2. targeted tests in `mimir/tests/`;
 3. this file, if behaviour or rationale changed;
 4. `README.md`, if user-facing behaviour changed;

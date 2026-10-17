@@ -208,7 +208,7 @@ def _close_exercise_advice(execution_context: ExecutionContext, verdict: str) ->
 
     The other verdicts do nothing here. There is deliberately no symmetric re-arm handing
     the shared exercise budget back once nothing is outstanding: nothing asks for the
-    verdict itself any more (see the advisory-axis comment in nudges/engine.py), and
+    verdict itself any more (see the advisory-axis comment in nudges/exercise.py), and
     re-arming a *run* recommendation on the strength of a verdict would only ask a model
     that just judged its run to go and run more.
     """

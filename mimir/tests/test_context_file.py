@@ -288,10 +288,10 @@ class NudgeCoverageTests(unittest.TestCase):
     _EXEMPT = {"creation"}
 
     def test_every_guidance_nudge_has_a_prompt_counterpart(self) -> None:
-        from mimir.client.guardrails.nudges.engine import _CORE_NUDGES
+        from mimir.client.guardrails.nudges.cascade import CORE_NUDGES
 
         base = cb._DEFAULT_BASE_SYSTEM_CONTENT
-        guidance = {n.name for n in _CORE_NUDGES if n.layer == "guidance"}
+        guidance = {n.name for n in CORE_NUDGES if n.layer == "guidance"}
         self.assertEqual(
             guidance - self._EXEMPT,
             set(self._EXPECTED),
@@ -330,10 +330,10 @@ class CoreNudgeCoverageTests(unittest.TestCase):
     _EXEMPT: set[str] = set()
 
     def test_every_verification_nudge_has_a_core_counterpart(self) -> None:
-        from mimir.client.guardrails.nudges.engine import _CORE_NUDGES
+        from mimir.client.guardrails.nudges.cascade import CORE_NUDGES
 
         core = cb._CORE_SYSTEM_CONTENT
-        verification = {n.name for n in _CORE_NUDGES if n.layer == "verification"}
+        verification = {n.name for n in CORE_NUDGES if n.layer == "verification"}
         self.assertEqual(
             verification - self._EXEMPT,
             set(self._EXPECTED),
