@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from ....session.journal import nudge_counts
 from ....session.commands import (
     COMMANDS,
     Command,
@@ -72,9 +73,12 @@ class DiagCommand(Command[WsCommandHost]):
     """``/diag``: the event chain's state, telling a dead pump from a swallowing watermark from silence."""
     name = "diag"
     surfaces = frozenset({"ws"})
-    help = (("", "what the event chain has done — pump, journal, watermark"),)
+    help = (("", "what the event chain has done — pump, journal, watermark"),
+            ("nudges [all]", "how often each reminder reached the model, here or in every conversation"))
 
     async def run(self, host: WsCommandHost, args: list[str]) -> CommandResult:
+        if args and args[0] == "nudges":
+            return _nudge_report(host, everywhere=args[1:2] == ["all"])
         screen, view = host.screen, host.screen.view
         rows = [Item(r["label"], r.get("detail", "")) for r in screen.pool.bus.diagnostics()]
         rows.append(Item("active session", str(view.active_session_id)))
@@ -90,6 +94,23 @@ class DiagCommand(Command[WsCommandHost]):
                 f"parked {worker.human.awaiting_user()}, "
                 f"deferral {worker.human.has_deferral}"))
         return CommandResult("Event chain", rows)
+
+
+def _nudge_report(host: WsCommandHost, *, everywhere: bool) -> CommandResult:
+    """Reminders by category, read from the journals: what an audit of the guardrails
+    is decided on."""
+    screen = host.screen
+    if everywhere:
+        sessions = [meta.id for meta in screen.pool.conversations.store.list_sessions()]
+    else:
+        sessions = [screen.view.active_session_id] if screen.view.active_session_id else []
+    counts = nudge_counts(sessions)
+    if not counts:
+        return CommandResult("No reminder has reached the model yet", tone="empty")
+    rows = [Item(category, str(n)) for category, n in
+            sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    scope = f"{len(sessions)} conversation(s)" if everywhere else "this conversation"
+    return CommandResult(f"Reminders, {scope}", rows)
 
 
 WS_COMMANDS: CommandRegistry = COMMANDS.for_surface("ws", CancelCommand(), DiagCommand())

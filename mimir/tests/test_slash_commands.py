@@ -318,3 +318,19 @@ def _run_patched(text: str, payload: dict) -> CommandResult:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NudgeCountTests(unittest.TestCase):
+    """``/diag nudges`` reads its counts off the journals."""
+
+    def test_reminders_are_counted_by_category_across_sessions(self) -> None:
+        from mimir.client.session.journal import TranscriptLog, nudge_counts
+        for session_id, categories in (("n1", ["validation", "denial", "validation"]),
+                                       ("n2", ["validation"])):
+            log = TranscriptLog()
+            log.bind(session_id)
+            for category in categories:
+                log.append({"type": "nudge_injected", "category": category})
+            log.append({"type": "tool_call", "name": "read_file"})
+        self.assertEqual(nudge_counts(["n1", "n2"]), {"validation": 3, "denial": 1})
+        self.assertEqual(nudge_counts(["n2"]), {"validation": 1})

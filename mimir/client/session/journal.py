@@ -168,3 +168,14 @@ def read_transcript(session_id: str) -> list[dict]:
     except Exception as exc:
         logger.warning("Transcript log read failed for %s: %s", session_id, exc)
     return events
+
+
+def nudge_counts(session_ids: list[str]) -> dict[str, int]:
+    """How often each reminder category reached the model in these sessions' journals."""
+    counts: dict[str, int] = {}
+    for session_id in session_ids:
+        for event in read_transcript(session_id):
+            if event.get("type") == "nudge_injected":
+                category = str(event.get("category") or "?")
+                counts[category] = counts.get(category, 0) + 1
+    return counts
