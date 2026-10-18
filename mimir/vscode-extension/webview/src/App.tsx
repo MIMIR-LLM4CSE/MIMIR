@@ -53,6 +53,7 @@ import { MimirIntro } from "./components/MimirIntro";
 import { chooseRestoredMessages, planTranscript } from "./components/transcriptUtils";
 import type { TranscriptSync } from "./components/transcriptUtils";
 import { Composer } from "./components/Composer";
+import { StatusBar } from "./components/StatusBar";
 import { useComposer } from "./hooks/useComposer";
 
 // VS Code webview API (optional — only present inside a webview).
@@ -70,15 +71,6 @@ function makeId(): string {
 /** How often the rendered transcript is checkpointed to the server mid-turn. */
 const TRANSCRIPT_CHECKPOINT_MS = 5000;
 
-
-function modelDisplayName(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "MIMIR";
-  const normalized = trimmed.replace(/\\/g, "/");
-  if (!normalized.includes("/")) return trimmed;
-  const parts = normalized.split("/").filter(Boolean);
-  return parts[parts.length - 1] || trimmed;
-}
 
 export const App: React.FC = () => {
   // Streaming / thinking / approval state machine lives in a pure reducer so
@@ -788,13 +780,6 @@ export const App: React.FC = () => {
     if (covered) handleApprovalResponse(card.approval.id, "y");
   }, [settings.changeApprovalMode, handleApprovalResponse]);
 
-  const connectionColor =
-    connection === "connected"
-      ? "var(--vscode-testing-iconPassed)"
-      : connection === "error" || connection === "disconnected"
-      ? "var(--vscode-testing-iconFailed)"
-      : "var(--vscode-descriptionForeground)";
-
   const hasTodos = todos.length > 0;
 
   // data-mode drives the chat's accent colour: blue agent / red plan / green ask.
@@ -841,110 +826,22 @@ export const App: React.FC = () => {
 
       {/* ── Main area ───────────────────────────────────────────────── */}
       <div className="main">
-        {/* Status bar — connection + model name + disconnect */}
-        <div className="status-bar">
-          {connection === "connected" && (
-            <>
-              <button
-                className={`sessions-toggle-btn ${showSessionsPanel ? "active" : ""}`}
-                title="Chat history"
-                aria-label="Toggle chat history"
-                aria-pressed={showSessionsPanel}
-                onClick={() => setShowSessionsPanel((v) => !v)}
-              >
-                ☰
-              </button>
-              {/* New session next to the history toggle — starting a chat
-                  shouldn't require opening the panel first. */}
-              <button
-                className="sessions-toggle-btn sessions-new-toggle-btn"
-                title="New session"
-                aria-label="New session"
-                onClick={() => startNewSession()}
-              >
-                ＋
-              </button>
-              {/* Always here, with a count when sub-agents are working: a button that
-                  comes and goes is a button the user has to look for. */}
-              <button
-                className={`sessions-toggle-btn ${showSubAgentsPanel ? "active" : ""}`}
-                title={runningSubAgents
-                  ? `${runningSubAgents} sub-agent(s) working`
-                  : "Sub-agents of this session"}
-                aria-label="Toggle sub-agents"
-                aria-pressed={showSubAgentsPanel}
-                onClick={() => setShowSubAgentsPanel((v) => !v)}
-              >
-                ⑂
-                {runningSubAgents > 0 && (
-                  <span className="subagent-badge">{runningSubAgents}</span>
-                )}
-              </button>
-              <button
-                className={`sessions-toggle-btn ${showSciencePanel ? "active" : ""}`}
-                title="Scientific computing"
-                aria-label="Toggle the scientific-computing panel"
-                aria-pressed={showSciencePanel}
-                onClick={() => setShowSciencePanel((v) => !v)}
-              >
-                ⚗
-              </button>
-            </>
-          )}
-          <span
-            className={`connection-dot is-${connection}`}
-            style={{ color: connectionColor }}
-            title={connection}
-            role="img"
-            aria-label={`Connection: ${connection}`}
-          >
-            ●
-          </span>
-          {/* Model name — a picker when the endpoint reported a real choice, a
-              static label otherwise. The current model is always an option even
-              if the probe missed it (auto-selected, or probe failed). Shown only
-              once an agent is live: before that there is no served model, and the
-              probe's list here would name one the connect form has not been told
-              to use — a label contradicting the form's own dropdown. While the
-              connection is still being made the name is a label, not a picker:
-              there is no agent yet to switch. */}
-          {connection !== "disconnected" && model && (() => {
-            const options = Array.from(new Set([...endpointModels, model].filter(Boolean)));
-            if (connection === "connected" && options.length > 1) {
-              return (
-                <select
-                  className="model-picker"
-                  value={model}
-                  title="Switch model"
-                  aria-label="Switch model"
-                  onChange={(e) => send({ type: "set_model", model: e.target.value })}
-                >
-                  {options.map((name) => (
-                    <option key={name} value={name}>{modelDisplayName(name)}</option>
-                  ))}
-                </select>
-              );
-            }
-            return <span className="model-name">{modelDisplayName(model)}</span>;
-          })()}
-          {/* Also while connecting: a connection can hang for the whole backend
-              timeout — minutes on a cold vLLM, and forever if the endpoint is
-              simply wrong — and offering no way out until it succeeds left the
-              only escape a window reload. Cancelling drops the socket and returns
-              to the connect form, where the endpoint can be corrected. */}
-          {(connection === "connected" || connection === "connecting") && (
-            <button
-              className="disconnect-btn"
-              title={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
-              aria-label={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
-              onClick={connection === "connecting"
-                ? endpoint.cancelConnect
-                : requestDisconnect}
-            >
-              ⏏
-            </button>
-          )}
-        </div>
+        <StatusBar
+          connection={connection}
+          model={model}
+          servedModels={endpointModels}
+          runningSubAgents={runningSubAgents}
+          showSessions={showSessionsPanel}
+          showSubAgents={showSubAgentsPanel}
+          showScience={showSciencePanel}
+          onToggleSessions={() => setShowSessionsPanel((v) => !v)}
+          onNewSession={startNewSession}
+          onToggleSubAgents={() => setShowSubAgentsPanel((v) => !v)}
+          onToggleScience={() => setShowSciencePanel((v) => !v)}
+          onSwitchModel={(name: string) => send({ type: "set_model", model: name })}
+          onCancelConnect={endpoint.cancelConnect}
+          onDisconnect={requestDisconnect}
+        />
 
         {/* Asked only when disconnecting would end work in flight. Held, not fired:
             dismissing it cancels the disconnect. */}
