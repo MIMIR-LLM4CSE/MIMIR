@@ -10,7 +10,6 @@ import React, {
 import type {
   ChatMessage,
   ClientMessage,
-  ConnectionState,
   ServerMessage,
   SessionMeta,
   PromptOrigin,
@@ -20,15 +19,14 @@ import type {
   ApprovalMessage,
   UserQuestionMessage,
   ToggleItem,
-  RunningServer,
   ResourceItem,
   ApprovalMode,
-  RememberedEndpoint,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { routeServerMessage, type ServerHandlers } from "./state/serverMessages";
 import { useAgentSettings } from "./hooks/useAgentSettings";
 import { usePanels } from "./hooks/usePanels";
+import { useEndpoint, type Host } from "./hooks/useEndpoint";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { useStickToBottom } from "./hooks/useStickToBottom";
 import { ChatThread } from "./components/ChatThread";
@@ -83,7 +81,6 @@ import {
   type HistoryState,
 } from "./components/historyUtils";
 import { caretOnFirstVisualLine, caretOnLastVisualLine } from "./components/caretLine";
-import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "../../src/shared/defaults";
 
 // VS Code webview API (optional — only present inside a webview).
 
@@ -122,43 +119,14 @@ export const App: React.FC = () => {
   chatStateRef.current = chatState;
 
   const [todos, setTodos] = useState<TodoItem[]>([]);
-  const [connection, setConnection] = useState<ConnectionState>("disconnected");
-  // Whether the agent behind the socket exists yet. The socket opens first and the
-  // worker then waits on the LLM backend — minutes, on a cold vLLM — so "connected"
-  // on its own was inviting the user to type into something that could not answer.
-  const [agentReady, setAgentReady] = useState(false);
-  const [model, setModel] = useState("");
-  const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
-  const [backend, setBackend] = useState(DEFAULT_BACKEND);
-  const [vllmBaseUrl, setVllmBaseUrl] = useState(DEFAULT_OPENAI_URL);
-  const [rayBaseUrl, setRayBaseUrl] = useState(DEFAULT_OPENAI_URL);
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_OLLAMA_URL);
-  // Endpoint the extension host remembers (checkbox in the connect form). It
-  // seeds the form and is what the host reconnects to on its own at startup.
-  const [remembered, setRemembered] = useState<RememberedEndpoint | null>(null);
-  // Remembers the exact args of the last connect (ours or the host's auto-connect)
-  // so the disconnected panel can offer a one-click Reconnect that replays them.
-  const lastConnectArgsRef = useRef<
-    [string, string, string, string | undefined, boolean | undefined] | null
-  >(null);
-  // The form reads its address/model/checkbox once, at mount; config and the
-  // remembered endpoint arrive after it. Remounting on those is how it picks
-  // them up without fighting the user's edits afterwards.
-  const connectFormKey = `${backend}|${vllmBaseUrl}|${rayBaseUrl}|${ollamaBaseUrl}|${remembered?.baseUrl ?? ""}`;
-  // Point the form at *baseUrl* for *be*. Used for the remembered endpoint and for
-  // every connect: the form is remounted with these props, so whatever it shows next
-  // (after a disconnect) is the address last used, not the settings default.
-  const seedAddress = useCallback((be: string, baseUrl: string) => {
-    setBackend(be);
-    if (be === "ollama") setOllamaBaseUrl(baseUrl);
-    else if (be === "ray") setRayBaseUrl(baseUrl);
-    else if (be === "vllm") setVllmBaseUrl(baseUrl);
-  }, []);
-  // Models the endpoint reports it serves — the connect form's dropdown.
-  const [endpointModels, setEndpointModels] = useState<string[]>([]);
-  const [modelsError, setModelsError] = useState<string | null>(null);
-  // Whether the endpoint has answered the model-list question at all.
-  const [modelsProbed, setModelsProbed] = useState(false);
+  // The host's actions, read once useWebSocket below has created them.
+  const hostRef = useRef<Host>({ connect: () => {}, fetchModels: () => {}, disconnect: () => {} });
+  const endpoint = useEndpoint(useCallback(() => hostRef.current, []));
+  const {
+    connection, agentReady, model, anthropicModels, backend, vllmBaseUrl, rayBaseUrl,
+    ollamaBaseUrl, remembered, runningServer, endpointModels, modelsError, modelsProbed,
+    connectFormKey,
+  } = endpoint;
   const [input, setInput] = useState("");
   // ── @-mention autocomplete (attach MCP resources and workspace files) ─────
   const [resources, setResources] = useState<ResourceItem[]>([]);
@@ -207,10 +175,6 @@ export const App: React.FC = () => {
   // boolean "show the dialog" but the disconnect itself, held: cancelling means the
   // disconnect never happened.
   const [disconnectPending, setDisconnectPending] = useState(false);
-  // The server this workspace already has, when it has one. Its presence is what turns
-  // a connect form into a rejoin: the address and backend a form collects describe how
-  // a *new* server would start, and none of them apply to one already serving.
-  const [runningServer, setRunningServer] = useState<RunningServer | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
@@ -406,12 +370,6 @@ export const App: React.FC = () => {
 
     switch (msg.type) {
       case "ready":
-        setModel(msg.model);
-        setConnection("connected");
-        // Defaulting to ready when the field is absent: an older server sends no
-        // such flag, and leaving the UI stuck on "starting" would be worse than
-        // the invitation being early.
-        setAgentReady(msg.agent_ready !== false);
         handleReady();
         return;
 
@@ -421,56 +379,6 @@ export const App: React.FC = () => {
         // (like plan .md) in VS Code's Markdown preview; other files open as a
         // normal editor tab. Absolute paths supported.
         if (msg.path) vscodePostMessage({ type: "open_preview", file: msg.path });
-        return;
-
-      case "config": {
-        setAnthropicModels(msg.anthropicModels ?? []);
-        if (msg.backend) setBackend(msg.backend);
-        if (msg.vllmBaseUrl) setVllmBaseUrl(msg.vllmBaseUrl);
-        if (msg.rayBaseUrl) setRayBaseUrl(msg.rayBaseUrl);
-        if (msg.ollamaBaseUrl) setOllamaBaseUrl(msg.ollamaBaseUrl);
-        // A remembered endpoint outranks the settings default: it is the address
-        // the user last connected to and asked us to keep.
-        const saved = msg.remembered ?? null;
-        setRemembered(saved);
-        setRunningServer(msg.running ?? null);
-        if (saved) seedAddress(saved.backend, saved.baseUrl);
-        return;
-      }
-
-      case "auto_connect":
-        // The host is reconnecting to the remembered endpoint by itself — show
-        // the connecting state, and let Reconnect replay the same arguments.
-        lastConnectArgsRef.current = [msg.model, msg.backend, msg.baseUrl, undefined, true];
-        setModel(msg.model);
-        setConnection("connecting");
-        // Reset on every transition away from a live agent, so a reconnect starts
-        // pessimistic and waits to be told again rather than inheriting the last
-        // session's answer.
-        setAgentReady(false);
-        return;
-
-      case "models":
-        setEndpointModels(msg.models);
-        setModelsError(msg.error ?? null);
-        // An answer arrived, whatever it says. Without this, an empty list looks
-        // exactly like a list never asked for, and the form has nothing to tell
-        // the user apart from silence.
-        setModelsProbed(true);
-        return;
-
-      case "served_models":
-        // The agent server's own answer about its endpoint. It wins over the
-        // extension host's probe — same question, asked by the process that is
-        // actually connected — and arrives even when that probe was swallowed.
-        setEndpointModels(msg.models);
-        setModelsError(null);
-        setModelsProbed(true);
-        return;
-
-      case "model_changed":
-        // The served model switched mid-session; the settings follow it too.
-        setModel(msg.model);
         return;
 
       case "todo":
@@ -611,7 +519,6 @@ export const App: React.FC = () => {
         dispatch({ type: "session_loaded_messages", messages: restore.messages });
         // After the restore, which resets the turn state this window arrives with.
         if (msg.turn_running) dispatch({ type: "turn_resumed" });
-        if (msg.agent_ready !== undefined) setAgentReady(msg.agent_ready);
         // Hand the richer copy straight back rather than waiting for the next turn
         // to end — the reconnect may be the last thing that happens in this session.
         if (restore.push) setTranscriptPush((n) => n + 1);
@@ -682,12 +589,10 @@ export const App: React.FC = () => {
   const resetSession = () => {
     dispatch({ type: "reset" });
     setTodos([]);
-    setModel("");
     setUserQuestion(null);
     setActiveSessionId(null);
     setSessions([]);
-    setConnection("disconnected");
-    setAgentReady(false);
+    endpoint.reset();
   };
 
   const { send, getConfig, connect, fetchModels, disconnect, createSession, switchSession, deleteSession, renameSession } = useWebSocket({
@@ -697,17 +602,16 @@ export const App: React.FC = () => {
       // Preserve messages and todos — only reset connection/busy state so the
       // chat history survives a transient drop (e.g. during batch-revert I/O).
       dispatch({ type: "connection_lost" });
-      setConnection("disconnected");
-      setAgentReady(false);
+      endpoint.lose("disconnected");
     },
     onError: () => {
       // Surface the error state; ws_closed follows and drives reconnect UI.
       dispatch({ type: "connection_lost" });
-      setConnection("error");
-      setAgentReady(false);
+      endpoint.lose("error");
     },
   });
   sendRef.current = send;
+  hostRef.current = { connect, fetchModels, disconnect };
 
   // Creating a session also opens it: the server makes the new session active
   // and answers with `session_loaded`, so we only have to show the (empty)
@@ -739,7 +643,7 @@ export const App: React.FC = () => {
     setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
     refreshSubAgents, refreshPanel, reloadPanel,
   } = panels;
-  tablesRef.current = [settings.on, panels.on];
+  tablesRef.current = [endpoint.on, settings.on, panels.on];
   useEffect(() => {
     if (readyCount === 0) return;
     const { thinkingLevel: tl, streaming: st, agentMode: am } = syncSettingsRef.current;
@@ -874,80 +778,6 @@ export const App: React.FC = () => {
     send({ type: "query", text });
     scrollQueryToTop();
   }, [busy, send, scrollQueryToTop, followBottomRef]);
-
-  const handleConnect = useCallback(
-    (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => {
-      lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey, remember];
-      // The status bar names what we are connecting to while we wait, so the
-      // label matches the model the form was left on. `ready` confirms it with
-      // the name the server actually serves.
-      setModel(mdl);
-      setRemembered(remember ? { backend: be, baseUrl, model: mdl } : null);
-      seedAddress(be, baseUrl);
-      setConnection("connecting");
-      setAgentReady(false);
-      connect(mdl, be, baseUrl, anthropicApiKey, remember);
-    },
-    [connect, seedAddress],
-  );
-
-  // Ask the extension host what the endpoint at *baseUrl* serves. Anthropic has
-  // no key-free listing, so its models stay the static list from settings.
-  const handleFetchModels = useCallback(
-    (be: string, baseUrl: string) => {
-      if (be === "anthropic") {
-        setEndpointModels([]);
-        setModelsError(null);
-        setModelsProbed(false);
-        return;
-      }
-      setModelsError(null);
-      setModelsProbed(false);
-      fetchModels(be, baseUrl);
-    },
-    [fetchModels],
-  );
-  /**
-   * Rejoin the server this workspace already has.
-   *
-   * Sent as an ordinary connect: the host checks the registry before starting
-   * anything, so this attaches rather than spawning. The arguments are placeholders —
-   * a server already serving does not take a backend or an address — and passing the
-   * last ones used keeps the host's own validation on a path it knows.
-   */
-  const handleReattach = useCallback(() => {
-    setConnection("connecting");
-    setAgentReady(false);
-    const args = lastConnectArgsRef.current;
-    if (args) {
-      connect(...args);
-      return;
-    }
-    // Nothing was connected from this window, so there are no last arguments. The
-    // address is a placeholder either way: the host sees a server already serving this
-    // workspace and attaches to it without reading any of this.
-    const baseUrl =
-      backend === "ray" ? rayBaseUrl
-      : backend === "ollama" ? ollamaBaseUrl
-      : vllmBaseUrl;
-    connect(runningServer?.model ?? "", backend, baseUrl, "", false);
-  }, [connect, runningServer, backend, vllmBaseUrl, rayBaseUrl, ollamaBaseUrl]);
-
-  const handleReconnect = useCallback(() => {
-    const args = lastConnectArgsRef.current;
-    if (!args) return;
-    setConnection("connecting");
-    setAgentReady(false);
-    connect(...args);
-  }, [connect]);
-
-  // Abort an in-progress connection: tell the host to tear down the server it
-  // is starting and drop straight back to idle.
-  const handleCancelConnect = useCallback(() => {
-    disconnect();
-    setConnection("disconnected");
-    setAgentReady(false);
-  }, [disconnect]);
 
   // The conversations still working.
   //
@@ -1413,7 +1243,7 @@ export const App: React.FC = () => {
               title={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
               aria-label={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
               onClick={connection === "connecting"
-                ? handleCancelConnect
+                ? endpoint.cancelConnect
                 : requestDisconnect}
             >
               ⏏
@@ -1490,8 +1320,8 @@ export const App: React.FC = () => {
                   modelsError={modelsError}
                   modelsProbed={modelsProbed}
                   remembered={remembered}
-                  onFetchModels={handleFetchModels}
-                  onConnect={handleConnect}
+                  onFetchModels={endpoint.fetchModels}
+                  onConnect={endpoint.connect}
                 />
               </div>
             ) : (
@@ -1511,7 +1341,7 @@ export const App: React.FC = () => {
                   <div className="loading-track" aria-hidden="true" />
                 )}
                 {(connection === "connecting" || connection === "error") && (
-                  <button className="connect-btn cancel-connect-btn" onClick={handleCancelConnect}>
+                  <button className="connect-btn cancel-connect-btn" onClick={endpoint.cancelConnect}>
                     Cancel connection
                   </button>
                 )}
@@ -1538,15 +1368,15 @@ export const App: React.FC = () => {
                     ? ` — running under “${runningServer.autonomy}”`
                     : ""}
                 </div>
-                <button className="reconnect-btn" onClick={handleReattach}>
+                <button className="reconnect-btn" onClick={endpoint.reattach}>
                   Rejoin the run
                 </button>
               </>
             ) : (
               <>
                 <div className="reconnect-hint">Agent disconnected — reconnect to continue</div>
-                {lastConnectArgsRef.current && (
-                  <button className="reconnect-btn" onClick={handleReconnect}>
+                {endpoint.hasLastConnect() && (
+                  <button className="reconnect-btn" onClick={endpoint.reconnect}>
                     Reconnect
                   </button>
                 )}
@@ -1563,8 +1393,8 @@ export const App: React.FC = () => {
               modelsError={modelsError}
               modelsProbed={modelsProbed}
               remembered={remembered}
-              onFetchModels={handleFetchModels}
-              onConnect={handleConnect}
+              onFetchModels={endpoint.fetchModels}
+              onConnect={endpoint.connect}
             />
           </div>
         )}
@@ -1573,7 +1403,7 @@ export const App: React.FC = () => {
         {connection === "connecting" && messages.length > 0 && (
           <div className="reconnect-panel reconnect-panel--connecting">
             <span className="inline-spinner" aria-hidden="true" /> Connecting to agent…
-            <button className="reconnect-btn cancel-connect-btn" onClick={handleCancelConnect}>
+            <button className="reconnect-btn cancel-connect-btn" onClick={endpoint.cancelConnect}>
               Cancel
             </button>
           </div>
