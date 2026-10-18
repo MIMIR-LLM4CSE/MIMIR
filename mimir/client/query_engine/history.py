@@ -128,6 +128,51 @@ def served_compaction_instruction() -> str:
     )
 
 
+def _protected_paths(execution_context: ExecutionContext | None) -> set[str]:
+    """Files being written or planned, plus every read while a repair is open (its
+    anchors may need an earlier read)."""
+    if execution_context is None:
+        return set()
+    paths = execution_context.dirty_written_files | execution_context.declared_edit_set
+    if execution_context.dirty_written_files:
+        paths = paths | execution_context.read_files
+    return {p for p in paths if p}
+
+
+def _recorded_paths(msg: dict, tool_msg_files: dict) -> list[str] | None:
+    """The files recorded for this result at dispatch, or None when it was not tracked.
+
+    Recorded paths avoid the substring hazard: a grep that merely mentions a path
+    neither protects nor invalidates that file's read.
+    """
+    cid = msg.get("tool_call_id")
+    return tool_msg_files[cid] if cid is not None and cid in tool_msg_files else None
+
+
+def _exempt_results(messages: list[dict], tool_indices: list[int],
+                    execution_context: ExecutionContext | None) -> set[int]:
+    """The results of the last call turn (this turn's payload) and pinned results (a
+    skill's instructions, kept in the tail rather than folded into messages[0])."""
+    last_call_turn = _last_call_turn(messages)
+    exempt = {i for i in tool_indices if i > last_call_turn} if last_call_turn >= 0 else set()
+    pinned = execution_context.pinned_call_ids if execution_context else set()
+    if pinned:
+        exempt |= {i for i in tool_indices if messages[i].get("tool_call_id") in pinned}
+    return exempt
+
+
+def _forget_read(execution_context: ExecutionContext, msg: dict,
+                 recorded: list[str] | None) -> None:
+    """An evicted read leaves ``read_files``, so policy asks for a re-read before an edit."""
+    read_files = execution_context.read_files
+    if recorded is not None:
+        read_files.difference_update(recorded)
+        execution_context.tool_msg_files.pop(msg["tool_call_id"], None)
+    else:
+        content = msg.get("content", "")
+        read_files.difference_update(p for p in list(read_files) if p and p in content)
+
+
 def _trim_tool_history(
     messages: list[dict],
     char_budget: int = _TOOL_HISTORY_CHAR_BUDGET,
@@ -140,90 +185,33 @@ def _trim_tool_history(
     Never evicted: the results of the last call turn, pinned results, results about files
     being written. An evicted read also leaves ``read_files``, so a re-read is required.
     """
-    _size = token_counter if token_counter is not None else len
+    size = token_counter if token_counter is not None else len
     budget = token_budget if token_counter is not None else char_budget
     tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-    total_size = sum(_message_tokens(messages[i], _size) for i in tool_indices)
-    if total_size <= budget:
+    excess = sum(_message_tokens(messages[i], size) for i in tool_indices) - budget
+    if excess <= 0:
         return
 
-    # Build set of protected file paths — files being actively written/planned.
-    protected_paths: set[str] = set()
-    if execution_context:
-        protected_paths |= execution_context.dirty_written_files
-        protected_paths |= execution_context.declared_edit_set
-        # Also protect reads for files being actively repaired: when dirty files
-        # exist, the model may need earlier read_file results to produce correct
-        # repair anchors — keep them from being evicted.
-        if execution_context.dirty_written_files:
-            protected_paths |= execution_context.read_files
-    protected_paths = {p for p in protected_paths if p}  # drop empty strings
-
-    # Authoritative per-message file association, recorded at dispatch time (see
-    # dispatch_tool_calls). Structural matching avoids the substring hazard: a grep
-    # result that merely *mentions* a path neither protects it from eviction nor
-    # invalidates that file's actual read.
-    tool_msg_files: dict = (
-        execution_context.tool_msg_files if execution_context else {}
-    )
-
-    def _structural_paths(m: dict) -> tuple[list[str], bool]:
-        """``(paths, is_structural)``: the files recorded for this message at dispatch, if any."""
-        cid = m.get("tool_call_id")
-        if cid is not None and cid in tool_msg_files:
-            return tool_msg_files[cid], True
-        return [], False
-
-    # The results answering the last call turn are this turn's payload: exempt here (the
-    # force-fit pass may still shrink them).
-    last_call_turn = _last_call_turn(messages)
-    newest_results = {i for i in tool_indices if i > last_call_turn} if last_call_turn >= 0 else set()
-
-    # Pinned results (a skill's instructions) are protected by tool_call_id; they stay in the
-    # tail, since folding them into messages[0] would cost the prefix cache.
-    pinned_call_ids: set[str] = (
-        execution_context.pinned_call_ids if execution_context else set()
-    )
-    pinned = (
-        {i for i in tool_indices if messages[i].get("tool_call_id") in pinned_call_ids}
-        if pinned_call_ids else set()
-    )
-
+    protected = _protected_paths(execution_context)
+    tool_msg_files = execution_context.tool_msg_files if execution_context else {}
+    exempt = _exempt_results(messages, tool_indices, execution_context)
     to_remove: list[int] = []
-    removed_size = 0
     for idx in tool_indices:
-        if idx in newest_results or idx in pinned:
-            continue
-        if total_size - removed_size <= budget:
+        if excess <= 0:
             break
+        if idx in exempt:
+            continue
         msg = messages[idx]
-        content = msg.get("content", "")
-        paths, structural = _structural_paths(msg)
-
-        # Keep messages whose referenced file is actively being edited.
-        if protected_paths:
-            if structural:
-                if any(p in protected_paths for p in paths):
-                    continue
-            elif any(p in content for p in protected_paths):  # the substring fallback
-                continue
-
+        recorded = _recorded_paths(msg, tool_msg_files)
+        mentioned = recorded if recorded is not None else [
+            p for p in protected if p in msg.get("content", "")]
+        if protected and any(p in protected for p in mentioned):
+            continue
         to_remove.append(idx)
-        # Credited in the units the budget is spent in (the wire form), or eviction overshoots.
-        removed_size += _message_tokens(msg, _size)
-        # Keep execution_context in sync: evicting a file read invalidates its
-        # read_files entry, so policy demands a fresh re-read before the next edit.
-        # The substring fallback covers untracked (carried-over) messages.
+        # Credited in the units the budget is spent in (the wire form).
+        excess -= _message_tokens(msg, size)
         if execution_context is not None:
-            read_files: set[str] = execution_context.read_files
-            if structural:
-                for path in paths:
-                    read_files.discard(path)
-                tool_msg_files.pop(msg.get("tool_call_id"), None)
-            else:
-                for path in list(read_files):
-                    if path and path in content:
-                        read_files.discard(path)
+            _forget_read(execution_context, msg, recorded)
 
     for i in sorted(to_remove, reverse=True):
         del messages[i]
