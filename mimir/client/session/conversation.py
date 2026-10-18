@@ -20,20 +20,10 @@ logger = logging.getLogger(__name__)
 
 def turn_messages(full: list[dict], submitted: int | None = None,
                   start: Any = None) -> list[dict]:
-    """The slice of *full* this turn produced — what the archive has yet to record.
+    """The slice of *full* this turn produced, from the loop's boundary *start*.
 
-    The boundary comes from the loop, which is the only place it is knowable. The
-    length submitted is not an index into *full* once the in-turn budget pass has
-    rewritten the list: it evicts old tool results, replaces the middle with a summary
-    and then repairs the assistant↔tool pairing those break. Every such rewrite shifts
-    the prefix, and a stale boundary re-archives whatever it shifted past or drops
-    whatever it shifted over — cutting through an assistant↔tool pair on the way, which
-    is how a record ends up holding tool results with no call in front of them.
-
-    Falls back to the submitted length, and then to the answer alone, when the loop
-    cannot place the boundary — a turn long enough to have its own opening message
-    summarized away. Better a turn recorded by its answer than a record quietly
-    interleaved with a copy of an older one.
+    The submitted length stops being an index once the budget rewrote the list; it is
+    only the fallback, and then the answer alone.
     """
     if not isinstance(start, int):
         start = submitted
@@ -44,14 +34,10 @@ def turn_messages(full: list[dict], submitted: int | None = None,
 
 
 def trim_front(history: list[dict], counts: list[int], usable: int) -> int:
-    """Drop the oldest messages of *history*, in place, until it fits in *usable* tokens.
+    """Drop the oldest messages until *history* fits *usable* tokens; return how many went.
 
-    *counts* are the per-message token counts of *history*, computed once by the caller.
-    The front-trim is the fallback when a window cannot be compacted: it forgets the
-    oldest turns outright, which is why the untrimmed record is kept beside the window.
-    A trim can leave a ``role: "tool"`` result whose assistant call was dropped, and
-    strict tokenizers reject that, so the window then starts on the next turn boundary.
-    Keeps at least one message. Returns how many were dropped.
+    *counts* are per-message token counts. The window then starts on a turn boundary, never
+    on an orphaned tool result; at least one message stays.
     """
     before = len(history)
     total = sum(counts)
@@ -66,20 +52,10 @@ def trim_front(history: list[dict], counts: list[int], usable: int) -> int:
 
 
 def _resume_window(record: FullSession) -> list[dict]:
-    """The window the model resumes on, from what was stored.
+    """The window the model resumes on: the stored window if it carries a compaction summary,
+    else the untrimmed record.
 
-    A stored window that carries a compaction summary *is* the conversation: the
-    handoff note stands in for everything that was cut, at a fraction of the tokens.
-    Reloading the untrimmed record over it threw that work away and handed the model a
-    context that was full before the user had typed anything. Absent a summary the
-    window is only the tail a front-trim left behind, so the untrimmed record is the
-    faithful resume: its prefix was never summarized anywhere.
-
-    Each message is copied, not just the list: the budgeting pass rewrites messages in
-    place (force-fit rewrites ``content``, the argument digest ``tool_calls``), and
-    sharing the dicts made those writes reach into the untrimmed record. Repaired, since
-    a stored window can start on an orphaned tool result or end on a call whose result
-    never landed, and strict tokenizers reject both.
+    Copied message by message (the budget rewrites messages in place) and repaired.
     """
     full = record.llm_history_full or record.llm_history
     resumed = (record.llm_history if carries_compaction_summary(record.llm_history)
@@ -96,16 +72,9 @@ def _resume_window(record: FullSession) -> list[dict]:
 class Conversation:
     """A conversation: what the model works on, what the user sees, what is owed.
 
-    ``history`` is the working window — trimmed and compacted to fit the budget.
-    ``history_full`` is the same conversation never trimmed, the record a resume
-    reloads. ``display`` is the transcript the user sees. ``submitted_len`` is how much
-    of ``history`` the running turn inherited, which is what tells its own messages from
-    the prefix when it answers.
-
-    The rest is what the conversation is owed between turns, kept here because it
-    belongs to the conversation and not to whichever process or window is looking:
-    finished runs not yet handed to a turn, the check-in held back while it worked, and
-    the history entries of steering typed into the turn now running.
+    ``history`` is the working window, ``history_full`` the untrimmed record, ``display``
+    the transcript, ``submitted_len`` what the running turn inherited. Also kept here: wakes
+    not yet given a turn, the held check-in, the live steering.
     """
 
     def __init__(self, record: FullSession, *, saved: bool) -> None:
@@ -185,13 +154,9 @@ class Conversation:
         self.display.append({"role": "user", "kind": "text", "text": text})
 
     def take_unread_steer(self, texts: list[str]) -> None:
-        """Drop the live copies of the steering the finished turn never read.
+        """Drop the live copies of the steering the finished turn never read (its own entries only).
 
-        They were written in the middle of the history, where they were typed. The turn
-        that answers them starts at the end, and left in place as well they read to the
-        model as said twice. Matched among this turn's own entries only, which keeps the
-        match off an older, identical user turn. Called on every answer: it is also
-        where the finished turn's steering stops being live.
+        Its catch-up turn answers them at the end; left in place they would read as said twice.
         """
         stale, self.live_steer = self.live_steer, []
         wanted = set(texts)
@@ -205,19 +170,11 @@ class Conversation:
         self.display.append({"role": "system", "kind": "text", "text": text})
 
     def commit_answer(self, ev: dict, extras: dict) -> bool:
-        """Write a finished turn into the conversation. True when its full transcript
-        was kept rather than the answer alone.
+        """Write a finished turn into the conversation; True when its full transcript was kept.
 
-        In full-context mode the structured transcript is kept — tool calls, results
-        and answer, chain-of-thought stripped — so the model recalls the tools it ran.
-        Only what the turn itself produced goes to the record: the loop may have
-        trimmed or compacted the prefix it inherited, and that prefix is exactly what
-        the untrimmed record exists to hold. Copied message by message, since a later
-        turn's budgeting rewrites messages in place.
-
-        *extras* are the private keys the worker put on the answer: the transcript,
-        where the turn began, how much it was handed, the mode of the agent that ran
-        it (not of whichever is on screen), and a deferred interaction.
+        Only what the turn itself produced goes to the record, copied message by message.
+        *extras* are the worker's private keys: transcript, boundary, submitted length, the
+        agent's context mode, a deferred interaction.
         """
         full = extras.get("_full")
         context_mode = extras.get("_context_mode") or "full"

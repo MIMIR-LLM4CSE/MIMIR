@@ -1,31 +1,6 @@
-"""Persistent session store for MimirAgent.
+"""The persistent session store: one JSON file per session under ``<STATE_DIR>/sessions/``.
 
-Each session is saved as a JSON file under .mimir/sessions/<id>.json.
-
-Session JSON schema:
-{
-  "id": "uuid4",
-  "title": "auto-generated or user-set",
-  "created_at": "ISO-8601",
-  "updated_at": "ISO-8601",
-  "preview": "first 80 chars of first user message",
-  "summary": "one-sentence description of what was done in the session",
-  "summary_msgs": 0,          # display-message count the summary was generated from
-  "summary_version": 0,       # session.summary.SUMMARY_VERSION that produced it
-  "title_custom": false,      # true once the user renamed the session by hand
-  "llm_history": [{"role": "...", "content": "..."}],      # working window sent to the LLM
-  "llm_history_full": [...],  # same, never trimmed — the archive a resume falls back to
-                              #   (a window that carries a compaction summary is what a
-                              #   resume reloads instead; see Connection._load_session)
-  "display_messages": [...],  # serialised UI ChatMessage objects
-  "carry_context": {...},     # MimirAgent.carry (context.carry.CarryContext)
-  "todos": [{"text": "...", "done": false}],
-  "pending_interaction": {...} | null  # the card a deferred turn waits on, and what
-                                       #   its answer resumes (query_engine.deferral)
-  "context_mode": "full" | "compact"   # the window the session was running in, so a
-                                       #   resume budgets it that way before its agent
-                                       #   exists (see Connection._ctx_budget)
-}
+The schema is in CLIENT_DETAILED.md, "The session file".
 """
 
 from __future__ import annotations
@@ -76,17 +51,9 @@ def _subagents_dir(session_id: str) -> str:
 
 
 def _still_running(card: dict) -> bool:
-    """Whether a card that says "running" belongs to a process that still exists.
+    """Whether a card saying "running" belongs to a process that still exists.
 
-    A card's state is only ever finished by the process that wrote it, so a spawn
-    server killed mid-run leaves one saying "running" for good — and the badge counting
-    those never comes back down, however often the panel refreshes. The pid the card
-    records is the test, applied here the way the spawn server applies it to its own
-    copies (``_card_is_live``).
-
-    Erring towards alive: a card from before pids were recorded, or one owned by another
-    user's process, counts as running. A child shown as working for a moment too long is
-    a smaller lie than one shown as dead while it works.
+    Erring towards alive: no pid, or another user's process, counts as running.
     """
     pid = card.get("pid")
     if not isinstance(pid, int):
@@ -101,18 +68,10 @@ def _still_running(card: dict) -> bool:
 
 
 def list_subagents(session_id: str) -> list[dict]:
-    """The sub-agents this session spawned, newest first.
+    """The sub-agents this session spawned, newest first, from their ``subagent.json`` cards.
 
-    Each is the card the spawn server left (``subagent.json``): what it was asked, what
-    it was given, how it ended. A directory without one is a child that died before
-    writing anything, reported as such rather than hidden — an axis that vanished is
-    precisely what the user needs to see. A card still saying "running" is checked
-    against its own pid (:func:`_still_running`), so a process that was killed mid-run
-    reports as abandoned instead of working for ever.
-
-    The answer is clipped here and only here: it is the one field that can run to
-    kilobytes, this list carries every card of the session at once, and the panel shows
-    an answer only in the detail view, which reads it through :func:`read_subagent`.
+    A directory without a card is reported as dead; a "running" card whose process is gone
+    as abandoned. Answers are clipped here (the detail view reads them whole).
     """
     base = _subagents_dir(session_id) if session_id else ""
     if not base or not os.path.isdir(base):
@@ -365,15 +324,7 @@ class SessionStore:
         return FullSession.from_dict(data)
 
     def save_session(self, session: FullSession) -> None:
-        """Atomically write session to disk (write tmp then rename).
-
-        Refuses a stale write. *session* carries the revision it was loaded at; if the
-        file on disk has moved past it, somebody else has written since and this copy's
-        history is older than what is there. Overwriting silently is how a turn
-        disappears, so this raises :class:`StaleSessionWrite` and the caller can reload
-        and say so. A caller that saves the same object repeatedly is unaffected: a
-        successful save carries the new revision back onto it.
-        """
+        """Write *session* atomically; raise :class:`StaleSessionWrite` if the file moved past its revision."""
         sdir = self._dir()
         target = os.path.join(sdir, f"{session.id}.json")
         on_disk = _stored_rev(target)

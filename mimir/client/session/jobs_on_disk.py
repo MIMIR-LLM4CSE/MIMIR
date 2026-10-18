@@ -1,15 +1,8 @@
 """The detached runs a session left behind, read off the disk.
 
-A background run outlives the worker that watched it: ``bash_run`` starts it in its own
-session with a trap that records the exit code, a Slurm job belongs to the controller,
-and both leave a descriptor under ``<state>/sessions/<sid>/jobs/<key>/`` or
-``.../hpc_jobs/<dir>/``. This module reads those descriptors to say which runs are
-still going and which ended while nothing was listening, so a watcher can be put back
-and a finished run reported once.
-
-Two files are contracts with the servers: ``exit_code``, written by ``bash_jobs``'s
-trap, and ``slurm_state`` (done, crashed or unknown), written by ``server_hpc`` once
-Slurm has let a job go. Liveness comes from ``servers/_shared/processes``.
+Descriptors under ``<state>/sessions/<sid>/jobs/`` and ``.../hpc_jobs/`` say which runs
+still go and which ended unwatched. Contracts with the servers: ``exit_code`` (the
+``bash_jobs`` trap) and ``slurm_state`` (``server_hpc``).
 """
 
 from __future__ import annotations
@@ -51,14 +44,7 @@ class DetachedJob:
 
     @property
     def owner_session(self) -> str:
-        """The conversation to wake for this run.
-
-        A sub-agent's session is stored under its parent's and is deliberately not a
-        conversation any front end can load — ``_sub_session_id`` writes directories
-        and no ``<id>.json``. So a child's run is the parent's to hear about: the
-        person is watching the parent, and the parent's agent is the one that can act
-        on it. Whose run it is and who gets woken are two different answers.
-        """
+        """The conversation to wake for this run: the parent's, for a sub-agent's run."""
         return self.session_id.split("/subagents/", 1)[0]
 
     @property
@@ -115,15 +101,9 @@ def _read_json(path: str) -> dict | None:
 # ``exit_code`` is shared with ``bash_jobs`` (see the module docstring).
 _SLURM_STATE = "slurm_state"
 
-# How long an unsettled Slurm submission is read as still running. A job's state lives in
-# the controller, so nothing here can conclude it ended; what this bounds is the opposite
-# failure — a descriptor nobody can settle holding a workspace open for ever, which is
-# reachable whenever no conversation is left to poll the job it belongs to.
-#
-# Generous on purpose, and far longer than any partition's wall-time: while a server is up
-# its watcher settles a finished job within a poll, so this only ever bites a submission
-# nothing is watching at all. Erring short is the worse mistake — it stops a server that
-# still owes a conversation its wake.
+# How long an unsettled Slurm submission reads as running: far past any wall-time, since
+# a live watcher settles a finished job within a poll. Only an unwatched submission is
+# bounded by it; erring short would stop a server that still owes a wake.
 _DEFAULT_SLURM_STALE_AFTER = 7 * 24 * 3600.0
 
 
@@ -167,13 +147,7 @@ def _written_at(path: str) -> float | None:
 
 
 def is_settled(job_dir: str) -> bool:
-    """Whether a run's directory records that it is over, either kind.
-
-    One predicate because there is one question: a shell job settles when its trap writes
-    an exit code, a Slurm submission when a poll writes the state Slurm last gave. A
-    reader that knows only the first reads every Slurm job this workspace ever submitted
-    as still running.
-    """
+    """Whether a run's directory records that it is over: an exit code, or a recorded Slurm state."""
     return (os.path.exists(os.path.join(job_dir, "exit_code"))
             or _read_slurm_state(job_dir) is not None)
 
@@ -224,22 +198,10 @@ def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
 
 
 def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
-    """Slurm jobs, which are finished only once a poll has written down that they are.
+    """Slurm jobs, live until a poll has written their state (``slurm_job_status``).
 
-    Their state lives in the controller, not in a pid on this machine, so inspection
-    cannot conclude a job ended: the honest reading of a bare submission is "there is a
-    job, ask Slurm", and it comes back live so a watcher is put on it.
-
-    What makes that terminable is the record the poll leaves behind. ``slurm_job_status``
-    writes the state into the submission's own directory the first time Slurm has let the
-    job go, which is this scan's equivalent of a shell job's exit-code trap — and the
-    reason the record has to exist at all: an id never stops existing, so a directory
-    holding nothing else reads as live for ever, and one submission is then enough to
-    make a workspace's server un-stoppable whatever it is or is not doing.
-
-    The age check is the other half, for a submission nothing will ever settle: no
-    conversation left to poll it, or a machine where the Slurm tools have gone. See
-    :data:`_DEFAULT_SLURM_STALE_AFTER` for why it is deliberately far longer than any job.
+    Nothing local can conclude a Slurm job ended. A submission nothing settles reads as
+    over after :data:`_DEFAULT_SLURM_STALE_AFTER`.
     """
     root = os.path.join(_sessions_root(), session_id, "hpc_jobs")
     if not os.path.isdir(root):
@@ -282,43 +244,19 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
     return found
 
 
-# Name of the marker that says a finished run's wake has been handed to a turn. A file
-# in the run's own directory, because "has this been delivered?" has to survive the
-# process that delivered it: two places look for runs that ended unwatched — a
-# connection arriving and a worker being built — and a run delivered twice is a
-# conversation woken twice for one build.
-#
-# **Delivered, not emitted.** The marker is written where the wake enters a turn, never
-# where the event is queued. A ``job_complete`` put on the bus with nothing ready to
-# consume it is a wake still owed: marking it at that moment makes the only record of
-# the debt say it was already paid, and the run is then filtered out of every later scan
-# — a conversation that waits for ever on a job that finished hours ago. Which is
-# precisely the case this module exists for, so the marker follows the turn.
+# The marker that a finished run's wake was handed to a turn, in the run's own
+# directory so it survives the process. Written where the wake enters a turn, never
+# where it is queued: marked early, a debt would read as paid.
 _REPORTED = "reported"
 
-# Name of the per-session file that says "scanning has happened here before".
-#
-# Without it the first scan of an existing workspace reads a whole history as a backlog
-# of wakes nobody is owed: a detached job's directory is never swept, however old, so
-# every build that ever finished is sitting there with no marker on it — and markers
-# only started being written when this was introduced. Waking a conversation for a
-# two-month-old build is worse than missing one, and unlike a missed wake it is also
-# unbounded.
-#
-# So the first scan establishes a baseline instead of claiming one: everything already
-# finished is marked as reported and nothing is emitted. Afterwards a job that ends is
-# genuinely one nothing has spoken for.
+# The per-session marker that this session was scanned before. The first scan marks
+# everything already finished as reported and emits nothing: job directories are never
+# swept, and waking for a months-old build is worse than missing one.
 _BASELINE = ".wake_baseline"
 
 
 def _job_dir(session_id: str, job_key: str, kind: str = "shell") -> str:
-    """The directory a run's markers belong in.
-
-    A shell job's key *is* its directory name. A Slurm job's is not: the submission is
-    filed under a timestamped name and the id lives in a file inside it, so the key has
-    to be resolved back to the directory that holds it — otherwise a marker lands beside
-    the real descriptor in a directory of its own, where nothing else about the job is.
-    """
+    """The directory a run's markers belong in (a Slurm key is resolved to its submission dir)."""
     if kind == "slurm":
         return _slurm_job_dir(session_id, job_key)
     if kind == "proxy":
@@ -337,15 +275,9 @@ def _slurm_hpc_root(session_id: str) -> str:
 
 
 def _slurm_job_dir(session_id: str, job_id: str, *, invent: bool = True) -> str:
-    """Where *job_id* was recorded by this session.
+    """Where this session recorded *job_id*, else ``hpc_jobs/<job id>`` (when *invent*).
 
-    Twin of ``server_hpc._find_job_dir``, narrowed to one session: a marker is written
-    where the run was filed, and this module is only ever asked about runs it scanned out
-    of that session's own directory.
-
-    Falls back to ``hpc_jobs/<job id>`` when no descriptor carries the id — a run whose
-    directory has been deleted can still be marked, and that fallback is also where
-    markers written before the id was resolved are to be found.
+    The twin of ``server_hpc._find_job_dir``, narrowed to one session.
     """
     root = _slurm_hpc_root(session_id)
     try:
@@ -455,16 +387,10 @@ def mark_job_reported(session_id: str | None, job_key: str | None,
 
 
 def mark_wakes_reported(events: list[dict]) -> None:
-    """Settle every run whose wake has just been handed to a turn.
+    """Mark reported every run whose wake was just handed to a turn.
 
-    What a consumer has: the ``job_complete`` events it folded into one message, each
-    carrying the session, the key and the server its descriptor named. Called once the
-    turn is submitted — before that the debt is still outstanding, and a marker written
-    early is indistinguishable from one written on time to every scan that follows.
-
-    A steered wake is deliberately *not* settled here: a steer is only known to have
-    been read when the loop says so, and until then the job still needs a turn of its
-    own. Its marker is written by the flush that eventually gives it one.
+    Called once the turn is submitted; a steered wake is marked later, by the flush that
+    gives it a turn.
     """
     for ev in events or ():
         mark_job_reported(_run_session(ev), ev.get("job_key"), ev.get("server"))
@@ -516,13 +442,7 @@ def scan_session(session_id: str, *, include_reported: bool = False
 
 
 def subagent_sessions(session_id: str) -> list[str]:
-    """The sub-sessions of *session_id*: ``<id>/subagents/<child>``, and no deeper.
-
-    One named level, because ``subagents/`` is the whole contract
-    ``server_spawn_agent._sub_session_id`` writes — a child cannot delegate, so there
-    is never a third level to walk, and walking arbitrary depth would make the scan's
-    cost a property of someone's directory tree.
-    """
+    """The sub-sessions of *session_id* (``<id>/subagents/<child>``), one level only."""
     root = subagents_dir(session_id, paths.STATE_DIR)
     if not os.path.isdir(root):
         return []
@@ -536,13 +456,9 @@ def subagent_sessions(session_id: str) -> list[str]:
 
 
 def scan_all_sessions() -> dict[str, list[DetachedJob]]:
-    """Every session's detached runs, keyed by session — sub-agents' included.
+    """Every session's detached runs, sub-agents' included, keyed by the session holding the files.
 
-    A sub-agent's runs are two levels down, under its parent. They are in here because
-    a child killed outright hands nothing over: its own watcher goes with it, and this
-    is the only thing left that can find what it left going. Keyed by the session that
-    holds the files, which for a child is not the session that gets woken — see
-    :attr:`DetachedJob.owner_session`.
+    A killed child's runs are found only here. See :attr:`DetachedJob.owner_session`.
     """
     root = _sessions_root()
     if not os.path.isdir(root):

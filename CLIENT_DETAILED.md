@@ -240,6 +240,23 @@ A conversation, independent of the front-end showing it.
 reference to the one on screen, and both write the same object, on the server's one event
 loop.
 
+**The session file.** `<STATE_DIR>/sessions/<id>.json`:
+
+| Key | Holds |
+|---|---|
+| `id`, `title`, `title_custom` | uuid4; the title, and whether the user chose it |
+| `created_at`, `updated_at` | ISO-8601 |
+| `preview` | the first 80 characters of the first user message |
+| `summary`, `summary_msgs`, `summary_version` | the one-sentence description, the prose-message count it covers, the generator version |
+| `llm_history` | the working window sent to the model |
+| `llm_history_full` | the same, never trimmed: what a resume falls back to (a window carrying a compaction summary is reloaded instead) |
+| `display_messages` | the transcript the webview renders |
+| `carry_context` | the agent's `CarryContext` |
+| `todos`, `todo_deps` | the checklist and its dependencies |
+| `pending_interaction` | the card a deferred turn waits on (`query_engine.deferral`), or null |
+| `context_mode` | `full` or `compact`, so a resume budgets the window before its agent exists |
+| `rendered_seq` | how far the client has rendered the journal |
+
 ---
 
 ## extensions

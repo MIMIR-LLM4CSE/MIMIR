@@ -25,19 +25,9 @@ class Item:
 class CommandResult:
     """What a command has to say, for a front-end to lay out.
 
-    Three shapes:
-
-    - a SETTING changed or reported — ``state`` is the message carrying its value, for
-      a front-end that shows settings as controls; ``card`` is False, since a line in
-      the transcript would only repeat the control (and the webview replays its stored
-      settings on connect, so such lines greeted each session with changes nobody had
-      made);
-    - a LISTING, or something IRREVERSIBLE that just happened — a card: ``title``,
-      ``items``, ``note``;
-    - an ERROR — ``tone == "error"`` and the reason in ``title``.
-
-    ``tone``: ``ok`` routine, ``warn`` irreversible, ``empty`` a listing with nothing in
-    it, ``error``. ``label`` is the command as the card names it ("/memory list").
+    A setting: ``state`` carries its value and ``card`` is False (the control shows it). A
+    listing or an irreversible change: a card (``title``, ``items``, ``note``). An error:
+    ``tone == "error"``. ``tone`` is ok, warn, empty or error; ``label`` names the command.
     """
     title: str = ""
     items: list[Item] = field(default_factory=list)

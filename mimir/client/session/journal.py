@@ -1,12 +1,7 @@
-"""Append-only JSONL log of everything a session exchanged.
+"""Append-only JSONL log of everything a session exchanged: ``sessions/<id>/transcript.jsonl``.
 
-One file per session, ``<STATE_DIR>/sessions/<id>/transcript.jsonl``. The session JSON
-is not a complete record: ``display_messages`` is what the UI renders, and
-``llm_history`` is a window the context budget trims in place. The journal is never
-trimmed, so it can rebuild the whole context and profile a run offline.
-
-Each line is one JSON object with ``ts`` / ``seq`` / ``type`` plus the event's payload.
-Token-level deltas are left out: their aggregate lands at ``thinking_end`` / ``answer``.
+Never trimmed, unlike the session JSON. Each line carries ``ts``, ``seq``, ``type`` and
+the payload; token deltas are left out (their aggregates are logged).
 """
 
 from __future__ import annotations
@@ -57,13 +52,9 @@ class TranscriptLog:
         self._seq = _last_seq(session_id)
 
     def append_and_stamp(self, event: dict) -> dict:
-        """Write one event and return it carrying the ``seq`` it was written under.
+        """Write one event and return it with its ``seq``, the re-attach watermark (one writer per session).
 
-        The stamped number is the watermark a re-attaching client resumes from, so it
-        must be assigned by whoever writes the file and by nobody else — one writer per
-        session. An event this log skips comes back unstamped: a stream delta is
-        live-only by design, never replayed, and a ``seq`` on it would promise a
-        durability it does not have.
+        A skipped event comes back unstamped.
         """
         before = self._seq
         self.append(event)
@@ -125,15 +116,7 @@ def read_since(session_id: str, after: int = 0,
                limit: int | None = None) -> tuple[list[dict], bool]:
     """Events logged after ``seq`` *after*, and whether older ones were left out.
 
-    The read half of the re-attach watermark: a client says how far its rendered
-    history goes and gets back only what it missed. Streamed line by line rather than
-    through :func:`read_transcript` so a twelve-hour run is not materialised whole to
-    throw most of it away.
-
-    With *limit* set the **most recent** events win — a reconnect after a long absence
-    wants the end of the run, not its beginning — and the returned flag says some were
-    dropped, so the client can mark the gap rather than present a hole as the whole
-    story.
+    Streamed line by line. With *limit*, the most recent events win.
     """
     path = transcript_path(session_id)
     if not path or not os.path.exists(path):
