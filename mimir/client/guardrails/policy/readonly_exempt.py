@@ -1,12 +1,4 @@
-"""Approval exemption for read-only invocations of the dual-use bash tool.
-
-The dual-use bash tool is ``sensitive`` so build/execution commands prompt for
-approval. Side-effect-free discovery (``rg``/``ls``/``cat``/``sed`` without
-``-i`` …) is safe to run unattended, so re-prompting for it is pure friction — in
-**any** mode. ``readonly_bash_exempt`` waives the prompt for exactly those calls,
-delegating the read-only decision to :func:`bash_classify.bash_command_is_readonly`.
-An exec command or an in-place write (``sed -i``) still hits the normal gate.
-"""
+"""The approval exemption for read-only calls of the dual-use bash tool, in every mode."""
 
 from __future__ import annotations
 
@@ -20,13 +12,10 @@ from ...core.ports import AgentPort
 
 
 def is_readonly_invocation(tool_name: str, arguments: dict[str, Any], caps: Any) -> bool:
-    """Whether this call of a dual-use (PLAN_READONLY) tool reads and changes nothing.
+    """Whether this call of a dual-use (``PLAN_READONLY``) tool reads and changes nothing.
 
-    The one answer to that question: the read-only modes run a call only when it is
-    true, and every mode waives the approval prompt when it is. Two shapes of dual-use
-    tool. One declares which argument value makes the call read-only — an omitted
-    argument is the tool's own default, which such a tool makes its read-only one; the
-    other carries a shell command, which only the classifier can judge.
+    By its declared read-only argument value (omitted means its default), or by the
+    classifier for a shell command.
     """
     if not has_cap(tool_name, PLAN_READONLY, caps):
         return False

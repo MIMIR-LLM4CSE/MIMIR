@@ -1,29 +1,8 @@
-"""The mandatory check, performed here rather than by a tool on the machine.
+"""The mandatory check every modified file owes, done here with the standard library.
 
-The check every modified file owes before the run may conclude lives here, not in an
-external binary named in the prompt (``ruff``, ``mypy``, ``py_compile``, a compiler).
-Leaning on one of those makes the loop's single blocking axis depend on what happens to be
-installed — a missing linter silently turns a file "unverifiable" — and on the handful of
-languages those binaries cover, leaving ``.js``, ``.rs``, ``.go`` and ``.sh`` unchecked.
-This floor needs nothing but the standard library, reads every text file, and answers the
-same on every machine.
-
-External checkers still count — a ``ruff check`` the model runs credits the file and
-*raises* its tier (``structural`` → ``static``). They are a bonus, never a
-requirement, and nothing in the prompts names one.
-
-Two storeys, both keyed by extension so adding a language is adding a line:
-
-- a **stdlib parser** where one exists (Python, JSON, TOML): the real thing, tier
-  ``syntax``, with the offending line in the message;
-- a **structural scan** for everything else, tier ``structural``: unbalanced delimiters,
-  an unterminated block comment, a leftover conflict marker. It is deliberately narrow —
-  it catches the file written half-way, which is the failure the floor exists for, and
-  claims nothing about semantics.
-
-Doctrine, everywhere below: **when tokenization is ambiguous, pass.** A false positive
-here charges a repair budget against code that is fine; a false negative only leaves us
-where we already were.
+A stdlib parser where one exists (tier ``syntax``), else a structural scan for a file
+written half-way (tier ``structural``). External checkers only raise the tier. When
+tokenization is ambiguous, pass (POLICY.md, "The built-in check").
 """
 
 from __future__ import annotations
@@ -73,10 +52,8 @@ class CheckOutcome:
 class _Profile:
     """How to tell code from comment from string in one family of languages.
 
-    Every field exists to *suppress* a false positive rather than to catch anything:
-    without the string and comment rules a brace in a message would unbalance the file,
-    and ``delimiters=False`` is how a family whose grammar legitimately looks unbalanced
-    (shell ``case`` patterns, prose) opts out of that check entirely.
+    Every field suppresses a false positive; ``delimiters=False`` opts a family whose grammar
+    looks unbalanced (shell ``case``, prose) out of that check.
     """
 
     line_comments: tuple[str, ...] = ()
@@ -531,10 +508,7 @@ def _stamp(path: str) -> tuple[int, int]:
 def sweep_builtin_checks(execution_context: ExecutionContext, absolute_path_fn=None) -> None:
     """Check every file that still owes one, once each, on its final content.
 
-    Called where the loop asks whether it may conclude — not after each write. A file
-    the model edits five times is checked once, on what it ended up being, and the
-    stamp is what makes that true across the several places the gate is consulted:
-    an unchanged file is skipped, one edited since is checked again.
+    Called where the loop asks whether it may conclude; the stamp skips an unchanged file.
     """
 
     resolve = absolute_path_fn or os.path.abspath

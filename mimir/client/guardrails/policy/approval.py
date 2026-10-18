@@ -220,17 +220,11 @@ class ApprovalManager:
         #   "bash:bash_run:git status"   -> trust only this narrower scope
         self.approved_scopes: set[str] = set()
 
-        # How much of the approval flow the user still answers by hand. Session
-        # state, never persisted: a mode that suppresses every prompt must be
-        # chosen deliberately for the session it applies to, not inherited silently
-        # from a previous one. Enforced in the policy engine (the single seam every
-        # front-end shares), so an auto mode emits nothing at all — the card is never
-        # built, so nothing reaches the socket or the terminal.
-        #   manual   — ask for sensitive tools and for out-of-workspace paths
+        # How much the user still answers by hand, for this session only (never persisted):
+        #   manual   — ask for sensitive tools and out-of-workspace paths
         #   auto     — sensitive tools pass; leaving the workspace still asks
         #   auto_all — nothing asks
-        # It removes the *question*, never the policy: the bash denylist, the servers'
-        # path/redirection validation and the verification-tier gates all still refuse.
+        # It removes the question, never the policy: denylists and the verification gates still refuse.
         self.approval_mode: str = "manual"
 
         # True when no one can answer a card (a sub-agent: its stdin is the MCP pipe).
@@ -308,13 +302,7 @@ class ApprovalManager:
         return risk_note_of(tool_name, self.tool_caps) or "performs a sensitive action"
 
     def describe_reversibility(self, tool_name: str) -> str:
-        """One line on how far this action can be taken back, for the prompt.
-
-        A binary "approval required" spent the same friction on a file the client can
-        restore and on a Slurm submission burning allocation hours. Naming the level
-        is what lets the user read the difference before answering — the prompt is the
-        only place the distinction reaches them.
-        """
+        """One line on how far this action can be taken back, for the prompt."""
         level = reversibility_of(tool_name, self.tool_caps)
         if level == IRREVERSIBLE:
             return "IRREVERSIBLE — leaves this machine or spends real resources; nothing here can undo it"
@@ -352,14 +340,7 @@ class ApprovalManager:
         self.approved_scopes.add(scope)
 
     def untrust_tool(self, tool_name: str, server_name: str | None = None) -> None:
-        """
-        Remove trust for a tool.
-
-        - server_name=None  -> remove wildcard trust and any narrower scopes
-                               for that tool across all servers
-        - server_name=...   -> remove base scope and any narrower scopes
-                               for that server/tool
-        """
+        """Remove trust for *tool_name*, on *server_name* or (None) on every server, narrower scopes included."""
         if server_name is None:
             wildcard = self._wildcard_tool_scope(tool_name)
             self.approved_scopes.discard(wildcard)
@@ -406,13 +387,7 @@ class ApprovalManager:
     # ------------------------------------------------------------------
 
     def _scope_token(self, tool_name: str, arguments: dict) -> tuple[str, str]:
-        """Resolve (token, label-noun) from the tool's declared scope spec.
-
-        The spec names the scope arg(s) and a generic derivation ``kind``; the kind
-        selects a builder in ``_SCOPE_KINDS``. Returns ``("", "")`` when the tool
-        declares no scope spec (or an unknown kind) — callers fall back to the coarse
-        server:tool scope. No tool names appear here; everything is registry-driven.
-        """
+        """``(token, noun)`` from the tool's declared scope spec, or ``("", "")`` without one."""
         spec = scope_spec(tool_name, self.tool_caps)
         if not spec:
             return "", ""
@@ -425,13 +400,7 @@ class ApprovalManager:
         return token, noun
 
     def _approval_scope(self, tool_name: str, server_name: str, arguments: dict) -> str:
-        """
-        Return the session-approval scope for this tool call.
-
-        Default behavior is coarse-grained (server + tool); tools that declare a
-        ``scope`` spec narrow the "always" scope (e.g. to one command family / host /
-        package set) so a single approval doesn't blanket every future call.
-        """
+        """The "always" scope of this call: server:tool, narrowed by a declared ``scope`` spec."""
         base = self._base_scope(tool_name, server_name)
         token, _ = self._scope_token(tool_name, arguments)
         return f"{base}:{token}" if token else base
@@ -457,13 +426,7 @@ class ApprovalManager:
         return False
 
     def _approval_scope_label(self, tool_name: str, server_name: str, arguments: dict) -> str:
-        """Human-readable description of what 'always' will approve.
-
-        Driven by the same scope spec as ``_approval_scope``: ``<phrase> (<token>)``
-        when the tool narrows its scope, falling back to the bare ``<phrase>`` (no
-        usable token) or ``this tool`` (no scope spec). The phrase carries its own
-        determiner (kind default or spec ``noun``). No tool names appear here.
-        """
+        """What "always" will approve, in words: ``<phrase> (<token>)``, ``<phrase>``, or "this tool"."""
         token, phrase = self._scope_token(tool_name, arguments)
         if not phrase:
             return "this tool"

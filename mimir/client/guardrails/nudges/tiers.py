@@ -4,13 +4,8 @@ from __future__ import annotations
 from __future__ import annotations
 
 
-# Guidance nudges permitted per (enforcement, mode). This is the single source for
-# the enforcement dimension of the line; each nudge's own active_mode/situational
-# gate still applies on top. Verification nudges and the plan-mode explore phase are
-# independent of this table. "off" is intentionally absent → empty set (and the
-# caller short-circuits the whole guidance layer before it is consulted).
-# Category strings match the nudge names of the cascade (e.g. the documentation
-# nudge's category is "doc", not "documentation").
+# Guidance nudges permitted per (enforcement, mode), by cascade category name. Each
+# nudge's own gate still applies; "off" is absent (the layer is skipped before this).
 ALL_GUIDANCE = frozenset({
     "env_resolution", "doc", "state",
     "blast_radius", "creation", "todo", "env_cleanup", "unwatched_run",

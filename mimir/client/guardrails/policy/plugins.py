@@ -1,30 +1,8 @@
-"""Pluggable policy checks — the extension seam for application-specific constraints.
+"""Application policy checks registered on top of the core pipeline; they can only block.
 
-The built-in pipeline in :mod:`policy.engine` (registry → *pre_mutation* →
-cluster_submit → proxy_exec → skill_pull → state_guard → write_policy → *pre_approval* →
-workspace → approval) is the fixed *core*; registered checks run at the two stages in
-italics. This module
-lets an application register **additional** checks on top — e.g. an API-contract or
-cybersecurity guard — without editing core code. Custom checks can only *add*
-constraints: the core runs first and independently, and a custom check that returns
-``None`` never relaxes anything.
-
-A pack (a Python module under the plugins dir; see :mod:`client.extensions`) declares a
-:class:`PolicyCheck` and registers it at import time::
-
-    from mimir.client.extensions import PolicyCheck, register_policy_check
-    from mimir.client.context.capabilities import has_cap, EXTERNAL_FETCH
-
-    def _no_secret_exfil(agent, tool, args, ec):
-        if has_cap(tool, EXTERNAL_FETCH, agent.tool_caps) and _looks_secret(args):
-            return '{"status": "error", "error": "Outbound call carries a secret"}'
-        return None
-
-    register_policy_check(PolicyCheck(name="no_secret_exfil", check=_no_secret_exfil))
-
-Application policies are **locked** (mandatory) — there is deliberately no toggle for
-them, unlike nudges. Reference *capabilities* (``has_cap``/``names_with_cap``), never
-literal tool names, so a pack stays robust across tool renames.
+A ``PolicyCheck`` runs at ``pre_mutation`` or ``pre_approval`` (see ``policy.engine``).
+Register at import time with ``register_policy_check``; read capabilities, never tool
+names. No toggle: application policies are mandatory.
 """
 
 from __future__ import annotations

@@ -45,14 +45,9 @@ from .call import Call
 from .files import enter_post_edit_state, record_code_edit, register_known_path
 
 
-# Checkers that cover a whole tree in one call. A *successful* run of one naming no
-# specific source file (`ruff check .`, `mypy src/`) clears every pending file at once;
-# per-file crediting is already language-agnostic, this set only adds the shortcut.
-#
-# INVARIANT (test-enforced): every entry is in `shell_paths.EXEC_EFFECTS` with effect
-# `validate`, and in `VALIDATOR_TIER` below. That is also why `pytest` and `ctest` are
-# not here: they are declared `run`, and running a suite is judged on its own output —
-# it credits no file however green it exits.
+# Checkers that cover a whole tree in one call: a green run naming no file clears every
+# pending file. Each is `validate` in `shell_paths.EXEC_EFFECTS` and in `VALIDATOR_TIER`
+# (test-enforced); test runners are `run` and credit no file.
 PROJECT_VALIDATORS = frozenset({
     "ruff", "mypy", "pyflakes", "black", "py_compile",
 })
@@ -102,18 +97,9 @@ _SYNTAX_ONLY_FLAGS = ("-fsyntax-only", "--fsyntax-only")
 
 
 def _call_was_refused(status: Any, payload: dict[str, Any]) -> bool:
-    """Whether the server rejected this call before any shell opened.
+    """Whether the server refused this call before any shell opened (``rejected`` flag).
 
-    A shell tool answers ``status: "error"`` for two different things, and only one of
-    them is evidence. A command that ran and exited non-zero — or timed out — is a
-    finding about the change; a call the server *refused* (a heredoc, a substitution, a
-    denied command, a path outside the workspace) never reached a shell, so it says
-    nothing about anything and must charge nothing: not a file's retry budget, not a
-    run's.
-
-    The server says which it is, rather than this inferring it from the payload's shape:
-    a rejection is the one answer it produces before knowing anything about a run, and
-    a flag it sets deliberately cannot drift the way "no ``returncode`` field" can.
+    A refusal is no evidence and charges nothing; a non-zero exit is a finding.
     """
     return status != "ok" and bool(payload.get("refused"))
 
@@ -121,38 +107,11 @@ def _call_was_refused(status: Any, payload: dict[str, Any]) -> bool:
 def bash_validation_scan(
     agent: AgentPort, command: str,
 ) -> tuple[list[str], bool, str, str, str, bool]:
-    """Scan a bash command, telling checks from builds from executions.
+    """Scan a command: ``(targets, whole_project, tier, execution, missing_head, exit_is_the_run_s)``.
 
-    Returns ``(explicit_targets, whole_project, tier, execution, missing_head,
-    exit_is_the_run_s)``:
-    - ``explicit_targets`` — normalized workspace paths of the files named by EXEC
-      segments, with a leading ``cd`` rebasing later relative operands (``cd sub &&
-      ruff check t.py`` → ``sub/t.py``).
-    - ``whole_project`` — True when a recognised project **checker** ran over no specific
-      file (``ruff check .``, ``mypy src/``): a green run then validates every pending
-      file, not just a named one.
-    - ``tier`` — the strongest check any segment performed, or ``""`` when none did.
-    - ``execution`` — ``EFFECT_RUN`` when a segment ran the project's code, ``EFFECT_BUILD``
-      when the strongest thing it did was drive a build, ``""`` when nothing was executed.
-      A run outranks a build in the same chain (``make && ./solver``): the build's exit
-      code settles it, the run's output still owes a reading. Which of the two a segment
-      is comes from :data:`shell_paths.EXEC_EFFECTS`, declared beside the command
-      groups — never from a head's absence from the tier table below, which is how
-      ``source env.sh`` came to be recorded as a run owing a verdict.
-    - ``missing_head`` — the first command in the chain that is not installed here, or
-      ``""``. The one imputation the machine can settle alone: a command the shell could
-      not find said nothing about the change, so its red exit is a wall, not a defect.
-      Three conditions, each guarding a real trap. It reads ``argv[0]``, never ``head``,
-      which is the *module* for ``python -m X`` and so never on PATH (``py_compile`` is a
-      checker with no command of its own). It skips a path-like argv0, because a missing
-      ``./solver`` is a build that did not happen, which is attributable. And it only looks
-      at segments that ran, built or checked something — ``source`` is a shell builtin and
-      would otherwise fail this test on every chain that sets up an environment.
-    For a command the classifier cannot read at all, the first three are empty — nothing
-    is attributable — but ``execution`` still comes from its command-position heads
-    (:func:`opaque_command_executes`). Opacity is a reason not to credit; it is not
-    a reason to believe nothing ran, and inline payloads (which the base prompt asks for)
-    are opaque by construction.
+    Targets are the files EXEC segments name (a leading ``cd`` rebases them); *execution* is
+    ``EFFECT_RUN`` or ``EFFECT_BUILD`` from ``shell_paths.EXEC_EFFECTS``; *missing_head* is
+    the first command that is not installed. An unreadable command still reports execution.
     """
     segments = classify_bash_command(command)
     if not segments:
@@ -219,19 +178,9 @@ def bash_validation_scan(
 def _record_test_failure_signatures(
     execution_context: ExecutionContext, out: str,
 ) -> None:
-    """Record WHICH tests a red run reported, per test file.
+    """Record which tests a red run reported, per test file, collapsing consecutive repeats.
 
-    The ledger the oracle nudge reads. A file whose failing SET keeps changing between
-    runs is one whose test is moving under the model's feet — a different situation from
-    the same failure repeating, which is already the repeated-call guard's business, and
-    the one that wants a different correction (re-read the test, not the code).
-
-    Keyed off the node ids in the runner's own report rather than off the command's file
-    operands, so a bare ``pytest`` is recorded exactly as ``pytest tests/x.py`` is. A
-    consecutive repeat of the same signature collapses into the existing entry, which is
-    what makes ``len(entries) >= 2`` mean "the failing set changed at least once" rather
-    than merely "it failed twice". A report clipped so hard that no node id survived
-    records nothing: unable to tell a moving failure from a stuck one, we do not guess.
+    Read from the runner's node ids; a report with none records nothing.
     """
     signature = test_failure_signature(out)
     if not signature:
@@ -248,17 +197,9 @@ def _record_test_failure_signatures(
 
 
 def _stage_moving_test_alert(execution_context: ExecutionContext) -> None:
-    """Arm the one-time "read the test itself" corrective for a test that is moving.
+    """Stage the one-time "read the test itself" corrective for a test whose failures moved.
 
-    Fires on a file whose failing SET has changed at least once — two entries in the
-    signature ledger, which collapses consecutive repeats. An unchanging failure is
-    deliberately excluded: that is the repeated-call guard's business, and it wants the
-    opposite advice (change something) from this one (stop changing things and read).
-
-    Staged rather than injected, exactly as ``_repeat_alert`` is, because this fires in
-    the middle of a tool loop that a nudge from the table can never reach — the model
-    debugging a red suite is by definition still calling tools. Once per file per query:
-    the point is made or it is not.
+    Staged like ``_repeat_alert``, since the model is still mid-loop; once per file per query.
     """
     ledger = execution_context.test_failure_signatures or {}
     told = execution_context.moving_test_told
@@ -270,26 +211,11 @@ def _stage_moving_test_alert(execution_context: ExecutionContext) -> None:
 
 
 def bash_validation(call: Call) -> None:
-    """Drive validation and run state from a bash command — success AND failure.
+    """Drive the check and run axes from a bash command, success and failure.
 
-    Two axes, never mixed, because they answer different questions:
-
-    - a **checker** (``py_compile`` → syntax; ``ruff``/``mypy``/a compiler → static)
-      validates the *files it names*. Its output is a list of problems and an empty one
-      is the finding, so exit 0 settles it and nobody has to read anything. Non-zero
-      charges the file's retry budget.
-    - an **execution** (``pytest``, ``python solver.py``, ``./solver``, ``python -c …``)
-      validates no file at all. It is recorded as a *run*: a non-zero exit is a failure
-      the machine already judged, and a green one owes the model a reading of what it
-      printed (``guardrails/verdict.py``). A green exit is demoted when the output itself
-      reports otherwise — a declared ``check=fail``, or a test runner's own summary of
-      red tests, which is the only signal left once ``| tail`` has eaten the exit status.
-      A red *test* settles the run without charging any file's validation budget:
-      the run is the subject, and no file is credited or blamed by guesswork.
-
-    A green project-wide **checker** (``ruff check .``) covers every pending file at
-    once. Test files are recorded in ``tests_run`` either way (pass or fail) so the
-    regression nudge sees them. Only shell-command tools qualify.
+    A checker validates the files it names (non-zero charges their budget); an execution
+    validates no file and is recorded as a run owing a verdict. A green project-wide check
+    covers every pending file. See POLICY.md, "Checks and runs are two axes".
     """
     execution_context = call.execution_context
     command_args = shell_command_args(call.tool_name, call.agent.tool_caps)
@@ -348,14 +274,7 @@ def bash_validation(call: Call) -> None:
 
 
 def command(call: Call) -> None:
-    """Credit the blackboard from a shell command classified into capability kinds.
-
-    A dual-use bash tool hides its effect inside a ``command`` string, so the other
-    observers (which key off static caps + a named path arg) miss it.
-    ``classify_bash_command`` maps each ``; && || |`` segment to a kind + operands;
-    this mirrors the dedicated observers so a bash ``cat``/``grep``/``sed -i`` feeds
-    the same discovery/edit/action state the file/search tools would.
-    """
+    """Credit the blackboard from a shell command, segment by segment, like the file tools."""
     execution_context = call.execution_context
     if call.status != "ok":
         return

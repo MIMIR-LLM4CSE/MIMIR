@@ -50,28 +50,17 @@ def validation_tool(call: Call) -> None:
 
 
 def action_op(call: Call) -> None:
-    """Count each successful substantive action (write / execution / mutation).
-
-    PLAN_BLOCKED is the universal marker for a non-discovery, side-effecting tool:
-    file writers derive it, and exec/db/web/cluster/proxy/hpc tools declare it. The
-    todo nudge reads this count so a task made of many such operations — e.g. an
-    optimisation loop that edits a single file but runs many benchmarks/evals — is
-    still recognised as multi-step and prompted to record a checklist.
-    """
+    """Count each successful ``PLAN_BLOCKED`` action, so many-operation tasks read as multi-step."""
     execution_context = call.execution_context
     if call.status == "ok" and has_cap(call.tool_name, PLAN_BLOCKED, call.agent.tool_caps):
         execution_context.action_op_count = int(execution_context.action_op_count) + 1
 
 
 def _run_key(tool_name: str, payload: dict, spec: dict[str, Any] | None) -> str:
-    """The ledger key for a run this tool performed.
+    """The ledger key of a run a tool performed: the payload field it declares, else its name.
 
-    A non-shell execution tool has no command line to name its runs. When it declares
-    which payload field identifies the run, that identifier is the key, so twenty
-    iterations are twenty entries.
-
-    Not prefixed with the tool name: the tool that launches a run and the one that
-    later reports its outcome must land on the same entry.
+    Not prefixed with the tool name, so the tool that launches and the one that reports land
+    on one entry.
     """
     field = (spec or {}).get("id")
     raw = payload.get(field) if field else None
@@ -94,20 +83,10 @@ def _matches(payload: dict, spec: dict[str, Any], kind: str) -> bool:
 
 
 def tool_run(call: Call) -> None:
-    """A non-shell execution tool ran: its output owes a verdict too.
+    """A non-shell execution tool ran: record it as a run owing a verdict.
 
-    The counterpart of :func:`bash_validation`, split by *surface* rather than
-    by purpose: a shell tool's calls differ in kind call by call (``cat`` reads,
-    ``python`` executes), so only the command text can decide, and that function already
-    has the parse. A tool like ``proxy_exec`` has no such variation — the
-    call *is* the execution — so the declared capability decides. The two are mutually
-    exclusive, which is what keeps a bash run from being registered twice and spares a
-    third shlex parse per call.
-
-    Recorded against the tool name, plus the run identifier the tool declares in its
-    ``run_outcome`` spec so repeated calls do not collapse onto one entry. It validates
-    no file: an execution's exit code says the program reached its end, and which file
-    it exercised is not a question anyone here can answer.
+    The call is the execution, so the capability decides (a shell call needs its command
+    parsed: :func:`bash_validation`). It validates no file.
     """
     execution_context = call.execution_context
     if call.status != "ok" or shell_command_args(call.tool_name, call.agent.tool_caps) is not None:
@@ -120,21 +99,10 @@ def tool_run(call: Call) -> None:
 
 
 def run_outcome(call: Call) -> None:
-    """Record what the *server* saw of a run it performed itself.
+    """Record what a server saw of a run it performed itself.
 
-    The counterpart of ``observed_failure_verdict`` for a non-shell execution tool.
-    A shell run is floored by its exit code; a tool like ``proxy_eval`` answers ``ok``
-    for the *call* even when the run it launched came back red, so without this the
-    ledger held no machine reading at all and a stated ``pass`` was uncontradicted.
-
-    One-way, like every other floor here: it can move a run to crashed or failing,
-    never settle one as passing. That asymmetry is what makes it safe to trust — and
-    it needs no enforcement of its own, since ``unsettled_runs`` already excludes a run
-    that is not ``completed`` or already carries a verdict, putting both beyond the
-    reach of a model's ``pass``.
-
-    Takes no call status by design: a read that reports a crashed run says the same
-    thing whether or not the call carrying it succeeded.
+    One way only: it can mark a run crashed or failing, never passing. The call's own
+    status is not read.
     """
     execution_context = call.execution_context
     spec = run_outcome_spec(call.tool_name, getattr(call.agent, "tool_caps", None))
@@ -154,16 +122,10 @@ def run_outcome(call: Call) -> None:
 def _credit_measured_source(
     execution_context: ExecutionContext, payload: dict, spec: dict[str, Any],
 ) -> None:
-    """Raise the optimisation session's source file to the ``measured`` tier.
+    """Raise the optimisation session's source to the ``measured`` tier.
 
-    The exception to "running the code validates no file": that rule exists because
-    attribution is a guess (``python main.py`` exercises ``mesh.py`` without naming it),
-    and here it is not one — the session config names exactly one source and the run is
-    by construction a run of it. Nothing else may take this route.
-
-    Credits evidence, not correctness: it records that the file was exercised and
-    measured. Whether the measurement was any good is a verdict on the run, settled
-    elsewhere and never by the server itself.
+    The one exception to "a run validates no file": the session names exactly one source.
+    It records that the file was measured, not that the measurement was good.
     """
     if _matches(payload, spec, "failed") or _matches(payload, spec, "crashed"):
         return
@@ -179,15 +141,9 @@ def _settle_from_machine(
     execution_context: ExecutionContext, tool_name: str, payload: dict,
     spec: dict[str, Any], call_id: str,
 ) -> None:
-    """Apply one declared run outcome to the ledger.
+    """Apply one declared run outcome: a crash drives the ladder, a failing result is a ``fail``.
 
-    A crash did not complete and drives the repair ladder. A failing result *did*
-    complete — the program ran, its answer is unsatisfactory — so it is recorded as a
-    machine ``fail`` verdict, the same shape a model's own ``fail`` takes.
-
-    Anything else is left exactly as it was: notably, an optimisation run that measured
-    correctly without improving on the incumbent is the ordinary outcome of an
-    experiment, and charging it would punish most of them.
+    A run that measured correctly without improving is left alone.
     """
     crashed = _matches(payload, spec, "crashed")
     failed = _matches(payload, spec, "failed")
@@ -207,19 +163,10 @@ def _settle_from_machine(
 
 
 def unwatched_runs(call: Call) -> None:
-    """Record long work a scheduler says exists and no descriptor covers.
+    """Record scheduler jobs that no descriptor covers; clear the ones a watcher now holds.
 
-    Payload-driven and tool-agnostic, deliberately — which is why it is not handed the
-    tool name: the fact is established by whoever can establish it (the HPC server runs
-    the queue *and* owns the submission directories) and arrives as two machine facts,
-    the ids the scheduler printed and the absence of a record for them. Nothing here
-    reads a command string. A nudge may rest only on something checkable, and "a
-    command whose text contained sbatch" is a guess that fires on a ``grep sbatch`` and
-    misses every wrapper ever written.
-
-    The twin half is the clearing: a call that returns a watcher's handle for an id has
-    made that id watched, so it leaves the set in the same turn. An array is adopted
-    under its base id and listed by task, so the base clears its tasks too.
+    Both facts come from the payload (ids the scheduler printed, no record for them),
+    never from a command string. An array's base id clears its tasks.
     """
     execution_context = call.execution_context
     # Shape first, and this is the hot path: every tool call of every turn comes

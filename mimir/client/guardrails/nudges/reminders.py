@@ -23,29 +23,11 @@ def inject_reminder(
     execution_context: ExecutionContext | None = None,
     step: int | None = None,
 ) -> dict[str, Any]:
-    """Append a machine-generated reminder as a user turn and announce the injection.
+    """Append a reminder as a user turn and announce it (``nudge_injected``). Returns it.
 
-    EVERY injection point must go through here, not just the nudge table. The event is
-    not decoration: the webview holds the turn in flight *outside* the transcript and
-    commits it only once the loop accepts it, so a reminder injected silently leaves
-    the rejected prose on screen looking like the answer, to be replaced without
-    explanation when the real one lands. The loop-control and plan-mode reminders were
-    injected that way, which is why the "answer appears then changes" symptom survived
-    the draft fix.
-
-    *tagged* is False for the reminders that are protocol, not advice (the plan-mode
-    control flow): prefixing those with an "advisory, apply judgment" banner invites
-    the model to skip a step the loop actually requires.
-
-    A reminder is TRANSIENT when *execution_context* is given: it is recorded there and
-    :func:`drop_transient_reminders` takes it back out after the call it was meant to
-    influence, so it never reaches persisted history. Without that the same reminder
-    was appended again on every occasion and stayed forever — one session carried 21
-    copies of a single sentence and 17 duplicate workflow reminders, ~10% of its prompt.
-    The emitted event is what a reader diagnoses from, and it is unaffected: it records
-    the category and step whether or not the message itself is kept.
-
-    Returns the appended message dict.
+    Every injection goes through here, so the webview can hold the turn it rejects. *tagged*
+    False for protocol steps. With *execution_context* it is transient: taken back after
+    the call by :func:`drop_transient_reminders`.
     """
     event: dict[str, Any] = {"type": "nudge_injected", "category": category, "text": content}
     if step is not None:
@@ -65,19 +47,9 @@ def drop_transient_reminders(
     messages: list[dict[str, Any]],
     execution_context: ExecutionContext | None,
 ) -> int:
-    """Take back the reminders injected for the call that has just been made.
+    """Remove the reminders injected for the call just made, by identity; return how many.
 
-    Removal is by IDENTITY, not by position: budget enforcement may have trimmed,
-    compacted or reordered the list between the injection and the call, so a tail-only
-    pop would silently do nothing whenever anything else was appended in the meantime.
-    A reminder that compaction already summarised away is simply not found, which is
-    the correct outcome.
-
-    The categories removed are left in ``_last_call_reminders`` so a caller can still
-    say what the prompt carried after the fact — the empty-turn diagnostic reads it,
-    and it necessarily runs after this.
-
-    Returns how many were removed.
+    Their categories stay in ``_last_call_reminders`` for the empty-turn diagnostic.
     """
     if execution_context is None:
         return 0

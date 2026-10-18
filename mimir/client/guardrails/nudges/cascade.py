@@ -61,14 +61,7 @@ def _fire_nudge(
     content: str,
     budget_key: str = "",
 ) -> bool:
-    """Increment the nudge counter, append the nudge, and signal it fired.
-
-    Centralises the counter-increment + message-append + ``return True`` triplet that every
-    nudge branch in ``maybe_append_nudge`` repeats. The per-nudge cap checks stay in the
-    guarding ``if`` so each nudge keeps its own frequency limit. *budget_key* is the
-    counter charged when several categories ration one shared budget; the event still
-    carries the category, which is what a reader wants to see.
-    """
+    """Count the nudge under *budget_key* (else its category), append it, and return True."""
     counts = execution_context.nudge_counts
     key = budget_key or category
     counts[key] = counts.get(key, 0) + 1
@@ -86,25 +79,10 @@ def maybe_append_nudge(
     execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
 ) -> bool:
-    """Append at most one workflow nudge, in priority order.
+    """Append at most one nudge: verification before guidance, core rows before packs.
 
-    The built-in table (``CORE_NUDGES``) comes first, then the rules of the agent's
-    extension set; both answer the ``Nudge`` protocol. Two layers:
-
-    - **Verification reminders** (``layer="verification"``) check *reality* — denied
-      required actions, repeated edit failures, an edited source whose test was never
-      run, a checklist still open after code was written. They run regardless of model
-      strength because a smarter model is no more honest about verification and has no
-      ground-truth access to disk/process state.
-    - **Guidance nudges** (``layer="guidance"``) babysit the model's *reasoning*
-      (validation, env resolution/cleanup, discovery, doc, state, blast-radius,
-      creation, todo). They
-      are a weak-model compatibility shim, skipped entirely when enforcement is
-      ``"off"``; which subset survives at ``"light"`` is defined by
-      ``GUIDANCE_BY_LEVEL_MODE`` (consulted inside each guidance predicate).
-
-    Order per layer: core table first, then packs. Verification is tried before
-    guidance, so it always wins.
+    Verification checks reality and runs at every level; guidance is skipped at "off" and
+    filtered at "light" by ``tiers.GUIDANCE_BY_LEVEL_MODE`` (POLICY.md, "Nudge cascade").
     """
     level = resolve_enforcement(agent)
     for layer in ("verification", "guidance"):
@@ -130,17 +108,10 @@ def nudge_pending(
     active_mode: str,
     execution_context: ExecutionContext,
 ) -> bool:
-    """True if :func:`maybe_append_nudge` would fire right now — predicate-only probe.
+    """True if :func:`maybe_append_nudge` would fire now; predicates only, no side effect.
 
-    Read BEFORE the model call so the loop can hold the turn's prose instead of
-    streaming it: a turn a nudge sends back must never have reached the screen.
-    Walks the same table and the same registry in the same layer order, evaluating
-    only the predicates — nothing is rendered, injected or counted, so probing has
-    no side effect on the run.
-
-    Deliberately an over-approximation on one point: a row whose predicate matches
-    but whose render comes back empty is reported as pending. The cost is one turn
-    that reaches the screen late; the alternative is rendering twice.
+    Read before the model call, so a turn a nudge will send back is held off the screen.
+    A row whose render comes back empty still counts as pending.
     """
     level = resolve_enforcement(agent)
     layers = ("verification",) if level == "off" else ("verification", "guidance")
@@ -154,14 +125,7 @@ def _log_no_nudge(
     level: str,
     active_mode: str,
 ) -> None:
-    """Record why no nudge was injected on a turn that asked for one.
-
-    The counterpart to the fire-time log in :func:`_fire_nudge`: without it a suppression
-    is invisible, and a false negative cannot be diagnosed after the fact. What is logged
-    is the state the predicates actually read — a declared target, the workflow state,
-    whether an edit happened, and the spent budgets — which is the trace worth having.
-    Debug-level and lazily formatted, so it costs nothing when the logger is off.
-    """
+    """Log, at debug level, the state the predicates read on a turn where nothing fired."""
     if not logger.isEnabledFor(logging.DEBUG):
         return
     logger.debug(
@@ -221,17 +185,9 @@ def maybe_inject_env_resolution(
     execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
 ) -> bool:
-    """Fire the env-resolution cascade mid-loop, right after the call that failed.
+    """Fire the env-resolution nudge right after the failing call, not at the end of the turn.
 
-    Every other nudge answers "is the work done?", which is a question worth asking
-    once the model stops calling tools. This one answers "why did that just fail?", and
-    a step ceiling away from the failure the answer is worth much less: the model has
-    already spent its steps retrying against the same interpreter, and the generic
-    repeat guard only catches it when the retries are *identical*.
-
-    Charged to the same counter as the table row it duplicates, so whichever fires
-    first spends the single budget and the other stays silent. Same enforcement/mode
-    gate too — this changes *when* the cascade arrives, not *whether* it applies.
+    Charged to the same counter and gated like its table row, so only one of the two speaks.
     """
     if not _enabled(agent, "env_resolution"):
         return False
@@ -286,14 +242,8 @@ CORE_NUDGES: tuple[CoreNudge, ...] = (
         lambda agent, query, mode, ec, level: should_nudge_error_recovery(ec),
         lambda agent, ec: error_recovery_nudge_message(first_failing_edit_path(ec) or ""),
     ),
-    # Ahead of the three advisory rows below, because it is the only one of the four
-    # that is required: a file the model modified and never checked is the one gap
-    # ``needs_incomplete_finalization`` refuses to conclude over.
-    # Before `validation`, and deliberately: while the model is going round the same
-    # failure, telling it to finish checking is answering a question it is not stuck on.
-    # Only one row speaks per turn, so this suppresses `validation` for as long as the
-    # ladder is talking — which costs nothing, because pending validation still blocks
-    # the conclusion through `needs_incomplete_finalization` either way.
+    # The one required advisory row (an unchecked modified file blocks the conclusion), yet
+    # after `stuck_repair`: a model circling a failure is not stuck on finishing its checks.
     CoreNudge(
         "stuck_repair", "verification",
         lambda agent, query, mode, ec, level: should_nudge_stuck_repair(ec),

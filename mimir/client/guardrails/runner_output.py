@@ -1,39 +1,8 @@
-"""Did this run reach a good end? — the one place that decides.
+"""Did this run reach a good end? The one place that decides (:func:`judge_run`).
 
-Four things can say a run failed, and until this module existed each was consulted
-separately by the caller, in a growing ``or`` chain, with no shared account of what
-counts as evidence:
-
-* the **exit status** — trustworthy only when it is actually the run's (see below);
-* a **declared verdict** the run printed about itself (``check=fail``), for a script
-  that computes its own criteria and returns 0 regardless;
-* a **test runner's summary** (``1 failed, 5 passed``, ``FAILED path::test``);
-* a run *server's* own report, which is judged elsewhere because it never goes
-  through a shell at all.
-
-The chain grew that way because each dialect was discovered as a missed failure and
-bolted on after the fact. :func:`judge_run` owns the question instead, and the
-dialects below are readers feeding it. Adding a fifth is a reader plus a row in its
-test table, not another clause at a call site.
-
-**Why the exit status needs qualifying.** A chained command reports the status of its
-LAST segment, and every idiom the model actually reaches for puts something else
-there::
-
-    pytest tests/test_x.py -q 2>&1 | tail -15     # the status is tail's
-    timeout 280 python3 test_x.py; echo "EXIT=$?" # the status is echo's
-
-Both report ``returncode: 0`` even with red tests. When the status cannot be trusted,
-the run's own report is the only evidence there is, so the readers below read it.
-
-Attribution itself is a separate question with a separate answer
-(:func:`exit_status_settles`) — an unattributable green is not a failure, it is an
-absence of evidence, and only the shortcut that settles a run without anyone reading it
-may be denied on those grounds.
-
-**Demote-only, throughout.** Every reader here can cost a run credit and none can buy
-it: a red report demotes a green exit, and no report ever rescues a red one. Declaring
-a verdict must never be a way to pass.
+Evidence: the exit status (only when it is the run's own: :func:`exit_status_settles`),
+a declared verdict (``check=fail``), a test runner's summary. Demote-only: a report can
+cost a run credit, never buy it.
 """
 
 from __future__ import annotations
@@ -45,14 +14,8 @@ import re
 # The base prompt steers self-checking scripts towards printing one of these.
 VERDICT_KEYS = frozenset({"check", "verdict"})
 _FAILING_VERDICTS = frozenset({"fail", "failed", "failure", "error", "red", "false", "no"})
-# Keys that report a COUNT of failures rather than a verdict (``checks_failed=3``).
-# ``exit`` rides the same "non-zero is a failure" rule, and reading it matters twice
-# over: ``suite_exit=1`` is how a wrapper script reports the status of what it ran, and
-# a trailing ``; echo "suite_exit=$?"`` makes the *shell's* returncode 0 — laundering a
-# red run into the green exit that ``judge_run`` treats as the one trustworthy signal.
-# The echo that launders the status is also the echo that prints the evidence, so the
-# idiom undoes itself. A bare ``; echo done`` still launders, and nothing here catches
-# it: attributing the exit to the last executing segment is a separate change.
+# Keys that report a count of failures (``checks_failed=3``). ``exit`` too: a trailing
+# ``echo "suite_exit=$?"`` turns the shell's status green while printing the red one.
 _FAILURE_COUNT_KEYS = frozenset({"failed", "failures", "exit"})
 
 # ``key=value`` at the start of a line, value a single token, remainder optional.
@@ -76,16 +39,7 @@ def _verdict_key(key: str) -> str:
 
 
 def observed_failure_verdict(text: str) -> bool:
-    """True when a run's own output declares that one of its checks did not pass.
-
-    The counterweight to an exit code: a script that evaluates its own criteria, prints
-    that they were not met and then returns 0 anyway is indistinguishable from a clean
-    run to everything downstream.
-
-    Any one failing verdict is enough, however many checks the run reported. A failure
-    *count* counts too, and only when non-zero — ``checks_failed=0`` is a pass stated
-    the long way round.
-    """
+    """True when a run's output declares a failing check, or a non-zero failure count."""
     if not text:
         return False
     for raw in text.splitlines():
@@ -146,14 +100,7 @@ def observed_test_failure(text: str) -> bool:
 
 
 def test_failure_signature(text: str) -> str:
-    """Which tests this run reported failing, as one comparable string.
-
-    Sorted and de-duplicated so two runs that failed the same tests compare equal
-    whatever order the runner listed them in and whatever ``| tail -N`` kept. Empty when
-    no node id could be read — the caller treats that as "no signature", never as "the
-    same signature as last time", because an unreadable report is not evidence that the
-    failure stayed put.
-    """
+    """The failing tests a run reported, sorted and de-duplicated; "" when none can be read."""
     nodes = {
         m.group("node")
         for m in (_NODE_ID_RE.match(line.strip()) for line in text.splitlines())
@@ -171,22 +118,10 @@ TEST_RUNNER_FAILURE = "the test runner's own summary reported failures"
 
 
 def judge_run(*, exit_ok: bool, output: str) -> tuple[bool, str]:
-    """Did this run reach a good end? Returns ``(completed, reason)``.
+    """``(completed, reason)`` for a run, from its exit and its merged output.
 
-    ``exit_ok`` is what the machine reported and ``output`` whatever the command printed
-    (stdout and stderr together — ``2>&1`` puts the report in whichever one the caller
-    merged into). ``reason`` is empty for a run that completed, and names what settled
-    it otherwise.
-
-    A red exit is final: it is the one judgement the machine makes in a direction that
-    can be trusted, and no report may talk it back up. The readers can only demote.
-
-    Note what this deliberately does NOT do: it never turns a green into a failure for
-    being *unattributable*. A ``pytest … | tail`` that genuinely passed reports the same
-    unattributable green as one that failed silently, and charging the repair budget for
-    the first in order to catch the second would punish every clean run written that
-    way. Not knowing is not the same as failing; what the missing attribution must block
-    is *settling*, which is :func:`exit_status_settles` below.
+    A red exit is final; the readers can only demote a green one. An unattributable green
+    is not a failure: what it may not do is settle (:func:`exit_status_settles`).
     """
     if not exit_ok:
         return False, ""
@@ -198,15 +133,5 @@ def judge_run(*, exit_ok: bool, output: str) -> tuple[bool, str]:
 
 
 def exit_status_settles(exit_is_the_run_s: bool) -> bool:
-    """May a green exit status settle this run on its own, with nobody reading it?
-
-    Only one kind of run is allowed that shortcut: a build, whose exit code *is* the
-    finding because it produced artefacts rather than results. The shortcut assumes the
-    status belongs to the thing that built, and ``make 2>&1 | tail -20`` breaks that
-    assumption silently — the status is the pager's, and the build was auto-passed
-    without anyone establishing it had succeeded.
-
-    Trivial as a function; named as one because the assumption is what matters, and this
-    is where it is written down.
-    """
+    """Whether a green exit may settle a build unread: only when the status is the build's own."""
     return exit_is_the_run_s

@@ -1,11 +1,6 @@
-"""Workflow-state guard: the anti-thrashing hard stop on a file that keeps failing.
+"""The anti-thrashing stop: a file whose validation failed ``VALIDATION_RETRY_BUDGET`` times.
 
-A reality check rather than a ritual — a file whose validation has failed
-``VALIDATION_RETRY_BUDGET`` times is one the model is patching blind, and each further
-broad edit makes the change harder to reason about, not closer to passing.
-
-The ``validate`` state blocks nothing: steering the model back toward pending
-validation is the validation nudge's job (POLICY.md → *Workflow State Machine*).
+The ``validate`` state blocks nothing (POLICY.md, "Workflow state machine").
 """
 from __future__ import annotations
 

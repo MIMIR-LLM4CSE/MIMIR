@@ -9,13 +9,7 @@ WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
 
 def pending_validation_paths(execution_context: ExecutionContext) -> list[str]:
-    """Dirty files that still owe a check, minus the ones nothing here can read.
-
-    The mandatory axis is the cheap one — does this parse, is it whole — and since it is
-    performed in-process (``guardrails.builtin_check``) it is possible everywhere, for
-    every language. What leaves this list for the ledger is now only a file the floor
-    cannot read as text at all: a binary, or bytes that are not UTF-8.
-    """
+    """Dirty files that still owe a check, except those that cannot be read as text."""
     dirty_files = set(execution_context.dirty_written_files)
     validated_files = set(execution_context.validated_files)
     unverifiable = set(execution_context.unverifiable_files or set())

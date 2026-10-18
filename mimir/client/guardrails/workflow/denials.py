@@ -6,21 +6,9 @@ from ...context.execution_context import ExecutionContext
 
 
 # ── Denial escalation ladder ──────────────────────────────────────────────────
-# A refused approval is not a failure to report and not an instruction to re-ask.
-# It carries one of three meanings, which the model must weigh in this order:
-#
-#   1. "not this way"  — the goal stands, the means is wrong: find another route.
-#   2. "that's useless" — the step itself is unnecessary: drop it, keep going, and
-#                         say it was skipped at the user's request. (Dropping a step
-#                         is never the same as getting past the approval gate.)
-#   3. "stop there"    — end the turn: report what was done, what is blocked, and
-#                         what you need from the user.
-#
-# The model chooses. These stages are the floor under that choice: they take the
-# earlier readings off the table as refusals accumulate, so a wrong first guess
-# cannot become a loop. Counting is per approval scope — the same normalised token
-# the "always" grants use — so refusing one member of a command family escalates
-# the family, while an unrelated action starts fresh.
+# A refusal means, in this order: 1. not this way (find another route), 2. that step is
+# useless (drop it and say so), 3. stop (report and hand back). The model chooses; these
+# stages take the earlier readings away as refusals of one approval scope accumulate.
 
 STAGE_RECONSIDER: str = "reconsider"      # readings 1-3 all open
 
@@ -91,14 +79,9 @@ def handback_required(execution_context: ExecutionContext) -> bool:
 
 
 def approval_is_settled(execution_context: ExecutionContext, scope: str) -> bool:
-    """True when raising an approval card for *scope* would re-ask an answered question.
+    """True when a card for *scope* would re-ask a question already answered.
 
-    The ladder tells the model what a refusal *means*; it cannot stop it re-issuing the
-    call, and each retry costs the user another card for a decision already made. From
-    the second refusal of one scope, "another route to the same goal" is off the table —
-    and the same route most certainly is one, so the gate answers instead of the user.
-    The query-wide hand-back keeps its own reach: past that point nothing sensitive is
-    worth another prompt, whatever scope it belongs to.
+    From the second refusal of one scope, and for every scope past the hand-back.
     """
     return (
         denial_scope_count(execution_context, scope) >= DENIAL_SCOPE_DROP_AFTER

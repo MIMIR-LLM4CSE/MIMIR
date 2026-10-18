@@ -31,18 +31,9 @@ _MODULE_NAME_RE = _re.compile(
 
 
 def missing_module(call: Call) -> None:
-    """Flag when a check/run failed for a missing importable module (not a code defect).
+    """Flag a failed call that reported a missing importable module; a success clears it.
 
-    Feeds the env-resolution nudge and the cascade in the system prompt: a missing
-    module is recoverable by pointing the check at a different interpreter, so it
-    must be distinguished from a real failure. Gated on a failing call so a
-    successful read of a file that merely *mentions* the text does not trip it:
-    any failing tool result whose text matches the module-not-found pattern (e.g. a
-    bash ``python``/``pytest`` that raised ``ModuleNotFoundError``).
-
-    A *successful* execution retracts the flag: it proves the environment resolved,
-    and ``_exercise_looks_feasible`` reads this set to decide whether the exercise
-    nudges may speak.
+    Feeds the env-resolution nudge: an interpreter mismatch, not a code defect.
     """
     execution_context = call.execution_context
     if call.status == "ok":
@@ -81,13 +72,7 @@ def env_probe(call: Call) -> None:
 
 
 def env_mutation(call: Call) -> None:
-    """Record a successful environment mutation as a cleanup obligation.
-
-    Capability-driven (no tool name): a successful ENV_MUTATE call (package install or
-    env creation) appends a record of what was created, which the conclude-phase
-    cleanup nudge surfaces so the agent offers to undo it. Pure bookkeeping — the undo
-    itself is a separate, user-approved action.
-    """
+    """Record a successful ``ENV_MUTATE`` call as something the cleanup nudge may offer to undo."""
     execution_context = call.execution_context
     if call.status != "ok":
         return

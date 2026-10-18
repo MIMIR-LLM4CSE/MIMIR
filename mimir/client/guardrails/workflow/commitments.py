@@ -9,17 +9,9 @@ from ...context.execution_context import ExecutionContext
 
 
 def turn_made_commitments(execution_context: ExecutionContext) -> bool:
-    """Did THIS turn commit to producing something?
+    """Did this turn commit to producing something: an edit, a declared target, a checklist?
 
-    Not ``code_mutation_started``, which says a code file was edited: a turn that writes
-    a checklist, declares eight files and ends without writing any of them committed to
-    work it did not do, and the completeness guards must see that.
-
-    Three signals, all per-query by declaration (``_NO_TRAITS`` in ``_FIELD_SPECS``), so
-    none of them can carry a previous turn's intent into this one: an edit happened, a
-    set of target files was declared, or a checklist was written. A genuine
-    discovery-only turn exhibits none and is still never nudged — that exemption now
-    falls out of the definition instead of being approximated.
+    All three are per-query fields, so no earlier turn's intent carries over.
     """
     return bool(
         execution_context.code_mutation_started
@@ -45,17 +37,7 @@ def unhonoured_commitments(execution_context: ExecutionContext) -> bool:
 
 
 def unchecked_checklist_items(execution_context: ExecutionContext) -> list[dict]:
-    """Steps still unticked on the live checklist, or [] if there is no checklist.
-
-    The single reader of checklist state outside the prompt builder, shared by the
-    completion issues below, the finalization predicate, and the unfinished-plan
-    nudge. Fails closed to ``[]`` on a missing or unreadable file so a run without a
-    checklist — the majority — keeps behaving exactly as before, rather than having
-    an obligation invented for it.
-
-    Optional steps are included; callers that must not block on them filter on
-    ``item["optional"]``.
-    """
+    """Unticked steps of the live checklist, optional ones included; [] without a checklist."""
     todo_fp = execution_context.todo_file_path
     if not todo_fp:
         return []

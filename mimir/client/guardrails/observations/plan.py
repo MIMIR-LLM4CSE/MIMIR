@@ -41,14 +41,10 @@ def todo_flags(call: Call) -> None:
 
 
 def declared_edit_set(call: Call) -> None:
-    """Record the source-file paths named in a task-checklist declaration.
+    """Replace the declared edit set with the source paths a new checklist names.
 
-    The checklist tool is the planning tool that declares a ``plan_steps`` arg-role (the
-    ordered steps); the prose-rationale tool carries no steps and is skipped.
-
-    The set is **replaced**, not added to, as the checklist tool replaces its whole
-    list of steps: a revised plan can drop a file it named before. A checklist that
-    names no file empties the set.
+    Only the checklist tool (``plan_steps`` arg-role) declares; a checklist naming no file
+    empties the set.
     """
     execution_context = call.execution_context
     if call.status != "ok":

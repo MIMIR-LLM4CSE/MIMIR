@@ -174,14 +174,7 @@ class BatchReview:
         return approved
 
     def revert(self, output_fn: Callable[[str], None] | None = None) -> list[str]:
-        """Restore all files that were snapshotted in the current batch.
-
-        Returns a list of paths that were reverted. If a snapshot has
-        ``None`` as the original (the file was newly created by the agent),
-        the file is deleted.
-
-        This is called by the ``/undo`` slash command.
-        """
+        """Restore every snapshotted file (deleting the ones the agent created); return their paths."""
         output_fn = output_fn or print
 
         if not self.snapshots:

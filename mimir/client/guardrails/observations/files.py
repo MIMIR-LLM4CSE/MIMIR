@@ -65,15 +65,7 @@ def _target_path(agent: AgentPort, tool_name: str, arguments: dict) -> str | Non
 
 
 def _clear_edit_fail_streak(execution_context: ExecutionContext, path: str) -> None:
-    """Drop *path*'s edit-failure streak and re-arm the error_recovery reminder budget.
-
-    The error_recovery nudge is capped per query so two ignored reminders don't turn
-    into per-step spam. But the cap must not mute it *forever*: once the streak that
-    earned those reminders is resolved (a successful edit or a re-read of the file)
-    and no other file is still failing, reset the counter so a later, distinct spate
-    of failures earns fresh reminders. While any file remains stuck the budget stays
-    spent, preserving the anti-spam guarantee.
-    """
+    """Drop *path*'s edit-failure streak; re-arm the error_recovery budget once no file fails."""
     streaks = execution_context.edit_fail_streak_by_file
     streaks.pop(path, None)
     if not streaks:
@@ -117,12 +109,9 @@ def record_code_edit(execution_context: ExecutionContext, edited_path: str) -> N
 
 
 def enter_post_edit_state(execution_context: ExecutionContext) -> None:
-    """Reset the idle counter and move to validate (if the declared set is done) or edit.
+    """Reset the idle counter and move to validate (declared set done) or edit.
 
-    Straight to ``conclude`` when the declared set is done and nothing owes a check:
-    every file written is one nothing here can check, so there is no validate step to
-    enter and telling the model to check them is asking for a command that does not
-    exist on this machine.
+    Straight to ``conclude`` when nothing written can be checked here.
     """
     execution_context.steps_since_last_edit = 0
     if not _should_enter_validate(execution_context):
@@ -163,13 +152,9 @@ def edit_outcome(call: Call) -> None:
     else:
         new_fail_count = 1
         execution_context.edit_loop_state[edited_path] = (current_signature, new_fail_count)
-    # Per-file streak, incremented whether or not the patch changed — this is what
-    # escalates a model trying *different* wrong anchors on the same file. The
-    # signature-based count above resets per patch and only guards identical-patch spin.
-    # The file is deliberately NOT evicted from the read sets here: a wrong anchor is not
-    # missing content, and forging "you have not read this" to provoke a re-read buys a
-    # blind reread where the failure itself already carries the current text (see
-    # server_files._anchor_retry_hint).
+    # Per-file streak, whatever the patch: what escalates different wrong anchors on one file.
+    # The file stays in the read sets: the failure already carries the current text
+    # (server_files._anchor_retry_hint).
     streak = int(execution_context.edit_fail_streak_by_file.get(edited_path, 0)) + 1
     execution_context.edit_fail_streak_by_file[edited_path] = streak
 
@@ -242,13 +227,9 @@ def read(call: Call) -> None:
 
 
 def delegated_exploration(call: Call) -> None:
-    """Credit what a sub-agent read back to the caller that sent it.
+    """Credit what a sub-agent read as discovery evidence of the caller.
 
-    These gates ask whether the model has facts about the code or is working off file
-    names. A file a child opened, and whose finding came back into this conversation,
-    is such a fact — so it is discovery evidence here. It stays out of ``read_files``,
-    which also answers "does this agent hold the lines it is about to edit": that one
-    only a read of its own can settle.
+    Not as ``read_files``: only a read of its own gives an agent the lines it edits.
     """
     execution_context = call.execution_context
     if not (has_cap(call.tool_name, DELEGATE, call.agent.tool_caps) and call.status == "ok"):

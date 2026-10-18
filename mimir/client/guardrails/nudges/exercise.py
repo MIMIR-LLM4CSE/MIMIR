@@ -1,13 +1,7 @@
-"""Whether the change was ever run, and the cheapest way to run it.
+"""Whether the change was ever run, and the cheapest way to run it: the advisory axis.
 
-The advisory axis. ``regression`` and ``unexercised`` are two phrasings of one question,
-"does anything show this works?", so they ration one budget (``EXERCISE_BUDGET``), and
-asking it is a recommendation: a build needs a toolchain and a run an environment, which
-the loop cannot conjure. Once the model has answered (a run it judged, or ``unknown``
-saying it cannot), the subject is closed for the rest of the query.
-
-No nudge asks for a *verdict* on a run: the VERDICT_DUE annotation on the run's own
-result and the judging tool's docstring ask for it where it costs nothing.
+``regression`` and ``unexercised`` share one budget (``EXERCISE_BUDGET``); once the
+model has answered, the subject is closed for the query. No nudge asks for a verdict.
 """
 from __future__ import annotations
 
@@ -69,21 +63,11 @@ def _exercise_budget_left(execution_context: ExecutionContext) -> bool:
 
 
 def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tuple[str, str]:
-    """``(route, obstacle)``: the one direct command that would exercise this change,
-    named — or ``""`` and what stood in the way.
+    """``(route, obstacle)``: the one direct command that would exercise this change, or "".
 
-    This is where "recommended when it is simply feasible" is decided, rather than
-    recited. A route is one invocation against the project as it stands, using something
-    that is actually installed; anything needing a step of its own first — configuring a
-    build, installing a package, provisioning data — is out of proportion and returns "".
-    So the model is never pushed toward a disproportionate step, and a recommendation that
-    does fire can name the command it found.
-
-    Silent, but not invisible: the obstacle is what :func:`record_exercise_obstacle` puts
-    in the ledger instead of simply omitting the advice. A pure function — it is asked from
-    a nudge predicate, and probing a predicate must change nothing. Evidence only — a build file has to have
-    been *seen* this session, because recommending `make` against a Makefile nobody has laid
-    eyes on is not obviously proportionate either.
+    A route is one invocation with something installed and a build file already seen;
+    anything needing a step of its own is out of proportion. The obstacle goes to the
+    ledger (:func:`record_exercise_obstacle`). Pure: asked from a predicate.
     """
     def _blocked(reason: str) -> tuple[str, str]:
         return "", reason
@@ -156,18 +140,10 @@ def should_nudge_regression(execution_context: ExecutionContext) -> bool:
 
 
 def should_nudge_unexercised_code(agent: AgentPort, execution_context: ExecutionContext) -> bool:
-    """Shared budget left, every written file checked, and nothing was ever run.
+    """Budget left, every written file checked, a route exists, and nothing was ever run.
 
-    Mutually exclusive with the two rows around it: ``validation`` speaks while a file
-    still owes a check, this one owns the state after — checks all green, no run at all
-    — which is exactly where a model stops believing it is finished. A checker
-    established that the file is written correctly; nothing yet bears on whether it
-    computes the right thing, and nothing will until something executes.
-
-    A recommendation, not a requirement, which is why it is bounded three ways: the
-    shared exercise budget, the feasibility gate, and the fact that "there was nothing
-    to run" is an answer the message explicitly accepts. Nothing downstream blocks on
-    it — an unexercised change concludes, and the ledger says so.
+    The state right after ``validation`` stops speaking. A recommendation, bounded by the
+    shared budget and the route; "nothing to run" is an accepted answer.
     """
     return (
         _exercise_budget_left(execution_context)

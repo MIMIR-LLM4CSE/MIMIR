@@ -73,13 +73,9 @@ class _PolicyCall:
 
 def _run_extra_checks(extra_checks: list | None, stage: str,
                       call: _PolicyCall) -> PolicyEvaluation | None:
-    """Run application-registered PolicyChecks for *stage*; return the first violation.
+    """Run the extension set's ``PolicyCheck``s for *stage*; return the first violation.
 
-    Custom checks are additive constraints layered on the built-in core — they run at
-    a fixed slot ("pre_mutation" or "pre_approval") and can only BLOCK (return a
-    violation string); returning None never relaxes a core gate. A check that raises
-    is "no opinion", so a bad pack cannot break the tool pipeline — but it is logged:
-    swallowed silently, a pack that never ran looked exactly like one that approved.
+    They can only block. A check that raises counts as no opinion, and is logged.
     """
     for pc in extra_checks or ():
         if pc.stage != stage:
@@ -163,12 +159,10 @@ def _write_gate(call: _PolicyCall) -> PolicyEvaluation | None:
 
 
 def _workspace_gate(call: _PolicyCall) -> PolicyEvaluation | None:
-    """A target outside the workspace is asked about before anything else is.
+    """Ask about targets outside the workspace first, and keep them on the call.
 
-    Its targets are kept on the call: the out-of-workspace prompt already shows this
-    call's label and arguments, so the approval card after it would be the same
-    decision asked twice. Once the gate has recorded its grants they no longer exist,
-    which is why they are computed here rather than inside the approval gate.
+    The approval card after it would ask the same decision twice; the targets are gone once
+    the grants are recorded.
     """
     call.oow_targets = out_of_workspace_targets(call.agent, call.tool_name, call.arguments)
     violation = check_out_of_workspace_access(
@@ -234,12 +228,9 @@ def evaluate_tool_preconditions(
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None = None,
 ) -> PolicyEvaluation:
-    """Run registry/state/write/approval checks and return normalized execution inputs.
+    """Run the call through :data:`_PIPELINE`; the first gate that blocks decides.
 
-    The single call-time entry point: the call goes through :data:`_PIPELINE` and the
-    first gate that blocks it decides. Application-registered :class:`PolicyCheck`s
-    of the agent's extension set run at their declared stage between the built-in gates
-    and can only add constraints.
+    Registered ``PolicyCheck``s run at their stage and can only add constraints.
     """
     extra_checks = agent.extensions.policy_checks()
     normalized_context = ensure_execution_context(execution_context)

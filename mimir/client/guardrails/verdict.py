@@ -1,43 +1,8 @@
-"""The model's verdict on what a run's output showed.
+"""The model's verdict on what a run's output showed: a claim, recorded as such.
 
-Exit 0 means a program reached its end, never that its answer is right, and no parser
-generalises across the shapes real output takes — fields, convergence tables, plots,
-logs, physical units. The only reader that can judge them is the model itself.
-
-So the division of labour is deliberate and one-way: **mimir never parses the program's
-output for a pass/fail; it records the model's own statement about that output.** That
-statement arrives as a tool call (the ``judge`` capability), not as a line in the
-assistant's prose: a structured channel keeps the bookkeeping out of what the user
-reads, and leaves nothing to a grammar the model has to remember.
-
-A verdict is about a **run**, and about nothing else. It credits no file: whether
-``solver.py`` parses and is whole is a separate question the built-in check answers on
-its own, and mixing the two is what let "the tests exited 0" be read back as "the answer is
-right". So there is no attribution to guess here — the run is the subject.
-
-What is recorded is a *claim*, never an observation, and the ledger renders it under its
-own heading for exactly that reason. A model may lower its own credit — a ``fail`` drives
-the same repair ladder a non-zero exit does — but it can never raise it past what the
-machine saw.
-
-The same asymmetry decides how far one statement reaches. ``fail`` and ``unknown``
-address every outstanding run at once, because withholding credit broadly is never the
-unsafe direction. A ``pass`` may only settle what it actually addresses: the run it names
-through ``verdict_scope``, or — unnamed — the most recent one, which is what a model
-stating a verdict right after reading an output is speaking about.
-
-``unknown`` is the one verdict that addresses a run without closing it. The run stays
-outstanding, carrying the stated verdict, because "I cannot tell" is a state somebody has
-to be told about at the end. Nothing loops on that: no reminder asks for a verdict, so an
-outstanding run is simply reported unresolved in the ledger and the turn moves on.
-
-``blocked`` is the only one that speaks about a run the machine already judged red, and it
-does not argue with that judgement — it re-imputes it. An exit code says *that* a run
-failed, never *whose* fault it was, and a wall the environment put there is not a defect in
-the change: it costs no repair budget and is reported as a limitation rather than as an
-unfinished task. The run stays as red as the machine saw it, so nothing is raised past that;
-what changes is only who is charged. And it is a retraction the model must claim: an
-unclaimed red exit drives the repair ladder exactly as before.
+MIMIR never parses a program's output for pass/fail; the judging tool records the
+model's statement about it. A verdict can lower credit, never raise it past what the
+machine saw. Scopes and each verdict's reach: POLICY.md, "Verdicts".
 """
 from __future__ import annotations
 
@@ -58,13 +23,7 @@ _NARROW_VERDICTS = ("pass", "rejected")
 
 
 def _warn_unmatched_scope(scope: str, runs: dict[str, Any]) -> None:
-    """Say that a ``fail``'s scope named nothing, and what it could have named.
-
-    The fallback stands — dropping the statement silently was the worse failure,
-    and that reasoning has not changed. What was missing is that nobody was told:
-    the model wrote a precise scope, watched it address every outstanding run
-    instead, and had no way to learn the difference.
-    """
+    """Tell the model a ``fail``'s scope matched nothing, and what it could have named."""
     keys = ", ".join(sorted(runs)[:6]) or "none"
     emit({"type": "status", "text": (
         f"  ⚠ Verdict scope '{scope}' matched no outstanding run — applied to all "
@@ -73,19 +32,9 @@ def _warn_unmatched_scope(scope: str, runs: dict[str, Any]) -> None:
 
 
 def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
-    """The outstanding runs a statement speaks for.
+    """The outstanding runs a statement speaks for: all of them, or those its scope matches.
 
-    Unscoped, that is all of them. Scoped, it is every run whose command contains the
-    named text, matched as a case-insensitive substring so the model can write the
-    command or a recognisable fragment of it and be understood.
-
-    Matched against the ledger key AND the command as typed: the key drops flags and
-    pipelines (``run_ledger_key``), so a model scoping by a fragment it can see in its
-    own transcript — a flag, a redirect — would otherwise address nothing.
-
-    A scope matching nothing outstanding returns nothing, and :func:`apply_verdict`
-    decides what that means — the choice belongs there, where the verdict's direction
-    is known.
+    Matched case-insensitively against the ledger key and the command as typed.
     """
     if not scope:
         return dict(runs)
@@ -96,15 +45,8 @@ def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
     }
     if matched:
         return matched
-    # Containment the other way round, because precision was being punished. The
-    # ledger key drops flags and pipelines, so it is usually SHORTER than anything
-    # the model would write: told `run="proxy_eval"` by VERDICT_DUE, a model that
-    # writes the more informative `proxy_eval(op='run') OMP=64` has a scope the
-    # key sits inside, not one that sits inside the key — and matched nothing. Every
-    # scope in the session that produced this matched nothing for that reason, and
-    # the fallback then decided what happened next: harmless for `pass`, which falls
-    # back to one run, and thirteen wrongly-failed runs for `fail`, which falls back
-    # to all of them. The more exactly the model named its run, the wider the damage.
+    # Either containment: the ledger key drops flags and pipes, so a precise scope
+    # (`proxy_eval(op='run') OMP=64`) contains the key rather than the reverse.
     return {
         key: run for key, run in runs.items()
         if key.lower() in needle or (
@@ -117,35 +59,11 @@ def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
 def apply_verdict(
     verdict: str, reason: str, scope: str, execution_context: ExecutionContext | None,
 ) -> list[dict[str, Any]]:
-    """Apply a stated verdict to the runs it addresses; return the ones it settled.
+    """Apply a stated verdict to the runs it addresses; return those it settled.
 
-    Each returned entry is the run's record plus its ``command``, so a caller can report
-    it — the UI badge reads ``call_id`` from there. An empty list means there was no
-    outstanding run to address at all.
-
-    - ``fail`` / ``unknown`` address every outstanding run. Withholding credit from a run
-      the statement did not mean costs nothing but a re-judgement.
-    - ``pass`` and ``rejected`` settle the run they address and no other: the one they
-      name, or — unscoped — the most recent one. The rest stay outstanding and are asked
-      about on their own.
-    - ``rejected`` additionally charges nothing. A candidate that measured correctly and
-      lost is the ordinary outcome of a search, not a defect to repair, and it is the
-      verdict that exists so ``fail`` need not be borrowed for it.
-    - ``blocked`` addresses *failed* runs instead, which is a disjoint set: a run that never
-      completed is not outstanding, it is already judged. See :func:`_apply_blocked`.
-
-    A scope naming a run nobody can find is read as no scope at all, rather than
-    discarded. Dropping it silently was the worse failure: nothing recorded, nothing
-    emitted, and a reminder asking for the statement the model had just made — which a
-    model answers by making it again, unchanged. The asymmetry survives the fallback,
-    because it is the direction that matters: ``fail``/``unknown`` fall back to every
-    run, ``pass`` to exactly one.
-
-    ``fail`` routes through :func:`register_run_failure`, the *same* ladder a non-zero
-    exit drives — retry budget, workflow transition, and the record of what was tried.
-    There is no second mechanism. ``rejected`` deliberately routes through none of it:
-    an optimisation loop rejects most of what it tries, and a ladder that fires on each
-    of those is a ladder that fires on the loop working correctly.
+    ``fail``/``unknown``: every outstanding run. ``pass``/``rejected``: the one named, else
+    the latest; ``rejected`` charges nothing. ``blocked``: failed runs. A scope matching
+    nothing falls back as if absent; ``fail`` drives ``register_run_failure``.
     """
     if execution_context is None or verdict not in VERDICTS:
         return []
@@ -176,15 +94,9 @@ def apply_verdict(
 def _apply_blocked(
     reason: str, scope: str, execution_context: ExecutionContext,
 ) -> list[dict[str, Any]]:
-    """Re-impute failed runs from the change to the environment; return the ones addressed.
+    """Re-impute failed runs to the environment, returning their repair budget.
 
-    Scoped like ``fail``: unscoped it speaks for every failed run, because a wall this box
-    put there is rarely specific to one command, and a scope naming nothing falls back to
-    all of them rather than being dropped.
-
-    Returning the repair budget is the whole effect. The run keeps ``completed=False`` — the
-    machine saw a red exit and that stands — so no caller can read this as a success; what
-    stops is only the ladder that was treating it as a defect to fix.
+    The run keeps ``completed=False``; only the ladder stops treating it as a defect.
     """
     runs = failed_runs(execution_context)
     if not runs:
@@ -200,17 +112,6 @@ def _apply_blocked(
 
 
 def _close_exercise_advice(execution_context: ExecutionContext, verdict: str) -> None:
-    """``unknown`` and ``blocked`` end the build-it/run-it recommendation for this query.
-
-    Both are accepted answers to the whole advisory question — one says the output cannot
-    be read, the other that the environment will not produce one — and asking again after
-    either is asking for a different answer to a question already answered.
-
-    The other verdicts do nothing here. There is deliberately no symmetric re-arm handing
-    the shared exercise budget back once nothing is outstanding: nothing asks for the
-    verdict itself any more (see the advisory-axis comment in nudges/exercise.py), and
-    re-arming a *run* recommendation on the strength of a verdict would only ask a model
-    that just judged its run to go and run more.
-    """
+    """``unknown`` and ``blocked`` close the build-it/run-it recommendation for this query."""
     if verdict in ("unknown", "blocked"):
         execution_context.exercise_advice_closed = True

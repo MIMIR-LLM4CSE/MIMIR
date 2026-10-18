@@ -1,29 +1,8 @@
-"""Pluggable nudges — the extension seam for application-specific guidance.
+"""Application nudges registered on top of the core cascade, toggleable by name.
 
-The built-in nudge cascade in :mod:`guardrails.nudges.cascade` (``maybe_append_nudge``:
-a verification layer that is always on, and a guidance layer gated by
-``tiers.GUIDANCE_BY_LEVEL_MODE[(enforcement, mode)]``) is the fixed *core*. This module lets an
-application register **additional** nudges on top — e.g. an "confirm this action is
-authorized" reminder for a cybersecurity deployment — without editing core code.
-
-Custom nudges run *after* their matching core layer and preserve the core invariants:
-at most one nudge fires per ``maybe_append_nudge`` call, verification before guidance,
-each injected with the automated-reminder tag and ``role:"user"`` by the cascade. Unlike policies, nudges are **toggleable** (a disabled name in
-``.mimir/preferences.json`` suppresses the rule).
-
-A pack registers a :class:`NudgeRule` at import time::
-
-    from mimir.client.extensions import NudgeRule, register_nudge
-    from mimir.client.context.capabilities import names_with_cap, SENSITIVE
-
-    register_nudge(NudgeRule(
-        name="authz_reminder",
-        layer="guidance",
-        predicate=lambda agent, query, mode, ec: bool(names_with_cap(SENSITIVE, agent.tool_caps)),
-        render=lambda agent, ec: "Before any sensitive action, confirm it is authorized.",
-    ))
-
-Reference *capabilities* (``names_with_cap``/``has_cap``), never literal tool names.
+A ``NudgeRule`` runs after the core rows of its layer, one nudge per call at most.
+Register at import time: ``register_nudge(NudgeRule(name, layer, predicate, render))``,
+reading capabilities (``has_cap``), never tool names.
 """
 
 from __future__ import annotations

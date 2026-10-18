@@ -13,19 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 def active_proxy_source(session_id: str | None = None) -> str:
-    """The source file of the currently active proxy optimization session, or "".
+    """The source file of the active proxy optimization session, or "" (best-effort).
 
-    Reads the proxy server's own store (single source of truth); an absent or
-    unreadable session yields "" so every caller abstains. Best-effort by design —
-    this informs guards and evidence, never correctness.
-
-    *session_id* names the conversation asking. The store's pointer is per MIMIR
-    session, and in this process N sessions share one environment, so a caller that
-    knows which agent it is acting for must say. A caller that does not — the two
-    evidence paths in guardrails/workflow/ and guardrails/observations/, which
-    receive only an execution_context — gets the pointer's own fallback, i.e. the
-    session on screen. Imprecise under concurrency, and bounded: those two only ever
-    raise a file's validation tier or add a reported line, never gate or block.
+    *session_id* names the asking conversation; without it the store's pointer answers,
+    which only the evidence paths use (they never gate).
     """
     try:
         from ...servers.proxy._lib import store

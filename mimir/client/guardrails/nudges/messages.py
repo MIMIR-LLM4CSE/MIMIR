@@ -135,13 +135,10 @@ def error_recovery_nudge_message(failing_path: str) -> str:
 
 
 def stuck_repair_nudge_message(streak: int) -> str:
-    """The two rungs of the stuck-repair ladder, chosen by how deep the streak is.
+    """The two rungs of the stuck-repair ladder, chosen by the streak.
 
-    One function, branching on state, rather than two table rows — the same shape
-    ``denial_nudge_message`` uses. Neither rung names a cause or proposes a fix: what
-    is being corrected is not the model's hypothesis but its refusal to leave the one
-    it has, so the copy constrains the *class* of next action and leaves the content
-    to the model, which is the only party that knows the code.
+    They constrain the class of the next action, never its content: only the model knows
+    the code.
     """
     if streak >= STUCK_REPAIR_CONSTRAIN_AFTER:
         return (
@@ -181,17 +178,9 @@ def regression_nudge_message(untested: list[tuple[str, str]]) -> str:
 
 
 def unexercised_code_nudge_message(paths: list[str], route: str = "") -> str:
-    """Everything you wrote is checked, and none of it has ever run.
+    """Everything written is checked and none of it ever ran; *route* is the command found.
 
-    Says what the checks did establish before asking for more, because a model told
-    "this is not validated" after watching its lint pass reads the loop as broken and
-    re-runs the lint. The three routes are listed because "run it" is not actionable
-    for a library, and the way out is stated in the same breath: a change with nothing
-    to run is a real answer, and this fires once.
-
-    ``route`` is the direct command the gate actually found here. Naming it is what makes
-    the ask proportionate by construction: this only fires when one exists, so it points at
-    that one rather than asking the model to go looking for any of the three.
+    Says what the checks established first, and accepts "nothing to run" as an answer.
     """
     preview = "\n".join(f"- {p}" for p in paths[:5])
     more = f"\n(+{len(paths) - 5} more)" if len(paths) > 5 else ""
@@ -465,15 +454,10 @@ PLAN_ALREADY_RECORDED_ERROR = (
 
 
 def evidence_handback_message(execution_context: ExecutionContext) -> str:
-    """Hand the model the machine-recorded state before it writes its conclusion.
+    """The machine-recorded state, handed to the model before it writes its conclusion.
 
-    The gap this closes: the completion report is assembled *after* the model has
-    written its summary and appended below it, so the model has never seen the ledger
-    it is contradicting. "Successfully implemented, complete and correct" printed above
-    "Modified files never checked" is not a rhetoric problem to police in the prose —
-    it is a missing fact at the moment the prose is written. Sent once per query; if the
-    corrected summary still contradicts the record, the report below states the record
-    and the two stand side by side.
+    The completion report comes after the summary, so without this the model never sees
+    the ledger it may contradict. Sent once per query.
     """
     issues, _ = collect_completion_issues(execution_context)
     return (
@@ -573,18 +557,10 @@ _EMPTY_TURN_ESCALATION = (
 def empty_turn_retry_message(
     execution_context: ExecutionContext | None = None, *, attempt: int = 1,
 ) -> str:
-    """What to say after a turn that produced nothing, given what the turn owes.
+    """What to say after a turn that produced nothing, given what the turn still owes.
 
-    Offering "or write the answer" is right for a turn with nothing outstanding and wrong
-    for one that has just declared eight files and written none: it hands the model the
-    exit at the moment it must not take it, and in the one recorded instance that is
-    exactly the branch it took, ending the turn on "Creating the package files now:".
-
-    A constant could not know the difference. Every other corrective in this module is
-    already a function of the state it speaks about; this one was the exception.
-
-    *attempt* is the 1-based retry number, and only widens the advice: attempt 1 is the
-    wording this function has always returned.
+    "Or write the answer" is offered only when nothing is outstanding. *attempt* (1-based)
+    widens the advice.
     """
     if execution_context is not None and unhonoured_commitments(execution_context):
         base = (
@@ -613,18 +589,10 @@ def repeat_corrective_message(tool_name: str, fails: int) -> str:
 
 
 def moving_test_corrective_message(test_path: str) -> str:
-    """One-time mid-loop reminder when a test file's failing SET keeps changing.
+    """One-time reminder when a test file's failing set keeps changing.
 
-    A failure that repeats identically is spin, and the repeated-call guard already says
-    so. A failure that *moves* between runs is a different thing: it is the signature of a
-    test whose own oracle is wrong — the expected value, the indexing, the units, the
-    direction of a ratio — being corrected one symptom at a time while the code under it
-    is fine. That is the shape recorded across four sessions of the same task, where a
-    subsampling stride, a time-step rescaling, a missing wavelet precursor and finally an
-    inverted error ratio were fixed in four separate passes, each revealing the next.
-
-    The correction is not "try harder": it is to read the test as a whole once, and to
-    say which side is wrong before touching either.
+    A failure that moves between runs is usually the test's own oracle being wrong: read
+    the test whole and say which side is wrong before touching either.
     """
     return (
         "[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
@@ -639,13 +607,7 @@ def moving_test_corrective_message(test_path: str) -> str:
 
 
 def handback_corrective_message(refusals: list[dict]) -> str:
-    """One-time mid-loop stop once refusals reached the end of the denial ladder.
-
-    Unlike the other correctives this one is not advisory framing around a retry: the
-    user has refused the same thing to the end of the ladder, and the only remaining
-    reading of that is "stop". It carries what was refused so the model reports the
-    right thing rather than guessing which of its actions is meant.
-    """
+    """Stop: refusals reached the end of the denial ladder. Lists what was refused."""
     what = ", ".join(item.get("scope") or item.get("tool", "that action") for item in refusals[:3])
     return (
         "[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"

@@ -21,12 +21,8 @@ def _plural_runs(n: int) -> str:
 
 
 # ── How the loop ended ────────────────────────────────────────────────────────
-# Computed once, where the loop exits, instead of being inferred downstream from
-# budgets. A retry budget with room left means "the loop would try again" only while
-# the loop is running; read from the completion report it became a promise nobody was
-# ever going to keep ("Checks failing (will retry)" on the last line of a finished
-# run). The report below therefore speaks only in the past tense, and this says why it
-# stopped speaking at all.
+# Recorded where the loop exits, so the report speaks in the past tense and says why it
+# stopped, instead of promising retries that will not happen.
 TERMINATION_ANSWERED: str = "answered"        # the model produced a final answer
 
 
@@ -94,13 +90,8 @@ def collect_completion_issues(
     # real one — a file unchecked, a run failing or unjudged, a step never started —
     # has its own line here.
 
-    # There is deliberately no plan-vs-implementation issue here. Reporting the files
-    # the checklist named and no write honoured looks like the same kind of fact as the
-    # lines around it, and is not: those read a checker, a run or the disk, while this
-    # one read prose the model wrote earlier and may since have thought better of. A plan
-    # revised mid-course — two files dropped because the work turned out not to need
-    # them — is indistinguishable at completion time from two files skipped, and the
-    # declared set has no way to retract. It charged the honest revision as a gap.
+    # No plan-vs-implementation issue: the declared set comes from prose the model may have
+    # revised, and a dropped file is indistinguishable from a skipped one.
 
     # The reminder budget stops asking after two tries; what it must not do is let a run
     # disappear. Every run still open at completion is named here, with what was tried.
@@ -148,13 +139,7 @@ def collect_completion_issues(
 
 
 def unjudged_run_lines(execution_context: ExecutionContext) -> list[str]:
-    """One line per run whose output was never read out, for the report.
-
-    Same standing as :func:`blocked_run_lines`: reported, never counted. A verdict says
-    what a run showed, and asking for one is a recommendation — so a missing or `unknown`
-    verdict is a gap in the record, not a defect in the change. Charging it here is what
-    taught the model to emit a label for every command it issued.
-    """
+    """One line per run whose output was never read out: reported, never counted."""
     runs = execution_context.runs or {}
     lines = [
         f"{run.get('command') or command} — ran; its output was never judged"
@@ -171,13 +156,7 @@ def unjudged_run_lines(execution_context: ExecutionContext) -> list[str]:
 def unmeasured_proxy_source_lines(execution_context: ExecutionContext) -> list[str]:
     """One line when an optimisation session's source was edited and never measured.
 
-    In an optimisation session the objective *is* a number, so a check that proves the
-    file parses establishes nothing about the change — and `ruff` on the proxy source is
-    otherwise enough to clear the check axis. This says so.
-
-    Reported, never counted, for the reason POLICY gives for every run: a cluster, a
-    queue or a dataset may simply not be there, and a gate that cannot be satisfied is
-    an impasse rather than a guarantee. What an unmeasured change owes is a statement.
+    Reported, never counted: a cluster or a dataset may not be there.
     """
 
     source = active_proxy_source()
@@ -245,15 +224,9 @@ _STATUS_BY_HEADLINE: dict[str, str] = {
 _INCOMPLETE_STATUSES: frozenset[str] = frozenset({"incomplete", "handback"})
 
 
-# Marker contract with the front-ends, deliberately the same shape as the verification
-# ledger's (see query_engine/verification.py): an HTML comment carrying the header
-# fields, then a markdown body. The front-end lifts the block off the answer and shows
-# it as a collapsed disclosure — headline and risk visible, the detail one click away.
-#
-# The marker is what makes that possible: concatenated ahead of the answer as bare prose,
-# the report has nothing to lift it by, so every front-end renders the whole of it as body
-# text with the model's own words underneath — which is what makes an ordinary interim turn
-# read as a wall of machine output. Nothing is dropped here, only folded.
+# Marker contract with the front-ends, shaped like the verification ledger's
+# (query_engine/verification.py): an HTML comment with the header fields, then markdown.
+# The front-end folds the block into a collapsed disclosure.
 COMPLETION_MARKER: str = "<!--mimir:completion"
 
 
@@ -313,14 +286,7 @@ def parse_completion_block(block: str) -> dict:
 
 
 def is_incomplete_answer(answer: str) -> bool:
-    """True when a finalized answer reports the task as unfinished.
-
-    The consumers (the CLI's re-plan offer, the sub-agent's ``completed`` flag) matched
-    the headline as a literal prefix, which only worked while the report was the head of
-    the answer. It is now a marked block at the tail, so they read the status the marker
-    states — a run that only skipped what the user refused *is* finished, and must not be
-    reported as a failure.
-    """
+    """True when a finalized answer's status marker reports the task unfinished."""
     _, block = split_answer_completion(answer)
     if block is None:
         return False
@@ -373,14 +339,8 @@ def finalize_incomplete_answer(
     # Only treat unvalidated source-code files as high-risk; unvalidated non-code
     # files (e.g. .md, .txt) that never go through a code validator are low-risk.
     _pending_code = [p for p in pending if any(p.endswith(ext) for ext in SOURCE_FILE_EXTENSIONS)]
-    # A refusal the run stopped on stays high risk — work was cut short. A refusal the
-    # run absorbed and continued past is a known, named gap: medium, never "low".
-    #
-    # A run left red is one too, so the level agrees with the issue the ledger prints.
-    # `failed_runs` excludes blocked runs: a missing toolchain is a limitation, not a
-    # defect of the change.
-    # Runs merely unjudged are deliberately NOT charged here: a verdict is a
-    # recommendation, and charging its absence is the trade POLICY already refused.
+    # A refusal the run stopped on is high risk; one it continued past, and a run left red
+    # (blocked runs excluded), are medium. Unjudged runs are not charged.
     _failed_runs = failed_runs(execution_context)
     # An optimisation source that was checked but never measured is a named gap, not a
     # defect: medium, never "low".

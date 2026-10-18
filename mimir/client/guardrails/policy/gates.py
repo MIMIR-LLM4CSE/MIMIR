@@ -88,60 +88,20 @@ def _is_under(root: str, full: str) -> bool:
 
 
 def _trusted_read_roots() -> list[str]:
-    """Client mirror of the servers' silent read roots (item 1): proxy/HPC caches
-    and the central state dir. Reads of these never prompt. Shares its source of
-    truth with the servers via ``servers._shared.trusted_read_roots`` so the two
-    lists can't drift.
+    """Roots read without prompting: the servers' trusted roots plus ``paths.STATE_DIR``.
 
-    ``paths.STATE_DIR`` is appended explicitly because the shared helper resolves it from
-    ``MIMIR_STATE_DIR``, and that variable is only ever placed in the *server*
-    subprocesses' env (server_manager) — the client process itself does not carry
-    it. Without this the agent could not read back its own plans/sessions without a
-    prompt, while the servers, which do see the variable, would have allowed it.
+    The client process has no ``MIMIR_STATE_DIR``, so the state dir is added here.
     """
     return [os.path.realpath(os.path.abspath(r))
             for r in (*trusted_read_roots(), paths.STATE_DIR)]
 
 
 def _shell_path_targets(agent: AgentPort, tool_name: str, arguments: dict, base: str) -> list[str]:
-    """Every filesystem path a shell call's arguments name, as abspaths.
+    """Every filesystem path a shell call names, as abspaths: operands, redirections, ``cd``.
 
-    A shell command carries its paths inside a string, so the ordinary file-target
-    extractor cannot see them: without this, ``cat /etc/passwd`` was refused by the
-    server with no prompt ever shown, which left the user unable to grant an access
-    they might well have wanted. Walking the segments here routes every such path
-    through the ordinary out-of-workspace prompt — approve it and the grant reaches
-    the server's sandbox guard through the shared sidecar, so the command runs.
-
-    A ``cd`` is included for a subtler reason: it is side-effect-free in itself, but
-    stepping outside the workspace changes what every later relative path in the
-    chain resolves to. So the destination is threaded through the walk (chained
-    ``cd``s accumulate) and surfaced as a target of its own. A ``cd`` that stays
-    inside the workspace yields nothing — the approval for such a chain is decided
-    by the command that follows it, as for any other call.
-
-    A redirection target counts as one of those paths: ``./solver.out > run.log``
-    creates a file exactly as a ``-o`` flag would, and the server confines it the
-    same way, so the user must be asked about it on the same terms.
-
-    Operand extraction is ``shell_paths.segment_path_operands``, the routine the
-    server's guard walks to decide what to *confine*, so what the user is asked
-    about is exactly what would otherwise be refused. Scoped to tools that declare a
-    ``command_prefix`` scope — the property this actually needs, since it reads the
-    arguments *as shell*. CODE_EXEC would be the wrong test: it also marks tools that
-    execute through structured arguments (``proxy_exec``), whose parameters
-    are not a command line. Driven off the shared segmenter, so no tool name or shell
-    keyword is spelled out here.
-
-    **Segmentation is the server's own** :func:`shell_paths.parse_segments`, not the
-    policy layer's :func:`bash_classify.shell_segments`. The two do not refuse the same
-    commands: the policy layer adds a conservatism of its own, because a *kind* it
-    cannot read must not be auto-approved. Extraction cannot inherit that. A command
-    the policy layer calls opaque and the server parses would yield no targets here, so
-    no prompt would be raised — and the server, which confines it against its own parse,
-    refuses it with no grant the user could have given. Sharing the server's parser is
-    what makes "asked about" and "confined" the same set of paths. A command
-    ``parse_segments`` itself refuses never reaches a shell, so it needs no prompt.
+    Segmented by the server's own ``parse_segments`` and ``segment_path_operands``, so what
+    the user is asked about is exactly what the server would confine. Scoped to tools with
+    a ``command_prefix`` scope.
     """
     if shell_command_args(tool_name, agent.tool_caps) is None:
         return []
@@ -200,11 +160,8 @@ def _call_base(agent: AgentPort, tool_name: str, arguments: dict) -> tuple[str, 
 def out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict) -> list[str]:
     """Absolute target paths of this call outside the workspace and not yet approved.
 
-    Sources: the existing file/edit-target extractor (covers file & batch args), any
-    declared ``cwd`` arg-role, and every path named inside a shell command — file
-    operands and ``cd`` destinations alike (see :func:`_shell_path_targets`), which
-    the file-target extractor cannot see because they live inside a string. Reads of
-    the trusted roots (item 1) and already-approved paths are excluded.
+    File targets, a declared ``cwd``, and the paths inside a shell command; trusted read
+    roots excluded.
     """
     root, call_base = _call_base(agent, tool_name, arguments)
 
@@ -262,20 +219,10 @@ def check_out_of_workspace_access(
     agent: AgentPort, tool_name: str, arguments: dict, execution_context: ExecutionContext | None,
     targets: list[str] | None = None,
 ) -> str | None:
-    """Prompt the user before a tool touches paths outside the workspace.
+    """Ask the user once about every outside path of this call; deny when no one can answer.
 
-    Reuses the existing approval UI (allow / deny / always-for-these-paths, via the
-    agent's ``request_path_approval`` hook). Runs before the sensitive/preview gate
-    so a previewable write cannot bypass it. Fail-closed: with no hook wired,
-    out-of-workspace access is denied. Returns a violation payload or ``None``.
-
-    **All the call's paths are asked about once.** The user judges the command (``cd
-    /data && python /opt/x.py > /var/log/y.log``), not each of its operands, so the
-    hook takes the whole list and returns one answer, and ``always`` covers every path.
-
-    *targets* lets the caller pass the list it already computed with
-    :func:`out_of_workspace_targets` — the engine needs to know whether this call
-    prompts at all, and re-deriving it after the grants land would come back empty.
+    *targets* is the list already computed by :func:`out_of_workspace_targets`. Returns a
+    violation payload or ``None``.
     """
     if targets is None:
         targets = out_of_workspace_targets(agent, tool_name, arguments)
@@ -311,31 +258,10 @@ def check_cluster_submit(
     agent: AgentPort, tool_name: str, execution_context: ExecutionContext | None,
     arguments: dict[str, Any] | None = None,
 ) -> str | None:
-    """Hold an expensive cluster submission until something has been validated locally.
+    """Hold a ``CLUSTER_SUBMIT`` call until something has been validated locally.
 
-    Verification-tier guard (always on, never enforcement-tiered): a CLUSTER_SUBMIT
-    tool (Slurm allocation / batch run) consumes real cluster hours, so the call
-    requires some local-validation evidence (``validated_files`` — a file that passed a
-    check) before it may run.
-
-    **The hold is not one-shot.** Setting a flag and letting the next retry through would
-    make it a reminder rather than a guard: against a model that simply calls again — the
-    normal reaction to an error — it costs one round trip and constrains nothing, on the
-    single most expensive action in the system. The condition is a fact about the session
-    (was anything validated?), not a nagging budget, so it holds until that fact changes.
-    The error names exactly what would clear it, so this is a precondition with a stated
-    exit, not a wall.
-
-    **A session that wrote nothing is exempt**, and that is what keeps the exit
-    reachable. ``validated_files`` is credited only by a checker run against a file the
-    model edited, so a run whose whole job is to launch something that already exists
-    ("resubmit this job on 64 nodes") can never satisfy the condition however long it
-    tries — the hold would be permanent, with the stated exit unreachable. Nothing was
-    changed, so there is nothing that ought to have been checked; the user's own
-    approval prompt, which these irreversible tools always raise, is the protection
-    that applies there.
-
-    Returns a structured violation payload, or ``None`` when the call is allowed.
+    Not one-shot: it holds until a file passes a check. A session that wrote nothing is
+    exempt. Returns a violation payload or ``None`` (POLICY.md, "Cluster-submission guard").
     """
     if execution_context is None:
         return None
@@ -363,23 +289,14 @@ def check_cluster_submit(
 
 
 # ── proxy direct-execution guard ──────────────────────────────────────────────
-#
-# In a proxy optimization session the model may only improve the proxy by editing its
-# source and going through ``proxy_eval(op='run')``. A direct ``python proxy.py`` skips
-# reference sealing, the numerical invariants and the ratchet, letting a hand-run be
-# reported as a win. Scoped to shell-command tools; blocks only calls that *execute* the
-# proxy (command position), never read-only inspection of its source. Locked and
-# non-tiered — a correctness boundary, not guidance. Fail-open on internal error.
+# In an optimization session the proxy improves through ``proxy_eval(op='run')`` only;
+# a direct run skips sealing, the invariants and the ratchet.
 
 def _executed_programs(command: str, base: str) -> set[str]:
     """Real paths of the programs a shell command (or a bare path) would execute.
 
-    A relative program resolves against *base*, the directory the call runs in, so
-    ``python proxy.py`` and ``python /abs/proxy.py`` name the same file. (Matched on
-    basenames instead, any ``main.py`` anywhere was blocked as the proxy whenever the
-    proxy happened to be called ``main.py``.) Segmented by the parser the bash server
-    validates with, so a command it refuses outright yields the empty set: it never
-    reaches a shell to run anything.
+    Relative programs resolve against *base*; a command the server's parser refuses yields
+    the empty set.
     """
     if not isinstance(command, str) or not command.strip():
         return set()
@@ -392,16 +309,7 @@ def _executed_programs(command: str, base: str) -> set[str]:
     return progs
 
 def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
-    """Real paths that count as "executing the proxy under optimization".
-
-    Reads the proxy server's own store for the optimization session *this* conversation
-    is driving; returns an empty set when none is initialized so the guard abstains.
-    Best-effort — any failure yields the empty set.
-
-    This one does gate, so the session matters: without it the guard would read another
-    conversation's active proxy and either block a program that is none of this
-    conversation's business, or wave through this conversation's own.
-    """
+    """Real paths of the proxy under optimization in this conversation's session, or empty."""
     # Imported here, as in ``proxy_state``: the proxy server's library is heavy, and
     # only a conversation running an optimisation ever needs it.
     from ....servers.proxy._lib import store
@@ -429,23 +337,10 @@ def check_proxy_exec(
     agent: AgentPort, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:
-    """Block direct execution of a proxy that is under optimization.
+    """Block direct execution of a proxy under optimization (fail-open).
 
-    Fast-path abstains for any tool that does not carry a shell command (no command
-    line to read). Otherwise, if an optimization session is initialized, blocks the call
-    only when one of its string arguments *executes* the proxy source/executable (in
-    command position). Read-only inspection of the source (``cat``/``grep``) never
-    matches. Fail-open.
-
-    Scoped on the ``command_prefix`` scope rather than CODE_EXEC: the sanctioned route
-    ``proxy_exec`` declares CODE_EXEC too, and its ``proxy_name`` argument is a bare
-    name that :func:`segment_program` would read as a program — matching the basenames
-    in :func:`_proxy_exec_targets` and blocking the very tool this guard exists to steer
-    the model towards.
-
-    Note: this covers a bash ``python proxy.py`` / ``./proxy``. Executing the proxy
-    by pasting its body inline into a fresh script is a narrower, documented residual
-    gap; the reserved-metrics guard still prevents forging an accepted result there.
+    Only for tools with a ``command_prefix`` scope, and only a program in command position;
+    reading the source never matches (POLICY.md, "Proxy direct-execution guard").
     """
     if shell_command_args(tool_name, agent.tool_caps) is None:
         return None
@@ -481,18 +376,10 @@ def check_skill_pull(
     agent: AgentPort, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:
-    """Refuse a skill pull the operator, the skill itself, or the budget rules out.
+    """Refuse a skill pull the toggles, the skill itself, or the budget rules out.
 
-    The server that serves ``load_skill`` is a subprocess: it can read a SKILL.md's own
-    front-matter, but not the toggle panel's live state, nor what this conversation has
-    already loaded. Those three answers are therefore given here, before dispatch —
-    where a refusal costs one line instead of the thousands of tokens the body would.
-
-    Reserves on the way through: a step can issue two pulls at once, and two gates
-    reading the same count would both pass a cap with one slot left. Writing
-    ``"pending"`` is what makes the cap exact; the dispatcher then promotes it to the
-    result's call id or releases it (see ``_pin_loaded_skill``). A reservation only ever
-    narrows what is allowed, which is the contract this layer holds to.
+    Reserves the slot (``"pending"``) on the way, so two pulls in one step cannot both pass
+    the cap; the dispatcher promotes or releases it.
     """
     if tool_name != SKILL_LOAD_TOOL:
         return None

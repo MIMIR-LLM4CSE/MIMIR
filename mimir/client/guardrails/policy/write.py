@@ -1,12 +1,7 @@
-"""Write-policy gate: preconditions that BLOCK a file mutation.
+"""Write-policy gate: preconditions that block a file mutation.
 
-The hard write guard (read-before-overwrite, delete evidence, anti-thrashing). What
-it reads is written by ``guardrails/observations/``.
-
-Every rule here guards against a *loss* — an unread file overwritten, a file deleted
-on a guess, a patch retried into the ground. A rule that only enforces a preferred
-working order does not belong in this module: it blocks reversible work, and being a
-hard guard it would sit outside the enforcement dial that exists to tune exactly that.
+Each rule guards against a loss (an unread overwrite, a guessed deletion, a patch
+retried into the ground); a preferred working order belongs to the nudges.
 """
 from __future__ import annotations
 

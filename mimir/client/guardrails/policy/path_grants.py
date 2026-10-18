@@ -25,13 +25,7 @@ class PathGrants:
         self.always: set[str] = set()
 
     def covers(self, abspath: str) -> bool:
-        """True if an 'always' grant this session covers *abspath*.
-
-        Containment, not equality: the sidecar the servers read admits a granted path
-        as a *root* (``resolve_path_in_root``'s ``extra_roots``), so once a directory is
-        approved the server already allows everything under it and a prompt for a
-        child could no longer deny anything.
-        """
+        """True if an "always" grant of this session contains *abspath* (servers treat grants as roots)."""
         real = _real(abspath)
         return any(real == granted or real.startswith(granted + os.sep)
                    for granted in self.always)
@@ -59,17 +53,10 @@ class PathGrants:
         self._flush()
 
     def sidecar_file(self) -> str:
-        """This session's allowlist sidecar — the path the servers read per call.
+        """This session's allowlist sidecar: ``<STATE_DIR>/sessions/<sid>/approved_paths.json``.
 
-        ``<STATE_DIR>/sessions/<sid>/approved_paths.json`` — from ``session_id``, not from
-        the active-session pointer: the pointer names the conversation on screen, and the
-        grant belongs to the conversation that was asked for it.
-
-        A ``session_id`` of None means this agent has no session of its own, and the path
-        resolves the way the single-session ends resolve it — through the pointer, falling
-        back to the state-dir root when nothing wrote one (the CLI, the benchmark runner,
-        tests). Passing None through rather than coercing it to "" is what keeps the writer
-        and the servers' reader naming the same file.
+        From ``session_id``: the grant belongs to the conversation that asked. None resolves
+        through the active-session pointer, as the single-session ends do.
         """
         return os.path.join(session_state_dir(paths.STATE_DIR, self.session_id),
                             "approved_paths.json")

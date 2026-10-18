@@ -19,11 +19,9 @@ BUILD_EXIT_IS_THE_VERDICT = "the build exited 0; a build reports diagnostics, no
 def mark_file_validated(
     execution_context: ExecutionContext, target: str, tier: str = "static",
 ) -> None:
-    """Credit *target* as checked; conclude when nothing else is pending.
+    """Credit *target* as checked by a checker; conclude when nothing else is pending.
 
-    Only a checker reaches here (``py_compile``, ``ruff``, a compiler): its output is a
-    list of problems, so exit 0 means none. Running the code is recorded on the run
-    instead (``record_run_outcome``). *tier* (see ``VALIDATION_TIERS``) is read only by
+    Running code is recorded on the run instead (``record_run_outcome``). *tier* feeds only
     the completion ledger.
     """
     execution_context.validation_fail_count_by_file.pop(target, None)
@@ -61,14 +59,10 @@ def record_run_outcome(
     call_id: str = "", reason: str = "", effect: str = EFFECT_RUN,
     missing_head: str = "", exit_settles: bool = True,
 ) -> None:
-    """Record a run; a run that did not complete is charged to the ladder.
+    """Record a run; one that did not complete is charged to the ladder.
 
-    A green run owes a verdict on what it printed. A green **build** does not: like a
-    compiler it reports diagnostics, so it is settled here, provided *exit_settles*
-    says the exit status is the build's own (not a pipe's last stage).
-
-    *missing_head* names a command that is not installed: the run is blocked by the
-    environment, so it charges nothing.
+    A green build is settled here when *exit_settles* (its exit status is its own). A
+    *missing_head* (not installed) blocks the run on the environment and charges nothing.
     """
     run = record_run(execution_context, command, completed=completed, call_id=call_id, effect=effect)
     if completed and effect == EFFECT_BUILD and exit_settles:
