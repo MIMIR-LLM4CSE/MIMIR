@@ -13,7 +13,6 @@ from ..workflow import (
     unhonoured_commitments,
     worst_denial_stage,
     STAGE_DROP_OR_STOP,
-    STAGE_HANDBACK,
 )
 from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER, VALIDATION_RETRY_BUDGET
 from ...context.execution_context import ExecutionContext
@@ -41,13 +40,6 @@ _DENIAL_DROP_OR_STOP: str = (
     "is blocked."
 )
 
-_DENIAL_HANDBACK: str = (
-    "That action has been refused repeatedly and you will not be asked to approve it again. Stop "
-    "here. Make no further tool calls toward it: end your turn with what you completed, what the "
-    "refusal leaves undone, and what you need from the user to go further."
-)
-
-
 def _validation_nudge_message(findings: dict[str, str]) -> str:
     """Report what the built-in check found, file by file.
 
@@ -69,8 +61,6 @@ def _validation_nudge_message(findings: dict[str, str]) -> str:
 def denial_nudge_message(context: ExecutionContext) -> str:
     stage = worst_denial_stage(context)
 
-    if stage == STAGE_HANDBACK:
-        return _DENIAL_HANDBACK
     if stage == STAGE_DROP_OR_STOP:
         return _DENIAL_DROP_OR_STOP
 

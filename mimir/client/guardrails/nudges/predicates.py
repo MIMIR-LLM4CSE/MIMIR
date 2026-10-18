@@ -182,12 +182,12 @@ def should_nudge_validation(execution_context: ExecutionContext) -> bool:
 def should_nudge_denial(execution_context: ExecutionContext) -> bool:
     """Blocking denials exist, budget left, and not already in the exhausted dead end.
 
-    The hand-back message escapes the cap and the dead end, but still needs an open denial.
+    Never at the hand-back stage: the ``handback`` corrective said it during the loop, and
+    a final answer is the stop it asked for.
     """
-    if handback_required(execution_context) and has_blocking_denials(execution_context):
-        return True
     return (
-        has_blocking_denials(execution_context)
+        not handback_required(execution_context)
+        and has_blocking_denials(execution_context)
         and nudge_count(execution_context, "denial") < NUDGE_MAX_DENIAL
         and not _all_pending_budget_exhausted(execution_context)
     )

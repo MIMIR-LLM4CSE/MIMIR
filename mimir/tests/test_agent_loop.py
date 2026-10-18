@@ -202,6 +202,18 @@ class PostDispatchInjectTests(unittest.TestCase):
         self.assertIn("kernel.cu", messages[0]["content"])
         self.assertIn("task checklist", messages[0]["content"])
 
+    def test_the_end_of_the_denial_ladder_is_said_once(self) -> None:
+        ec = build_execution_context(
+            denied_tool_calls=[{"tool": "bash_run", "scope": "bash:bash_run:pip install"}],
+            denial_history=[{"tool": "bash_run", "scope": "bash:bash_run:pip install",
+                             "kind": "denied"}] * 3)
+        first: list[dict] = []
+        asyncio.run(dispatch_module.post_dispatch_inject(fake_agent(), first, ec))
+        second: list[dict] = []
+        asyncio.run(dispatch_module.post_dispatch_inject(fake_agent(), second, ec))
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+
     def test_no_reminder_without_written_todo(self) -> None:
         messages: list[dict] = []
         ec = build_execution_context(last_edit_success_path="src/kernel.cu", todo_written=False, todo_file_path="/tmp/todo.md")

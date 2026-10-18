@@ -560,38 +560,15 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(len(execution_context.denials.denial_history), 2)
         self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
 
-    def test_handback_nudge_fires_past_its_frequency_cap(self) -> None:
-        # The other denial messages ask the model to act, so they are rationed. This
-        # one tells it to stop — a reminder to stop that is itself suppressed leaves
-        # the model going.
-        import importlib
-        from mimir.client.config.limits import NUDGE_MAX_DENIAL
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
-
-        execution_context = build_execution_context(workflow_state="edit", denied_tool_calls=[{"tool": "bash_run", "scope": "bash:bash_run:pip install"}], denial_history=[
-                {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"}
-            ] * 3, dirty_written_files=set(), validated_files=set(), nudge_counts={"denial": NUDGE_MAX_DENIAL})
-        messages: list = []
-
-        class _FakeAgent(FakeAgent):
-            def __init__(self, *args, **kwargs) -> None:
-                super().__init__()
-                super().__init__(*args, **kwargs)
-                self.turn = TurnState()
-
-            model = "big-model"
-            enforcement = "off"
-
-        fired = nudge_logic.maybe_append_nudge(
-            agent=_FakeAgent(),
-            query="please add the new feature",
-            active_mode="agent",
-            execution_context=execution_context,
-            messages=messages,
-        )
-        self.assertTrue(fired)
-        self.assertIn("Stop here", messages[-1]["content"])
-        self.assertNotIn("reach it another way", messages[-1]["content"])
+    def test_a_final_answer_at_the_handback_stage_is_not_sent_back(self) -> None:
+        # The handback corrective said "stop" during the loop; an answer is that stop.
+        from mimir.client.guardrails.nudges.predicates import should_nudge_denial
+        execution_context = build_execution_context(
+            workflow_state="edit",
+            denied_tool_calls=[{"tool": "bash_run", "scope": "bash:bash_run:pip install"}],
+            denial_history=[{"tool": "bash_run", "scope": "bash:bash_run:pip install",
+                             "kind": "denied"}] * 3)
+        self.assertFalse(should_nudge_denial(execution_context))
 
     def test_state_machine_allows_code_edit_without_prior_read_in_edit_state(self) -> None:
         agent = client_module.MimirAgent()
