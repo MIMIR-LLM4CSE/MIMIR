@@ -14,7 +14,8 @@ from mimir.client.config.limits import (
     VALIDATION_RETRY_BUDGET,
 )
 from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
-from mimir.client.context.execution_context import build_execution_context, record_run
+from mimir.client.context.execution_context import record_run
+from mimir.tests.support.context import build_execution_context
 from mimir.client.event_sink import reset_event_sink, set_event_sink
 from mimir.client.guardrails.nudges import maybe_append_nudge, nudge_pending
 from mimir.client.guardrails.nudges.cascade import CORE_NUDGES
@@ -32,8 +33,8 @@ from mimir.tests.support.agents import fake_agent
 def _ctx(command="pytest -q solver.py", failures=0, fired=0):
     """A context whose one command has already failed `failures` times."""
     ec = build_execution_context()
-    ec.dirty_written_files = {"solver.py"}
-    ec.code_mutation_started = True
+    ec.edits.dirty_written_files = {"solver.py"}
+    ec.edits.code_mutation_started = True
     for _ in range(max(failures, 1)):
         record_run(ec, command, completed=False)
         if failures:
@@ -41,10 +42,10 @@ def _ctx(command="pytest -q solver.py", failures=0, fired=0):
     if not failures:
         # Runs are keyed by identity, not by the text typed (run_ledger_key).
         key = run_ledger_key(command)
-        ec.runs[key]["failures"] = 0
-        ec.runs[key]["completed"] = True
-        ec.runs[key]["verdict"] = "pass"
-    ec.nudge_counts["stuck_repair"] = fired
+        ec.execution.runs[key]["failures"] = 0
+        ec.execution.runs[key]["completed"] = True
+        ec.execution.runs[key]["verdict"] = "pass"
+    ec.nudges.nudge_counts["stuck_repair"] = fired
     return ec
 
 
@@ -56,7 +57,7 @@ class StreakTests(unittest.TestCase):
         # Two unrelated commands failing once each is ordinary early red, not a model
         # going round in circles. Summing them would fire on the honest case.
         ec = build_execution_context()
-        ec.code_mutation_started = True
+        ec.edits.code_mutation_started = True
         for cmd in ("make", "pytest -q"):
             record_run(ec, cmd, completed=False)
             register_run_failure(ec, cmd, "nope")
@@ -71,8 +72,8 @@ class StreakTests(unittest.TestCase):
     def test_a_settled_run_leaves_the_streak(self) -> None:
         # A pass drops the run out of failed_runs, so the ladder disarms on its own.
         ec = _ctx(failures=4)
-        ec.runs["pytest solver.py"]["completed"] = True
-        ec.runs["pytest solver.py"]["verdict"] = "pass"
+        ec.execution.runs["pytest solver.py"]["completed"] = True
+        ec.execution.runs["pytest solver.py"]["verdict"] = "pass"
         self.assertEqual(worst_run_failure_streak(ec), 0)
         self.assertFalse(should_nudge_stuck_repair(ec))
 
@@ -80,7 +81,7 @@ class StreakTests(unittest.TestCase):
         # The environment putting up a wall is not the model repeating itself, and
         # failed_runs already excludes it.
         ec = _ctx(failures=4)
-        ec.runs["pytest solver.py"]["blocked"] = "pytest not installed"
+        ec.execution.runs["pytest solver.py"]["blocked"] = "pytest not installed"
         self.assertEqual(worst_run_failure_streak(ec), 0)
 
 
@@ -185,8 +186,8 @@ class FiringPathTests(unittest.TestCase):
 
     def _fire(self, ec):
         """The category of the one nudge this call injects, plus the text."""
-        ec.read_files.add("solver.py")
-        ec.searched = True
+        ec.discovery.read_files.add("solver.py")
+        ec.discovery.searched = True
         events: list[dict] = []
         messages: list[dict] = []
         token = set_event_sink(events.append)
@@ -216,16 +217,16 @@ class FiringPathTests(unittest.TestCase):
     def test_firing_charges_its_own_counter(self) -> None:
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
         self._fire(ec)
-        self.assertEqual(ec.nudge_counts.get("stuck_repair"), 1)
-        self.assertEqual(ec.nudge_counts.get("exercise", 0), 0)
+        self.assertEqual(ec.nudges.nudge_counts.get("stuck_repair"), 1)
+        self.assertEqual(ec.nudges.nudge_counts.get("exercise", 0), 0)
 
     def test_the_probe_agrees_with_the_injection(self) -> None:
         # `nudge_pending` runs before the model call so the loop can hold streaming
         # prose; if the two walks disagreed the answer would be dropped for a reminder
         # that never came.
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
-        ec.read_files = {"solver.py"}
-        ec.searched = True
+        ec.discovery.read_files = {"solver.py"}
+        ec.discovery.searched = True
         self.assertTrue(nudge_pending(agent=self._agent(), query="fix the solver",
                                       active_mode="agent", execution_context=ec))
 
@@ -233,15 +234,15 @@ class FiringPathTests(unittest.TestCase):
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
         nudge_pending(agent=self._agent(), query="fix the solver",
                       active_mode="agent", execution_context=ec)
-        self.assertEqual(ec.nudge_counts.get("stuck_repair", 0), 0)
+        self.assertEqual(ec.nudges.nudge_counts.get("stuck_repair", 0), 0)
 
     def test_it_survives_enforcement_off(self) -> None:
         # A verification row by construction: guidance is gated off, this is not.
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
         agent = self._agent()
         agent.enforcement = "off"
-        ec.read_files = {"solver.py"}
-        ec.searched = True
+        ec.discovery.read_files = {"solver.py"}
+        ec.discovery.searched = True
         self.assertTrue(nudge_pending(agent=agent, query="fix the solver",
                                       active_mode="agent", execution_context=ec))
 
@@ -254,8 +255,9 @@ class TheLadderIsReachableThroughAStatusLineTests(unittest.TestCase):
 
     def test_the_failure_streak_accumulates_across_the_status_line(self) -> None:
         from mimir.client.context.execution_context import (
-            build_execution_context, record_run,
+            record_run,
         )
+        from mimir.tests.support.context import build_execution_context
         from mimir.client.guardrails.ladder import register_run_failure
         base = "python3 tests/test_wave2d.py"
         forms = [base, base + '; echo "suite_exit=$?"', "cd sub && " + base]
@@ -263,8 +265,8 @@ class TheLadderIsReachableThroughAStatusLineTests(unittest.TestCase):
         for cmd in forms:
             record_run(ec, cmd, completed=False)
             register_run_failure(ec, cmd, "red")
-        self.assertEqual(len(ec.runs), 1)
-        self.assertEqual(ec.runs[base]["failures"], len(forms))
+        self.assertEqual(len(ec.execution.runs), 1)
+        self.assertEqual(ec.execution.runs[base]["failures"], len(forms))
 
 
 if __name__ == "__main__":

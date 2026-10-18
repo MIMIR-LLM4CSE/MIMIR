@@ -9,7 +9,7 @@ import unittest
 
 import mimir.client.guardrails.observations as runtime
 from mimir.client.context import capabilities as caps
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 from mimir.client.guardrails.nudges import maybe_append_nudge, maybe_inject_env_resolution
 from mimir.tests.support.golden_caps import build_declared_registry
 from mimir.client.guardrails.observations import Call  # noqa: E402
@@ -43,7 +43,7 @@ class MissingModuleObserverTests(unittest.TestCase):
             agent=_agent(), tool_name="code_run", payload=payload, status="error",
             execution_context=ctx,
         ))
-        self.assertIn("scipy", ctx.unresolved_modules)
+        self.assertIn("scipy", ctx.env.unresolved_modules)
 
     def test_module_not_found_in_failing_run_flags_unresolved(self) -> None:
         ctx = build_execution_context()
@@ -52,7 +52,7 @@ class MissingModuleObserverTests(unittest.TestCase):
             agent=_agent(), tool_name="code_run", payload=payload, status="error",
             execution_context=ctx,
         ))
-        self.assertIn("numpy", ctx.unresolved_modules)
+        self.assertIn("numpy", ctx.env.unresolved_modules)
 
     def test_success_never_flags(self) -> None:
         ctx = build_execution_context()
@@ -61,7 +61,7 @@ class MissingModuleObserverTests(unittest.TestCase):
             agent=_agent(), tool_name="code_run", payload=payload, status="ok",
             execution_context=ctx,
         ))
-        self.assertFalse(ctx.unresolved_modules)
+        self.assertFalse(ctx.env.unresolved_modules)
 
     def test_unrelated_failure_does_not_flag(self) -> None:
         ctx = build_execution_context()
@@ -70,7 +70,7 @@ class MissingModuleObserverTests(unittest.TestCase):
             agent=_agent(), tool_name="code_run", payload=payload, status="error",
             execution_context=ctx,
         ))
-        self.assertFalse(ctx.unresolved_modules)
+        self.assertFalse(ctx.env.unresolved_modules)
 
 
 class EnvProbeObserverTests(unittest.TestCase):
@@ -79,12 +79,12 @@ class EnvProbeObserverTests(unittest.TestCase):
         runtime.env.env_probe(Call(
             agent=_agent(), tool_name=_env_discovery_tool(), execution_context=ctx,
         ))
-        self.assertTrue(ctx.env_probed)
+        self.assertTrue(ctx.env.env_probed)
 
     def test_other_tool_does_not_flip_flag(self) -> None:
         ctx = build_execution_context()
         runtime.env.env_probe(Call(agent=_agent(), tool_name="code_run", execution_context=ctx))
-        self.assertFalse(ctx.env_probed)
+        self.assertFalse(ctx.env.env_probed)
 
 
 class EnvMutationObserverTests(unittest.TestCase):
@@ -100,8 +100,8 @@ class EnvMutationObserverTests(unittest.TestCase):
             agent=_agent(), tool_name=self._mutate_tool(), payload=payload, status="ok",
             execution_context=ctx,
         ))
-        self.assertEqual(len(ctx.env_mutations), 1)
-        self.assertEqual(ctx.env_mutations[0]["installed"], ["numpy"])
+        self.assertEqual(len(ctx.env.env_mutations), 1)
+        self.assertEqual(ctx.env.env_mutations[0]["installed"], ["numpy"])
 
     def test_failed_mutation_records_nothing(self) -> None:
         ctx = build_execution_context()
@@ -109,7 +109,7 @@ class EnvMutationObserverTests(unittest.TestCase):
             agent=_agent(), tool_name=self._mutate_tool(), payload={}, status="error",
             execution_context=ctx,
         ))
-        self.assertFalse(ctx.env_mutations)
+        self.assertFalse(ctx.env.env_mutations)
 
     def test_non_mutating_tool_records_nothing(self) -> None:
         ctx = build_execution_context()
@@ -117,7 +117,7 @@ class EnvMutationObserverTests(unittest.TestCase):
             agent=_agent(), tool_name="code_run", payload={"installed": ["x"]}, status="ok",
             execution_context=ctx,
         ))
-        self.assertFalse(ctx.env_mutations)
+        self.assertFalse(ctx.env.env_mutations)
 
     def test_duplicate_mutation_not_double_recorded(self) -> None:
         ctx = build_execution_context()
@@ -129,7 +129,7 @@ class EnvMutationObserverTests(unittest.TestCase):
         runtime.env.env_mutation(Call(
             agent=_agent(), tool_name=tool, payload=payload, status="ok", execution_context=ctx,
         ))
-        self.assertEqual(len(ctx.env_mutations), 1)
+        self.assertEqual(len(ctx.env.env_mutations), 1)
 
 
 class EnvCleanupNudgeTests(unittest.TestCase):
@@ -150,40 +150,40 @@ class EnvCleanupNudgeTests(unittest.TestCase):
         # The env-cleanup nudge is placed ahead of the other strict guidance nudges,
         # so it wins when its condition holds.
         ctx = build_execution_context()
-        ctx.env_mutations = [{"installed": ["numpy"], "python": "/envs/foo/bin/python"}]
+        ctx.env.env_mutations = [{"installed": ["numpy"], "python": "/envs/foo/bin/python"}]
         ctx.workflow_state = "conclude"
         messages = self._fire(ctx)
-        self.assertEqual(ctx.nudge_counts.get("env_cleanup"), 1)
+        self.assertEqual(ctx.nudges.nudge_counts.get("env_cleanup"), 1)
         self.assertIn("undo", messages[0]["content"].lower())
 
     def test_not_fired_before_conclude(self) -> None:
         ctx = build_execution_context()
-        ctx.env_mutations = [{"installed": ["numpy"]}]
+        ctx.env.env_mutations = [{"installed": ["numpy"]}]
         ctx.workflow_state = "edit"
         self._fire(ctx)
-        self.assertIsNone(ctx.nudge_counts.get("env_cleanup"))
+        self.assertIsNone(ctx.nudges.nudge_counts.get("env_cleanup"))
 
     def test_not_fired_without_mutations(self) -> None:
         ctx = build_execution_context()
         ctx.workflow_state = "conclude"
         self._fire(ctx)
-        self.assertIsNone(ctx.nudge_counts.get("env_cleanup"))
+        self.assertIsNone(ctx.nudges.nudge_counts.get("env_cleanup"))
 
     def test_fires_at_light(self) -> None:
         # env_cleanup is part of the deliberate "light" subset (agent mode).
         ctx = build_execution_context()
-        ctx.env_mutations = [{"installed": ["numpy"]}]
+        ctx.env.env_mutations = [{"installed": ["numpy"]}]
         ctx.workflow_state = "conclude"
         self._fire(ctx, enforcement="light")
-        self.assertEqual(ctx.nudge_counts.get("env_cleanup"), 1)
+        self.assertEqual(ctx.nudges.nudge_counts.get("env_cleanup"), 1)
 
     def test_suppressed_at_off(self) -> None:
         # off cuts the whole guidance layer.
         ctx = build_execution_context()
-        ctx.env_mutations = [{"installed": ["numpy"]}]
+        ctx.env.env_mutations = [{"installed": ["numpy"]}]
         ctx.workflow_state = "conclude"
         self._fire(ctx, enforcement="off")
-        self.assertIsNone(ctx.nudge_counts.get("env_cleanup"))
+        self.assertIsNone(ctx.nudges.nudge_counts.get("env_cleanup"))
 
 
 class EnvResolutionNudgeTests(unittest.TestCase):
@@ -202,38 +202,38 @@ class EnvResolutionNudgeTests(unittest.TestCase):
 
     def test_fires_when_unresolved_and_not_probed(self) -> None:
         ctx = build_execution_context()
-        ctx.unresolved_modules = {"torch"}
-        ctx.env_probed = False
+        ctx.env.unresolved_modules = {"torch"}
+        ctx.env.env_probed = False
         messages = self._fire(ctx)
         self.assertEqual(len(messages), 1)
         self.assertIn("environment", messages[0]["content"].lower())
-        self.assertEqual(ctx.nudge_counts.get("env_resolution"), 1)
+        self.assertEqual(ctx.nudges.nudge_counts.get("env_resolution"), 1)
 
     def test_suppressed_once_env_probed(self) -> None:
         ctx = build_execution_context()
-        ctx.unresolved_modules = {"torch"}
-        ctx.env_probed = True
+        ctx.env.unresolved_modules = {"torch"}
+        ctx.env.env_probed = True
         self._fire(ctx)
-        self.assertIsNone(ctx.nudge_counts.get("env_resolution"))
+        self.assertIsNone(ctx.nudges.nudge_counts.get("env_resolution"))
 
     def test_fires_at_most_once(self) -> None:
         ctx = build_execution_context()
-        ctx.unresolved_modules = {"torch"}
-        ctx.env_probed = False
+        ctx.env.unresolved_modules = {"torch"}
+        ctx.env.env_probed = False
         self._fire(ctx)
-        self.assertEqual(ctx.nudge_counts.get("env_resolution"), 1)
+        self.assertEqual(ctx.nudges.nudge_counts.get("env_resolution"), 1)
         # Second pass: counter already at 1 -> no further env-resolution nudge.
         self._fire(ctx)
-        self.assertEqual(ctx.nudge_counts.get("env_resolution"), 1)
+        self.assertEqual(ctx.nudges.nudge_counts.get("env_resolution"), 1)
 
     def test_suppressed_when_enforcement_not_strict(self) -> None:
         # light/off trust the model to resolve the import failure itself.
         for level in ("light", "off"):
             ctx = build_execution_context()
-            ctx.unresolved_modules = {"torch"}
-            ctx.env_probed = False
+            ctx.env.unresolved_modules = {"torch"}
+            ctx.env.env_probed = False
             self._fire(ctx, enforcement=level)
-            self.assertIsNone(ctx.nudge_counts.get("env_resolution"), level)
+            self.assertIsNone(ctx.nudges.nudge_counts.get("env_resolution"), level)
 
 
 class MidLoopEnvResolutionTests(unittest.TestCase):
@@ -251,7 +251,7 @@ class MidLoopEnvResolutionTests(unittest.TestCase):
 
     def test_fires_immediately_after_a_failing_call(self) -> None:
         ctx = build_execution_context()
-        ctx.unresolved_modules = {"torch"}
+        ctx.env.unresolved_modules = {"torch"}
         messages: list[dict] = []
         fired = maybe_inject_env_resolution(
             agent=self._agent(), active_mode="agent",
@@ -263,19 +263,19 @@ class MidLoopEnvResolutionTests(unittest.TestCase):
 
     def test_spends_the_budget_the_table_row_shares(self) -> None:
         ctx = build_execution_context()
-        ctx.unresolved_modules = {"torch"}
+        ctx.env.unresolved_modules = {"torch"}
         agent = self._agent()
         maybe_inject_env_resolution(
             agent=agent, active_mode="agent", execution_context=ctx, messages=[],
         )
-        self.assertEqual(ctx.nudge_counts.get("env_resolution"), 1)
+        self.assertEqual(ctx.nudges.nudge_counts.get("env_resolution"), 1)
         # The end-of-turn row must now stay silent rather than repeat the cascade.
         end_of_turn: list[dict] = []
         maybe_append_nudge(
             agent=agent, query="check this file", active_mode="agent",
             execution_context=ctx, messages=end_of_turn,
         )
-        self.assertEqual(ctx.nudge_counts.get("env_resolution"), 1)
+        self.assertEqual(ctx.nudges.nudge_counts.get("env_resolution"), 1)
 
     def test_silent_without_an_unresolved_module(self) -> None:
         ctx = build_execution_context()
@@ -287,7 +287,7 @@ class MidLoopEnvResolutionTests(unittest.TestCase):
     def test_respects_enforcement(self) -> None:
         for level in ("light", "off"):
             ctx = build_execution_context()
-            ctx.unresolved_modules = {"torch"}
+            ctx.env.unresolved_modules = {"torch"}
             self.assertFalse(maybe_inject_env_resolution(
                 agent=self._agent(level), active_mode="agent",
                 execution_context=ctx, messages=[],
@@ -315,12 +315,12 @@ class ResolvedEnvironmentRearmsExerciseTests(unittest.TestCase):
             agent=agent, tool_name=tool, payload={"stderr": "No module named 'torch'"},
             status="error", execution_context=ctx,
         ))
-        self.assertIn("torch", ctx.unresolved_modules)
+        self.assertIn("torch", ctx.env.unresolved_modules)
         runtime.env.missing_module(Call(
             agent=agent, tool_name=tool, payload={"stdout": "ok"}, status="ok",
             execution_context=ctx,
         ))
-        self.assertFalse(ctx.unresolved_modules)
+        self.assertFalse(ctx.env.unresolved_modules)
 
     def test_non_execution_success_leaves_it_alone(self) -> None:
         # Reading a file that merely happens to succeed says nothing about the
@@ -335,7 +335,7 @@ class ResolvedEnvironmentRearmsExerciseTests(unittest.TestCase):
             agent=agent, tool_name="read_file", payload={"stdout": "ok"}, status="ok",
             execution_context=ctx,
         ))
-        self.assertIn("torch", ctx.unresolved_modules)
+        self.assertIn("torch", ctx.env.unresolved_modules)
 
 
 if __name__ == "__main__":

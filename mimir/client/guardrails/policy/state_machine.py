@@ -29,7 +29,7 @@ def check_state_machine_guard(
     if not (has_cap(tool_name, EDIT, agent.tool_caps) and is_code_target and path):
         return None
 
-    fail_counts = execution_context.validation_fail_count_by_file
+    fail_counts = execution_context.checks.validation_fail_count_by_file
     failure_count = int(fail_counts.get(path, 0))
 
     # Hard stop only for the specific file that exhausted its validation retry budget.

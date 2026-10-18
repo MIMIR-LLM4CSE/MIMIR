@@ -41,7 +41,7 @@ def _collect_candidate_paths(path: str, execution_context: ExecutionContext | No
     target_base = os.path.basename(path).lower()
     known: set[str] = known_existing_files(execution_context)
 
-    similar_by_dir = execution_context.similar_candidates_by_dir
+    similar_by_dir = execution_context.discovery.similar_candidates_by_dir
     if isinstance(similar_by_dir, dict):
         for paths in similar_by_dir.values():
             if isinstance(paths, set):
@@ -119,10 +119,10 @@ def missing_evidence(execution_context: ExecutionContext | None) -> list[str]:
     evidence: list[str] = []
     state = execution_context.workflow_state
 
-    searched = execution_context.searched
-    read_files = execution_context.read_files or set()
-    dirty_files = execution_context.dirty_written_files or set()
-    validated_files = execution_context.validated_files or set()
+    searched = execution_context.discovery.searched
+    read_files = execution_context.discovery.read_files or set()
+    dirty_files = execution_context.edits.dirty_written_files or set()
+    validated_files = execution_context.checks.validated_files or set()
 
     if state == "discover":
         # Coherent with the discovery gates: only guide toward discovery while the
@@ -246,7 +246,7 @@ def enrich_violation_payload(
 
     
     if execution_context is not None:
-        nudges = execution_context.nudge_counts.get("denial", 0)
+        nudges = execution_context.nudges.nudge_counts.get("denial", 0)
         if nudges >= 2:
             payload.pop("missing_evidence", None)
 

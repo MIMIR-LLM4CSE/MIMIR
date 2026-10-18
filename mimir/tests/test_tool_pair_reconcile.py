@@ -6,7 +6,7 @@ backend receives the same history, so the repair belongs to ``history.py`` rathe
 than to one provider. These tests pin the repair itself, its wiring into the budget
 pass, and the fact that each backend's own preparation preserves it.
 """
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 
 import json
 import unittest

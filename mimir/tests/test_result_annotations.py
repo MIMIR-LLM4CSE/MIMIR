@@ -18,7 +18,7 @@ import types
 import unittest
 
 from mimir.client.context.capabilities import CODE_NAV, EDIT, READ, CACHEABLE, ToolCaps
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 from mimir.client.tool_execution import bash_effect as be
 from mimir.client.tool_execution import executor as ex
 from mimir.client.protocol.tool_result import normalize_tool_content, parse_tool_payload
@@ -118,7 +118,7 @@ class ForkHintTests(unittest.TestCase):
         # record_tool_observation has already run by the time the hint is built, so
         # the file just written is itself in the dirty set: the check must not read
         # it as its own fork.
-        ec.dirty_written_files.add(path)
+        ec.edits.dirty_written_files.add(path)
         return ex._build_fork_hint(
             _agent(), "write_file", {"path": path},
             result if result is not None else _created(path), ec,
@@ -126,29 +126,29 @@ class ForkHintTests(unittest.TestCase):
 
     def test_suffixed_stem_is_read_as_a_fork(self) -> None:
         ec = build_execution_context()
-        ec.dirty_written_files.add("work/convergence_test.py")
+        ec.edits.dirty_written_files.add("work/convergence_test.py")
         hint = self._hint(ec, "work/convergence_test_fixed.py")
         self.assertIn("FORK_SUSPECTED", hint)
         self.assertIn("convergence_test.py", hint)
 
     def test_short_stem_suffix_still_matches(self) -> None:
         ec = build_execution_context()
-        ec.dirty_written_files.add("work/solver.py")
+        ec.edits.dirty_written_files.add("work/solver.py")
         self.assertIn("FORK_SUSPECTED", self._hint(ec, "work/solver_ghost.py"))
 
     def test_unrelated_stem_is_left_alone(self) -> None:
         ec = build_execution_context()
-        ec.dirty_written_files.add("work/solver.py")
+        ec.edits.dirty_written_files.add("work/solver.py")
         self.assertEqual(self._hint(ec, "work/driver.py"), "")
 
     def test_a_sibling_in_another_directory_is_not_a_fork(self) -> None:
         ec = build_execution_context()
-        ec.dirty_written_files.add("other/solver.py")
+        ec.edits.dirty_written_files.add("other/solver.py")
         self.assertEqual(self._hint(ec, "work/solver_ghost.py"), "")
 
     def test_overwrite_of_an_existing_file_is_the_wanted_behaviour(self) -> None:
         ec = build_execution_context()
-        ec.dirty_written_files.add("work/convergence_test.py")
+        ec.edits.dirty_written_files.add("work/convergence_test.py")
         updated = json.dumps({"status": "ok", "operation": "updated"})
         self.assertEqual(
             self._hint(ec, "work/convergence_test_fixed.py", updated), ""
@@ -165,9 +165,9 @@ class ForkHintTests(unittest.TestCase):
 
     def test_it_speaks_once_per_query(self) -> None:
         ec = build_execution_context()
-        ec.dirty_written_files.add("work/solver.py")
+        ec.edits.dirty_written_files.add("work/solver.py")
         self.assertIn("FORK_SUSPECTED", self._hint(ec, "work/solver_ghost.py"))
-        ec.dirty_written_files.add("work/driver.py")
+        ec.edits.dirty_written_files.add("work/driver.py")
         self.assertEqual(self._hint(ec, "work/driver_v2.py"), "")
 
     def test_the_scratchpad_is_exactly_where_these_files_belong(self) -> None:
@@ -175,7 +175,7 @@ class ForkHintTests(unittest.TestCase):
         from mimir.client.config.paths import STATE_DIR
         scratch = scratch_dir(STATE_DIR)
         ec = build_execution_context()
-        ec.dirty_written_files.add(os.path.join(scratch, "probe.py"))
+        ec.edits.dirty_written_files.add(os.path.join(scratch, "probe.py"))
         self.assertEqual(
             self._hint(ec, os.path.join(scratch, "probe_fixed.py")), ""
         )

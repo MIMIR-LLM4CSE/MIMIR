@@ -38,9 +38,9 @@ def missing_module(call: Call) -> None:
     execution_context = call.execution_context
     if call.status == "ok":
         if has_cap(call.tool_name, CODE_EXEC, getattr(call.agent, "tool_caps", None)):
-            execution_context.unresolved_modules.clear()
+            execution_context.env.unresolved_modules.clear()
         return
-    unresolved = execution_context.unresolved_modules
+    unresolved = execution_context.env.unresolved_modules
     text_fields = (
         call.payload.get("stderr"),
         call.payload.get("stdout"),
@@ -68,7 +68,7 @@ def env_probe(call: Call) -> None:
     """
     execution_context = call.execution_context
     if has_cap(call.tool_name, ENV_DISCOVERY, getattr(call.agent, "tool_caps", None)):
-        execution_context.env_probed = True
+        execution_context.env.env_probed = True
 
 
 def env_mutation(call: Call) -> None:
@@ -78,7 +78,7 @@ def env_mutation(call: Call) -> None:
         return
     if not has_cap(call.tool_name, ENV_MUTATE, getattr(call.agent, "tool_caps", None)):
         return
-    mutations = execution_context.env_mutations
+    mutations = execution_context.env.env_mutations
     record = {
         "tool": call.tool_name,
         "installed": call.payload.get("installed") or [],

@@ -14,7 +14,8 @@ import mimir.client.guardrails.observations as observations
 import mimir.client.tool_execution.executor as executor
 from mimir.client.config.limits import EXERCISE_BUDGET, VALIDATION_RETRY_BUDGET
 from mimir.client.context.capabilities import JUDGE, ToolCaps
-from mimir.client.context.execution_context import build_execution_context, record_run
+from mimir.client.context.execution_context import record_run
+from mimir.tests.support.context import build_execution_context
 from mimir.client.event_sink import event_sink
 from mimir.client.guardrails.verdict import apply_verdict
 from mimir.client.core.turn_state import TurnState
@@ -23,8 +24,8 @@ from mimir.client.core.turn_state import TurnState
 class ApplyVerdictTests(unittest.TestCase):
     def _ctx(self, command="pytest -q foo.py"):
         ec = build_execution_context()
-        ec.dirty_written_files = {"foo.py"}
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = {"foo.py"}
+        ec.edits.code_mutation_started = True
         record_run(ec, command, completed=True, call_id="c1")
         return ec
 
@@ -39,15 +40,15 @@ class ApplyVerdictTests(unittest.TestCase):
     def test_an_unrecognised_word_records_nothing(self) -> None:
         ec = self._ctx()
         self.assertEqual(apply_verdict("probably", "fine", "", ec), [])
-        self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["verdict"], "")
 
     def test_a_pass_validates_no_file(self) -> None:
         # The whole point of the split: reading an output right says nothing about
         # whether the file parses, and a checker is what answers that.
         ec = self._ctx()
         apply_verdict("pass", "l2_rel=3e-4 against the analytic solution", "", ec)
-        self.assertEqual(ec.validated_files, set())
-        self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "pass")
+        self.assertEqual(ec.checks.validated_files, set())
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["verdict"], "pass")
 
     def test_a_settled_run_is_returned_with_its_command_and_row(self) -> None:
         # What the UI badge is drawn from: the verdict lands on the row the run was on.
@@ -62,48 +63,48 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._two_runs()
         settled = apply_verdict("pass", "both are within tolerance", "", ec)
         self.assertEqual([s["command"] for s in settled], ["python bench.py"])
-        self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["verdict"], "")
 
     def test_a_re_run_becomes_the_most_recent(self) -> None:
         # Re-registering in place would leave an unscoped `pass` crediting an older run.
         ec = self._two_runs()
         record_run(ec, "pytest -q foo.py", completed=True)
         apply_verdict("pass", "green and correct", "", ec)
-        self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "pass")
-        self.assertEqual(ec.runs["python bench.py"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["python bench.py"]["verdict"], "")
 
     def test_a_re_run_keeps_the_failure_history(self) -> None:
         # The budget counts attempts at the same command; a re-run is the next attempt.
         ec = self._ctx()
         apply_verdict("fail", "off by a factor of two", "", ec)
         record_run(ec, "pytest -q foo.py", completed=True)
-        self.assertEqual(ec.runs["pytest foo.py"]["failures"], 1)
-        self.assertEqual(ec.runs["pytest foo.py"]["attempts"],
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["failures"], 1)
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["attempts"],
                          ["off by a factor of two"])
 
     def test_a_scoped_pass_settles_only_the_run_it_names(self) -> None:
         ec = self._two_runs()
         self.assertTrue(apply_verdict("pass", "matches the reference", "bench", ec))
-        self.assertEqual(ec.runs["python bench.py"]["verdict"], "pass")
-        self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["python bench.py"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["verdict"], "")
 
     def test_an_unreadable_scope_on_a_pass_still_credits_exactly_one_run(self) -> None:
         """A scope nothing matches reads as no scope: a ``pass`` still credits exactly one run."""
         ec = self._two_runs()
         settled = apply_verdict("pass", "fine", "unrelated", ec)
         self.assertEqual([r["command"] for r in settled], ["python bench.py"])
-        self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["verdict"], "")
 
     def test_an_unreadable_scope_on_a_fail_falls_back_to_every_run(self) -> None:
         ec = self._two_runs()
         self.assertEqual(len(apply_verdict("fail", "off by two", "unrelated", ec)), 2)
-        self.assertEqual({r["verdict"] for r in ec.runs.values()}, {"fail"})
+        self.assertEqual({r["verdict"] for r in ec.execution.runs.values()}, {"fail"})
 
     def test_fail_settles_every_run_without_a_scope(self) -> None:
         # Withholding credit broadly is never the unsafe direction.
         ec = self._two_runs()
         self.assertEqual(len(apply_verdict("fail", "off by a factor of two", "", ec)), 2)
-        self.assertEqual({r["verdict"] for r in ec.runs.values()}, {"fail"})
+        self.assertEqual({r["verdict"] for r in ec.execution.runs.values()}, {"fail"})
 
     def test_a_failing_verdict_drives_the_same_ladder_as_a_red_exit(self) -> None:
         # One repair mechanism, not two: the budget, the attempt log and the workflow
@@ -111,7 +112,7 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._ctx()
         ec.workflow_state = "conclude"
         apply_verdict("fail", "energy grows from 1.56 to 4.02", "", ec)
-        run = ec.runs["pytest foo.py"]
+        run = ec.execution.runs["pytest foo.py"]
         self.assertEqual(run["failures"], 1)
         self.assertEqual(run["attempts"], ["energy grows from 1.56 to 4.02"])
         self.assertEqual(ec.workflow_state, "edit")
@@ -122,7 +123,7 @@ class ApplyVerdictTests(unittest.TestCase):
         for _ in range(VALIDATION_RETRY_BUDGET):
             apply_verdict("fail", "still wrong", "", ec)
             record_run(ec, "pytest -q foo.py", completed=True)
-        ec.validated_files = {"foo.py"}
+        ec.checks.validated_files = {"foo.py"}
         apply_verdict("fail", "still wrong", "", ec)
         self.assertEqual(ec.workflow_state, "conclude")
 
@@ -131,14 +132,14 @@ class ApplyVerdictTests(unittest.TestCase):
         # run stays outstanding carrying its verdict instead of disappearing.
         ec = self._two_runs()
         self.assertEqual(len(apply_verdict("unknown", "nothing to compare against", "", ec)), 2)
-        self.assertEqual({r["verdict"] for r in ec.runs.values()}, {"unknown"})
-        self.assertEqual(ec.runs["python bench.py"]["reason"], "nothing to compare against")
+        self.assertEqual({r["verdict"] for r in ec.execution.runs.values()}, {"unknown"})
+        self.assertEqual(ec.execution.runs["python bench.py"]["reason"], "nothing to compare against")
 
     def test_a_later_pass_closes_a_run_left_unknown(self) -> None:
         ec = self._ctx()
         apply_verdict("unknown", "no reference for this regime", "", ec)
         apply_verdict("pass", "l2_rel=3e-4 against the analytic solution", "", ec)
-        self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["pytest foo.py"]["verdict"], "pass")
 
     def test_a_run_that_never_completed_owes_no_verdict(self) -> None:
         # Its non-zero exit is the finding; asking the model to judge output that never
@@ -152,25 +153,25 @@ class ApplyVerdictTests(unittest.TestCase):
         # what shares that budget is the recommendation to *run* something, and a model
         # that just judged its run does not need to be told to go and run more.
         ec = self._ctx()
-        ec.nudge_counts[EXERCISE_BUDGET] = 1
+        ec.nudges.nudge_counts[EXERCISE_BUDGET] = 1
         apply_verdict("pass", "fine", "", ec)
-        self.assertEqual(ec.nudge_counts[EXERCISE_BUDGET], 1)
+        self.assertEqual(ec.nudges.nudge_counts[EXERCISE_BUDGET], 1)
 
     def test_an_unknown_verdict_closes_the_advisory_axis(self) -> None:
         # "I cannot tell what the output showed" answers the whole question — build it,
         # run it, say what came out. Asking again is asking for a different answer.
         ec = self._ctx()
-        ec.nudge_counts[EXERCISE_BUDGET] = 1
+        ec.nudges.nudge_counts[EXERCISE_BUDGET] = 1
         apply_verdict("unknown", "cannot tell", "", ec)
-        self.assertEqual(ec.nudge_counts[EXERCISE_BUDGET], 1)
-        self.assertTrue(ec.exercise_advice_closed)
+        self.assertEqual(ec.nudges.nudge_counts[EXERCISE_BUDGET], 1)
+        self.assertTrue(ec.execution.exercise_advice_closed)
 
     def test_settling_runs_leaves_the_budget_spent(self) -> None:
         ec = self._two_runs()
-        ec.nudge_counts[EXERCISE_BUDGET] = 1
+        ec.nudges.nudge_counts[EXERCISE_BUDGET] = 1
         apply_verdict("pass", "fine", "bench.py", ec)
         apply_verdict("pass", "fine", "foo.py", ec)
-        self.assertEqual(ec.nudge_counts[EXERCISE_BUDGET], 1)
+        self.assertEqual(ec.nudges.nudge_counts[EXERCISE_BUDGET], 1)
 
 
 class RejectedVerdictTests(unittest.TestCase):
@@ -190,10 +191,10 @@ class RejectedVerdictTests(unittest.TestCase):
         settled = apply_verdict(
             "rejected", "0.0642 vs the incumbent's 0.0556 — slower", "proxy_eval", ec)
         self.assertEqual([r["command"] for r in settled], ["proxy_eval"])
-        self.assertEqual(ec.runs["proxy_eval"]["verdict"], "rejected")
+        self.assertEqual(ec.execution.runs["proxy_eval"]["verdict"], "rejected")
         # The runs it said nothing about are untouched, and still owe a reading.
-        self.assertEqual(ec.runs["gcc kernel.c"]["verdict"], "")
-        self.assertEqual(ec.runs["pytest tests/"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["gcc kernel.c"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["pytest tests/"]["verdict"], "")
 
     def test_a_rejection_charges_no_repair_budget(self) -> None:
         """The point of the word. A search rejects most of what it tries."""
@@ -201,13 +202,13 @@ class RejectedVerdictTests(unittest.TestCase):
         for _ in range(VALIDATION_RETRY_BUDGET + 2):
             record_run(ec, "proxy_eval", completed=True, call_id="c3")
             apply_verdict("rejected", "slower than the incumbent", "proxy_eval", ec)
-        self.assertEqual(ec.runs["proxy_eval"]["failures"], 0)
+        self.assertEqual(ec.execution.runs["proxy_eval"]["failures"], 0)
 
     def test_a_fail_on_the_same_run_still_charges(self) -> None:
         """`rejected` is a new word, not a softening of the existing one."""
         ec = self._ctx()
         apply_verdict("fail", "segfault in the fused kernel", "proxy_eval", ec)
-        self.assertEqual(ec.runs["proxy_eval"]["failures"], 1)
+        self.assertEqual(ec.execution.runs["proxy_eval"]["failures"], 1)
 
     def test_an_unscoped_rejection_takes_the_most_recent_run(self) -> None:
         ec = self._ctx()
@@ -230,8 +231,8 @@ class VerdictScopeResolutionTests(unittest.TestCase):
         settled = apply_verdict(
             "fail", "the run crashed", "proxy_eval(op='run') OMP=64", ec)
         self.assertEqual([r["command"] for r in settled], ["proxy_eval"])
-        self.assertEqual(ec.runs["gcc kernel.c"]["verdict"], "")
-        self.assertEqual(ec.runs["gcc kernel.c"]["failures"], 0)
+        self.assertEqual(ec.execution.runs["gcc kernel.c"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["gcc kernel.c"]["failures"], 0)
 
     def test_a_scope_shorter_than_the_key_still_matches_it(self) -> None:
         """The original direction keeps working."""
@@ -274,8 +275,8 @@ class VerdictToolTests(unittest.TestCase):
 
     def _ctx(self):
         ec = build_execution_context()
-        ec.dirty_written_files = {"foo.py"}
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = {"foo.py"}
+        ec.edits.code_mutation_started = True
         record_run(ec, "python foo.py", completed=True, call_id="c1")
         return ec
 
@@ -288,18 +289,18 @@ class VerdictToolTests(unittest.TestCase):
         # Neither the tool name nor its argument names are known to the client.
         ec = self._ctx()
         self._call(ec, {"outcome": "pass", "why": "l2_rel=3e-4", "which": ""})
-        self.assertEqual(ec.runs["python foo.py"]["verdict"], "pass")
-        self.assertEqual(ec.runs["python foo.py"]["reason"], "l2_rel=3e-4")
+        self.assertEqual(ec.execution.runs["python foo.py"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["python foo.py"]["reason"], "l2_rel=3e-4")
 
     def test_a_shouted_verdict_is_still_a_verdict(self) -> None:
         ec = self._ctx()
         self._call(ec, {"outcome": "PASS", "why": "residual 3e-4", "which": ""})
-        self.assertEqual(ec.runs["python foo.py"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["python foo.py"]["verdict"], "pass")
 
     def test_a_failed_call_settles_nothing(self) -> None:
         ec = self._ctx()
         self._call(ec, {"outcome": "pass", "why": "x", "which": ""}, status="error")
-        self.assertEqual(ec.runs["python foo.py"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["python foo.py"]["verdict"], "")
 
     def test_the_settled_row_is_announced_to_the_ui(self) -> None:
         ec = self._ctx()
@@ -354,16 +355,16 @@ class BlockedVerdictTests(unittest.TestCase):
 
     def _failed(self, command="make", **kw):
         ec = build_execution_context()
-        ec.dirty_written_files = {"solver.c"}
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = {"solver.c"}
+        ec.edits.code_mutation_started = True
         record_run(ec, command, completed=False, **kw)
-        ec.runs[command]["failures"] = 2
+        ec.execution.runs[command]["failures"] = 2
         return ec
 
     def test_it_returns_the_repair_budget_and_leaves_the_run_red(self) -> None:
         ec = self._failed()
         settled = apply_verdict("blocked", "no configured build tree here", "", ec)
-        run = ec.runs["make"]
+        run = ec.execution.runs["make"]
         self.assertEqual([r["command"] for r in settled], ["make"])
         self.assertEqual(run["failures"], 0)
         self.assertEqual(run["blocked"], "no configured build tree here")
@@ -377,28 +378,28 @@ class BlockedVerdictTests(unittest.TestCase):
         ec = self._failed()
         record_run(ec, "pytest -q", completed=True)
         apply_verdict("blocked", "cmake is absent", "", ec)
-        self.assertEqual(ec.runs["pytest -q"]["verdict"], "")
-        self.assertEqual(ec.runs["make"]["verdict"], "blocked")
+        self.assertEqual(ec.execution.runs["pytest -q"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["make"]["verdict"], "blocked")
 
     def test_it_cannot_rescue_a_completed_run(self) -> None:
         ec = build_execution_context()
         record_run(ec, "pytest -q", completed=True)
         self.assertEqual(apply_verdict("blocked", "excuse", "", ec), [])
-        self.assertEqual(ec.runs["pytest -q"]["verdict"], "")
+        self.assertEqual(ec.execution.runs["pytest -q"]["verdict"], "")
 
     def test_a_scope_naming_nothing_still_speaks_for_every_failed_run(self) -> None:
         ec = self._failed()
         record_run(ec, "cmake --build .", completed=False)
         apply_verdict("blocked", "no toolchain", "nonesuch", ec)
         self.assertEqual(
-            {c for c, r in ec.runs.items() if r["blocked"]},
+            {c for c, r in ec.execution.runs.items() if r["blocked"]},
             {"make", "cmake --build ."},
         )
 
     def test_it_closes_the_advisory_axis_like_unknown(self) -> None:
         ec = self._failed()
         apply_verdict("blocked", "no configured build tree here", "", ec)
-        self.assertTrue(ec.exercise_advice_closed)
+        self.assertTrue(ec.execution.exercise_advice_closed)
 
     def test_a_blocked_run_leaves_the_repair_release_reachable(self) -> None:
         # failed_runs excludes it: left in, its permanent `failures == 0` would hold the

@@ -109,7 +109,7 @@ class ToolDispatcher:
         """Count identical calls across steps: failures toward the guards, successes
         toward the IDENTICAL_REPEAT note. Writes have their own dedup; refused calls
         never ran."""
-        lc = self.ec.loop_control
+        lc = self.ec.bookkeeping.loop_control
         for i, (call, result) in enumerate(zip(calls, results)):
             if call.refused is not None or is_write(self.agent, call.name):
                 continue
@@ -139,11 +139,11 @@ class ToolDispatcher:
             lc.call_fails[key] = lc.call_fails.get(key, 0) + 1
             if lc.call_fails[key] >= SOFT_REPEAT_THRESHOLD and key not in lc.repeat_warned:
                 lc.repeat_warned.add(key)
-                self.ec.repeat_alert = (call.name, lc.call_fails[key])
+                self.ec.nudges.repeat_alert = (call.name, lc.call_fails[key])
 
     def append_results(self, admission: Any, results: list[str]) -> None:
         """One tool message per call, in order, then the calls not run; records each message's files by id."""
-        tool_msg_files: dict = self.ec.tool_msg_files
+        tool_msg_files: dict = self.ec.bookkeeping.tool_msg_files
         # Bounded BEFORE it is appended: the trim pass exempts the current step, so
         # afterwards only the force-fit backstop could touch it, once already over.
         results = _bound_results(results, self.agent)
@@ -184,14 +184,14 @@ def _pin_loaded_skill(
     skill = str((args or {}).get("name") or "").strip()
     if not skill:
         return
-    loaded: dict = execution_context.skills_loaded
+    loaded: dict = execution_context.bookkeeping.skills_loaded
     succeeded, _summary = summarize_tool_result(name, result, agent.tool_caps)
     if not succeeded:
         if loaded.get(skill) == "pending":
             del loaded[skill]
         return
     loaded[skill] = call_id
-    execution_context.pinned_call_ids.add(call_id)
+    execution_context.bookkeeping.pinned_call_ids.add(call_id)
     emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
 
 

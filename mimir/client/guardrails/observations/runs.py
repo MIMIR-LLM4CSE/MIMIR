@@ -46,7 +46,7 @@ def validation_tool(call: Call) -> None:
     arg_names = path_args(call.tool_name, caps) or ("filepath", "path")
     raw = next((call.arguments.get(a) for a in arg_names if call.arguments.get(a)), None)
     target = call.agent.normalize_workspace_path(raw)
-    if target and target in execution_context.dirty_written_files:
+    if target and target in execution_context.edits.dirty_written_files:
         mark_file_validated(execution_context, target)
 
 
@@ -134,7 +134,7 @@ def _credit_measured_source(
         return
 
     source = active_proxy_source()
-    if source and source in execution_context.dirty_written_files:
+    if source and source in execution_context.edits.dirty_written_files:
         mark_file_validated(execution_context, source, "measured")
 
 
@@ -156,7 +156,7 @@ def _settle_from_machine(
             execution_context, key, False, call_id, _MACHINE_SAW_CRASH)
         return
     record_run_outcome(execution_context, key, True, call_id)
-    run = (execution_context.runs or {}).get(key)
+    run = (execution_context.execution.runs or {}).get(key)
     if run is not None:
         run["verdict"] = "fail"
         run["reason"] = _MACHINE_SAW_FAILURE
@@ -179,7 +179,7 @@ def unwatched_runs(call: Call) -> None:
     listed = call.payload.get("unwatched") or ()
     if call.status != "ok" or not (listed or handles):
         return
-    unwatched = execution_context.unwatched_runs
+    unwatched = execution_context.execution.unwatched_runs
     unwatched.update(job_id for job_id in listed
                      if isinstance(job_id, str) and job_id)
     # Adopted or freshly submitted, which are the same fact here: something now polls

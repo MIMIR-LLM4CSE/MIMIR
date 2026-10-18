@@ -62,7 +62,7 @@ def _fire_nudge(
     budget_key: str = "",
 ) -> bool:
     """Count the nudge under *budget_key* (else its category), append it, and return True."""
-    counts = execution_context.nudge_counts
+    counts = execution_context.nudges.nudge_counts
     key = budget_key or category
     counts[key] = counts.get(key, 0) + 1
     logger.debug("nudge fired: category=%s budget=%s count=%d", category, key, counts[key])
@@ -133,9 +133,9 @@ def _log_no_nudge(
         level,
         active_mode,
         execution_context.workflow_state,
-        bool(execution_context.code_mutation_started),
+        bool(execution_context.edits.code_mutation_started),
         has_declared_write_target(execution_context),
-        execution_context.nudge_counts,
+        execution_context.nudges.nudge_counts,
     )
 
 
@@ -266,7 +266,7 @@ CORE_NUDGES: tuple[CoreNudge, ...] = (
         "unexercised", "verification",
         lambda agent, query, mode, ec, level: should_nudge_unexercised_code(agent, ec),
         lambda agent, ec: unexercised_code_nudge_message(
-            sorted(ec.dirty_written_files or ()), exercise_hint(agent, ec)),
+            sorted(ec.edits.dirty_written_files or ()), exercise_hint(agent, ec)),
         budget_key=EXERCISE_BUDGET,
     ),
     CoreNudge(

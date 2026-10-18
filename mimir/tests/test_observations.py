@@ -24,13 +24,13 @@ from mimir.client.guardrails.runner_output import (
 )
 from mimir.client.config.limits import VALIDATION_RETRY_BUDGET
 from mimir.client.context.execution_context import (
-    build_execution_context,
     declared_edit_set_complete,
     record_run,
     run_ledger_key,
     unsettled_runs,
     unwritten_declared_files,
 )
+from mimir.tests.support.context import build_execution_context
 from mimir.client.guardrails.ladder import register_run_failure
 from mimir.client.guardrails.observations import Call  # noqa: E402
 from mimir.client.core.turn_state import TurnState
@@ -147,27 +147,27 @@ class DelegatedExplorationTests(unittest.TestCase):
     def test_reported_reads_become_discovery_evidence(self) -> None:
         ec = build_execution_context()
         runtime.record_tool_observation(self._agent(), "delegating_tool", {}, self._OK, ec)
-        self.assertEqual(ec.delegated_read_files, {"/w/a.py", "/w/b.py"})
-        self.assertEqual(ec.existing_paths, {"/w/a.py", "/w/b.py"})
+        self.assertEqual(ec.discovery.delegated_read_files, {"/w/a.py", "/w/b.py"})
+        self.assertEqual(ec.discovery.existing_paths, {"/w/a.py", "/w/b.py"})
 
     def test_they_never_land_in_read_files(self) -> None:
         """`read_files` also answers "does THIS agent hold the lines it is about to
         edit". Only a read of its own settles that."""
         ec = build_execution_context()
         runtime.record_tool_observation(self._agent(), "delegating_tool", {}, self._OK, ec)
-        self.assertEqual(ec.read_files, set())
+        self.assertEqual(ec.discovery.read_files, set())
 
     def test_a_failed_delegation_credits_nothing(self) -> None:
         ec = build_execution_context()
         runtime.record_tool_observation(
             self._agent(), "delegating_tool", {},
             '{"status": "error", "files_read": ["/w/a.py"]}', ec)
-        self.assertEqual(ec.delegated_read_files, set())
+        self.assertEqual(ec.discovery.delegated_read_files, set())
 
     def test_a_tool_without_the_capability_is_ignored(self) -> None:
         ec = build_execution_context()
         runtime.record_tool_observation(self._agent(), "plain_tool", {}, self._OK, ec)
-        self.assertEqual(ec.delegated_read_files, set())
+        self.assertEqual(ec.discovery.delegated_read_files, set())
 
     def test_a_delegated_sweep_can_carry_the_plan_evidence_bar(self) -> None:
         """Otherwise plan mode punishes the fan-out it asks for: the explore phase
@@ -177,7 +177,7 @@ class DelegatedExplorationTests(unittest.TestCase):
         agent = self._agent()
         runtime.record_tool_observation(agent, "delegating_tool", {}, self._OK, ec)
         self.assertFalse(plan_evidence_ready(ec))  # one signal kind is not breadth
-        ec.searched = True
+        ec.discovery.searched = True
         self.assertTrue(plan_evidence_ready(ec))
 
 
@@ -214,29 +214,29 @@ class EditFailureStreakTests(unittest.TestCase):
         from mimir.client.guardrails import nudges as nudge_logic
         agent = self._agent()
         ec = build_execution_context()
-        ec.read_files.add("mod.py")
+        ec.discovery.read_files.add("mod.py")
 
         self._fail(agent, ec, "anchor A", "A2")   # failure 1
-        self.assertEqual(ec.edit_fail_streak_by_file["mod.py"], 1)
-        self.assertIn("mod.py", ec.read_files)
+        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 1)
+        self.assertIn("mod.py", ec.discovery.read_files)
 
         self._fail(agent, ec, "anchor B", "B2")   # failure 2 — DIFFERENT anchor
-        self.assertEqual(ec.edit_fail_streak_by_file["mod.py"], 2)
+        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 2)
         # The escalation is the nudge, not a forged "you have not read this".
-        self.assertIn("mod.py", ec.read_files)
+        self.assertIn("mod.py", ec.discovery.read_files)
         self.assertEqual(nudge_logic.predicates.first_failing_edit_path(ec), "mod.py")
 
     def test_success_resets_streak(self) -> None:
         agent = self._agent()
         ec = build_execution_context()
         self._fail(agent, ec, "anchor A", "A2")
-        self.assertEqual(ec.edit_fail_streak_by_file.get("mod.py"), 1)
+        self.assertEqual(ec.edits.edit_fail_streak_by_file.get("mod.py"), 1)
         runtime.record_tool_observation(
             agent, "replace_in_file",
             {"path": "mod.py", "old_text": "anchor A", "new_text": "A2"},
             '{"status": "ok"}', ec,
         )
-        self.assertNotIn("mod.py", ec.edit_fail_streak_by_file)
+        self.assertNotIn("mod.py", ec.edits.edit_fail_streak_by_file)
 
     def test_identical_hard_block_count_still_patch_specific(self) -> None:
         # edit_loop_state (consumed by check_write_policy) must keep resetting on a new
@@ -246,10 +246,10 @@ class EditFailureStreakTests(unittest.TestCase):
         ec = build_execution_context()
         self._fail(agent, ec, "anchor A", "A2")
         self._fail(agent, ec, "anchor A", "A2")   # identical patch
-        self.assertEqual(ec.edit_loop_state["mod.py"][1], 2)
+        self.assertEqual(ec.edits.edit_loop_state["mod.py"][1], 2)
         self._fail(agent, ec, "anchor B", "B2")   # different patch → identical count resets
-        self.assertEqual(ec.edit_loop_state["mod.py"][1], 1)
-        self.assertEqual(ec.edit_fail_streak_by_file["mod.py"], 3)
+        self.assertEqual(ec.edits.edit_loop_state["mod.py"][1], 1)
+        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 3)
 
     def test_reread_resets_streak(self) -> None:
         from mimir.client.context.capabilities import READ, ToolCaps
@@ -258,11 +258,11 @@ class EditFailureStreakTests(unittest.TestCase):
         })
         ec = build_execution_context()
         self._fail(agent, ec, "anchor A", "A2")
-        self.assertEqual(ec.edit_fail_streak_by_file["mod.py"], 1)
+        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 1)
         runtime.record_tool_observation(
             agent, "read_file", {"path": "mod.py"}, '{"status": "ok", "content": "x"}', ec,
         )
-        self.assertNotIn("mod.py", ec.edit_fail_streak_by_file)
+        self.assertNotIn("mod.py", ec.edits.edit_fail_streak_by_file)
 
     def test_resolving_streak_rearms_error_recovery_budget(self) -> None:
         # The error_recovery reminder is capped per query; once the streak that spent
@@ -270,21 +270,21 @@ class EditFailureStreakTests(unittest.TestCase):
         # later, distinct spate of failures earns fresh reminders.
         agent = self._agent()
         ec = build_execution_context()
-        ec.nudge_counts["error_recovery"] = 2  # budget spent
+        ec.nudges.nudge_counts["error_recovery"] = 2  # budget spent
         self._fail(agent, ec, "anchor A", "A2")
         runtime.record_tool_observation(
             agent, "replace_in_file",
             {"path": "mod.py", "old_text": "anchor A", "new_text": "A2"},
             '{"status": "ok"}', ec,
         )
-        self.assertEqual(ec.nudge_counts["error_recovery"], 0)
+        self.assertEqual(ec.nudges.nudge_counts["error_recovery"], 0)
 
     def test_budget_stays_spent_while_another_file_still_failing(self) -> None:
         # Clearing one file's streak must NOT re-arm the budget while a different file
         # is still stuck — otherwise the stuck file would get unlimited reminders.
         agent = self._agent()
         ec = build_execution_context()
-        ec.nudge_counts["error_recovery"] = 2
+        ec.nudges.nudge_counts["error_recovery"] = 2
         self._fail(agent, ec, "anchor A", "A2", path="a.py")
         self._fail(agent, ec, "anchor B", "B2", path="b.py")
         runtime.record_tool_observation(
@@ -292,8 +292,8 @@ class EditFailureStreakTests(unittest.TestCase):
             {"path": "a.py", "old_text": "anchor A", "new_text": "A2"},
             '{"status": "ok"}', ec,
         )
-        self.assertEqual(ec.nudge_counts["error_recovery"], 2)  # b.py still failing
-        self.assertIn("b.py", ec.edit_fail_streak_by_file)
+        self.assertEqual(ec.nudges.nudge_counts["error_recovery"], 2)  # b.py still failing
+        self.assertIn("b.py", ec.edits.edit_fail_streak_by_file)
 
 
 class BashCommandObservationTests(unittest.TestCase):
@@ -320,23 +320,23 @@ class BashCommandObservationTests(unittest.TestCase):
 
     def test_read_command_populates_read_files(self):
         ec = self._run("cat a.py")
-        self.assertIn("a.py", ec.read_files)
-        self.assertIn("a.py", ec.checked_paths)
-        self.assertIn("a.py", ec.existing_paths)
+        self.assertIn("a.py", ec.discovery.read_files)
+        self.assertIn("a.py", ec.discovery.checked_paths)
+        self.assertIn("a.py", ec.discovery.existing_paths)
 
     def test_search_command_sets_searched(self):
         ec = self._run("grep foo bar.py")
-        self.assertTrue(ec.searched)
-        self.assertEqual(ec.search_tool_calls, 1)
+        self.assertTrue(ec.discovery.searched)
+        self.assertEqual(ec.discovery.search_tool_calls, 1)
 
     def test_inspect_command_populates_inspected_dirs(self):
         ec = self._run("ls src")
-        self.assertIn("src", ec.inspected_dirs)
+        self.assertIn("src", ec.discovery.inspected_dirs)
 
     def test_inplace_write_marks_file_dirty(self):
         ec = self._run("sed -i s/a/b/ mod.py")
-        self.assertIn("mod.py", ec.dirty_written_files)
-        self.assertIn("mod.py", ec.planned_edit_targets)
+        self.assertIn("mod.py", ec.edits.dirty_written_files)
+        self.assertIn("mod.py", ec.edits.planned_edit_targets)
         self.assertEqual(ec.action_op_count, 1)
 
     def test_exec_command_increments_action_op(self):
@@ -345,24 +345,24 @@ class BashCommandObservationTests(unittest.TestCase):
 
     def test_pipe_reads_and_searches(self):
         ec = self._run("cat a.py | grep foo")
-        self.assertIn("a.py", ec.read_files)
-        self.assertTrue(ec.searched)
+        self.assertIn("a.py", ec.discovery.read_files)
+        self.assertTrue(ec.discovery.searched)
 
     def test_module_load_records_env_mutation(self):
         ec = self._run("module load cuda")
-        self.assertTrue(any(r["installed"] == ["cuda"] for r in ec.env_mutations))
+        self.assertTrue(any(r["installed"] == ["cuda"] for r in ec.env.env_mutations))
 
     def test_module_avail_sets_env_probed(self):
         ec = self._run("module avail")
-        self.assertTrue(ec.env_probed)
+        self.assertTrue(ec.env.env_probed)
 
     def test_failed_call_credits_nothing(self):
         ec = self._run("cat a.py", status="error")
-        self.assertNotIn("a.py", ec.read_files)
+        self.assertNotIn("a.py", ec.discovery.read_files)
 
     def test_opaque_command_is_noop(self):
         ec = self._run("cat $(which python)")  # substitution → unclassifiable
-        self.assertEqual(len(ec.read_files), 0)
+        self.assertEqual(len(ec.discovery.read_files), 0)
 
     def test_read_search_leaves_discover_state(self):
         ec = self._run("grep foo bar.py")
@@ -394,8 +394,8 @@ class BashValidationObservationTests(unittest.TestCase):
 
     def _ctx(self, dirty):
         ec = build_execution_context()
-        ec.dirty_written_files = set(dirty)
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = set(dirty)
+        ec.edits.code_mutation_started = True
         return ec
 
     def _run(self, agent, command, ec, status="ok", stdout="x"):
@@ -416,24 +416,24 @@ class BashValidationObservationTests(unittest.TestCase):
         # end. Whether solver.py parses is a checker's answer, and nobody ran one.
         agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
         self._run(agent, "pytest -q pkg/mod.py", ec)
-        self.assertEqual(ec.validated_files, set())
-        self.assertTrue(ec.runs["pytest pkg/mod.py"]["completed"])
+        self.assertEqual(ec.checks.validated_files, set())
+        self.assertTrue(ec.execution.runs["pytest pkg/mod.py"]["completed"])
 
     def test_a_passing_verdict_validates_nothing_either(self):
         agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
         self._run(agent, "pytest -q pkg/mod.py", ec)
         self._judge(ec)
-        self.assertEqual(ec.validated_files, set())
-        self.assertEqual(ec.runs["pytest pkg/mod.py"]["verdict"], "pass")
+        self.assertEqual(ec.checks.validated_files, set())
+        self.assertEqual(ec.execution.runs["pytest pkg/mod.py"]["verdict"], "pass")
 
     def test_a_failing_verdict_charges_the_run_not_the_file(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python foo.py", ec)
         self._judge(ec, "fail", "0.00% amplitude reduction against a >90% criterion")
-        self.assertEqual(ec.validation_fail_count_by_file, {})
-        self.assertEqual(ec.runs["python foo.py"]["failures"], 1)
+        self.assertEqual(ec.checks.validation_fail_count_by_file, {})
+        self.assertEqual(ec.execution.runs["python foo.py"]["failures"], 1)
         self.assertEqual(
-            ec.runs["python foo.py"]["attempts"],
+            ec.execution.runs["python foo.py"]["attempts"],
             ["0.00% amplitude reduction against a >90% criterion"],
         )
         self.assertEqual(ec.workflow_state, "edit")
@@ -444,20 +444,20 @@ class BashValidationObservationTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python foo.py", ec)
         self._judge(ec, "unknown", "no reference solution available for this regime")
-        self.assertEqual(ec.runs["python foo.py"]["verdict"], "unknown")
+        self.assertEqual(ec.execution.runs["python foo.py"]["verdict"], "unknown")
 
     def test_a_red_execution_owes_no_verdict(self):
         # Its non-zero exit is the finding; it goes straight onto the repair ladder.
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python foo.py", ec, status="error")
-        self.assertFalse(ec.runs["python foo.py"]["completed"])
-        self.assertEqual(ec.runs["python foo.py"]["failures"], 1)
+        self.assertFalse(ec.execution.runs["python foo.py"]["completed"])
+        self.assertEqual(ec.execution.runs["python foo.py"]["failures"], 1)
         self.assertEqual(ec.workflow_state, "edit")
 
     def test_a_run_that_declares_its_own_failure_is_treated_as_red(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python foo.py", ec, stdout="reflection is high\ncheck=fail")
-        run = ec.runs["python foo.py"]
+        run = ec.execution.runs["python foo.py"]
         self.assertFalse(run["completed"])
         self.assertEqual(run["attempts"], [runner_output.DECLARED_FAILURE])
 
@@ -467,8 +467,8 @@ class BashValidationObservationTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"a.py", "pkg/b.py"})
         self._run(agent, "pytest -q", ec)
         self._judge(ec)
-        self.assertEqual(ec.validated_files, set())
-        self.assertEqual(list(ec.runs), ["pytest -q"])
+        self.assertEqual(ec.checks.validated_files, set())
+        self.assertEqual(list(ec.execution.runs), ["pytest -q"])
 
     # ── environment setup: preparation, never evidence ─────────────────────
 
@@ -478,13 +478,13 @@ class BashValidationObservationTests(unittest.TestCase):
         # executes, but it exercises nothing of the project.
         agent, ec = self._agent(), self._ctx({"solver.f90"})
         self._run(agent, "source set_env_cmake.sh", ec)
-        self.assertEqual(ec.runs, {})
-        self.assertEqual(ec.validated_files, set())
+        self.assertEqual(ec.execution.runs, {})
+        self.assertEqual(ec.checks.validated_files, set())
 
     def test_env_setup_around_a_chdir_and_a_probe_is_not_a_run(self):
         agent, ec = self._agent(), self._ctx({"solver.f90"})
         self._run(agent, "cd sub && source env.sh && echo done", ec)
-        self.assertEqual(ec.runs, {})
+        self.assertEqual(ec.execution.runs, {})
 
     # ── builds: judged by the machine, like the compilers they drive ───────
 
@@ -493,13 +493,13 @@ class BashValidationObservationTests(unittest.TestCase):
         # model to read — it must never surface as "ran but never judged".
         agent, ec = self._agent(), self._ctx({"solver.f90"})
         self._run(agent, "make -f makefile.cmake", ec)
-        self.assertEqual(ec.runs["make makefile.cmake"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["make makefile.cmake"]["verdict"], "pass")
         self.assertEqual(unsettled_runs(ec), {})
 
     def test_a_build_that_only_prepares_its_environment_first_still_counts(self):
         agent, ec = self._agent(), self._ctx({"solver.f90"})
         self._run(agent, "source env.sh && make", ec, status="error")
-        run = ec.runs["source env.sh && make"]
+        run = ec.execution.runs["source env.sh && make"]
         self.assertFalse(run["completed"])
         self.assertEqual(run["effect"], "build")
 
@@ -508,7 +508,7 @@ class BashValidationObservationTests(unittest.TestCase):
         # code stopped being the last word the moment something ran.
         agent, ec = self._agent(), self._ctx({"solver.f90"})
         self._run(agent, "make && ./solver", ec)
-        run = ec.runs["make && ./solver"]
+        run = ec.execution.runs["make && ./solver"]
         self.assertEqual(run["effect"], "run")
         self.assertEqual(run["verdict"], "")
 
@@ -517,7 +517,7 @@ class BashValidationObservationTests(unittest.TestCase):
         # one would be a guess — and the check axis is the one that must stay honest.
         agent, ec = self._agent(), self._ctx({"solver.f90"})
         self._run(agent, "make", ec)
-        self.assertEqual(ec.validated_files, set())
+        self.assertEqual(ec.checks.validated_files, set())
 
     def test_an_inline_snippet_is_a_run(self):
         # The payload is quoted, so it is text to bash and the command classifies: an
@@ -526,10 +526,10 @@ class BashValidationObservationTests(unittest.TestCase):
         # what keeps two unrelated one-liners from reading as two attempts at one thing.
         agent, ec = self._agent(), self._ctx({"a.py", "b.py"})
         self._run(agent, "python -c 'print(check(a))'", ec)
-        self.assertEqual(ec.validated_files, set())
-        self.assertIn("python -c print(check(a))", ec.runs)
+        self.assertEqual(ec.checks.validated_files, set())
+        self.assertIn("python -c print(check(a))", ec.execution.runs)
         self.assertEqual(
-            ec.runs["python -c print(check(a))"]["command"],
+            ec.execution.runs["python -c print(check(a))"]["command"],
             "python -c 'print(check(a))'",
         )
 
@@ -537,9 +537,9 @@ class BashValidationObservationTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"solver.py", "mesh.py"})
         self._run(agent, "python /tmp/mimir-scratch/probe.py", ec)
         self._judge(ec)
-        self.assertEqual(ec.validated_files, set())
+        self.assertEqual(ec.checks.validated_files, set())
         self.assertEqual(
-            ec.runs["python /tmp/mimir-scratch/probe.py"]["verdict"], "pass",
+            ec.execution.runs["python /tmp/mimir-scratch/probe.py"]["verdict"], "pass",
         )
 
     def test_a_module_exercised_through_an_entry_point_still_owes_a_verdict(self):
@@ -547,9 +547,9 @@ class BashValidationObservationTests(unittest.TestCase):
         # recorded and judged all the same — which file it exercised is not asked.
         agent, ec = self._agent(), self._ctx({"mesh.py"})
         self._run(agent, "python main.py", ec)
-        self.assertIn("python main.py", ec.runs)
+        self.assertIn("python main.py", ec.execution.runs)
         self._judge(ec)
-        self.assertEqual(ec.runs["python main.py"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["python main.py"]["verdict"], "pass")
 
     def test_a_run_that_cannot_be_fixed_releases_the_workflow(self):
         from mimir.client.config.limits import VALIDATION_RETRY_BUDGET
@@ -564,18 +564,18 @@ class BashValidationObservationTests(unittest.TestCase):
     def test_py_compile_marks_validated(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python -m py_compile foo.py", ec)
-        self.assertIn("foo.py", ec.validated_files)
-        self.assertFalse(ec.runs)
+        self.assertIn("foo.py", ec.checks.validated_files)
+        self.assertFalse(ec.execution.runs)
 
     def test_cd_rebases_relative_operand(self):
         agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
         self._run(agent, "cd pkg && ruff check mod.py", ec)
-        self.assertIn("pkg/mod.py", ec.validated_files)
+        self.assertIn("pkg/mod.py", ec.checks.validated_files)
 
     def test_same_name_other_dir_is_not_credited(self):
         agent, ec = self._agent(), self._ctx({"a/mod.py"})
         self._run(agent, "cd b && ruff check mod.py", ec)
-        self.assertFalse(ec.validated_files)
+        self.assertFalse(ec.checks.validated_files)
 
     def test_conclude_when_last_pending_file_validated(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
@@ -585,8 +585,8 @@ class BashValidationObservationTests(unittest.TestCase):
     def test_failed_check_increments_fail_count_and_returns_to_edit(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "ruff check foo.py", ec, status="error")
-        self.assertEqual(ec.validation_fail_count_by_file.get("foo.py"), 1)
-        self.assertNotIn("foo.py", ec.validated_files)
+        self.assertEqual(ec.checks.validation_fail_count_by_file.get("foo.py"), 1)
+        self.assertNotIn("foo.py", ec.checks.validated_files)
         self.assertEqual(ec.workflow_state, "edit")
 
     def test_exhausted_retry_budget_escapes_to_conclude(self):
@@ -595,56 +595,56 @@ class BashValidationObservationTests(unittest.TestCase):
         for _ in range(VALIDATION_RETRY_BUDGET):
             self._run(agent, "ruff check foo.py", ec, status="error")
         self.assertGreaterEqual(
-            ec.validation_fail_count_by_file["foo.py"], VALIDATION_RETRY_BUDGET,
+            ec.checks.validation_fail_count_by_file["foo.py"], VALIDATION_RETRY_BUDGET,
         )
         self.assertEqual(ec.workflow_state, "conclude")
 
     def test_test_file_recorded_in_tests_run_even_on_failure(self):
         agent, ec = self._agent(), self._ctx({"test_foo.py"})
         self._run(agent, "pytest -q test_foo.py", ec, status="error")
-        self.assertIn("test_foo.py", ec.tests_run)
+        self.assertIn("test_foo.py", ec.execution.tests_run)
 
     def test_multiple_named_files_all_validated(self):
         agent, ec = self._agent(), self._ctx({"a.py", "b.py", "c.py"})
         self._run(agent, "ruff check a.py b.py c.py", ec)
-        self.assertEqual(ec.validated_files, {"a.py", "b.py", "c.py"})
+        self.assertEqual(ec.checks.validated_files, {"a.py", "b.py", "c.py"})
 
     def test_whole_project_checker_clears_all_pending(self):
         agent, ec = self._agent(), self._ctx({"src/a.py", "src/b.py"})
         self._run(agent, "ruff check .", ec)
-        self.assertEqual(ec.validated_files, {"src/a.py", "src/b.py"})
+        self.assertEqual(ec.checks.validated_files, {"src/a.py", "src/b.py"})
 
     def test_c_source_compile_marks_it_validated(self):
         # Language-agnostic per-file: naming a C file in a compile command validates it.
         agent, ec = self._agent(), self._ctx({"solver.c"})
         self._run(agent, "gcc solver.c -O2 -o solver.out", ec)
-        self.assertIn("solver.c", ec.validated_files)
+        self.assertIn("solver.c", ec.checks.validated_files)
 
     def test_a_build_is_credited_as_such_and_owes_no_verdict(self):
         # A build sits on its own tier: it needs a toolchain, so nothing demands it,
         # and its exit code is the finding — nothing executed, nothing to judge.
         agent, ec = self._agent(), self._ctx({"solver.c"})
         self._run(agent, "gcc -c solver.c -o solver.o", ec)
-        self.assertEqual(ec.validation_tier_by_file["solver.c"], "compiled")
-        self.assertFalse(ec.runs)
+        self.assertEqual(ec.checks.validation_tier_by_file["solver.c"], "compiled")
+        self.assertFalse(ec.execution.runs)
 
     def test_a_syntax_only_compile_is_the_cheap_check(self):
         # The mandatory floor for a compiled language: it parses the translation unit
         # and emits nothing, so it asks no more of the environment than a linter does.
         agent, ec = self._agent(), self._ctx({"model.f90"})
         self._run(agent, "gfortran -fsyntax-only model.f90", ec)
-        self.assertEqual(ec.validation_tier_by_file["model.f90"], "syntax")
+        self.assertEqual(ec.checks.validation_tier_by_file["model.f90"], "syntax")
 
     def test_running_the_built_binary_is_a_run(self):
         agent, ec = self._agent(), self._ctx({"solver.c"})
         self._run(agent, "gcc -c solver.c -o solver.o", ec)
         self._run(agent, "./solver.out", ec)
-        self.assertIn("./solver.out", ec.runs)
+        self.assertIn("./solver.out", ec.execution.runs)
 
     def test_fortran_compile_failure_counts(self):
         agent, ec = self._agent(), self._ctx({"model.f90"})
         self._run(agent, "gfortran model.f90 -o model.out", ec, status="error")
-        self.assertEqual(ec.validation_fail_count_by_file.get("model.f90"), 1)
+        self.assertEqual(ec.checks.validation_fail_count_by_file.get("model.f90"), 1)
 
     def test_a_chain_checks_and_runs_at_once(self):
         # `py_compile a.py && python a.py`: the checker validates the file, the run is
@@ -652,9 +652,9 @@ class BashValidationObservationTests(unittest.TestCase):
         # other.
         agent, ec = self._agent(), self._ctx({"a.py"})
         self._run(agent, "python -m py_compile a.py && python a.py", ec)
-        self.assertIn("a.py", ec.validated_files)
+        self.assertIn("a.py", ec.checks.validated_files)
         # keyed by identity: `python -m X` reports as X, and flags drop out
-        self.assertIn("py_compile a.py && python a.py", ec.runs)
+        self.assertIn("py_compile a.py && python a.py", ec.execution.runs)
 
 
 class RedTestRunObservationTests(unittest.TestCase):
@@ -679,8 +679,8 @@ class RedTestRunObservationTests(unittest.TestCase):
 
     def _ctx(self, dirty=("tests/test_x.py",)):
         ec = build_execution_context()
-        ec.dirty_written_files = set(dirty)
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = set(dirty)
+        ec.edits.code_mutation_started = True
         return ec
 
     def _run(self, agent, command, ec, status="ok", stdout="x"):
@@ -700,16 +700,16 @@ class RedTestRunObservationTests(unittest.TestCase):
     def test_a_red_suite_behind_a_pipe_is_not_a_pass(self):
         agent, ec = self._agent(), self._ctx()
         self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
-        run = ec.runs[run_ledger_key(self.PIPED)]
+        run = ec.execution.runs[run_ledger_key(self.PIPED)]
         self.assertFalse(run["completed"])
-        self.assertNotIn("tests/test_x.py", ec.validated_files)
+        self.assertNotIn("tests/test_x.py", ec.checks.validated_files)
 
     def test_a_green_suite_behind_a_pipe_still_passes(self):
         # The demotion reads one way only: a report cannot rescue a red exit, and the
         # absence of a red report must not manufacture one.
         agent, ec = self._agent(), self._ctx()
         self._run(agent, self.PIPED, ec, status="ok", stdout=self.GREEN)
-        self.assertTrue(ec.runs[run_ledger_key(self.PIPED)]["completed"])
+        self.assertTrue(ec.execution.runs[run_ledger_key(self.PIPED)]["completed"])
 
     def test_a_red_test_charges_no_per_file_budget(self):
         # Debugging a red test is the work. Charging the file's retry budget here walks a
@@ -717,25 +717,25 @@ class RedTestRunObservationTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx()
         for _ in range(VALIDATION_RETRY_BUDGET + 1):
             self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
-        self.assertEqual(ec.validation_fail_count_by_file, {})
+        self.assertEqual(ec.checks.validation_fail_count_by_file, {})
 
     def test_the_run_itself_still_carries_the_failure(self):
         # Not charging a FILE is not the same as not recording the failure.
         agent, ec = self._agent(), self._ctx()
         self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
         self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
-        self.assertEqual(ec.runs[run_ledger_key(self.PIPED)]["failures"], 2)
+        self.assertEqual(ec.execution.runs[run_ledger_key(self.PIPED)]["failures"], 2)
 
     def test_the_test_file_is_still_recorded_as_run(self):
         agent, ec = self._agent(), self._ctx()
         self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
-        self.assertIn("tests/test_x.py", ec.tests_run)
+        self.assertIn("tests/test_x.py", ec.execution.tests_run)
 
     def test_prose_naming_a_failure_is_not_a_report(self):
         agent, ec = self._agent(), self._ctx()
         self._run(agent, self.PIPED, ec, status="ok",
                   stdout="2 failed to converge before the boundary\n")
-        self.assertTrue(ec.runs[run_ledger_key(self.PIPED)]["completed"])
+        self.assertTrue(ec.execution.runs[run_ledger_key(self.PIPED)]["completed"])
 
     # ── the moving-oracle alert ────────────────────────────────────────────
 
@@ -747,17 +747,17 @@ class RedTestRunObservationTests(unittest.TestCase):
     def test_a_changing_failure_set_arms_the_alert(self):
         agent, ec = self._agent(), self._ctx()
         self._fail(agent, ec, "tests/test_x.py::test_a", "tests/test_x.py::test_b")
-        self.assertIsNone(ec.moving_test_alert)
+        self.assertIsNone(ec.nudges.moving_test_alert)
         self._fail(agent, ec, "tests/test_x.py::test_b")
-        self.assertEqual(ec.moving_test_alert, "tests/test_x.py")
+        self.assertEqual(ec.nudges.moving_test_alert, "tests/test_x.py")
 
     def test_an_unchanging_failure_never_arms_it(self):
         # That is the repeated-call guard's business, and it wants the opposite advice.
         agent, ec = self._agent(), self._ctx()
         for _ in range(4):
             self._fail(agent, ec, "tests/test_x.py::test_b")
-        self.assertIsNone(ec.moving_test_alert)
-        self.assertEqual(ec.test_failure_signatures["tests/test_x.py"],
+        self.assertIsNone(ec.nudges.moving_test_alert)
+        self.assertEqual(ec.execution.test_failure_signatures["tests/test_x.py"],
                          ["tests/test_x.py::test_b"])
 
     def test_it_arms_once_per_file(self):
@@ -766,15 +766,15 @@ class RedTestRunObservationTests(unittest.TestCase):
         self._fail(agent, ec, "tests/test_x.py::test_b")
         self.assertEqual(ec.take("moving_test_alert"), "tests/test_x.py")
         self._fail(agent, ec, "tests/test_x.py::test_c")
-        self.assertIsNone(ec.moving_test_alert)
+        self.assertIsNone(ec.nudges.moving_test_alert)
 
     def test_a_report_with_no_node_ids_records_nothing(self):
         # `| tail -3` can clip every FAILED row away. Unable to tell a moving failure
         # from a stuck one, we do not guess.
         agent, ec = self._agent(), self._ctx()
         self._run(agent, self.PIPED, ec, status="ok", stdout="1 failed, 5 passed in 1s\n")
-        self.assertFalse(ec.runs[run_ledger_key(self.PIPED)]["completed"])
-        self.assertEqual(ec.test_failure_signatures, {})
+        self.assertFalse(ec.execution.runs[run_ledger_key(self.PIPED)]["completed"])
+        self.assertEqual(ec.execution.test_failure_signatures, {})
 
 
 class VerdictGrammarTests(unittest.TestCase):
@@ -875,7 +875,7 @@ class ExitAttributionTests(unittest.TestCase):
                 runtime.record_tool_observation(
                     self._agent(), "bash_run", {"command": cmd},
                     json.dumps({"status": "ok", "stdout": "built\n"}), ec)
-                run = next(iter(ec.runs.values()))
+                run = next(iter(ec.execution.runs.values()))
                 self.assertEqual(run["verdict"], settled, cmd)
 
 
@@ -898,8 +898,8 @@ class RunLedgerKeyTests(unittest.TestCase):
         for tail in (15, 8, 12):
             record_run(ec, f"pytest tests/test_x.py -q | tail -{tail}", completed=False)
             register_run_failure(ec, f"pytest tests/test_x.py -q | tail -{tail}", "red")
-        self.assertEqual(len(ec.runs), 1)
-        self.assertEqual(ec.runs["pytest tests/test_x.py"]["failures"], 3)
+        self.assertEqual(len(ec.execution.runs), 1)
+        self.assertEqual(ec.execution.runs["pytest tests/test_x.py"]["failures"], 3)
 
     def test_distinct_inline_probes_stay_distinct(self):
         # A segment naming no file keeps its argv: otherwise every `python -c` one-liner
@@ -940,7 +940,7 @@ class RunLedgerKeyTests(unittest.TestCase):
         ec = build_execution_context()
         typed = "cd /w && python3 -m pytest tests/test_x.py -q 2>&1 | tail -15"
         record_run(ec, typed, completed=False)
-        self.assertEqual(ec.runs["pytest tests/test_x.py"]["command"], typed)
+        self.assertEqual(ec.execution.runs["pytest tests/test_x.py"]["command"], typed)
 
 
 class PluginValidatorObservationTests(unittest.TestCase):
@@ -963,8 +963,8 @@ class PluginValidatorObservationTests(unittest.TestCase):
 
     def _ctx(self, dirty):
         ec = build_execution_context()
-        ec.dirty_written_files = set(dirty)
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = set(dirty)
+        ec.edits.code_mutation_started = True
         return ec
 
     def test_successful_validate_tool_marks_file_validated(self):
@@ -972,7 +972,7 @@ class PluginValidatorObservationTests(unittest.TestCase):
         runtime.record_tool_observation(
             agent, "pack_validate", {"filepath": "pkg/mod.py"}, '{"status": "ok"}', ec,
         )
-        self.assertIn("pkg/mod.py", ec.validated_files)
+        self.assertIn("pkg/mod.py", ec.checks.validated_files)
         self.assertEqual(ec.workflow_state, "conclude")
 
     def test_failing_validate_tool_leaves_file_pending(self):
@@ -980,7 +980,7 @@ class PluginValidatorObservationTests(unittest.TestCase):
         runtime.record_tool_observation(
             agent, "pack_validate", {"filepath": "pkg/mod.py"}, '{"status": "error"}', ec,
         )
-        self.assertNotIn("pkg/mod.py", ec.validated_files)
+        self.assertNotIn("pkg/mod.py", ec.checks.validated_files)
 
 
 class ExecutionToolObservationTests(unittest.TestCase):
@@ -998,8 +998,8 @@ class ExecutionToolObservationTests(unittest.TestCase):
 
     def _ctx(self, dirty=()):
         ec = build_execution_context()
-        ec.dirty_written_files = set(dirty)
-        ec.code_mutation_started = bool(dirty)
+        ec.edits.dirty_written_files = set(dirty)
+        ec.edits.code_mutation_started = bool(dirty)
         return ec
 
     def _call(self, agent, ec, **args):
@@ -1011,9 +1011,9 @@ class ExecutionToolObservationTests(unittest.TestCase):
         from mimir.client.context.capabilities import CODE_EXEC
         agent, ec = self._agent({CODE_EXEC}), self._ctx({"solver.py"})
         self._call(agent, ec)
-        self.assertTrue(ec.runs["runner"]["completed"])
-        self.assertEqual(ec.runs["runner"]["verdict"], "")
-        self.assertFalse(ec.validated_files)
+        self.assertTrue(ec.execution.runs["runner"]["completed"])
+        self.assertEqual(ec.execution.runs["runner"]["verdict"], "")
+        self.assertFalse(ec.checks.validated_files)
 
     def test_a_declared_path_arg_validates_nothing(self):
         # Naming the file it ran does not make the call a check of that file.
@@ -1021,8 +1021,8 @@ class ExecutionToolObservationTests(unittest.TestCase):
         agent = self._agent({CODE_EXEC}, arg_roles={"path": ("target",)})
         ec = self._ctx({"a.py", "b.py"})
         self._call(agent, ec, target="b.py")
-        self.assertEqual(list(ec.runs), ["runner"])
-        self.assertFalse(ec.validated_files)
+        self.assertEqual(list(ec.execution.runs), ["runner"])
+        self.assertFalse(ec.checks.validated_files)
 
     def test_with_nothing_written_the_run_is_recorded_all_the_same(self):
         # An analysis-only session: no file was touched, but the answer rests entirely
@@ -1030,13 +1030,13 @@ class ExecutionToolObservationTests(unittest.TestCase):
         from mimir.client.context.capabilities import CODE_EXEC
         agent, ec = self._agent({CODE_EXEC}), self._ctx()
         self._call(agent, ec)
-        self.assertIn("runner", ec.runs)
+        self.assertIn("runner", ec.execution.runs)
 
     def test_a_writer_owes_nothing(self):
         from mimir.client.context.capabilities import EDIT
         agent, ec = self._agent({EDIT}), self._ctx({"solver.py"})
         self._call(agent, ec, path="solver.py")
-        self.assertFalse(ec.runs)
+        self.assertFalse(ec.execution.runs)
 
     def test_a_shell_tool_is_left_to_the_bash_observer(self):
         # Mutual exclusion: otherwise the same run is registered twice, once per handler.
@@ -1046,7 +1046,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
         )
         ec = self._ctx({"solver.py"})
         self._call(agent, ec, command="python solver.py")
-        self.assertEqual(list(ec.runs), ["python solver.py"])
+        self.assertEqual(list(ec.execution.runs), ["python solver.py"])
 
     def test_a_failed_call_owes_nothing(self):
         from mimir.client.context.capabilities import CODE_EXEC
@@ -1054,7 +1054,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
         runtime.record_tool_observation(
             agent, "runner", {}, '{"status": "error"}', ec,
         )
-        self.assertFalse(ec.runs)
+        self.assertFalse(ec.execution.runs)
 
 
 
@@ -1069,7 +1069,7 @@ class ValidationTierTests(unittest.TestCase):
     _judge = BashValidationObservationTests._judge
 
     def tier(self, ec, path="foo.py"):
-        return ec.validation_tier_by_file.get(path)
+        return ec.checks.validation_tier_by_file.get(path)
 
     def test_py_compile_is_syntax_tier(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
@@ -1102,31 +1102,31 @@ class ValidationTierTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "ruff check foo.py", ec, status="error")
         self.assertIsNone(self.tier(ec))
-        self.assertNotIn("foo.py", ec.validated_files)
+        self.assertNotIn("foo.py", ec.checks.validated_files)
 
     def test_declared_failing_verdict_overrides_a_green_exit(self):
         # The wave2d boundary test: the script decided its own criteria were unmet,
         # printed so, and returned 0 — which the ledger would otherwise read as a pass.
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python foo.py", ec, stdout="reflection is high\ncheck=fail")
-        self.assertFalse(ec.runs["python foo.py"]["completed"])
+        self.assertFalse(ec.execution.runs["python foo.py"]["completed"])
 
     def test_prose_about_a_failed_check_is_not_a_verdict(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec, stdout="the check failed to converge early on")
-        self.assertTrue(ec.runs["pytest foo.py"]["completed"])
+        self.assertTrue(ec.execution.runs["pytest foo.py"]["completed"])
 
     def test_passing_verdict_never_rescues_a_red_exit(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec, status="error", stdout="check=pass")
-        self.assertFalse(ec.runs["pytest foo.py"]["completed"])
+        self.assertFalse(ec.execution.runs["pytest foo.py"]["completed"])
 
     def test_tier_never_downgrades(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "ruff check foo.py", ec)
         self.assertEqual(self.tier(ec), "static")
         # A weaker check afterwards does not un-prove what the stronger one established.
-        ec.dirty_written_files.add("foo.py")
+        ec.edits.dirty_written_files.add("foo.py")
         self._run(agent, "python -m py_compile foo.py", ec)
         self.assertEqual(self.tier(ec), "static")
 
@@ -1143,7 +1143,7 @@ class ValidationTierTests(unittest.TestCase):
         self.assertEqual(self.tier(ec), "static")
         record_code_edit(ec, "foo.py")
         self.assertIsNone(self.tier(ec))
-        self.assertNotIn("foo.py", ec.validated_files)
+        self.assertNotIn("foo.py", ec.checks.validated_files)
 
     def test_reedit_does_not_retract_a_run(self):
         # A run is a past event and its verdict is a statement about what that event
@@ -1153,20 +1153,20 @@ class ValidationTierTests(unittest.TestCase):
         self._run(agent, "python foo.py", ec)
         self._judge(ec)
         record_code_edit(ec, "foo.py")
-        self.assertEqual(ec.runs["python foo.py"]["verdict"], "pass")
+        self.assertEqual(ec.execution.runs["python foo.py"]["verdict"], "pass")
 
     def test_failed_validation_retracts_the_tier(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "ruff check foo.py", ec)
         self.assertEqual(self.tier(ec), "static")
-        ec.dirty_written_files.add("foo.py")
+        ec.edits.dirty_written_files.add("foo.py")
         self._run(agent, "ruff check foo.py", ec, status="error")
         self.assertIsNone(self.tier(ec))
 
     def test_whole_project_checker_stamps_every_pending_file(self):
         agent, ec = self._agent(), self._ctx({"a.py", "b.py"})
         self._run(agent, "ruff check .", ec)
-        self.assertEqual(ec.validated_files, {"a.py", "b.py"})
+        self.assertEqual(ec.checks.validated_files, {"a.py", "b.py"})
         for p in ("a.py", "b.py"):
             self.assertEqual(self.tier(ec, p), "static")
 
@@ -1199,29 +1199,29 @@ class UncheckableFileTests(unittest.TestCase):
     def test_a_language_with_no_external_checker_is_checked_all_the_same(self):
         from mimir.client.guardrails.workflow import pending_validation_paths
         ec, _ = self._sweep("engine.rs", "fn main() { println!(\"hi\"); }\n")
-        self.assertEqual(ec.unverifiable_files, set())
+        self.assertEqual(ec.checks.unverifiable_files, set())
         self.assertEqual(pending_validation_paths(ec), [])
-        self.assertEqual(ec.validation_tier_by_file["engine.rs"], "structural")
+        self.assertEqual(ec.checks.validation_tier_by_file["engine.rs"], "structural")
 
     def test_a_truncated_file_is_rejected_with_its_line(self):
         from mimir.client.guardrails.workflow import pending_validation_paths
         ec, _ = self._sweep("kernel.cu", "__global__ void k() {\n")
         self.assertEqual(pending_validation_paths(ec), ["kernel.cu"])
-        self.assertIn("kernel.cu", ec.builtin_check_findings)
-        self.assertIn("line 1", ec.builtin_check_findings["kernel.cu"])
+        self.assertIn("kernel.cu", ec.checks.builtin_check_findings)
+        self.assertIn("line 1", ec.checks.builtin_check_findings["kernel.cu"])
 
     def test_only_a_file_that_is_not_text_stays_unverifiable(self):
         from mimir.client.guardrails.workflow import pending_validation_paths
         ec, _ = self._sweep("blob.py", b"\x00\x01\x02")
-        self.assertIn("blob.py", ec.unverifiable_files)
+        self.assertIn("blob.py", ec.checks.unverifiable_files)
         self.assertEqual(pending_validation_paths(ec), [])
 
     def test_re_editing_retracts_the_previous_answer(self):
         from mimir.client.guardrails import observations
         ec, _ = self._sweep("kernel.cu", "__global__ void k() {\n")
         observations.files.record_code_edit(ec, "kernel.cu")
-        self.assertEqual(ec.builtin_check_findings, {})
-        self.assertEqual(ec.builtin_check_stamp, {})
+        self.assertEqual(ec.checks.builtin_check_findings, {})
+        self.assertEqual(ec.checks.builtin_check_stamp, {})
 
     def test_the_sweep_reads_each_revision_once(self):
         from mimir.client.guardrails.builtin_check import sweep_builtin_checks
@@ -1266,8 +1266,8 @@ class MissingCommandImputationTests(unittest.TestCase):
     def _red(self, command, dirty={"solver.c"}, absent=()):
         """Run *command* red, with *absent* commands taken off PATH."""
         ec = build_execution_context()
-        ec.dirty_written_files = set(dirty)
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = set(dirty)
+        ec.edits.code_mutation_started = True
         real = runtime.shell.any_command_on_path
         runtime.shell.any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
         try:
@@ -1281,7 +1281,7 @@ class MissingCommandImputationTests(unittest.TestCase):
 
     def test_a_command_that_is_not_installed_is_not_a_defect_in_the_patch(self):
         ec = self._red("make", absent=("make",))
-        run = ec.runs["make"]
+        run = ec.execution.runs["make"]
         self.assertEqual(run["blocked"], "make is not installed here")
         self.assertEqual(run["failures"], 0)
         # Steers nothing: the wall is not a reason to go back and edit.
@@ -1290,8 +1290,8 @@ class MissingCommandImputationTests(unittest.TestCase):
     def test_a_red_exit_from_an_installed_command_still_drives_the_repair_ladder(self):
         # The default does not move. Every other wall needs the model to claim it.
         ec = self._red("make")
-        self.assertEqual(ec.runs["make"]["blocked"], "")
-        self.assertEqual(ec.runs["make"]["failures"], 1)
+        self.assertEqual(ec.execution.runs["make"]["blocked"], "")
+        self.assertEqual(ec.execution.runs["make"]["failures"], 1)
         self.assertEqual(ec.workflow_state, "edit")
 
     def test_a_stdlib_module_head_is_never_read_as_a_missing_command(self):
@@ -1300,24 +1300,24 @@ class MissingCommandImputationTests(unittest.TestCase):
         # as uninstallable on every box.
         ec = self._red("python -m py_compile foo.py", dirty={"foo.py"},
                        absent=("py_compile",))
-        self.assertEqual(ec.runs.get("python -m py_compile foo.py", {}).get("blocked", ""), "")
+        self.assertEqual(ec.execution.runs.get("python -m py_compile foo.py", {}).get("blocked", ""), "")
 
     def test_a_missing_local_executable_is_a_missed_build(self):
         # `./solver` absent is a build that did not happen — attributable, not a wall.
         ec = self._red("./solver", absent=("./solver",))
-        self.assertEqual(ec.runs["./solver"]["blocked"], "")
-        self.assertEqual(ec.runs["./solver"]["failures"], 1)
+        self.assertEqual(ec.execution.runs["./solver"]["blocked"], "")
+        self.assertEqual(ec.execution.runs["./solver"]["failures"], 1)
 
     def test_an_env_setup_segment_is_not_tested_against_path(self):
         # `source` is a shell builtin: without the effect filter every chain that sets
         # up an environment would read as blocked.
         ec = self._red("source env.sh && make", absent=("source",))
-        self.assertEqual(ec.runs["source env.sh && make"]["blocked"], "")
+        self.assertEqual(ec.execution.runs["source env.sh && make"]["blocked"], "")
 
     def test_a_blocked_run_closes_the_advisory_axis(self):
         ec = self._red("make", absent=("make",))
-        self.assertTrue(ec.exercise_advice_closed)
-        self.assertEqual(ec.exercise_blocked_reason, "make is not installed here")
+        self.assertTrue(ec.execution.exercise_advice_closed)
+        self.assertEqual(ec.execution.exercise_blocked_reason, "make is not installed here")
 
 
 class DeclaredEditSetTests(unittest.TestCase):
@@ -1349,7 +1349,7 @@ class DeclaredEditSetTests(unittest.TestCase):
     def test_a_checklist_declares_the_paths_it_names(self):
         ec = build_execution_context()
         self._declare(ec, ["edit solver.py", "then update helper.py"])
-        self.assertEqual(ec.declared_edit_set, {"solver.py", "helper.py"})
+        self.assertEqual(ec.edits.declared_edit_set, {"solver.py", "helper.py"})
 
     def test_a_revised_checklist_retracts_what_it_no_longer_names(self):
         # The case this exists for: the model plans three files, finds out mid-course
@@ -1359,8 +1359,8 @@ class DeclaredEditSetTests(unittest.TestCase):
         ec = build_execution_context()
         self._declare(ec, ["edit solver.py", "edit helper.py", "edit legacy.py"])
         self._declare(ec, ["edit solver.py", "edit helper.py"])
-        self.assertEqual(ec.declared_edit_set, {"solver.py", "helper.py"})
-        ec.dirty_written_files = {"solver.py", "helper.py"}
+        self.assertEqual(ec.edits.declared_edit_set, {"solver.py", "helper.py"})
+        ec.edits.dirty_written_files = {"solver.py", "helper.py"}
         self.assertEqual(unwritten_declared_files(ec), [])
         self.assertTrue(declared_edit_set_complete(ec))
 
@@ -1368,7 +1368,7 @@ class DeclaredEditSetTests(unittest.TestCase):
         ec = build_execution_context()
         self._declare(ec, ["edit solver.py"])
         self._declare(ec, ["think about it some more"])
-        self.assertEqual(ec.declared_edit_set, set())
+        self.assertEqual(ec.edits.declared_edit_set, set())
 
     def test_a_declared_target_written_under_another_spelling_counts_as_kept(self):
         # A write outside the workspace records an absolute path while the checklist
@@ -1378,8 +1378,8 @@ class DeclaredEditSetTests(unittest.TestCase):
         outside = os.path.abspath(os.path.join(root, "../other/wave_solver_2d.py"))
         for declared in ("wave_solver_2d.py", "../other/wave_solver_2d.py", outside):
             ec = build_execution_context()
-            ec.declared_edit_set = {declared}
-            ec.dirty_written_files = {outside}
+            ec.edits.declared_edit_set = {declared}
+            ec.edits.dirty_written_files = {outside}
             self.assertEqual(unwritten_declared_files(ec), [], declared)
 
     def test_a_declared_path_elsewhere_is_a_different_file(self):
@@ -1387,8 +1387,8 @@ class DeclaredEditSetTests(unittest.TestCase):
         import mimir.client.config.paths as paths
         root = paths.WORKSPACE_ROOT
         ec = build_execution_context()
-        ec.declared_edit_set = {"tests/solver.py"}
-        ec.dirty_written_files = {os.path.abspath(os.path.join(root, "src/solver.py"))}
+        ec.edits.declared_edit_set = {"tests/solver.py"}
+        ec.edits.dirty_written_files = {os.path.abspath(os.path.join(root, "src/solver.py"))}
         self.assertEqual(unwritten_declared_files(ec), ["tests/solver.py"])
 
 
@@ -1411,18 +1411,18 @@ class UnwatchedRunObservationTests(unittest.TestCase):
 
     def test_ids_the_scheduler_listed_are_recorded(self):
         ec = self._run({"status": "ok", "unwatched": ["15306620", "15306621"]})
-        self.assertEqual(ec.unwatched_runs, {"15306620", "15306621"})
+        self.assertEqual(ec.execution.unwatched_runs, {"15306620", "15306621"})
 
     def test_a_failed_call_establishes_nothing(self):
         ec = self._run({"status": "error", "unwatched": ["1"]})
-        self.assertEqual(ec.unwatched_runs, set())
+        self.assertEqual(ec.execution.unwatched_runs, set())
 
     def test_adopting_one_clears_it_in_the_same_turn(self):
         ec = self._run({"status": "ok", "unwatched": ["15306620", "15306621"]})
         self._run({"status": "ok", "job_id": "15306620",
                    "background_job": {"server": "hpc", "job_key": "15306620"}},
                   tool="slurm_watch", ec=ec)
-        self.assertEqual(ec.unwatched_runs, {"15306621"})
+        self.assertEqual(ec.execution.unwatched_runs, {"15306621"})
 
     def test_adopting_an_array_clears_its_tasks(self):
         # The queue lists tasks, the descriptor holds the base: a watcher on the base
@@ -1432,7 +1432,7 @@ class UnwatchedRunObservationTests(unittest.TestCase):
         self._run({"status": "ok", "job_id": "15306621",
                    "background_job": {"server": "hpc", "job_key": "15306621"}},
                   tool="slurm_watch", ec=ec)
-        self.assertEqual(ec.unwatched_runs, {"15306999"})
+        self.assertEqual(ec.execution.unwatched_runs, {"15306999"})
 
     def test_a_re_arming_answer_also_clears(self):
         # `background_jobs` is the plural a status answer carries when it puts a
@@ -1442,19 +1442,19 @@ class UnwatchedRunObservationTests(unittest.TestCase):
                    "background_jobs": [{"server": "bash", "job_key": "42",
                                         "status_op": {"tool": "bash_job", "args": {}}}]},
                   tool="bash_job", ec=ec)
-        self.assertEqual(ec.unwatched_runs, set())
+        self.assertEqual(ec.execution.unwatched_runs, set())
 
     def test_an_ordinary_answer_leaves_the_set_alone(self):
         ec = self._run({"status": "ok", "unwatched": ["42"]})
         self._run({"status": "ok", "stdout": "hello"}, tool="bash_run", ec=ec)
-        self.assertEqual(ec.unwatched_runs, {"42"})
+        self.assertEqual(ec.execution.unwatched_runs, {"42"})
 
     def test_it_is_not_keyed_on_the_tool_name(self):
         # Payload-driven on purpose: a scheduler this toolkit does not have yet reports
         # the same fact in the same field and earns the same reminder, with no table to
         # keep in step.
         ec = self._run({"status": "ok", "unwatched": ["42"]}, tool="lsf_queue")
-        self.assertEqual(ec.unwatched_runs, {"42"})
+        self.assertEqual(ec.execution.unwatched_runs, {"42"})
 
 
 if __name__ == "__main__":

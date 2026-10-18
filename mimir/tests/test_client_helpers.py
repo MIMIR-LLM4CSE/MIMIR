@@ -1,5 +1,5 @@
 from mimir.client.guardrails.observations import Call
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 import contextlib
 import io
 import json
@@ -126,24 +126,15 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_every_field_declares_its_types(self) -> None:
         # The validator checks each field against the types it declares; a field
-        # declared without them would be the one the validator silently skips —
-        # except the loop bookkeeping, which is plumbing, not schema.
-        import dataclasses
+        # declared without them would be the one the validator silently skips.
         m = execution_context_module
-        bookkeeping = {"loop_control", "observed_agent_mode", "skill_suffix",
-                       "checklist_stamp", "repeat_alert", "moving_test_alert",
-                       "moving_test_told", "handback_told", "last_todo_tick_path",
-                       "transient_reminders", "last_call_reminders"}
-        for f in dataclasses.fields(m.ExecutionContext):
-            if f.name in bookkeeping:
-                continue
+        for _home, f in m.leaf_fields():
             with self.subTest(field=f.name):
                 self.assertTrue(f.metadata.get("types"), f"{f.name} declares no types")
 
     def test_declared_traits_are_from_the_known_vocabulary(self) -> None:
         m = execution_context_module
-        import dataclasses
-        for f in dataclasses.fields(m.ExecutionContext):
+        for _home, f in m.leaf_fields():
             name, traits = f.name, f.metadata.get("traits", frozenset())
             with self.subTest(field=name):
                 self.assertTrue(traits <= m.FIELD_TRAITS,
@@ -172,8 +163,7 @@ class ClientHelperTests(unittest.TestCase):
             # association it exists to provide.
             "tool_msg_files",
         }
-        import dataclasses
-        for f in dataclasses.fields(m.ExecutionContext):
+        for _home, f in m.leaf_fields():
             name, traits = f.name, f.metadata.get("traits", frozenset())
             if not name.endswith(("_files", "_paths", "_dirs")):
                 continue
@@ -193,13 +183,11 @@ class ClientHelperTests(unittest.TestCase):
         against the semantics it claims to preserve.
         """
         m = execution_context_module
-        # `pinned_call_ids` is the one CARRY field holding no paths: it names tool
-        # messages, not files, so it carries no FILE_PATH trait and the delete purge
-        # leaves it alone. It is carried because the message it protects is archived
-        # and replayed into the next query, so the protection has to travel with it.
+        # Carried without paths: `pinned_call_ids` (the pinned message is replayed into
+        # the next query), `searched` and `skills_loaded`.
         self.assertEqual(set(m.fields_with(m.CARRY)), {
             "read_files", "delegated_read_files", "existing_paths", "inspected_dirs",
-            "checked_paths", "pinned_call_ids"})
+            "checked_paths", "pinned_call_ids", "searched", "skills_loaded"})
         self.assertEqual(set(m.fields_with(m.FILE_PATH)), {
             "existing_paths", "read_files", "delegated_read_files", "checked_paths",
             "dirty_written_files", "validated_files", "unverifiable_files"})
@@ -224,11 +212,11 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_known_existing_files_has_one_implementation(self) -> None:
         """Policy and nudges asked the same question with two separate walks."""
-        ec = execution_context_module.build_execution_context()
-        ec.read_files.add("a.py")
-        ec.checked_paths.add("c.py")
-        ec.existing_paths.add("d.py")
-        ec.dirty_written_files.add("written.py")  # written ≠ "encountered"
+        ec = build_execution_context()
+        ec.discovery.read_files.add("a.py")
+        ec.discovery.checked_paths.add("c.py")
+        ec.discovery.existing_paths.add("d.py")
+        ec.edits.dirty_written_files.add("written.py")  # written ≠ "encountered"
         shared = execution_context_module.known_existing_files(ec)
         self.assertEqual(shared, {"a.py", "c.py", "d.py"})
 
@@ -240,8 +228,8 @@ class ClientHelperTests(unittest.TestCase):
         policy tells the model not to do.
         """
         m = execution_context_module
-        ec = m.build_execution_context()
-        ec.read_files.add("partial.py")
+        ec = build_execution_context()
+        ec.discovery.read_files.add("partial.py")
         self.assertTrue(m.was_read(ec, "partial.py"))
         # A read also proves the file exists.
         self.assertIn("partial.py", m.known_existing_files(ec))
@@ -251,8 +239,8 @@ class ClientHelperTests(unittest.TestCase):
     def test_a_checked_path_is_not_proof_of_existence(self) -> None:
         """`checked_paths` records that a look happened, including a negative one."""
         m = execution_context_module
-        ec = m.build_execution_context()
-        ec.checked_paths.add("maybe.py")
+        ec = build_execution_context()
+        ec.discovery.checked_paths.add("maybe.py")
         self.assertTrue(m.was_checked_for(ec, "maybe.py"))
         self.assertFalse(m.is_known_to_exist(ec, "maybe.py"))
         self.assertFalse(m.was_read(ec, "maybe.py"))
@@ -265,8 +253,8 @@ class ClientHelperTests(unittest.TestCase):
         """
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        ec = execution_context_module.build_execution_context()
-        ec.existing_paths.add("src/module.py")
+        ec = build_execution_context()
+        ec.discovery.existing_paths.add("src/module.py")
 
         violation = policy_runtime_module.check_write_policy(
             agent, "write_file", {"path": "src/module.py", "content": "x"}, ec,
@@ -279,9 +267,9 @@ class ClientHelperTests(unittest.TestCase):
         """A capped read clears the gate: it asks for a read, not for the whole file."""
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        ec = execution_context_module.build_execution_context()
-        ec.existing_paths.add("src/module.py")
-        ec.read_files.add("src/module.py")
+        ec = build_execution_context()
+        ec.discovery.existing_paths.add("src/module.py")
+        ec.discovery.read_files.add("src/module.py")
 
         violation = policy_runtime_module.check_write_policy(
             agent, "write_file", {"path": "src/module.py", "content": "x"}, ec,
@@ -295,10 +283,10 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.context.capabilities import REMOVE, ToolCaps
 
         m = execution_context_module
-        ec = m.build_execution_context()
+        ec = build_execution_context()
         for field in m.fields_with(m.FILE_PATH):
-            getattr(ec, field).add("doomed.py")
-            getattr(ec, field).add("kept.py")
+            ec.get(field).add("doomed.py")
+            ec.get(field).add("kept.py")
 
         agent = fake_agent(
             tool_caps={"delete_file": ToolCaps(
@@ -312,13 +300,13 @@ class ClientHelperTests(unittest.TestCase):
 
         for field in m.fields_with(m.FILE_PATH):
             with self.subTest(field=field):
-                self.assertNotIn("doomed.py", getattr(ec, field))
-                self.assertIn("kept.py", getattr(ec, field), "an unrelated path was purged too")
+                self.assertNotIn("doomed.py", ec.get(field))
+                self.assertIn("kept.py", ec.get(field), "an unrelated path was purged too")
 
     def test_deleting_a_file_purges_it_from_the_carried_path_fields(self) -> None:
         agent = client_module.MimirAgent()
         m = execution_context_module
-        for field in m.fields_with(m.CARRY):
+        for field in m.fields_with(m.CARRY, m.FILE_PATH) + ("inspected_dirs",):
             agent.carry.fields[field] = {"doomed.py", "kept.py"}
 
         agent.carry.discard_path("doomed.py")
@@ -334,7 +322,7 @@ class ClientHelperTests(unittest.TestCase):
         # The nudge seeder used to default this to 99 where the schema says 0, so the
         # same absent field meant "maximally idle" to the idle gates and "just edited"
         # to the message builder. Declared once, there is one answer.
-        self.assertEqual(execution_context_module.build_execution_context().steps_since_last_edit, 0)
+        self.assertEqual(build_execution_context().edits.steps_since_last_edit, 0)
 
     def test_a_dict_is_not_a_context(self) -> None:
         with self.assertRaises(TypeError):
@@ -342,7 +330,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertIsNone(execution_context_module.ensure_execution_context(None))
 
     def test_template_satisfies_validator(self) -> None:
-        template = execution_context_module.build_execution_context()
+        template = build_execution_context()
         # Round-trips: the generated template must pass the generated validator.
         execution_context_module.validate_execution_context(template)
 
@@ -388,7 +376,7 @@ class ClientHelperTests(unittest.TestCase):
         execution_context = build_execution_context(searched=False, inspected_dirs=set(), checked_paths=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={})
 
         agent.carry.apply(execution_context)
-        self.assertIn("mimir/servers/utilities/server_math.py", execution_context.existing_paths)
+        self.assertIn("mimir/servers/utilities/server_math.py", execution_context.discovery.existing_paths)
 
     def test_write_policy_allows_new_non_code_file_with_direct_target_context(self) -> None:
         agent = client_module.MimirAgent()
@@ -526,7 +514,7 @@ class ClientHelperTests(unittest.TestCase):
         scope = agent.approval_scope("bash_run", {"command": "pip install numpy"})
 
         def refuse() -> dict:
-            execution_context.denial_history.append(
+            execution_context.denials.denial_history.append(
                 {"tool": "bash_run", "scope": scope, "kind": "denied", "reason": "denied by user"})
             return json.loads(agent.denied_tool_result(
                 "bash_run", {"command": "pip install numpy"}, "denied by user", execution_context))
@@ -558,9 +546,9 @@ class ClientHelperTests(unittest.TestCase):
 
         agent.record_denied_tool_call("bash_run", args, execution_context, "denied by user")
         agent.record_denied_tool_call("bash_run", args, execution_context, "denied by user")
-        self.assertEqual(len(execution_context.denied_tool_calls), 2)
-        self.assertEqual(execution_context.denial_history[0]["scope"], scope)
-        self.assertEqual(execution_context.denial_history[0]["kind"], "denied")
+        self.assertEqual(len(execution_context.denials.denied_tool_calls), 2)
+        self.assertEqual(execution_context.denials.denial_history[0]["scope"], scope)
+        self.assertEqual(execution_context.denials.denial_history[0]["kind"], "denied")
         self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
 
         denial_clearing(Call(
@@ -568,8 +556,8 @@ class ClientHelperTests(unittest.TestCase):
             execution_context=execution_context,
         ))
 
-        self.assertEqual(execution_context.denied_tool_calls, [])
-        self.assertEqual(len(execution_context.denial_history), 2)
+        self.assertEqual(execution_context.denials.denied_tool_calls, [])
+        self.assertEqual(len(execution_context.denials.denial_history), 2)
         self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
 
     def test_handback_nudge_fires_past_its_frequency_cap(self) -> None:
@@ -782,7 +770,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(ec.discovery_signal_count(execution_context), 0)
         for signal in ec.DISCOVERY_EVIDENCE_SIGNALS:
             with self.subTest(signal=signal):
-                self.assertFalse(getattr(execution_context, signal))
+                self.assertFalse(execution_context.get(signal))
 
     # ── step budget ───────────────────────────────────────────────────────────
 
@@ -1044,7 +1032,7 @@ class ClientHelperTests(unittest.TestCase):
 
         # grep message evicted, but src/app.py read stays valid.
         self.assertNotIn("g1", [m.get("tool_call_id") for m in messages])
-        self.assertIn("src/app.py", execution_context.read_files)
+        self.assertIn("src/app.py", execution_context.discovery.read_files)
 
     def test_trim_history_invalidates_read_files_for_evicted_read(self) -> None:
         # When the actual read message is evicted, its file IS invalidated so the
@@ -1060,8 +1048,8 @@ class ClientHelperTests(unittest.TestCase):
             messages, char_budget=1_000, execution_context=execution_context
         )
 
-        self.assertNotIn("src/old.py", execution_context.read_files)
-        self.assertIn("src/recent.py", execution_context.read_files)
+        self.assertNotIn("src/old.py", execution_context.discovery.read_files)
+        self.assertIn("src/recent.py", execution_context.discovery.read_files)
 
     def test_trim_history_keeps_the_results_of_the_latest_tool_call_turn(self) -> None:
         # A sub-agent's whole answer comes back as the newest tool result. Evicting
@@ -1526,7 +1514,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertIn("write target was declared", messages[0]["content"])
         self.assertIn("server_science.py", messages[0]["content"])
-        self.assertEqual(execution_context.nudge_counts["creation"], 1)
+        self.assertEqual(execution_context.nudges.nudge_counts["creation"], 1)
 
     def _pending_case(self, *, query, execution_context):
         """(probe, fired) for one context — the probe read first, then the real call."""
@@ -1543,7 +1531,7 @@ class ClientHelperTests(unittest.TestCase):
         # Probing is read-only: it must not spend a budget or announce anything, or
         # the real call right after it would behave differently for having been asked.
         self.assertEqual(events, [])
-        self.assertEqual(execution_context.nudge_counts, {})
+        self.assertEqual(execution_context.nudges.nudge_counts, {})
 
         messages: list = []
         fired = nudge_logic.maybe_append_nudge(
@@ -1744,7 +1732,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertTrue(
             nudge_logic.predicates.should_nudge_validation(ctx)
         )
-        ctx.validated_files = {"solver.py"}
+        ctx.checks.validated_files = {"solver.py"}
         self.assertFalse(
             nudge_logic.predicates.should_nudge_validation(ctx)
         )
@@ -1821,7 +1809,7 @@ class ClientHelperTests(unittest.TestCase):
             model = "big-model"
 
         for level in ("light", "off"):
-            execution_context.nudge_counts = {}
+            execution_context.nudges.nudge_counts = {}
             messages: list = []
             agent = _FakeAgent()
             agent.enforcement = level
@@ -1860,7 +1848,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=messages,
         )
         self.assertTrue(fired, "denial (verification) nudge must fire even at enforcement=off")
-        self.assertEqual(execution_context.nudge_counts["denial"], 1)
+        self.assertEqual(execution_context.nudges.nudge_counts["denial"], 1)
 
     def test_guidance_nudge_gated_by_enforcement_off(self) -> None:
         # A guidance nudge (creation) fires at strict but is fully suppressed at off.
@@ -1892,7 +1880,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=messages,
         )
         self.assertTrue(fired, "creation guidance nudge should fire at enforcement=strict")
-        self.assertEqual(ctx.nudge_counts["creation"], 1)
+        self.assertEqual(ctx.nudges.nudge_counts["creation"], 1)
 
         # off → guidance layer skipped entirely
         ctx = _fresh_ctx()
@@ -1931,16 +1919,16 @@ class ClientHelperTests(unittest.TestCase):
             agent=_Agent(), query=query, active_mode="agent",
             execution_context=existing, messages=[],
         ))
-        self.assertEqual(existing.nudge_counts.get("blast_radius"), 1)
-        self.assertIsNone(existing.nudge_counts.get("creation"))
+        self.assertEqual(existing.nudges.nudge_counts.get("blast_radius"), 1)
+        self.assertIsNone(existing.nudges.nudge_counts.get("creation"))
 
         brand_new = _ctx(exists=False)
         self.assertTrue(nudge_logic.maybe_append_nudge(
             agent=_Agent(), query=query, active_mode="agent",
             execution_context=brand_new, messages=[],
         ))
-        self.assertEqual(brand_new.nudge_counts.get("creation"), 1)
-        self.assertIsNone(brand_new.nudge_counts.get("blast_radius"))
+        self.assertEqual(brand_new.nudges.nudge_counts.get("creation"), 1)
+        self.assertIsNone(brand_new.nudges.nudge_counts.get("blast_radius"))
 
     def test_light_subset_drops_procedural_guidance_but_keeps_blast_radius(self) -> None:
         # The deliberate "light" line (agent mode): procedural nudges (creation/state/
@@ -1962,7 +1950,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=[],
         )
         self.assertFalse(fired, "creation (procedural) must NOT fire at light")
-        self.assertIsNone(creation_ctx.nudge_counts.get("creation"))
+        self.assertIsNone(creation_ctx.nudges.nudge_counts.get("creation"))
 
         # blast_radius IS in the light subset: a declared target that already exists,
         # files read, no search yet. `existing_paths` is what makes `mod.py` a
@@ -1976,7 +1964,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=[],
         )
         self.assertTrue(fired, "blast_radius must fire at light")
-        self.assertEqual(blast_ctx.nudge_counts.get("blast_radius"), 1)
+        self.assertEqual(blast_ctx.nudges.nudge_counts.get("blast_radius"), 1)
 
     def test_light_plan_fires_no_guidance(self) -> None:
         # light-plan = no guidance nudges (plan relies on its explore phase).
@@ -2022,7 +2010,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=messages,
         )
         self.assertTrue(fired, "regression nudge should fire for an un-run existing test")
-        self.assertEqual(ctx.nudge_counts["exercise"], 1)
+        self.assertEqual(ctx.nudges.nudge_counts["exercise"], 1)
         self.assertIn("test_foo.py", messages[0]["content"])
 
     def test_regression_nudge_silent_when_test_was_run(self) -> None:
@@ -2308,7 +2296,7 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.query_engine.verification import split_answer_ledger
 
         ec = client_module.MimirAgent.new_execution_context()
-        ec.dirty_written_files.add("solver.py")
+        ec.edits.dirty_written_files.add("solver.py")
         return split_answer_ledger(_annotate_answer_with_changes("Done.", ec))[1]
 
     def test_cli_ledger_collapses_to_one_line_pointing_at_the_command(self) -> None:

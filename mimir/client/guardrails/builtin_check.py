@@ -512,8 +512,8 @@ def sweep_builtin_checks(execution_context: ExecutionContext, absolute_path_fn=N
     """
 
     resolve = absolute_path_fn or os.path.abspath
-    stamps = execution_context.builtin_check_stamp
-    findings = execution_context.builtin_check_findings
+    stamps = execution_context.checks.builtin_check_stamp
+    findings = execution_context.checks.builtin_check_findings
 
     for path in pending_validation_paths(execution_context):
         absolute = resolve(path)
@@ -524,7 +524,7 @@ def sweep_builtin_checks(execution_context: ExecutionContext, absolute_path_fn=N
         outcome = check_file(absolute)
         if outcome.status == STATUS_UNREADABLE:
             findings.pop(path, None)
-            execution_context.unverifiable_files.add(path)
+            execution_context.checks.unverifiable_files.add(path)
         elif outcome.status == STATUS_FAIL:
             findings[path] = outcome.detail
             register_validation_failure(execution_context, path, outcome.tier)
@@ -535,6 +535,6 @@ def sweep_builtin_checks(execution_context: ExecutionContext, absolute_path_fn=N
 
 def builtin_check_failures(execution_context: ExecutionContext) -> dict[str, str]:
     """Files the floor rejected and that are still dirty, path -> diagnostic."""
-    findings = execution_context.builtin_check_findings or {}
-    validated = execution_context.validated_files
+    findings = execution_context.checks.builtin_check_findings or {}
+    validated = execution_context.checks.validated_files
     return {p: d for p, d in sorted(findings.items()) if p not in validated}

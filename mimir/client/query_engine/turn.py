@@ -100,19 +100,19 @@ async def run_agent_query(
     execution_context = agent.new_execution_context()
     # Set here rather than passed in: a front-end's stand-in agent supplies its own
     # zero-argument factory, and the root is a fact about the agent either way.
-    execution_context.workspace_root = getattr(agent, "workspace_root", "")
+    execution_context.bookkeeping.workspace_root = getattr(agent, "workspace_root", "")
     agent.carry.apply(execution_context)
     validate_execution_context(execution_context)
     active_mode = normalize_mode(mode or agent.mode)
     # Baseline for the live-mode check: only a *later* change to agent.mode is a
     # user switching mid-run. Seeded from the agent, not from active_mode, so an
     # explicit per-query override never registers as one. See _live_mode.
-    execution_context.observed_agent_mode = agent.mode
+    execution_context.bookkeeping.observed_agent_mode = agent.mode
 
     system_content = await agent.build_system_content(active_mode=active_mode)
 
     # Store the active todo file path so _sync_checklist can watch it for changes.
-    execution_context.todo_file_path = agent.todo_file()
+    execution_context.plan.todo_file_path = agent.todo_file()
 
     # Append the query unless history already ends with it (the WS server appends it, the CLI
     # does not): two identical user turns break strict tokenizers.
@@ -177,21 +177,21 @@ async def run_agent_query(
             + skill["content"]
         )
         messages[0]["content"] = system_content
-        execution_context.skill_suffix = system_content[len(_base_system_content):]
+        execution_context.bookkeeping.skill_suffix = system_content[len(_base_system_content):]
         # Counted among the loaded skills, with no call id: there is no tool result to
         # pin because the body is in messages[0], which nothing evicts. What this buys
         # is that the model cannot pull what it has already been given, and that the
         # cap counts a body the user put there the same as one the model asked for.
-        execution_context.skills_loaded[skill_name] = ""
+        execution_context.bookkeeping.skills_loaded[skill_name] = ""
 
     # messages[0] now carries the checklist as it stands at query start; _sync_checklist
     # rewrites it from here on, and only when the file behind it actually changes. The
     # mtime is seeded rather than left unset so an unchanged checklist costs nothing on
     # the first step of every query.
-    _todo_fp = execution_context.todo_file_path
+    _todo_fp = execution_context.plan.todo_file_path
     if _todo_fp:
         try:
-            execution_context.checklist_stamp = os.stat(_todo_fp).st_mtime_ns
+            execution_context.plan.checklist_stamp = os.stat(_todo_fp).st_mtime_ns
         except OSError:
             pass
 

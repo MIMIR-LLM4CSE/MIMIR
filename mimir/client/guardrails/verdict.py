@@ -114,4 +114,4 @@ def _apply_blocked(
 def _close_exercise_advice(execution_context: ExecutionContext, verdict: str) -> None:
     """``unknown`` and ``blocked`` close the build-it/run-it recommendation for this query."""
     if verdict in ("unknown", "blocked"):
-        execution_context.exercise_advice_closed = True
+        execution_context.execution.exercise_advice_closed = True

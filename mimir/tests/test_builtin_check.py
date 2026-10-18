@@ -4,7 +4,7 @@ nothing installed, and does not accuse legal code (each case has a clean counter
 """
 
 from __future__ import annotations
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 
 import os
 import subprocess
@@ -190,16 +190,16 @@ class SweepTests(unittest.TestCase):
         _write(self.dir, "engine.rs", "fn main() {}\n")
         ec = self._context("engine.rs")
         sweep_builtin_checks(ec, self._resolver())
-        self.assertEqual(ec.validated_files, {"engine.rs"})
-        self.assertEqual(ec.validation_tier_by_file["engine.rs"], "structural")
+        self.assertEqual(ec.checks.validated_files, {"engine.rs"})
+        self.assertEqual(ec.checks.validation_tier_by_file["engine.rs"], "structural")
 
     def test_a_rejected_file_charges_the_retry_budget_and_keeps_the_diagnostic(self) -> None:
         _write(self.dir, "solver.py", "def f(:\n")
         ec = self._context("solver.py")
         sweep_builtin_checks(ec, self._resolver())
-        self.assertEqual(ec.validated_files, set())
-        self.assertEqual(ec.validation_fail_count_by_file["solver.py"], 1)
-        self.assertIn("line 1", ec.builtin_check_findings["solver.py"])
+        self.assertEqual(ec.checks.validated_files, set())
+        self.assertEqual(ec.checks.validation_fail_count_by_file["solver.py"], 1)
+        self.assertIn("line 1", ec.checks.builtin_check_findings["solver.py"])
         self.assertEqual(ec.workflow_state, "edit")
 
     def test_an_unchanged_file_is_not_re_checked(self) -> None:
@@ -210,12 +210,12 @@ class SweepTests(unittest.TestCase):
         sweep_builtin_checks(ec, self._resolver())
         # Three calls, one charge: the gate is consulted from several places and the
         # budget must not drain just because the loop asked more than once.
-        self.assertEqual(ec.validation_fail_count_by_file["solver.py"], 1)
+        self.assertEqual(ec.checks.validation_fail_count_by_file["solver.py"], 1)
 
         _write(self.dir, "solver.py", "def g(:\n")
         os.utime(path, (0, 0))
         sweep_builtin_checks(ec, self._resolver())
-        self.assertEqual(ec.validation_fail_count_by_file["solver.py"], 2)
+        self.assertEqual(ec.checks.validation_fail_count_by_file["solver.py"], 2)
 
     def test_a_repair_clears_the_finding(self) -> None:
         _write(self.dir, "solver.py", "def f(:\n")
@@ -224,8 +224,8 @@ class SweepTests(unittest.TestCase):
         path = _write(self.dir, "solver.py", "def f():\n    return 1\n")
         os.utime(path, (0, 0))
         sweep_builtin_checks(ec, self._resolver())
-        self.assertEqual(ec.builtin_check_findings, {})
-        self.assertEqual(ec.validated_files, {"solver.py"})
+        self.assertEqual(ec.checks.builtin_check_findings, {})
+        self.assertEqual(ec.checks.validated_files, {"solver.py"})
 
 
 if __name__ == "__main__":

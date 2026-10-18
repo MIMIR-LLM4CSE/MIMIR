@@ -210,23 +210,23 @@ class ScratchIsNotADeliverableTests(unittest.TestCase):
         self.assertFalse(is_scratch_path(""))
 
     def test_scratch_write_is_not_recorded_as_produced_work(self):
-        from mimir.client.context.execution_context import build_execution_context
+        from mimir.tests.support.context import build_execution_context
         from mimir.client.guardrails.observations.files import record_code_edit
         ec = build_execution_context()
         record_code_edit(ec, os.path.join(self.scratch, "probe.py"))
-        self.assertFalse(ec.dirty_written_files)
-        self.assertFalse(ec.code_mutation_started)
+        self.assertFalse(ec.edits.dirty_written_files)
+        self.assertFalse(ec.edits.code_mutation_started)
 
     def test_workspace_write_is_still_recorded(self):
-        from mimir.client.context.execution_context import build_execution_context
+        from mimir.tests.support.context import build_execution_context
         from mimir.client.guardrails.observations.files import record_code_edit
         ec = build_execution_context()
         record_code_edit(ec, "solver.py")
-        self.assertIn("solver.py", ec.dirty_written_files)
-        self.assertTrue(ec.code_mutation_started)
+        self.assertIn("solver.py", ec.edits.dirty_written_files)
+        self.assertTrue(ec.edits.code_mutation_started)
 
     def test_scratch_work_produces_no_ledger(self):
-        from mimir.client.context.execution_context import build_execution_context
+        from mimir.tests.support.context import build_execution_context
         from mimir.client.guardrails.observations.files import record_code_edit
         from mimir.client.query_engine.finalize import _annotate_answer_with_changes
         ec = build_execution_context()

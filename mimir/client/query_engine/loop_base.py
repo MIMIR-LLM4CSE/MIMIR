@@ -96,12 +96,12 @@ def _live_mode(agent: AgentPort, active_mode: str, execution_context: ExecutionC
     A context never seeded takes the agent's mode as its baseline.
     """
     val = agent.mode.strip().lower()
-    if execution_context.observed_agent_mode is None:
-        execution_context.observed_agent_mode = val
+    if execution_context.bookkeeping.observed_agent_mode is None:
+        execution_context.bookkeeping.observed_agent_mode = val
         return active_mode
-    if val not in VALID_MODES or val == execution_context.observed_agent_mode:
+    if val not in VALID_MODES or val == execution_context.bookkeeping.observed_agent_mode:
         return active_mode
-    execution_context.observed_agent_mode = val
+    execution_context.bookkeeping.observed_agent_mode = val
     return val
 
 
@@ -115,7 +115,7 @@ async def rebuild_system_content(
     Every rebuild site goes through here, so none drops the skill.
     """
     content = await agent.build_system_content(active_mode=active_mode)
-    return content + (execution_context.skill_suffix or "")
+    return content + (execution_context.bookkeeping.skill_suffix or "")
 
 
 async def _sync_thinking_directive(
@@ -190,7 +190,7 @@ def _note_empty_turn(msg: dict, messages: list[dict], execution_context: Executi
     tail = " → ".join(str(m.get("role")) for m in messages[-6:])
     # Read after the fact: the reminders that were in this prompt have already been
     # taken back out by the time the turn is judged empty.
-    cats = list(execution_context.last_call_reminders or [])
+    cats = list(execution_context.nudges.last_call_reminders or [])
     emit({"type": "status", "text": (
         f"  ⓘ Empty turn diagnostics — step {step}, {len(messages)} messages, "
         f"finish_reason={msg.get('finish_reason') or 'none'}, "

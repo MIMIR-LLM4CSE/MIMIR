@@ -48,12 +48,12 @@ from .tiers import guidance_enabled
 
 def _all_pending_budget_exhausted(execution_context: ExecutionContext) -> bool:
     """True when every dirty file is validated, budget-exhausted, or not checkable at all."""
-    dirty = execution_context.dirty_written_files
+    dirty = execution_context.edits.dirty_written_files
     if not dirty:
         return False
-    validated = execution_context.validated_files
-    unverifiable = execution_context.unverifiable_files or set()
-    fail_counts = execution_context.validation_fail_count_by_file
+    validated = execution_context.checks.validated_files
+    unverifiable = execution_context.checks.unverifiable_files or set()
+    fail_counts = execution_context.checks.validation_fail_count_by_file
     return all(
         f in validated or f in unverifiable
         or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
@@ -67,12 +67,10 @@ def has_declared_write_target(execution_context: ExecutionContext) -> bool:
     A declared edit target or a recorded plan; reading files is not commitment. The gate
     for nudges that would otherwise push a mutation on a keyword alone.
     """
-    for field in ("planned_edit_targets", "dirty_written_files"):
-        value = getattr(execution_context, field)
-        if isinstance(value, set) and value:
-            return True
+    if execution_context.edits.planned_edit_targets or execution_context.edits.dirty_written_files:
+        return True
     return bool(
-        execution_context.todo_written or execution_context.plan_written
+        execution_context.plan.todo_written or execution_context.plan.plan_written
     )
 
 
@@ -82,8 +80,8 @@ def _declared_targets_already_existing(execution_context: ExecutionContext) -> b
     Tells changing (``blast_radius``) from creating (``creation``) by a fact about the
     workspace; reads ``planned_edit_targets`` and ``declared_edit_set``.
     """
-    declared = set(execution_context.planned_edit_targets or ()) | set(
-        execution_context.declared_edit_set or ()
+    declared = set(execution_context.edits.planned_edit_targets or ()) | set(
+        execution_context.edits.declared_edit_set or ()
     )
     if not declared:
         return False
@@ -92,9 +90,9 @@ def _declared_targets_already_existing(execution_context: ExecutionContext) -> b
 
 def _retryable_pending_validation_exists(execution_context: ExecutionContext) -> bool:
     """Return True if there is at least one pending file that still has retry budget."""
-    dirty = execution_context.dirty_written_files or set()
-    validated = execution_context.validated_files or set()
-    fail_counts = execution_context.validation_fail_count_by_file
+    dirty = execution_context.edits.dirty_written_files or set()
+    validated = execution_context.checks.validated_files or set()
+    fail_counts = execution_context.checks.validation_fail_count_by_file
     pending = set(dirty) - set(validated)
     if not pending:
         return False
@@ -103,7 +101,7 @@ def _retryable_pending_validation_exists(execution_context: ExecutionContext) ->
 
 def untested_edited_sources(execution_context: ExecutionContext) -> list[tuple[str, str]]:
     """``[(source, test)]``: edited Python sources whose ``test_<stem>.py`` exists and did not run."""
-    dirty = execution_context.dirty_written_files or set()
+    dirty = execution_context.edits.dirty_written_files or set()
     edited_sources = [
         p for p in dirty
         if p.endswith(".py")
@@ -113,7 +111,7 @@ def untested_edited_sources(execution_context: ExecutionContext) -> list[tuple[s
         return []
 
     known = known_existing_files(execution_context)
-    tests_run = execution_context.tests_run or set()
+    tests_run = execution_context.execution.tests_run or set()
     known_by_base: dict[str, str] = {os.path.basename(p): p for p in known}
 
     pairs: list[tuple[str, str]] = []
@@ -128,7 +126,7 @@ def untested_edited_sources(execution_context: ExecutionContext) -> list[tuple[s
 
 
 def _has_non_doc_code_changes(execution_context: ExecutionContext) -> bool:
-    dirty = execution_context.dirty_written_files or set()
+    dirty = execution_context.edits.dirty_written_files or set()
     if not dirty:
         return False
     return any(not p.endswith(".md") for p in dirty)
@@ -165,7 +163,7 @@ def first_failing_edit_path(execution_context: ExecutionContext) -> str | None:
     Keyed on the per-file failure streak (any patch), so it reflects a model that keeps
     trying differently-anchored edits on the same file, not just identical retries.
     """
-    streaks = execution_context.edit_fail_streak_by_file
+    streaks = execution_context.edits.edit_fail_streak_by_file
     for path, fails in streaks.items():
         if fails >= 1:
             return path
@@ -257,8 +255,8 @@ def should_nudge_env_resolution(
     """A check/run failed for a missing module and envs were not enumerated yet."""
     return (
         guidance_enabled("env_resolution", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.unresolved_modules)
-        and not execution_context.env_probed
+        and bool(execution_context.env.unresolved_modules)
+        and not execution_context.env.env_probed
         and nudge_count(execution_context, "env_resolution") < NUDGE_MAX_ENV_RESOLUTION
     )
 
@@ -269,7 +267,7 @@ def should_nudge_env_cleanup(
     """The agent mutated the environment and is now concluding — offer cleanup."""
     return (
         guidance_enabled("env_cleanup", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.env_mutations)
+        and bool(execution_context.env.env_mutations)
         and execution_context.workflow_state == "conclude"
         and nudge_count(execution_context, "env_cleanup") < NUDGE_MAX_ENV_CLEANUP
     )
@@ -284,7 +282,7 @@ def should_nudge_unwatched_run(
     """
     return (
         guidance_enabled("unwatched_run", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.unwatched_runs)
+        and bool(execution_context.execution.unwatched_runs)
         and execution_context.workflow_state == "conclude"
         and nudge_count(execution_context, "unwatched_run") < NUDGE_MAX_UNWATCHED_RUN
     )
@@ -297,7 +295,7 @@ def should_nudge_doc(
     return (
         active_mode == "agent"
         and guidance_enabled("doc", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.code_mutation_started)
+        and bool(execution_context.edits.code_mutation_started)
         and execution_context.workflow_state in ("validate", "conclude")
         and not has_pending_validation(execution_context)
         and _has_non_doc_code_changes(execution_context)
@@ -311,7 +309,7 @@ def should_nudge_state(
     """Softer catch-all: editing paused post-validation but not concluded yet."""
     return (
         guidance_enabled("state", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.code_mutation_started)
+        and bool(execution_context.edits.code_mutation_started)
         and execution_context.workflow_state != "conclude"
         and nudge_count(execution_context, "state") < NUDGE_MAX_STATE
         and idle_steps(execution_context) >= NUDGE_STATE_IDLE_STEPS
@@ -330,12 +328,12 @@ def should_nudge_blast_radius(
         active_mode == "agent"
         and guidance_enabled("blast_radius", enforcement=level, active_mode=active_mode)
         and execution_context.workflow_state == "edit"
-        and not execution_context.code_mutation_started
+        and not execution_context.edits.code_mutation_started
         and has_declared_write_target(execution_context)
         and _declared_targets_already_existing(execution_context)
         and nudge_count(execution_context, "blast_radius") < NUDGE_MAX_BLAST_RADIUS
-        and bool(execution_context.read_files)
-        and int(execution_context.search_tool_calls) < 1
+        and bool(execution_context.discovery.read_files)
+        and int(execution_context.discovery.search_tool_calls) < 1
     )
 
 
@@ -349,11 +347,11 @@ def should_nudge_creation(
     return (
         active_mode == "agent"
         and guidance_enabled("creation", enforcement=level, active_mode=active_mode)
-        and not execution_context.code_mutation_started
+        and not execution_context.edits.code_mutation_started
         and execution_context.workflow_state in ("edit", "discover")
         and has_declared_write_target(execution_context)
         and not _declared_targets_already_existing(execution_context)
-        and bool(execution_context.read_files)
+        and bool(execution_context.discovery.read_files)
         and nudge_count(execution_context, "creation") < NUDGE_MAX_CREATION
     )
 
@@ -367,11 +365,11 @@ def should_nudge_todo(
     substantive actions run.
     """
     touched = (
-        execution_context.dirty_written_files
-        | execution_context.planned_edit_targets
+        execution_context.edits.dirty_written_files
+        | execution_context.edits.planned_edit_targets
     )
     multi_file = (
-        bool(execution_context.code_mutation_started)
+        bool(execution_context.edits.code_mutation_started)
         and execution_context.workflow_state == "edit"
         and len(touched) >= TODO_NUDGE_MULTIFILE_THRESHOLD
     )
@@ -379,7 +377,7 @@ def should_nudge_todo(
     return (
         active_mode == "agent"
         and guidance_enabled("todo", enforcement=level, active_mode=active_mode)
-        and not execution_context.todo_written
+        and not execution_context.plan.todo_written
         # A checklist is only useful while work remains. The many-ops trigger has no
         # workflow-state bound, so in a long task that never wrote one it would fire
         # at the very end, after the work is done. Suppressed once concluding: a plan

@@ -32,7 +32,6 @@ from .context.paths import absolute_workspace_path, normalize_workspace_path
 from .config.preferences import load_subagent_level, load_temperature
 from .context import (
         SOURCE_FILE_EXTENSIONS,
-        build_execution_context,
         validate_execution_context,
 )
 from .context.capabilities import (
@@ -236,11 +235,8 @@ class MimirAgent:
         )
 
     @staticmethod
-    def new_execution_context(workspace_root: str = "") -> ExecutionContext:
-        context = build_execution_context()
-        # The root travels on the context because the consumers that need it — the
-        # declared-edit tracker among them — never see the agent.
-        context.workspace_root = workspace_root
+    def new_execution_context() -> ExecutionContext:
+        context = ExecutionContext()
         validate_execution_context(context)
         return context
 
@@ -275,7 +271,7 @@ class MimirAgent:
         fallback_tools = list(self.approvals.fallback_suggestions(tool_name))
         scope = self.approval_scope(tool_name, arguments)
         kind = denial_kind(note)
-        execution_context.denied_tool_calls.append({
+        execution_context.denials.denied_tool_calls.append({
             "tool": tool_name,
             "path": self.normalize_workspace_path(arguments.get("path") or arguments.get("filepath")),
             "fallback_tools": fallback_tools,
@@ -283,7 +279,7 @@ class MimirAgent:
             "kind": kind,
             "reason": note,
         })
-        execution_context.denial_history.append({
+        execution_context.denials.denial_history.append({
             "tool": tool_name,
             "scope": scope,
             "kind": kind,
@@ -422,7 +418,7 @@ class MimirAgent:
         """
 
         scope = self.approval_scope(tool_name, arguments)
-        context = execution_context if execution_context is not None else build_execution_context()
+        context = execution_context if execution_context is not None else ExecutionContext()
         stage = denial_stage(context, scope)
         refusals = denial_scope_count(context, scope)
 

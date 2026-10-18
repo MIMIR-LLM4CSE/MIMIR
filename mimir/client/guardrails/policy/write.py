@@ -33,7 +33,7 @@ def has_delete_context(path: str, execution_context: ExecutionContext) -> bool:
     """
     parent = os.path.dirname(path) or "."
 
-    parent_known = parent in execution_context.inspected_dirs
+    parent_known = parent in execution_context.discovery.inspected_dirs
     return is_known_to_exist(execution_context, path) and parent_known
 
 
@@ -71,7 +71,7 @@ def check_write_policy(
         return None
 
     is_code_target = agent.is_code_filepath(path)
-    repeated_failures = execution_context.edit_loop_state.get(path, (None, 0))[1]
+    repeated_failures = execution_context.edits.edit_loop_state.get(path, (None, 0))[1]
 
     if has_cap(tool_name, REMOVE, agent.tool_caps):
         has_direct_context = has_delete_context(path, execution_context)

@@ -1,7 +1,7 @@
 """Loading a skill mid-run with ``load_skill``: who may, how often, and the pin that keeps
 the body in context, since it lives in a tool result the budget would otherwise evict.
 """
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 import json
 import types
 import unittest
@@ -60,14 +60,14 @@ class SkillPullGateTests(unittest.TestCase):
         # "pending", not the call id: the result has not come back yet. What the
         # reservation buys is a cap that two parallel pulls in one step cannot both
         # pass with one slot left.
-        self.assertEqual(context.skills_loaded, {"fix-bug": "pending"})
+        self.assertEqual(context.bookkeeping.skills_loaded, {"fix-bug": "pending"})
 
     def test_another_tool_is_not_this_gate_s_business(self) -> None:
         context = build_execution_context()
         self.assertIsNone(
             check_skill_pull(_agent(), "read_file_lines", {"name": "fix-bug"}, context)
         )
-        self.assertFalse(context.skills_loaded)
+        self.assertFalse(context.bookkeeping.skills_loaded)
 
     def test_the_same_skill_twice_is_refused_pointing_at_the_earlier_result(self) -> None:
         context = build_execution_context()
@@ -136,8 +136,8 @@ class PinRecordingTests(unittest.TestCase):
     def test_a_successful_pull_is_promoted_and_pinned(self) -> None:
         context = build_execution_context(skills_loaded={"fix-bug": "pending"})
         self._pin(json.dumps({"status": "ok", "instructions": "method"}), context)
-        self.assertEqual(context.skills_loaded, {"fix-bug": "call-1"})
-        self.assertEqual(context.pinned_call_ids, {"call-1"})
+        self.assertEqual(context.bookkeeping.skills_loaded, {"fix-bug": "call-1"})
+        self.assertEqual(context.bookkeeping.pinned_call_ids, {"call-1"})
 
     def test_a_refused_pull_releases_the_slot_it_reserved(self) -> None:
         """A refusal must not charge the budget of the thing it refused.
@@ -147,16 +147,16 @@ class PinRecordingTests(unittest.TestCase):
         """
         context = build_execution_context(skills_loaded={"fix-bug": "pending"})
         self._pin(json.dumps({"status": "error", "error": "no"}), context)
-        self.assertEqual(context.skills_loaded, {})
-        self.assertNotIn("call-1", context.pinned_call_ids)
+        self.assertEqual(context.bookkeeping.skills_loaded, {})
+        self.assertNotIn("call-1", context.bookkeeping.pinned_call_ids)
 
     def test_a_result_for_any_other_tool_pins_nothing(self) -> None:
         context = build_execution_context()
         dispatch_module._pin_loaded_skill(
             _agent(), "read_file_lines", {"name": "fix-bug"}, "call-9", "ok", context,
         )
-        self.assertFalse(context.skills_loaded)
-        self.assertFalse(context.pinned_call_ids)
+        self.assertFalse(context.bookkeeping.skills_loaded)
+        self.assertFalse(context.bookkeeping.pinned_call_ids)
 
 
 def _history_with_pinned_body(body_size: int = 400) -> list[dict]:

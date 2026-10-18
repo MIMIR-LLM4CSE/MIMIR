@@ -1,4 +1,4 @@
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 import os
 import unittest
 import json
@@ -218,7 +218,7 @@ class PolicyManagerTests(unittest.TestCase):
         self.assertIn("held", second.lower())
 
         # The stated exit — one local check that passes — is the only thing that lifts it.
-        ctx.validated_files = {"job.py"}
+        ctx.checks.validated_files = {"job.py"}
         self.assertIsNone(_submit())
 
     def test_cluster_submit_not_held_when_the_session_wrote_nothing(self) -> None:

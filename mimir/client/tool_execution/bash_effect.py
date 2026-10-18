@@ -118,7 +118,7 @@ def _candidate_dirs(
     the command's own operands.
     """
     dirs: set[str] = {root}
-    dirty = execution_context.dirty_written_files if execution_context is not None else ()
+    dirty = execution_context.edits.dirty_written_files if execution_context is not None else ()
     for path in dirty:
         dirs.add(os.path.dirname(str(path)))
     for segment in classify_bash_command(command) or []:

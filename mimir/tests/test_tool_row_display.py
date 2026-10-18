@@ -8,7 +8,7 @@ import unittest
 
 import mimir.client.query_engine.dispatch.execution as dispatch_execution
 from mimir.client.event_sink import event_sink as capture_events
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 from mimir.client.context.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
 from mimir.client.context.tool_display import (
     clip_doing,

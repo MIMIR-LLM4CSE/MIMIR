@@ -77,16 +77,16 @@ async def _sync_checklist(
     Triggered by the file's mtime (it has several writers), then by a content comparison
     (the todo server re-saves unchanged text).
     """
-    todo_fp = execution_context.todo_file_path
+    todo_fp = execution_context.plan.todo_file_path
     if not todo_fp:
         return system_content
     try:
         stamp = os.stat(todo_fp).st_mtime_ns
     except OSError:
         return system_content  # no checklist on disk — nothing to refresh
-    if stamp == execution_context.checklist_stamp:
+    if stamp == execution_context.plan.checklist_stamp:
         return system_content
-    execution_context.checklist_stamp = stamp
+    execution_context.plan.checklist_stamp = stamp
     if not (getattr(agent, "build_system_content", None) and messages
              and messages[0].get("role") == "system"):
         return system_content
@@ -108,7 +108,7 @@ def _turn_may_be_rejected(
     once-per-query evidence handback.
     """
     sweep_builtin_checks(execution_context)
-    prospective_noop = execution_context.consecutive_noop_turns + 1
+    prospective_noop = execution_context.nudges.consecutive_noop_turns + 1
     if prospective_noop <= NUDGE_MAX_CONSECUTIVE_NOOP and nudge_pending(
         agent=agent,
         query=query,
@@ -116,7 +116,7 @@ def _turn_may_be_rejected(
         execution_context=execution_context,
     ):
         return True
-    return needs_incomplete_finalization(execution_context) and not execution_context.evidence_handback_used
+    return needs_incomplete_finalization(execution_context) and not execution_context.nudges.evidence_handback_used
 
 
 class AgentLoop(StepLoop):
@@ -171,7 +171,7 @@ class AgentLoop(StepLoop):
                                 tagged=False, execution_context=self.ec, step=self.step)
             # Steps since the last successful edit, so the nudges can tell a refactor
             # in progress from a paused one.
-            self.ec.steps_since_last_edit = self.ec.steps_since_last_edit + 1
+            self.ec.edits.steps_since_last_edit = self.ec.edits.steps_since_last_edit + 1
 
             await self.refresh_live_settings()
             msg, hold = await self.call_model(
@@ -189,7 +189,7 @@ class AgentLoop(StepLoop):
 
             # The model acted — the no-op streak resets, so it keeps earning reminders
             # as long as it keeps making progress between them.
-            self.ec.consecutive_noop_turns = 0
+            self.ec.nudges.consecutive_noop_turns = 0
             ended = await self.dispatch(tool_calls)
             if ended is not None:
                 return ended
@@ -218,8 +218,8 @@ class AgentLoop(StepLoop):
             return await self.on_empty_turn(msg, hold)
         # A nudge is only worth sending while the model still *acts* on reminders:
         # once it answers one with another bare turn, it is ignoring them.
-        noop_turns = self.ec.consecutive_noop_turns + 1
-        self.ec.consecutive_noop_turns = noop_turns
+        noop_turns = self.ec.nudges.consecutive_noop_turns + 1
+        self.ec.nudges.consecutive_noop_turns = noop_turns
         # The mandatory check happens here rather than after each write: the model has
         # stopped editing, so every dirty file is at the revision it will ship at.
         sweep_builtin_checks(self.ec)
@@ -233,8 +233,8 @@ class AgentLoop(StepLoop):
         if needs_incomplete_finalization(self.ec):
             # Once per query, before the report is assembled: the model has never seen
             # the ledger its summary is about to contradict.
-            if not self.ec.evidence_handback_used:
-                self.ec.evidence_handback_used = True
+            if not self.ec.nudges.evidence_handback_used:
+                self.ec.nudges.evidence_handback_used = True
                 inject_reminder(self.messages, evidence_handback_message(self.ec),
                                 category="evidence_handback", tagged=False,
                                 execution_context=self.ec, step=self.step)

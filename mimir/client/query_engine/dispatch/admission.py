@@ -83,7 +83,7 @@ def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContex
     # (name, args) -> the id of the first call issued that way in this step.
     seen: dict[tuple, str] = {}
     # Per-query loop-control state (dedup + spin guards), outside the schema.
-    lc = execution_context.loop_control
+    lc = execution_context.bookkeeping.loop_control
     for idx, tc in enumerate(tool_calls):
         call = _read_call(agent, idx, tc)
         if UNPARSED_ARGUMENTS in call.args:

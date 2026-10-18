@@ -24,28 +24,28 @@ def mark_file_validated(
     Running code is recorded on the run instead (``record_run_outcome``). *tier* feeds only
     the completion ledger.
     """
-    execution_context.validation_fail_count_by_file.pop(target, None)
-    execution_context.validated_files.add(target)
+    execution_context.checks.validation_fail_count_by_file.pop(target, None)
+    execution_context.checks.validated_files.add(target)
     raise_validation_tier(execution_context, target, tier)
-    if execution_context.code_mutation_started and not has_pending_validation(execution_context):
+    if execution_context.edits.code_mutation_started and not has_pending_validation(execution_context):
         set_workflow_state(execution_context, "conclude")
-        execution_context.nudge_counts["validation"] = 0
-        execution_context.nudge_counts["state"] = 0
+        execution_context.nudges.nudge_counts["validation"] = 0
+        execution_context.nudges.nudge_counts["state"] = 0
 
 
 def register_validation_failure(
     execution_context: ExecutionContext, target: str, tier: str = "static",
 ) -> None:
     """A check of *target* failed: charge it, and send the workflow back to ``edit``."""
-    fail_counts = execution_context.validation_fail_count_by_file
+    fail_counts = execution_context.checks.validation_fail_count_by_file
     fail_counts[target] = int(fail_counts.get(target, 0)) + 1
-    execution_context.validated_files.discard(target)
-    execution_context.validation_tier_by_file.pop(target, None)
-    if not execution_context.code_mutation_started:
+    execution_context.checks.validated_files.discard(target)
+    execution_context.checks.validation_tier_by_file.pop(target, None)
+    if not execution_context.edits.code_mutation_started:
         return
     set_workflow_state(execution_context, "edit")
-    dirty = execution_context.dirty_written_files
-    validated = execution_context.validated_files
+    dirty = execution_context.edits.dirty_written_files
+    validated = execution_context.checks.validated_files
     all_stuck = dirty and all(
         f in validated or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
         for f in dirty
@@ -71,8 +71,8 @@ def record_run_outcome(
     if not completed:
         if missing_head:
             run["blocked"] = f"{missing_head} is not installed here"
-            execution_context.exercise_blocked_reason = run["blocked"]
-            execution_context.exercise_advice_closed = True
+            execution_context.execution.exercise_blocked_reason = run["blocked"]
+            execution_context.execution.exercise_advice_closed = True
         else:
             register_run_failure(execution_context, command, reason)
 
@@ -81,13 +81,13 @@ def register_run_failure(
     execution_context: ExecutionContext, command: str, reason: str = "",
 ) -> None:
     """A run of *command* failed: charge it, and send the workflow back to ``edit``."""
-    run = (execution_context.runs or {}).get(run_ledger_key(command))
+    run = (execution_context.execution.runs or {}).get(run_ledger_key(command))
     if run is None:
         return
     run["failures"] = int(run.get("failures", 0)) + 1
     if reason:
         run.setdefault("attempts", []).append(reason)
-    if not execution_context.code_mutation_started:
+    if not execution_context.edits.code_mutation_started:
         return
     set_workflow_state(execution_context, "edit")
     if all(

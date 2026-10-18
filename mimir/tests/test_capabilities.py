@@ -5,7 +5,7 @@ against the live server declarations by ``test_phase_b_servers.py``. This file
 covers the registry's pure logic: ``infer_tool_caps`` precedence, the server-side
 ``tool_caps`` helper round-trip, the unannotated-tool report, and ``explorer_servers``.
 """
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 
 import types
 import unittest

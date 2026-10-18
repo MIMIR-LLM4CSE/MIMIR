@@ -272,9 +272,9 @@ def check_cluster_submit(
                     and allocates_cluster(str((arguments or {}).get("command", ""))))
     if not (has_cap(tool_name, CLUSTER_SUBMIT, agent.tool_caps) or shell_submit):
         return None
-    if execution_context.validated_files:
+    if execution_context.checks.validated_files:
         return None
-    if not execution_context.dirty_written_files:
+    if not execution_context.edits.dirty_written_files:
         return None
     return json_error_payload(
         f"Cluster submission '{tool_name}' held: nothing validated locally yet this session.",
@@ -387,7 +387,7 @@ def check_skill_pull(
     if not skill:
         return None   # the server answers for a malformed name
     # A call made outside a query has nothing loaded and nothing to reserve against.
-    loaded: dict = execution_context.skills_loaded if execution_context is not None else {}
+    loaded: dict = execution_context.bookkeeping.skills_loaded if execution_context is not None else {}
 
     if skill in loaded:
         return json_error_payload(

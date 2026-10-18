@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 from mimir.client.context import SOURCE_FILE_EXTENSIONS
 from mimir.client.context.capabilities import ToolCaps
-from mimir.client.context.execution_context import build_execution_context, unsettled_runs
+from mimir.client.context.execution_context import unsettled_runs
+from mimir.tests.support.context import build_execution_context
 from mimir.client.guardrails import observations as _observations
 from mimir.client.guardrails.observations import record_tool_observation
 from mimir.client.context.bash_classify import classify_bash_command
@@ -52,8 +53,8 @@ def _run(command: str, *, status: str = "ok", stdout: str = "out",
     """
     ec = build_execution_context()
     for path in dirty:
-        ec.dirty_written_files.add(path)
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files.add(path)
+        ec.edits.code_mutation_started = True
     payload = json.dumps({"status": status, "stdout": stdout})
     record_tool_observation(_stub_agent(), BASH_TOOL, {"command": command}, payload, ec)
     return ec
@@ -185,28 +186,28 @@ class CorpusCreditTests(unittest.TestCase):
         ec = _run(command, dirty=dirty)
 
         for path in expect.get("read", ()):
-            self.assertIn(path, ec.read_files, f"{command!r}: read not credited")
+            self.assertIn(path, ec.discovery.read_files, f"{command!r}: read not credited")
         if expect.get("search"):
-            self.assertTrue(ec.searched, f"{command!r}: search not credited")
+            self.assertTrue(ec.discovery.searched, f"{command!r}: search not credited")
         for path in expect.get("inspect", ()):
-            self.assertIn(path, ec.inspected_dirs, f"{command!r}: dir not credited")
+            self.assertIn(path, ec.discovery.inspected_dirs, f"{command!r}: dir not credited")
         for path in expect.get("write", ()):
-            self.assertIn(path, ec.dirty_written_files, f"{command!r}: write not credited")
+            self.assertIn(path, ec.edits.dirty_written_files, f"{command!r}: write not credited")
         for path in expect.get("validate", ()):
-            self.assertIn(path, ec.validated_files, f"{command!r}: check not credited")
+            self.assertIn(path, ec.checks.validated_files, f"{command!r}: check not credited")
         if expect.get("judge"):
-            self.assertTrue(ec.runs, f"{command!r}: run not recorded")
+            self.assertTrue(ec.execution.runs, f"{command!r}: run not recorded")
             self.assertTrue(unsettled_runs(ec),
                             f"{command!r}: run settled itself instead of owing a verdict")
-            self.assertFalse(ec.validated_files,
+            self.assertFalse(ec.checks.validated_files,
                              f"{command!r}: an execution must not validate a file")
         if expect.get("project"):
-            self.assertIn("pending.py", ec.validated_files,
+            self.assertIn("pending.py", ec.checks.validated_files,
                           f"{command!r}: whole-project check did not clear pending files")
         for path in expect.get("tests_run", ()):
-            self.assertIn(path, ec.tests_run, f"{command!r}: test run not recorded")
+            self.assertIn(path, ec.execution.tests_run, f"{command!r}: test run not recorded")
         if expect.get("env"):
-            self.assertTrue(ec.env_mutations, f"{command!r}: env mutation not recorded")
+            self.assertTrue(ec.env.env_mutations, f"{command!r}: env mutation not recorded")
         if expect.get("action"):
             self.assertGreater(ec.action_op_count, 0, f"{command!r}: no action counted")
 
@@ -224,8 +225,8 @@ class CorpusCreditTests(unittest.TestCase):
         """
         ec = _run("ruff check tests/test_solver.py", status="error",
                   dirty=("tests/test_solver.py",))
-        self.assertNotIn("tests/test_solver.py", ec.validated_files)
-        self.assertEqual(ec.validation_fail_count_by_file.get("tests/test_solver.py"), 1)
+        self.assertNotIn("tests/test_solver.py", ec.checks.validated_files)
+        self.assertEqual(ec.checks.validation_fail_count_by_file.get("tests/test_solver.py"), 1)
 
     def test_reformatting_is_not_checking(self) -> None:
         """A formatter rewrites the file and exits 0 regardless, so it credits nothing;
@@ -235,18 +236,18 @@ class CorpusCreditTests(unittest.TestCase):
                         "black solver.py"):
             with self.subTest(command=command):
                 ec = _run(command, dirty=("solver.py",))
-                self.assertNotIn("solver.py", ec.validated_files,
+                self.assertNotIn("solver.py", ec.checks.validated_files,
                                  f"{command!r}: a reformat was credited as a check")
 
         ec = _run("ruff format .", dirty=("pending.py",))
-        self.assertNotIn("pending.py", ec.validated_files,
+        self.assertNotIn("pending.py", ec.checks.validated_files,
                          "a project-wide reformat cleared the pending files")
 
         for command in ("ruff format --check solver.py", "ruff check solver.py",
                         "black --check solver.py"):
             with self.subTest(command=command):
                 ec = _run(command, dirty=("solver.py",))
-                self.assertIn("solver.py", ec.validated_files,
+                self.assertIn("solver.py", ec.checks.validated_files,
                               f"{command!r}: a real check lost its credit")
 
     def test_a_failed_run_is_charged_to_the_run(self) -> None:
@@ -254,8 +255,8 @@ class CorpusCreditTests(unittest.TestCase):
         with _head_installed(True):
             ec = _run("pytest tests/test_solver.py", status="error",
                       dirty=("tests/test_solver.py",))
-        self.assertEqual(ec.validation_fail_count_by_file, {})
-        self.assertEqual(ec.runs["pytest tests/test_solver.py"]["failures"], 1)
+        self.assertEqual(ec.checks.validation_fail_count_by_file, {})
+        self.assertEqual(ec.execution.runs["pytest tests/test_solver.py"]["failures"], 1)
 
     def test_a_run_whose_command_is_missing_is_blocked_not_charged(self) -> None:
         """The other half of the same branch, so neither can move unnoticed.
@@ -266,7 +267,7 @@ class CorpusCreditTests(unittest.TestCase):
         with _head_installed(False):
             ec = _run("pytest tests/test_solver.py", status="error",
                       dirty=("tests/test_solver.py",))
-        run = ec.runs["pytest tests/test_solver.py"]
+        run = ec.execution.runs["pytest tests/test_solver.py"]
         self.assertEqual(run["failures"], 0)
         self.assertIn("not installed", run.get("blocked", ""))
 
@@ -320,11 +321,11 @@ def _semantic_view(ec: dict) -> tuple:
     ``action_op_count`` is left out, since every EXEC segment bumps it.
     """
     return (
-        frozenset(ec.read_files), bool(ec.searched), frozenset(ec.inspected_dirs),
-        frozenset(ec.dirty_written_files), frozenset(ec.validated_files),
-        frozenset(ec.runs),
-        frozenset(ec.tests_run), tuple(ec.env_mutations or ()),
-        ec.last_edit_success_path or "",
+        frozenset(ec.discovery.read_files), bool(ec.discovery.searched), frozenset(ec.discovery.inspected_dirs),
+        frozenset(ec.edits.dirty_written_files), frozenset(ec.checks.validated_files),
+        frozenset(ec.execution.runs),
+        frozenset(ec.execution.tests_run), tuple(ec.env.env_mutations or ()),
+        ec.edits.last_edit_success_path or "",
     )
 
 

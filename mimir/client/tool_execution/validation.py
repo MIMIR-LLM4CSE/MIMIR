@@ -61,7 +61,7 @@ def _check_replacement_completeness(
     """
     if execution_context is None:
         return ""
-    old_text = execution_context.last_replace_old_text
+    old_text = execution_context.edits.last_replace_old_text
     if not old_text or not os.path.isfile(filepath):
         return ""
 
@@ -86,7 +86,7 @@ def _check_replacement_completeness(
     # Skip warning when old_text is a substring of new_text: the replacement
     # itself re-introduces the pattern, so occurrences are expected and not
     # leftovers (e.g. replacing "compute" with "recompute").
-    new_text = execution_context.last_replace_new_text or ""
+    new_text = execution_context.edits.last_replace_new_text or ""
     if new_text and old_text in new_text:
         return ""
 

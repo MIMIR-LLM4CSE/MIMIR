@@ -21,8 +21,8 @@ def search_flags(call: Call) -> None:
     execution_context = call.execution_context
     if not (has_cap(call.tool_name, SEARCH, call.agent.tool_caps) and call.status == "ok"):
         return
-    execution_context.searched = True
-    execution_context.search_tool_calls += 1
+    execution_context.discovery.searched = True
+    execution_context.discovery.search_tool_calls += 1
 
 
 def discover_transition(call: Call) -> None:
@@ -54,7 +54,7 @@ def candidates(call: Call) -> None:
             continue
         register_known_path(execution_context, candidate)
         candidate_parent = parent_path(candidate)
-        by_dir = execution_context.similar_candidates_by_dir
+        by_dir = execution_context.discovery.similar_candidates_by_dir
         by_dir.setdefault(candidate_parent, set()).add(candidate)
 
 
@@ -63,11 +63,11 @@ def dir_inspect(call: Call) -> None:
     if not (has_cap(call.tool_name, INSPECT_DIR, call.agent.tool_caps) and call.status == "ok"):
         return
     if call.path:
-        execution_context.inspected_dirs.add(call.path)
+        execution_context.discovery.inspected_dirs.add(call.path)
     listed_dir = call.agent.normalize_workspace_path(
         call.payload.get("path") or call.payload.get("parent"))
     if listed_dir:
-        execution_context.inspected_dirs.add(listed_dir)
+        execution_context.discovery.inspected_dirs.add(listed_dir)
 
 
 def existence_check(call: Call) -> None:
@@ -79,6 +79,6 @@ def existence_check(call: Call) -> None:
     if not checked:
         return
     if call.status == "ok" or call.payload.get("exists") is not None:
-        execution_context.checked_paths.add(checked)
+        execution_context.discovery.checked_paths.add(checked)
     if call.payload.get("exists") is True:
         register_known_path(execution_context, checked)

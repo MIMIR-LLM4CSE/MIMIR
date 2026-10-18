@@ -24,7 +24,7 @@ def denial_scope_count(execution_context: ExecutionContext, scope: str) -> int:
     if not scope:
         return 0
     return sum(
-        1 for item in execution_context.denial_history
+        1 for item in execution_context.denials.denial_history
         if item.get("scope") == scope
     )
 
@@ -37,7 +37,7 @@ def denial_stage(execution_context: ExecutionContext, scope: str = "") -> str:
     first refusal of a scope reports ``reconsider`` (all three readings open).
     """
 
-    history = execution_context.denial_history
+    history = execution_context.denials.denial_history
     total = len(history)
     scoped = denial_scope_count(execution_context, scope)
 
@@ -62,7 +62,7 @@ def worst_denial_stage(execution_context: ExecutionContext) -> str:
     report) need: one scope at the end of the ladder governs the turn, even if another
     was only refused once.
     """
-    history = execution_context.denial_history
+    history = execution_context.denials.denial_history
     if not history:
         return STAGE_RECONSIDER
     scopes = {item.get("scope", "") for item in history}
@@ -74,7 +74,7 @@ def worst_denial_stage(execution_context: ExecutionContext) -> str:
 
 def handback_required(execution_context: ExecutionContext) -> bool:
     """True once any refused scope has reached the end of the ladder."""
-    return bool(execution_context.denial_history) and \
+    return bool(execution_context.denials.denial_history) and \
         worst_denial_stage(execution_context) == STAGE_HANDBACK
 
 
@@ -91,7 +91,7 @@ def approval_is_settled(execution_context: ExecutionContext, scope: str) -> bool
 
 def handback_scopes(execution_context: ExecutionContext) -> list[dict]:
     """The refusal records whose scope reached ``handback``, newest first."""
-    history = execution_context.denial_history
+    history = execution_context.denials.denial_history
     seen: set = set()
     out: list[dict] = []
     for item in reversed(history):

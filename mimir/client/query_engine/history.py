@@ -133,9 +133,9 @@ def _protected_paths(execution_context: ExecutionContext | None) -> set[str]:
     anchors may need an earlier read)."""
     if execution_context is None:
         return set()
-    paths = execution_context.dirty_written_files | execution_context.declared_edit_set
-    if execution_context.dirty_written_files:
-        paths = paths | execution_context.read_files
+    paths = execution_context.edits.dirty_written_files | execution_context.edits.declared_edit_set
+    if execution_context.edits.dirty_written_files:
+        paths = paths | execution_context.discovery.read_files
     return {p for p in paths if p}
 
 
@@ -155,7 +155,7 @@ def _exempt_results(messages: list[dict], tool_indices: list[int],
     skill's instructions, kept in the tail rather than folded into messages[0])."""
     last_call_turn = _last_call_turn(messages)
     exempt = {i for i in tool_indices if i > last_call_turn} if last_call_turn >= 0 else set()
-    pinned = execution_context.pinned_call_ids if execution_context else set()
+    pinned = execution_context.bookkeeping.pinned_call_ids if execution_context else set()
     if pinned:
         exempt |= {i for i in tool_indices if messages[i].get("tool_call_id") in pinned}
     return exempt
@@ -164,10 +164,10 @@ def _exempt_results(messages: list[dict], tool_indices: list[int],
 def _forget_read(execution_context: ExecutionContext, msg: dict,
                  recorded: list[str] | None) -> None:
     """An evicted read leaves ``read_files``, so policy asks for a re-read before an edit."""
-    read_files = execution_context.read_files
+    read_files = execution_context.discovery.read_files
     if recorded is not None:
         read_files.difference_update(recorded)
-        execution_context.tool_msg_files.pop(msg["tool_call_id"], None)
+        execution_context.bookkeeping.tool_msg_files.pop(msg["tool_call_id"], None)
     else:
         content = msg.get("content", "")
         read_files.difference_update(p for p in list(read_files) if p and p in content)
@@ -193,7 +193,7 @@ def _trim_tool_history(
         return
 
     protected = _protected_paths(execution_context)
-    tool_msg_files = execution_context.tool_msg_files if execution_context else {}
+    tool_msg_files = execution_context.bookkeeping.tool_msg_files if execution_context else {}
     exempt = _exempt_results(messages, tool_indices, execution_context)
     to_remove: list[int] = []
     for idx in tool_indices:
@@ -278,7 +278,7 @@ def _maybe_compact_intra_query(
     # A pinned result sits in this slice like any other and would be summarised away
     # with it — the one pass that could silently drop a skill's instructions without
     # the eviction path ever running. Carved out, with its assistant turn.
-    pinned_call_ids: set[str] = execution_context.pinned_call_ids or set()
+    pinned_call_ids: set[str] = execution_context.bookkeeping.pinned_call_ids or set()
     middle, kept = (_carve_out_pinned(middle, pinned_call_ids)
                     if pinned_call_ids else (middle, []))
     if not middle:
@@ -657,7 +657,7 @@ def enforce_context_budget(
         before = sum(_message_tokens(m, token_counter) for m in messages)
         fitted = force_fit_to_window(
             messages, usable, token_counter,
-            pinned_call_ids=execution_context.pinned_call_ids or set(),
+            pinned_call_ids=execution_context.bookkeeping.pinned_call_ids or set(),
         )
         after = sum(_message_tokens(m, token_counter) for m in messages)
         if after < before:

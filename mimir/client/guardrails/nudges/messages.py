@@ -105,7 +105,7 @@ def denial_nudge_message(context: ExecutionContext) -> str:
     if stage == STAGE_DROP_OR_STOP:
         return _DENIAL_DROP_OR_STOP
 
-    denied_calls = context.denied_tool_calls
+    denied_calls = context.denials.denied_tool_calls
     if not denied_calls:
         return _DENIAL_RECONSIDER
 
@@ -223,7 +223,7 @@ def unfinished_plan_nudge_message(unchecked: list[dict]) -> str:
 
 
 def env_resolution_nudge_message(execution_context: ExecutionContext) -> str:
-    modules = sorted(m for m in execution_context.unresolved_modules if m)
+    modules = sorted(m for m in execution_context.env.unresolved_modules if m)
     mod_hint = f" (missing: {', '.join(modules[:3])})" if modules else ""
     return (
         "A check or run failed because a required module is not importable in the "
@@ -242,7 +242,7 @@ def env_resolution_nudge_message(execution_context: ExecutionContext) -> str:
 
 
 def env_cleanup_nudge_message(execution_context: ExecutionContext) -> str:
-    mutations = execution_context.env_mutations or []
+    mutations = execution_context.env.env_mutations or []
     lines = []
     for m in mutations[:4]:
         if m.get("installed"):
@@ -260,7 +260,7 @@ def env_cleanup_nudge_message(execution_context: ExecutionContext) -> str:
 
 
 def unwatched_run_nudge_message(execution_context: ExecutionContext) -> str:
-    ids = sorted(execution_context.unwatched_runs or set())
+    ids = sorted(execution_context.execution.unwatched_runs or set())
     named = ", ".join(ids[:6]) + (f" (+{len(ids) - 6} more)" if len(ids) > 6 else "")
     plural = "s" if len(ids) != 1 else ""
     return (
@@ -278,7 +278,7 @@ def unwatched_run_nudge_message(execution_context: ExecutionContext) -> str:
 
 
 def documentation_nudge_message(execution_context: ExecutionContext) -> str:
-    written = sorted(execution_context.dirty_written_files)
+    written = sorted(execution_context.edits.dirty_written_files)
     file_hint = f" You modified: {', '.join(written[:3])}." if written else ""
     return (
         "Before concluding, quickly check whether any documentation or reference file "
@@ -289,7 +289,7 @@ def documentation_nudge_message(execution_context: ExecutionContext) -> str:
 
 
 def blast_radius_nudge_message(execution_context: ExecutionContext) -> str:
-    read_files = sorted(execution_context.read_files)
+    read_files = sorted(execution_context.discovery.read_files)
     file_hint = f" You have read: {', '.join(read_files[:3])}." if read_files else ""
     return (
         "Before changing a function/class definition or renaming a symbol, "
@@ -300,7 +300,7 @@ def blast_radius_nudge_message(execution_context: ExecutionContext) -> str:
 
 
 def creation_nudge_message(execution_context: ExecutionContext) -> str:
-    targets = sorted(execution_context.planned_edit_targets)
+    targets = sorted(execution_context.edits.planned_edit_targets)
     target_hint = f" Declared target(s): {', '.join(targets[:3])}." if targets else ""
     return (
         "A write target was declared earlier in this task but nothing has been "
@@ -314,11 +314,11 @@ def creation_nudge_message(execution_context: ExecutionContext) -> str:
 
 def todo_nudge_message(execution_context: ExecutionContext) -> str:
     files = sorted(
-        execution_context.dirty_written_files
-        | execution_context.planned_edit_targets
+        execution_context.edits.dirty_written_files
+        | execution_context.edits.planned_edit_targets
     )
     file_hint = f" Files touched so far: {', '.join(files[:4])}." if files else ""
-    if execution_context.plan_written:
+    if execution_context.plan.plan_written:
         guidance = (
             " Record the ordered remaining steps as a checklist using the plan/todo tool "
             "so progress is tracked."
@@ -353,15 +353,15 @@ def validation_nudge_message(agent: AgentPort, execution_context: ExecutionConte
 
     base_message = _validation_nudge_message(findings)
 
-    fail_counts = execution_context.validation_fail_count_by_file
+    fail_counts = execution_context.checks.validation_fail_count_by_file
     hottest_path = max(findings, key=lambda path: int(fail_counts.get(path, 0)))
     hottest_count = int(fail_counts.get(hottest_path, 0))
     if hottest_count < 2:
         return base_message
 
     suffix = f" The check has now failed {hottest_count} time(s) for {hottest_path}."
-    last_replace_file = execution_context.last_replace_file
-    last_replace_old_text = execution_context.last_replace_old_text
+    last_replace_file = execution_context.edits.last_replace_file
+    last_replace_old_text = execution_context.edits.last_replace_old_text
     if last_replace_file == hottest_path and last_replace_old_text:
         return (
             base_message + suffix

@@ -89,7 +89,7 @@ async def _build_outline_hint(
     if not outline_tools:
         return ""
 
-    counts = execution_context.nudge_counts
+    counts = execution_context.nudges.nudge_counts
     key = f"outline_hint:{agent.normalize_workspace_path(path)}"
     if not isinstance(counts, dict) or counts.get(key):
         return ""
@@ -213,7 +213,7 @@ def _build_fork_hint(
         return ""
     if require_edit_cap and not has_cap(tool_name, EDIT, agent.tool_caps):
         return ""
-    counts = execution_context.nudge_counts
+    counts = execution_context.nudges.nudge_counts
     if not isinstance(counts, dict) or counts.get("fork_hint"):
         return ""
     path = agent.normalize_workspace_path(arguments.get("path") or "")
@@ -237,7 +237,7 @@ def _build_fork_hint(
 
     base = _fork_base_stem(stem)
     if base:
-        for other in sorted(execution_context.dirty_written_files or ()):
+        for other in sorted(execution_context.edits.dirty_written_files or ()):
             if other == path or os.path.dirname(other) != parent:
                 continue
             if os.path.splitext(os.path.basename(other))[0] == base:

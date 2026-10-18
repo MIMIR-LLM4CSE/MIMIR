@@ -9,10 +9,10 @@ import unittest
 
 from mimir.client.context.execution_context import (
     RecencySet,
-    build_execution_context,
     recent_first,
     validate_execution_context,
 )
+from mimir.tests.support.context import build_execution_context
 from mimir.client.prompt.system_prompt import build_system_content
 
 
@@ -62,7 +62,7 @@ class RecencySetTests(unittest.TestCase):
 
     def test_template_still_validates(self) -> None:
         ctx = build_execution_context()
-        ctx.read_files.add("a.py")
+        ctx.discovery.read_files.add("a.py")
         validate_execution_context(ctx)  # must not raise
 
 

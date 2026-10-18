@@ -22,11 +22,8 @@ from .paths import absolute_workspace_path
 
 
 def _mirrored_fields() -> tuple[str, ...]:
-    """The execution-context fields mirrored into the carry and back (the CARRY trait).
-
-    Narrower than ``carry_set_fields()``, which also lists carry-only keys such as
-    ``last_query_written_files``.
-    """
+    """The execution-context fields mirrored into the carry and back (the CARRY trait):
+    sets are unioned, dicts merged, flags kept once raised."""
     return fields_with(CARRY)
 
 
@@ -78,38 +75,37 @@ class CarryContext:
             carry["read_files"] = fresh_reads
 
         for field in _mirrored_fields():
-            prior: set[Any] = carry.get(field, set())
-            if isinstance(prior, set) and isinstance(getattr(execution_context, field), set):
+            prior = carry.get(field)
+            current = execution_context.get(field)
+            if isinstance(current, set) and isinstance(prior, set):
                 # sorted(): carried entries seed a RecencySet's order, and a set iterates
                 # in a per-process hash order; a stable order keeps the pin byte-stable.
-                getattr(execution_context, field).update(sorted(prior))
-        if carry.get("searched"):
-            execution_context.searched = True
-        # A skill already in the conversation is not pulled again by the next query.
-        prior_skills = carry.get("skills_loaded")
-        if isinstance(prior_skills, dict):
-            execution_context.skills_loaded.update(prior_skills)
+                current.update(sorted(prior))
+            elif isinstance(current, dict) and isinstance(prior, dict):
+                # A skill already in the conversation is not pulled again.
+                current.update(prior)
+            elif isinstance(current, bool) and prior:
+                setattr(execution_context.home(field), field, True)
 
     def update(self, execution_context: ExecutionContext) -> None:
         """Fold what this query learnt into the carry."""
         carry = self.fields
         for field in _mirrored_fields():
-            current: set[Any] = getattr(execution_context, field)
+            current = execution_context.get(field)
+            prior = carry.get(field)
             if isinstance(current, set):
-                carry[field] = carry.get(field, set()) | current
-        if execution_context.searched:
-            carry["searched"] = True
-        loaded = execution_context.skills_loaded
-        if isinstance(loaded, dict):
-            prior_skills = carry.get("skills_loaded")
-            merged = dict(prior_skills) if isinstance(prior_skills, dict) else {}
-            # A reservation that never resolved is not a load: carrying "pending" would
-            # bar the skill for the rest of the session.
-            merged.update({n: cid for n, cid in loaded.items() if cid != "pending"})
-            carry["skills_loaded"] = merged
-        carry["last_query_written_files"] = set(execution_context.dirty_written_files)
+                carry[field] = (prior if isinstance(prior, set) else set()) | current
+            elif isinstance(current, dict):
+                # A reservation that never resolved is not a load: carrying "pending"
+                # would bar the skill for the rest of the session.
+                merged = dict(prior) if isinstance(prior, dict) else {}
+                merged.update({k: v for k, v in current.items() if v != "pending"})
+                carry[field] = merged
+            elif isinstance(current, bool) and current:
+                carry[field] = True
+        carry["last_query_written_files"] = set(execution_context.edits.dirty_written_files)
         # A file written this query was read before the write: that read is stale.
-        dirty: set[str] = execution_context.dirty_written_files
+        dirty: set[str] = execution_context.edits.dirty_written_files
         read_mtimes: dict[str, float] = carry.setdefault("_read_mtimes", {})
         if dirty:
             carry_reads: set[str] = carry.get("read_files", set())

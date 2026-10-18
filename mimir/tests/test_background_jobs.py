@@ -775,7 +775,7 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
                                                   f"sub-1/jobs/{key}"}}}
 
     def _dispatch(self, result_text: str) -> list[dict]:
-        from mimir.client.context.execution_context import build_execution_context
+        from mimir.tests.support.context import build_execution_context
         from mimir.client.query_engine import dispatch as dispatch_module
 
         agent = self._agent(result_text)

@@ -54,7 +54,7 @@ class NudgeRule:
         """Whether the rule would fire now: under its per-query cap, in tier (guidance),
         and its predicate holds. A predicate that raises is "no", and is logged. The
         cascade skips a rule the user switched off before asking."""
-        if (ec.nudge_counts or {}).get(self.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
+        if (ec.nudges.nudge_counts or {}).get(self.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
             return False
         if self.layer == "guidance" and not rule_tier_enabled(
                 self, enforcement=level, active_mode=mode):

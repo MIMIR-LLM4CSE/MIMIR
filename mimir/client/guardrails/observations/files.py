@@ -55,7 +55,7 @@ def _edit_signature(tool_name: str, path: str, arguments: dict, registry: Any = 
 def register_known_path(execution_context: ExecutionContext, candidate_path: str) -> None:
     if not candidate_path:
         return
-    execution_context.existing_paths.add(candidate_path)
+    execution_context.discovery.existing_paths.add(candidate_path)
 
 
 def _target_path(agent: AgentPort, tool_name: str, arguments: dict) -> str | None:
@@ -66,10 +66,10 @@ def _target_path(agent: AgentPort, tool_name: str, arguments: dict) -> str | Non
 
 def _clear_edit_fail_streak(execution_context: ExecutionContext, path: str) -> None:
     """Drop *path*'s edit-failure streak; re-arm the error_recovery budget once no file fails."""
-    streaks = execution_context.edit_fail_streak_by_file
+    streaks = execution_context.edits.edit_fail_streak_by_file
     streaks.pop(path, None)
     if not streaks:
-        counts = execution_context.nudge_counts
+        counts = execution_context.nudges.nudge_counts
         if isinstance(counts, dict):
             counts["error_recovery"] = 0
 
@@ -90,21 +90,21 @@ def record_code_edit(execution_context: ExecutionContext, edited_path: str) -> N
     parent_dir = os.path.dirname(edited_path)
     if parent_dir and parent_dir != ".":
         register_known_path(execution_context, parent_dir)
-    execution_context.code_mutation_started = True
-    execution_context.planned_edit_targets.add(edited_path)
-    execution_context.dirty_written_files.add(edited_path)
-    execution_context.validated_files.discard(edited_path)
+    execution_context.edits.code_mutation_started = True
+    execution_context.edits.planned_edit_targets.add(edited_path)
+    execution_context.edits.dirty_written_files.add(edited_path)
+    execution_context.checks.validated_files.discard(edited_path)
     # Evidence is about a revision, and so is its absence: a file rewritten after the
     # floor rejected it — or after the floor could not read it — is owed a fresh answer,
     # not the previous one.
-    execution_context.unverifiable_files.discard(edited_path)
-    execution_context.builtin_check_findings.pop(edited_path, None)
-    execution_context.builtin_check_stamp.pop(edited_path, None)
+    execution_context.checks.unverifiable_files.discard(edited_path)
+    execution_context.checks.builtin_check_findings.pop(edited_path, None)
+    execution_context.checks.builtin_check_stamp.pop(edited_path, None)
     # Evidence is about a specific revision: rewriting the file retracts it. Runs are
     # not retracted — a run is a past event, and its verdict is a statement about what
     # that event showed, which re-editing does not undo.
-    execution_context.validation_tier_by_file.pop(edited_path, None)
-    execution_context.edit_loop_state.pop(edited_path, None)
+    execution_context.checks.validation_tier_by_file.pop(edited_path, None)
+    execution_context.edits.edit_loop_state.pop(edited_path, None)
     _clear_edit_fail_streak(execution_context, edited_path)
 
 
@@ -113,7 +113,7 @@ def enter_post_edit_state(execution_context: ExecutionContext) -> None:
 
     Straight to ``conclude`` when nothing written can be checked here.
     """
-    execution_context.steps_since_last_edit = 0
+    execution_context.edits.steps_since_last_edit = 0
     if not _should_enter_validate(execution_context):
         set_workflow_state(execution_context, "edit")
     elif has_pending_validation(execution_context):
@@ -139,24 +139,24 @@ def edit_outcome(call: Call) -> None:
     if call.status == "ok":
         record_code_edit(execution_context, edited_path)
         # Signal the post-dispatch injector that a successful code edit occurred.
-        execution_context.last_edit_success_path = edited_path
+        execution_context.edits.last_edit_success_path = edited_path
         enter_post_edit_state(execution_context)
         return
 
     current_signature = _edit_signature(
         call.tool_name, edited_path, call.arguments, call.agent.tool_caps)
-    last_sig, _fail_count = execution_context.edit_loop_state.get(edited_path, (None, 0))
+    last_sig, _fail_count = execution_context.edits.edit_loop_state.get(edited_path, (None, 0))
     if current_signature == last_sig:
         new_fail_count = _fail_count + 1
-        execution_context.edit_loop_state[edited_path] = (last_sig, new_fail_count)
+        execution_context.edits.edit_loop_state[edited_path] = (last_sig, new_fail_count)
     else:
         new_fail_count = 1
-        execution_context.edit_loop_state[edited_path] = (current_signature, new_fail_count)
+        execution_context.edits.edit_loop_state[edited_path] = (current_signature, new_fail_count)
     # Per-file streak, whatever the patch: what escalates different wrong anchors on one file.
     # The file stays in the read sets: the failure already carries the current text
     # (server_files._anchor_retry_hint).
-    streak = int(execution_context.edit_fail_streak_by_file.get(edited_path, 0)) + 1
-    execution_context.edit_fail_streak_by_file[edited_path] = streak
+    streak = int(execution_context.edits.edit_fail_streak_by_file.get(edited_path, 0)) + 1
+    execution_context.edits.edit_fail_streak_by_file[edited_path] = streak
 
 
 def replacement_tracking(call: Call) -> None:
@@ -168,22 +168,22 @@ def replacement_tracking(call: Call) -> None:
     if not old_text:
         return
     edited_path = call.agent.normalize_workspace_path(call.arguments.get("path"))
-    last_file = execution_context.last_replace_file
+    last_file = execution_context.edits.last_replace_file
     # If this edit is on a different file than the previous tracked edit,
     # clear the stale last_replace_* fields first so completeness checks
     # don't fire against the wrong file.
     if last_file and edited_path and edited_path != last_file:
-        execution_context.last_replace_old_text = ""
-        execution_context.last_replace_new_text = ""
-        execution_context.last_replace_file = ""
-    execution_context.last_replace_old_text = old_text
-    execution_context.last_replace_new_text = call.arguments.get("new_text") or ""
-    execution_context.last_replace_file = edited_path or ""
+        execution_context.edits.last_replace_old_text = ""
+        execution_context.edits.last_replace_new_text = ""
+        execution_context.edits.last_replace_file = ""
+    execution_context.edits.last_replace_old_text = old_text
+    execution_context.edits.last_replace_new_text = call.arguments.get("new_text") or ""
+    execution_context.edits.last_replace_file = edited_path or ""
     # A confirmed replacement (only the workspace-wide replacer takes confirm=True among
     # replacement-tracking tools) seeds the cross-file completeness check.
     if call.arguments.get("confirm"):
-        execution_context.cross_file_grep_old_text = old_text
-        execution_context.cross_file_grep_source = edited_path or ""
+        execution_context.edits.cross_file_grep_old_text = old_text
+        execution_context.edits.cross_file_grep_source = edited_path or ""
 
 
 def edit_loop_clear(call: Call) -> None:
@@ -194,7 +194,7 @@ def edit_loop_clear(call: Call) -> None:
     read_path = call.agent.normalize_workspace_path(
         call.arguments.get("path") or call.arguments.get("filepath"))
     if read_path:
-        execution_context.edit_loop_state.pop(read_path, None)
+        execution_context.edits.edit_loop_state.pop(read_path, None)
         _clear_edit_fail_streak(execution_context, read_path)
 
 
@@ -209,7 +209,7 @@ def delete(call: Call) -> None:
     # file must not survive anywhere as evidence, and hand-listing the fields meant a
     # new path-valued field would silently keep stale entries.
     for field in fields_with(FILE_PATH):
-        getattr(execution_context, field).discard(deleted_path)
+        execution_context.get(field).discard(deleted_path)
     call.agent.carry.discard_path(deleted_path)
 
 
@@ -221,9 +221,9 @@ def read(call: Call) -> None:
     if not path:
         return
 
-    execution_context.read_files.add(path)
+    execution_context.discovery.read_files.add(path)
     register_known_path(execution_context, path)
-    execution_context.checked_paths.add(path)
+    execution_context.discovery.checked_paths.add(path)
 
 
 def delegated_exploration(call: Call) -> None:
@@ -237,5 +237,5 @@ def delegated_exploration(call: Call) -> None:
     for raw in call.payload.get("files_read") or ():
         path = call.agent.normalize_workspace_path(raw)
         if path:
-            execution_context.delegated_read_files.add(path)
+            execution_context.discovery.delegated_read_files.add(path)
             register_known_path(execution_context, path)

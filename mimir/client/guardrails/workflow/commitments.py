@@ -14,9 +14,9 @@ def turn_made_commitments(execution_context: ExecutionContext) -> bool:
     All three are per-query fields, so no earlier turn's intent carries over.
     """
     return bool(
-        execution_context.code_mutation_started
-        or execution_context.declared_edit_set
-        or execution_context.todo_written
+        execution_context.edits.code_mutation_started
+        or execution_context.edits.declared_edit_set
+        or execution_context.plan.todo_written
     )
 
 
@@ -38,7 +38,7 @@ def unhonoured_commitments(execution_context: ExecutionContext) -> bool:
 
 def unchecked_checklist_items(execution_context: ExecutionContext) -> list[dict]:
     """Unticked steps of the live checklist, optional ones included; [] without a checklist."""
-    todo_fp = execution_context.todo_file_path
+    todo_fp = execution_context.plan.todo_file_path
     if not todo_fp:
         return []
     # Imported lazily: the prompt package pulls in the extension loader, and the

@@ -35,9 +35,9 @@ def todo_flags(call: Call) -> None:
     if call.status != "ok" or call.tool_name not in planning:
         return
     if arg_role(call.tool_name, "plan_steps", call.agent.tool_caps):
-        execution_context.todo_written = True
+        execution_context.plan.todo_written = True
     else:
-        execution_context.plan_written = True
+        execution_context.plan.plan_written = True
 
 
 def declared_edit_set(call: Call) -> None:
@@ -61,5 +61,5 @@ def declared_edit_set(call: Call) -> None:
         if (candidate := call.agent.normalize_workspace_path(match.group(0)))
     }
     # Mutated in place: other modules hold a reference to this set.
-    execution_context.declared_edit_set.clear()
-    execution_context.declared_edit_set.update(declared)
+    execution_context.edits.declared_edit_set.clear()
+    execution_context.edits.declared_edit_set.update(declared)

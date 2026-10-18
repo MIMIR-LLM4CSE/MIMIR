@@ -39,7 +39,7 @@ def inject_reminder(
     }
     messages.append(msg)
     if execution_context is not None:
-        execution_context.transient_reminders.append((category, msg))
+        execution_context.nudges.transient_reminders.append((category, msg))
     return msg
 
 
@@ -53,13 +53,13 @@ def drop_transient_reminders(
     """
     if execution_context is None:
         return 0
-    pending = execution_context.transient_reminders
+    pending = execution_context.nudges.transient_reminders
     if not pending:
-        execution_context.last_call_reminders = []
+        execution_context.nudges.last_call_reminders = []
         return 0
     doomed = {id(m) for _cat, m in pending}
     before = len(messages)
     messages[:] = [m for m in messages if id(m) not in doomed]
-    execution_context.last_call_reminders = [cat for cat, _m in pending]
-    execution_context.transient_reminders = []
+    execution_context.nudges.last_call_reminders = [cat for cat, _m in pending]
+    execution_context.nudges.transient_reminders = []
     return before - len(messages)

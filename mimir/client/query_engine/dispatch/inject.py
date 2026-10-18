@@ -29,14 +29,14 @@ async def post_dispatch_inject(
     denial ladder, a missing module: the model is still calling tools when they apply.
     """
     # remind agent to mark completed step done in todo list
-    success_path = execution_context.last_edit_success_path
+    success_path = execution_context.edits.last_edit_success_path
     if (
         success_path
-        and execution_context.todo_written
-        and execution_context.todo_file_path
+        and execution_context.plan.todo_written
+        and execution_context.plan.todo_file_path
     ):
-        execution_context.last_edit_success_path = ""  # consume
-        counts = execution_context.nudge_counts
+        execution_context.edits.last_edit_success_path = ""  # consume
+        counts = execution_context.nudges.nudge_counts
         if (
             # The per-category cap every nudge in the table honours, applied here too:
             # this reminder reached the model on EVERY successful write, uncapped, which
@@ -44,10 +44,10 @@ async def post_dispatch_inject(
             nudge_count(execution_context, "todo_tick") < NUDGE_MAX_TODO_TICK
             # And never twice running about the same file: re-editing what we just spoke
             # about is the middle of one change, not the end of a step.
-            and success_path != execution_context.last_todo_tick_path
+            and success_path != execution_context.plan.last_todo_tick_path
         ):
             counts["todo_tick"] = counts.get("todo_tick", 0) + 1
-            execution_context.last_todo_tick_path = success_path
+            execution_context.plan.last_todo_tick_path = success_path
             inject_reminder(
                 messages,
                 f"You just wrote {os.path.basename(success_path)} successfully. "
@@ -75,8 +75,8 @@ async def post_dispatch_inject(
         )
 
     # one-time stop once refusals reached the end of the denial ladder
-    if handback_required(execution_context) and not execution_context.handback_told:
-        execution_context.handback_told = True
+    if handback_required(execution_context) and not execution_context.denials.handback_told:
+        execution_context.denials.handback_told = True
         inject_reminder(
             messages,
             handback_corrective_message(handback_scopes(execution_context)),

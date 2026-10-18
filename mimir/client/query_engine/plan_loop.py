@@ -120,8 +120,8 @@ def _clear_recorded_plan(execution_context: ExecutionContext) -> None:
     its local flag would leave the sticky context flags set and the very next tool turn
     would count the discarded plan as the new one.
     """
-    execution_context.todo_written = False
-    execution_context.plan_written = False
+    execution_context.plan.todo_written = False
+    execution_context.plan.plan_written = False
 
 
 async def _request_plan_decision(agent: AgentPort) -> tuple[str, str]:
@@ -287,7 +287,7 @@ class PlanLoop(StepLoop):
             # Whether a plan exists is the execution context's call, never a second
             # derivation from tool names here (observations.plan.todo_flags records
             # `plan_written` for the prose document — the only form plan mode produces).
-            if self.ec.plan_written:
+            if self.ec.plan.plan_written:
                 self.plan_title = self.plan_title or _plan_document_title(tool_calls, self.agent)
                 self.plan_recorded = True
             if not self.plan_recorded:

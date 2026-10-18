@@ -109,177 +109,223 @@ def _spec(factory: Callable[[], Any], types: tuple[type, ...], *traits: str) -> 
 _NoneType = type(None)
 
 
+@dataclass
+class Discovery:
+    """What the model searched, inspected and read: its discovery evidence."""
+    # True once any SEARCH-capability tool has run
+    searched: bool = _spec(lambda: False, (bool,), CARRY, DISCOVERY)
+    # directories listed or inspected (delete context); directories, so never purged
+    inspected_dirs: set[str] = _spec(set, (set,), CARRY, DISCOVERY)
+    # paths whose existence was probed
+    checked_paths: set[str] = _spec(set, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
+    # files whose content was read: the edit/overwrite precondition, dropped to force a
+    # re-read. A RecencySet: shown as a bounded slice, most recent first.
+    read_files: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
+    # paths proven to exist (reads, hits, written files). Not DISCOVERY: the loop's own
+    # bookkeeping establishes some of them.
+    existing_paths: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE)
+    # files a delegated sub-agent read: discovery evidence, never a substitute for read_files
+    delegated_read_files: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
+    # per-directory near-name candidates (path clarification)
+    similar_candidates_by_dir: dict[str, set[str]] = _spec(dict, (dict,))
+    # successful search calls this query (blast-radius gate)
+    search_tool_calls: int = _spec(lambda: 0, (int,))
+
+
+@dataclass
+class Edits:
+    """Planned and in-flight mutations, and how edits have failed."""
+    # files the model intends to edit or has begun editing
+    planned_edit_targets: set[str] = _spec(RecencySet, (set,))
+    # source files a checklist declared (multi-file plan completeness)
+    declared_edit_set: set[str] = _spec(set, (set,))
+    # code files written this query and not yet re-validated
+    dirty_written_files: set[str] = _spec(RecencySet, (set,), FILE_PATH)
+    # True once the first code file was edited this query
+    code_mutation_started: bool = _spec(lambda: False, (bool,))
+    # a confirmed workspace-wide replace, seeding the cross-file completeness check (one-shot)
+    cross_file_grep_old_text: str | None = _spec(lambda: None, (str, _NoneType,))
+    cross_file_grep_source: str | None = _spec(lambda: None, (str, _NoneType,))
+    # the most recent tracked replacement
+    last_replace_old_text: str | None = _spec(lambda: None, (str, _NoneType,))
+    last_replace_new_text: str = _spec(lambda: "", (str,))
+    last_replace_file: str = _spec(lambda: "", (str,))
+    # path -> (last signature, identical consecutive failures): the identical-patch block
+    edit_loop_state: dict[str, tuple[Any, ...]] = _spec(dict, (dict,))
+    # path -> consecutive edit failures whatever the patch (error_recovery)
+    edit_fail_streak_by_file: dict[str, int] = _spec(dict, (dict,))
+    # loop steps since the last successful edit (idle gating)
+    steps_since_last_edit: int = _spec(lambda: 0, (int,))
+    # last successfully edited code file, cleared once a tick reminder is injected
+    last_edit_success_path: str = _spec(lambda: "", (str,))
+
+
+@dataclass
+class Checks:
+    """What checkers established about the dirty files."""
+    # dirty files that passed a checker (never an execution)
+    validated_files: set[str] = _spec(set, (set,), FILE_PATH)
+    # per-file strength of that check: structural|syntax|static|compiled|measured
+    validation_tier_by_file: dict[str, str] = _spec(dict, (dict,))
+    # per-file failed checks (retry budget)
+    validation_fail_count_by_file: dict[str, int] = _spec(dict, (dict,))
+    # dirty files the built-in floor cannot read (binary): reported, never demanded
+    unverifiable_files: set[str] = _spec(set, (set,), FILE_PATH)
+    # path -> (mtime_ns, size) at its last built-in check
+    builtin_check_stamp: dict[str, tuple[int, int]] = _spec(dict, (dict,))
+    # path -> the built-in floor's diagnostic for a rejected file
+    builtin_check_findings: dict[str, str] = _spec(dict, (dict,))
+
+
+@dataclass
+class Execution:
+    """What ran, what it showed, and the runs nothing watches."""
+    # ledger key -> {call_id, command, completed, effect, verdict, reason, failures,
+    # attempts, blocked}: an execution, judged on its own, crediting no file
+    runs: dict[str, dict[str, Any]] = _spec(dict, (dict,))
+    # files passed to a tests-kind validator (regression guard)
+    tests_run: set[str] = _spec(set, (set,))
+    # test file -> distinct failing-node-id sets seen
+    test_failure_signatures: dict[str, list[str]] = _spec(dict, (dict,))
+    # the run/verdict advice was answered: the exercise budget never re-arms
+    exercise_advice_closed: bool = _spec(lambda: False, (bool,))
+    # why running the change was out of reach, reported in the ledger
+    exercise_blocked_reason: str = _spec(lambda: "", (str,))
+    # scheduler ids no descriptor covers: nothing watches them
+    unwatched_runs: set[str] = _spec(set, (set,))
+
+
+@dataclass
+class Environment:
+    """The interpreter environments: what failed to import, and what changed."""
+    unresolved_modules: set[str] = _spec(set, (set,))
+    env_probed: bool = _spec(lambda: False, (bool,))
+    # installs and env creations (conclude-phase cleanup)
+    env_mutations: list[dict[str, Any]] = _spec(list, (list,))
+
+
+@dataclass
+class Denials:
+    """What the user refused."""
+    # calls blocked by policy or approval this query (denial nudge, finalization)
+    denied_tool_calls: list[dict[str, Any]] = _spec(list, (list,))
+    # append-only refusal log by approval scope: the escalation ladder
+    denial_history: list[dict[str, Any]] = _spec(list, (list,))
+    # the end of the denial ladder was said
+    handback_told: bool = _spec(lambda: False, (bool,))
+
+
+@dataclass
+class PlanState:
+    """The checklist and the plan of record."""
+    todo_written: bool = _spec(lambda: False, (bool,))
+    plan_written: bool = _spec(lambda: False, (bool,))
+    # the active checklist file (set at query start)
+    todo_file_path: str = _spec(lambda: "", (str,))
+    # mtime of the checklist the system message renders
+    checklist_stamp: int | None = _spec(lambda: None, (int, _NoneType))
+    # the file the last "tick the step" was about
+    last_todo_tick_path: str = _spec(lambda: "", (str,))
+
+
+@dataclass
+class NudgeState:
+    """What the guardrails said, and what they staged for the next injection."""
+    # per-category fire counts (frequency caps)
+    nudge_counts: dict[str, int] = _spec(dict, (dict,))
+    # reminders for the next call only, and the categories of the last call's
+    transient_reminders: list[Any] = _spec(list, (list,))
+    last_call_reminders: list[Any] = _spec(list, (list,))
+    # one-shot correctives, consumed by the next injection: (tool, failures) of a
+    # repeated failing call; a test file whose failing set keeps moving
+    repeat_alert: tuple[Any, ...] | None = _spec(lambda: None, (tuple, _NoneType))
+    moving_test_alert: str | None = _spec(lambda: None, (str, _NoneType))
+    moving_test_told: list[Any] = _spec(list, (list,))
+    # consecutive bare final answers (nudge cutoff)
+    consecutive_noop_turns: int = _spec(lambda: 0, (int,))
+    # the completion ledger was handed back for a rewrite (once per query)
+    evidence_handback_used: bool = _spec(lambda: False, (bool,))
+
+
+@dataclass
+class Bookkeeping:
+    """The loop's own state between steps: not evidence about the work."""
+    # tool_call_id -> files that result concerns, for structural history trimming
+    tool_msg_files: dict[str, list[str]] = _spec(dict, (dict,))
+    # results the history budget may not evict while anything else is reducible;
+    # carried, since the pinned message is replayed into the next query
+    pinned_call_ids: set[str] = _spec(set, (set,), CARRY)
+    # skill -> tool_call_id of its instructions ("" folded by /<name>, "pending" in flight)
+    skills_loaded: dict[str, str] = _spec(dict, (dict,), CARRY)
+    # the /<skill> block folded into the system message, put back on every rebuild
+    skill_suffix: str = _spec(lambda: "", (str,))
+    # the agent's mode as last seen, so only a change reads as a switch; None at start
+    observed_agent_mode: str | None = _spec(lambda: None, (str, _NoneType))
+    # the tree this agent works in; empty: the workspace the client started in
+    workspace_root: str = _spec(lambda: "", (str,))
+    # the per-query dedup and spin guards
+    loop_control: LoopControlState = _spec(LoopControlState, (LoopControlState,))
+
+
+#: The sub-records of a context, in declaration order: attribute name and class.
+RECORDS: tuple[tuple[str, type], ...] = (
+    ("discovery", Discovery), ("edits", Edits), ("checks", Checks),
+    ("execution", Execution), ("env", Environment), ("denials", Denials),
+    ("plan", PlanState), ("nudges", NudgeState), ("bookkeeping", Bookkeeping),
+)
+
+
 @dataclass(eq=False)
 class ExecutionContext:
     """Everything one query has established, read by every guard, nudge and report.
 
-    Each field declares its default, types and traits; the derived lists (carried fields,
-    path fields, discovery signals) are computed from those declarations.
+    Grouped by concern into sub-records; each field declares its default, types and
+    traits, and the derived lists are computed from those declarations.
     """
-
-    # ── Discovery: what the agent has searched, inspected, and read ────────────
-    # True once any SEARCH-capability tool has run (discovery-evidence signal)
-    searched: bool = _spec(lambda: False, (bool,), DISCOVERY)
-    # directories listed/inspected (delete context, discovery-evidence signal)
-    inspected_dirs: set[str] = _spec(set, (set,), CARRY, DISCOVERY)
-    # paths whose existence was probed via an existence check
-    checked_paths: set[str] = _spec(set, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
-    # RecencySet: shown as a bounded slice, where recency is what makes the slice
-    # useful (see recent_first).
-    # files whose content was read (edit/overwrite precondition; dropped to force a re-read after repeated edit failures)
-    read_files: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
-    # Not DISCOVERY: a path's existence can be established as a side effect of the
-    # loop's own bookkeeping rather than by the model's own exploration, which is
-    # exactly what the discovery gates must not accept as evidence.
-    # paths proven to exist on disk (reads, existence hits, candidate matches, written files + their parent dirs)
-    existing_paths: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE)
-    # Read by a sub-agent the model sent, and reported back with the finding: the
-    # model's own discovery, done at arm's length. Kept apart from `read_files`
-    # because that field also gates editing, and the model has not read these.
-    # files a delegated sub-agent read and reported back; discovery evidence for the caller, never a substitute for read_files
-    delegated_read_files: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
-    # per-directory near-name candidates from candidate searches (path clarification)
-    similar_candidates_by_dir: dict[str, set[str]] = _spec(dict, (dict,))
-    # count of successful search calls (blast-radius gate)
-    search_tool_calls: int = _spec(lambda: 0, (int,))
-    # Count of successful substantive actions (writes/exec/mutations — any PLAN_BLOCKED
-    # tool). Read by the todo nudge so a many-operation task is recognised as
-    # multi-step even when it touches only one (or zero) files.
-    # count of successful substantive actions (PLAN_BLOCKED: writes/exec/mutations); drives the todo op-count trigger
-    action_op_count: int = _spec(lambda: 0, (int,))
-    # Empty means "the workspace the client was started in" — the module constant.
-    # Set per run, because an agent's root is a property of the agent and a sub-agent
-    # may work in a copy of the repository.
-    # the tree THIS agent works in; a sub-agent given a copy of the repository declares its paths under that copy
-    workspace_root: str = _spec(lambda: "", (str,))
-    # ── Edit: planned and in-flight mutations ──────────────────────────────────
-    # files the model intends to / has begun editing (union'd with dirty for todo + blast gating)
-    planned_edit_targets: set[str] = _spec(RecencySet, (set,))
-    # source files named in a task-checklist declaration (multi-file plan completeness)
-    declared_edit_set: set[str] = _spec(set, (set,))
-    # code files successfully written this query and not yet re-validated
-    dirty_written_files: set[str] = _spec(RecencySet, (set,), FILE_PATH)
-    # old_text of a confirmed workspace-wide replace, seeding the cross-file completeness check
-    cross_file_grep_old_text: str | None = _spec(lambda: None, (str, _NoneType,))
-    # file where that workspace-wide replacement originated
-    cross_file_grep_source: str | None = _spec(lambda: None, (str, _NoneType,))
-    # old_text of the most recent tracked replacement (completeness checking)
-    last_replace_old_text: str | None = _spec(lambda: None, (str, _NoneType,))
-    # new_text of that most recent tracked replacement
-    last_replace_new_text: str = _spec(lambda: "", (str,))
-    # file the most recent tracked replacement targeted
-    last_replace_file: str = _spec(lambda: "", (str,))
-    # path -> (last_signature: str|None, identical consecutive failures: int); guards the identical-patch hard block
-    edit_loop_state: dict[str, tuple[Any, ...]] = _spec(dict, (dict,))
-    # path -> consecutive edit failures regardless of patch (force-re-read + error_recovery)
-    edit_fail_streak_by_file: dict[str, int] = _spec(dict, (dict,))
-    # agent-loop steps since the last successful edit (idle gating)
-    steps_since_last_edit: int = _spec(lambda: 0, (int,))
-    # path of last successful code edit (cleared after injection)
-    last_edit_success_path: str = _spec(lambda: "", (str,))
-    # ── Validation ─────────────────────────────────────────────────────────────
-    # dirty files that have since passed a checker (syntax/imports/lint) — never an execution
-    validated_files: set[str] = _spec(set, (set,), FILE_PATH)
-    # per-file strength of that validation: structural|syntax|static|compiled (completion ledger)
-    validation_tier_by_file: dict[str, str] = _spec(dict, (dict,))
-    # per-file count of failed checks (retry-budget exhaustion)
-    validation_fail_count_by_file: dict[str, int] = _spec(dict, (dict,))
-    # dirty files the built-in floor cannot read at all (binary, undecodable): reported, never demanded
-    unverifiable_files: set[str] = _spec(set, (set,), FILE_PATH)
-    # path -> (mtime_ns, size) at its last built-in check: what makes the conclusion sweep check each revision once
-    builtin_check_stamp: dict[str, tuple[int, int]] = _spec(dict, (dict,))
-    # path -> the built-in floor's diagnostic for a file it rejected (drives the validation nudge)
-    builtin_check_findings: dict[str, str] = _spec(dict, (dict,))
-    # command -> {call_id, completed: bool, effect: run|build, verdict: ''|pass|fail|unknown, reason, failures: int, attempts: [str]}: everything about an execution, which is judged on its own and credits no file
-    runs: dict[str, dict[str, Any]] = _spec(dict, (dict,))
-    # True once the model answered the run/verdict advice; the shared exercise budget never re-arms after that
-    exercise_advice_closed: bool = _spec(lambda: False, (bool,))
-    # why running the change was out of reach (no exec tool, unresolved imports, needs a build): reported in the ledger instead of silently dropping the advice
-    exercise_blocked_reason: str = _spec(lambda: "", (str,))
-    # True once the model was handed the completion ledger to rewrite its summary (once per query)
-    evidence_handback_used: bool = _spec(lambda: False, (bool,))
-    # ── Workflow + policy ──────────────────────────────────────────────────────
-    # coarse phase of the loop: "discover" | "edit" | "validate" | "conclude"
+    discovery: Discovery = field(default_factory=Discovery)
+    edits: Edits = field(default_factory=Edits)
+    checks: Checks = field(default_factory=Checks)
+    execution: Execution = field(default_factory=Execution)
+    env: Environment = field(default_factory=Environment)
+    denials: Denials = field(default_factory=Denials)
+    plan: PlanState = field(default_factory=PlanState)
+    nudges: NudgeState = field(default_factory=NudgeState)
+    bookkeeping: Bookkeeping = field(default_factory=Bookkeeping)
+    # The loop's coarse phase, read across every record: discover|edit|validate|conclude
     workflow_state: str = _spec(lambda: "discover", (str,))
-    # True once the first code file was successfully edited this query
-    code_mutation_started: bool = _spec(lambda: False, (bool,))
-    # per-category nudge fire counts (frequency caps). keys: discovery, validation, denial, state, creation, blast_radius, doc, todo, error_recovery, regression
-    nudge_counts: dict[str, int] = _spec(dict, (dict,))
-    # tool calls blocked by policy/approval (denial nudge + finalization)
-    denied_tool_calls: list[dict[str, Any]] = _spec(list, (list,))
-    # append-only refusal log keyed by approval scope; drives the escalation ladder (never cleared, unlike denied_tool_calls)
-    denial_history: list[dict[str, Any]] = _spec(list, (list,))
-    # files passed to a tests-kind validator this query (regression guard)
-    tests_run: set[str] = _spec(set, (set,))
-    # test file -> distinct failing-node-id sets seen this query (oracle nudge)
-    test_failure_signatures: dict[str, list[str]] = _spec(dict, (dict,))
-    # ── Environment ────────────────────────────────────────────────────────────
-    # imports a run failed to resolve (env-resolution nudge)
-    unresolved_modules: set[str] = _spec(set, (set,))
-    # ids a scheduler listed that no descriptor covers — nothing watches them, no wake is owed (unwatched-run nudge)
-    unwatched_runs: set[str] = _spec(set, (set,))
-    # True once the model enumerated the available interpreters/envs
-    env_probed: bool = _spec(lambda: False, (bool,))
-    # installs / env creations recorded this query (conclude-phase cleanup nudge)
-    env_mutations: list[dict[str, Any]] = _spec(list, (list,))
-    # ── Todo / planning ────────────────────────────────────────────────────────
-    # True once an ordered checklist (plan_steps) was recorded
-    todo_written: bool = _spec(lambda: False, (bool,))
-    # True once a prose plan/rationale was recorded
-    plan_written: bool = _spec(lambda: False, (bool,))
-    # absolute path to the active todo_list.md (set at query start)
-    todo_file_path: str = _spec(lambda: "", (str,))
-    # ── Cross-query and loop bookkeeping ───────────────────────────────────────
-    # These were live without being declared: written by the loop, the dispatcher or
-    # the carry merge, and read by the history budget — but invisible to the template,
-    # to validate_execution_context and to the trait derivations.
-    # tool_call_id -> files that tool message concerns; lets history trimming match messages to files structurally
-    tool_msg_files: dict[str, list[str]] = _spec(dict, (dict,))
-    # consecutive bare final-answer turns with no tool call (nudge cutoff)
-    consecutive_noop_turns: int = _spec(lambda: 0, (int,))
-    # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
-    history_truncated: bool = _spec(lambda: False, (bool,))
-    # ── Skills loaded on demand ────────────────────────────────────────────────
-    # Insertion order is the load order; the instructions live in the messages and in
-    # agent.skills. Mirrored into carry_context by hand, like ``searched``.
-    # skill name -> tool_call_id carrying its instructions ("" = folded into messages[0] by /<name>, "pending" = pull in flight)
-    skills_loaded: dict[str, str] = _spec(dict, (dict,))
-    # tool_call_ids whose results the history budget may not evict or summarise away
-    # while anything else is reducible. The one pin mechanism; see history.py. CARRY
-    # because the pinned message is archived and replayed into the next query, so its
-    # protection has to outlive the query too.
-    # tool_call_ids the history budget may not evict or summarise while anything else is reducible
-    pinned_call_ids: set[str] = _spec(set, (set,), CARRY)
+    # successful substantive actions (PLAN_BLOCKED calls): the todo nudge's op count
+    action_op_count: int = _spec(lambda: 0, (int,))
 
-    # ── Loop bookkeeping: state the loop and the correctives keep between two steps ──
-    # The per-query dedup and spin guards (see LoopControlState).
-    loop_control: LoopControlState = field(default_factory=LoopControlState)
-    # The agent's mode as last seen, so only a *change* reads as the user switching
-    # (loop_base._live_mode); None until the query starts.
-    observed_agent_mode: str | None = None
-    # The /<skill> block folded into the system message, put back on every rebuild.
-    skill_suffix: str = ""
-    # mtime of the checklist file the system message currently renders.
-    checklist_stamp: int | None = None
-    # One-shot correctives staged during a step and consumed by the next injection.
-    repeat_alert: tuple[Any, ...] | None = None          # (tool, failures) of a repeated failing call
-    moving_test_alert: str | None = None        # a test file whose failing set keeps moving
-    moving_test_told: list[Any] = field(default_factory=list)   # test files already told about
-    handback_told: bool = False                 # the end of the denial ladder was said
-    last_todo_tick_path: str = ""               # the file the last "tick the step" was about
-    # Reminders injected for the next call only, and the categories of the last call's.
-    transient_reminders: list[Any] = field(default_factory=list)
-    last_call_reminders: list[Any] = field(default_factory=list)
+    def home(self, name: str) -> Any:
+        """The record holding field *name* (the context itself for a top-level field)."""
+        record = _HOME.get(name)
+        if record is None:
+            raise AttributeError(f"execution context has no field {name!r}")
+        return getattr(self, record) if record else self
+
+    def get(self, name: str) -> Any:
+        return getattr(self.home(name), name)
 
     def take(self, name: str) -> Any:
         """Read a one-shot field and reset it to its default: the staged correctives
         are consumed by whoever delivers them."""
-        value = getattr(self, name)
-        spec = self.__dataclass_fields__[name]
-        setattr(self, name, spec.default_factory() if spec.default_factory is not MISSING
+        owner = self.home(name)
+        value = getattr(owner, name)
+        spec = type(owner).__dataclass_fields__[name]
+        setattr(owner, name, spec.default_factory() if spec.default_factory is not MISSING
                 else spec.default)
         return value
 
+
+def leaf_fields() -> list[tuple[str, Any]]:
+    """``(record attribute, Field)`` for every field, sub-records first, in declaration
+    order; the attribute is "" for a top-level field."""
+    out = [(attr, f) for attr, cls in RECORDS for f in fields(cls)]
+    records = {attr for attr, _cls in RECORDS}
+    return out + [("", f) for f in fields(ExecutionContext) if f.name not in records]
+
+
+_HOME: dict[str, str] = {f.name: attr for attr, f in leaf_fields()}
 
 
 # ── The carry-context schema ───────────────────────────────────────────────────
@@ -289,7 +335,6 @@ class ExecutionContext:
 _CarryExtraSpec = tuple[str, Callable[[], Any], str, bool]
 
 _CARRY_EXTRA_SPECS: tuple[_CarryExtraSpec, ...] = (
-    ("searched", lambda: False, "scalar", False),
     # Reported by a sub-agent's hand-back (see server_spawn_agent).
     ("last_query_written_files", set, "set", True),
     # path -> mtime at the time of the read; used to evict reads a later edit staled.
@@ -299,7 +344,9 @@ _CARRY_EXTRA_SPECS: tuple[_CarryExtraSpec, ...] = (
 
 def carry_set_fields() -> tuple[str, ...]:
     """Carry keys holding a ``set`` — the ones needing list⇄set conversion for JSON."""
-    return fields_with(CARRY) + tuple(
+    return tuple(f.name for _home, f in leaf_fields()
+                 if CARRY in f.metadata.get("traits", ()) and set in f.metadata["types"]
+                 ) + tuple(
         name for name, _f, kind, _p in _CARRY_EXTRA_SPECS if kind == "set"
     )
 
@@ -346,7 +393,7 @@ def fields_with(*traits: str) -> tuple[str, ...]:
     iterate get a deterministic result without sorting.
     """
     wanted = frozenset(traits)
-    return tuple(f.name for f in fields(ExecutionContext)
+    return tuple(f.name for _home, f in leaf_fields()
                  if wanted <= f.metadata.get("traits", frozenset()))
 
 
@@ -357,7 +404,7 @@ def was_read(execution_context: ExecutionContext, path: str) -> bool:
     targeted, a capped window is the normal case, and a gate that asked for the whole
     file would be asking for the one thing the read policy tells the model not to do.
     """
-    return path in (execution_context.read_files or set())
+    return path in (execution_context.discovery.read_files or set())
 
 
 def is_known_to_exist(execution_context: ExecutionContext, path: str) -> bool:
@@ -366,14 +413,14 @@ def is_known_to_exist(execution_context: ExecutionContext, path: str) -> bool:
     Stronger than :func:`was_checked_for`, which only records that a look happened.
     """
     return (
-        path in (execution_context.existing_paths or set())
+        path in (execution_context.discovery.existing_paths or set())
         or was_read(execution_context, path)
     )
 
 
 def was_checked_for(execution_context: ExecutionContext, path: str) -> bool:
     """Whether a pre-check was attempted for *path* — not proof that it exists."""
-    return path in (execution_context.checked_paths or set())
+    return path in (execution_context.discovery.checked_paths or set())
 
 
 def known_existing_files(execution_context: ExecutionContext) -> set[str]:
@@ -385,15 +432,14 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
     """
     known: set[str] = set()
     for name in fields_with(KNOWN_FILE):
-        value = getattr(execution_context, name)
+        value = execution_context.get(name)
         if isinstance(value, set):
             known.update(str(p) for p in value if p)
     return known
 
 
-# ── State producer → consumer map ──────────────────────────────────────────────
-# Each field group has one writer: see CLIENT_DETAILED.md, "Who writes what". Never
-# mutate the context outside its declared writer.
+# ── Who writes what ────────────────────────────────────────────────────────────
+# Each record's writers are listed in CLIENT_DETAILED.md, "Who writes what".
 
 
 # ── Discovery evidence: what counts as the model's own exploration this query ──
@@ -408,8 +454,7 @@ DISCOVERY_EVIDENCE_SIGNALS: tuple[str, ...] = fields_with(DISCOVERY)
 
 def discovery_signal_count(execution_context: ExecutionContext) -> int:
     """Number of distinct model-initiated discovery signals present in *execution_context*."""
-    return sum(1 for s in DISCOVERY_EVIDENCE_SIGNALS
-               if getattr(execution_context, s))
+    return sum(1 for s in DISCOVERY_EVIDENCE_SIGNALS if execution_context.get(s))
 
 
 def nudge_count(execution_context: ExecutionContext, category: str) -> int:
@@ -418,7 +463,7 @@ def nudge_count(execution_context: ExecutionContext, category: str) -> int:
     Named accessor for the ``execution_context.nudge_counts.get(category, 0)``
     pattern that the per-category frequency caps repeat across every nudge branch.
     """
-    return execution_context.nudge_counts.get(category, 0)
+    return execution_context.nudges.nudge_counts.get(category, 0)
 
 
 def idle_steps(execution_context: ExecutionContext) -> int:
@@ -428,7 +473,7 @@ def idle_steps(execution_context: ExecutionContext) -> int:
     the 99 sentinel means "the model has not edited anything, so it is maximally
     idle" — used by the validation/state idle gates.
     """
-    return int(execution_context.steps_since_last_edit)
+    return int(execution_context.edits.steps_since_last_edit)
 
 
 def has_discovery_evidence(execution_context: ExecutionContext, *, min_distinct: int = 1) -> bool:
@@ -443,11 +488,11 @@ def plan_evidence_ready(
     min_distinct: int = DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
 ) -> bool:
     """True once the model has read code, not merely located it: the bar for the plan tool."""
-    read = set(execution_context.read_files or ())
+    read = set(execution_context.discovery.read_files or ())
     # A file a sub-agent read and reported on counts here: the plan's "WHERE" rests on
     # code that was read and whose finding is in the model's context. It does NOT count
     # toward the pre-edit gate, which asks whether *this* agent holds the lines.
-    read |= set(execution_context.delegated_read_files or ())
+    read |= set(execution_context.discovery.delegated_read_files or ())
     return (
         len(read) >= min_files
         and has_discovery_evidence(execution_context, min_distinct=min_distinct)
@@ -477,13 +522,13 @@ def unwritten_declared_files(execution_context: ExecutionContext) -> list[str]:
 
     Guidance mid-run only: the set is scraped from checklist prose.
     """
-    declared = execution_context.declared_edit_set or set()
+    declared = execution_context.edits.declared_edit_set or set()
     if not declared:
         return []
-    dirty = set(execution_context.dirty_written_files or set())
+    dirty = set(execution_context.edits.dirty_written_files or set())
     # Off the context, not off the import: a sub-agent in a copy of the repository
     # declares paths under its own root, and this function never sees the agent.
-    root = os.path.abspath(execution_context.workspace_root or paths.WORKSPACE_ROOT)
+    root = os.path.abspath(execution_context.bookkeeping.workspace_root or paths.WORKSPACE_ROOT)
     return sorted(d for d in declared if not _declared_target_written(d, dirty, root))
 
 
@@ -503,7 +548,7 @@ _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 
 def validation_tier(execution_context: ExecutionContext, path: str) -> str | None:
     """The strength of *path*'s validation, or None if it was never validated."""
-    return execution_context.validation_tier_by_file.get(path)
+    return execution_context.checks.validation_tier_by_file.get(path)
 
 
 def raise_validation_tier(execution_context: ExecutionContext, path: str, tier: str) -> None:
@@ -513,7 +558,7 @@ def raise_validation_tier(execution_context: ExecutionContext, path: str, tier: 
     """
     if tier not in _TIER_RANK:
         return
-    tiers = execution_context.validation_tier_by_file
+    tiers = execution_context.checks.validation_tier_by_file
     current = tiers.get(path)
     if current is None or _TIER_RANK[tier] > _TIER_RANK[current]:
         tiers[path] = tier
@@ -544,7 +589,7 @@ def files_below_tier(execution_context: ExecutionContext, tier: str) -> list[str
     threshold = _TIER_RANK.get(tier)
     if threshold is None:
         return []
-    tiers = execution_context.validation_tier_by_file
+    tiers = execution_context.checks.validation_tier_by_file
     return sorted(p for p, t in tiers.items() if _TIER_RANK.get(t, 0) < threshold)
 
 
@@ -589,7 +634,7 @@ def record_run(
     Keyed by :func:`run_ledger_key`; ``command`` keeps the text a report shows. ``effect``
     tells a build from a run.
     """
-    runs = execution_context.runs
+    runs = execution_context.execution.runs
     key = run_ledger_key(command)
     previous = runs.pop(key, None) or {}
     run = {
@@ -617,7 +662,7 @@ def unsettled_runs(execution_context: ExecutionContext) -> dict[str, dict[str, A
     judged ``unknown`` stays here — "I cannot tell" is not a settlement.
     """
     return {
-        command: run for command, run in (execution_context.runs or {}).items()
+        command: run for command, run in (execution_context.execution.runs or {}).items()
         if run.get("completed") and run.get("verdict") in ("", "unknown")
     }
 
@@ -649,21 +694,17 @@ def failed_runs(execution_context: ExecutionContext) -> dict[str, dict[str, Any]
     the "every failure is spent" release below its threshold for the rest of the query.
     """
     return {
-        command: run for command, run in (execution_context.runs or {}).items()
+        command: run for command, run in (execution_context.execution.runs or {}).items()
         if run_class(run) == "broken"
     }
 
 
-def build_execution_context(**values: Any) -> ExecutionContext:
-    """A fresh context, with *values* set over the defaults."""
-    return ExecutionContext(**values)
-
-
 def validate_execution_context(execution_context: ExecutionContext) -> None:
     """Fail fast if the runtime policy contract is broken."""
-    for f in fields(execution_context):
+    for home, f in leaf_fields():
         types = f.metadata.get("types")
-        value = getattr(execution_context, f.name)
+        value = getattr(getattr(execution_context, home) if home else execution_context,
+                        f.name)
         if types and not isinstance(value, types):
             type_names = ", ".join(tp.__name__ for tp in types)
             raise TypeError(
@@ -671,23 +712,23 @@ def validate_execution_context(execution_context: ExecutionContext) -> None:
                 f"expected one of: {type_names}"
             )
 
-    for parent, candidates in execution_context.similar_candidates_by_dir.items():
+    for parent, candidates in execution_context.discovery.similar_candidates_by_dir.items():
         if not isinstance(parent, str):
             raise TypeError("execution_context.similar_candidates_by_dir keys must be str")
         if not isinstance(candidates, set):
             raise TypeError("execution_context.similar_candidates_by_dir values must be set[str]")
 
-    for target in execution_context.planned_edit_targets:
+    for target in execution_context.edits.planned_edit_targets:
         if not isinstance(target, str):
             raise TypeError("execution_context.planned_edit_targets values must be str")
 
-    for key, count in execution_context.validation_fail_count_by_file.items():
+    for key, count in execution_context.checks.validation_fail_count_by_file.items():
         if not isinstance(key, str):
             raise TypeError("execution_context.validation_fail_count_by_file keys must be str")
         if not isinstance(count, int):
             raise TypeError("execution_context.validation_fail_count_by_file values must be int")
 
-    for key, tier in execution_context.validation_tier_by_file.items():
+    for key, tier in execution_context.checks.validation_tier_by_file.items():
         if not isinstance(key, str):
             raise TypeError("execution_context.validation_tier_by_file keys must be str")
         if tier not in VALIDATION_TIERS:
@@ -696,7 +737,7 @@ def validate_execution_context(execution_context: ExecutionContext) -> None:
                 f"{VALIDATION_TIERS}; got {tier!r}"
             )
 
-    for key, run in execution_context.runs.items():
+    for key, run in execution_context.execution.runs.items():
         if not isinstance(key, str):
             raise TypeError("execution_context.runs keys must be str")
         if not isinstance(run, dict) or not isinstance(run.get("attempts"), list):

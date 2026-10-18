@@ -10,9 +10,9 @@ WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
 def pending_validation_paths(execution_context: ExecutionContext) -> list[str]:
     """Dirty files that still owe a check, except those that cannot be read as text."""
-    dirty_files = set(execution_context.dirty_written_files)
-    validated_files = set(execution_context.validated_files)
-    unverifiable = set(execution_context.unverifiable_files or set())
+    dirty_files = set(execution_context.edits.dirty_written_files)
+    validated_files = set(execution_context.checks.validated_files)
+    unverifiable = set(execution_context.checks.unverifiable_files or set())
     return sorted(
         path for path in dirty_files
         if path not in validated_files and path not in unverifiable
@@ -24,7 +24,7 @@ def has_pending_validation(execution_context: ExecutionContext) -> bool:
 
 
 def has_blocking_denials(execution_context: ExecutionContext) -> bool:
-    return bool(execution_context.denied_tool_calls)
+    return bool(execution_context.denials.denied_tool_calls)
 
 
 def set_workflow_state(execution_context: ExecutionContext, new_state: str) -> None:

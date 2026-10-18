@@ -7,7 +7,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 from mimir.client.event_sink import event_sink as capture_events
 from mimir.client.config.limits import AGENT_EMPTY_TURN_RETRIES
 from mimir.client.guardrails.nudges import drop_transient_reminders, inject_reminder
@@ -326,7 +326,7 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
     """Plan mode handles an empty turn like the agent loop: no empty message left in history."""
 
     def _run(self, script):
-        from mimir.client.context.execution_context import build_execution_context
+        from mimir.tests.support.context import build_execution_context
         from mimir.client.query_engine import plan_loop as plan_loop_module
 
         backend = ScriptedBackend(script)

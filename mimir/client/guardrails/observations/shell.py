@@ -189,7 +189,7 @@ def _record_test_failure_signatures(
     by_file: dict[str, list[str]] = {}
     for node in signature.split():
         by_file.setdefault(node.split("::", 1)[0], []).append(node)
-    ledger = execution_context.test_failure_signatures
+    ledger = execution_context.execution.test_failure_signatures
     for path, nodes in by_file.items():
         seen = ledger.setdefault(path, [])
         sig = " ".join(nodes)
@@ -202,12 +202,12 @@ def _stage_moving_test_alert(execution_context: ExecutionContext) -> None:
 
     Staged like ``_repeat_alert``, since the model is still mid-loop; once per file per query.
     """
-    ledger = execution_context.test_failure_signatures or {}
-    told = execution_context.moving_test_told
+    ledger = execution_context.execution.test_failure_signatures or {}
+    told = execution_context.nudges.moving_test_told
     for path, seen in sorted(ledger.items()):
         if len(seen) >= 2 and path not in told:
             told.append(path)
-            execution_context.moving_test_alert = path
+            execution_context.nudges.moving_test_alert = path
             return
 
 
@@ -249,10 +249,10 @@ def bash_validation(call: Call) -> None:
     if reason == TEST_RUNNER_FAILURE:
         _record_test_failure_signatures(execution_context, out)
         _stage_moving_test_alert(execution_context)
-    dirty = execution_context.dirty_written_files
+    dirty = execution_context.edits.dirty_written_files
     for target in explicit:
         if is_python_test_filepath(target):
-            execution_context.tests_run.add(target)
+            execution_context.execution.tests_run.add(target)
         if not tier or target not in dirty:
             continue
         if completed:
@@ -313,33 +313,33 @@ def command(call: Call) -> None:
             for op in operands:
                 path = _resolve(op)
                 if path:
-                    execution_context.read_files.add(path)
-                    execution_context.checked_paths.add(path)
+                    execution_context.discovery.read_files.add(path)
+                    execution_context.discovery.checked_paths.add(path)
                     register_known_path(execution_context, path)
         elif kind == Kind.SEARCH:
-            execution_context.searched = True
-            execution_context.search_tool_calls += 1
+            execution_context.discovery.searched = True
+            execution_context.discovery.search_tool_calls += 1
         elif kind == Kind.INSPECT:
             for op in operands:
                 path = _resolve(op)
                 if path:
-                    execution_context.inspected_dirs.add(path)
+                    execution_context.discovery.inspected_dirs.add(path)
         elif kind == Kind.WRITE:
             execution_context.action_op_count = int(execution_context.action_op_count) + 1
             for op in operands:
                 path = _resolve(op)
                 if path and call.agent.is_code_filepath(path):
                     record_code_edit(execution_context, path)
-                    execution_context.last_edit_success_path = path
+                    execution_context.edits.last_edit_success_path = path
                     enter_post_edit_state(execution_context)
         elif kind in (Kind.EXEC, Kind.UNKNOWN):
             # Marking a dirty file validated (or failed) is handled status-agnostically
             # by bash_validation; here we only count the substantive action.
             execution_context.action_op_count = int(execution_context.action_op_count) + 1
         elif kind == Kind.ENV_DISCOVERY:
-            execution_context.env_probed = True
+            execution_context.env.env_probed = True
         elif kind == Kind.ENV_MUTATE:
-            mutations = execution_context.env_mutations
+            mutations = execution_context.env.env_mutations
             record = {
                 "tool": call.tool_name, "installed": list(operands),
                 "python": "", "path": "", "name": "",

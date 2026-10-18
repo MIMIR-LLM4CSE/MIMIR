@@ -2,7 +2,7 @@
 rows under the parent's. The gate, the envelope, and isolation between delegations.
 """
 from __future__ import annotations
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 
 import asyncio
 import json

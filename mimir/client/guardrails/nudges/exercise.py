@@ -57,7 +57,7 @@ _CONFIGURED_BUILDS: dict[str, tuple[str, ...]] = {
 def _exercise_budget_left(execution_context: ExecutionContext) -> bool:
     """True while the one shared exercise/verdict ask is still available."""
     return (
-        not execution_context.exercise_advice_closed
+        not execution_context.execution.exercise_advice_closed
         and nudge_count(execution_context, EXERCISE_BUDGET) < NUDGE_MAX_EXERCISE
     )
 
@@ -75,7 +75,7 @@ def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tup
     def _route(description: str) -> tuple[str, str]:
         return description, ""
 
-    if execution_context.unresolved_modules:
+    if execution_context.env.unresolved_modules:
         return _blocked("an import could not be resolved in the interpreter that was used")
     if not names_with_cap(CODE_EXEC, agent.tool_caps):
         return _blocked("no execution tool is connected to this session")
@@ -86,7 +86,7 @@ def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tup
     if untested:
         return _route(f"the test that already covers it ({untested[0][1]})")
 
-    dirty = sorted(execution_context.dirty_written_files or ())
+    dirty = sorted(execution_context.edits.dirty_written_files or ())
     known = {os.path.basename(p) for p in known_existing_files(execution_context)}
 
     # 2. A file this environment starts directly.
@@ -126,8 +126,8 @@ def record_exercise_obstacle(agent: AgentPort, execution_context: ExecutionConte
     Asked where the ledger is built, for the case the ledger reports it in: code was
     written and nothing was run.
     """
-    if execution_context.dirty_written_files and not execution_context.runs:
-        execution_context.exercise_blocked_reason = exercise_route(
+    if execution_context.edits.dirty_written_files and not execution_context.execution.runs:
+        execution_context.execution.exercise_blocked_reason = exercise_route(
             agent, execution_context)[1]
 
 
@@ -147,9 +147,9 @@ def should_nudge_unexercised_code(agent: AgentPort, execution_context: Execution
     """
     return (
         _exercise_budget_left(execution_context)
-        and bool(execution_context.code_mutation_started)
-        and bool(execution_context.dirty_written_files)
+        and bool(execution_context.edits.code_mutation_started)
+        and bool(execution_context.edits.dirty_written_files)
         and not has_pending_validation(execution_context)
-        and not (execution_context.runs or {})
+        and not (execution_context.execution.runs or {})
         and bool(exercise_hint(agent, execution_context))
     )

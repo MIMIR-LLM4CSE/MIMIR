@@ -23,16 +23,16 @@ def denial_clearing(call: Call) -> None:
         or call.arguments.get("subdir")
         or call.arguments.get("directory")
     )
-    denied_calls = execution_context.denied_tool_calls
-    execution_context.denied_tool_calls = [
+    denied_calls = execution_context.denials.denied_tool_calls
+    execution_context.denials.denied_tool_calls = [
         item for item in denied_calls
         if not (
             item.get("tool") == call.tool_name
             and item.get("path") == resolved_path
         )
     ]
-    if not execution_context.denied_tool_calls:
-        execution_context.nudge_counts["denial"] = 0
+    if not execution_context.denials.denied_tool_calls:
+        execution_context.nudges.nudge_counts["denial"] = 0
 
 
 def verdict_tool(call: Call) -> None:

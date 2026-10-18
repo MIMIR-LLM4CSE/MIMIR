@@ -141,7 +141,7 @@ class LoopDeferralTests(unittest.TestCase):
 
 class PlanDecisionDeferralTests(unittest.TestCase):
     def _run_plan(self, ask):
-        from mimir.client.context.execution_context import build_execution_context
+        from mimir.tests.support.context import build_execution_context
         from mimir.client.query_engine import plan_loop as plan_loop_module
 
         backend = ScriptedBackend([])

@@ -15,10 +15,10 @@ from unittest import mock
 from mimir.client.config.limits import EXERCISE_BUDGET
 from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import (
-    build_execution_context,
     raise_validation_tier,
     record_run,
 )
+from mimir.tests.support.context import build_execution_context
 from mimir.client.event_sink import reset_event_sink, set_event_sink
 from mimir.client.guardrails.nudges import needs_incomplete_finalization
 from mimir.client.guardrails.nudges import maybe_append_nudge
@@ -74,7 +74,7 @@ class _ChecklistFixture(unittest.TestCase):
         with open(fp, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
         self.addCleanup(lambda: (os.remove(fp), os.rmdir(d)))
-        ec.todo_file_path = fp
+        ec.plan.todo_file_path = fp
         return fp
 
 
@@ -122,7 +122,7 @@ class VerificationLedgerTests(_ChecklistFixture):
         # Once a run has been read, the ledger has something better to show than the
         # reminder that a checker proves nothing about the answer.
         ec = _written({"solver.py"}, tier="static")
-        ec.runs = {"pytest -q": {
+        ec.execution.runs = {"pytest -q": {
             "completed": True, "verdict": "pass", "reason": "l2_rel=3e-4",
             "failures": 0, "attempts": [],
         }}
@@ -136,7 +136,7 @@ class VerificationLedgerTests(_ChecklistFixture):
         # from plan prose, so at completion time a plan the model revised on purpose is
         # indistinguishable from a step it skipped, and charging it read as a defect.
         ec = _written({"a.py"}, tier="static")
-        ec.declared_edit_set = {"a.py", "b.py"}
+        ec.edits.declared_edit_set = {"a.py", "b.py"}
         out = _annotate_answer_with_changes("Done.", ec)
         self.assertNotIn("Declared but never written", out)
         self.assertNotIn("declared, never written", out)
@@ -196,7 +196,7 @@ class LedgerMarkerTests(_ChecklistFixture):
         # ok: settled evidence, nothing open. note: it checks out, but nothing read the
         # result. warn: something the reader has to act on.
         clean = _written({"a.py"}, tier="static")
-        clean.runs = {"pytest -q": {
+        clean.execution.runs = {"pytest -q": {
             "completed": True, "verdict": "pass", "reason": "l2_rel=3e-4",
             "failures": 0, "attempts": [],
         }}
@@ -208,7 +208,7 @@ class LedgerMarkerTests(_ChecklistFixture):
         # Suppressing the run recommendation and suppressing the fact that it could not
         # be followed are different things; the second is what the reader needs.
         ec = _written({"a.py"}, tier="static")
-        ec.exercise_blocked_reason = "no execution tool is connected to this session"
+        ec.execution.exercise_blocked_reason = "no execution tool is connected to this session"
         rows = "\n".join(build_ledger(ec)["rows"])
         self.assertIn("no execution tool is connected", rows)
         # Silent when nothing blocked it: an ordinary unexercised change says enough.
@@ -322,9 +322,9 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
             failures=VALIDATION_RETRY_BUDGET,
             attempts=["0.00% amplitude reduction", "energy grew by 0.6%"],
         )
-        ec.dirty_written_files = {"solver.py"}
-        ec.validated_files = {"solver.py"}
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = {"solver.py"}
+        ec.checks.validated_files = {"solver.py"}
+        ec.edits.code_mutation_started = True
         issues, _ = collect_completion_issues(ec)
         joined = "\n".join(issues)
         self.assertIn("budget exhausted", joined)
@@ -335,9 +335,9 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
         # The loop is over by the time this is rendered; a retry budget with room
         # left describes what the loop *would* have done, not what will happen.
         ec = self._run(verdict="fail", reason="segfault", failures=1)
-        ec.dirty_written_files = {"solver.py"}
-        ec.validated_files = {"solver.py"}
-        ec.code_mutation_started = True
+        ec.edits.dirty_written_files = {"solver.py"}
+        ec.checks.validated_files = {"solver.py"}
+        ec.edits.code_mutation_started = True
         joined = "\n".join(collect_completion_issues(ec)[0])
         self.assertIn("unresolved", joined)
         self.assertNotIn("will retry", joined)
@@ -366,8 +366,8 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         """
         # Two distinct discovery signals, else the guidance layer's `discovery` nudge
         # speaks first and this reads as "no workflow nudge fired".
-        ec.read_files.add("solver.py")
-        ec.searched = True
+        ec.discovery.read_files.add("solver.py")
+        ec.discovery.searched = True
         events: list[dict] = []
         token = set_event_sink(events.append)
         try:
@@ -385,7 +385,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         unchecked = _written({"solver.py"}, validated=False)
         # `validation` now carries a finding rather than a request, so it fires on the
         # built-in check having rejected the file, not on editing having paused.
-        unchecked.builtin_check_findings = {"solver.py": "line 3: '{' is never closed"}
+        unchecked.checks.builtin_check_findings = {"solver.py": "line 3: '{' is never closed"}
         cases = [
             ("written, never checked", unchecked, "validation"),
             ("checked, never run", _written({"solver.py"}, tier="static"), "unexercised"),
@@ -429,7 +429,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         # The env-resolution advice owns this moment; "you never ran it" would be
         # asking for the run that just failed to start.
         ec = _written({"solver.py"}, tier="static")
-        ec.unresolved_modules = {"numpy"}
+        ec.env.unresolved_modules = {"numpy"}
         self.assertNotEqual(self._fired(ec), "unexercised")
 
     def test_an_unrun_change_still_concludes(self) -> None:
@@ -449,7 +449,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
             messages: list[dict] = []
             maybe_append_nudge(agent=agent, query="fix it", active_mode="agent",
                                execution_context=ec, messages=messages)
-        self.assertEqual(ec.nudge_counts[EXERCISE_BUDGET], 1)
+        self.assertEqual(ec.nudges.nudge_counts[EXERCISE_BUDGET], 1)
 
     def test_the_reminder_names_the_three_routes_and_the_way_out(self) -> None:
         text = unexercised_code_nudge_message(["solver.py"])
@@ -495,7 +495,7 @@ class CompletionIssueTests(_ChecklistFixture):
         # Same reason as the ledger row it mirrors: an issue is something the run left
         # broken, and a plan revised mid-course is not that.
         ec = _written({"a.py"}, tier="static")
-        ec.declared_edit_set = {"a.py", "b.py"}
+        ec.edits.declared_edit_set = {"a.py", "b.py"}
         issues, _ = collect_completion_issues(ec)
         self.assertFalse(any("Declared but never written" in i for i in issues))
 
@@ -599,11 +599,11 @@ class RefusedActionReportTests(_ChecklistFixture):
         ec = _written({"a.py"}, tier="static")
         ec.workflow_state = "conclude"
         for name, value in over.items():
-            setattr(ec, name, value)
+            setattr(ec.home(name), name, value)
         for _ in range(times):
-            ec.denied_tool_calls.append(
+            ec.denials.denied_tool_calls.append(
                 {"tool": "bash_run", "path": "", "scope": "bash:bash_run:pip install"})
-            ec.denial_history.append(
+            ec.denials.denial_history.append(
                 {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"})
         return ec
 
@@ -626,7 +626,7 @@ class RefusedActionReportTests(_ChecklistFixture):
         # The refusal alone reads as "complete, except what you refused"; a file the
         # run modified and never checked is a blocker of its own, and it wins.
         ec = self._refused()
-        ec.dirty_written_files.add("b.py")  # written, never validated
+        ec.edits.dirty_written_files.add("b.py")  # written, never validated
         out = finalize_incomplete_answer("Done.", ec)
         self.assertEqual(self._headline(out), HEADLINE_INCOMPLETE)
         self.assertIn("b.py", out)
@@ -720,7 +720,7 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
         ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] two"])
         self.assertTrue(self._should(ec))
-        ec.nudge_counts["unfinished_plan"] = NUDGE_MAX_UNFINISHED_PLAN
+        ec.nudges.nudge_counts["unfinished_plan"] = NUDGE_MAX_UNFINISHED_PLAN
         self.assertFalse(self._should(ec))
 
     def test_message_offers_both_exits(self):
@@ -789,7 +789,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
             validated_files={"solver.c"},
             code_mutation_started=True,
         )
-        ec.validation_tier_by_file = {"solver.c": "compiled"}
+        ec.checks.validation_tier_by_file = {"solver.c": "compiled"}
         run = record_run(ec, command, completed=False, effect="build")
         run["blocked"] = reason
         run["reason"] = reason
@@ -809,7 +809,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
         # appears under its own heading and never among the issues that drive the
         # headline: a wall the environment put there is not a defect of the change.
         ec = self._blocked()
-        ec.dirty_written_files.add("mesh.c")  # a file that still owes a check
+        ec.edits.dirty_written_files.add("mesh.c")  # a file that still owes a check
         summary = finalize_incomplete_answer("Done.", ec)
         self.assertIn(
             "Not attempted (a prerequisite this environment does not have)", summary,
@@ -837,7 +837,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
     def test_a_genuinely_failing_run_is_still_an_issue(self):
         # The negative control: nothing here swallows a real failure.
         ec = self._blocked()
-        ec.runs["make"]["blocked"] = ""
+        ec.execution.runs["make"]["blocked"] = ""
         issues, _ = collect_completion_issues(ec)
         self.assertTrue(any("make" in i for i in issues))
         self.assertTrue(is_incomplete_answer(finalize_incomplete_answer("Done.", ec)))
@@ -861,7 +861,7 @@ class ExerciseRouteTests(unittest.TestCase):
         from mimir.client.guardrails.nudges import exercise
 
         ec = _ctx(dirty_written_files=set(dirty), code_mutation_started=True)
-        ec.read_files = set(seen)
+        ec.discovery.read_files = set(seen)
         real = exercise.any_command_on_path
         exercise.any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
         try:
@@ -897,7 +897,7 @@ class ExerciseRouteTests(unittest.TestCase):
 
         ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
         exercise.record_exercise_obstacle(self._agent(), ec)
-        self.assertTrue(ec.exercise_blocked_reason)
+        self.assertTrue(ec.execution.exercise_blocked_reason)
 
     def test_a_build_file_nobody_has_seen_is_not_a_route(self):
         # Evidence only: recommending `make` against a Makefile nobody laid eyes on is
@@ -970,7 +970,7 @@ class TestRedRunRaisesResidualRisk(unittest.TestCase):
     def test_a_model_stated_fail_lifts_low_to_medium(self):
         ec = self._clean_but_for_runs()
         record_run(ec, "./solver", completed=True)
-        ec.runs["./solver"]["verdict"] = "fail"
+        ec.execution.runs["./solver"]["verdict"] = "fail"
         self.assertIn("Residual risk: medium.", finalize_incomplete_answer("Done.", ec))
 
     def test_a_blocked_run_stays_low(self):
@@ -978,7 +978,7 @@ class TestRedRunRaisesResidualRisk(unittest.TestCase):
         # change — POLICY is explicit that it must not be charged against completion.
         ec = self._clean_but_for_runs()
         record_run(ec, "cmake --build .", completed=False)
-        ec.runs["cmake --build ."]["blocked"] = "cmake is not installed here"
+        ec.execution.runs["cmake --build ."]["blocked"] = "cmake is not installed here"
         out = finalize_incomplete_answer("Done.", ec)
         self.assertIn("Not attempted", out)
         self.assertIn("Residual risk: low.", out)

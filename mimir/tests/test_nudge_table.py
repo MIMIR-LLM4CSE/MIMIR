@@ -1,4 +1,4 @@
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 import unittest
 
 from mimir.client.config.limits import EXERCISE_BUDGET
@@ -105,7 +105,7 @@ class UnwatchedRunNudgeTest(unittest.TestCase):
     def _context(self, **over):
         ctx = build_execution_context(unwatched_runs={"15306620"}, workflow_state="conclude", nudge_counts={})
         for _name, _value in over.items():
-            setattr(ctx, _name, _value)
+            setattr(ctx.home(_name), _name, _value)
         return ctx
 
     def _fires(self, ctx, *, level="strict", mode="agent") -> bool:

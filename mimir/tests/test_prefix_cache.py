@@ -6,7 +6,7 @@ prompt — which is what empties turns on a served model (37/108 draws with it, 
 0/40 once the same text sits in messages[0]). These tests hold the checklist to messages[0]
 and hold the rebuild to the moments the checklist actually changed.
 """
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 import asyncio
 import os
 import tempfile
@@ -220,8 +220,8 @@ class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
 
         # Not even reassigned: the same string object is still there.
         self.assertIs(messages[0]["content"], before)
-        self.assertFalse(ctx.skill_suffix)
-        self.assertEqual(ctx.pinned_call_ids, {"call-1"})
+        self.assertFalse(ctx.bookkeeping.skill_suffix)
+        self.assertEqual(ctx.bookkeeping.pinned_call_ids, {"call-1"})
 
     def test_a_rebuild_after_a_pull_carries_no_skill_block(self):
         """Because there is nothing in the suffix to carry: the body is in the tail."""

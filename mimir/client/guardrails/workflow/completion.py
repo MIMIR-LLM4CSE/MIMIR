@@ -46,12 +46,12 @@ def _validation_findings(execution_context: ExecutionContext) -> tuple[list[str]
     if not pending:
         # Name what a check proves: "validated" reads back as licence to call the work
         # verified, when it only means the files parse and are whole.
-        dirty = execution_context.dirty_written_files
+        dirty = execution_context.edits.dirty_written_files
         tier = weakest_validation_tier(execution_context, dirty) if dirty else None
         if tier:
             return [], [f"All modified files checked ({tier}) — parses, says nothing about the result"]
         return [], ["All modified files checked"]
-    fails = execution_context.validation_fail_count_by_file
+    fails = execution_context.checks.validation_fail_count_by_file
     issues = []
     for label, keep in (
         ("Checks failing, budget exhausted: ", lambda n: n >= VALIDATION_RETRY_BUDGET),
@@ -67,7 +67,7 @@ def _validation_findings(execution_context: ExecutionContext) -> tuple[list[str]
 def _refusal_findings(execution_context: ExecutionContext) -> tuple[list[str], list[str]]:
     """A refusal is a blocker only when it ended the run (hand-back); otherwise it is
     reported in its own section (:func:`refused_action_lines`), never as a failure."""
-    if not execution_context.denied_tool_calls:
+    if not execution_context.denials.denied_tool_calls:
         return [], ["No denied actions"]
     if handback_required(execution_context):
         return ["Stopped at the user's request: "
@@ -89,7 +89,7 @@ def _run_findings(execution_context: ExecutionContext) -> tuple[list[str], list[
         attempts = run.get("attempts") or []
         if spent and attempts:
             issues.append("  tried: " + "; ".join(attempts[:3]))
-    runs = execution_context.runs or {}
+    runs = execution_context.execution.runs or {}
     if runs and not issues and not unsettled_runs(execution_context):
         return [], [_plural_runs(len(runs)) + " judged pass by the model"]
     return issues, []
@@ -136,7 +136,7 @@ def collect_completion_issues(
 
 def unjudged_run_lines(execution_context: ExecutionContext) -> list[str]:
     """One line per run whose output was never read out: reported, never counted."""
-    runs = execution_context.runs or {}
+    runs = execution_context.execution.runs or {}
     lines = [
         f"{run.get('command') or command} — ran; its output was never judged"
         for command, run in sorted(runs.items())
@@ -156,7 +156,7 @@ def unmeasured_proxy_source_lines(execution_context: ExecutionContext) -> list[s
     """
 
     source = active_proxy_source()
-    if not source or source not in execution_context.dirty_written_files:
+    if not source or source not in execution_context.edits.dirty_written_files:
         return []
     if validation_tier(execution_context, source) == "measured":
         return []
@@ -170,7 +170,7 @@ def blocked_run_lines(execution_context: ExecutionContext) -> list[str]:
     see, and never a defect in the change to be charged against completion. Kept out of
     ``collect_completion_issues`` for that reason alone — it is what decides the headline.
     """
-    runs = execution_context.runs or {}
+    runs = execution_context.execution.runs or {}
     return [
         f"{_run_label(run)} not attempted — {run['blocked']}: {run.get('command') or command}"
         for command, run in sorted(runs.items()) if run.get("blocked")
@@ -185,7 +185,7 @@ def refused_action_lines(execution_context: ExecutionContext) -> list[str]:
     about what they had actually refused.
     """
     lines: list[str] = []
-    for item in execution_context.denied_tool_calls:
+    for item in execution_context.denials.denied_tool_calls:
         tool_name = item.get("tool", "unknown")
         # The scope token is the command family / host / package set the refusal was
         # really about; the tool name alone is the least informative part of it.
@@ -294,7 +294,7 @@ def finalize_incomplete_answer(
 ) -> str:
     issues, completed = collect_completion_issues(execution_context, termination)
     pending = pending_validation_paths(execution_context)
-    denied_calls = execution_context.denied_tool_calls
+    denied_calls = execution_context.denials.denied_tool_calls
     refused = refused_action_lines(execution_context)
     handback = handback_required(execution_context)
 

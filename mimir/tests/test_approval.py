@@ -1,7 +1,7 @@
 import types
 import unittest
 
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 from mimir.client.guardrails.policy import approval
 from mimir.client.guardrails.policy.approval import ApprovalManager as _ApprovalManager
 from mimir.client.guardrails.workflow import approval_is_settled
@@ -289,7 +289,7 @@ class SettledRefusalTests(unittest.TestCase):
 
     def _ctx(self, scope, times):
         ec = build_execution_context()
-        ec.denial_history = [{"tool": "bash_run", "scope": scope, "kind": "refused"}] * times
+        ec.denials.denial_history = [{"tool": "bash_run", "scope": scope, "kind": "refused"}] * times
         return ec
 
     def test_one_refusal_leaves_the_route_open(self):
@@ -310,7 +310,7 @@ class SettledRefusalTests(unittest.TestCase):
         # Four refusals in one query end the run; nothing sensitive is worth another
         # card at that point, whichever scope it belongs to.
         ec = build_execution_context()
-        ec.denial_history = [
+        ec.denials.denial_history = [
             {"tool": "bash_run", "scope": f"bash:bash_run:c{i}", "kind": "refused"}
             for i in range(4)
         ]
@@ -318,7 +318,7 @@ class SettledRefusalTests(unittest.TestCase):
 
     def test_a_cancelled_prompt_settles_everything_at_once(self):
         ec = build_execution_context()
-        ec.denial_history = [{"tool": "bash_run", "scope": "s", "kind": "cancelled"}]
+        ec.denials.denial_history = [{"tool": "bash_run", "scope": "s", "kind": "cancelled"}]
         self.assertTrue(approval_is_settled(ec, "other"))
 
 

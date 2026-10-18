@@ -8,7 +8,7 @@ an ExtensionSet of its own, which the test's agents carry.
 """
 
 from __future__ import annotations
-from mimir.client.context.execution_context import build_execution_context
+from mimir.tests.support.context import build_execution_context
 
 import asyncio
 import json
@@ -210,7 +210,7 @@ class NudgePluginTests(ExtensionRegistryResetMixin):
             maybe_append_nudge(agent=agent, query="hi", active_mode="agent",
                                execution_context=ec, messages=[])
         # Capped at CUSTOM_NUDGE_MAX_PER_QUERY (3) via the shared nudge_counts.
-        self.assertEqual(ec.nudge_counts["spammy"], 3)
+        self.assertEqual(ec.nudges.nudge_counts["spammy"], 3)
 
 
 class PostToolPluginTests(ExtensionRegistryResetMixin):
@@ -271,13 +271,13 @@ class PostToolPluginTests(ExtensionRegistryResetMixin):
         # It cannot block — the call already happened — but the turn-end gates read
         # what it records, which is how a machine-observed failure stops a conclusion.
         def _record(agent, tool_name, arguments, result, execution_context):
-            execution_context.dirty_written_files.add("solver.py")
+            execution_context.edits.dirty_written_files.add("solver.py")
             return ""
 
         register_post_tool(PostToolRule(name="record", run=_record))
         ec = build_execution_context()
         asyncio.run(run_post_tool_annotations(self._agent(), "any_tool", {}, "{}", ec))
-        self.assertEqual(ec.dirty_written_files, {"solver.py"})
+        self.assertEqual(ec.edits.dirty_written_files, {"solver.py"})
 
 
 class LoaderTests(ExtensionRegistryResetMixin):

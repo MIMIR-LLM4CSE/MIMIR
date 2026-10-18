@@ -14,8 +14,9 @@ from mimir.client.context.capabilities import (
     CODE_EXEC, PLAN_BLOCKED, PLAN_READONLY, ToolCaps, infer_tool_caps, run_outcome_spec,
 )
 from mimir.client.context.execution_context import (
-    build_execution_context, validation_tier,
+    validation_tier,
 )
+from mimir.tests.support.context import build_execution_context
 from mimir.client.context import failed_runs, unsettled_runs
 from mimir.client.guardrails import observations as O
 from mimir.client.guardrails import workflow
@@ -106,9 +107,9 @@ class MachineFloorTests(unittest.TestCase):
         _observe(self.agent, self.ec, "runner", {"run_dir": "/r/b"})
         _observe(self.agent, self.ec, "reporter",
                  {"run_dir": "/r/b", "state": "done", "feasible": False})
-        self.assertEqual(self.ec.runs["/r/b"]["verdict"], "fail")
+        self.assertEqual(self.ec.execution.runs["/r/b"]["verdict"], "fail")
         self.assertEqual(apply_verdict("pass", "looks good", "", self.ec), [])
-        self.assertEqual(self.ec.runs["/r/b"]["verdict"], "fail")
+        self.assertEqual(self.ec.execution.runs["/r/b"]["verdict"], "fail")
         self.assertIn("/r/b", failed_runs(self.ec))
 
     def test_a_measured_run_that_did_not_improve_costs_nothing(self) -> None:
@@ -122,20 +123,20 @@ class MachineFloorTests(unittest.TestCase):
     def test_launch_and_report_settle_the_same_entry(self) -> None:
         """Keyed on the run, not the tool: otherwise the floor lands on a second row."""
         _observe(self.agent, self.ec, "runner", {"run_dir": "/r/d"})
-        self.assertEqual(list(self.ec.runs), ["/r/d"])
+        self.assertEqual(list(self.ec.execution.runs), ["/r/d"])
         _observe(self.agent, self.ec, "reporter", {"run_dir": "/r/d", "state": "crashed"})
-        self.assertEqual(list(self.ec.runs), ["/r/d"])
+        self.assertEqual(list(self.ec.execution.runs), ["/r/d"])
 
     def test_iterations_do_not_collapse(self) -> None:
         for tag in ("r1", "r2", "r3"):
             _observe(self.agent, self.ec, "runner", {"run_dir": f"/runs/{tag}"})
-        self.assertEqual(list(self.ec.runs), ["/runs/r1", "/runs/r2", "/runs/r3"])
+        self.assertEqual(list(self.ec.execution.runs), ["/runs/r1", "/runs/r2", "/runs/r3"])
 
     def test_undeclared_tool_keeps_the_old_key(self) -> None:
         """Non-regression: a tool declaring no outcome still records against its name."""
         _observe(self.agent, self.ec, "plain", {"run_dir": "/runs/x"})
         _observe(self.agent, self.ec, "plain", {"run_dir": "/runs/y"})
-        self.assertEqual(list(self.ec.runs), ["plain"])
+        self.assertEqual(list(self.ec.execution.runs), ["plain"])
 
     def test_a_failing_row_fails_its_own_run(self) -> None:
         """A suite answers ok while individual cases crashed; each row is its own run."""
@@ -146,7 +147,7 @@ class MachineFloorTests(unittest.TestCase):
         })
         self.assertNotIn("/suite/case0", failed_runs(self.ec))
         self.assertIn("/suite/case1", failed_runs(self.ec))
-        self.assertEqual(self.ec.runs["/suite/case1"]["verdict"], "fail")
+        self.assertEqual(self.ec.execution.runs["/suite/case1"]["verdict"], "fail")
 
 
 class MeasuredTierTests(unittest.TestCase):
@@ -169,7 +170,7 @@ class MeasuredTierTests(unittest.TestCase):
             "bash_run", frozenset({PLAN_READONLY, CODE_EXEC}),
             scope={"kind": "command_prefix", "args": ["command"]})
         self.ec = build_execution_context()
-        self.ec.dirty_written_files.add(self.source)
+        self.ec.edits.dirty_written_files.add(self.source)
 
     def tearDown(self) -> None:
         store._CACHE_DIR = self._saved_root
@@ -181,7 +182,7 @@ class MeasuredTierTests(unittest.TestCase):
     def test_finished_run_measures_the_session_source(self) -> None:
         self._report(state="done", feasible=True)
         self.assertEqual(validation_tier(self.ec, self.source), "measured")
-        self.assertIn(self.source, self.ec.validated_files)
+        self.assertIn(self.source, self.ec.checks.validated_files)
 
     def test_a_run_still_going_credits_nothing(self) -> None:
         # A launched or diverted run reports status ok with whatever it had printed
@@ -210,7 +211,7 @@ class MeasuredTierTests(unittest.TestCase):
         self.assertIsNone(validation_tier(self.ec, self.source))
 
     def test_an_unedited_source_is_not_credited(self) -> None:
-        self.ec.dirty_written_files.discard(self.source)
+        self.ec.edits.dirty_written_files.discard(self.source)
         self._report(state="done", feasible=True)
         self.assertIsNone(validation_tier(self.ec, self.source))
 
@@ -280,7 +281,7 @@ class RefusedCallTests(unittest.TestCase):
 
     def test_a_refused_heredoc_opens_no_run(self) -> None:
         self._observe_bash(REFUSED_HEREDOC, "error", REFUSAL_PAYLOAD)
-        self.assertEqual(self.ec.runs, {})
+        self.assertEqual(self.ec.execution.runs, {})
         self.assertEqual(failed_runs(self.ec), {})
 
     def test_a_refused_call_does_not_reach_the_completion_report(self) -> None:
@@ -292,9 +293,9 @@ class RefusedCallTests(unittest.TestCase):
 
     def test_a_refused_call_charges_no_validation_budget(self) -> None:
         """The other half: a rejection must not count against the file it named."""
-        self.ec.dirty_written_files.add("/tmp/ws/solver.py")
+        self.ec.edits.dirty_written_files.add("/tmp/ws/solver.py")
         self._observe_bash("ruff check /tmp/ws/solver.py", "error", REFUSAL_PAYLOAD)
-        self.assertEqual(self.ec.validation_fail_count_by_file, {})
+        self.assertEqual(self.ec.checks.validation_fail_count_by_file, {})
 
     def test_a_real_red_exit_is_still_a_failing_run(self) -> None:
         """Non-regression: same error status, no `refused`, so it is a real finding."""

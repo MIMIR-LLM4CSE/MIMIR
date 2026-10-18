@@ -102,7 +102,7 @@ def _plural(n: int, word: str) -> str:
 
 def _file_rows(execution_context: ExecutionContext, written: list[str],
                unvalidated: list[str]) -> list[str]:
-    unverifiable = execution_context.unverifiable_files or set()
+    unverifiable = execution_context.checks.unverifiable_files or set()
     rows = []
     for f in written:
         if f not in unvalidated:
@@ -135,10 +135,10 @@ def _notes(execution_context: ExecutionContext, written: list[str],
     notes = []
     if written and not unvalidated and not runs:
         notes.append(_UNCHECKED_OUTPUT_NOTE)
-        reason = str(execution_context.exercise_blocked_reason or "").strip()
+        reason = str(execution_context.execution.exercise_blocked_reason or "").strip()
         if reason:
             notes.append(_EXERCISE_BLOCKED_NOTE.format(reason=reason))
-    if set(unvalidated) & (execution_context.unverifiable_files or set()):
+    if set(unvalidated) & (execution_context.checks.unverifiable_files or set()):
         notes.append(_UNVERIFIABLE_NOTE)
     if any(r.get("verdict") for r in runs.values()):
         notes.append(_VERDICT_NOTE)
@@ -188,16 +188,16 @@ def build_ledger(execution_context: ExecutionContext) -> dict | None:
     ``status`` is ok, note or warn. File rows say what a checker established; run rows what
     an execution showed and what the model read.
     """
-    written = sorted(execution_context.dirty_written_files)
+    written = sorted(execution_context.edits.dirty_written_files)
     unchecked = unchecked_checklist_items(execution_context)
-    runs = execution_context.runs or {}
+    runs = execution_context.execution.runs or {}
     # A run nobody judged is worth reporting even when no file was touched.
     if not written and not unchecked and not runs:
         return None
 
     required = [it for it in unchecked if not it.get("optional")]
     optional = [it for it in unchecked if it.get("optional")]
-    unvalidated = [f for f in written if f not in execution_context.validated_files]
+    unvalidated = [f for f in written if f not in execution_context.checks.validated_files]
     by_class = Counter(run_class(r) for r in runs.values())
     notes = _notes(execution_context, written, unvalidated, runs)
     rows = (_file_rows(execution_context, written, unvalidated) + _run_rows(runs)
