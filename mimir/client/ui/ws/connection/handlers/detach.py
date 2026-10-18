@@ -11,7 +11,7 @@ import os
 from ...server import registry as server_registry
 from .....config import paths
 from ...server.detach import detach as detach_process
-from .....session.jobs_on_disk import establish_baseline, has_baseline, scan_all_sessions
+from .....session.jobs_on_disk import ended_event, needing_attention, scan_all_sessions
 from ...pool.lifecycle import idle_stop_reason
 from ...pool.pool import AgentPool
 from ..screen import Screen
@@ -42,30 +42,10 @@ class DetachHandlers(Handlers):
         except Exception:
             logger.warning("job scan: the sessions could not be read", exc_info=True)
             return
-        for session_id, jobs in found.items():
-            if not has_baseline(session_id):
-                establish_baseline(session_id, jobs)
-                continue
-            for job in jobs:
-                if job.live:
-                    continue   # a worker being built is what puts a watcher back on it
-                descriptor = job.descriptor()
-                self.pool.wakes.consume({
-                    "type": "job_complete",
-                    "job_key": job.job_key,
-                    "server": descriptor.get("server"),
-                    "kind": descriptor.get("kind"),
-                    "state": job.state,
-                    # Who gets woken, which for a sub-agent's run is not the session
-                    # holding the files: a sub-session is a directory and no front end
-                    # can load one, so a child's run is announced in the conversation
-                    # that delegated it. Its markers stay under the child, where the
-                    # scan that found it will look again.
-                    "session_id": job.owner_session,
-                    "run_session": job.session_id,
-                    "summary": {"command": job.command, "exit_code": job.exit_code},
-                    "status_op": job.status_op(),
-                })
+        for job in needing_attention(found):
+            # A live run gets its watcher back when its conversation's worker is built.
+            if not job.live:
+                self.pool.wakes.consume(ended_event(job))
 
     async def restore_detached_autonomy(self) -> None:
         """Take back a run left going: drop the claims, restore each conversation's level.

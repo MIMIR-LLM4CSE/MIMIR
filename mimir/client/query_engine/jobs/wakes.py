@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+from ....servers._shared.jobs import job_key_of
+
 
 # How much of a finished job's own summary a wake carries. Enough for an exit code
 # and the tail of a build log; short of pasting a whole test suite into the history.
@@ -84,6 +86,31 @@ def compact_summary(payload: dict) -> tuple[str, bool]:
         whole = str(payload)
     text = _clip(whole)
     return text, text != whole
+
+
+def job_complete(descriptor: dict, state: str, *, session_id: str | None = None,
+                 run_session: str = "", summary: dict | None = None,
+                 reason: str = "") -> dict:
+    """The ``job_complete`` event of a run that reached *state*, live or found on disk.
+
+    *session_id* is the conversation woken; *run_session* where the run's files and
+    markers are (a sub-agent's run is woken in its parent), by default its origin.
+    """
+    status_op = descriptor.get("status_op") or {}
+    return {
+        "type": "job_complete",
+        "job_key": job_key_of(descriptor),
+        "server": descriptor.get("server"),
+        "kind": descriptor.get("kind"),
+        "state": state,
+        "summary": summary or {},
+        "status_op": status_op,
+        "summary_op": descriptor.get("summary_op") or {},
+        "session_id": session_id,
+        "run_session": run_session or (descriptor.get("origin") or {}).get("session")
+                       or session_id,
+        "reason": reason if state == "unknown" else "",
+    }
 
 
 def wake_text(ev: dict) -> str:

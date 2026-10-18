@@ -480,6 +480,16 @@ class WatchJobTests(unittest.TestCase):
         self.assertNotIn("fast", worker.jobs.watches)  # cleaned up
         self.assertGreaterEqual(agent.status_calls, 3)
 
+    def test_a_handed_over_run_is_settled_where_its_files_are(self) -> None:
+        # Woken in the parent, marked in the child's session, where a later scan looks.
+        agent = _ScriptedAgent(states=["done"], summary={})
+        worker = self._make_worker(agent)
+        descriptor = {**self._descriptor(),
+                      "origin": {"kind": "subagent", "session": "p/subagents/sub-1"}}
+        self._run(worker, descriptor, session_id="p")
+        ev = worker.out_q.get_nowait()
+        self.assertEqual((ev["session_id"], ev["run_session"]), ("p", "p/subagents/sub-1"))
+
     def test_the_event_carries_the_launching_session_and_the_descriptor_ops(self) -> None:
         # Both are what the session layer needs and cannot reconstruct: which
         # conversation to wake, and — for a job with no summary — the only op it may

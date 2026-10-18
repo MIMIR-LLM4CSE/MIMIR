@@ -13,12 +13,13 @@ from itertools import chain, repeat
 from typing import TYPE_CHECKING
 
 from ....session.jobs_on_disk import (
-    establish_baseline,
-    has_baseline,
+    ended_event,
+    needing_attention,
     scan_session,
     subagent_sessions,
 )
 from ....query_engine.jobs import poll
+from ....query_engine.jobs.wakes import job_complete
 from .....servers._shared.jobs import job_key_of
 
 if TYPE_CHECKING:
@@ -142,22 +143,10 @@ class JobWatcher:
         session_id = self.worker.session_id
         if not session_id:
             return {"rearmed": [], "reported": []}
-        # This session's own runs and its sub-agents'. A child's watcher goes with the
-        # child, and a child killed outright hands nothing over, so its runs are the
-        # parent's to pick back up — the person is watching the parent, and nothing can
-        # load a sub-session as a conversation.
-        jobs: list = []
-        for sid in (session_id, *subagent_sessions(session_id)):
-            found = scan_session(sid)
-            if not has_baseline(sid):
-                # First time this session has been looked at: everything already
-                # finished was reported by whatever was watching it, long before
-                # markers existed. Claiming that history as a backlog of wakes would
-                # wake a conversation for every build it ever ran. Per session, so a
-                # child seen for the first time brings no backlog of its own either.
-                establish_baseline(sid, found)
-                found = [job for job in found if job.live]
-            jobs.extend(found)
+        # Its sub-agents' runs too: a child killed outright hands nothing over, and no
+        # front end can load a sub-session.
+        jobs = needing_attention({sid: scan_session(sid)
+                                  for sid in (session_id, *subagent_sessions(session_id))})
         rearmed: list[str] = []
         reported: list[str] = []
         for job in jobs:
@@ -168,23 +157,8 @@ class JobWatcher:
                 if self.register(job.descriptor(), owner=session_id):
                     rearmed.append(job.job_key)
                 continue
-            # Ended with nobody watching. Emitted as the watcher would have — the
-            # descriptor's own server and kind included — because a consumer must not be
-            # able to tell a run reported late from one reported on time, and the wake
-            # text names the kind. Settled by that consumer, not here: see
-            # ``jobs_on_disk.mark_wakes_reported``.
-            descriptor = job.descriptor()
-            self.worker.out_q.put({
-                "type": "job_complete",
-                "job_key": job.job_key,
-                "server": descriptor.get("server"),
-                "kind": descriptor.get("kind"),
-                "state": job.state,
-                "session_id": session_id,
-                "run_session": job.session_id,
-                "summary": {"command": job.command, "exit_code": job.exit_code},
-                "status_op": job.status_op(),
-            })
+            # Settled by the consumer, not here (``jobs_on_disk.mark_wakes_reported``).
+            self.worker.out_q.put(ended_event(job))
             reported.append(job.job_key)
         if rearmed or reported:
             logger.info("job scan: session %s re-armed %d run(s) and reported %d "
@@ -347,18 +321,8 @@ class JobWatcher:
 
         logger.info("background job %r of session %s finished (%s); waking it",
                     job_key, session_id, state)
-        self.worker.out_q.put({
-            "type":       "job_complete",
-            "job_key":    job_key,
-            "server":     descriptor.get("server"),
-            "kind":       descriptor.get("kind"),
-            "state":      state,
-            "summary":    summary,
-            "status_op":  status_op,
-            "summary_op": summary_op,
-            "session_id": session_id,
-            "reason":     reason if state == "unknown" else "",
-        })
+        self.worker.out_q.put(job_complete(descriptor, state, session_id=session_id,
+                                           summary=summary, reason=reason))
         # Deliberately not marked as reported here. Emitting is not delivering: the
         # event still has to be folded into a turn by whatever consumes the bus, and a
         # run settled at the moment its event is queued is one every later scan takes

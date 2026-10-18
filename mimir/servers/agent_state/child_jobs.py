@@ -14,7 +14,7 @@ from collections import deque
 
 from mimir.client.query_engine.jobs import poll as job_poll
 from .._shared.jobs import job_key_of
-from mimir.client.query_engine.jobs.wakes import wake_text
+from mimir.client.query_engine.jobs.wakes import job_complete, wake_text
 
 logger = logging.getLogger(__name__)
 
@@ -187,17 +187,7 @@ class ChildWatcher:
             label=job_key)
         summary = await job_poll.read_summary(
             run_tool, summary_op, call_timeout=_CALL_TIMEOUT, label=job_key)
-        event = {
-            "type": "job_complete",
-            "job_key": job_key,
-            "server": descriptor.get("server"),
-            "kind": descriptor.get("kind"),
-            "state": state,
-            "summary": summary,
-            "status_op": status_op,
-            "summary_op": summary_op,
-            "reason": reason if state == "unknown" else "",
-        }
+        event = job_complete(descriptor, state, summary=summary, reason=reason)
         with self._lock:
             handed_over = self._handed_over
         if handed_over:

@@ -28,6 +28,7 @@ from ...servers._shared.jobs import (
 from ...servers._shared.processes import is_running
 from ...servers._shared.state_paths import sessions_root, subagents_dir
 from ..config import paths
+from ..query_engine.jobs.wakes import job_complete
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +415,29 @@ def scan_session(session_id: str, *, include_reported: bool = False
     if include_reported:
         return found
     return [j for j in found if j.live or not was_reported(j)]
+
+
+def needing_attention(found: dict[str, list[DetachedJob]]) -> list[DetachedJob]:
+    """The runs of *found* (by session) that still need something: live, or ended unannounced.
+
+    A session scanned for the first time gets a baseline instead: what already ended is
+    marked reported, never woken for (job directories are never swept).
+    """
+    out: list[DetachedJob] = []
+    for sid, jobs in found.items():
+        if not has_baseline(sid):
+            establish_baseline(sid, jobs)
+            jobs = [job for job in jobs if job.live]
+        out.extend(jobs)
+    return out
+
+
+def ended_event(job: DetachedJob) -> dict:
+    """The ``job_complete`` of a run that ended with nothing watching, as a watcher would
+    have sent it: woken in its owner's conversation, settled where its files are."""
+    return job_complete(job.descriptor(), job.state, session_id=job.owner_session,
+                        run_session=job.session_id,
+                        summary={"command": job.command, "exit_code": job.exit_code})
 
 
 def subagent_sessions(session_id: str) -> list[str]:
