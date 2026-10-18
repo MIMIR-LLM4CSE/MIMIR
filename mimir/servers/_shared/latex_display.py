@@ -1,14 +1,7 @@
-"""LaTeX display copy of a calculation, for the client to render under the tool row.
+"""The LaTeX display copy of a calculation, for the client to render (never raises).
 
-A math tool puts a ``latex`` string in its success payload: the calculation and its
-result, as one display-math body (no ``$`` delimiters). The client detects the field
-by shape and the chat renders it with KaTeX. Building it must never fail a call, so
-every entry point here returns ``None`` rather than raise.
-
-:func:`numeric_latex` converts the restricted Python AST the math server accepts.
-It is not SymPy: SymPy canonicalises while it parses — ``a / b`` becomes
-``a · b⁻¹`` and ``floor(3.7)`` becomes ``3`` — and the point is to show the
-calculation as it was asked.
+:func:`numeric_latex` converts the math server's restricted AST as written; SymPy would
+canonicalise it.
 """
 
 from __future__ import annotations

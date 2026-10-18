@@ -4,27 +4,10 @@ from .responses import err
 
 
 def require_absolute(path: str, root_abs: str, arg: str = "path") -> "dict | None":
-    """None when *path* is absolute; an error payload naming the likely target otherwise.
+    """None for an absolute *path*; else an error payload naming the absolute path it likely meant.
 
-    Tools that name a file take absolute paths only. A relative path has to be resolved
-    against a root the model cannot see, and getting that wrong is silent: asked to
-    create a file *outside* a directory, a model writes a bare relative name, the server
-    resolves it against that very directory, and the run reports the constraint
-    satisfied. No amount of prompt text made that inference reliable — removing the
-    inference does.
-
-    It applies to reads for the same reason it applies to writes, and one more: a read
-    that quietly accepts a relative path teaches the model a habit the next write will
-    refuse. Directory and scan roots keep their tolerant default — "." there means the
-    workspace, which is not an inference anyone can get wrong.
-
-    The suggestion is the point. Naming the path the relative form *would* have produced
-    makes the rejection a one-step correction rather than an obstacle, and it states the
-    root at the moment placement is actually being decided, which no static prompt
-    section can do.
-
-    Call it at the tool boundary, not inside the resolver: internal helpers legitimately
-    pass relative paths.
+    Tools that name a file take absolute paths only: resolving a relative one against an
+    unseen root fails silently. Call it at the tool boundary.
     """
     raw = "" if path is None else str(path).strip()
     if not raw:
@@ -44,13 +27,7 @@ def resolve_path_in_root(
     path: str, root_abs: str, outside_error_label: str,
     extra_roots: "list[str] | tuple[str, ...] | None" = None,
 ) -> str:
-    """Resolve an input path inside a sandbox root with duplicate-root tolerance.
-
-    ``extra_roots`` widens the allowed set: a resolved path that falls under the
-    primary root **or** any extra root is accepted. Relative paths still resolve
-    against the primary root only; extra roots admit absolute paths in trusted
-    locations (e.g. the proxy cache) without loosening the workspace default.
-    """
+    """Resolve *path* inside the sandbox root, or any of *extra_roots* for absolute paths."""
     root = os.path.abspath(root_abs)
     raw = "." if path is None else str(path).strip()
     if not raw:

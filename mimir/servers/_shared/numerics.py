@@ -1,21 +1,7 @@
-"""Numerical correctness invariants — the shared vocabulary of "this was proved".
+"""The numerical invariants the proxy treats as reserved metric names.
 
-The **proxy optimization server** treats these names as *reserved*: values the code
-under optimization prints for them are discarded before evaluation, so a solver can
-never satisfy its own acceptance constraints (printing ``conservation_residual=…`` to
-pass a requirement).
-
-The **client** does not read this module: a printed ``l2_rel=…`` is a string, which
-cannot be interpreted from outside the process — the reason the proxy seals references
-server-side. What a run printed is the model's to read and report.
-
-Nothing client-only belongs here, and in particular not the ``check=fail`` verdict
-grammar: that lives beside the other ways a run reports on itself, in
-``client.guardrails.runner_output``, which owns the question. Keeping it here is what
-drags this module across the client/server line, and it hides two failures while it does
-— a grammar written to mirror the metrics parser's strictness rather than what harnesses
-actually print, with no test exercising it against a real one. What belongs here is the
-proxy's reserved vocabulary, which is all this module is for.
+Values a run prints under them are discarded, so code cannot satisfy its own
+acceptance constraints. The client does not read this module.
 """
 
 from __future__ import annotations

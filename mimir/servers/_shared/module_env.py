@@ -31,13 +31,7 @@ def module_env(base: dict | None = None) -> dict:
 
 
 def module_probe_script(module_cmd: str) -> str:
-    """A shell script that makes `module` available, then runs *module_cmd*.
-
-    The init block is silenced, not the command: output from these scripts is
-    *parsed*, and a chatty site profile would otherwise prepend noise to the payload.
-    The command keeps its own streams — `module -t avail 2>&1` deliberately wants
-    stderr, since Lmod prints its MODULEPATH section headers there.
-    """
+    """A shell script that makes ``module`` available (silently) and then runs *module_cmd*."""
     init = """
 if ! type module >/dev/null 2>&1; then
   [ -f /etc/profile.d/modules.sh ] && source /etc/profile.d/modules.sh

@@ -1,25 +1,8 @@
-"""Run a subprocess under a timeout that actually stops the work.
+"""Run a subprocess under a timeout that kills its whole process group.
 
-``subprocess.run(..., timeout=...)`` kills the process it launched and nothing else.
-Anything that process forked keeps running, reparented to init, with no record of where
-it came from: a ``find /`` whose timeout fired goes on scanning the filesystem.
-
-Two costs, and the second is the one that matters. The leaked processes consume the
-machine; and because they are invisible to the tool that started them, they silently
-corrupt every measurement taken afterwards. A ratchet optimising ``time_s`` against a
-disk saturated by forgotten ``find`` jobs is optimising noise.
-
-Why the leak happens here in particular: the bash tool runs ``bash -c "<preamble><cmd>"``.
-Given a single command bash would ``exec`` it and be the only process, so killing the
-child would be enough — but the preamble makes the script compound, so bash forks. The
-kill lands on bash, and the fork survives. A tool that runs code it did not write cannot
-assume the shape of the process tree it creates.
-
-The fix is to give the child its own process group and signal the group:
-``start_new_session=True`` makes it a session leader, so its pgid equals its pid and can
-never be the caller's own group — killing it cannot reach MIMIR itself. SIGTERM first so
-a well-behaved program can clean up, SIGKILL after a short grace period for one that
-will not.
+``subprocess.run`` kills only its child; what that child forked (bash forks for a
+compound script) survives and corrupts later measurements. The child gets its own
+session; SIGTERM, then SIGKILL after a grace.
 """
 
 from __future__ import annotations
@@ -56,22 +39,10 @@ def _terminate_group(proc: subprocess.Popen) -> None:
 
 
 def run(argv: list[str], *, timeout: float | None = None, **kwargs: Any):
-    """Like :func:`subprocess.run`, but a timeout kills the child's whole process group.
+    """:func:`subprocess.run`, but a timeout kills the child's process group.
 
-    Drop-in for the call sites that matter: it raises ``subprocess.TimeoutExpired`` and
-    returns a ``CompletedProcess`` exactly as ``subprocess.run`` does, so existing
-    ``except subprocess.TimeoutExpired`` handlers keep working unchanged.
-
-    *start_new_session* is forced on unless the caller set it: it is what makes the
-    group killable, and it is also what stops a child inheriting the controlling
-    terminal it has no business reading from.
-
-    *stdin* defaults to ``DEVNULL`` for a sharper reason. A server's own stdin is the MCP
-    protocol pipe, and a child inherits it: a command that reads stdin — ``ssh`` without
-    ``-n`` and ``cat`` both do — then consumes the client's JSON-RPC traffic. The request
-    it swallows is never answered (a concurrent poll that hangs for ever), a partial steal
-    desynchronises the framing, and either way the session is left unusable while the
-    server itself looks healthy. Nothing a tool runs has any business reading that pipe.
+    ``start_new_session`` is forced; ``stdin`` defaults to ``DEVNULL``, since a server's stdin
+    is its MCP pipe and a reading child would eat the protocol.
     """
     kwargs.setdefault("start_new_session", True)
     kwargs.setdefault("stdin", subprocess.DEVNULL)

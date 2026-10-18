@@ -1,35 +1,8 @@
-"""Server-side capability declaration helper.
+"""The server side of tool capabilities: :func:`tool_caps` declares what a tool means.
 
-A first-party MCP server uses :func:`tool_caps` to declare what each of its tools
-*means* so the client classifies it correctly with zero client-side edits::
-
-    from _shared.capabilities import tool_caps, READ, SEARCH
-
-    @mcp.tool(**tool_caps(caps=[READ], path_args=["path"], label="Reading file: {path}"))
-    def read_file_lines(path: str, start_line: int = 1, end_line: int = 200) -> str:
-        ...
-
-The helper emits the kwargs FastMCP's ``@mcp.tool`` accepts:
-
-* ``meta={"mimir": {...}}`` — our authoritative descriptor, read by the client's
-  :func:`mimir.client.context.capabilities.infer_tool_caps` (Layer 1).
-* ``annotations=ToolAnnotations(...)`` — standard ``readOnlyHint``/``destructiveHint``
-  so foreign/older clients still get a coarse classification (Layer 2).
-
-The descriptor schema mirrors the client contract exactly:
-
-    {
-      "capabilities": [...],            # semantic flags (vocab below)
-      "arg_roles": {"path": [...], ...},
-      "approval": {"sensitive": bool, "non_batch": bool, "fallbacks": [...]},
-      "label": "Reading file: {path}",  # optional status template
-      "kind": "read",                   # work family: the row's word + icon
-      "preview": {"kind": "...", "args": [...]},  # optional pre-write diff shape
-    }
-
-The capability vocabulary is duplicated here as plain strings (rather than importing
-the client) to keep the server layer free of client dependencies; the two lists must
-stay in sync — the client's parity test guards classification.
+It emits ``meta={"mimir": descriptor}`` (read by the client's ``infer_tool_caps``) and
+standard ``ToolAnnotations``. The vocabulary is mirrored from the client as plain
+strings; a parity test keeps them level.
 """
 
 from __future__ import annotations
@@ -83,18 +56,10 @@ DELEGATE = "delegate"
 # capability and no list of names lives client-side.
 MAIN_ONLY = "main_only"
 
-# Fills one section of the client's scientific-computing panel. Declared with a
-# ``panel`` spec — ``{"section": <name>, "order": <int>, "args": {...},
-# "refresh_arg": <name>?}`` — so the client calls it by capability, never by name, and
-# a plugin server adds a section of its own by declaring this. The tool answers
-# read-only, with its own words:
-# ``{"title", "lines": [{"label", "value", "state"?}], "detail"?}``.
-#
-# ``refresh_arg`` names the parameter that means "read it again, do not serve the
-# cache". A panel refreshing on a timer must be cheap, so a section that costs an
-# ``sinfo`` or an ``ssh`` is served from a cache — and then the reader pressing ⟳ gets
-# back the page they just read. Declaring the argument is how a caching tool says which
-# call is the reader's; the client sets it only for that press, never for the timer.
+# Fills one section of the client's panel, declared with a ``panel`` spec
+# (``{"section", "order", "args", "refresh_arg"?}``) and answering
+# ``{"title", "lines": [{"label", "value", "state"?}], "detail"?}``. ``refresh_arg`` names
+# the argument that bypasses the server's cache, set only for the user's ⟳.
 PANEL_REPORT = "panel_report"
 
 # Approval & mode policy
@@ -120,37 +85,19 @@ DIVERTIBLE = "divertible"                # publishes a run channel under its own
 
 
 # ── Reversibility: how much of an action can be taken back ────────────────────
-#
-# One ordered dimension instead of a `sensitive` boolean, which put `mkdir` and a Slurm
-# submission behind the same door and left no way to spend friction where it matters.
-# Sensitivity is *derived* from this (client `_caps_from_meta`), the way plan-blocking
-# is derived from the write caps — one concept declared, not two kept in sync.
-#
-#   reversible   the client itself can undo it — an in-workspace file mutation, which
-#                the approval manager snapshots and `revert_last` restores. NOT
-#                approval-gated.
-#   recoverable  undoable, but by hand and off the client's own record: a delete, an
-#                environment mutation, a memory wipe.
-#   irreversible it leaves the machine or spends something real: a cluster submission
-#                burning allocation hours, an outbound POST, a write outside the
-#                workspace. No enforcement level may ever soften these.
+# One ordered dimension; approval-gating is derived from it client-side.
+#   reversible   the client can undo it (an in-workspace write it snapshotted); not gated.
+#   recoverable  undoable by hand: a delete, an environment mutation, a memory wipe.
+#   irreversible it leaves the machine or spends something: a submission, a POST.
 REVERSIBLE = "reversible"
 RECOVERABLE = "recoverable"
 IRREVERSIBLE = "irreversible"
 REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
 
 
-# ── Work families: the one word a tool-activity row shows, and the icon with it ─
-#
-# A *family of work*, never a tool's identity: several tools share one kind, and the
-# UI maps the kind to an icon. One declared fact drives both halves of the row, so the
-# glyph and the word cannot drift apart the way a separate icon table did.
-#
-# The kind is what the row says the call *is*; what it is *doing* comes from the model,
-# per call (the `doing` argument). A tool whose family cannot be read off its
-# capabilities is exactly why this is declared rather than derived — nothing in
-# `symbolic`'s flags distinguishes it from `evaluate`, and nothing in `proxy_eval`'s
-# says it is the one proxy tool that launches a run.
+# ── Work families: the word a tool-activity row shows, and its icon ───────────
+# Declared because it cannot always be derived; the row's sentence comes from the model's
+# ``doing`` argument.
 TOOL_KINDS = (
     # discovery
     "read", "search", "list", "outline",
@@ -221,14 +168,9 @@ def build_descriptor(
     run_outcome: dict[str, Any] | None = None,
     panel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the ``meta["mimir"]`` descriptor dict (pure / stdlib-only).
+    """The ``meta["mimir"]`` descriptor dict (stdlib only, testable without ``mcp``).
 
-    Kept separate from :func:`tool_caps` so it is unit-testable without importing
-    the ``mcp`` package; round-trip it through the client's ``infer_tool_caps``.
-
-    *reversibility* is the declared level (see :data:`REVERSIBILITY_LEVELS`); omit it
-    and the client derives one from the capabilities. An unrecognised value is dropped
-    rather than trusted, so the client's conservative derivation applies.
+    An unrecognised *reversibility* is dropped, so the client derives one.
     """
     descriptor: dict[str, Any] = {}
 
@@ -327,13 +269,9 @@ def build_descriptor(
         if norm_prev.get("kind"):
             descriptor["preview"] = norm_prev
 
-    # What the *server* saw of a run it performed, so the client's run ledger has a
-    # floor under the model's stated verdict. `id` names the payload field carrying the
-    # run identifier; `crashed_when`/`failed_when` map a payload field to the values
-    # that mean the machine judged the run red. Read-only in that direction: this can
-    # withhold credit, never grant it, which is why there is no `passed_when`.
-    # `rows` declares the same shape nested inside a list field, for a tool that
-    # reports several runs in one response.
+    # What the server saw of a run it performed: ``id`` names the run's payload field,
+    # ``crashed_when``/``failed_when`` map fields to red values (never a ``passed_when``: it can
+    # only withhold credit). ``rows`` declares the same nested in a list field.
     if run_outcome:
         norm_out: dict[str, Any] = {}
         if run_outcome.get("id"):
@@ -373,16 +311,10 @@ def tool_caps(
     read_only: bool | None = None,
     destructive: bool | None = None,
 ) -> dict[str, Any]:
-    """Return ``@mcp.tool(**...)`` kwargs declaring this tool's capabilities.
+    """``@mcp.tool(**...)`` kwargs declaring this tool's capabilities.
 
-    Declare *reversibility* (see :data:`REVERSIBILITY_LEVELS`) rather than a
-    ``sensitive`` flag: approval-gating is derived from it client-side, so a tool
-    states one fact about its effect instead of two that can drift apart.
-
-    ``read_only`` / ``destructive`` populate the standard ``ToolAnnotations`` hints
-    for cross-client compatibility; when omitted, sensible defaults are derived from
-    the declared capabilities (a write/edit/plan-blocked/executes tool is not
-    read-only; anything beyond ``reversible`` is destructive).
+    Declare *reversibility*, not "sensitive": gating is derived from it. ``read_only`` and
+    ``destructive`` default from the capabilities.
     """
     descriptor = build_descriptor(
         caps=caps,

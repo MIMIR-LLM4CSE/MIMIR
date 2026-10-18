@@ -1,21 +1,7 @@
-"""How far along a build says it is, read from the output it prints.
+"""How far along a build says it is, parsed from its output (never tracked).
 
-Parsed, never tracked: the only process that knows the answer is the build tool, and
-the one thing it shares is its output. So the percentage is the tool's own count or
-nothing — a build that prints none gets no bar, since showing 0% for it would invent
-a fact.
-
-Read from the output rather than the command line, which is what makes it work inside
-a long shell chain: whatever surrounds ``make`` (an ``export``, a ``cd``, a ``&&``
-tail), its lines still land in the same log.
-
-Formats recognized, each the tool's default:
-
-    [ 42%] Building CXX object ...        CMake Makefiles, fpm
-    [12/345] Building CXX object ...      ninja, meson
-    [1,234 / 5,678] Compiling ...         bazel
-
-A plain Makefile, pdflatex or latexmk print no count at all, and get no bar.
+Recognized counts: ``[ 42%]`` (CMake, fpm), ``[12/345]`` (ninja, meson), ``[1,234 / 5,678]``
+(bazel). A tool that prints none gets no bar.
 """
 
 from __future__ import annotations
@@ -54,15 +40,10 @@ def _percent_of(line: str) -> float | None:
 
 
 def parse(text: str, drop_finished: bool = True) -> tuple[float, str] | None:
-    """The newest (percent, line) in *text*, or None when there is none to report.
+    """The newest ``(percent, line)`` in *text*, or None.
 
-    A finished build is not a build in progress: in ``make && ./bench`` the last
-    count is ``[100%]`` for as long as the benchmark runs. So a 100% that is no
-    longer the last line is dropped, rather than leaving a full bar standing over
-    work it does not describe. A caller that already knows the build is still the
-    current step (the proxy runner's phase says so) passes ``drop_finished=False``.
-    A lower count stays shown under the warnings a compiler prints between two
-    counts — that build is still going.
+    A 100% that is no longer the last line is dropped (the build is over), unless
+    *drop_finished* is False.
     """
     if not text:
         return None
@@ -110,16 +91,8 @@ def from_file(path: str, drop_finished: bool = True) -> tuple[float, str] | None
 
 
 # --- Getting the bytes out of a pipeline ------------------------------------------
-#
-# Everything above reads a build's own output and nothing else. That only works while
-# the output reaches a log. In `make | tail -40` it does not: the job's log is the
-# *pipeline's* stdout, and `tail` holds everything back until the build has finished,
-# so the log is empty for exactly as long as a bar would have been worth showing.
-#
-# The fix is a second copy, taken before the filter. Which is the one decision here
-# made from the command line rather than from the output — unavoidably, since it has
-# to be made before a single byte exists. It decides only where bytes are copied to;
-# whether there is a bar to show is still the build's own count or nothing.
+# In `make | tail -40` the log stays empty until the build ends, so a copy is taken
+# before the filter. The bar itself still comes only from the build's own count.
 
 # The tools whose progress this module can read, and the subcommand each needs before
 # it is a build rather than a configure or a query. `cmake` alone is a configure step,
@@ -167,16 +140,10 @@ def _is_build(argv: list[str]) -> bool:
 
 
 def tee_command(command: str, log_path: str) -> str | None:
-    """*command* with a ``tee`` to *log_path* spliced in after a piped build.
+    """*command* with a ``tee`` to *log_path* spliced in after a piped build, or None.
 
-    Returns None when there is nothing to do — no pipe, nothing that builds in front
-    of one, or a ``tee`` already there. The rewrite is deliberately the smallest one
-    that works: the filter stays, every other character stays, and ``tee`` is not the
-    last command of the pipeline, so bash still reports the filter's status as the
-    pipeline's. Same output, same exit code, one more copy on disk.
-
-    Removing the filter instead would be a bigger lie: the caller asked for a short
-    result and would silently get a long one.
+    The smallest rewrite: the filter stays last, so the pipeline's status and output are
+    unchanged.
     """
     try:
         segments = shell_paths.parse_segments(command)

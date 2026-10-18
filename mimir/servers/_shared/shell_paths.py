@@ -1,31 +1,8 @@
 """How a shell command splits into commands, and which paths its arguments name.
 
-Single source of truth for two halves of the same rule, which must not drift:
-
-- the bash server's sandbox guard *confines* those paths to the workspace, and
-- the client's out-of-workspace gate *prompts* the user for the ones outside it,
-  so an approved path is then accepted by the guard above.
-
-If the two disagreed the failure is silent and bad in both directions: a path the
-client misses is refused by the server with no way for the user to grant it, and a
-path the server misses is never gated at all. Hence one module, imported by both.
-
-The *segmentation* below (:func:`parse_segments`) is here for the same reason: both
-sides have to agree on what the shell will run — where one command ends and the
-next begins, and which tokens are a redirection rather than an argument — before
-either can say anything about the paths involved. Two tokenizers meant one could
-read ``ls > out.txt`` as a write of ``out.txt`` while the other read ``out.txt`` as
-an argument of ``ls``, and only one of them would ask the user about it.
-
-Dependency-free (stdlib only) so it imports cleanly on either side of the
-client/server process boundary — flat ``from shell_paths import ...`` in a server
-subprocess, packaged ``mimir.servers._shared.shell_paths`` from the client
-(cf. ``trusted_read_roots.py``).
-
-Scope note: this module answers "which tokens are paths, and where do they
-resolve" — nothing more. Whether a resolved path is *allowed* is the caller's
-decision (the server checks workspace membership plus the user's session grants;
-the client checks membership to decide whether to prompt).
+Shared by the bash server, which confines those paths, and the client, which prompts
+for the outside ones: they must agree. Stdlib only. Whether a path is allowed is the
+caller's decision.
 """
 
 import functools
@@ -131,13 +108,8 @@ READ_COMMANDS = frozenset({
 })
 SEARCH_COMMANDS = frozenset({"grep", "rg"})
 INSPECT_COMMANDS = frozenset({"ls", "find", "du"})
-# ``git`` is a multiplexer, so it is placed by its subcommand or not at all. These are
-# the ones that only read the repository. Unplaced, the whole of git classified UNKNOWN
-# and so counted as a run, which made ``git status`` and ``git log`` — the two commands
-# for finding out what a repository is — inexpressible in the mode whose entire job is
-# finding things out. Conservative on purpose: anything that writes an object, moves a
-# ref, touches the worktree or talks to a remote is absent, and ``config`` is absent
-# because the same subcommand both reads and writes.
+# ``git`` is placed by its subcommand: these only read the repository (anything that
+# writes, moves a ref, touches the worktree or a remote, and ``config``, is absent).
 GIT_READ_SUBCOMMANDS = frozenset({
     "status", "log", "diff", "show", "branch", "tag", "remote",
     "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file",
@@ -366,23 +338,10 @@ _LEADING_SEPARATOR = re.compile(r"^(?:&&|\|\||\||;)(?:\s|$)")
 
 
 def flatten_unquoted_newlines(command: str) -> str:
-    """Rewrite a multi-line command as the equivalent one-liner, for validation.
+    """*command* with each unquoted newline turned into ``;``, for validation only.
 
-    A raw newline is a shell command separator, so a validator that tokenizes with
-    ``shlex`` (where newline is mere whitespace) would read ``cat a\\nrm -rf b`` as
-    *one* command ``cat`` with extra arguments — only argv[0] is judged, while
-    bash actually runs both. Refusing newlines would refuse the legitimate shape they
-    usually carry: a multi-line ``python3 -c "..."`` body, or one command per line.
-
-    So instead of rejecting, normalize: every **unquoted** newline becomes an
-    explicit ``;`` and validation proceeds unchanged, so every command in the chain
-    is judged on its own. Newlines *inside* quotes are left exactly as they are
-    — they are data (the ``-c`` body), not separators — and a backslash-newline is
-    removed, as the shell does. No ``;`` is inserted where the line already ends (or
-    the next begins) with a separator, so ``make &&\\n./a.out`` stays valid.
-
-    The string returned is for the *checker* only; the caller still hands bash the
-    original text, whose newlines bash reads as the separators this models.
+    So every line is judged as its own command; quoted newlines stay data and a
+    backslash-newline is removed, as the shell does.
     """
     parts: list[str] = []
     buf: list[str] = []
@@ -428,22 +387,9 @@ def flatten_unquoted_newlines(command: str) -> str:
 
 
 def unquoted_substitution_marker(command: str) -> str | None:
-    """The first substitution marker *the shell would act on*, or None.
+    """The first substitution marker the shell would act on, read on the raw string, or None.
 
-    Quoting decides whether these characters run anything, so the test has to be
-    made where the quoting is still visible — on the raw string. The token scan this
-    replaces ran after ``shlex(posix=True)`` had already **removed** the quotes, so a
-    backtick that bash treats as text was indistinguishable from one that executes,
-    and every literal occurrence was refused: ``sed -n '/```mermaid/,/```/p' f.md``
-    and ``grep -n '${VAR}' f.py`` are searches for a *string*, and are exactly where
-    these characters legitimately appear.
-
-    Single quotes make everything literal, so markers inside them are text. Double
-    quotes do **not** — ``"`cmd`"`` and ``"$(cmd)"`` both substitute — so those still
-    count, as does anything unquoted. Process substitution is the exception: inside
-    double quotes ``<(`` and ``>(`` are text, and C++ passed inline to ``python -c``
-    is full of them (``std::vector<int>(n)``). A backslash-escaped marker outside single
-    quotes is literal too, and is skipped the way the shell skips it.
+    Single quotes make markers text; double quotes do not, except for ``<(``/``>(``.
     """
     i, n = 0, len(command)
     in_single = in_double = False
@@ -476,19 +422,7 @@ _DOUBLE_QUOTE_ACTIVE = frozenset("$`")
 
 
 def unquoted_shell_char(command: str, chars: frozenset[str]) -> str | None:
-    """The first of *chars* that *command* lets the shell act on, or None.
-
-    The quote-aware counterpart to a scan over tokens, for the same reason as
-    :func:`unquoted_substitution_marker`: quoting is what decides whether a character
-    does anything, and it is only legible while the quotes are still attached. After
-    ``shlex(posix=True)`` has stripped them, ``echo "(absent)"`` — text — and ``(cd x)``
-    — a subshell — carry the same token, so a per-token scan has to refuse both.
-
-    Single quotes make every character literal. Double quotes leave only the expansion
-    sigils active (``_DOUBLE_QUOTE_ACTIVE``), so an operator character inside them is
-    text too. A backslash-escaped character outside single quotes is literal, and is
-    skipped the way the shell skips it.
-    """
+    """The first of *chars* the shell would act on in *command* (quote- and escape-aware), or None."""
     i, n = 0, len(command)
     in_single = in_double = False
     while i < n:
@@ -571,20 +505,10 @@ class Redirection:
 
 @dataclass(frozen=True)
 class ParsedSegment:
-    """One command of a chain: its argv, plus the files its redirections touch.
+    """One command of a chain: its argv and the files its redirections touch.
 
-    ``nested`` marks a segment lifted out of another command's argument list rather
-    than found between shell separators — today only a ``find -exec`` payload. It is
-    a real command the shell will run, so it is emitted as its own segment and every
-    caller confines its operands and classifies its head exactly as usual; the flag
-    only lets the *policy* layer treat it differently from a top-level command.
-
-    ``sep`` is the separator that *follows* this segment (``''`` for the last one and
-    for a nested one). Without it a chain reads as a flat list, and ``make | tail``
-    is indistinguishable from ``make && tail log`` — the first hands the build's
-    output to a filter that withholds it, the second does not. Only a caller that
-    reasons about the plumbing itself needs this; one that only judges each command
-    on its own keeps ignoring it.
+    ``nested`` marks one lifted out of another's arguments (``find -exec``); ``sep`` is the
+    separator after it ("" for the last).
     """
     argv: list[str]
     redirections: list[Redirection] = field(default_factory=list)
@@ -614,23 +538,9 @@ _EXEC_TERMINATORS = frozenset({";", "+"})
 def parse_segments(command: str) -> list[ParsedSegment]:
     """Split *command* into the commands the shell would run, with their redirections.
 
-    Quote-aware: chaining separators and other operators become standalone tokens,
-    while anything inside quotes is preserved literally (a ``;`` inside ``python -c
-    "a; b"`` is text, not chaining). Multi-line input is normalized first, so an
-    unquoted newline separates commands exactly as ``;`` does — see
-    :func:`flatten_unquoted_newlines`.
-
-    Redirections are lifted out of argv and attached to their segment: fd dups and
-    ``/dev/null`` vanish (they name no file), and ``> f`` / ``>> f`` / ``< f`` are
-    recorded as a :class:`Redirection` so the caller can treat ``f`` as the path it
-    is — confined to the workspace by the server, prompted for by the client, and
-    counted as a write by the classifier. The leading source fd (the ``2`` in
-    ``2>/dev/null``) is dropped from argv rather than left to look like an argument.
-
-    Raises :class:`ShellParseError` for what neither side will reason about:
-    substitution, a subshell, backgrounding, a heredoc, a dangling separator or a
-    redirection with no target. Everything else — globs, ``$VAR``, unknown commands
-    — parses; judging those is the caller's job, not this function's.
+    Quote-aware; redirections are lifted out of argv (fd dups and ``/dev/null`` vanish).
+    Raises :class:`ShellParseError` on substitution, subshells, backgrounding, heredocs or
+    dangling operators.
     """
     if not isinstance(command, str) or not command.strip():
         raise ShellParseError("empty", "Command must be a non-empty string.")
@@ -750,16 +660,7 @@ def parse_segments(command: str) -> list[ParsedSegment]:
 
 
 def unquoted_pipe_offsets(command: str) -> list[int]:
-    """Where each unquoted ``|`` sits in *command*, in order; ``||`` is not one.
-
-    Offsets into the string the shell is actually handed, which is what a caller
-    splicing something into the pipeline needs: :func:`parse_segments` works from
-    shlex tokens, and reassembling a command from those would quote a glob or a
-    ``$VAR`` into a literal. So the k-th ``|`` separator of the parse is matched to
-    the k-th offset here and the text is cut at that point, leaving every other
-    character exactly as written. Both counts see the same pipes — newline
-    flattening moves characters around but adds and removes none.
-    """
+    """Offsets of each unquoted ``|`` in *command* (not ``||``), to splice at the k-th pipe."""
     offsets: list[int] = []
     in_single = in_double = False
     i, n = 0, len(command)
@@ -792,13 +693,7 @@ def is_path_like_command(argv0: str) -> bool:
 
 
 def normalize_path_arg(raw_arg: str, cwd: str) -> str | None:
-    """Resolve a path-like argument to a real path, or None if it is not one.
-
-    Returns None for the tokens that are *not* paths — option flags, ``-`` (stdin),
-    URLs — so callers skip them. Everything else resolves against *cwd*, which is
-    what makes ``-I/usr/include`` and ``-lm`` pass untouched while a bare
-    ``/etc/passwd`` or ``../../x.py`` resolves to something the caller can judge.
-    """
+    """The real path a path-like argument names, against *cwd*; None for options, ``-`` and URLs."""
     arg = (raw_arg or "").strip()
     if not arg or arg == "-":
         return None
@@ -832,16 +727,9 @@ _FILE_VALUE_FLAGS = ("-f", "--file")
 # first is dropped, and only when no -e/-f supplied the pattern instead.
 _LEADING_PATTERN_COMMANDS = ("grep", "rg", "sed")
 
-# Flags whose value is a file the command *writes*, keyed by leading command. The walk
-# below skips flag values generally, which is right for the ones carrying no path
-# (`-lm`) and for reads that legitimately leave the workspace (`-I/usr/include`,
-# `-L/usr/lib`, `-Wl,-rpath,...` — confining those would refuse every HPC compile).
-# Writes are the other case: they need approval, which the separated form already gets
-# by resolving as a positional. This table closes the glued form (`gcc a.c -o/tmp/x`,
-# `--output-file=/tmp/r.txt`), so both spellings of a write flag yield their value.
-#
-# Add a flag here when its value is a path the command creates or overwrites. Do not
-# add read/search paths: they are deliberately unconfined (see above).
+# Flags whose value is a file the command writes, so the glued form (``-o/tmp/x``,
+# ``--output-file=...``) is confined like the separate one. Read paths (``-I``, ``-L``)
+# stay unconfined on purpose; add only write flags here.
 WRITE_VALUE_FLAGS_BY_CMD = {
     "gcc": ("-o",), "g++": ("-o",), "gfortran": ("-o",), "nvcc": ("-o",),
     "javac": ("-d", "-s", "-h"),
@@ -898,20 +786,10 @@ def write_value_operands(argv: list[str]) -> list[str]:
 
 
 def path_operand_tokens(argv: list[str]) -> list[str]:
-    """The raw arguments of *argv* that sit in path position.
+    """The arguments of *argv* in path position, command-family aware (a grep pattern is text).
 
-    Command-family aware, because "every non-flag argument is a path" is wrong for
-    the two families that take text first: a `grep` pattern and a `sed` script are
-    data, not files. Treating them as paths made `grep /etc/passwd notes.txt` — a
-    search for a *string* — look like a read of /etc/passwd, so it was refused and
-    (once the client gate existed) prompted the user about a file nothing would open.
-
-    Conservative in the safe direction: a token that might be a path is kept. Flag
-    values are only skipped when the flag is known to take text — except for the
-    *write* flags (``gcc -o``, ``ruff --output-file``, …), whose value is a file the
-    command creates and is therefore included in either spelling: see
-    :data:`WRITE_VALUE_FLAGS_BY_CMD` for why writes are treated differently from the
-    ``-I``/``-L`` reads that stay unconfined.
+    Conservative: a token that might be a path is kept; write-flag values
+    (:data:`WRITE_VALUE_FLAGS_BY_CMD`) are included.
     """
     if not argv:
         return []
@@ -954,34 +832,15 @@ def path_operand_tokens(argv: list[str]) -> list[str]:
 
 
 def takes_path_operands(argv0: str) -> bool:
-    """True when *argv0*'s arguments name files/dirs, so they must be checked.
-
-    True by default, including for a command nobody classified: its operands are
-    confined by the server and prompted for by the client, rather than escaping both.
-    ``echo``/``which`` are the exception — their arguments are words, and treating
-    them as paths would refuse ``echo $HOME`` for no reason.
-    """
+    """True when *argv0*'s arguments name files (the default); False for ``echo``, ``which``."""
     return bool(argv0) and argv0 not in PATH_INSENSITIVE_COMMANDS
 
 
 def expansion_operands(argv: list[str]) -> list[str]:
-    """Path-position tokens carrying a shell expansion (``$VAR``, backticks).
+    """Path-position tokens carrying a shell expansion, for classified commands only.
 
-    These cannot be validated: expansion happens in the *child* shell, whose
-    environment is not the one doing the checking — and a chain can change it
-    mid-flight. ``module load cuda && cat $CUDA_HOME/version.txt`` checked as a
-    harmless relative path (CUDA_HOME unset here) and then read from the module
-    tree at runtime. The command that runs must be the command that was checked,
-    so a path built from an expansion is refused rather than guessed at.
-
-    Only path position, and only for commands that open paths at all:
-    ``-I$CUDA_HOME/include`` is a flag and ``echo $HOME`` opens nothing, so both
-    keep working — the HPC idioms are untouched.
-
-    Restricted to heads the taxonomy places, because the refusal only buys a guarantee
-    where the operand shapes are understood. For an unclassified head a positional is a
-    guess — ``awk '{print $1}'`` is a program, not a path — so its expansions are left
-    alone and the approval prompt, which shows the command verbatim, carries the call.
+    They cannot be validated (expansion happens in the child's environment), so callers
+    refuse them.
     """
     if not argv or argv[0] not in KNOWN_COMMANDS and not is_path_like_command(argv[0]):
         return []
@@ -1012,22 +871,8 @@ def segment_path_operands(argv: list[str], cwd: str) -> list[str]:
 def cd_destination(argv: list[str], cwd: str, call_cwd: str) -> str:
     """Where a ``cd`` segment moves the shell, resolved against *cwd*.
 
-    The directory a chain lands in is the base every later relative path resolves
-    against, so a caller walking a chain must thread this value through — checking
-    each segment against the *initial* directory instead would make both halves of
-    ``cd /etc && cat passwd`` look individually fine.
-
-    A bare ``cd`` and ``cd ~`` go to ``$HOME``, which is the user's real home: the
-    shell inherits it rather than having it pinned to the workspace, so this must
-    resolve there too. It is then judged like any other destination — outside the
-    workspace, hence refused unless the user approved it — instead of being modelled
-    as a return to the workspace, which would have let the rest of the chain resolve
-    its relative paths against a directory the shell had already left.
-
-    ``cd -`` is the one target that cannot be read off the command: it is ``$OLDPWD``,
-    which depends on where the chain has been. It resets to *call_cwd*, which is safe
-    because OLDPWD can only ever be a directory this same chain already occupied, and
-    every one of those passed the caller's confinement check to be entered at all.
+    Later relative paths resolve against it. A bare ``cd``/``~`` is the real ``$HOME``;
+    ``cd -`` resets to *call_cwd*.
     """
     args = argv[1:]
     # '-' is tested before the operand scan below, which skips it as a flag.

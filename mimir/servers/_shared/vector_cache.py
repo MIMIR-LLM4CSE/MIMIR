@@ -1,16 +1,7 @@
 """A JSON-backed embedding cache with semantic ranking and a lexical fallback.
 
-A file of ``{key: {"model": ..., "vec": [...]}}`` beside a corpus, vectors backfilled on the
-fly when they are missing or were computed under a different embedding model, and a
-caller that degrades to a non-semantic ordering whenever the backend is down.
-
-The one behaviour that is *not* memory's: :func:`semantic_rank` takes an already
-narrowed candidate list. Memory embeds its whole corpus eagerly because it holds at
-most fifty entries; a corpus of thousands must be prefiltered by the caller, or the
-first search pays for embedding the entire thing.
-
-Never raises: every failure path degrades to ``None`` (rank) or a no-op (write), so a
-read-only state dir or an unreachable embedding endpoint costs a fallback, not an error.
+Vectors are backfilled when missing or from another model; callers prefilter large
+corpora. Never raises.
 """
 
 import json
@@ -59,13 +50,7 @@ def semantic_rank(
     path: str,
     limit: int,
 ) -> list[tuple[Any, float]] | None:
-    """Rank *items* by embedding similarity to *query*.
-
-    Returns ``[(item, score), ...]`` best first, or ``None`` to tell the caller to
-    fall back — the backend is unavailable, nothing could be embedded, or the query
-    itself failed to embed. Vectors absent from the cache, or stored under a
-    different embedding model, are recomputed and persisted along the way.
-    """
+    """``[(item, score)]`` best first by similarity to *query*, or None to fall back."""
     if not _embed.is_available():
         return None
     store = load_vectors(path)

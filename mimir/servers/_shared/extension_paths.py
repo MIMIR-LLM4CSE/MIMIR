@@ -1,15 +1,7 @@
-"""Single source of truth for the user-extension directories under ``.mimir/``.
+"""The user-extension directories under ``.mimir/`` and their resolution order.
 
-The client *loads* these directories (skills, servers, plugin packs, the base prompt)
-and the ``mimir_api`` server *reports* them, so the names and the resolution order are
-needed on both sides of the client/server process boundary. They live here, the way
-``workspace_id`` does in ``state_paths``, and ``client/config/paths`` re-exports
-them rather than restating them — a drop-in path a user is told about must be the one
-the loader actually scans.
-
-Dependency-free (stdlib only, no sibling imports) so it loads both ways: flat
-``from extension_paths import ...`` in a server subprocess, packaged
-``mimir.servers._shared.extension_paths`` from the client.
+Shared by the client, which loads them, and ``mimir_api``, which reports them;
+stdlib only.
 """
 
 import os

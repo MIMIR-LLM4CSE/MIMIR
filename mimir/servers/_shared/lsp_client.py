@@ -1,19 +1,7 @@
-"""Minimal synchronous LSP (Language Server Protocol) client over stdio.
+"""A minimal synchronous LSP client over stdio, for code navigation.
 
-Just enough of the protocol to drive a language server for code navigation:
-
-    initialize -> initialized -> didOpen -> {workspace/symbol,
-    textDocument/documentSymbol, textDocument/definition,
-    textDocument/references, textDocument/hover}
-
-Deliberately dependency-free (stdlib only) and **best-effort**: every public
-method returns ``None`` / ``[]`` on any failure, so the caller
-(server_code_intel) degrades gracefully to ctags when no language server is
-installed or the server misbehaves. Nothing here imports ``mcp``.
-
-A small registry maps file extensions to candidate server commands; the first
-command whose executable is found on ``PATH`` is used. A started server is
-cached per (command, root) for the lifetime of the owning process.
+Best-effort (``None``/``[]`` on any failure, so ``server_code_intel`` falls back to
+ctags). Servers are found per extension on ``PATH`` and cached per (command, root).
 """
 from __future__ import annotations
 

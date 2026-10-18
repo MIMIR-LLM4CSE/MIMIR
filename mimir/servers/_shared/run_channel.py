@@ -1,39 +1,8 @@
-"""The user's channel into a run that is already going.
+"""The user's channel into a blocking run: two files under ``<session_state_dir>/runs/<channel>/``.
 
-A tool whose body blocks cannot be reached through the model: the client's worker
-thread is parked awaiting the tool result, and steering is only drained at a step
-boundary, so an instruction routed that way would arrive after the run it meant to
-divert had already ended. It cannot be reached through MCP either — a synchronous
-tool body holds its server's event loop for the whole call, and even an async one
-(``proxy_eval``) is a single awaited call with no second channel into it.
-
-What is left is the shared state dir, which both ends can touch at any moment. The
-server announces the run it is waiting on; the client names that run in a request
-file the server's wait loop consumes on its next tick. The server also republishes
-what the run is *doing*, which is what lets a blocking call show a live phase
-instead of a mute spinner.
-
-Two files, under ``<session_state_dir>/runs/<channel>/``:
-
-``current.json``  written by the server the moment it starts waiting, so the client
-                  can learn which job a blocking run is, without the key ever
-                  becoming a tool parameter the model could set. Refreshed by
-                  :func:`update` as the run moves through its phases.
-``divert``        written by the client, naming that key. The waiting loop consumes
-                  it and stops waiting, leaving the process alive.
-
-*channel* is the name of the tool that blocks — ``bash_run``, ``proxy_eval``. It is
-registry data on both ends: the server passes the name it registered, and the client
-reads it off the tool row it is diverting. Neither end ever tests it against a
-literal. One file each is unambiguous because at most one foreground call per tool can
-be in flight *per session* at any instant — the same blocking property stated above, read
-as a guarantee rather than a limitation. Per session is what makes it a guarantee at all,
-sessions being concurrent: two conversations can each have a ``bash_run`` blocking, and a
-single channel directory between them would let a divert click detach the other one's
-command.
-
-Everything here is best-effort and fail-open: a missing, stale or corrupt sidecar
-must leave the run behaving exactly as it does when nothing asks it to detach.
+``current.json``, written by the server while it waits (job key, phase); ``divert``,
+written by the client, which the wait loop consumes to stop waiting and leave the run
+going. *channel* is the blocking tool's name; one call per tool per session. Fail-open.
 """
 
 import json
@@ -64,14 +33,9 @@ def _read_current(channel: str) -> dict | None:
 
 def publish(channel: str, job_key: str, pid: int, command: str, cwd: str,
             deadline_s: float, phase: str = "", percent: float | None = None) -> None:
-    """Announce the foreground run the client may divert.
+    """Announce the foreground run the client may divert, clearing a leftover divert request.
 
-    Also clears a divert left over from an earlier run: a request that arrived just
-    after its target finished would otherwise detach the next command the agent runs,
-    which is the one failure of this design a user could not explain.
-
-    ``server_pid`` rides along so the client can tell a live announcement from one a
-    crashed server left behind — see the client half's ``current_run``.
+    ``server_pid`` lets the client tell a live announcement from a crashed server's.
     """
     try:
         base = _dir(channel)
@@ -99,13 +63,7 @@ def publish(channel: str, job_key: str, pid: int, command: str, cwd: str,
 
 def update(channel: str, job_key: str, phase: str | None = None,
            percent: float | None = None) -> None:
-    """Refresh what the announced run is doing, if it is still *job_key*.
-
-    Deliberately does not touch the ``divert`` file. Clearing a leftover request is a
-    start-of-run act (see :func:`publish`); this runs on every tick of a wait loop,
-    while a request the user just made may be in flight, and consuming it here would
-    drop the click on the floor.
-    """
+    """Refresh what the announced run is doing, if it is still *job_key* (never touches ``divert``)."""
     run = _read_current(channel)
     if run is None or run.get("job_key") != job_key:
         return

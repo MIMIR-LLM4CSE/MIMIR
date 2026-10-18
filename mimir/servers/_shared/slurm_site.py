@@ -1,43 +1,8 @@
-"""Which Slurm schedulers this workspace reaches, learned rather than configured.
+"""Which Slurm schedulers this workspace reaches, learned from successful calls.
 
-Slurm's tools are commands on a host, and the host MIMIR runs on is not always the one
-that has them: a login node holding the editor's remote session while the scheduler
-lives behind ``ssh`` is an ordinary arrangement. On one of those, every typed cluster
-tool answers "sbatch is not available", so the work goes out through a hand-written
-``ssh host "sbatch …"`` instead — where nothing records a descriptor, nothing is
-watched, no wake is owed when the job ends, and the server stops on its idle timer with
-the run still going. The tools being local-only was the whole of that failure.
-
-**Learned from the user's own successful call, not from a setting.** An environment
-variable is a thing somebody has to know to set, and nobody sets it before the first
-night is lost. What is already happening instead is that the model reaches the
-scheduler over ``ssh`` constantly — to read the queue, to check a job. So the bash
-server tells this module every time such a call *succeeds*, and the hpc server asks it
-where to send its own commands. One successful ``ssh <host> "squeue -u $USER"`` is
-enough, and that call is the first thing anybody runs.
-
-**A set of schedulers, not one.** A login node reaches its own and whatever ``ssh``
-gets to, and one conversation uses several: a reference run on the local controller
-while a sweep goes out to another cluster. So learning a host *adds* a destination and
-displaces nothing — the jobs already running keep being polled where they are — and
-every job carries the host it was submitted to, which is what lets a wake be owed for
-all of them at once. Nothing here picks a destination: a caller names one, and
-:func:`resolve_host` says what to answer when it did not.
-
-Deterministic, which is what lets it be acted on: the signal is the shell validator's
-own parse of the command — the same mechanism that refuses a bare ``sbatch`` — plus the
-exit status. Nothing here matches patterns against free text.
-
-Filed per *workspace*, because the clusters in play are a property of the work and
-not of the conversation doing it. The sessions in one workspace share a project, the
-filesystems its inputs are on, and therefore the schedulers that can run it — so a
-host one of them proved is a host the next can submit to.
-
-That is also what makes the two halves of this module agree. :func:`recorded_jobs`
-below reads every session's descriptors, so a job submitted in one conversation is
-already findable from the next; filed per session instead, the registry would hand
-that conversation a job it cannot poll, because the scheduler running it is not in
-its inventory. One fact read at two scopes is how a run ends up watched by nobody.
+The bash server records a host whenever an ``ssh <host> <slurm command>`` succeeds
+(from its own parse, never from text); the hpc server sends its commands there.
+Several hosts at once, filed per workspace; job directories are per session.
 """
 
 from __future__ import annotations
@@ -104,18 +69,9 @@ _SSH_BASE = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 
 
 def argv_for(script: str, *, host: str = LOCAL, piped: bool = False) -> list[str]:
-    """The argv that runs *script* on *host* — ``LOCAL`` for this machine's own Slurm.
+    """The argv running *script* on *host* (``LOCAL`` or over ``ssh``) in a login shell.
 
-    A login shell in both cases, local and remote, because that is what puts the
-    scheduler's own module files on ``PATH`` — the difference between ``squeue`` and
-    "command not found" on most sites. Quoted once for the remote shell: ``ssh`` joins
-    its arguments and hands the result to a shell on the far side, so a script that
-    arrived unquoted would be re-split there.
-
-    *piped* says this call feeds the command its own stdin. ``-n`` closes stdin for
-    every other call — an ``ssh`` that reads a server's stdin eats its MCP protocol
-    traffic — and must be left off when the stdin *is* the point, as it is for a
-    submission handing ``sbatch`` its script.
+    Quoted once for the remote shell; ``-n`` closes stdin unless *piped*.
     """
     if not host:
         return ["bash", "-lc", script]
@@ -125,32 +81,14 @@ def argv_for(script: str, *, host: str = LOCAL, piped: bool = False) -> list[str
 
 def exec_argv(argv: list[str], *, host: str = LOCAL,
               piped: bool = False) -> list[str]:
-    """What to exec to run *argv* on *host* — ``LOCAL`` for this machine's own Slurm.
-
-    The twin of :func:`argv_for` for a caller that built an **argv** rather than a
-    script — the submitters, which take their resources as arguments and assemble the
-    command themselves precisely so that no shell is involved and no argument can
-    become a second command. Locally that property is kept exactly: the argv is
-    exec'd as it stands.
-
-    Remotely one shell is unavoidable, because ``ssh`` has no argv to hand over — only
-    a command line for the far side to parse. So each element is quoted on the way out
-    and the property survives in the form that matters: what the remote shell splits is
-    exactly the argv built here.
-    """
+    """The argv running *argv* on *host*: as is locally, each element quoted for ``ssh``."""
     if not host:
         return list(argv)
     return argv_for(shlex.join(argv), host=host, piped=piped)
 
 
 def queued_ids(timeout: float = 15.0, *, host: str = LOCAL) -> list[str] | None:
-    """The job ids *host* says this user has queued, or None if it did not answer.
-
-    Here rather than in either server because both ask it, and for the same reason: the
-    gap between this and the descriptors on disk is the work nothing is watching. None
-    is "unknown", which must never be read as "nothing" — the whole failure this exists
-    for is silence being taken for an empty queue.
-    """
+    """The job ids *host* has queued for this user, or None ("unknown", never "nothing")."""
     try:
         res = subprocess.run(
             argv_for(_QUEUED_IDS_COMMAND, host=host),
@@ -165,24 +103,12 @@ def queued_ids(timeout: float = 15.0, *, host: str = LOCAL) -> list[str] | None:
 
 
 def queued_by_host(timeout: float = 15.0) -> dict[str, list[str] | None]:
-    """What every reachable scheduler says this user has queued, keyed by host.
-
-    One entry per host in :func:`hosts`, None where that one did not answer — so a
-    cluster that is down leaves its own jobs unknown instead of making the whole sweep
-    unknown. Sequential on purpose: the list is short, and each remote call is an ssh
-    whose failure mode is a timeout nobody is waiting out twice.
-    """
+    """:func:`queued_ids` for every reachable host, sequentially; None where one did not answer."""
     return {host: queued_ids(timeout, host=host) for host in hosts()}
 
 
 def slurm_host_from_ssh(argv: list[str]) -> str:
-    """The host *argv* reached a Slurm command on, or "" when it did not.
-
-    ``argv`` is one command as the shell validator parsed it, so this reads tokens and
-    never text. The remote command arrives as a single token — ``ssh host "squeue -u
-    $USER"`` is three words to a shell — so its own head is taken from one more round
-    of tokenization, which is the same answer the far side's shell will reach.
-    """
+    """The host an ``ssh`` argv reached a Slurm command on, or ""."""
     if not argv or os.path.basename(argv[0]) != "ssh":
         return ""
     host = ""
@@ -223,15 +149,7 @@ def _path() -> str:
 
 
 def slurm_is_local() -> bool:
-    """Whether Slurm's own tools answer on this host. Probed once per process.
-
-    Through ``bash -lc``, not :func:`shutil.which`, because that is how :func:`argv_for`
-    runs the local branch: on a site where ``sbatch`` arrives from a module loaded in
-    the login shell, the server process's own ``PATH`` does not have it and the answer
-    about that ``PATH`` would be about nothing anybody runs. A probe that will not
-    answer is read as "not local", which keeps the remote host — the behaviour of a
-    machine that has no scheduler, and the safe direction.
-    """
+    """Whether Slurm answers on this host through a login shell (probed once; failure means no)."""
     global _HAS_SLURM
     if _HAS_SLURM is None:
         try:
@@ -257,13 +175,7 @@ def name_of(host: str) -> str:
 
 
 def hosts() -> list[str]:
-    """Every scheduler this workspace can reach, the local one first when there is one.
-
-    The local one is a member by probe rather than by record: it is a fact about the
-    machine, true before any call has been made, and there is nothing to learn. It
-    comes first because it is the one whose filesystems the work is already on. The
-    rest follow in the order they were learned, which is the order they were useful in.
-    """
+    """Every reachable scheduler: the local one first (by probe), then the learned ones in order."""
     out = [LOCAL] if slurm_is_local() else []
     try:
         with open(_path()) as fh:
@@ -278,13 +190,7 @@ def hosts() -> list[str]:
 
 
 def record_host(host: str) -> None:
-    """Add *host* to this workspace's reachable schedulers. Never raises.
-
-    Additive, and that is the whole of it: a scheduler learned displaces nothing, so a
-    queue read on a second cluster adds a destination while every job already running
-    keeps being polled where it is. Appended only when the host is new, so a
-    read-mostly fact does not become a write on every queue listing.
-    """
+    """Add *host* to the workspace's schedulers if new (never raises)."""
     host = (host or "").strip()
     if not host or host in hosts():
         return
@@ -298,13 +204,7 @@ def record_host(host: str) -> None:
 
 
 def forget_host(host: str) -> bool:
-    """Drop *host* from the registry, answering whether it was in it.
-
-    For a destination that was a mistake or is gone: a hostname learned from a typo
-    that happened to answer, a cluster the user no longer has. The local scheduler is
-    not droppable — it is a probe rather than a record, so it would be back on the next
-    call, and saying so is better than appearing to work.
-    """
+    """Drop *host* from the registry; whether it was there (the local one cannot be dropped)."""
     host = (host or "").strip()
     path = _path()
     try:
@@ -323,22 +223,10 @@ def forget_host(host: str) -> bool:
 
 
 def resolve_host(requested: str = "") -> tuple[str, str]:
-    """The scheduler to run on, or ``""`` and the reason the caller must choose.
+    """``(host, "")`` for the scheduler to use, or ``("", reason)`` when the caller must choose.
 
-    *requested* is what a tool was handed: :data:`LOCAL_NAME` for this machine's own
-    Slurm, a hostname for one behind ``ssh``, or ``""`` for "not specified".
-
-    A name is taken as given rather than checked against the registry. The registry is
-    a convenience, not an allowlist — a host the user names is one they can already
-    ``ssh`` to — and it joins the registry when a command actually succeeds there.
-
-    Unspecified is where the judgement is. With one scheduler there is no choice and it
-    is used. With several there is one, and it belongs to whoever knows what the job
-    needs: the GPUs, a compilation node, the filesystem its inputs are on, or simply
-    what the user asked for. So this refuses and names the candidates rather than
-    taking the local one because it happens to be first — a default here would make
-    that decision invisible, which is the failure that put a production run's tools on
-    a cluster that had never heard of it.
+    A named host is taken as given. Unspecified with several schedulers is refused, listing
+    them: the choice belongs to whoever knows what the job needs.
     """
     requested = (requested or "").strip()
     known = hosts()
@@ -377,14 +265,8 @@ def _choices(known: list[str]) -> str:
 
 
 # ── What this workspace tracks of what the scheduler is running ───────────────
-#
-# Two halves, and both servers need the same answer. A job is tracked by the descriptor
-# its submission wrote — the id file under ``hpc_jobs/`` — so the gap is "what the queue
-# says is running" minus "what the disk says we recorded". Owned here rather than in the
-# hpc server because the *bash* server is the one that sees the ordinary case: the work
-# is submitted by a site launcher and verified with a ``squeue`` a second later, and
-# neither call reaches a typed cluster tool. Two copies of this rule would drift, and
-# the one that drifted would be the one the night depends on.
+# Untracked work is what the queue lists minus the descriptors on disk. Here because
+# both the bash and the hpc server need the same answer.
 
 # The file a submission's directory is identified by, and the name every reader of a
 # descriptor agrees on. :func:`record_job_dir` below is the one writer.
@@ -402,17 +284,7 @@ _JOBS_SUBDIR = "hpc_jobs"
 
 
 def jobs_dir() -> str:
-    """Where this session files the jobs it submits.
-
-    Per session, unlike the registry above, and for the opposite reason: a submission
-    belongs to the conversation that made it, two conversations submitting in the same
-    second must not land on one directory, and a conversation's submissions go with it
-    when it is deleted. Reading is workspace-wide all the same — see
-    :func:`recorded_jobs` — because a job outlives the conversation that started it.
-
-    Env-overridable for tests, which is the one seam that lets a submission be filed
-    somewhere a test can see without standing up a session.
-    """
+    """Where this session files its submissions (env-overridable for tests)."""
     return os.environ.get("MIMIR_HPC_JOBS_DIR") or os.path.join(
         session_state_dir(), _JOBS_SUBDIR)
 
@@ -432,13 +304,7 @@ def _new_job_dir_name(base: str) -> str:
 
 
 def new_job_dir() -> str:
-    """An empty directory for a submission about to be made, created.
-
-    Apart from :func:`record_job_dir` for the submitter that needs the directory
-    *before* it has an id: the batch script is written there and the id only exists
-    once ``sbatch`` has answered. Both halves name the directory the same way, which
-    is the whole reason they live together.
-    """
+    """A new empty directory for a submission whose id is not known yet."""
     base = jobs_dir()
     job_dir = os.path.join(base, _new_job_dir_name(base))
     os.makedirs(job_dir, exist_ok=True)
@@ -446,15 +312,9 @@ def new_job_dir() -> str:
 
 
 def record_job_dir(job_id: str, **files: str) -> str:
-    """File *job_id* as a job of this workspace and return its directory.
+    """File *job_id* (with *files*) as a job of this workspace; return its directory.
 
-    The one writer of the layout every reader here depends on, which is why it lives
-    beside them rather than in whichever server happens to submit. Three callers, and
-    the third is the point: a submission, an adoption, and the proxy — whose runs are
-    Slurm jobs of this workspace as much as they are its own state machine. Filed
-    anywhere else, they are jobs that "nothing is watching" to every reader of this
-    module, and the remedy it offers — adopt the id — arms a second watcher on a run
-    that already has one.
+    The one writer of the layout: submissions, adoptions and the proxy's runs.
     """
     job_dir = new_job_dir()
     for name, content in {ID_FILE: job_id, **files}.items():
@@ -464,29 +324,10 @@ def record_job_dir(job_id: str, **files: str) -> str:
 
 
 def recorded_jobs() -> set[tuple[str | None, str]]:
-    """Every job this workspace holds a descriptor for, as ``(host, id)`` pairs.
+    """Every ``(host, id)`` this workspace has a descriptor for, across sessions.
 
-    A set rather than a search per id: the callers are listings, and a search only
-    returns early on a hit — so the ids that answer "no", which are the interesting
-    ones, would each pay a complete walk of every session's submissions.
-
-    Keyed by host because two clusters number independently: ``9001`` is a
-    production run on one and somebody else's sweep on the other, and an id alone would
-    have the descriptor here vouch for the job there — reporting a watched run that
-    nothing is watching, which is the one mistake this whole mechanism exists to
-    prevent. ``None`` is a descriptor that recorded no host (see :func:`job_host`), and
-    :func:`covered_by` lets it vouch for any: an older submission must not be read as
-    unwatched work.
-
-    Read from :func:`jobs_dir` and from every session's directory under it. Both,
-    because the two name different places outside a session and under the test
-    override, and a reader seeing one of them calls this session's own submissions
-    unwatched — the one answer this must never give wrongly.
-
-    There is nowhere else to look, and that is a decision rather than a coincidence.
-    A submitter that filed its jobs in a tree of its own — the proxy did — is one whose
-    runs read as work nobody is watching to everything built on this, so
-    :func:`record_job_dir` is the only writer there is.
+    Keyed by host since clusters number independently; a descriptor without a host
+    (``None``) covers any (:func:`covered_by`).
     """
     roots = [jobs_dir()]
     sessions = sessions_root()
@@ -499,13 +340,7 @@ def recorded_jobs() -> set[tuple[str | None, str]]:
 
 
 def _descriptors(roots: list[str]):
-    """Every job descriptor under *roots*, as ``(job_dir, recorded id, host)``.
-
-    The one walk both readers below share. A directory that is not there, and a
-    descriptor with no readable id, are skipped rather than reported: they are what a
-    half-written submission and a tree belonging to something else look like, and
-    neither can vouch for a job.
-    """
+    """Every readable job descriptor under *roots*, as ``(job_dir, id, host)``."""
     for root in roots:
         try:
             names = sorted(os.listdir(root))
@@ -546,16 +381,9 @@ def _owned_jobs_roots() -> list[str]:
 
 
 def owned_jobs() -> dict[str, set[str]]:
-    """What this session (and its sub-agents) submitted, as ``{job id: hosts}``.
+    """``{job id: hosts}`` this session and its sub-agents submitted: the gate of every ``scancel``.
 
-    The one gate in front of every ``scancel``: a job of the same Unix user is not
-    enough, since other sessions and other workspaces run as that user too. Adopted
-    jobs are left out — MIMIR did not start them — and so is a descriptor without a
-    host, because the same id on another cluster is somebody else's job.
-
-    The whole map rather than a search per id, for the reason :func:`recorded_jobs`
-    gives: a cancellation asks about two ids at least (a split submission is a build
-    and a run), and every one of them paid a complete walk of the tree.
+    Adopted jobs and descriptors without a host are left out.
     """
     owned: dict[str, set[str]] = {}
     for job_dir, recorded, host in _descriptors(_owned_jobs_roots()):
@@ -587,13 +415,7 @@ def owns_job(job_id: str, host: str,
 
 
 def job_host(job_dir: str) -> str | None:
-    """The scheduler *job_dir*'s job is on: a hostname, ``LOCAL``, or None if unrecorded.
-
-    None is not "local". A descriptor that never recorded a host cannot say where its
-    job is, and reading that silence as this machine would poll the wrong scheduler and
-    call a running job forgotten. The callers answer it by asking every reachable
-    scheduler instead, and write down the one that knew.
-    """
+    """The scheduler of *job_dir*'s job, or None when unrecorded (which is not "local")."""
     try:
         with open(os.path.join(job_dir, HOST_FILE)) as fh:
             return fh.read().strip()
@@ -603,19 +425,7 @@ def job_host(job_dir: str) -> str | None:
 
 def covered_by(job_id: str, recorded: set[tuple[str | None, str]],
                host: str) -> bool:
-    """Whether *recorded* holds a descriptor covering *job_id* on *host*.
-
-    An array is the whole reason this is not ``in``. It is adopted or submitted under
-    its base id and the queue then lists its tasks — ``15306621_3``, or
-    ``15306621_[4-8]`` for the ones still pending — so the id in a row is rarely the id
-    on disk. The base is what covers them: a watcher on it polls the whole array.
-
-    *host* is required, because every caller has just read one scheduler's queue and
-    knows which: the descriptor that may vouch is the one filed against that same
-    scheduler. The exception is on the *recorded* side — a descriptor that never wrote
-    a host down vouches for any, since an older submission read as unwatched work is a
-    reminder nobody can act on.
-    """
+    """Whether *recorded* covers *job_id* on *host*, an array's tasks by their base id."""
     if not job_id:
         return False
     ids = {job_id, job_id.split("_", 1)[0]}

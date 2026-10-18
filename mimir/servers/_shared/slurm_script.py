@@ -56,28 +56,10 @@ def sbatch_header(
     dependency: str = "",
     kill_on_invalid_dep: bool = False,
 ) -> list[str]:
-    """Return the ``#!/bin/bash`` + ``#SBATCH`` directive lines (no command body).
+    """The ``#!/bin/bash`` and ``#SBATCH`` lines of a job script; empty options are omitted.
 
-    ``nodes``/``ntasks`` left at None are left to the scheduler's default. ``exclusive``
-    is what a timing needs: a benchmark sharing its node with someone else's job
-    measures the neighbour as much as the code.
-
-    ``comment`` is free text Slurm stores with the job and ``sacct -o Comment`` reads
-    back — it is how a submission says, to whoever looks at the queue later, what it
-    was for.
-
-    ``work_dir`` is where the job runs, and that pairing is the whole of why its output
-    is reachable: if the job can start at all, that directory is mounted on the node
-    Slurm started it on — otherwise there would have been nothing to chdir into. A log
-    pointed anywhere else depends on a second filesystem being shared, which on a site
-    whose home is not mounted on the compute nodes it is not: the job runs, succeeds,
-    and its output goes nowhere.
-
-    ``dependency`` chains this job behind another, and ``kill_on_invalid_dep`` is what
-    keeps that chain from hanging: without it a job whose dependency can never be
-    satisfied sits PENDING indefinitely and whatever is watching it waits exactly as
-    long. Every optional directive is omitted when empty, so a caller that passes none
-    of them gets byte-for-byte the script it got before.
+    The log goes to *work_dir*, the one directory known to be mounted on the node.
+    ``kill_on_invalid_dep`` keeps a job behind an impossible dependency from pending for ever.
     """
     lines = [
         "#!/bin/bash",
@@ -120,15 +102,10 @@ def sbatch_header(
 
 
 def node_python_lines(var: str = "_MIMIR_PY", explicit: str = "") -> list[str]:
-    """Shell lines that set ``$var`` to a MIMIR Python that runs on *this* node.
+    """Shell lines setting ``$var`` to a MIMIR Python that starts on the compute node.
 
-    The server's own interpreter is the wrong default on a compute node: the in-place
-    ``.venv`` is built for the login node's OS, and a node on an older distribution
-    or another CPU cannot run it. The candidates, in order: the launcher
-    ``install.sh`` leaves (``~/.mimir/bin/python``), which starts the venv recorded
-    for the machine it runs on; the portable venv named by OS and architecture
-    (``.venv-<os>-<arch>``) in this checkout; the server's own interpreter. Each must
-    actually start before it is chosen. An *explicit* interpreter is used as given.
+    Tried in order: ``~/.mimir/bin/python``, ``.venv-<os>-<arch>``, the server's own; or
+    *explicit* as given.
     """
     if explicit:
         return [f"{var}={shlex.quote(explicit)}"]

@@ -1,20 +1,8 @@
-"""Session allowlist of out-of-workspace paths the user explicitly approved.
+"""The session allowlist of out-of-workspace paths the user approved.
 
-The client is the sole writer: when the user approves an out-of-workspace access
-(allow-once or always) it appends the absolute path to
-``<session_state_dir()>/approved_paths.json`` and resets the file at session start. The
-sandbox guards read it **per call** (the servers' env is frozen at spawn, so a
-file on the state dir is the only live client→server channel) and pass the
-entries as ``extra_roots`` to ``resolve_path_in_root``.
-
-**One file per session, not per workspace.** Consent is given inside a conversation, for
-what that conversation is doing, and conversations run at once. A grant widens exactly the
-sandbox of the session that was asked for it: a file shared between them would make each
-one's grants visible to all the others, and — since a session starts by truncating its
-own — would revoke another's live grants mid-run, under paths it is still writing.
-
-Read-only + best-effort: any missing/corrupt file yields ``[]`` (fail-closed —
-nothing extra is allowed), so a broken allowlist can never widen the sandbox.
+The client writes ``<session_state_dir()>/approved_paths.json``; the sandbox guards read
+it per call (the only live client→server channel) as ``extra_roots``. One file per
+session, since consent is given per conversation. A missing or corrupt file allows nothing.
 """
 
 import json

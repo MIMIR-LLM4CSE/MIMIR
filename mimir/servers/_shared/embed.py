@@ -1,26 +1,8 @@
-"""Backend-aware text embedding with a lexical fallback.
+"""Backend-aware text embedding, with ``None`` (lexical fallback) on any failure.
 
-Shared by the MCP servers (which run in separate processes) and by the client
-policy layer. It reads the *same*
-environment variables as the chat backend — ``LLM_BACKEND``, ``VLLM_BASE_URL`` /
-``VLLM_API_KEY``, ``RAY_BASE_URL`` / ``RAY_API_KEY`` — so it behaves identically on
-both sides without importing any client config.
-
-Design contract: **every entry point degrades gracefully.** ``embed_texts``
-returns ``None`` on any failure (backend down, no embedding model served, timeout,
-missing dependency), and callers fall back to lexical overlap scoring. This keeps
-the hermetic pytest suite and embedding-less environments fully working.
-
-Environment:
-  LLM_BACKEND           "vllm" | "ray" | "ollama" (default "vllm", matching the chat
-                        side). vLLM and Ray share the /v1/embeddings path.
-  MIMIR_EMBED_MODEL     embedding model name. Required for vLLM and Ray (the served
-                        model name, e.g. "BAAI/bge-m3"); defaults to
-                        "nomic-embed-text" for Ollama.
-  MIMIR_EMBED_BASE_URL  optional override so embeddings can be served by a separate
-                        endpoint from the chat model; falls back to the active
-                        backend's address (VLLM_BASE_URL or RAY_BASE_URL).
-  MIMIR_EMBED_TIMEOUT   HTTP timeout in seconds for the OpenAI path (default 10).
+Reads the chat backend's variables (``LLM_BACKEND``, ``VLLM_*``, ``RAY_*``) plus
+``MIMIR_EMBED_MODEL`` (required for vLLM/Ray), ``MIMIR_EMBED_BASE_URL`` and
+``MIMIR_EMBED_TIMEOUT``.
 """
 
 from __future__ import annotations
@@ -67,21 +49,10 @@ def _timeout() -> float:
 
 
 def verify_ssl() -> bool:
-    """Whether to verify TLS certs when talking to an OpenAI-compatible endpoint.
+    """Whether to verify TLS for an OpenAI-compatible endpoint (``VLLM_VERIFY_SSL``, default off).
 
-    One switch for both vLLM and Ray Serve: the name stays ``VLLM_VERIFY_SSL``
-    because it is already in users' settings and shells, and the two endpoints face
-    the same situation.
-
-    Internal corporate routes (e.g. ``https://…​.corp.local/``) are often served
-    behind an OpenShift/ingress cert signed by a private CA that isn't in the
-    default trust store, so verification fails with ``CERTIFICATE_VERIFY_FAILED``.
-    Defaults to **off** — consistent with the ``trust_env=False`` posture used
-    everywhere here (the endpoint is an internal cluster service, proxy already
-    bypassed), so vLLM works out of the box. Set ``VLLM_VERIFY_SSL=1`` (or
-    true/yes/on) to re-enable verification when the endpoint has a publicly
-    trusted cert. Single source of truth — the chat backend and embed helper both
-    consult this so behaviour is identical on both sides.
+    Internal endpoints often use a private CA; the chat backend and the embedder both read
+    this one switch.
     """
     val = os.environ.get("VLLM_VERIFY_SSL", "0").strip().lower()
     return val in ("1", "true", "yes", "on")
@@ -90,13 +61,7 @@ def verify_ssl() -> bool:
 # ── embedding backends ──────────────────────────────────────────────────────────
 
 def _embed_vllm(texts: list[str], model: str) -> list[list[float]]:
-    """POST to the OpenAI-compatible /v1/embeddings endpoint (vLLM or Ray Serve).
-
-    ``MIMIR_EMBED_BASE_URL`` wins in both cases — the embedding model is often
-    served by a different endpoint than the chat model. Without it, the address is
-    the active backend's own, so a Ray session does not silently embed against a
-    vLLM server that may not be running.
-    """
+    """POST to ``/v1/embeddings`` at ``MIMIR_EMBED_BASE_URL``, else the active backend's address."""
     import httpx
 
     ray = _backend() == "ray"

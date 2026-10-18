@@ -1,13 +1,7 @@
-"""What a machine is, read the same way wherever the reading happens.
+"""What a machine is, parsed the same way by the platform server, a Slurm probe and the
+proxy runner, so profiles and timings of the same hardware agree.
 
-Shared because the same facts are read in three places: the platform server describing
-the host it runs on, a Slurm probe job describing a compute node, and the proxy runner
-recording where a timed run executed. If each parsed ``lscpu`` its own way, a node
-profile and the host profile would disagree about the same machine, and two timings
-taken on identical hardware would look incomparable.
-
-Everything here is a pure parser over command output, except the few ``local_*``
-helpers, which read the current machine directly and name themselves accordingly.
+Pure parsers, except the ``local_*`` helpers.
 """
 
 import hashlib
@@ -189,14 +183,7 @@ def expand_hostlist(expr: str) -> list[str]:
 
 def execution_context(env: Mapping[str, str] | None = None, hostname: str = "",
                       has_slurm: bool | None = None) -> dict:
-    """Where this process sits relative to the scheduler, from deterministic signals.
-
-    ``none``          no Slurm here: the host is the only machine.
-    ``login``         Slurm is here, but this host is not inside an allocation it runs
-                      on — a login node (possibly holding an allocation elsewhere, via
-                      salloc: then ``job_id`` is set and a job step lands on it).
-    ``in_allocation`` this host is one of the allocated nodes: it *is* the compute node.
-    """
+    """Where this process sits relative to the scheduler: ``none``, ``login`` or ``in_allocation``."""
     env = os.environ if env is None else env
     hostname = hostname or socket.gethostname()
     if has_slurm is None:
@@ -217,14 +204,7 @@ def execution_context(env: Mapping[str, str] | None = None, hostname: str = "",
 # ── machine signature ─────────────────────────────────────────────────────────
 
 def machine_signature(arch: str, cpu: dict, gpu_names: list[str]) -> str:
-    """A short hash of the hardware a timing depends on.
-
-    Computed on the machine where the code runs, from the same facts whichever way it
-    got there (local, inside an allocation, in a batch job), so two timings carry the
-    same signature exactly when they were taken on the same kind of machine. Unlike
-    Slurm's own node signature it includes the CPU model, which is what tells two
-    generations with the same core count apart.
-    """
+    """A short hash of the hardware a timing depends on (architecture, CPU model, GPUs)."""
     payload = {
         "arch": arch,
         "model": cpu.get("model", ""),
