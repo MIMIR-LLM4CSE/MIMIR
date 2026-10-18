@@ -97,13 +97,7 @@ logger = logging.getLogger(__name__)
 _BASE = SERVER_BASE
 
 def _discard_token(_text: str) -> None:
-    """Token sink for model calls whose output is not the user's answer.
-
-    ``LLMBackend.chat`` streams to stdout whenever no ``token_callback`` is given —
-    that default belongs to the CLI answer path. History compaction consumes its
-    result in code, so without a sink the summary would be printed into the middle of
-    the session.
-    """
+    """Token sink for model calls whose output is not the user's answer (compaction)."""
 
 
 class MimirAgent:
@@ -118,24 +112,13 @@ class MimirAgent:
         # Note what does NOT follow it: STATE_DIR and MIMIR_DIR stay the real
         # workspace's, so memory, preferences and .mimir extensions are shared.
         self.workspace_root: str = WORKSPACE_ROOT
-        # The conversation this agent works for, for its whole life. Several agents run
-        # in this one process — one per concurrent session, plus every sub-agent — sharing
-        # one `os.environ`, so an id in the environment could only ever name one of them.
-        # Everything session-scoped on the client side reads it from here and passes it
-        # down explicitly (approvals, scratchpad, todo file, run channels); the server
-        # subprocesses get their own copy stamped into their frozen environment at spawn
-        # (see integration/server_manager.connect_server).
-        # None for the ends that have no session: the CLI, the benchmark runner, tests.
+        # The conversation this agent works for, for its whole life. Agents share one
+        # `os.environ`, so everything session-scoped reads it from here; servers get it at spawn
+        # (integration/server_manager). None for the CLI, the runner and tests.
         self.session_id: str | None = session_id
-        # Deliberately NOT published to os.environ: neither the model nor the session can
-        # be: one session's value would retarget every other session's servers. Both
-        # travel per server instead, in connect_server's env, read from this object.
-        # Resolve the scratchpad home once, here, and publish it: the ownership check
-        # on a world-writable /tmp must happen in exactly one place, and both this
-        # process and the server subprocesses then read the same answer from the
-        # environment instead of re-deriving (and re-vetting) the path per call.
-        # A refused /tmp (symlink, foreign owner) falls back to the private state dir:
-        # degraded, never absent.
+        # Neither the model nor the session goes to os.environ: they travel per server. The
+        # scratchpad home is resolved and vetted once, here, then published for every process; a
+        # refused /tmp falls back to the private state dir.
         resolved = ensure_scratch_home()
         if not resolved:
             resolved = os.path.join(STATE_DIR, "scratch")
@@ -266,13 +249,7 @@ class MimirAgent:
         return os.path.splitext(path)[1].lower() in SOURCE_FILE_EXTENSIONS
 
     def approval_scope(self, tool_name: str, arguments: dict) -> str:
-        """The normalised approval scope for this call ("" if it cannot be derived).
-
-        The same token the "always" grants are keyed on, reused here as the identity
-        of the *goal* a refusal is about: `pip install numpy` and `pip install scipy`
-        share a scope, so refusing one escalates the other, while an unrelated command
-        family is untouched.
-        """
+        """The normalised approval scope of this call ("" if none): the key of "always" grants and of refusals."""
         try:
             return self.approvals._approval_scope(
                 tool_name, self.tool_owner.get(tool_name, "unknown"), arguments
@@ -288,13 +265,10 @@ class MimirAgent:
         execution_context: ExecutionContext | None,
         note: str = "",
     ) -> None:
-        """Record a refusal in both ledgers.
+        """Record a refusal in the open set (``denied_tool_calls``) and the scope history.
 
-        ``denied_tool_calls`` is the *open* set — it is cleared once the same action
-        later succeeds, and drives the completion report. ``denial_history`` is
-        append-only and keyed by approval scope: it is what the escalation ladder
-        counts, and it must survive that clearing or a refusal followed by a success
-        elsewhere would silently reset the ladder.
+        The open set clears when the action later succeeds; ``denial_history`` does not, since
+        the escalation ladder counts it.
         """
         if execution_context is None:
             return
@@ -351,12 +325,7 @@ class MimirAgent:
     def todo_file(self) -> str:
         """This agent's own todo_list.md, or '' when it has no planning tool.
 
-        ``self.session_id``, never the active-session pointer directly. This path goes into
-        the system prompt, and the pointer names the conversation the user is looking at —
-        which would hand every concurrently running agent that conversation's checklist. A
-        sub-agent names a session of its own and keeps its own checklist there. An agent
-        with no session (CLI, benchmark runner) passes None and resolves through the
-        pointer, falling back to the shared file at the state-dir root.
+        From ``self.session_id``; an agent without a session resolves through the pointer.
         """
         if not names_with_cap(TASK_PLANNING, self.tool_caps):
             return ""
@@ -408,14 +377,9 @@ class MimirAgent:
         )
 
     def model_invocable_skills(self) -> list[tuple[str, str]]:
-        """(name, description) of every skill the MODEL may load, sorted by name.
+        """``(name, description)`` of every skill the model may load, sorted (stable prefix).
 
-        Two exclusions, and they are different in kind: a skill the operator switched
-        off in the toggle panel is soft-hidden from everything, and a skill whose own
-        front-matter carries ``disable-model-invocation`` stays available to the user's
-        ``/<name>`` and only refuses the model's own pull. What is left is exactly the
-        set ``load_skill`` will answer for, which is what makes it safe to print as a
-        list of offers. Sorted so the prompt prefix is byte-stable across rebuilds.
+        Excludes skills switched off and those declaring ``disable-model-invocation``.
         """
         return [
             (name, str(meta.get("description") or "").strip())
@@ -436,14 +400,10 @@ class MimirAgent:
 
     def request_user_question(self, questions: list, origin: dict | None = None,
                               timeout_secs: float | None = None) -> dict:
-        """Ask the user clarifying questions (``ask_user_question``).
+        """Ask the user *questions* (``{header, question, multiSelect, options}`` specs).
 
-        ``questions`` is a list of ``{header, question, multiSelect, options}`` specs.
-        *origin* names the asker when it is not the turn on screen — a sub-agent
-        running alongside it. *timeout_secs* is how long to wait; ``None`` waits
-        indefinitely, which is what an approval and a plan decision do. Returns
-        ``{"answers": [{"selected": [...], "other_text": ...}, ...]}`` — or
-        ``{"answers": [], "timed_out": True}`` when the wall passed unanswered.
+        *origin* names an asker other than the turn on screen; *timeout_secs* None waits
+        indefinitely. Returns ``{"answers": [...]}``, flagged ``timed_out`` when the wait ran out.
         """
         return self.human.ask(self, questions, origin, timeout_secs)
 
@@ -523,15 +483,7 @@ class MimirAgent:
         await connect_servers_runtime(agent=self, registry=registry, on_error=on_error)
 
     async def read_resource(self, uri: str) -> str:
-        """Read an MCP resource's text content by URI (best-effort).
-
-        Resources are user-attached context — the host reads them and injects the
-        content into a turn (see context/resource_context.py), unlike tools which the
-        model invokes. Dispatches to the owning session recorded in ``self.resources``.
-        Returns "" for an unknown URI or on any read/transport error, and joins the
-        text of all ``TextResourceContents`` parts (binary blobs are skipped). Never
-        raises into the chat loop.
-        """
+        """The text of an MCP resource by URI, from its owning session; "" when unknown or unreadable."""
         info = self.resources.get(uri)
         if not info:
             return ""
@@ -550,17 +502,10 @@ class MimirAgent:
         return "\n".join(parts)
 
     def seed_classification_from_caps(self) -> None:
-        """Seed the approval manager from the live, per-agent tool registry.
+        """Seed the approval manager from the connected tools' declared capabilities.
 
-        Call once after all servers are connected (the registry is now fully
-        populated). The approval manager is constructed before any server connects,
-        so its sensitive/non-batch/fallback classification has to be (re)seeded here
-        from ``self.tool_caps`` — what each connected server actually declared.
-
-        The three sets are mutated **in place** (clear + update), never reassigned:
-        ``session_approved_scopes`` aliases ``self.approvals.approved_scopes`` and
-        external code holds references to the manager, so the object identity of
-        these attributes must be preserved.
+        Call once all servers are connected. The sets are updated in place: other objects hold
+        references to them.
         """
         self.approvals.sensitive_tools.clear()
         self.approvals.sensitive_tools.update(names_with_cap(SENSITIVE, self.tool_caps))
@@ -599,13 +544,7 @@ class MimirAgent:
         ]
 
     def advertised_tools_for_mode(self, active_mode: str | None = None) -> list[dict]:
-        """:meth:`advertised_tools`, narrowed by the mode's read-only filter.
-
-        The two filters the loop applies before it knows the query, in the order it
-        applies them (``agent_loop._mode_tools``). Kept here so the context bar can
-        ask for the same list without restating the rule: a bar that counts tools the
-        mode has already removed reports a load the model never receives.
-        """
+        """:meth:`advertised_tools` narrowed by the mode's read-only filter, as the loop applies it."""
         mode = self.mode if active_mode is None else active_mode
         tools = self.advertised_tools()
         if mode in READONLY_MODES:
@@ -620,13 +559,7 @@ class MimirAgent:
         self.toggles.set_enabled(kind, name, enabled)
 
     def toggles_state(self) -> dict:
-        """Snapshot for the toggle panel: every server and skill with its enabled flag.
-
-        Servers come from the merged registry (bundled ``SERVERS`` + discovered user
-        servers under ``.mimir/servers``), so the panel lists them even if one failed to
-        connect; skills from the loaded ``self.skills`` map (which already includes user
-        skills). Each row carries a one-line ``description`` for the hover tooltip.
-        """
+        """Every server (connected or not) and skill with its enabled flag and description, for the panel."""
         server_descriptions = all_server_descriptions()
         servers = [
             {
@@ -664,15 +597,7 @@ class MimirAgent:
         return {"servers": servers, "skills": skills, "nudges": nudges}
 
     def report_capability_consistency(self) -> None:
-        """Warn about connected tools that resolved to no capabilities.
-
-        Call once after all servers are connected. With classification now owned
-        by the servers (each declares its caps via ``@mcp.tool(**tool_caps(...))``),
-        a connected tool with an empty descriptor most likely *forgot to declare* —
-        the silent-drift signal the registry is designed to surface. Genuinely pure
-        tools (math, string ops, read-only queries) also resolve empty, so this is
-        informational, not an error.
-        """
+        """Log the connected tools that declare no capabilities (pure, or a forgotten ``tool_caps``)."""
         unannotated = unannotated_live_tools(self.tool_caps)
         if unannotated:
             logger.info(
@@ -701,13 +626,7 @@ class MimirAgent:
         )
 
     async def compact_history(self, history: list[dict]) -> str:
-        """Summarize accumulated conversation history into a single compact message.
-
-        Calls the *configured* backend with a structured compaction prompt and no
-        tools. Returns the summary string; the caller is responsible for mutating
-        the history list in-place. Returns an empty string when history is empty,
-        and on any backend failure — the caller keeps the history it has.
-        """
+        """Summarize *history* into one message with the configured backend; "" when empty or failed."""
         if not history:
             return ""
         messages: list[dict] = [
@@ -747,19 +666,9 @@ class MimirAgent:
         return (msg or {}).get("content") or "" if isinstance(msg, dict) else ""
 
     def compact_messages(self, middle: list[dict]) -> list[dict]:
-        """Summarize a slice of conversation messages into a single summary message.
+        """Summarize *middle* into one message; synchronous, for the loop's in-query compaction.
 
-        Synchronous counterpart of :meth:`compact_history`, called from the agent
-        loop (which runs in the worker thread) via ``_maybe_compact_intra_query``.
-        Unlike ``compact_history`` this uses the *configured* backend — not a
-        hard-coded Ollama client — so it works under vLLM too, and returns a list
-        of messages (the summary) rather than a bare string.
-
-        Robustness: the summarization request itself is bounded to the model's
-        window (via the loop's force-fit helper applied to a throwaway copy) so it
-        can never trigger the very overflow it exists to prevent. On any failure or
-        empty result it returns *middle* unchanged, leaving the caller's truncation
-        backstop to handle the size.
+        The request is force-fit to the window first; on failure *middle* comes back unchanged.
         """
         if not middle:
             return middle

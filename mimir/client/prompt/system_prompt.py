@@ -24,27 +24,12 @@ logger = logging.getLogger(__name__)
 # workspace `.mimir/` — that directory is the user's alone; see PLUGINS_DETAILED.md.
 
 
-# The built-in default "general context" — the agent's base system prompt. Split in two
-# at the bottom of this block: _DEFAULT_DOCTRINE_CONTENT, which a ``.mimir/system_prompt.md``
-# replaces, and _CORE_SYSTEM_CONTENT, which it cannot reach. See those two constants for
-# the sorting criterion; assign every new section to one of them.
-#
-# Written as one markdown section per constant, joined below. Two reasons the shape
-# matters: (a) the rendered string is what a mid-size open-weight model actually
-# parses — a flat wall of prose loses its middle, so every section carries a real
-# ``##`` heading and one instruction per line; (b) the conditional sections (see
-# _SECTION_SUBAGENTS) must be separable so they are injected only when the matching
-# capability is connected. Keep sections short: what is stated once, in the right
-# section, is followed; what is repeated three times is noise.
-#
-# INVARIANT — coverage vs. the nudge layer. Guidance nudges are enforcement-gated
-# (``guardrails/nudges/tiers.GUIDANCE_BY_LEVEL_MODE``): at "light" only a subset
-# fires, at "off" none do. So every guidance nudge's *obligation* must also exist
-# here, in one line, or it silently disappears for strong models — the prompt is the
-# only carrier that survives every enforcement level. The nudge stays the detailed,
-# situational reminder; this file states the rule once. Verification-layer nudges
-# need no such mirroring (they run at every level), though the hard ones are restated
-# in Non-negotiables anyway. ``test_context_file.py`` guards this mapping.
+# The base system prompt: _DEFAULT_DOCTRINE_CONTENT, which ``.mimir/system_prompt.md``
+# replaces, and _CORE_SYSTEM_CONTENT, which it cannot reach. One ``##`` section per
+# constant, one instruction per line; conditional sections are injected only when their
+# capability is connected.
+# INVARIANT: every guidance nudge's obligation is also stated here in one line, since
+# guidance nudges are enforcement-gated and the prompt is not (test_context_file.py).
 
 _SECTION_IDENTITY = (
     "You are MIMIR (Mathematical Intelligence: Modeling, Implementation, Runtime), "
@@ -386,13 +371,8 @@ _SECTION_SUBAGENTS_AXES = (
     "established, what is left, where), then send a fresh sub-agent on from there."
 )
 
-# Conditional — injected by build_system_content only when the memory server is
-# connected, ahead of the index it refers to.
-#
-# This section is the ONLY carrier of the behaviour. Nothing in the execution context
-# says whether a fact is worth keeping or already covered, so there is no nudge; the one
-# deterministic check (a near-verbatim duplicate) is the memory server's refusal. Writing
-# is the model's call alone: no memory is stored on its behalf at the end of a turn.
+# Conditional: only when the memory server is connected, ahead of the index. The only
+# carrier of the behaviour; writing a memory is the model's call alone.
 _SECTION_MEMORY = (
     "## Persistent memory\n"
     "A small set of facts, one per file, in two memories — the indexes below list every one "
@@ -423,23 +403,10 @@ _SECTION_MEMORY = (
     "confirm how you should work. Do not write at the end of a task by default."
 )
 
-# Conditional — injected by build_system_content only when the question channel is
-# actually connected, and only in the modes that can act on the answer. Same reason as
-# the sub-agent section above: an instruction naming a capability the model does not
-# have is one it tries to act on anyway.
-#
-# This section is the ONLY carrier of the behaviour. There is deliberately no matching
-# nudge: the guardrails layer can observe that a loop is going nowhere, but nothing in
-# the execution context establishes that a *fork* exists, and a nudge fired on loop
-# length as a proxy for ambiguity would fire on every merely long task. A nudge earns
-# its place only where what it guards is decidable from recorded fact.
-# The skills index. Only the NAME and the one-line description of each skill live in
-# the prompt; the method itself is read by load_skill when the work turns out to need
-# it. The split is what makes skills affordable at all: the shipped set is 22 KB
-# together and its largest member 13 KB, so carrying every body would spend thousands
-# of tokens per query to apply, at most, one of them — while a classifier guessing from
-# the query alone decides before the first step, from a request that does not yet know
-# what the task is made of.
+# Conditional: only when the question channel is connected, in the modes that can act on
+# the answer. No matching nudge: no recorded fact establishes that a fork exists.
+# The skills index: names and one-line descriptions only; ``load_skill`` reads a body
+# when the work needs it.
 def _skills_section(skills_index: list[tuple[str, str]]) -> str:
     lines = "\n".join(f"- {name}: {desc}" for name, desc in skills_index)
     return (
@@ -548,14 +515,7 @@ _DEFAULT_BASE_SYSTEM_CONTENT = _DEFAULT_DOCTRINE_CONTENT + "\n\n" + _CORE_SYSTEM
 
 
 def build_base_system_content(context_file: str = "") -> str:
-    """The agent's base system prompt (its "general context").
-
-    A resolved override .md (``extensions.resolve_system_prompt_file``) replaces
-    ``_DEFAULT_DOCTRINE_CONTENT`` only; ``_CORE_SYSTEM_CONTENT`` is appended either way.
-    The override goes first so its identity opens the prompt and the hard rules keep the
-    recency slot. Falls back to the built-in doctrine when no file is resolved, the file
-    is empty, or it cannot be read.
-    """
+    """The base system prompt: the doctrine (or its override file), then the core sections."""
     doctrine = _DEFAULT_DOCTRINE_CONTENT
     path = resolve_system_prompt_file(context_file)
     if path:
@@ -640,16 +600,9 @@ def build_tool_catalog_for_planning(
     sensitive_tools: set[str],
     tool_descriptions: dict[str, str] | None = None,
 ) -> str:
-    """What the execution phase will be able to do, for a mode that cannot try it.
+    """A one-line summary of each tool the execution phase will have, for plan mode.
 
-    Plan mode strips the write/exec tools from the model's tool list, which removes
-    their schemas along with them — so a plan built entirely around one of them is
-    written by a model that cannot see what it takes.
-
-    A name is not enough: knowing that ``proxy_eval`` exists is not knowing what
-    ``op`` it takes. So each tool
-    carries its one-line summary here, and the schema stays out of the tool list:
-    knowable without being callable.
+    Plan mode does not get the write/exec tools, so it learns what they do from this.
     """
     descriptions = tool_descriptions or {}
     by_server: dict[str, list[str]] = {}
@@ -672,27 +625,14 @@ def build_tool_catalog_for_planning(
 
 
 def _workspace_root_for_prompt(workspace_root: str = "") -> str:
-    """The workspace root, stated absolutely so in-workspace paths are copied, not inferred.
-
-    The file tools reject a relative path, so the model needs the root to build an
-    absolute one; this is the only place the prompt states it. *workspace_root* is the
-    agent's own — a sub-agent working in a copy of the repository must be told where
-    that copy is, not where the caller's tree sits. Resolved without touching the disk.
-    """
+    """The agent's workspace root, absolute (a sub-agent's copy, for a sub-agent)."""
     return workspace_root or os.environ.get("SEARCH_ROOT") or os.getcwd()
 
 
 def _scratch_dir_for_prompt(session_id: str | None = None) -> str:
-    """The scratchpad path to advertise, or "" if it cannot resolve.
+    """This session's scratchpad directory, or "" if it cannot resolve.
 
-    The session-scoped directory, not ``standing_roots()[0]``: the standing grant is
-    the scratchpad *home* (it has to cover a mid-run session switch), so advertising it
-    would point the model one level above where its own working files belong.
-    paths.STATE_DIR is passed explicitly — see context.paths.scratch_roots.
-
-    *session_id* names the conversation this prompt is for. It has to be passed, not
-    looked up: several sessions build prompts in this one process, and the active-session
-    pointer would advertise one conversation's scratchpad to all of them.
+    *session_id* is passed: several sessions build prompts in this process.
     """
     try:
         return scratch_dir(paths.STATE_DIR, session_id)
@@ -794,13 +734,8 @@ def build_system_content(
     if "ask_user_question" in (tool_owner or {}) and active_mode in ("agent", "plan"):
         system_content += _section("\n" + _SECTION_CLARIFY)
 
-    # Same gating shape again, and for the same reason: an index of loadable skills is a
-    # phantom instruction when the tool that loads them is not connected (the mimir_api
-    # server switched off in the toggle panel, or a trimmed install). The caller has
-    # already dropped what the operator disabled and what declares itself user-invoked
-    # only, so what is listed here is exactly what a pull would be answered for. Sits in
-    # the same static, capability-gated band — ahead of every dynamic block, so a
-    # changing checklist or memory index never pushes the index out of the cached prefix.
+    # Only when ``load_skill`` is connected; the caller already dropped disabled and
+    # user-only skills. Before every dynamic block, so it stays in the cached prefix.
     if skills_index and "load_skill" in (tool_owner or {}):
         system_content += _section("\n" + _skills_section(skills_index))
 
@@ -809,13 +744,8 @@ def build_system_content(
     if active_mode == "agent":
         system_content += _section("\n" + _authorship_section(model_name))
 
-    # Two absolute paths, and nothing else foundational: the workspace root (which the
-    # model needs to BUILD an in-workspace path, since the file tools reject relative
-    # ones) and the scratchpad (where throwaway work goes instead of the user's tree).
-    # Both are unconditional and resolved without touching the disk, so the prefix stays
-    # byte-stable and cacheable across a run. Nothing describing the repo's contents or
-    # the machine is injected: what this task touches is the model's to discover with its
-    # own searches and reads, and hardware detail is on demand from the platform tools.
+    # The workspace root and the scratchpad, both absolute and resolved without touching the
+    # disk, so the prefix is byte-stable. Nothing about the repository or the machine.
     system_content += _section(
         f"Workspace root (absolute): {_workspace_root_for_prompt(workspace_root)}\n"
         f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt(session_id)}\n"
