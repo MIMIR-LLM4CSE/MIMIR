@@ -1,18 +1,5 @@
-"""A read states the number of every line it returns.
-
-Root cause this covers: the edit tools are addressed by line number, and the read that
-was supposed to supply those numbers handed back an unnumbered block with only the
-window's own bounds around it. Mapping "this line of text" to "line 203" was then an
-offset the model had to count by hand — and its way out of the uncertainty was to keep
-re-reading narrower ranges (195-215, 200-210, 200-225, 203, 203) until the requested
-range was a single line and the number was asserted by the arguments instead of
-inferred. Numbering the content removes the thing those reads were resolving.
-
-The second half is the cost of that: the text a model now holds is numbered, and the
-anchors and replacement bodies it is asked for are not.
-
-Run:
-    python -m unittest mimir.tests.test_read_line_numbers -v
+"""A read numbers every line it returns, so edits addressed by line need no counting; the
+anchors and bodies the edit tools take stay unnumbered.
 """
 
 import os

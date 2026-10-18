@@ -1,28 +1,7 @@
-"""Coverage measurement for the bash → blackboard pipeline.
+"""Coverage of the bash → blackboard pipeline, measured rather than enumerated.
 
-``test_bash_classify.py`` tests the classifier *case by case*: it pins that the forms
-someone already thought of map to the right ``Kind``. What it cannot say is which
-fraction of the shell a model actually writes ends up crediting anything — and that
-is the number that matters, because the shell is an unbounded language projected into
-a small vocabulary of states. Every form the classifier does not recognise fails
-**silently**: the command runs, the file is edited or validated, and the blackboard
-never hears about it. Worse, the failure grows with model capability — a stronger
-model writes more varied shell, so the blind spots widen exactly as the agent improves.
-
-So this module measures instead of enumerating, on the pattern of
-``test_server_contracts.test_every_refused_path_is_one_the_user_can_be_asked_about``:
-
-1. :data:`_CREDITING_CORPUS` — realistic commands, each annotated with what it must
-   credit. Assertions run the **whole** pipeline (``record_tool_observation``), not
-   just ``classify_bash_command``, because the gap between "the segment has the right
-   kind" and "the execution context learned something" is where regressions live.
-2. :data:`_KNOWN_UNCREDITED` — the frozen blind spots, asserted to credit *nothing*.
-   Making one of them work must delete its entry consciously; introducing a *new*
-   blind spot breaks (1). The list is the executable documentation of the blind surface.
-3. A floor on the credit rate, so a whole unhandled command family shows up as a
-   number rather than dissolving into the suite.
-
-Pure-Python + stubs (no live model/servers): runs on x86 and ARM.
+:data:`_CREDITING_CORPUS` holds commands with what each must credit (whole pipeline);
+:data:`_KNOWN_UNCREDITED` freezes the blind spots; a floor holds the credit rate.
 """
 from __future__ import annotations
 
@@ -81,15 +60,10 @@ def _run(command: str, *, status: str = "ok", stdout: str = "out",
 
 
 def _head_installed(present: bool):
-    """Pin the host's PATH out of the pipeline for one assertion.
+    """Pin whether the command's head counts as installed, for one assertion.
 
-    ``record_run_outcome`` treats a run whose command is not installed as *blocked*
-    and charges it nothing — deliberately, since a missing binary said nothing about
-    the patch. That makes every run-failure assertion depend on what happens to be
-    installed on the machine running the suite: this file's own ``pytest`` examples
-    are charged on a machine with the console script on PATH and blocked on one that
-    runs the suite as ``python -m pytest``. Stating which of the two is meant is what
-    keeps the answer the same everywhere.
+    A run of a missing command is blocked, not charged, so leaving this to the host's PATH
+    would make the outcome machine-dependent.
     """
     return patch.object(_observations.shell, "any_command_on_path", lambda heads: present)
 
@@ -254,13 +228,8 @@ class CorpusCreditTests(unittest.TestCase):
         self.assertEqual(ec.validation_fail_count_by_file.get("tests/test_solver.py"), 1)
 
     def test_reformatting_is_not_checking(self) -> None:
-        """A formatter rewrites the file and exits 0 regardless, so it credits nothing.
-
-        The head alone used to decide this, and `ruff format .` reads as `ruff`: it
-        matched the whole-project shortcut and cleared every pending file at tier
-        `static`, on the strength of a run that had only moved whitespace — in the very
-        files it was crediting. `--check`/`--diff` report instead of writing, which is
-        what a checker does, so those forms stay credited.
+        """A formatter rewrites the file and exits 0 regardless, so it credits nothing;
+        ``--check``/``--diff`` report instead, and stay credited.
         """
         for command in ("ruff format solver.py", "python -m ruff format solver.py",
                         "black solver.py"):
@@ -281,14 +250,7 @@ class CorpusCreditTests(unittest.TestCase):
                               f"{command!r}: a real check lost its credit")
 
     def test_a_failed_run_is_charged_to_the_run(self) -> None:
-        """A red run owes no file its failure; it charges the repair ladder instead.
-
-        Asserted against an installed head. Left to the host's PATH this passed or
-        failed depending on whether ``pytest`` was exported as a console script — a
-        run of a *missing* command is blocked rather than charged (below), and read
-        without that in mind the green-here/red-there result looks like a product
-        defect rather than a test reaching outside itself.
-        """
+        """A red run owes no file its failure; it charges the repair ladder instead."""
         with _head_installed(True):
             ec = _run("pytest tests/test_solver.py", status="error",
                       dirty=("tests/test_solver.py",))
@@ -322,13 +284,8 @@ class BlindSurfaceTests(unittest.TestCase):
                 )
 
     def test_the_frozen_list_is_exactly_the_blind_surface(self) -> None:
-        """The list and the measurement must agree in *both* directions.
-
-        The two lists are a claim about the pipeline; this is the claim checked against
-        it. Drift either way is a silent lie: an entry that started crediting makes the
-        list pessimistic (and hides a fix worth knowing about), while a corpus command
-        that stopped crediting is the regression the whole module exists to catch. This
-        is the invariant; the credit rate below is only a coarse trend on top of it.
+        """The frozen list and the measurement agree in both directions: an entry that starts
+        crediting, or a corpus command that stops, fails here.
         """
         commands = [c for c, _ in _CREDITING_CORPUS] + [c for c, _ in _KNOWN_UNCREDITED]
         measured_blind = {c for c in commands if not _credits_semantics(c)}
@@ -344,12 +301,8 @@ _NOOP_COMMAND = "true"
 
 
 def _files_named(command: str) -> tuple[str, ...]:
-    """Paths *command* names, used to seed the dirty set for a credit probe.
-
-    A validation credit is only ever given to an already-dirty file, so a fixed seed
-    cannot serve every command: probing ``gcc src/mesh.c`` against a set holding only
-    ``solver.py`` reports "credits nothing" for a pipeline that works fine. Seeding
-    from the command's own operands removes that artifact.
+    """Paths *command* names, to seed the dirty set for a credit probe (credit only goes to
+    an already-dirty file).
     """
     segments = classify_bash_command(command)
     if not segments:
@@ -362,12 +315,9 @@ def _files_named(command: str) -> tuple[str, ...]:
 
 
 def _semantic_view(ec: dict) -> tuple:
-    """The content-bearing part of a context — what the command actually taught.
+    """The content-bearing part of a context: what the command taught.
 
-    ``action_op_count`` is excluded on purpose. Every EXEC segment bumps it, so
-    ``make test`` and ``./solver --check`` would score as credited while having taught
-    nothing about *what* they read, wrote or established — which is the whole question.
-    Counting it inflated the measured rate from 82% to a flattering 90%.
+    ``action_op_count`` is left out, since every EXEC segment bumps it.
     """
     return (
         frozenset(ec.read_files), bool(ec.searched), frozenset(ec.inspected_dirs),
@@ -379,12 +329,8 @@ def _semantic_view(ec: dict) -> tuple:
 
 
 def _credits_semantics(command: str) -> bool:
-    """Did *command* teach the blackboard anything with content?
-
-    The coarse question the per-command assertions refine. Measured by running the
-    pipeline and diffing against a control run of a no-op command under the *same*
-    seeding — not by counting list entries, which would report a healthy rate for a
-    pipeline that had stopped working entirely.
+    """Did *command* teach the blackboard anything with content? Measured against a control
+    run of a no-op command under the same seeding.
     """
     seed = (_SENTINEL_PENDING, *_files_named(command))
     return _semantic_view(_run(command, dirty=seed)) != _semantic_view(

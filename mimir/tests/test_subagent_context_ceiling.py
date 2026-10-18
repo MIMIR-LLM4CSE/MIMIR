@@ -1,17 +1,5 @@
-"""A sub-agent gets a share of the window, sized by what it was given.
-
-A child exists to keep its reading out of the caller's context. Left at the model's
-full window, several children fanned out on one endpoint each budget for the whole
-thing — the fan-out becomes the cost it was meant to avoid, and the trimming,
-eviction and compaction inside each child never engage until it has read as much as
-the parent could have. So the child carries a ceiling: 64k for an explorer, which
-reads a handful of files and returns a conclusion but owns the breadth of its sweep,
-and the standing full budget for a working child, which reads what it must to change
-code and reports what running it produced.
-
-The ceiling only ever lowers: a model whose window is smaller still sizes the budget.
-
-Pure-Python (no live model/servers): runs on x86 and ARM.
+"""A sub-agent gets a share of the window: 64k for an explorer, the full budget for a
+working child. The ceiling only lowers.
 """
 from __future__ import annotations
 

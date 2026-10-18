@@ -1,21 +1,7 @@
 """Steering typed into the last step of a run still gets answered.
 
-A steer is taken in at a step boundary. The step that writes the final answer has none
-after it, so a message typed while that answer streams reaches the queue once the loop
-has stopped draining — and before this it stayed there: the run ended, nothing read it,
-and the webview kept showing it as "queued" for a turn that was over.
-
-Two halves, pinned separately because they fail apart:
-
-**The worker knows.** Its steer queue is the ground truth for what the loop never read,
-so the leftovers leave with the answer — unless the turn was cancelled, where the
-instruction aimed at it is abandoned with it.
-
-**The session answers it.** The leftovers become the next turn, the message reads once
-in the history, and the client is told so the bubble loses its tag and the chat marks
-itself busy for a turn nobody pressed send for.
-
-Pure-Python (no live model/servers): runs on x86 and ARM.
+The worker hands unread steers back with the answer (unless cancelled); the session
+runs them as the next turn and tells the client.
 """
 from __future__ import annotations
 
@@ -263,16 +249,8 @@ class TheCatchUpTurnTests(unittest.TestCase):
 
 
 class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
-    """The other half of the same gap: the message arrives after the run has ended.
-
-    A run ends in the worker a moment before its answer reaches the screen. The chat is
-    still busy until it lands, so a message typed in that gap is sent as a steer — and
-    there is no longer a run to steer into. It is answered as a turn of its own, which
-    was always true; what was missing is that nobody told the client, so the bubble kept
-    the "queued" tag of a run that was over.
-
-    The notice cannot be sent from here: the answer is still on the wire ahead of it and
-    is what clears ``busy``. It goes on the queue that answer is in, behind it.
+    """A steer that arrives after the run ended is answered as its own turn, and the client
+    is told, on the queue behind the answer.
     """
 
     def setUp(self) -> None:

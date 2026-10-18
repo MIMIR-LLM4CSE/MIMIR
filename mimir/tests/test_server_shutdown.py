@@ -1,12 +1,5 @@
-"""Stopping the server closes the agents' MCP servers.
-
-``stdio_client`` spawns each MCP server with ``start_new_session=True`` — its own process
-group, which survives this process dying — and the only thing that terminates one is
-closing the owning agent's exit stack. Dying without that leaves up to ``cap`` × ~19
-orphaned interpreters behind, and the VS Code extension kills and respawns this server on
-every connect, so that is the ordinary path rather than an edge case.
-
-Pure-Python: a stub pool, because what is under test is that the signal reaches the close.
+"""Stopping the server closes the agents' MCP servers, which run in their own process
+groups and would otherwise outlive it. A stub pool.
 """
 from __future__ import annotations
 

@@ -1,16 +1,5 @@
-"""replace_in_file reports a clear no-op when the edit was already applied.
-
-Paths are absolute throughout: file tools reject relative paths (see
-``server_files._require_abs``), so ``_write`` returns the absolute path to use.
-
-Root cause of "I see an edit failure but the edit is actually done": the model
-re-issues an edit whose anchor a prior successful call already replaced. The
-anchor is gone, so the naive result was "Target text was not found" (reads as a
-failure) even though the file already holds the intended change. Now that case
-returns a benign no-op (✓), while a genuine wrong anchor still errors.
-
-Run:
-    python -m unittest mimir.tests.test_edit_already_applied -v
+"""``replace_in_file`` reports a clear no-op when the edit is already in the file; a wrong
+anchor still errors. Paths are absolute.
 """
 
 import os

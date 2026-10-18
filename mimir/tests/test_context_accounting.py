@@ -1,11 +1,5 @@
-"""The prompt is measured the way the provider measures it.
-
-Regression cover for the accounting gap behind session ``b2fd38f1``: the trim and
-compaction triggers sized history with ``content`` alone, while the request the
-backend serialized carried ``tool_calls[].function.arguments`` too. On that run the
-budgeteer saw ~44k tokens where the prompt held ~80k — of which 36k were tool-call
-arguments, 22k of those ``write_file`` bodies — so neither trigger ever fired and
-the force-fit backstop, which *did* count the arguments, had no way to reduce them.
+"""The prompt is measured the way the provider measures it, tool-call arguments
+included.
 """
 from __future__ import annotations
 from mimir.client.context.execution_context import build_execution_context
@@ -69,13 +63,7 @@ class MessageTokensTests(unittest.TestCase):
         self.assertGreater(_message_tokens(m, len), 0)
 
     def test_empty_content_still_costs_its_envelope(self) -> None:
-        """A message with nothing to say is still a message on the wire.
-
-        Scoring it 0 is the same optimism one layer down: the provider is sent
-        ``{"role": "user", ...}`` whether or not the content is empty, and a budget that
-        scores it free is short by one envelope per message. Small per message, and there
-        are hundreds.
-        """
+        """A message with empty content still costs its envelope."""
         empty = _message_tokens({"role": "user", "content": ""}, len)
         self.assertGreater(empty, 0)
         # Bounded, though: an envelope is an envelope, not a message's worth.
@@ -86,19 +74,8 @@ class MessageTokensTests(unittest.TestCase):
 
 
 class WireUnitsTests(unittest.TestCase):
-    """The budget's units are the provider's units.
-
-    Regression cover for the crash that ended session ``7d322a3b``: the backstop
-    announced ``truncated ~441,752 tokens of older content to fit the model's
-    window`` — the branch it only takes when ``force_fit_to_window`` returned
-    True — and the very next call was refused with *Prompt (272,386 tokens)
-    exceeds the model's context window (262,144 tokens)*. Both sides used the
-    same tokenizer. They were counting different strings: the budget measured
-    content and tool-call arguments as bare text, the provider measured
-    ``json.dumps(messages)``. No tokenizer closes a difference in what is
-    measured, so the fit was optimistic by construction — by ~18% on ordinary
-    tool traffic and ~30% on the escape-dense pages a web fetch returns, which is
-    what two of them had just put in the history.
+    """The budget's units are the provider's units: the serialized ``json.dumps(messages)``,
+    not bare content, which undercounts by 18–30%.
     """
 
     @staticmethod
@@ -331,14 +308,7 @@ class DigestShapeTests(unittest.TestCase):
 
 
 class StepResultBudgetTests(unittest.TestCase):
-    """What one step may add to the context, bounded before it is appended.
-
-    Cover for the session that went from 200k to 215k in a single step: four fetches
-    landed together, one of them a 131k-token HTTP 403 body. Nothing looked at the
-    sum. The trim pass exempts the current step from eviction, so the only thing that
-    could have reduced them was the force-fit backstop — and only once the window was
-    already over.
-    """
+    """What one step may add to the context is bounded before it is appended."""
 
     # One token per character keeps the arithmetic in these tests readable.
     _TOK = staticmethod(len)
@@ -405,14 +375,8 @@ class StepResultBudgetTests(unittest.TestCase):
 
 
 class BackstopIsWideEnoughTests(unittest.TestCase):
-    """A backstop that fires in normal operation is not a backstop.
-
-    The shares started at usable//4, which on a 160k usable window is 40k tokens —
-    and `github_get_file` is allowed to return 256 KB, about 65k. A file fetch doing
-    exactly what it is designed to do would have been cut, silently, by the pass
-    meant to catch pathological results. These numbers are the ceilings MIMIR's own
-    servers declare; if one of them rises past the share, the share moves, not the
-    result.
+    """The backstop never fires in normal operation: its shares cover the ceilings MIMIR's
+    own servers declare.
     """
 
     # (tool, its own documented maximum, in bytes)
@@ -494,14 +458,7 @@ class EnforceBudgetIntegrationTests(unittest.TestCase):
 
 
 class InterruptedQueryStateTests(unittest.TestCase):
-    """A query that dies still says what it left behind.
-
-    Session ``7d322a3b`` ended on a provider error rendered as the entire answer.
-    A source file edited ninety seconds earlier had never been measured and an
-    optimisation session sat open on a baseline nobody would remember — none of
-    which appeared anywhere, because the ledger that reports exactly this is
-    built on the normal exit path and that path was never reached.
-    """
+    """A query that dies still says what it left behind (unmeasured edits, open sessions)."""
 
     @staticmethod
     def _context_with_unfinished_work() -> dict:
@@ -529,15 +486,8 @@ class InterruptedQueryStateTests(unittest.TestCase):
 
 
 class PlanModeToolCatalogTests(unittest.TestCase):
-    """Plan mode hides the tools; it must not hide what they do.
-
-    In session ``7d322a3b`` the plan was built entirely around ``proxy_eval`` /
-    ``proxy_manage`` / ``proxy_exec``, all of which are PLAN_BLOCKED and therefore
-    stripped from the tool list — schemas included. A third of the planning phase
-    went on recovering their contract: two filesystem-wide ``find`` calls that timed
-    out at 30 s and 60 s, a grep through the session's own transcripts, and finally
-    ``sed -n '204,300p'`` over mimir's own server source. The docstrings enumerate
-    every op; they were simply not in the room.
+    """Plan mode hides the blocked tools, not what they do: their contract stays in the
+    prompt.
     """
 
     _DESCRIPTIONS = {

@@ -1,17 +1,5 @@
-"""Parameter descriptions are lifted out of the docstring and into the schema.
-
-A constraint a tool states only in prose does not get followed. On one recorded run the
-model dropped `report_verdict`'s required `verdict` twice, called `proxy_get` with an
-`op` outside the six its docstring lists and with another the same docstring says needs
-`name`, and hit `bash_run`'s 30s default four times against a docstring telling it to
-raise the value — 9 wasted turns in 107 calls. The prose reached the model each time:
-the whole docstring, `Args:` block included, is the tool's `description`. What gets
-obeyed is the schema, and every parameter there was a bare `{"type": "string"}`.
-
-So the text is not rewritten, it is moved to where it is read. These tests pin the
-parser that moves it, including the shapes these docstrings are actually written in and
-the malformed ones it has to survive — it runs at server registration, and a bad
-docstring must never stop a tool being registered.
+"""Parameter descriptions are lifted from the docstring's ``Args:`` block into the schema,
+which is what the model obeys. Malformed docstrings never stop a registration.
 """
 import unittest
 

@@ -1,13 +1,5 @@
-"""Tool-activity row display: exact line range + no intra-row duplication.
-
-Two UI-string fixes (backend; the webview renders these verbatim):
-1. read_file_lines summary shows the exact range read ("lines 207-211") instead
-   of a bare "2 lines".
-2. A row detail that merely repeats the label (basename under a "Reading file:
-   {path}" label) is dropped, so the file name is not shown twice in one row.
-
-Run:
-    python -m unittest mimir.tests.test_tool_row_display -v
+"""Tool-activity rows: ``read_file_lines`` shows the exact range read, and a detail that
+repeats the label is dropped.
 """
 
 import asyncio
@@ -188,13 +180,7 @@ class ObjectPreviewTests(unittest.TestCase):
         self.assertNotIn("secret", out)
 
     def test_a_url_the_parser_cannot_read_still_sheds_its_secrets(self) -> None:
-        """The fallback echoes the value as written, which is where one survives.
-
-        A schemeless `user:secret@host/x` parses to no host at all, so it took the
-        branch that returns the string — and the secret went onto the row and into the
-        stored transcript with it. A query goes the same way: an api key is usually in
-        one, and it is not what identifies the call.
-        """
+        """A URL the parser cannot read still sheds its credentials and query."""
         self.assertEqual(tool_arg_preview("t", {"url": "user:secret@host.io/x"}), "host.io/x")
         self.assertEqual(
             tool_arg_preview("t", {"url": "https://tok:x@api.example.com/v1?key=abcd1234"}),
@@ -298,13 +284,7 @@ class PolicyBlockSummaryTests(unittest.TestCase):
 
 
 class AppendedAdvisorySummaryTests(unittest.TestCase):
-    """A successful edit must stay a success even when advisory text is appended.
-
-    The client appends AUTO_VALIDATION / MORE_CONTENT / OUTLINE text AFTER the JSON
-    payload. A post-write validator (lint/typecheck/import) embedding a nested
-    ``"status": "error"`` must NOT flip a successful edit's row to failed — the file
-    was written; the validator finding is advisory.
-    """
+    """A successful edit stays a success when advisory text with a nested error follows it."""
 
     _edit_ok = {
         "status": "ok", "operation": "replaced", "path": "foo.py",
@@ -376,13 +356,8 @@ class ErrorDetailTests(unittest.TestCase):
 
 
 class RowPathsAreShortenedTests(unittest.TestCase):
-    """Activity rows show the file name; approval prompts keep the absolute path.
-
-    Tools carry absolute paths now (see ``server_files._require_abs``), which is
-    right for the model and unreadable for a person — a row reading
-    "Reading file: /long/absolute/path/.../observations.py" buries the one token
-    the user is scanning for. The shortening is capability-driven off the declared
-    ``path`` arg-role, so it needs no tool-name list.
+    """Activity rows show the file name, through the declared ``path`` arg-role; approval
+    prompts keep the absolute path.
     """
 
     ABS = "/work/proj/codes/mimir/client/guardrails/observations.py"
@@ -419,13 +394,8 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         self.assertEqual(short["path"], "observations.py")
 
     def test_a_url_loses_its_credentials_in_the_display_copy(self):
-        """Not just in the row's preview: in the label, which is the wider carrier.
-
-        `label_for` interpolates the url verbatim ("Fetching {url}"), and that label is
-        the row's tooltip, the approval card's header and a line of the stored
-        transcript. The display copy of the arguments is where that is fixed for all of
-        them at once. The scheme and the query stay — a consent prompt asks about a
-        precise call, and only the credential is never part of it.
+        """The display copy of the arguments drops a URL's credentials, so the label, the card and
+        the transcript never carry them.
         """
         reg = {"t": ToolCaps(name="t")}
         short = shorten_display_args(
@@ -446,13 +416,7 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         self.assertEqual(args["url"], "https://tok:s3cr3t@api.example.com/v1")
 
     def test_a_relative_path_is_left_alone_declared_or_not(self):
-        """An argument named `path` is not always a filesystem path.
-
-        A remote-fetch tool's repository path is already short, and is the one the row
-        means: reduced to its basename, the GitHub row read `ci.yml` where the call was
-        for `.github/workflows/ci.yml`. Only an absolute value is the problem this
-        exists for, and a tool that names a workspace file is given one.
-        """
+        """Only an absolute path is shortened; a relative one (a repository path) is kept."""
         for reg in ({"t": ToolCaps(name="t")},
                     {"t": ToolCaps(name="t", arg_roles={"path": ("path",)})}):
             with self.subTest(declared="path" in (reg["t"].arg_roles or {})):
@@ -685,13 +649,8 @@ class DispatchRowFieldsTests(unittest.TestCase):
         self.assertEqual(rows[0]["doing"], "reading it")
 
     def test_the_model_s_own_message_is_left_as_it_issued_it(self) -> None:
-        """The description is read out of the call, never popped out of it.
-
-        ``normalize_arguments`` hands back the very dict the assistant message holds,
-        and that message is the record of what the model issued — ``take_deferred_calls``
-        reads the calls back out of it to resume a step that waited on the user. Popped
-        in place, the description was erased from the record, and a call resumed after
-        an approval came back with nothing to say.
+        """The description is read from the call, never popped from it: the assistant message is
+        the record a resumed call is read back from.
         """
         from mimir.client.query_engine.deferral import take_deferred_calls
 

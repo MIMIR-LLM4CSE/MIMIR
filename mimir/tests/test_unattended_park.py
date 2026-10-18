@@ -1,14 +1,5 @@
-"""An unanswered card with nobody there is set aside, not waited out for ever.
-
-The wait behind an approval has no timeout, deliberately: nothing may proceed because
-the user was slow. That is right while somebody is there and a deadlock once nobody is
-— a detached run meets its first sensitive tool, holds the worker thread, and the pool
-then reaps the agent out from under it.
-
-So the criterion added is *attached*, not *elapsed*. These tests pin both halves: that a
-card with somebody there still waits for ever (which `test_approval_wait` also pins,
-unmodified), and that one with nobody there is deferred — through the park/placeholder/
-resume mechanism that already existed and had no caller.
+"""An unanswered card with nobody attached is deferred (park, placeholder, resume), not
+waited out forever; with somebody there it still waits.
 """
 import asyncio
 import os

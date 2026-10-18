@@ -1,18 +1,5 @@
-"""A slash command must not be judged as if the model had asked for it.
-
-`call_session_tool` is what `/memory list`, `/memory clear` and `/proxy clean` run
-on, and it deliberately bypasses `agent.run_tool` — the full policy pipeline of
-approvals, plan-shape gates and write policy. Those exist to weigh what the MODEL
-proposed. Applied to a command the user typed themselves, the plan gate answers with a
-refusal string in plan or ask mode, so the command does nothing, and scatters tool cards
-through the transcript on its way there.
-
-Both surfaces go through the one direct call (`tool_execution.direct.call_tool_directly`);
-these tests pin the WS surface's scheduling of it, and the two surfaces to the same
-command set.
-
-Run:
-    python -m unittest mimir.tests.test_session_command_tools -v
+"""A slash command runs directly (``call_tool_directly``), outside the policy pipeline
+meant for the model's calls; both surfaces share one command set.
 """
 
 from __future__ import annotations

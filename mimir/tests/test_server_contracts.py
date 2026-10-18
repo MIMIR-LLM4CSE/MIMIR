@@ -141,15 +141,8 @@ def _body_full(page: str) -> str:
 
 
 class ReservedHintKeyTests(unittest.TestCase):
-    """`hint` belongs to error payloads, and success payloads silently drop it.
-
-    ``responses.ok`` strips ``status``/``error``/``hint`` from
-    anything handed to ``ok()``. Five separate tools had written guidance under that
-    key — "fetch a more specific URL", "call again with confirm=True", "load one with
-    module load", "update old_text to match" — and not one of those lines had ever
-    reached the model it was written for. Nothing failed, nothing was logged; the
-    advice simply was not there. A static check, because that is the only kind that
-    catches the sixth one.
+    """``hint`` belongs to error payloads: ``ok()`` drops it, so a static check keeps
+    success payloads from using it.
     """
 
     def _server_files(self):
@@ -312,12 +305,8 @@ class RepresentativeServerContractTests(unittest.TestCase):
         self.assertIn("contains=", note["body_note"])
 
     def test_web_a_page_with_no_text_falls_back_to_its_own_metadata(self) -> None:
-        """Measured on a thesis record page: 754 KB, 92% of it one inline <style>.
-
-        The socket read stops at 512 KB, entirely inside that block, so the body
-        never arrives and the parser correctly finds no prose. Handing back the
-        markup then spent 131 072 chars — ~34k tokens — on CSS. The page had said
-        what it was in its <head> all along, in the first KB off the wire.
+        """A page whose read stops inside a huge inline style falls back to its ``<head>``
+        metadata, not its markup.
         """
         page = ('<!doctype html><html><head><title>Catalogue Record 4471</title>'
                 '<meta name="description" content="A record held by the registry.">'
@@ -380,12 +369,8 @@ class RepresentativeServerContractTests(unittest.TestCase):
                          (shell, {}))
 
     def test_web_a_failed_request_body_is_capped_like_everything_else(self) -> None:
-        """The path that put a 200k window at 215k.
-
-        The error branches handed back up to `_MAX_BYTES` of the error body raw —
-        no extraction, no text ceiling. Measured on a paper host answering 403: the
-        block page came back as 131 164 tokens, and it was one of four fetches issued
-        in the same step. An error body is a diagnosis, not content.
+        """A failed request's body is extracted and capped like any other: it is a diagnosis,
+        not content.
         """
         class _Err(urllib.error.HTTPError):
             def __init__(self) -> None:
@@ -1630,12 +1615,8 @@ class BashServerTests(unittest.TestCase):
             self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_no_classified_command_is_one_the_server_refuses(self) -> None:
-        """A command cannot be both classified and denied.
-
-        A command the classifier files under a kind but the server refuses is dead
-        weight that reads as a supported capability: every consumer of the kind (plan
-        mode, the approval waiver, the blackboard) treats a call that never runs as
-        one that does. The taxonomy and the denylist must stay disjoint.
+        """The classifier's taxonomy and the denylist stay disjoint: no command is both classified
+        and refused.
         """
         from mimir.client.guardrails import observations as obs
         from mimir.client.context.bash_classify import READONLY_KINDS, classify_bash_command
@@ -1720,13 +1701,7 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(missing, [], "denied commands absent from the documented table")
 
     def test_a_wrapper_is_unwrapped_never_denied(self) -> None:
-        """A wrapper may not be denied, and a denied head may not be a wrapper.
-
-        The validator reads a head. A command whose argument list *is* another
-        command would otherwise clear the denylist on its own name and nothing it
-        runs, so wrappers are unwrapped instead of listed — and the two sets must
-        stay disjoint or a wrapper would be refused before it could be unwrapped.
-        """
+        """Wrappers are unwrapped, never denied; the wrapper set and the denylist stay disjoint."""
         self.assertEqual(
             sorted(_shell_paths.COMMAND_WRAPPERS & _shell_paths.DENIED_COMMANDS), [],
             "a wrapper is denylisted; it would be refused instead of unwrapped")
@@ -1757,13 +1732,7 @@ class BashServerTests(unittest.TestCase):
         self.assertTrue(argv)
 
     def test_every_refused_path_is_one_the_user_can_be_asked_about(self) -> None:
-        """The invariant tying the guard to the gate.
-
-        The guard refuses a path; the gate offers it to the user; a grant makes the
-        guard accept. If the gate cannot see a path the guard refuses, the access is
-        unreachable — refused with no way to allow it — and the user never learns
-        why. So: every path this guard rejects must be one the gate would surface.
-        """
+        """Every path the guard refuses is one the gate would surface, so the user can grant it."""
         from mimir.client.context.bash_classify import shell_segments
         from mimir.servers._shared.shell_paths import (
             cd_destination, normalize_path_arg, segment_path_operands,
@@ -1941,18 +1910,10 @@ class ReportVerdictTests(unittest.TestCase):
 
 
 class ToolSchemaContractTests(unittest.IsolatedAsyncioTestCase):
-    """What a tool promises must be declared where the model reads it: the schema.
+    """What a tool promises is declared in its schema, where the model reads it.
 
-    Observed defect: a live session dropped `verdict` from two report_verdict calls,
-    sending only {reason, run}. vLLM parsed the call fine — the rejection was pydantic's,
-    and the model saw a raw dump. Its schema described all three parameters as bare
-    `{"type": "string"}` with no description and no enum: three indistinguishable slots,
-    with the closed four-value set stated only in the docstring's prose. `reason` and `run` have obvious semantic anchors in that prose;
-    `verdict` is the abstract one, and it is the one that went missing.
-
-    The `Args:` block was written and is discarded — the bundled FastMCP builds its
-    schema from the signature alone and has no docstring-parsing option, so a contract
-    only reaches the model through `Field(...)`.
+    FastMCP builds the schema from the signature alone, so a contract reaches the model
+    only through ``Field(...)``.
     """
 
     async def _schema(self, name: str) -> dict:
@@ -2020,19 +1981,8 @@ class ToolSchemaContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
-    """No tool ships a parameter the model is left to guess at.
-
-    A constraint stated only in a docstring's prose does not get followed. On one
-    recorded run the model dropped `report_verdict`'s required `verdict` twice, called
-    `proxy_get` with an `op` that is not one of the six the docstring lists and with
-    another that the same docstring says needs `name`, and hit `bash_run`'s 30s default
-    four times against a docstring that says to raise it — 9 wasted turns in 107 calls.
-    The prose reached the model every time; only the schema changes behaviour.
-
-    `_schema_for_model` closes that by lifting each tool's `Args:` block
-    into its schema, so the fix costs no new prose. This test is what keeps it closed:
-    without it the invariant lapses at the first tool added with an undocumented
-    parameter, and nothing would say so.
+    """No tool ships a parameter the model is left to guess at: ``_schema_for_model`` lifts
+    each ``Args:`` block into the schema, and every parameter must have one.
     """
 
     async def test_no_parameter_reaches_the_model_undescribed(self) -> None:
@@ -2205,14 +2155,7 @@ class EnvServerTests(unittest.TestCase):
         self.assertFalse(server_env._looks_like_venv(str(SERVERS_DIR)))
 
 class ToolSchemaHonestyTests(unittest.TestCase):
-    """A tool's schema may only advertise policies that exist.
-
-    ``write_file`` once carried a ``large_file_overwrite_confirmed`` flag and a
-    docstring promising that ">150 lines blocks overwrite unless it is set". No policy
-    ever read it, so the model paid for the field in every tool schema and was told a
-    rule that would never fire. The two guards that do exist are the read-before-
-    overwrite check and the server's refusal to overwrite without ``overwrite=true``.
-    """
+    """A tool's schema advertises only policies that exist."""
 
     def test_write_file_advertises_no_line_threshold_policy(self) -> None:
         import inspect
@@ -2224,14 +2167,7 @@ class ToolSchemaHonestyTests(unittest.TestCase):
 
 
 class BinaryBodyTests(unittest.TestCase):
-    """A fetch that lands on bytes must not spend the window on them.
-
-    Incident (2026-09-20): a plan-mode run fetched a PDF from HAL. The text ceiling
-    held — 131072 characters — but those characters were catalog objects and stream
-    bytes, and they JSON-escaped to 502529 characters, ~125K tokens, inside a window
-    budgeted for 160K. Nothing in them was readable, and the run reached for a text
-    mirror on its very next step, having already paid for the bytes.
-    """
+    """A fetch that lands on binary bytes does not spend the window on them."""
 
     def _read(self, decoded: str, content_type: str):
         return server_web._read_body(decoded, content_type, False, "", 0)

@@ -1,15 +1,7 @@
 """Detached ``bash_run(background=True)`` jobs: launch, terminal state, stop.
 
-The blocking path is capped, and no real build fits inside the cap. These cover the
-part that makes a detached run usable rather than merely started: that a terminal state
-is knowable afterwards (the exit code the shell records on its way out), that stopping
-one takes the whole process group with it, and — the property that must not regress —
-that detaching is a parameter on an already-validated command, not a way around the
-validation. See ``bash_jobs`` and ``server_bash.bash_run``.
-
-``BlockingRunTests`` below covers the other half: a blocking call now goes through the
-same launcher, so its output lives in a file. That is what lets a run stopped at the cap
-still report what it printed, and lets the user detach one mid-flight without losing it.
+The exit code is knowable afterwards, stop takes the process group, and detaching
+never bypasses validation. ``BlockingRunTests``: a blocking run's output lives in a file.
 """
 import os
 import shutil
@@ -222,14 +214,8 @@ class BashBackgroundTests(unittest.TestCase):
         self.assertEqual(server_bash.bash_job(op="nonsense")["status"], "error")
 
     def test_a_well_formed_handle_naming_nothing_is_an_error_not_an_ok(self) -> None:
-        """``valid_key`` checks the shape of a handle, not that it names anything.
-
-        So a well-formed key for a job this host does not have reached the job layer and
-        came back carrying ``error`` — which was then wrapped in ``ok()``, producing a
-        payload that said both at once. A caller reading ``status`` first was told the
-        stop had succeeded while nothing was stopped. No longer hypothetical: job
-        directories are per session, so a handle from another conversation is exactly a
-        well-formed key naming nothing here.
+        """A well-formed handle naming no job here (one from another session) is an error, not
+        an ``ok`` carrying ``error``.
         """
         absent = "20200101T000000Z-abcd"
         self.assertTrue(bash_jobs.valid_key(absent))
@@ -477,14 +463,7 @@ class FinishedOutputClipTests(unittest.TestCase):
 
 
 class RewatchHandleTests(unittest.TestCase):
-    """Asking a job's state hands back the handle to track it with.
-
-    The watcher that was holding a run dies with the agent that made it, which an
-    editor window reload is enough to cause; the detached process carries on in its
-    own session directory regardless. So the state op answers with the handle as well
-    as the state, and asking becomes the way to pick tracking back up — without
-    re-arming runs nobody asked about.
-    """
+    """Asking a job's state hands back the handle to track it with."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.mkdtemp(prefix="mimir-bash-rewatch-")
@@ -555,16 +534,9 @@ class RewatchHandleTests(unittest.TestCase):
 
 
 class AdoptingARunningProcessTests(unittest.TestCase):
-    """``bash_watch(pid)`` — the counterpart of a launch for work already going.
+    """``bash_watch(pid)`` adopts a process something else started.
 
-    A process something else started is watched by nothing: tracking is the record a
-    launch writes, and nothing wrote one. So nobody is told when it ends, and it does
-    not keep this workspace's server alive while it runs — which is how a night goes
-    to a run that finished at two in the morning with no one listening.
-
-    What it cannot give is a status. The exit-code trap is installed by the launch and
-    cannot be added to a process already running, so the end of an adopted job is
-    ``unknown`` — honestly, rather than a ``done`` nobody observed.
+    Its end is ``unknown``: the exit-code trap cannot be added to a running process.
     """
 
     def setUp(self) -> None:
@@ -663,14 +635,8 @@ class AdoptingARunningProcessTests(unittest.TestCase):
 
 
 class AParentPollsItsChildsJobTests(unittest.TestCase):
-    """A run a sub-agent launched, read by the conversation that delegated to it.
-
-    A child's session is stored under its parent's, so its jobs are real runs of this
-    conversation's work that do not resolve from a bare handle. They must resolve some
-    way, and not for convenience: a handle resolved against the wrong session reads as
-    "No such job", the job layer spells that ``unknown``, and ``unknown`` is terminal.
-    A parent that adopted a run on a bare handle would announce a healthy build as lost
-    on its first poll.
+    """A run a sub-agent launched resolves for the conversation that delegated to it; read
+    against the wrong session it would turn ``unknown``, which is terminal.
     """
 
     _KEY = "20261013T101500Z-ab12"
@@ -771,16 +737,7 @@ class AParentPollsItsChildsJobTests(unittest.TestCase):
 class LearnedSchedulersTests(unittest.TestCase):
     """Which schedulers a workspace reaches, learned from calls it was making anyway.
 
-    On a login node whose Slurm tools live on another host, every typed cluster tool
-    answers "sbatch is not available" — so the work goes out as `ssh host "sbatch …"`,
-    which writes no descriptor: nothing watches the job, no wake is owed when it ends,
-    and the server stops on its idle timer with the run still going. The fact the typed
-    tools were missing is the host, and the model names it constantly while reading the
-    queue. One successful call is enough, and a setting nobody knows to set before the
-    first lost night is the wrong mechanism.
-
-    An inventory rather than an answer: a machine reaches its own scheduler and
-    whatever ``ssh`` gets to, so learning one *adds* a destination and redirects
+    One successful ``ssh host squeue`` adds that host as a destination; it redirects
     nothing.
     """
 
@@ -866,30 +823,14 @@ class LearnedSchedulersTests(unittest.TestCase):
         self.assertEqual(slurm_site.hosts(), ["host-a", "host-b"])
 
     def test_a_host_with_its_own_slurm_keeps_it_first(self) -> None:
-        """A machine with a scheduler has it whether anything was learned or not.
-
-        It is a probe, not a record — true before any call is made — and it comes
-        first because it is the one whose filesystems the work is already on. An ssh
-        elsewhere adds a second destination and takes nothing away: the submissions
-        that belong here keep a scheduler to go to.
-        """
+        """A machine with its own scheduler keeps it first, whatever was learned."""
         self._local(True)
         self._ran(["ssh", "host-b", "squeue -u $USER"])
         self.assertEqual(slurm_site.hosts(), ["", "host-b"])
 
     def test_the_sessions_of_one_workspace_share_the_schedulers(self) -> None:
-        """The inventory belongs to the work, not to the conversation doing it.
-
-        Two conversations in one workspace are two conversations on one project, whose
-        inputs are on one set of filesystems and whose jobs therefore run on one set of
-        clusters. A scheduler the first proved reachable is one the second can submit
-        to, and it must not have to prove it again.
-
-        What makes it load-bearing rather than a convenience: a job's descriptor is
-        already read across every session of the workspace (``recorded_jobs``), so the
-        second conversation can find a job the first submitted. Learned per session,
-        the registry would hand it that job with no scheduler to poll it on — a run
-        nothing is watching, which is the failure this whole module exists against.
+        """The inventory belongs to the workspace: job descriptors are read across its
+        sessions, so each session needs the scheduler to poll them on.
         """
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-local"}, clear=False):
             self._ran(["ssh", "host-a", "squeue"])
@@ -946,16 +887,7 @@ class LearnedSchedulersTests(unittest.TestCase):
         self.assertIn("ask them", refusal)
 
     def test_a_command_that_reached_the_scheduler_answers_with_the_gap(self):
-        """The case the whole path exists for, closed where it actually happens.
-
-        A job submitted through a site launcher is tracked by nothing, and neither the
-        launcher call nor the ``squeue`` that checks it a second later reaches a typed
-        cluster tool — so the reminder that fires when a turn concludes with unwatched
-        work never got its fact. A command that just *proved* the scheduler answers is
-        where that fact is free: the ids it is running, minus the ones a descriptor
-        covers. Carried on this payload, which is all it takes — the client's observer
-        reads the field, not the tool name.
-        """
+        """A command that reached the scheduler reports the running ids no descriptor covers."""
         result = self._ran(["squeue", "-u", "me"],
                            queued=["15306620", "15306621_1", "15306621_2"])
         # By array, because adoption is by array: two task rows are one descriptor.

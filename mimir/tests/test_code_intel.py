@@ -249,12 +249,8 @@ class SearchCarriesSourceContextTest(unittest.TestCase):
 
 
 class SymbolOutlineSpansTest(unittest.TestCase):
-    """An outline says where each symbol ENDS, not only where it starts.
-
-    Root cause this covers: the edit tools are addressed by line, so a map of start
-    lines alone leaves "read the block around line N" to be found by widening the
-    window five lines at a time — the crawl seen in the wild (1486-1520, 1515-1525,
-    1510-1530, 1515-1535) before a single insert.
+    """An outline says where each symbol ends, not only where it starts, so a block is read
+    in one call.
     """
 
     def test_flat_symbol_information_is_read_like_a_nested_one(self):

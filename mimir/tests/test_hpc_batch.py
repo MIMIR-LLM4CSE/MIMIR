@@ -1,12 +1,5 @@
-"""HPC async batch submission + normalized job status (background-jobs support).
-
-The HPC server gains a non-blocking ``sbatch_submit`` (returns a job id + a
-``background_job`` descriptor) and a ``slurm_job_status(job_id)`` shim that maps
-squeue/sacct to the shared state vocabulary. Tests stub ``_run_bash`` so no real
-scheduler is touched.
-
-Run:
-    python -m unittest mimir.tests.test_hpc_batch -v
+"""HPC batch submission (``sbatch_submit``) and normalized job status
+(``slurm_job_status``). ``_run_bash`` is stubbed; no scheduler is touched.
 """
 
 import json
@@ -351,12 +344,8 @@ class SbatchSubmitTests(unittest.TestCase):
 
 
 class SallocSubmitTests(unittest.TestCase):
-    """The validation has to sit on the path that executes, not beside it.
-
-    `salloc_submit` used to take a free-form command string and check only that it
-    started with "salloc ", while the time/mem/shell-token checks lived in a separate
-    build tool nothing forced the model to call. Resources are arguments now, so a
-    rejected value can never reach the scheduler.
+    """``salloc_submit`` takes resources as arguments and validates them on the path that
+    executes.
     """
 
     def setUp(self) -> None:
@@ -916,16 +905,8 @@ class SlurmCancelTests(unittest.TestCase):
 
 
 class WhereAJobsOutputGoesTests(unittest.TestCase):
-    """A job writes its output from the node it ran on, not from this host.
-
-    The log used to be pointed at the submission's own directory under the state dir —
-    the one directory in the arrangement that nothing guarantees the compute nodes can
-    write. On a site whose home is not mounted on them, the job ran, succeeded, and its
-    output went nowhere; an empty read then looked like a job that printed nothing.
-
-    The rule that needs no configuration and no failure to learn: the output goes where
-    the job *runs*. If the job could start at all, that directory is reachable from the
-    node Slurm started it on — otherwise there would have been nothing to chdir into.
+    """A job writes its output where it runs (its work dir), which the node is known to
+    reach.
     """
 
     def setUp(self) -> None:
@@ -995,13 +976,8 @@ class WhereAJobsOutputGoesTests(unittest.TestCase):
         self.assertEqual(res["status"], "error")
 
     def test_a_work_dir_it_cannot_write_is_refused_now(self) -> None:
-        """Said before the queue wait, and not worked around.
-
-        The tempting fallback is somewhere always writable, which on a cluster means
-        ``/tmp`` — and ``/tmp`` is the compute node's own disk, so the output would
-        land where this host can never read it. A shared directory that is not
-        writable fails loudly; a node-local one fails silently, with an empty run that
-        looks like a job which printed nothing.
+        """A work dir that cannot be written is refused before the queue wait, with no fallback
+        to node-local ``/tmp``.
         """
         locked = os.path.join(self._tmp.name, "readonly")
         os.makedirs(locked)
@@ -1044,19 +1020,8 @@ class WhereAJobsOutputGoesTests(unittest.TestCase):
 
 
 class HowACommandReachesItsSchedulerTests(unittest.TestCase):
-    """Running a command where Slurm is, which is not always on this host.
-
-    A login node that holds the editor's remote session while the scheduler lives
-    behind ``ssh`` is an ordinary arrangement, and on one of those every cluster tool
-    answered "sbatch is not available" — so the work was submitted by hand through the
-    shell, where nothing writes a descriptor. Nothing was watched, no wake was ever
-    owed, and the server stopped on its idle TTL with the user's job running.
-
-    *Which* scheduler a call goes to is the caller's, resolved from what a tool was
-    given against the session's inventory — see ``LearnedSchedulersTests`` in
-    ``test_bash_background`` for how that inventory is built. These pin how a command
-    is run once the host is known. The seam is shared (``_shared/slurm_site``) because
-    all three servers ask the same question.
+    """Running a command where Slurm is: locally or over ``ssh``, through
+    ``_shared/slurm_site``. Which scheduler a call goes to is resolved by the caller.
     """
 
     def test_local_is_run_through_a_login_shell(self) -> None:
@@ -1093,15 +1058,8 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
         self.assertEqual(argv.count("host-a"), 1)
 
     def test_an_interactive_allocation_is_refused_over_ssh(self) -> None:
-        """A silent no-op is worse than a plain no.
-
-        ``salloc`` wants a terminal on the host that has the scheduler, and over ssh
-        there is none: it would take the allocation, find no shell to run in it, and
-        give it straight back — spending the request and reporting success at having
-        done nothing.
-
-        Asked of the scheduler the call *names*: the refusal is about where this one
-        allocation would land, not about anything the session recorded earlier.
+        """``salloc`` over ssh is refused: with no terminal it would give the allocation straight
+        back and report success.
         """
         res = server_hpc.salloc_submit(partition="cpu", confirm=True,
                                        scheduler="host-a")
@@ -1141,13 +1099,7 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
 
 
 class JobArraysTests(unittest.TestCase):
-    """One id can be many jobs, and a site launcher submits exactly that.
-
-    An array submits as ``15306621`` and runs as ``15306621_1 … _8``; squeue and sacct
-    both answer with a line per element. Read as one line, an array whose first task
-    has finished while seven still run reports as finished — waking its conversation
-    on a run that has barely started.
-    """
+    """A job array reports finished only when every element has."""
 
 
 
@@ -1186,14 +1138,8 @@ class JobArraysTests(unittest.TestCase):
 
 
 class ManySchedulersOneSessionTests(unittest.TestCase):
-    """A job is not something a scheduler owns — it is something one of them is running.
-
-    A machine reaches its own scheduler and whatever ``ssh`` gets to, and one
-    conversation uses several: a reference run local, a sweep on another cluster. So
-    the choice of where to submit is per call and refused rather than defaulted when
-    it is a real choice; and finding a job again never depends on having been told
-    where it is, because the watcher that polls it is re-armed from disk with nothing
-    but an id.
+    """One conversation uses several schedulers: the destination is chosen per call (refused
+    when ambiguous), and a job is found again from its id alone.
     """
 
     def setUp(self) -> None:
@@ -1247,12 +1193,8 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
         return asked
 
     def test_a_submission_is_refused_rather_than_sent_somewhere_by_default(self) -> None:
-        """The failure this whole shape exists for, caught at the one call that spends.
-
-        With two schedulers reachable, "which one" is a decision about the work — the
-        GPUs it needs, the filesystem its inputs are on. Picking the first silently is
-        how a production run's submissions went to a cluster that had never heard of
-        it, reported as an infrastructure problem for hours.
+        """With two schedulers reachable, a submission that names neither is refused, not sent
+        to the first.
         """
         self._reaching("", "host-b")
         res = server_hpc.sbatch_submit(command="echo hi", partition="cpu",
@@ -1383,13 +1325,8 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
 
 
 class TheQueueSaysWhatIsWatchedTests(unittest.TestCase):
-    """Whether this workspace is watching a job is not a thing the scheduler knows.
-
-    A job is tracked by the descriptor its submission wrote; one submitted any other
-    way wrote none. The consequence is invisible from both ends — nothing polls it, no
-    wake is owed, and the process stops on its idle TTL with the run still going — so
-    the queue says it per row, and hands the set to the client where a nudge reads it.
-    Two facts and no guessing, which is what makes it fit to be acted on.
+    """The queue says per row whether a descriptor covers the job, and hands the unwatched set
+    to the client.
     """
 
     def setUp(self) -> None:
@@ -1435,13 +1372,7 @@ class TheQueueSaysWhatIsWatchedTests(unittest.TestCase):
         self.assertNotIn("unwatched", res)
 
     def test_the_same_id_on_another_scheduler_is_a_different_job(self) -> None:
-        """Two clusters number independently, so an id alone is not an identity.
-
-        15306620 is a watched production run on one and somebody else's sweep on the
-        other. Keyed by id alone, the descriptor here would vouch for the job there:
-        the queue would report it watched, the nudge would stay silent, and nothing
-        would be polling it or owe a wake when it ended.
-        """
+        """A job is identified by scheduler and id: the same id on another cluster is another job."""
         self._recorded("15306620", host="")        # on this machine's own scheduler
         res = self._queue("15306620|me|RUNNING|0:23|1:00:00|1|node1|someone-elses-sweep",
                           scheduler="host-b")
@@ -1573,12 +1504,8 @@ class SlurmWatchTests(unittest.TestCase):
         stub_attr(self, hpc_cli, "run_bash", fake)
 
     def test_a_job_already_recorded_is_handed_over_again(self) -> None:
-        """Recorded is not watched, and the answer used to say otherwise.
-
-        A watcher is held by the agent that registered it and by nothing else, so a
-        window reload leaves the directory saying "there is a job" with nobody polling
-        it. Asking again is the moment that is repairable — and the answer carried no
-        descriptor, so it repaired nothing while reporting the job as watched.
+        """Watching a job already recorded hands its descriptor over again, since its watcher
+        may be gone.
         """
         self._watch({"squeue": ("ok", "RUNNING")})
         self._refuse_slurm()          # the disk settles this, not two ssh round trips

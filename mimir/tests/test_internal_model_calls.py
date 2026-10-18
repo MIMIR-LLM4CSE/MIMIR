@@ -1,16 +1,7 @@
-"""The model calls MIMIR makes on its own behalf, rather than for the user.
+"""The model calls MIMIR makes on its own behalf (history compaction).
 
-History compaction asks the model something the user never typed and consumes the
-answer in code. Two properties follow, and neither held before: the call must go
-through the *configured* backend (it used to call ``ollama.chat`` directly, so it
-failed under vLLM, Ray or Anthropic), and its output must not reach the terminal —
-``LLMBackend.chat`` streams to stdout whenever no ``token_callback`` is given, which
-is the CLI answer path's default.
-
-A skill is not one of these calls. The model is given the index of loadable skills in
-its system prompt and loads one itself with ``load_skill`` when the work turns out to
-need it, so no internal round-trip is spent classifying a query that does not yet know
-what the task is made of. ``test_agent_loop.SkillResolutionTests`` is what holds that.
+They go through the configured backend and print nothing to the terminal. Skills are
+loaded by the model itself; no internal call classifies a query.
 """
 
 import asyncio
@@ -30,13 +21,7 @@ from mimir.tests.support.agents import fake_agent
 
 
 class EchoingBackend(LLMBackend):
-    """A backend that reproduces the real ones' stdout contract.
-
-    Both shipped backends push content through :class:`ThinkTagParser`, which
-    writes to stdout when no ``token_callback`` is set. Mimicking that here — rather
-    than asserting on a recorded argument — is what makes the "nothing is printed"
-    tests fail if the sink is ever dropped again.
-    """
+    """A backend that writes to stdout when no ``token_callback`` is set, like the real ones."""
 
     def __init__(self, content: str) -> None:
         super().__init__()

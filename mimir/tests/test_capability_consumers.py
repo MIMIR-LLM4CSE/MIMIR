@@ -1,25 +1,7 @@
-"""Drift guard: every declared capability must have a live client consumer.
+"""Drift guard: every declared capability has a live consumer in ``client/`` or the
+shipped example packs (some capabilities are pack-facing).
 
-The dual of :func:`mimir.client.context.capabilities.unannotated_live_tools`,
-which flags the *tool* side of capability drift (a connected tool that declares
-no capability). This guards the *vocabulary* side: a capability constant that
-lingers in the vocab after its last consumer was removed — exactly what happened
-to ``VALIDATION_BYPASS`` once its only reader (a never-firing policy branch) was
-deleted. A capability only earns its place if some client control-flow reacts to
-it; servers merely *declare* caps, so consumption is measured in ``client/`` — plus the shipped
-example packs, because part of the vocabulary is **pack-facing**: a capability whose job
-is to give an application policy a rename-proof handle (``EXTERNAL_FETCH``) has its
-consumer in a plugin, not in core. Scanning core alone reported such a capability as an
-orphan, pushing toward deleting the seam rather than the dead code.
-
-Static AST scan (no runtime / model / mcp deps) so it runs on the x86 build host,
-same approach as ``support.golden_caps.build_declared_registry``.
-
-Scope / caveat: this catches *declared-but-never-referenced* drift — the common,
-cheap case (you removed the last consumer but left the constant). It deliberately
-does NOT try to catch a consumer that exists but is itself unreachable (a branch
-gated on a context field nothing populates). That reachability class needs
-behavioural / effect tests, not a static reference scan.
+A static AST scan: it catches a constant nothing references, not an unreachable consumer.
 """
 from __future__ import annotations
 
@@ -66,17 +48,10 @@ def referenced_identifiers(*, exclude: set[pathlib.Path]) -> set[str]:
 
 
 def _vocab_helper_bodies(used_by_client: set[str]) -> set[str]:
-    """Identifiers used inside vocab-file helpers that client code actually calls.
+    """Identifiers used inside vocab-file helpers that client code calls.
 
-    A capability can be consumed *through* a derivation the vocabulary owns rather than
-    by name: ``CONTENT_WRITE`` reaches the dispatcher only via ``is_write``, and reaches
-    plan mode only via the ``PLAN_BLOCKED`` derivation in ``_caps_from_meta``. Both are
-    live client control-flow, so the capability has earned its place — the reference is
-    simply one hop away, where a flat name scan cannot see it.
-
-    Only helpers the client references are followed, so this removes the false positive
-    without weakening the guard: a capability referenced *only* by a vocab-file function
-    nothing calls is still reported as the orphan it is.
+    A capability consumed through such a helper (``CONTENT_WRITE`` via ``is_write``) counts;
+    one referenced only by a helper nothing calls is still an orphan.
     """
     tree = ast.parse(CAP_DEF_FILE.read_text(), filename=str(CAP_DEF_FILE))
     used: set[str] = set()

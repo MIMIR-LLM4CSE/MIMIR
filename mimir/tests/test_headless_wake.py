@@ -1,21 +1,7 @@
 """A run that finishes with no window open still gets its turn.
 
-A watcher outlives every connection: it is a task on a worker's loop, and the pool
-refuses to release a worker that holds one. So a detached run reports in whether or not
-a panel is attached, and the pump journals what it says. What the journal cannot do is
-*act* on it — and for a background run, acting on it is the whole point. A job that
-finished at 15:39 with the window shut was recorded and never handed to the conversation
-waiting on it: the agent resumed sixteen hours later, when somebody opened the panel and
-asked where things were.
-
-These tests pin the consumer that closes that gap. It belongs to the pool rather than to
-a socket, it is handed the event by the pump, and it does the three things a wake needs:
-appends the instruction to the stored conversation, queues the turn on that
-conversation's own agent, and settles the run so no later scan re-announces it.
-
-The companion invariant lives in :mod:`test_job_rearm` and :mod:`test_reattach_replay`:
-the marker records *delivery*. A wake that nothing took in is re-announced on the next
-scan, which is what makes the two paths safe to have at once.
+The pool's consumer appends the instruction to the stored conversation, queues the
+turn on its agent, and settles the run. The marker records delivery.
 """
 import json
 import os

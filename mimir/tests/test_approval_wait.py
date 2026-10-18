@@ -1,15 +1,7 @@
 """What each kind of unanswered prompt does to a parked agent.
 
-An approval waits indefinitely: it must never resume on its own and answer for the
-user, so the only ways out are an answer and the cancel flag (the Stop button). A
-clarification question carries a wall instead — nothing bad happens at the end of it,
-the agent goes on with the option it recommended — and the wait reports that ending
-distinctly so the card can be taken off the screen.
-
-Each card has an answer slot of its own and is matched to its answer by id. A
-sub-agent still running after its delegating call has returned raises its card from
-another thread, so two can be in flight at once; the cards queue — one on screen at a
-time — rather than share one slot.
+An approval waits until answered or cancelled; a clarification has a deadline and goes
+on with its recommended option. Each card has its own answer slot, matched by id.
 """
 
 import threading
@@ -84,13 +76,8 @@ class AwaitResponseTests(unittest.TestCase):
 
 
 class TwoCardsAtOnceTests(unittest.TestCase):
-    """What a detached sub-agent introduces: two cards, raised from two threads.
-
-    Every prompt of a turn comes from the worker thread, so on their own they cannot
-    coexist. A sub-agent whose delegating call has already returned raises its own
-    from wherever the elicitation lands, and a slot shared between them would let the
-    second card erase the first while its answer went to whichever thread happened to
-    be listening.
+    """Two cards raised from two threads (a detached sub-agent) queue; neither erases the
+    other or takes its answer.
     """
 
     def _park(self, w, req_id, results):
@@ -179,13 +166,7 @@ class TwoCardsAtOnceTests(unittest.TestCase):
 
 
 class DeadlineTests(unittest.TestCase):
-    """A clarification gives up on the user; an approval never does.
-
-    The wall exists so a long run is not stopped for the night by a question nobody
-    will read. Applying it to an approval would mean a coffee break authorises a
-    command the user never saw, so the deadline is passed by whoever raises the card
-    and no card gets one by default.
-    """
+    """A clarification gives up on the user; an approval never does."""
 
     def test_a_card_with_a_deadline_gives_up_on_its_own(self) -> None:
         """And says so with TIMED_OUT, which is not the cancelled None: the caller has

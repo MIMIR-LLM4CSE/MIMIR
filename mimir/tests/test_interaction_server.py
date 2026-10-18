@@ -187,13 +187,8 @@ class AskUserQuestionTests(unittest.TestCase):
 
 
 class ElicitationTransportTests(unittest.TestCase):
-    """The answer must survive the *real* MCP result type, not a stand-in.
-
-    ``_FakeSession`` above returns a ``SimpleNamespace``, so every test that uses it
-    passes whatever shape the client hands over. The MCP schema restricts
-    ``ElicitResult.content`` values to primitives and string lists, and pydantic
-    rejects anything else at construction — which is why answering used to fail
-    while declining worked. These tests pin the transport itself.
+    """The answer survives the real MCP ``ElicitResult`` type, whose content admits only
+    primitives and string lists.
     """
 
     def test_callback_result_is_a_valid_elicit_result(self) -> None:
@@ -315,12 +310,8 @@ class ElicitationTransportTests(unittest.TestCase):
         self.assertEqual(seen, [float(USER_QUESTION_TIMEOUT_SECS)])
 
     def test_the_users_thinking_time_does_not_burn_the_tool_budget(self) -> None:
-        """The wall on an answer is the question's own, not the tool-call budget.
-
-        The frontend handler blocks in a pool thread, and ``human_pause`` accounting
-        is thread-local: unless the wait is marked on the loop thread, the
-        ``_await_tool`` watching this call never sees it and the card dies on the
-        ordinary 120s tool budget while telling the user they have five minutes.
+        """The wait for an answer is marked on the loop thread, so the tool-call budget does not
+        count it.
         """
         import time
 
@@ -370,13 +361,8 @@ class ElicitationTransportTests(unittest.TestCase):
 
 
 class ElicitationOriginTests(unittest.TestCase):
-    """Who raised a card travels with it, from the server that asked to the front end.
-
-    An ordinary question comes from the turn the user is watching, so there is nothing
-    to say. A sub-agent's does not: it works alongside that turn, several can be
-    working at once, and an approval the user cannot attribute is one they cannot
-    weigh. The bridge carries whatever the asking server declared and understands none
-    of it — the same way it already refuses a spec it does not recognise.
+    """Who raised a card travels with it to the front end; the bridge passes the asking
+    server's declaration through without reading it.
     """
 
     def _callback(self, x_mimir: dict, seen: dict):
@@ -416,12 +402,8 @@ class ElicitationOriginTests(unittest.TestCase):
 
 
 class QuestionDeadlineTests(unittest.TestCase):
-    """A clarification expires; nothing else on this channel does.
-
-    A run left to work overnight used to stop dead on a question nobody would read
-    until morning, and never resume: an unanswered question and a refused one came
-    back as the same "do not choose for them", which is right for a refusal and wrong
-    for an empty room.
+    """A clarification expires, and its expiry reads differently from a refusal; nothing else
+    on this channel expires.
     """
 
     def _callback(self, seen: dict, answer: dict):

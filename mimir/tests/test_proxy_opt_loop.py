@@ -1,12 +1,5 @@
-"""Integration tests for the proxy optimization ratchet (accept/reject/converge).
-
-Drives ``eval_session.results`` over fabricated completed runs — the same
-"never actually launch the runner" approach as test_proxy_ops.py — and asserts
-the ratchet verdict, best-so-far tracking, ledger monotonicity, and the
-reset_to_best rollback op.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_opt_loop -v
+"""The proxy ratchet (accept, reject, converge) over fabricated completed runs: verdicts,
+best-so-far, ledger monotonicity, and ``reset_to_best``.
 """
 
 import json
@@ -54,13 +47,7 @@ class _RatchetFixture(_TmpStorageTest):
         self.assertIn("minimize time_s", res["objective"])
 
     def _baseline_run(self, feasible: bool = True) -> None:
-        """Measure the untouched code, which the ratchet now requires before accepting.
-
-        Taking the first FEASIBLE run as the best leaves a session whose first run is
-        already an edit with nothing to compare against, and every later number an
-        assertion. The run is recorded as the baseline whether or not it passed: what
-        matters is that the original was measured.
-        """
+        """Measure the untouched code, which the ratchet requires before accepting anything."""
         self._complete_run("20231231T235959Z", all_passed=feasible, time_s=9.0)
         self._results()
 
@@ -234,13 +221,7 @@ class RatchetLoopTests(_RatchetFixture):
 
 
 class RunnerConvergenceRequirementTests(_TmpStorageTest):
-    """convergence_order is run-level: requiring it must not fail every case.
-
-    Regression: the runner used to feed the full requirements list to the
-    per-case evaluation, where convergence_order can never exist (it is
-    fitted across the sweep), so any session requiring it had 0/N cases
-    passing regardless of the actual metrics.
-    """
+    """``convergence_order`` is run-level: requiring it does not fail every case."""
 
     def _write_sweep_proxy(self) -> str:
         """A proxy whose error scales as h^2 across the {n} sweep."""
@@ -311,12 +292,8 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
 
 
 class RunnerSettlesRatchetTests(_TmpStorageTest):
-    """The runner settles ledger/best at completion — bookkeeping must not
-    depend on the agent ever calling results().
-
-    Regression: a winning run completed after the agent's tool call timed
-    out; the agent only polled status, so the run was absent from the ledger
-    and never became best until someone manually called results.
+    """The runner settles the ledger and best at completion, whether or not the agent calls
+    ``results()``.
     """
 
     def _setup_session(self) -> str:

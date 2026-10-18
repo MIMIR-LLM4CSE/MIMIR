@@ -1,15 +1,7 @@
-"""The shape of an optimisation: which ideas were tried, and which are still open.
+"""The attempt graph of an optimisation: which ideas were tried, and which are open.
 
-A session ledger records what each run measured. What it did not record is what the
-run was *for* — so a session that had tried eight things was, on disk, eight numbers,
-and the next agent to look had no way to tell an idea already ruled out from one nobody
-had thought of. Delegating axes to parallel sub-agents multiplies that: each writes its
-own ledger, and nothing joined them up.
-
-These pin what the graph is allowed to claim. The edge is the incumbent a run was
-measured against — not the tree it started from, which two runs share when they measure
-the SAME code. And attempts made under one incumbent are independent of each other,
-which is a reason to try combining them and never a promise that they add up.
+An edge is the incumbent a run was measured against; attempts under one incumbent are
+independent, which suggests combining them and promises nothing.
 """
 from __future__ import annotations
 

@@ -1,12 +1,5 @@
-"""Tests for the memory server: duplicate refusal, and the two memory scopes.
-
-A near-repeat of ANY stored memory is refused, not only of the recent ones, and the
-refusal is an error naming the memory to update — a silent "ok" let the model believe
-it had stored a second copy.
-
-The scope tests pin what separates the two stores: a global fact reaches every
-workspace, so it blocks a local copy of itself, is never aged out to make room, and
-survives a workspace wipe.
+"""The memory server: a near-repeat of any stored memory is refused with the memory to
+update, and a global memory blocks a local copy, is never aged out, and survives a wipe.
 """
 
 from mimir.tests.support.stubs import stub_attr

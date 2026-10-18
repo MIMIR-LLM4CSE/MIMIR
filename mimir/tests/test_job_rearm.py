@@ -298,14 +298,7 @@ class _RearmWorker(AgentWorker):
 
 
 class ASubAgentsRunsAreFoundTests(_ScanCase):
-    """A child's runs, found under its parent.
-
-    A child's own watcher goes with the child, and one killed outright hands nothing
-    over — so this scan is the only thing left that can find what it left going. Its
-    jobs are two levels down (``<parent>/subagents/<child>/jobs/<key>``), which a
-    single-level listing never reached: the reader could read the nested path all along,
-    the enumeration simply never offered it one.
-    """
+    """A child's runs are found under its parent (``<parent>/subagents/<child>/jobs/<key>``)."""
 
     def test_a_childs_jobs_are_found_under_its_parent(self):
         self._job("s1", "j1", exit_code=0)
@@ -495,16 +488,10 @@ class RearmTests(_ScanCase):
 
 
 class ReportedOnceTests(_ScanCase):
-    """Two places look for runs that ended unwatched; one wake must come of it.
+    """Two scans look for runs that ended unwatched; one wake comes of it.
 
-    A connection arriving and a worker being built both ask, so the marker lives in the
-    run's own directory and outlives whichever process wrote it.
-
-    What the marker records is **delivery, not emission**. A run announced twice and
-    taken in once is a nuisance the consumers dedup; a run settled at the moment its
-    event was queued, with nothing yet reading the queue, is a wake nobody will ever be
-    given — and every later scan agrees it was already paid. So an announcement repeats
-    until a consumer has folded the wake into a turn, and stops for good once one has.
+    The marker lives in the run's directory and records delivery: an announcement repeats
+    until a consumer has folded the wake into a turn.
     """
 
     def test_a_reported_run_is_left_out_of_the_next_scan(self):
@@ -571,12 +558,8 @@ class ReportedOnceTests(_ScanCase):
 
 
 class BaselineTests(_ScanCase):
-    """The first look at a session establishes what is already known, not a backlog.
-
-    A detached job's directory is never swept, however old, and markers only started
-    being written when this did — so an existing workspace has every build it ever ran
-    sitting there unmarked. Read as wakes owed, that is a conversation woken for a
-    two-month-old build, and unlike a missed wake it is unbounded.
+    """The first look at a session marks what is already there as known, not as a backlog of
+    wakes.
     """
 
     def _unbaselined_job(self, session_id: str, job_key: str, exit_code: int) -> None:
@@ -657,14 +640,8 @@ if __name__ == "__main__":
 
 
 class ARunWatchedByItsOwnServerTests(_ScanCase):
-    """A proxy run is a Slurm job of this workspace *and* that server's state machine.
-
-    It is filed among the Slurm descriptors so that "is anything watching this id" has
-    one answer — otherwise the queue calls it unwatched and the remedy offered, adopting
-    the id, puts a second watcher on a run that already has one. But the watcher put
-    back after a reload must be *its* watcher: re-armed with the stock poll instead, the
-    run would be held twice under two different keys, which no dedup catches, and one
-    result would wake the conversation twice.
+    """A proxy run is filed among the Slurm descriptors and re-armed with its own server's
+    watcher, under one key.
     """
 
     def test_the_scan_re_arms_the_watcher_the_run_recorded(self):

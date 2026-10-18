@@ -1,15 +1,7 @@
-"""The verdict: the one thing in the ledger the model wrote.
+"""The verdict: the model's statement about a run, made through a tool call.
 
-Mimir never reads a program's output for a pass/fail — output is unbounded and belongs
-to whoever wrote the code. It records the model's *statement* about that output, made
-through a tool call rather than a line of prose, and these tests pin the asymmetry that
-statement is subject to: a model may withhold credit from itself broadly, and may only
-grant it precisely.
-
-They also pin the separation the verdict rests on: a verdict is about a **run**, and
-touches no file. Whether a file parses and lints is a checker's answer, established
-without reading anything; whether the result is right is the model's, and the two are
-never merged into one word.
+A model may withhold credit from itself broadly and grant it only precisely. A verdict
+is about a run and touches no file.
 """
 from __future__ import annotations
 
@@ -96,13 +88,7 @@ class ApplyVerdictTests(unittest.TestCase):
         self.assertEqual(ec.runs["pytest foo.py"]["verdict"], "")
 
     def test_an_unreadable_scope_on_a_pass_still_credits_exactly_one_run(self) -> None:
-        """A scope nobody can match is read as no scope, not as a reason to drop it.
-
-        Discarding it recorded nothing and emitted nothing, then the reminder asked for
-        the statement the model had just made — which a model answers by making it
-        again, unchanged. Falling back keeps the asymmetry, because it is the direction
-        that matters: a `pass` still reaches exactly one run.
-        """
+        """A scope nothing matches reads as no scope: a ``pass`` still credits exactly one run."""
         ec = self._two_runs()
         settled = apply_verdict("pass", "fine", "unrelated", ec)
         self.assertEqual([r["command"] for r in settled], ["python bench.py"])
@@ -188,16 +174,8 @@ class ApplyVerdictTests(unittest.TestCase):
 
 
 class RejectedVerdictTests(unittest.TestCase):
-    """A run that worked and lost is not a run that failed.
-
-    Reconstructed from session ``7d322a3b``, where the model wrote
-
-        report_verdict(verdict='fail',
-          reason="OMP_NUM_THREADS=64 rejected: time_s=0.064247 > best 0.055586")
-
-    about a run that had measured cleanly. `fail` addresses everything outstanding
-    and charges the repair budget, so one accurate sentence about a thread count
-    marked thirteen unrelated runs — rebuilds, a pytest run, greps — as defects.
+    """A run that worked and lost (``rejected``) is not a run that failed; it charges no
+    repair budget.
     """
 
     def _ctx(self):
@@ -238,13 +216,7 @@ class RejectedVerdictTests(unittest.TestCase):
 
 
 class VerdictScopeResolutionTests(unittest.TestCase):
-    """A scope the model wrote precisely has to match.
-
-    The ledger key drops flags and pipelines, so it is normally *shorter* than
-    anything a model would write to name a run. Matching only "scope inside key"
-    meant a more informative scope matched nothing and fell back — to one run for
-    `pass`, to every run for `fail`. Precision widened the blast radius.
-    """
+    """A scope more precise than the ledger key still matches its run."""
 
     def _ctx(self):
         ec = build_execution_context()

@@ -1,15 +1,7 @@
-"""A resumed session is accounted for as the session it was, not as a default.
+"""A resumed session is accounted for as the session it was.
 
-Reopening a conversation whose context had been compacted showed the bar over-full,
-and the first query then compacted and trimmed a history that fit the real window
-perfectly well. Three separate causes, one per group below:
-
-* the window was sized from a mode the conversation was not in, because the budget was
-  read before the agent that answers for it existed,
-* the mode itself was not saved with the session, so there was nothing to fall back to,
-* and everything that makes the count exact — the server-measured prompt overhead and
-  the history's chars-per-token — lived in the process and died with it, so the figure
-  moved on its own as soon as the first answer re-measured it.
+The window is sized from its saved mode, and the measured prompt overhead and
+chars-per-token are saved with it.
 """
 from __future__ import annotations
 

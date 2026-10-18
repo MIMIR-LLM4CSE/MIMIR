@@ -1,13 +1,5 @@
-"""Proxy direct-execution guard (client policy gate `gates.check_proxy_exec`).
-
-While a proxy optimization session is active, running the proxy's source/executable
-directly through a CODE_EXEC tool is blocked; read-only inspection of the source is
-not. The guard reads the proxy store (single source of truth) read-only. It must be
-the SAME `store` module object the guard imports, so we repoint
-`mimir.servers.proxy._lib.store._CACHE_DIR` (not the sys.path `_lib.store` alias).
-
-Run:
-    python -m unittest mimir.tests.test_proxy_exec_guard -v
+"""The proxy direct-execution guard (``gates.check_proxy_exec``): during a session, running
+the proxy's source directly is blocked; reading it is not.
 """
 
 import json

@@ -1,14 +1,5 @@
-"""Unit tests for the proxy helper library in servers/proxy/_lib/.
-
-Locks in the behavior of the consolidated helpers (seal_reference,
-_diff_run_dirs), the correctness fixes (select_best_case, the _fallback_scan
-leak, per-case timeout plumbing), and the integrity guards (reserved metrics,
-time_s plausibility, returncode gate). Slurm submission is in
-test_proxy_slurm.py, the store root in test_proxy_store_creation.py, and build
-progress in test_proxy_build.py.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_helpers -v
+"""The proxy helper library (``servers/proxy/_lib/``): consolidated helpers, correctness
+fixes, and integrity guards (reserved metrics, ``time_s`` plausibility, returncode gate).
 """
 
 import json
@@ -48,13 +39,7 @@ class CoerceTests(unittest.TestCase):
                 self.assertEqual(metrics.coerce(text), want)
 
     def test_zero_and_one_stay_numbers(self) -> None:
-        """The values a numerics tool most needs to keep were read as flags.
-
-        With "1" and "0" in the boolean word sets, tested ahead of the int branch, a
-        summary line ``cases_passed=0 cases_total=1`` reached the model as
-        ``cases_passed: false, cases_total: true``, and a case ``returncode=0`` — a
-        success — read as ``false``.
-        """
+        """``0`` and ``1`` stay numbers, never booleans."""
         for text in ("0", "1"):
             got = metrics.coerce(text)
             self.assertNotIsInstance(got, bool, f"{text!r} came back as a flag")

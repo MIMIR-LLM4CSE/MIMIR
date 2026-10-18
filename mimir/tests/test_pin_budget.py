@@ -1,11 +1,6 @@
-"""Tests for the checklist section of the system prompt and the recency sets.
+"""The checklist section of the system prompt and the recency sets.
 
-The checklist is state the model is held to, so what the prompt says about it is
-load-bearing. It carries the checklist and nothing else: repeating the paths read,
-written and planned this session gives the model something to copy instead of use (one
-recorded run looped on the file list until the step budget ran out). It lives in
-messages[0] — never in the last position before the generation prompt, which is what
-empties turns on a served model (see test_prefix_cache).
+The section carries the checklist only, in ``messages[0]``, never in last position.
 """
 
 import os

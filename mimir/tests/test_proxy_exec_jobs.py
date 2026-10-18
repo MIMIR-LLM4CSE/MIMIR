@@ -1,11 +1,5 @@
-"""proxy_exec's long ops (reference/suite/benchmark_create) run as detached jobs.
-
-They used to run inside the tool call, so a baseline longer than the client's tool wall
-could not be created at all. Now the call waits for the job, and detaches it to the
-background watcher on request or when the wait budget runs out.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_exec_jobs -v
+"""``proxy_exec``'s long ops (reference, suite, benchmark_create) run as detached jobs the
+call waits for, detaching on request or when the budget runs out.
 """
 
 import asyncio

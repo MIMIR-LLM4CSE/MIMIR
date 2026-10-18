@@ -1,14 +1,5 @@
-"""Shared fixtures for the proxy test modules.
-
-Underscore-prefixed so ``unittest discover`` does not collect it: it holds no tests.
-
-It exists because ``test_proxy_ops`` had become the fixture module for three of its
-siblings — re-exporting eleven server modules alongside its own thirty-seven tests, so
-those siblings could not run without it and a change to either role touched the other.
-A fixture module that is also a test module is two things sharing one name.
-
-What is here is what was otherwise rewritten: the storage redirection (twelve copies of
-it), a registered proxy, an initialised session, and a fake ``sbatch``.
+"""Shared fixtures for the proxy tests: redirected storage, a registered proxy, an
+initialised session, and a fake ``sbatch``. It holds no tests.
 """
 
 from __future__ import annotations
@@ -58,20 +49,8 @@ def _script(path: str, body: str) -> str:
 
 
 class _TmpStorageTest(unittest.TestCase):
-    """Base: redirects the proxy storage root into a per-test temp dir.
-
-    Every path is derived from ``store._CACHE_DIR`` at call time, so one repoint
-    makes the entire store hermetic.
-
-    The temp dir doubles as the WORKSPACE (``MCP_FILES_ROOT``): ``optimize_paths``
-    are refused outside it, so a fixture with no workspace of its own would be
-    measuring the repository it runs from.
-
-    ``MIMIR_STATE_DIR`` is pinned under it as well, because it is what
-    ``state_paths.state_dir`` reads first and the workspace root only its fallback.
-    Left to the ambient environment, a shell launched by MIMIR hands these tests the
-    real workspace's state: ``slurm_site.jobs_dir()`` then lists the session's actual
-    submissions, and a test counting what it filed counts those too.
+    """Base: the proxy storage, the workspace (``MCP_FILES_ROOT``) and ``MIMIR_STATE_DIR``
+    all point into a per-test temp dir, so no test sees the real workspace's state.
     """
 
     def setUp(self) -> None:
@@ -144,12 +123,10 @@ class _TmpStorageTest(unittest.TestCase):
 
 
 class _FakeSbatchTest(_TmpStorageTest):
-    """A ``sbatch`` on PATH that hands out job ids and keeps the scripts it was given.
+    """A ``sbatch`` on PATH that hands out increasing job ids and keeps each script.
 
-    Ids increment so a chained submission can be told apart job by job, and each
-    script's path is recorded so its contents can be asserted on. PATH is *replaced*
-    rather than prepended, so no real scheduler can be reached by accident — which
-    is also why the fake uses shell builtins only: not even ``cat`` is on that PATH.
+    PATH is replaced, not prepended, so no real scheduler is reachable; the fake uses
+    shell builtins only.
     """
 
     def setUp(self) -> None:

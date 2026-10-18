@@ -1,14 +1,7 @@
-"""Who takes a finished run's wake in — and that somebody always does.
+"""Who takes a finished run's wake in, and that somebody always does.
 
-A finished background run is owed a turn of the conversation that launched it. It used
-to have two possible consumers — the socket's drain loop, against the conversation it
-held on screen, and the pool, against the one on disk — and a claim deciding which one
-acted. There is one conversation object now, so there is one consumer: the pump hands
-every wake to the pool's ``WakeRouter`` inside the tick that drained it, whether or not
-a window is open, and a view only reports what it did.
-
-These tests pin that: a wake is taken in within its tick, attached or not; a turn that
-lands carries on with what it left unread; and an agent owed anything is not released.
+The pump hands every wake to the pool's ``WakeRouter`` within its tick, window or not;
+a landing turn carries on with what it left unread; an agent owed a wake is kept.
 """
 import asyncio
 import json
@@ -191,14 +184,8 @@ class CheckInsGoTheSameWayTests(_WakeCase):
 
 
 class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
-    """What a connection does the moment an answer lands, with none attached.
-
-    This is the difference between a chain of steps that runs overnight and one that
-    stops at its first link. The training finishes, its wake starts a turn, that turn
-    launches the FWI — and the run that finishes while it is still working is steered
-    into it. If that turn never reads the steer, a connection would start a turn for it
-    on the spot; a detached process that only wrote the answer down would stop there,
-    with a finished run and nobody ever told.
+    """When an answer lands with no connection, unread steers start the next turn, so a
+    chain of runs carries on.
     """
 
     def _steered(self, pool, worker, s, job_key="j1"):
@@ -311,17 +298,8 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
 
 
 class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
-    """The invariant that replaces a rebuild.
-
-    An agent that has delivered its final answer with nothing of its outstanding is
-    *meant* to be closed: no wake can come for it, because every emitter that goes
-    through the bus runs on a worker's own loop. So rather than machinery to rebuild an
-    agent for a wake, the guarantee is that the agent is still there — ``releasable``
-    refuses to close one while a job of its is watched, a wake of its is owed, its
-    output is undrained.
-
-    What is left for the unreachable case is honesty: say so, keep the wake for the
-    conversation's next turn, and leave the run unsettled on disk.
+    """No wake arrives for a closed agent: ``releasable`` refuses while a job is watched, a
+    wake owed or output undrained. Otherwise the wake waits for the next turn.
     """
 
     def test_the_whole_handover_happens_while_the_agent_is_unreleasable(self):
@@ -369,17 +347,8 @@ class _NoWS:
 
 
 class AnAgentOwedAWakeIsNotIdleTests(_WakeCase):
-    """What "idle for ten minutes" may not be allowed to mean.
-
-    Idleness is measured from the last time the pool was asked for the worker — not
-    from anything the run is doing — so a conversation waiting on a twenty-four-hour
-    job has been "idle" for twenty-four hours. What protects it is not the clock but
-    ``releasable``: a watched job makes it unreleasable outright.
-
-    The gap this closes is one step later. A watcher drops its job the instant it
-    reports it finished, which leaves the agent releasable for the moment between the
-    report and the turn that answers it — and the sweep that looks every thirty seconds
-    is looking at a conversation whose idle clock has been running for hours.
+    """An agent owed a wake is not releasable, in the moment between a job's report and the
+    turn that answers it.
     """
 
     def test_an_agent_watching_a_run_is_never_released(self):
@@ -421,15 +390,7 @@ class AnAgentOwedAWakeIsNotIdleTests(_WakeCase):
 
 
 class AViewThatEndsReleasesWhatItHoldsTests(_WakeCase):
-    """``run`` subscribes before the handshake; it must unsubscribe however it leaves.
-
-    Every step of that handshake sends on a socket that can close under it — a window
-    shut during the replay of a long detached run raises there — so an exit before the
-    read loop is the ordinary case rather than the exotic one. A subscription left
-    behind is the server's standing evidence that somebody is watching, and under it
-    nothing is committed and no finished run is handed to its conversation for the
-    whole life of the process.
-    """
+    """``run`` subscribes before the handshake and unsubscribes however it leaves."""
 
     def _view(self, pool, worker):
         from mimir.client.ui.ws.connection.connection import Connection

@@ -1,13 +1,6 @@
-"""The mandatory check, now performed in-process.
-
-Two things are being defended here, and the second is the harder one:
-
-- the floor *catches* the file written half-way, in every language, with nothing
-  installed;
-- the floor *does not* accuse code that is fine. A false positive charges a repair
-  budget against a correct file and sends the model rewriting it, so every language
-  case below carries its own "this is legal, leave it alone" counterpart, and
-  ``test_the_repo_checks_clean`` runs the whole thing over this repository.
+"""The in-process mandatory check: it catches a half-written file in every language with
+nothing installed, and does not accuse legal code (each case has a clean counterpart;
+``test_the_repo_checks_clean`` runs it over this repository).
 """
 
 from __future__ import annotations

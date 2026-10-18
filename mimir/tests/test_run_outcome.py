@@ -1,14 +1,7 @@
 """The machine floor under a stated verdict, for servers that run code themselves.
 
-A shell run is floored by its exit code. A tool like ``proxy_eval`` answers ``ok`` for
-the *call* even when the run it launched came back red, so the ledger held no machine
-reading at all and a stated ``pass`` was uncontradicted — the hole these tests close.
-
-Covers the ``run_outcome`` descriptor round-trip, the one-way floor it feeds, the
-per-run ledger key, and the ``measured`` validation tier.
-
-Run:
-    python -m pytest mimir/tests/test_run_outcome.py
+The ``run_outcome`` descriptor round-trip, the one-way floor, the per-run ledger key,
+and the ``measured`` tier.
 """
 
 import os
@@ -267,14 +260,7 @@ REFUSAL_PAYLOAD = {
 
 
 class RefusedCallTests(unittest.TestCase):
-    """A call the server refused never ran, so it owes and charges nothing.
-
-    Both halves of one observed failure. A refused heredoc was entered in the run
-    ledger as red: it charged the repair budget, steered the workflow back to `edit`,
-    and printed its whole body into the user's chat under `Run failing, unresolved`.
-    It got there because `opaque_command_executes` read `//` — the start of a C++
-    comment in the heredoc body — as a program invoked by path.
-    """
+    """A call the server refused never ran, so it owes and charges nothing."""
 
     def setUp(self) -> None:
         self.agent = _agent(bash_run=ToolCaps(

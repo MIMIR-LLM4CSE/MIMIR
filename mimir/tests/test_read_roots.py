@@ -1,12 +1,5 @@
-"""Read-only servers may read trusted out-of-workspace locations (proxy/HPC caches).
-
-Reading agent-produced run artefacts under ~/.cache/proxy_bench etc. was a
-recurring dead-end ("Path outside workspace"). The read/search server now admits
-those as extra read roots, while the write server (server_files) stays strict and
-arbitrary paths remain blocked.
-
-Run:
-    python -m unittest mimir.tests.test_read_roots -v
+"""Read-only servers may read the trusted out-of-workspace root; the write server stays
+strict and arbitrary paths stay blocked.
 """
 
 import os
@@ -53,12 +46,8 @@ class ResolveExtraRootsTests(unittest.TestCase):
 
 class SearchServerReadRootsTests(unittest.TestCase):
     def test_the_state_dir_is_a_read_root(self) -> None:
-        """Where the agent's own artefacts live — job scripts, logs, session state.
-
-        It is the only trusted out-of-workspace root now. The three fixed ``~/.cache``
-        locations this used to assert are gone with the things that lived in them: the
-        proxy store moved into ``<workspace>/proxy_bench/``, and both kinds of job
-        directory moved under the state dir, per session.
+        """The state dir (job scripts, logs, session state) is the one trusted out-of-workspace
+        root.
         """
         from mimir.servers.workspace import server_search as ss
         with tempfile.TemporaryDirectory() as d:

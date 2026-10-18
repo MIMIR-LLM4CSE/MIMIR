@@ -1,12 +1,5 @@
-"""Background-jobs feature: server descriptor, client detection, worker watcher.
-
-The feature lets the agent launch a long detached run (``background=True``), end
-its turn, and be auto-resumed when a watcher detects completion. These tests
-cover the three seams in isolation (no live WebSocket / no real subprocess where
-avoidable).
-
-Run:
-    python -m unittest mimir.tests.test_background_jobs -v
+"""Background jobs: the server descriptor, client detection, and the worker's watcher,
+each tested in isolation.
 """
 
 import asyncio
@@ -198,13 +191,8 @@ class RegisterBackgroundJobTests(unittest.TestCase):
         self.assertIn("raised", "\n".join(log.output))
 
     def test_annotated_result_still_finds_its_descriptor(self) -> None:
-        """A post-tool annotation must not be able to hide a launched run.
-
-        The dispatcher appends advisory prose to the same string the descriptor lives
-        in, and a result is an envelope plus its text blocks besides. Read with a bare
-        ``json.loads`` that is one broken document and the run goes unwatched — which
-        is why detection goes through ``parse_tool_payload``, like every other
-        consumer of a tool payload.
+        """A post-tool annotation cannot hide a launched run: detection goes through
+        ``parse_tool_payload``.
         """
         from mimir.client.query_engine.jobs.background import detect_background_job
         agent = _FakeAgent(cap=True, with_hook=True)
@@ -231,17 +219,8 @@ class RegisterBackgroundJobTests(unittest.TestCase):
 # ── 2b. The joint: a real launch result, read through the real live registry ────
 
 class LiveRegistrySeamTests(unittest.TestCase):
-    """The seam that actually failed in the field, and that nothing covered.
-
-    Section 2 builds the capability registry by hand, so its tests pass whether or not
-    a server really declares ``backgroundable``. In September 2026 ``bash_run`` did not
-    yet, on the client's side of the wire: every launch came back with the server's own
-    "you will be resumed" note, no watcher was ever registered, and five two-hour builds
-    finished into silence while the model kept promising a resume nobody was holding.
-    Both halves were tested. The joint between them was not.
-
-    So this one goes end to end on the client's side: the ``_meta`` the server really
-    advertises, decoded by the real ``infer_tool_caps``, against a real launch result.
+    """End to end on the client's side: the ``_meta`` a server advertises, decoded by
+    ``infer_tool_caps``, against a real launch result, so a launch is always watched.
     """
 
     def setUp(self) -> None:
@@ -293,17 +272,8 @@ class LiveRegistrySeamTests(unittest.TestCase):
         self.assertIn(job_key, out)
 
     def test_an_adopted_run_is_handed_over_without_the_launch_cap(self) -> None:
-        """The field failure of October 2026, and the other half of the same joint.
-
-        ``slurm_watch`` and ``bash_watch`` returned the *singular* ``background_job``
-        key, which the client reads only from a tool declaring ``backgroundable`` —
-        and an adopter does not declare it, because it launches nothing. So every
-        adoption said "end your turn, you are resumed when it finishes", wrote its
-        descriptor, and armed nothing: four Slurm probes ended with no wake, and the
-        user had to ask what had happened to them.
-
-        An adopter answers like a status op — the plural key, read with no capability
-        gate at all, because what it hands over is a run that was already going.
+        """An adopter (``slurm_watch``, ``bash_watch``) answers with the plural key, which is
+        read with no capability gate: it hands over a run already going.
         """
         import subprocess
         import sys
@@ -431,16 +401,10 @@ class _MuteAgent:
 
 
 class _HangingAgent:
-    """An agent whose tool call never answers at all.
+    """An agent whose tool call never answers, like a wedged server.
 
-    The shape of a wedged MCP server, a scheduler that stops responding, a queue
-    command that never returns. Distinct from :class:`_MuteAgent` in the one way that
-    matters: that one answers uselessly and the loop can count the useless answers,
-    while this one never comes back — and nothing beneath the watcher has a deadline,
-    so without one of its own the watcher waits for ever.
-
-    *hang_on* says which op hangs, so the status poll and the summary call can be
-    tested apart: the second is the dangerous one, the run being already over.
+    *hang_on* names the op that hangs, so the status poll and the summary call are tested
+    apart.
     """
 
     def __init__(self, hang_on: str = "status", states: list[str] | None = None,
@@ -663,12 +627,8 @@ class WatchJobTests(unittest.TestCase):
 
 
 class SharedPollLoopTests(unittest.TestCase):
-    """The loop both watchers and the in-turn wait are built on.
-
-    Its callers differ in what they can afford — a watcher holding a run across turns
-    asks rarely and puts a deadline on each probe; a turn waiting on one asks often and
-    has no deadline to give, because it *is* the deadline — so the schedule is an
-    argument. What is not an argument is what a poll means, and that is what these pin.
+    """The poll loop under both watchers and the in-turn wait: the schedule is an argument,
+    what a poll means is not.
     """
 
     @staticmethod
@@ -769,16 +729,10 @@ class SharedPollLoopTests(unittest.TestCase):
 
 
 class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
-    """A result reporting runs still going has them adopted, whatever else it says.
+    """A result reporting runs still going has them adopted, whatever else it says, failed
+    results included.
 
-    Two gates used to stand between a handed-over run and a watcher. The adoption only
-    ran when no run had been launched in the same result, so a payload doing both lost
-    the handover; and it only ran on a result that succeeded, which is the opposite of
-    where it is needed — a sub-agent abandoned mid-flight reports where it got to
-    through an error, and its live runs are named on exactly that payload.
-
-    Adopting trusts no state: a descriptor must name a job and an op to poll it with,
-    and a run that is not there is retired as unknown a few ticks later.
+    A descriptor must name a job and a poll op; a run that is not there retires as unknown.
     """
 
     def _agent(self, result_text: str):
@@ -1072,14 +1026,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         self.assertEqual(job["status_op"]["tool"], "proxy_eval_status")
 
     def test_eval_without_background_still_attaches_descriptor(self) -> None:
-        """A submission is detached whatever the flag says, so it is watched either way.
-
-        sbatch returns with the job still queued: there is no version of this call
-        that answers with a result. Honouring background=False here only decided
-        whether anything was left watching the job, and nothing was — the model was
-        told to monitor by hand, ended its turn with nothing left to do, and was
-        never resumed when the job landed.
-        """
+        """A submission is detached whatever the flag says, so it is watched either way."""
         from unittest import mock
         from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
@@ -1496,13 +1443,7 @@ class DetachedSessionResumeTests(unittest.TestCase):
 # ── 6. A burst of finished jobs is one turn, not one turn apiece ───────────────
 
 class WakeCoalescingTests(unittest.TestCase):
-    """Three jobs finishing together used to mean three turns and three answers.
-
-    Measured in the field: three near-identical "the work is done" summaries inside
-    3.5 minutes, one of them saying two jobs had finished and the next, seven seconds
-    later, saying three — because each turn had seen a different subset. The wake
-    mechanism working is what created this; nothing about it was wrong before it fired.
-    """
+    """Jobs finishing together wake one turn, not one each."""
 
     def setUp(self) -> None:
         import shutil
@@ -2231,14 +2172,8 @@ class WakeDeliveryLossTests(unittest.TestCase):
 
 
 class ReconnectLosesNothingTests(unittest.TestCase):
-    """What a reconnect may throw away: nothing.
-
-    The pump drains every worker whether or not a socket exists, and the journal holds
-    what it drained, so a reconnect replays from its watermark rather than deciding what
-    to keep. These tests pin that every case a sweep would have had to reason about is
-    simply recorded — including the one that makes the question unanswerable: a finished
-    job's wake answers to no turn, its watcher is already finished, and its conversation
-    is idle precisely because it is waiting for it.
+    """What a reconnect may throw away: nothing. The journal holds every event and a
+    reconnect replays from its watermark.
     """
 
     def setUp(self) -> None:
@@ -2307,13 +2242,7 @@ class ReconnectLosesNothingTests(unittest.TestCase):
 # ── 12. Re-arming tracking a restart took away ────────────────────────────────
 
 class RewatchDetectionTests(unittest.TestCase):
-    """Asking where a run is at is what puts a watcher back on it.
-
-    Watchers belong to the agent that made them and go when it goes — which an editor
-    window reload is enough to cause. The run itself carries on, indifferent, in its
-    own session directory; only the promise to report it has to be re-made, and asking
-    is the one moment a person has said they still care.
-    """
+    """Asking where a run is at puts a watcher back on it."""
 
     def setUp(self) -> None:
         from mimir.client.query_engine.jobs import background

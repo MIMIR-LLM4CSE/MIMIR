@@ -1,12 +1,6 @@
-"""Hermetic tests for user-attached context via @-mention / attach.
-
-Covers the frontend-agnostic core with no live servers:
-- MCP-resource mention parsing (URIs, name shorthand, unknown tokens, punctuation)
-- workspace-file mention parsing (whole file, line ranges, missing files) + slice reads
-- attachment-block formatting
-- ``agent.read_resource`` dispatch to the owning session
-- ``register_resources`` registry population
-- ``augment_query_with_resources`` end-to-end (parse → read → prepend), files + resources
+"""User-attached context (@-mention, attach), with no live servers: mention parsing for
+resources and files, attachment blocks, ``read_resource``, ``register_resources``, and
+``augment_query_with_resources`` end to end.
 """
 
 import asyncio

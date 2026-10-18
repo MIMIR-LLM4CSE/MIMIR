@@ -1,15 +1,5 @@
-"""Slurm submission for the proxy server (_ops/slurm.py, _lib/placement.py).
-
-Resource validation, the sbatch script actually handed to the scheduler, and the
-build/run split: one job by default, two chained jobs when the build is sent to a
-partition of its own. Gathered here because these were spread across the helper and
-op test modules, neither of which is about submission.
-
-Every test runs against a fake ``sbatch`` on a PATH with nothing else on it, so no
-scheduler can be reached even by accident.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_slurm -v
+"""Slurm submission for the proxy server: resource validation, the sbatch script, and the
+build/run split. A fake ``sbatch`` on a bare PATH; no scheduler is reachable.
 """
 
 import json
@@ -290,14 +280,8 @@ if __name__ == "__main__":
 
 
 class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
-    """A proxy run that submits to Slurm is two things, and must be filed as both.
-
-    It is this server's own state machine, in its run directory. It is also a job in a
-    queue, and every reader of ``slurm_site`` — the queue listing's ``watched`` column,
-    the conclude-phase reminder — answers "is anything watching this id" by looking for
-    a descriptor. Filed only in the run directory, the answer is no: the run is named as
-    unwatched work, and the remedy offered is to adopt the id, which puts a second
-    watcher on a run this server is already polling. One result, two wakes.
+    """A proxy run submitted to Slurm is also filed as a workspace job descriptor, so nothing
+    offers to watch it twice.
     """
 
     def _submitted(self, **kwargs) -> tuple[str, int]:

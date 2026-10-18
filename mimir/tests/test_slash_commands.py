@@ -1,15 +1,5 @@
-"""The webview's slash list must name commands the backend actually handles.
-
-Two kinds of slash share the chat input and travel differently: a SKILL is part of the
-query and reaches the model, a SESSION COMMAND is handled by the session's command
-registry and never does. The webview's dropdown listed only skills, and typed session commands
-were sent as `type: "query"` — so "/memory clear" asked the model to clear memory rather
-than clearing it, and "/proxy clean foo" was a request for the model to tidy up.
-
-The webview now carries its own list (SESSION_COMMANDS in slashUtils.ts), mirrored by
-hand so the dropdown needs no round-trip before the first keystroke completes. Mirrored
-lists drift; this test is what stops the drift from becoming a command that autocompletes
-and then does nothing.
+"""The webview's slash list (``SESSION_COMMANDS`` in ``slashUtils.ts``) names exactly the
+commands the backend handles; it is mirrored by hand, so this test stops drift.
 """
 from __future__ import annotations
 
@@ -50,13 +40,8 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
             f"they would autocomplete and do nothing: {missing}")
 
     def test_every_handled_command_is_advertised(self) -> None:
-        """The converse of the check above, and the sharper of the two.
-
-        A name advertised but unhandled autocompletes and does nothing. A command the
-        session handles but the webview does not know is worse: it is not routed as a
-        command at all. It leaves as a plain query, the *model* answers it, and that
-        reads as the command working badly rather than never arriving — a `/diag` that
-        reports the machine's CPU instead of the event chain's counters.
+        """Every handled command is advertised; an unlisted one would leave as a plain query for
+        the model.
         """
         # Answered from the model's own surface rather than the panel's: the webview has
         # no business knowing these.
@@ -83,19 +68,8 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
 
 
 class DetachOwnershipTests(unittest.TestCase):
-    """Who ends the server, and how the host knows it is not its to end.
-
-    Asking to detach is what stops the kill, not hearing back about it: there is a round
-    trip between the click and the server having detached, and a host that waits for the
-    reply leaves a window in which the user has asked to keep the run going, the badge
-    has not changed yet, and closing the editor still ends it. The two outcomes are not
-    symmetric — a server left running that failed to detach is findable through the
-    registry and endable with the stop command, while one killed after the user asked to
-    keep it is work gone.
-
-    The other half is having a handle at all. A window that attached to a server holds no
-    child process, so the pid from the registry entry stands in for one; without it the
-    departures that are supposed to end a server ended nothing.
+    """Who ends the server: asking to detach stops the kill at once, without waiting for
+    the reply, and an attached window ends the server through the registry pid.
     """
 
     def _extension(self) -> str:
@@ -119,13 +93,8 @@ class DetachOwnershipTests(unittest.TestCase):
         return range(start, end + 1)
 
     def test_only_one_place_ends_the_server_and_it_consults_the_flag(self) -> None:
-        """Found by enumerating the calls rather than the ones I knew.
-
-        A guard on some of the paths out is a detachment that holds until the user
-        leaves through another one. So there is a single function that signals a
-        server — a spawned child and an attached pid alike — and the enumeration is
-        the test: a kill written anywhere else fails here rather than in somebody's
-        overnight run.
+        """A single function signals the server, and it consults the detach flag; the test
+        enumerates every kill call.
         """
         lines = self._extension().splitlines()
         inside = self._helper_lines(lines)
@@ -241,12 +210,8 @@ def _run(text: str, host: CommandHost | None = None) -> CommandResult:
 
 
 class CommandAnswersAreRenderedTests(unittest.TestCase):
-    """A command answer must not travel on the transient `output` channel.
-
-    The webview reducer drops `output` on purpose — it is tool-activity chatter — so
-    every answer the session sent there was swallowed: `/memory list` printed nothing,
-    and `/memory clear` wiped the store while looking like it had done nothing at all.
-    Answers go out as `command_output`, which the reducer renders.
+    """A command answer travels as ``command_output``, which the webview renders, not on the
+    dropped ``output`` channel.
     """
 
     def _reply(self) -> dict:

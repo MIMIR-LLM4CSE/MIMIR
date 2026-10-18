@@ -1,15 +1,6 @@
 """The stuck-repair ladder: leaving a hypothesis the model will not leave on its own.
 
-The failure this row exists for is not a wrong fix — it is the *same* wrong fix, tried
-again with different letters. A model going round that loop passes every guardrail the
-codebase already has: the calls are not identical (so `dispatch`'s repeat block never
-arms), the edits are not identical (so `REPEATED_EDIT_FAILURE_LIMIT` never arms), and a
-failing run is deliberately not a completion gate (`RecommendedAxesDoNotBlockTests`).
-What is repeated is the *hypothesis*, and nothing was watching that.
-
-These tests pin the substitute: the hypothesis is never inspected — only counted against.
-`runs[cmd]["failures"]`, which `record_run` already carries across a re-run, is the whole
-signal, and the row's job is to say something *different* at each rung rather than louder.
+The signal is ``runs[cmd]["failures"]``; each rung says something different, not louder.
 """
 from __future__ import annotations
 
@@ -179,12 +170,8 @@ class TablePlacementTests(unittest.TestCase):
 
 
 class FiringPathTests(unittest.TestCase):
-    """The predicate is not the feature — what reaches the model is.
-
-    Exercised through `maybe_append_nudge` rather than the predicate alone, because the
-    row has three ways to be silently inert that a predicate test cannot see: an empty
-    render is skipped, an earlier verification row wins the single slot, and the whole
-    guidance half is gated off at `enforcement="off"` while this half is not.
+    """Exercised through ``maybe_append_nudge``, which an empty render, an earlier row or the
+    enforcement level could each silence.
     """
 
     def _agent(self):
@@ -261,15 +248,8 @@ class FiringPathTests(unittest.TestCase):
 
 
 class TheLadderIsReachableThroughAStatusLineTests(unittest.TestCase):
-    """The rung counter only accumulates if the ledger key holds the run together.
-
-    ``run_ledger_key`` used to fall back to raw text whenever the classifier refused a
-    command, and ``$`` is refused by the security default — so a model that appended
-    ``; echo "suite_exit=$?"`` to the command it was already retrying opened a fresh
-    entry each time. Every attempt read as the first, ``failures`` never passed
-    STUCK_REPAIR_ADVISE_AFTER, and this whole ladder was unreachable. The key's own
-    identity cases live in ``RunLedgerKeyTests`` (test_observations); what is pinned
-    here is that the counter this row reads actually adds up.
+    """The ledger key holds a retried run together through a trailing ``echo "$?"``, so the
+    failure counter adds up.
     """
 
     def test_the_failure_streak_accumulates_across_the_status_line(self) -> None:

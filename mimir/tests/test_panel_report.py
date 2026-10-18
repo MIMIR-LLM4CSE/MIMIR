@@ -288,13 +288,8 @@ def test_a_host_that_did_not_answer_is_asked_again_soon():
 
 
 def test_a_server_with_nothing_to_say_gets_no_heading():
-    """A section is a heading plus what is under it.
-
-    A cluster section on a laptop has no queue, no partitions and no nodes — it returns
-    neither lines nor detail, and rendering its title anyway gives the user a heading to
-    read in order to learn there is nothing to read. A section that reports *about*
-    having nothing ("no optimisation session in this workspace") says so in `detail`,
-    and still appears.
+    """A section with neither lines nor detail gets no heading; one that says it has nothing
+    (in ``detail``) still appears.
     """
     import asyncio
     from mimir.client.ui.ws.worker.worker import AgentWorker
@@ -451,13 +446,7 @@ def test_a_node_kind_is_named_by_its_nodes_and_lists_its_specs():
 
 
 def test_an_unprofiled_kind_offers_the_request_that_would_fix_it_and_says_nothing_else():
-    """The offer is inside the row; there is no badge beside its name.
-
-    Nothing has been probed in most workspaces, so a "not profiled" on every kind was a
-    warning colour carrying no warning — next to the one thing on the row worth reading.
-    The server still writes the request, because it is the end that knows the scheduler
-    and the partition, which keeps tool names out of the webview entirely.
-    """
+    """An unprofiled kind shows the server-written request in its row, and no badge."""
     kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
     assert "state" not in kind
     assert "value" not in kind

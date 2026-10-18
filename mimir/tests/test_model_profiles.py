@@ -1,11 +1,5 @@
-"""Model-profile-driven knobs: the thinking mechanism.
-
-The tool-count cap that used to live here is gone: every advertised tool is sent, to
-every model. It was a per-model accommodation whose cost was a request-dependent prompt
-prefix, and which decided what to drop from the request's wording.
-
-Tool-call and reasoning parsers are deliberately absent: they are flags on the user's
-own ``vllm serve`` command, not something MIMIR sends or needs to know.
+"""Model profiles: the thinking mechanism each model gets. Parsers are flags of the
+user's ``vllm serve``, not MIMIR's concern.
 """
 import unittest
 
@@ -16,11 +10,8 @@ from mimir.client.query_engine.backends import openai_compat
 class ThinkingMechanismTest(unittest.TestCase):
     """Which switch each served model gets for its reasoning.
 
-    ``profile_for_model`` matches the longest key that is a *prefix* of the path, its
-    last segment, or any segment -- not a substring. The default matters more than any
-    single entry: the served model name is whatever ``--served-model-name`` says, so an
-    unlisted name is the normal case and must still get ``enable_thinking`` rather than
-    silently losing its reasoning.
+    The longest key that prefixes the path or a segment wins; an unlisted name gets
+    ``enable_thinking``.
     """
 
     def test_unlisted_models_still_get_the_thinking_kwarg(self):
@@ -46,12 +37,8 @@ class ThinkingMechanismTest(unittest.TestCase):
         self.assertEqual(models.thinking_mechanism("weird-model"), "kwarg")
 
     def test_shipped_profiles_only_declare_a_thinking_mechanism(self):
-        """The file is a thinking table, not a per-model tuning dump.
-
-        `enforcement` stays supported for anyone who needs it, but nothing ships with
-        it: a shipped opinion about one model's rails outlives the model it was
-        measured on. (`max_tools` used to sit beside it and is gone — every advertised
-        tool now goes to every model.)
+        """The shipped profiles declare only the thinking mechanism; ``enforcement`` stays
+        supported but unshipped.
         """
         for key, profile in models.VLLM_MODEL_PROFILES.items():
             with self.subTest(key=key):
@@ -151,18 +138,8 @@ class ThinkingExtraBodyTest(unittest.TestCase):
                     self.assertIn(body["reasoning_effort"], levels)
 
     def test_an_effort_family_without_a_toggle_still_gets_its_weakest_rung(self):
-        """"Off" must not become "no instruction at all".
-
-        One profile used to declare toggle_param='thinking_mode'. That field is inert on
-        the served build — it ships no chat template, and vLLM silently ignores unknown
-        top-level request fields — so `thinking_mode='chat'` returned reasoning
-        byte-identical to sending nothing (measured at temperature 0). Declaring it cost
-        more than nothing: with a toggle present the "off" branch sends the toggle and
-        withholds reasoning_effort, so switching reasoning off left the model at its
-        DEFAULT depth — more reasoning than the weakest rung, not less. Observed in a
-        real session: a run resumed with thinking off produced a turn of 226k characters
-        of reasoning prose in `content`, repeating one block 59 times until it hit
-        max_tokens.
+        """With reasoning off, an effort family without a toggle gets its weakest rung, not the
+        model's default depth.
         """
         off = openai_compat._thinking_extra_body("deepseek-v4", False, {})
         self.assertEqual(off, {"reasoning_effort": "low"})

@@ -293,12 +293,8 @@ class WorkFamilyTest(unittest.TestCase):
 
 
 class ReversibilityDerivationTest(unittest.TestCase):
-    """`SENSITIVE` is derived from reversibility, so the derivation *is* the gate.
-
-    Getting it wrong is not a cosmetic mislabel: too permissive and a mutating tool
-    runs unasked; too conservative and every read in the catalog raises a prompt (the
-    first draft of `_derive_reversibility` defaulted everything to `recoverable` and
-    did exactly that).
+    """``SENSITIVE`` is derived from reversibility, so the derivation is the gate: too
+    permissive runs a mutating tool unasked, too conservative prompts on every read.
     """
 
     def _resolve(self, **descriptor_kwargs):
@@ -358,13 +354,7 @@ class ReversibilityDerivationTest(unittest.TestCase):
         self.assertEqual(caps.reversibility_of("never-connected", {}), caps.RECOVERABLE)
 
     def test_no_enforcement_level_can_soften_an_irreversible_action(self):
-        """The invariant the dial must never be able to cross.
-
-        `/enforcement` tunes how much the model is *reminded*; it has no say over what
-        the model is *allowed* to do. Stated as an assertion rather than as prose in
-        POLICY.md, because prose is what let the pre-edit planning gate end up on the
-        hard-guard side of the same line.
-        """
+        """``/enforcement`` tunes reminders, never what the model is allowed to do."""
         import importlib
         gates = importlib.import_module("mimir.client.guardrails.policy.gates")
 

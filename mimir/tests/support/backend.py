@@ -1,16 +1,7 @@
-"""Reusable scripted LLM backend for agent-loop tests.
+"""A scripted ``LLMBackend`` for agent-loop tests: ``chat()`` replays canned responses.
 
-``ScriptedBackend`` is a deterministic ``LLMBackend`` whose ``chat()`` replays a
-pre-built list of response dicts (one popped per call). It lets a test drive the
-real agent loop end-to-end without a live model: feed it a script of
-``{"content": ...}`` / ``{"tool_calls": [...]}`` turns and assert on the loop's
-behaviour. The same backend powers a zero-cost CI mode for the eval harness.
-
-The response dicts use the canonical backend return shape (see
-``LLMBackend.chat``): keys ``role``, ``content``, optional ``thinking`` and
-``tool_calls`` (each ``{"id", "function": {"name", "arguments": <json-or-dict>}}``).
-A turn is returned verbatim, so any other contract key — ``finish_reason``, to
-script a turn the provider cut short at ``max_tokens`` — can be set on it too.
+Each response uses the backend return shape (``role``, ``content``, ``thinking``,
+``tool_calls``) and is returned verbatim, so ``finish_reason`` can be scripted too.
 """
 from __future__ import annotations
 
@@ -22,16 +13,8 @@ from mimir.client.query_engine.backends.base import LLMBackend
 class ScriptedBackend(LLMBackend):
     """An ``LLMBackend`` that returns canned ``chat()`` responses in order.
 
-    Parameters
-    ----------
-    responses:
-        Response dicts returned by successive ``chat()`` calls. When exhausted,
-        ``chat()`` returns an empty-content assistant message (a natural turn
-        end), so a script that runs past its end terminates the loop rather
-        than hanging.
-    tokenize:
-        Optional ``(model, text) -> int`` used by ``_tokenize_text`` (and thus
-        ``count_text_tokens``). Defaults to the base chars-per-token heuristic.
+    Past the end of *responses* it returns an empty answer, which ends the loop. *tokenize*
+    is an optional ``(model, text) -> int``; the default is the chars-per-token heuristic.
     """
 
     def __init__(

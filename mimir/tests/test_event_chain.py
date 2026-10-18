@@ -1,16 +1,7 @@
 """The whole chain an event travels, with the real objects.
 
-Every link was tested on its own — the pump, the replay watermark, the committer, the
-approval wait — and that is precisely how three separate faults reached a running
-install. Each piece was right; what broke was the joins between them, and a chat window
-cannot tell those apart: the pump never starting, the pump dying, a watermark swallowing
-what it delivers, and the agent emitting nothing all look like a conversation that went
-quiet.
-
-So this test is deliberately coarse. It builds a real ``Connection`` over a real
-``EventBus`` and a real worker's queue, runs the handshake, sends a query, and asserts
-that what the engine emitted arrived. Coarse on purpose: the joins are what a chat
-window cannot see.
+A real ``Connection`` over a real ``EventBus`` and worker queue: handshake, query, and
+the emitted events arrive. Coarse on purpose: it tests the joins.
 """
 import asyncio
 import json
@@ -228,13 +219,8 @@ class ATurnReachesTheClientTests(_ChainCase):
 
 
 class ProseSurvivesAnAbsenceTests(_ChainCase):
-    """Coming back shows what the agent *said*, not only what it called.
-
-    The deltas are not journaled — hundreds per turn — so without an aggregate a turn
-    read back after an absence keeps only its tool rows and its final answer, having
-    lost everything the agent said between its tools. That is most of what makes a turn
-    legible. Each block is recorded whole instead, replay-only: a connected client has
-    already had the deltas.
+    """Coming back shows what the agent said, not only what it called: each prose block is
+    journaled whole, replay-only.
     """
 
     def _turn_with_prose(self) -> list[dict]:

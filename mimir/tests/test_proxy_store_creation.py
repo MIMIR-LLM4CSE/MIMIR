@@ -1,15 +1,5 @@
-"""The proxy store is created by registering a proxy, never by reading.
-
-``proxy_get`` is a read tool and stays visible in plan mode (the mutating proxy
-tools are PLAN_BLOCKED), so it must leave nothing behind on a project that has never
-registered anything. Taking the registry flock on every read has the flock create its own
-directory, leaving ``<workspace>/proxy_bench/`` and a ``registry.json.lock`` in the user's
-tree — a read tool writing, during a phase that must not write at all. Reads skip the lock
-when there is no store to race over, and ``proxy_manage(op='register')`` is the one op that
-brings the store into existence.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_store_creation -v
+"""The proxy store is created by registering a proxy, never by reading: reads skip the
+lock when no store exists, so plan mode writes nothing.
 """
 
 import os

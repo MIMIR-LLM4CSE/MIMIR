@@ -1,25 +1,7 @@
-"""Every path that belongs to a conversation names *that* conversation.
+"""Every path that belongs to a conversation names that conversation.
 
-MIMIR runs several sessions at the same time, each with its own agent and so its own set
-of server subprocesses. A single file — ``<STATE_DIR>/active_session`` — can name only one
-of them, so every other session reading it acts for the wrong conversation: it writes to
-another's todo list, reads another's plans, announces its blocking run in another's
-channel, and — the one that is not merely untidy — inherits and revokes another's approved
-paths.
-
-So the session reaches each end the only way that is correct for it:
-
-* **servers** get ``MIMIR_SESSION_ID`` stamped into their environment at spawn. One
-  agent owns a server for its whole life, so the session is fixed and the frozen
-  environment is the right carrier.
-* **the client** passes it explicitly, from the object that knows it. N sessions share
-  one ``os.environ`` in that process, so the environment cannot carry it there.
-
-``session_id=None`` means "this end has no session of its own" — the CLI, the benchmark
-runner, these tests — and resolves through the pointer and then the state-dir root. That
-fallback is what keeps the single-session ends resolving the paths they would without it.
-
-Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
+Servers get ``MIMIR_SESSION_ID`` at spawn; the client passes the session explicitly.
+``session_id=None`` (CLI, runner, tests) resolves through the pointer, then the root.
 """
 from __future__ import annotations
 
@@ -251,12 +233,8 @@ class AgentCarriesItsSessionTests(_StateDirCase):
 
 
 class GlobalStateDirTests(unittest.TestCase):
-    """The tier above the workspace: one directory for the whole machine.
-
-    What is tested hardest here is where it must NOT land. This tier holds the memory
-    shared by every workspace, so a resolution that reaches the user's real home turns
-    any test run into a write to their own memory, and one that reaches ``/tmp``
-    directly puts it in a world-writable path shared between users.
+    """The machine-wide state tier, and where it must not land: the user's real home, or
+    ``/tmp`` directly.
     """
 
     def setUp(self) -> None:

@@ -1,17 +1,7 @@
 """A one-worker stand-in for ``AgentPool``, for tests that build a bare ``Connection``.
 
-``Connection.worker`` is a property: it resolves the agent of the conversation on screen
-through the pool, there being one agent per conversation. A test that only needs "a
-worker" cannot assign to that property, and should not have to care how the lookup works.
-
-This gives it the simple shape — one worker, whatever session is active — while the code
-under test goes through the real seam.
-
-Pass ``workers={session_id: worker}`` instead where *which* agent was addressed is the
-thing under test. One worker answering for every session cannot tell a wake routed to
-the conversation that launched the job from one routed to whatever is on screen, and a
-stand-in that cannot fail the way production fails is not testing the seam, only the
-call.
+The code under test still resolves its worker through the pool. Pass
+``workers={session_id: worker}`` when which conversation is addressed is under test.
 """
 from __future__ import annotations
 
@@ -120,13 +110,8 @@ class FakePool:
         return 0 if self.worker is None else 1
 
     def is_busy(self, session_id: str | None) -> bool:
-        """Busy *with that conversation's* turn.
-
-        The real pool looks the session up and asks its own worker, and a worker only ever
-        runs its own session's turn. This stand-in has one worker for every session, so it
-        emulates that lookup by comparing against the turn the worker says it is running;
-        without that it would report every conversation as busy whenever any one of them
-        is.
+        """Busy *with that conversation's* turn: the worker's running turn is compared, as the
+        real pool's per-session lookup would.
         """
         worker = self._for(session_id)
         busy = getattr(worker, "is_busy", None)

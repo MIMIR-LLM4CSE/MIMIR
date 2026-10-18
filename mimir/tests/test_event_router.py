@@ -1,11 +1,5 @@
-"""A connection forwards its share of the stream, and costs nothing while idle.
-
-The loop it replaces slept 5 ms between looks at its queue and ``stat``-ed the checklist
-file each time round, on every connection, for the life of the socket. These pin the
-replacement: it waits on the subscription, refreshes only while a turn on screen is
-live, and does per event type what the old loop did inline.
-
-Pure-Python (no agent, no servers): runs on x86 and ARM.
+"""A connection forwards its share of the stream and costs nothing while idle: it waits
+on the subscription and refreshes only while a turn on screen is live.
 """
 from __future__ import annotations
 

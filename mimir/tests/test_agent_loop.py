@@ -1,11 +1,6 @@
-"""Direct unit coverage for agent-loop functions that had none.
-
-Covers ``_maybe_compact_intra_query``, ``post_dispatch_inject``,
-``finalize_answer``, ``PlanLoop``, and the non-interactive
-``run_agent_query`` path — driving the latter through the real ``stream_chat``
-wrapper with a ``ScriptedBackend`` so the loop's plumbing is exercised, not mocked.
-
-Plain ``unittest`` + ``asyncio.run`` to match the rest of the suite.
+"""Unit coverage for the agent loop: ``_maybe_compact_intra_query``, ``post_dispatch_inject``,
+``finalize_answer``, ``PlanLoop`` and the non-interactive ``run_agent_query``, driven
+through the real ``stream_chat`` with a ``ScriptedBackend``.
 """
 from __future__ import annotations
 
@@ -54,11 +49,7 @@ from mimir.tests.support.agents import FakeAgent, fake_agent
 def _reminder_calls(backend, text: str) -> list[int]:
     """Indices of the backend calls whose prompt carried the reminder *text*.
 
-    Reminders are transient: injected for one call, taken back out after it, so the
-    final ``messages`` list no longer holds them. What matters is what reached the
-    model, which is what ScriptedBackend records per call — and since a reminder
-    lives for exactly one call, the number of calls carrying it *is* the number of
-    times it was injected.
+    A reminder lives for one call, so the calls carrying it count its injections.
     """
     return [i for i, c in enumerate(backend.calls)
             if any(m.get("content") == text for m in c["messages"])]
@@ -97,13 +88,7 @@ _CHECKLIST_CAPS = {
 
 
 def _record_plan_flags(tool_calls, agent, execution_context) -> None:
-    """Set the plan flags a real dispatch would, via the production observer.
-
-    Plan mode reads "is a plan recorded" from the execution context, which
-    ``record_tool_observation`` populates on every call. A test dispatch that skipped
-    this would exercise a loop that can never see a recorded plan — so the real
-    observer is called here rather than a local imitation of its rules.
-    """
+    """Set the plan flags a real dispatch would, through the production observer."""
     for tc in tool_calls:
         name = as_dict(as_dict(tc).get("function", {})).get("name", "")
         todo_flags(Call(
@@ -174,10 +159,8 @@ class MaybeCompactIntraQueryTests(unittest.TestCase):
 class CommitmentTests(unittest.TestCase):
     """A turn that promised work and delivered none is not a discovery turn.
 
-    Replays the recorded refactor turn: a checklist written, eight files declared, a
-    directory created, and an answer ending "Creating the package files now:" with
-    nothing written. `code_mutation_started` was False throughout — no edit ever
-    succeeded — so every completeness guard exempted it.
+    Replays a recorded turn: a checklist, eight files declared, an answer ending
+    "Creating the package files now:", and nothing written.
     """
 
     ABANDONED = build_execution_context(todo_written=True, todo_file_path="/tmp/todo.md", declared_edit_set={"solver.py", "boundaries.py", "timestepping.py"}, dirty_written_files=set(), code_mutation_started=False)
@@ -329,12 +312,8 @@ class FinalizeAnswerTests(unittest.TestCase):
         self.assertEqual(agent.turn.last_full_messages, messages[1:])  # system stripped
 
     def test_the_turn_boundary_survives_a_rewrite_of_the_prefix(self) -> None:
-        """The index is resolved by identity, so an in-turn rewrite cannot shift it.
-
-        ``enforce_context_budget`` runs between the loop's prologue and this point and
-        mutates the list in place — evicting old tool results, replacing the middle
-        with a summary. Anything that counted positions beforehand is wrong by however
-        much moved; the opening message is still the same object.
+        """The index is resolved by identity, so an in-turn rewrite of the list (eviction,
+        summary) cannot shift it.
         """
         agent, _ = self._agent()
         opening = {"role": "user", "content": "the turn's own query"}
@@ -408,15 +387,7 @@ class FinalizeAnswerTests(unittest.TestCase):
 
 
 class PlanModeContextBudgetTests(unittest.TestCase):
-    """Regression: plan mode made every model call without enforcing any budget.
-
-    Plan mode reads evidence for as long as the question needs — the step ceiling is
-    optional there — so it is the mode whose history grows most, and it was extracted
-    from the agent loop without the trim/compaction pass. Observed 2026-09-20: a
-    fetched document worth ~125K tokens sat in a plan-mode history across three
-    further model calls, untouched, while the agent loop's own history would have
-    been compacted before the first of them.
-    """
+    """Plan mode enforces the context budget before each model call, like the agent loop."""
 
     def test_the_history_is_bounded_before_the_call(self) -> None:
         backend = ScriptedBackend([{"content": "Here is the plan."}])
@@ -492,15 +463,7 @@ class RunPlanModeTests(unittest.TestCase):
         self.assertEqual(len(backend.calls), 2)
 
     def test_plan_mode_delivers_the_repeated_call_corrective(self) -> None:
-        """Regression: plan mode dispatched but never consumed the staged alert.
-
-        ``dispatch_tool_calls`` only *stages* ``_repeat_alert`` when a non-write call
-        fails identically; ``post_dispatch_inject`` is what turns it into a reminder.
-        Plan mode called the first and not the second, so a model spinning on the same
-        failing fetch was never told — and the alert sat in the execution context until
-        an approved plan handed the run to the agent loop, which then fired it about a
-        call made several turns earlier.
-        """
+        """Plan mode turns a staged ``_repeat_alert`` into a reminder, as the agent loop does."""
         backend = ScriptedBackend([
             {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
@@ -1154,10 +1117,7 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
 class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
     """What a query costs in model calls before its first step, and what /name does.
 
-    The implicit classifier used to run here: one full model round-trip per query,
-    spent deciding which methodology applied from a request that does not yet know
-    what the task is made of. The model now has the index in its system prompt and
-    loads a skill itself, at the step where its own reading settles the question.
+    No classifier call precedes the query: the model loads a skill itself from the index.
     """
 
     def _skilled_agent(self):
@@ -1333,14 +1293,9 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
         self.assertIn("focus on the parser", step2_users)
 
     def test_nothing_is_appended_after_a_steer(self) -> None:
-        """A steer is a real user turn, so it must hold the last position.
+        """A steer is a real user turn, so it holds the last position.
 
-        The last message is what the model answers — that is what the position is for.
-        Appending the checklist after the steer, just before the call, has the backend's
-        consecutive-user merge fold both plain string `user` turns into ONE ending in a
-        status block: the model answers the block and the instruction is buried. Measured
-        worst on exactly this shape. The checklist lives in messages[0], so a steer stays
-        last.
+        Anything appended after it would be merged into the same user turn and bury it.
         """
         import tempfile
         agent = self._query_agent()
@@ -1922,13 +1877,8 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
 
 
 class WriteDiffEmitTests(unittest.TestCase):
-    """The post-execution diff card must reflect the *outcome* of the write.
-
-    A failed edit never writes the file, but the batch baseline snapshot predates
-    any earlier successful edit to the same path (record_snapshot keeps only the
-    first snapshot). Diffing that stale baseline against the current content would
-    surface the earlier change and make the failed call look like it applied — so
-    a failed write must emit no diff card.
+    """The diff card reflects the *outcome* of the write: a failed write emits none, since
+    its baseline may predate an earlier successful edit.
     """
 
     def _agent(self, run_tool, snapshots):
@@ -1998,13 +1948,8 @@ class WriteDiffEmitTests(unittest.TestCase):
             self.assertIn("new content", diffs[0]["patch"])
 
     def test_slow_post_write_validation_never_fails_the_write(self) -> None:
-        """A hung/slow post-write validator must not flip a successful edit to failed.
-
-        The write hits disk first; auto-validation runs afterward under its own
-        budget. If validation exceeds that budget the advisory is dropped, but the
-        tool row stays ``ok`` and the diff still emits — the regression this fix
-        targets (validation timing out inside the write's timeout marked the whole
-        edit failed even though the file was written).
+        """A slow post-write validator drops its advisory; the write stays ``ok`` and its diff
+        still emits.
         """
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "wave.py")
@@ -2047,12 +1992,8 @@ class WriteDiffEmitTests(unittest.TestCase):
 
 
 class HeldDraftTests(RunAgentQueryNonInteractiveTests):
-    """A turn the loop is about to refuse never reaches the screen.
-
-    Nudges discard the turn the model just wrote, and the front-end drops the draft
-    it was rendering with it — an answer that streams in and then vanishes. The loop
-    probes the guardrails before the call and holds the prose when one could still
-    fire.
+    """A turn the loop is about to refuse never reaches the screen: the prose is held while
+    a guardrail could still fire.
     """
 
     def _run(self, responses, *, pending, nudge_fires):
@@ -2122,14 +2063,8 @@ class HeldDraftTests(RunAgentQueryNonInteractiveTests):
 class IdenticalSuccessRepeatTests(unittest.TestCase):
     """A call that keeps returning the same answer is told so, and never blocked.
 
-    The failing-call guard next to this counts only failures, and a nudge fires only
-    once the model stops calling tools — which a spinning model never does. So a `find`
-    returning nothing four times in a row, or the same range of the same file read six
-    times, passed through every guard in the loop untouched.
-
-    Said as an annotation on the result. Two guards that withheld or rewrote a repeated
-    *success* were built here before and removed, because refusing the content only sent
-    the model to fetch the same thing another way; nothing is withheld here.
+    The note goes on the result; nothing is withheld, since withholding only sends the
+    model to fetch the same thing another way.
     """
 
     def _agent(self, result: str = "(no output)"):

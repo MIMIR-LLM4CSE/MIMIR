@@ -1,17 +1,7 @@
-"""The agent scratchpad: a writable place outside the workspace, under the temp dir.
+"""The agent scratchpad: a standing writable root under the temp dir, excluded from
+deliverable accounting.
 
-Without one, the only writable location is the user's own tree, so every throwaway
-probe script becomes indistinguishable from produced work — it lands in the repo
-*and* in the change ledger, and then demands validation before the run can
-conclude. The scratchpad is granted as a *standing* root (system-granted, never
-prompted) and is excluded from deliverable accounting.
-
-It lives under ``<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`` — where throwaway work
-belongs, and where the OS reclaims it. That location is world-writable, so the
-ownership vetting in ``ensure_scratch_home`` is part of the contract, not a detail:
-an existing path at our name may be someone else's symlink.
-
-Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
+Its location is world-writable, so ``ensure_scratch_home`` vets ownership.
 """
 from __future__ import annotations
 

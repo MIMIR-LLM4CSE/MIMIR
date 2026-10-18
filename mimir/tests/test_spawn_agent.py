@@ -281,12 +281,8 @@ class PayloadTests(unittest.TestCase):
 
 
 class ChildVisibilityTests(unittest.TestCase):
-    """What the child is doing has to leave this process, and only one way out works.
-
-    This server's stdout IS the JSON-RPC pipe, and the child runs in-process: an
-    unbound event sink puts every one of its events through emit()'s print fallback,
-    straight into the protocol stream. Binding a sink plugs that leak and is also what
-    lets the caller show the child's tool calls.
+    """A child's events leave through a bound sink, never through ``emit()``'s print fallback
+    into the JSON-RPC stdout.
     """
 
     def test_the_child_engine_gets_a_sink_instead_of_printing(self):
@@ -463,13 +459,8 @@ class UserChannelTests(unittest.TestCase):
         self.assertIsInstance(agent.human, spawn_user_channel.RelayedHuman)
 
     def test_a_detached_child_can_reach_the_user_too(self):
-        """What ends when the delegating call returns is the REQUEST, not the session.
-
-        The MCP session is one per stdio connection, and the client registers its
-        elicitation callback on connect rather than per call — so a card raised after
-        the call has returned still reaches the person. A detached child used to run
-        unattended for want of this, which made the longest work the only work that
-        could not ask a question.
+        """A detached child can still raise a card: the elicitation callback belongs to the
+        session, not the request.
         """
         agent = _FakeAgent()
         done = threading.Event()
@@ -571,14 +562,7 @@ class UserChannelTests(unittest.TestCase):
             f"nothing was recorded: {agent.approvals.approved_scopes}")
 
     def test_a_card_says_which_sub_agent_is_asking(self):
-        """As data, not as a prefix glued to the question.
-
-        "Allow this command?" from an unnamed process is a question the user cannot
-        weigh, and several children can be working at once. The name used to be pasted
-        into the question text, where the interface can neither style it nor tell it
-        apart from what is being asked; it travels in `x_mimir.origin` instead, and the
-        card renders it as a badge.
-        """
+        """A card names its sub-agent in ``x_mimir.origin``, as data the card renders as a badge."""
         session = _ElicitSession()
         agent = _FakeAgent()
         agent.session_id = "parent-1/subagents/sub-abc"
@@ -614,14 +598,7 @@ class UserChannelTests(unittest.TestCase):
 
 
 class ParkedChildBudgetTests(unittest.TestCase):
-    """Time in front of the user is not time the child spent working.
-
-    A card sits for as long as the person takes, and that wait lands on whichever
-    thread the client's elicitation callback runs on — so `human_pause`, which is
-    thread-local, never sees it. Counted against the budget, a child parked on its own
-    approval is declared lost to the watcher (which reads "unknown" as terminal) while
-    the card it is waiting on is still on screen.
-    """
+    """Time a child spends waiting on the user is not counted against its budget."""
 
     def setUp(self):
         spawn_user_channel.PAUSED.clear()
@@ -951,13 +928,8 @@ def _bash_descriptor(job_key: str = "k1") -> dict:
 
 
 class AChildWatchesItsOwnRunsTests(unittest.TestCase):
-    """A sub-agent holding its own detached runs.
-
-    Without this a child had no watcher at all: the hook pair is installed on the agent
-    the WebSocket worker owns, and a child's is built in the spawn server, so every
-    backgroundable launch inside one waited the run out in-turn — on the child's loop,
-    inside its budget. For the rung whose whole point is working in parallel, that meant
-    sitting on a step until a build finished instead of preparing the next one.
+    """A sub-agent holds its own detached runs with its own watcher, instead of waiting them
+    out in-turn.
     """
 
     def setUp(self) -> None:
@@ -1067,12 +1039,8 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
         self._run(body)
 
     def test_a_handover_names_the_directory_the_parent_must_read(self) -> None:
-        """A child's job lives under the child's session.
-
-        A status op resolving a bare key against the *parent's* session finds nothing,
-        and reports that as ``unknown`` — a terminal state. Handing the parent an
-        unqualified key would have it announce a healthy run as lost seconds after
-        adopting it.
+        """A handover qualifies the job key with the child's session, or the parent would read it
+        as ``unknown``.
         """
         agent = _PollingAgent(["running"] * 10)
         watcher = self._watcher(agent)
@@ -1198,13 +1166,8 @@ class SubSessionTests(unittest.TestCase):
 
 
 class TimeBudgetTests(unittest.TestCase):
-    """How long a child gets, by what it was given to do.
-
-    Ten minutes is right for a sweep that reads and concludes, and wrong for a child
-    that has to build, measure and try again — a run cut off there ends for a reason
-    with nothing to do with the task. The rung decides, through the same test that
-    decides whether the child gets a copy of the repository, so "works in its own copy"
-    and "has hours to do it" cannot disagree.
+    """A child's time budget follows its rung, through the same test that gives it a copy of
+    the repository.
     """
 
     def _budget(self, ctx, **kwargs):
@@ -1280,13 +1243,7 @@ class TimeBudgetTests(unittest.TestCase):
 
 
 class ForcedDetachmentTests(unittest.TestCase):
-    """A run longer than a blocking call can hold is detached, asked for or not.
-
-    The client caps any wall a tool declares at TOOL_CALL_TIMEOUT_MAX_SECS, so a
-    two-hour child held in a blocking call would be killed at twenty minutes with
-    nothing to show — and the model, which knows nothing of that ceiling, cannot make
-    this choice correctly.
-    """
+    """A run longer than a blocking call can hold is detached, asked for or not."""
 
     def _spawn(self, ctx, **kwargs):
         agent = _FakeAgent()
@@ -1828,13 +1785,7 @@ class BudgetTimeoutAdviceTests(unittest.TestCase):
         self.assertIn("nothing about it has changed", note)
 
     def test_a_detached_run_that_overran_says_it_in_those_words_too(self):
-        """A blocking run and a detached one end the same way; a caller should not have
-        to learn two vocabularies for one fact.
-
-        The detached path had no words at all: it reported "unknown" and handed over a
-        list of files, which reads exactly like a finished run that touched nothing
-        interesting.
-        """
+        """A detached run that overran says so in the same words as a blocking one."""
         child = {"agent": types.SimpleNamespace(
             carry=CarryContext({"read_files": {"/w/a.py"}, "last_query_written_files": set()}),
             turn=TurnState())}
@@ -1873,13 +1824,7 @@ class DeclaredBudgetTests(unittest.TestCase):
         self.assertEqual(timeout_for("other_tool", registry), TOOL_CALL_TIMEOUT_SECS)
 
     def test_the_declared_budget_covers_every_blocking_run(self):
-        """The dispatcher's timeout must stay above the longest run it can actually
-        hold, or such a run is killed from outside with nothing to show.
-
-        It does NOT cover a working child's two hours, and cannot: the client clamps
-        any declared wall to its own ceiling. That is precisely why a budget past the
-        blocking cap is detached instead of waited on.
-        """
+        """The declared timeout stays above the longest blocking run; longer budgets are detached."""
         from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
         self.assertGreater(spawn_limits.SUBAGENT_HARD_CAP_SECS, spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
         self.assertLessEqual(self._descriptor().timeout_secs, TOOL_CALL_TIMEOUT_MAX_SECS)
@@ -1906,13 +1851,7 @@ def _drain_child_threads(timeout: float = 10.0) -> None:
 
 
 class ConcurrencyBoundTests(unittest.TestCase):
-    """How many sub-agents may work at once.
-
-    The client dispatches every non-writing call of one model step concurrently, so a
-    model that emits eight delegations got eight: eight threads, their MCP server
-    subprocesses, and eight concurrent streams on one endpoint, each budgeting for its
-    own share of the window. The prompt asks for one to three; this is the bound.
-    """
+    """How many sub-agents may work at once."""
 
     def setUp(self):
         # Before rebinding the semaphore, not after: a child releases its slot from its

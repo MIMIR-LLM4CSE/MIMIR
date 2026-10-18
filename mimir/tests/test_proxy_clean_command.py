@@ -1,12 +1,5 @@
-"""The ``/proxy clean`` slash command (client side).
-
-Housekeeping the user can ask for without going through the model — and the reason
-it exists: a store that outlives its project brings a finished checklist back with
-it. The server op it drives is covered by the proxy op tests; what is checked here
-is the command surface.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_clean_command -v
+"""The ``/proxy clean`` slash command's surface; the server op is covered by the proxy op
+tests.
 """
 
 import os
@@ -18,13 +11,7 @@ _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers
 
 
 class ProxyCleanCommandTests(unittest.TestCase):
-    """`/proxy clean <name>` — housekeeping the user can do without asking the model.
-
-    `clean` is reachable as a tool op, but a person who wants to start an optimisation
-    over should not have to ask the model to tidy up first. The alternative is `rm -rf` on
-    a store whose path nobody has a reason to know — which is how a deleted project comes
-    back with a finished checklist and an optimisation still marked "in progress".
-    """
+    """``/proxy clean <name>``: housekeeping the user can do without asking the model."""
 
     def _run(self, query: str, payload: dict):
         from unittest import mock

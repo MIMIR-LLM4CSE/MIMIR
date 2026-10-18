@@ -1,17 +1,7 @@
-"""What survives a reload — the rendered chat, and the context behind it.
+"""What survives a reload: the client transcript verbatim (guarded against the wrong
+session or a shorter history) and the untrimmed record beside the window.
 
-Two losses used to happen on every reconnect. The session file only ever held the text
-bubbles, so tool rows, reasoning panels and diff cards came back stripped to prose; and
-`llm_history` is the *window*, mutated in place by the budget trim, so the turns it drops
-left no record anywhere and a resumed session started amnesiac. These tests pin the two
-halves of the fix: a client transcript is stored verbatim (with the guards that stop it
-overwriting the wrong session or a longer history), and the untrimmed record is kept
-beside the window.
-
-What a load hands the model is the third thing pinned here. A front-trimmed tail resumes
-from the record, because its prefix was summarized nowhere; a window that already
-carries a compaction summary resumes from itself, because reloading the record over it
-throws that summary away and starts the session back at its pre-compaction size.
+A trimmed tail resumes from the record; a compacted window resumes from itself.
 """
 import concurrent.futures
 import uuid
@@ -224,13 +214,7 @@ class RichTranscriptRoundTripTests(unittest.TestCase):
 
 
 class SubAgentCardTests(unittest.TestCase):
-    """The card a sub-agent leaves, and where its answer is allowed to be cut.
-
-    The answer used to be clipped on the way *to* disk, so the whole of it existed
-    nowhere: the panel showed 2000 characters ending mid-word and a reload could not
-    recover the rest. It is written whole now, and cut only for the list — which goes
-    out carrying every card of the session at once.
-    """
+    """A sub-agent's answer is stored whole and cut only for the session list."""
 
     def _session_with_card(self, tmp, answer):
         directory = os.path.join(tmp, "s1", "subagents", "sub-1")
@@ -455,15 +439,8 @@ class UntrimmedHistoryTests(unittest.TestCase):
 
 
 class AnswerDeltaTests(unittest.TestCase):
-    """What the record takes from a finished turn.
-
-    The agent hands back its whole transcript, but the loop is free to rewrite the
-    prefix it inherited while the turn runs — and that prefix is exactly what the
-    record exists to preserve, so only the turn's own messages may be taken from it.
-
-    These drive ``Conversation.commit_answer`` itself. They used to carry a copy of its
-    arithmetic instead, which is why they kept passing while the real path was cutting
-    an archive to ribbons: a test that restates the code cannot disagree with it.
+    """What the record takes from a finished turn: only the turn's own messages, through
+    ``Conversation.commit_answer`` itself.
     """
 
     TURN = [
@@ -491,12 +468,8 @@ class AnswerDeltaTests(unittest.TestCase):
         self.assertEqual(added[0]["tool_calls"][0]["id"], "c1")
 
     def test_the_boundary_the_loop_gives_beats_the_length_we_submitted(self):
-        """The bug, in one assertion.
-
-        We submitted 2 messages; the in-turn budget pass rewrote the prefix and the
-        turn now starts at 1. Trusting our own count re-archives message 1 — already
-        in the record — and, in the session this came from, cut into an assistant↔tool
-        pair and left the tool result orphaned.
+        """The turn boundary comes from the loop, not from the submitted length, which an in-turn
+        rewrite of the prefix invalidates.
         """
         added = self._added(self.TURN, 1, 2)
         self.assertEqual([m["content"] for m in added][:1], ["new"])
@@ -524,16 +497,7 @@ class AnswerDeltaTests(unittest.TestCase):
 
 
 class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
-    """A reconnect must not overwrite a checklist newer than the snapshot it holds.
-
-    `session.todos` is captured at autosave time, so a query cut short by a dropped
-    connection leaves the store holding the list as it stood at the last save while the
-    file on disk holds the one the model has written since. Restoring unconditionally
-    destroys the live list and hands the model a finished one. Observed in session
-    ba8eee87: a disconnect during an optimisation task restored the *previous* task's
-    five completed steps, so the next query ran with a plan of record reading
-    "0 pending" and the completion gate had nothing left to block on.
-    """
+    """A reconnect never overwrites a checklist newer than its snapshot."""
 
     def _sess_with_todo_file(self, body: str | None, mtime_offset: float = 0.0):
         """A session whose todo file holds *body* (None = no file), with a set mtime."""
@@ -618,15 +582,7 @@ class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AlwaysResumeTests(unittest.IsolatedAsyncioTestCase):
-    """A checklist with work left on it is resumed, never asked about.
-
-    There used to be a card: "previous session plan — resume, or start fresh". It was
-    raised from the session load, and a session is loaded on every connect — so a
-    connection dropping mid-turn put the question in the middle of the very work it was
-    asking whether to continue. And neither answer was right there: the plan of record
-    is the file on disk, which the agent reads either way, so "start fresh" threw away a
-    live plan while the turn that wrote it was still running.
-    """
+    """A checklist with work left on it is resumed, never asked about."""
 
     def _loaded(self, todos):
         async def _run():
@@ -699,13 +655,7 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sess.view.conv.history_full[0]["content"], "turn 0")
 
     async def test_a_compacted_window_is_what_a_resume_reloads(self):
-        """A summary already stands in for what was cut — reloading the record undoes it.
-
-        The bug this pins: a long session compacted its 1346-message history down to a
-        162-message window, and the reload handed the model the 1346 again. The context
-        bar sat full before the user had typed, and the first turn spent an LLM call
-        re-compacting what was already compacted.
-        """
+        """A compacted window is what a resume reloads; the record would undo the summary."""
         sess = _session()
         window = [
             {"role": "user", "content": "port the build to the new target"},
@@ -807,12 +757,8 @@ class CompactionMarkerTests(unittest.TestCase):
 
 
 class CompactedExchangeCountTests(unittest.TestCase):
-    """What the marker claims the summary stands for.
-
-    The model reads this number to judge how much of its own past it can no longer
-    see. Counting the slice's messages made every pass after the first announce less
-    than the one before it, because a summary absorbing hundreds of exchanges counts
-    as a single message.
+    """The compaction marker counts the exchanges a summary stands for, earlier summaries
+    included.
     """
 
     @staticmethod

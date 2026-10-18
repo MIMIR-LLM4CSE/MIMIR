@@ -1,11 +1,5 @@
-"""Unit coverage for the modular general-context loader.
-
-Verifies the resolution order (env var → workspace file → built-in default), the
-replace-the-doctrine-half semantics (the core half survives every override),
-defensive fallbacks (missing/empty/unreadable), and that the dynamic sections still
-layer on top of a loaded base.
-
-Plain ``unittest`` to match the rest of the suite.
+"""The general-context loader: resolution order (env var → workspace file → default),
+the core half surviving every override, fallbacks, and the dynamic sections on top.
 """
 from __future__ import annotations
 
@@ -132,13 +126,7 @@ class CoreSurvivesOverrideTests(unittest.TestCase):
 
 
 class DefaultBaseShapeTests(unittest.TestCase):
-    """Guard the *shape* of the built-in prompt, not its wording.
-
-    The prompt was once a single concatenated literal with zero newlines — a flat
-    wall of prose whose middle mid-size open-weight models drop. These assertions
-    exist so that regression cannot come back unnoticed, and so the token budget
-    cannot creep back up.
-    """
+    """The shape of the built-in prompt (sections, line breaks, token budget), not its wording."""
 
     def test_default_base_is_sectioned_markdown(self) -> None:
         base = cb._DEFAULT_BASE_SYSTEM_CONTENT
@@ -256,14 +244,8 @@ class DefaultBaseShapeTests(unittest.TestCase):
 
 
 class NudgeCoverageTests(unittest.TestCase):
-    """Every enforcement-gated obligation must also live in the system prompt.
-
-    Guidance nudges are filtered by ``_GUIDANCE_BY_LEVEL_MODE``: at "light" only a
-    subset fires, at "off" none do. The prompt is the only carrier that survives all
-    three levels, so an obligation that exists *only* as a guidance nudge silently
-    vanishes for exactly the strong models running at light/off. This test walks the
-    real nudge table so a newly added guidance nudge fails here until its rule is
-    stated in the prompt too.
+    """Every enforcement-gated obligation also lives in the system prompt, which survives
+    every level; a new guidance nudge fails here until its rule is stated there.
     """
 
     # nudge category -> a phrase in the prompt carrying the same obligation.
@@ -447,16 +429,9 @@ class AuthorshipSectionTests(unittest.TestCase):
 
 
 class ClarifySectionGateTests(unittest.TestCase):
-    """The "ask the user" contract is injected only where it can actually be acted on.
+    """The "ask the user" section appears only when the question tool is connected.
 
-    Same gating shape as the sub-agent section, keyed on the tool name rather than on a
-    capability: the question channel has a single consumer, so a declared capability
-    would buy nothing the name does not already give.
-
-    This section is the only carrier of the behaviour — there is deliberately no
-    matching nudge, because nothing in the execution context can establish that a fork
-    exists (loop length is not evidence of ambiguity). That makes these tests the whole
-    of the mechanical guarantee.
+    It is the only carrier of the behaviour: no nudge backs it.
     """
 
     _HEADING = "## Clarifying with the user"

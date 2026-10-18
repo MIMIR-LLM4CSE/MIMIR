@@ -172,12 +172,8 @@ class ValidationCommandTests(unittest.TestCase):
 
 
 class ExecEffectTests(unittest.TestCase):
-    """What a successful EXEC segment would *prove*, declared rather than inferred.
-
-    The four groups are declared, not derived by elimination: taking a head the validator
-    table does not know to have run the project's code records `source env.sh` as a run
-    owing a verdict. The invariants below are what keep the declarations from drifting
-    apart from the tables that read them.
+    """What a successful EXEC segment proves, declared per group; the invariants keep the
+    declarations in step with the tables that read them.
     """
 
     def _effect(self, command, index=0):
@@ -319,13 +315,8 @@ class ChdirTests(unittest.TestCase):
         self.assertEqual(_kinds("cat 'a\nb.py'"), [Kind.READ])
 
     def test_unknown_leading_command_classifies_as_a_run(self):
-        """A head no group places still classifies — bash gates by denylist now.
-
-        Returning None instead would make the common case invisible to the
-        observation layer: nothing credited, no verdict owed, and the credit-rate
-        floor in test_bash_coverage would fall through. UNKNOWN is the conservative
-        reading — a run, so never plan-safe and never approval-exempt — while the
-        operands stay legible enough to credit and to confine.
+        """A head no group places classifies as UNKNOWN, a run: never plan-safe, never
+        approval-exempt, its operands still credited and confined.
         """
         for cmd in ("rm -rf .", "curl http://x", "awk '{print}' f.txt",
                     "bash -c 'ls'", "git bisect start"):
@@ -404,12 +395,8 @@ class TexTests(unittest.TestCase):
 
 
 class NestedCommandParsingTests(unittest.TestCase):
-    """`find … -exec CMD {} \\;` is split into its own segment.
-
-    ``parse_segments`` is shared by the bash server, this classifier, and the
-    client's out-of-workspace gate, so a change here has the widest blast radius in
-    the stack. The invariance test below is the guard: tokenization must be
-    byte-identical for every command that contains no ``-exec``.
+    """``find … -exec CMD {} \\;`` is split into its own segment; tokenization of any command
+    without ``-exec`` is unchanged.
     """
 
     def _segs(self, cmd):

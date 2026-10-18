@@ -277,12 +277,8 @@ class ReadSinceTests(_BusCase):
 
 
 class ConcludedTests(_BusCase):
-    """What counts as finished — the positive criterion the idle shutdown rests on.
-
-    "Not busy" is not "has finished": a worker is also not busy between queries, after
-    a turn that broke, and while it waits behind a card. An idle predicate built on the
-    absence of noise would stop a server whose turn merely paused, so the bus records
-    the conclusion itself.
+    """The bus records a turn's conclusion; "not busy" is not "finished", and the idle
+    shutdown rests on the latter.
     """
 
     def test_an_answer_marks_the_session_concluded(self):

@@ -1,12 +1,5 @@
-"""The per-host hardware digest: what a scheduler's machines are, kept once per process.
-
-The digest exists so that choosing a cluster does not cost two ssh round trips per
-candidate, and so that the choice can be made on architecture rather than on hope.
-These tests pin the two properties that make it safe to keep: it is blind to occupancy,
-and a cluster that did not answer is never reported as a cluster with nothing in it.
-
-Run:
-    python -m unittest mimir.tests.test_slurm_digest -v
+"""The per-host hardware digest, kept once per process: blind to occupancy, and a cluster
+that did not answer is never reported empty.
 """
 
 import unittest

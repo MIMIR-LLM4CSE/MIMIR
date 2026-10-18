@@ -1,16 +1,7 @@
-"""No command a tool runs can read the server's stdin.
+"""No command a tool runs can read the server's stdin, which is its MCP protocol pipe.
 
-A server's stdin is its MCP protocol pipe: the client's JSON-RPC requests arrive on it.
-A child inherits it unless told otherwise, and plenty of ordinary commands read stdin —
-``ssh`` without ``-n`` drains it, ``cat`` and ``head`` consume it outright. Such a command
-eats the client's traffic: a request sent while it runs (a background-job watcher polling
-``bash_job``, say) is swallowed and never answered, and a partial steal desynchronises the
-framing so every later call on that session hangs or fails on a dead transport — while the
-server itself looks perfectly healthy.
-
-So every spawn in every server redirects stdin from ``/dev/null``. Checked here on the
-real launcher with a real stdin-reading command, not by inspecting kwargs: the property is
-that the bytes stay unread, whatever the layers in between do.
+Every spawn redirects stdin from ``/dev/null``; checked on the real launcher with a
+real stdin-reading command.
 """
 from __future__ import annotations
 

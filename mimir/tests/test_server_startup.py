@@ -1,11 +1,5 @@
-"""Hermetic tests for connecting a whole server registry at once.
-
-Start-up used to be the sum of every server's: twenty child interpreters importing
-the MCP SDK, one after the next, before the first query could be answered. The
-processes are now started together and the handshakes awaited at once, which puts
-the cost at the slowest server rather than the total. What these tests pin is what
-that overlap must not change — the order the model sees the tools in, and a
-caller's tolerance of a server that fails to come up.
+"""Connecting a whole server registry at once: the handshakes overlap, the tool order the
+model sees is kept, and a server that fails to come up is tolerated.
 """
 
 import asyncio

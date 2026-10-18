@@ -158,13 +158,8 @@ class PolicyManagerTests(unittest.TestCase):
         self.assertEqual(filtered, tools)
 
     def test_tools_for_context_visibility_is_independent_of_discovery_state(self) -> None:
-        """Edit tools are no longer *hidden* before discovery.
-
-        The per-query tool list is byte-stable regardless of discovery state, so the
-        model-prompt prefix stays cacheable across steps (Workstream C). The guard
-        against premature writes/edits now lives in the call-time policy
-        (check_write_policy), not in tool visibility — so the filtered list is the
-        same before and after discovery.
+        """The per-query tool list does not depend on discovery state, so the prompt prefix stays
+        cacheable; premature writes are caught at call time.
         """
         tools = [
             {"function": {"name": "replace_in_file"}},
@@ -189,18 +184,7 @@ class PolicyManagerTests(unittest.TestCase):
         self.assertIn("replace_in_file", [t["function"]["name"] for t in before])
 
     def test_external_fetch_is_not_gated_on_local_discovery(self) -> None:
-        """Reaching outside the workspace does not require having looked inside it.
-
-        There was a gate here holding every EXTERNAL_FETCH call until the model had
-        searched or read locally. It was removed rather than repaired. It contradicted
-        the prompt, which tells the model to skip the survey for work that builds
-        something new outside the repository and lets a literature task conclude
-        straight from discovery; it ignored two of the five discovery signals, so a
-        model that delegated its exploration — which the sub-agent section asks for —
-        counted as having done nothing; and a structural snapshot pre-filled the one
-        field it did read, so on a repo-touching query it never fired at all. It bit
-        only on the bibliography turn it was least entitled to block.
-        """
+        """Reaching outside the workspace does not require having looked inside it."""
         agent = _FakeAgent()
         agent.tool_owner["github_get_file"] = "github"
 
@@ -213,14 +197,7 @@ class PolicyManagerTests(unittest.TestCase):
         self.assertIsNone(result.violation)
 
     def test_cluster_submit_stays_held_until_something_is_validated(self) -> None:
-        """The hold is a precondition, not a counter — retrying alone must not clear it.
-
-        One-shot — warn once, set a flag, let the next call through — constrains nothing
-        against a model that simply calls again, which is the normal reaction to an error,
-        and costs one round trip on the most expensive action in the system: a submission
-        that burns real allocation hours and cannot be taken back. The condition is a fact
-        about the session, so it holds until the fact changes.
-        """
+        """The hold is a precondition, not a counter: retrying alone does not clear it."""
         agent = _FakeAgent()
         agent.tool_owner["salloc_submit"] = "hpc"
         args = {"partition": "compute", "confirm": True}
@@ -245,14 +222,8 @@ class PolicyManagerTests(unittest.TestCase):
         self.assertIsNone(_submit())
 
     def test_cluster_submit_not_held_when_the_session_wrote_nothing(self) -> None:
-        """The stated exit has to be reachable, or the hold is a wall.
-
-        ``validated_files`` is credited only by a checker run against a file the model
-        edited. A session whose whole job is to launch something that already exists
-        ("resubmit this job on 64 nodes") edits nothing, so it can never satisfy the
-        condition however many times it tries. Nothing changed ⇒ nothing ought to have
-        been checked; the user's approval prompt, which these irreversible tools always
-        raise, is the protection that applies there.
+        """A session that edited nothing is not held: nothing ought to have been checked, and the
+        approval prompt still applies.
         """
         agent = _FakeAgent()
         agent.tool_owner["salloc_submit"] = "hpc"

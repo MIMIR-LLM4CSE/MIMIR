@@ -1,13 +1,7 @@
 """The two ends of the divert channel agree on one pair of files.
 
-The client writes the request and a server in another process consumes it, so
-nothing typechecks the format between them: only a test that runs both halves against
-one state dir can. The properties that matter are that a request reaches its own run
-and nothing else, that one tool's channel is invisible to another's, and that every
-failure mode is silent — a missing, stale or corrupt sidecar must leave a blocking run
-behaving exactly as it does when nothing asks it to detach.
-
-See servers/_shared/run_channel.py and client/tool_execution/run_channel.py.
+A request reaches its own run only, channels are per tool, and a missing, stale or
+corrupt sidecar leaves a blocking run unchanged.
 """
 import importlib
 import os

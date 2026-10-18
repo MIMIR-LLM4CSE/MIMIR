@@ -83,12 +83,8 @@ class ParseTests(unittest.TestCase):
 
 
 class TeeInjectionTests(unittest.TestCase):
-    """Which commands get a second copy of their output, and where it is spliced.
-
-    The log a job keeps is the *pipeline's* output, so a filter at the end of one
-    holds back exactly what the bar is read from. These decide when a `tee` goes in
-    ahead of the filter — the one judgement in this module made from the command
-    line rather than from the output, because it has to be made before there is any.
+    """Which commands get a ``tee`` ahead of a trailing filter, so the job log keeps the
+    output the progress bar is read from.
     """
     LOG = "/jobs/k/progress.log"
 

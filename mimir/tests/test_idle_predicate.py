@@ -1,12 +1,7 @@
-"""When a detached server is no longer needed — and the many ways it still is.
+"""When a detached server is no longer needed.
 
-The criterion is positive, and that is the whole design. "Not busy" is not "has
-finished": a worker is also not busy between queries, after a turn that broke, and while
-it waits behind a card. An idle test built on the absence of noise stops a server whose
-turn merely paused. So a conversation counts as finished only once it has *concluded* —
-delivered a final answer — and a run launched but not collected holds the process open
-even with no turn running, which is exactly the "I submitted a two-hour build and left"
-case the whole feature exists for.
+A conversation counts as finished only once it has concluded, and a launched run not
+yet collected holds the process open.
 """
 import asyncio
 import json
@@ -154,14 +149,7 @@ class WhatCountsAsFinishedTests(_IdleCase):
 
 
 class SlurmSubmissionsEndTests(_IdleCase):
-    """A Slurm job holds the process open, and stops holding it.
-
-    The second half is the one that was missing, and it cost a night: a submission
-    records an id and an id never stops existing, so a workspace that had ever submitted
-    one job had a server that could never be idle — whatever it was or was not doing,
-    however long ago the job ended. The process does not decide a Slurm job is over by
-    inspection; it reads the state a poll wrote down.
-    """
+    """A Slurm job holds the process open until a poll records its end."""
 
     def test_a_submitted_job_holds_the_process_open(self):
         w = _Worker()
@@ -457,13 +445,7 @@ class TheClockTests(_IdleCase):
 
 
 class NobodyAskedToKeepItTests(unittest.TestCase):
-    """A server exists claimed, or owned by a window. There is no third state.
-
-    What used to be possible was a server in neither: one a window had merely attached
-    to, nobody's to kill, still writing to a pipe whose reader had gone. It kept
-    working, unobserved, and nobody had asked it to — the fragile state the whole
-    detach path exists to avoid.
-    """
+    """A server is either claimed or owned by a window; there is no third state."""
 
     def _pool(self, *, claims: dict, unattended: float | None, ever: bool = True):
         import tempfile

@@ -1,24 +1,7 @@
-"""Shared resources, once several sessions use them at the same time.
+"""Shared resources under concurrent sessions: no single-slot pointer, no
+test-then-create, no unlocked read-modify-write or truncating write.
 
-Everything here was correct while one session lived at a time, and stops being correct
-the moment two do. Three distinct shapes of the same mistake:
-
-* **A single-slot pointer** standing in for "the" current thing. The proxy store's
-  ``opt_runs/active_session`` named the proxy a nameless ``proxy_eval`` op acts on, so a
-  second session initialising its own optimisation retargeted the first one's ops — a run
-  meant for one proxy was measured against another.
-* **Test-then-create.** ``env_create`` checked ``os.path.exists`` and then created, so two
-  sessions asking for the same environment name ran ``venv`` into each other's tree.
-* **Read-modify-write, and truncating writes.** ``preferences.json`` loaded, merged and
-  wrote atomically — but not the cycle, so the second of two concurrent toggles dropped
-  the first. The memory store wrote notes and its index with a plain truncating open, so a
-  concurrent reader could load half a file.
-
-What stays shared is deliberate, and the last test says so: the memory store, the Python
-environments, the module catalogue and the proxy store belong to the *workspace*. Making
-them per conversation would cost minutes and gigabytes on every new one.
-
-Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
+Memory, environments, the module catalogue and the proxy store stay per workspace.
 """
 from __future__ import annotations
 
@@ -205,13 +188,8 @@ if __name__ == "__main__":
 
 
 class RevertProtectsConcurrentWorkTests(unittest.TestCase):
-    """A revert undoes the diff the user looked at — and only that.
-
-    Snapshots are per agent, but the files on disk are not. With two conversations
-    editing one file, reverting in the first wrote its own pre-edit baseline over the
-    second's work, which nobody asked to discard. The reviewed digest is the seam: it is
-    recorded when the diff is built, which is the one moment what is on disk and what the
-    user is being shown are known to be the same thing.
+    """A revert undoes the diff the user looked at, and only that: the digest recorded with
+    the diff is checked before writing.
     """
 
     def _manager(self):

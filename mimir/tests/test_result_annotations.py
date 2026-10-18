@@ -319,12 +319,8 @@ class ForkBaseStemTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("git"), "git not available — BashEffect tests exercise a real git repo")
 class BashEffectTests(unittest.TestCase):
-    """What a shell command changed, reported back because nothing else reports it.
-
-    An edit through the file tools returns a diff and the prompt says to check it. A
-    `sed -i` returns an empty line, so the model that just ran one has nothing to look
-    at. The case this pins was real: an unanchored address inserted the same block
-    eight times into a C++ header and the run never noticed.
+    """What a shell command changed is reported back, since ``sed -i`` returns nothing to
+    check.
     """
 
     def setUp(self) -> None:
@@ -431,12 +427,8 @@ class BashEffectTests(unittest.TestCase):
 
 
 class RepeatedBlockTests(unittest.TestCase):
-    """The duplication test is a period, not a repeated window.
-
-    A window scan fires on ordinary code — three closing braces recur in every C++
-    file — and once a block genuinely repeats, every longer window repeats too, so the
-    largest match says nothing. A period says the whole inserted region is one block
-    over and over, which is the signature of an address matching everywhere it looked.
+    """The duplication test looks for a period over the inserted region, not a repeated
+    window (which fires on ordinary code).
     """
 
     def test_a_block_repeated_eight_times_is_found(self) -> None:

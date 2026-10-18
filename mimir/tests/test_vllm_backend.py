@@ -10,12 +10,8 @@ from mimir.client.query_engine.backends.openai_compat import _answer_max_tokens
 
 
 class AnswerMaxTokensTests(unittest.TestCase):
-    """Regression: requested output must survive the estimate undercounting.
-
-    Incident (2026-07-10): window 262144, local estimate ~16558 prompt tokens,
-    vLLM counted 17071 (rendered chat template + tool schemas). The old
-    ``mml - estimate - 512`` requested 245074 output tokens → 262145 total →
-    400 "maximum context length".
+    """The requested output leaves room for the server counting more prompt tokens than the
+    local estimate.
     """
 
     def test_incident_numbers_stay_in_window(self) -> None:
@@ -128,13 +124,7 @@ class SamplingParamsTests(unittest.TestCase):
 
 
 class TokenizeAbsenceTests(unittest.TestCase):
-    """Regression: a router with no /tokenize cost a round-trip per message per pass.
-
-    Incident (2026-09-18): an OpenAI-compatible router answered /tokenize with 500
-    "no valid backends". The heuristic fallback was not cached, so every recount of
-    the history went back to the network and turns waited 25-76 s before the model
-    was even asked.
-    """
+    """A router without ``/tokenize`` is asked once; the heuristic fallback is cached."""
 
     def _backend(self, status: int):
         import httpx
@@ -193,14 +183,7 @@ class TokenizeAbsenceTests(unittest.TestCase):
 
 
 class UnknownWindowTests(unittest.TestCase):
-    """A server that publishes no max_model_len must still bound the answer.
-
-    Incident (2026-09-20): an OpenAI-compatible router served the model but
-    reported no ``max_model_len``, so no ``max_tokens`` was sent and vLLM defaulted
-    it to the whole remaining window — a >600K-token allowance. A sub-agent's
-    report-writing step ran until the router gave up with a 500, three identical
-    retries deep, ~90s apiece, with nothing to show for the six minutes.
-    """
+    """A server that publishes no ``max_model_len`` still gets a bounded ``max_tokens``."""
 
     def _sent(self, options, window=None):
         import mimir.client.query_engine.backends.openai_compat as vb
@@ -233,13 +216,7 @@ class UnknownWindowTests(unittest.TestCase):
 
 
 class WindowPrecedenceTests(unittest.TestCase):
-    """Detection first; the declared value only covers what detection cannot reach.
-
-    Reading the window off the endpoint is the generic answer — it needs no
-    maintenance and survives the endpoint being upgraded or repointed. The declared
-    value used to short-circuit the lookup entirely, so a setting left behind from
-    one endpoint silently displaced the next one's published window.
-    """
+    """The detected window wins; the declared value covers only what detection cannot reach."""
 
     def _window(self, declared, served):
         import mimir.client.query_engine.backends.openai_compat as vb
@@ -269,15 +246,8 @@ class WindowPrecedenceTests(unittest.TestCase):
 
 
 class DeclaredWindowBoundsTheAnswerTests(unittest.TestCase):
-    """The window that bounds generation is the one every other budget uses.
-
-    Incident (2026-09-22): a router publishing no ``max_model_len``, with the window
-    declared as 512K in the settings. ``_fetch_context_window`` honoured the
-    declaration, so the context bar, the eviction and the compaction all sized
-    themselves to 512K — but the request shaper read ``served_model_len`` directly,
-    which consults only /v1/models. The declaration was invisible at the one place
-    that caps a generation, so a README-writing step fell through to the
-    unknown-window reserve, ran for minutes, and died on the router's 500.
+    """The window that bounds generation is the one every other budget uses, declared value
+    included.
     """
 
     def _sent(self, options, declared=None, served=None):

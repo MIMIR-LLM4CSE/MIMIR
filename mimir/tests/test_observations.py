@@ -182,13 +182,8 @@ class DelegatedExplorationTests(unittest.TestCase):
 
 
 class EditFailureStreakTests(unittest.TestCase):
-    """Per-file edit-failure escalation must count failures regardless of the patch.
-
-    edit_loop_state stays signature-based (guards only the identical-patch spin in
-    check_write_policy). edit_fail_streak_by_file counts every consecutive failure on
-    a file, so a model that keeps trying *different* wrong anchors still gets the
-    error_recovery escalation. The file is NOT evicted from the read sets: a wrong
-    anchor is not missing content, and the failure already carries the current text.
+    """``edit_fail_streak_by_file`` counts every consecutive failure on a file, whatever the
+    patch; the file stays in the read sets.
     """
 
     def _agent(self, extra_caps=None):
@@ -302,13 +297,7 @@ class EditFailureStreakTests(unittest.TestCase):
 
 
 class BashCommandObservationTests(unittest.TestCase):
-    """A shell-command tool feeds the blackboard by classified capability.
-
-    ``shell.command`` classifies the ``command`` string (registry-driven off the
-    ``command_prefix`` scope kind) and credits the same execution_context fields the
-    dedicated file/search tools would — so a bash ``cat``/``grep``/``sed -i`` is no
-    longer invisible to the policy/nudge layer.
-    """
+    """A shell command credits the same context fields as the dedicated file and search tools."""
 
     def _agent(self):
         from mimir.client.context.capabilities import ToolCaps
@@ -381,15 +370,8 @@ class BashCommandObservationTests(unittest.TestCase):
 
 
 class BashValidationObservationTests(unittest.TestCase):
-    """Two axes from one bash command, and they never mix.
-
-    A **checker** (`py_compile`, `ruff`, `mypy`, a compiler) validates the files it
-    names: its output is a list of problems, and an empty one is the finding. An
-    **execution** (`pytest`, `python solver.py`, `./solver`) validates nothing at all —
-    it is recorded as a run, which owes a reading of what it printed. `cd` in the chain
-    rebases relative operands so the resolved path matches the (root-relative) dirty
-    path exactly, which also means two same-named files in different directories are
-    never confused.
+    """A checker validates the files it names; an execution is recorded as a run owing a
+    reading. ``cd`` rebases relative operands to match the dirty paths.
     """
 
     def setUp(self):
@@ -676,13 +658,7 @@ class BashValidationObservationTests(unittest.TestCase):
 
 
 class RedTestRunObservationTests(unittest.TestCase):
-    """A test runner's own report of failure outranks the exit code it was handed.
-
-    Every recorded session wrote its runs as ``pytest … | tail -N`` or
-    ``python3 test_x.py; echo "EXIT=$?"``, both of which hand the observation layer the
-    status of the LAST command in the chain. All of them therefore arrived as ``ok``,
-    including the ones with four red tests, and each credited its test file as validated.
-    """
+    """A test runner's own failure report outranks the exit code of a pipe or ``; echo``."""
 
     def setUp(self):
         # Whether this host has `pytest` on PATH must not decide these cases; the
@@ -1008,13 +984,8 @@ class PluginValidatorObservationTests(unittest.TestCase):
 
 
 class ExecutionToolObservationTests(unittest.TestCase):
-    """An execution tool that is not bash owes a verdict just the same.
-
-    Split by *surface*, not by purpose: a shell tool's calls differ in kind call by call
-    (`cat` reads, `python` executes), so only the command text can decide and
-    `shell.bash_validation` owns it. A tool like `proxy_exec` has no such variation —
-    the call *is* the execution — so the declared capability decides. The two must stay
-    mutually exclusive, or a bash run gets registered twice.
+    """A non-bash execution tool owes a verdict too, decided by its declared capability;
+    bash runs are never registered twice.
     """
 
     def _agent(self, caps, **kwargs):
@@ -1088,12 +1059,8 @@ class ExecutionToolObservationTests(unittest.TestCase):
 
 
 class ValidationTierTests(unittest.TestCase):
-    """How much a green check actually proved.
-
-    ``validated_files`` answers "was this file checked?"; ``validation_tier_by_file``
-    answers "with what?". Both are about checkers only. Running the code is not on this
-    ladder at all — a vacuous test and a rigorous one produce the same exit code, so
-    "it ran" is recorded as a run and read by the model, never as file evidence.
+    """How much a green check proved (``validation_tier_by_file``). Running code is recorded
+    as a run, never as file evidence.
     """
 
     _agent = BashValidationObservationTests._agent
@@ -1212,13 +1179,7 @@ class ValidationTierTests(unittest.TestCase):
 
 
 class UncheckableFileTests(unittest.TestCase):
-    """The check is possible everywhere now, so almost nothing is uncheckable.
-
-    The floor runs in-process, so the only file that escapes it is one that is not text at
-    all. Depending on a binary leaves a `.cu` edited on a node with no CUDA toolkit with no
-    checker to run, and every language outside the table (`.rs`, `.go`, `.sh`) in the same
-    position.
-    """
+    """The in-process floor makes every text file checkable; only a binary file escapes."""
 
     _ctx = BashValidationObservationTests._ctx
 
@@ -1432,13 +1393,8 @@ class DeclaredEditSetTests(unittest.TestCase):
 
 
 class UnwatchedRunObservationTests(unittest.TestCase):
-    """Long work a scheduler says exists and no record covers.
-
-    Payload-driven and tool-agnostic on purpose: the fact is established by whoever
-    can establish it — the server that runs the queue and owns the submission
-    directories — and arrives as two machine facts. Nothing here reads a command
-    string, because a nudge built on "the text contained sbatch" fires on a `grep
-    sbatch` and misses every wrapper ever written.
+    """Long work a scheduler reports and no record covers, read from two payload facts and
+    never from the command text.
     """
 
     def _agent(self):

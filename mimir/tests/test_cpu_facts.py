@@ -1,12 +1,5 @@
-"""Reading a machine the same way wherever the reading happens.
-
-Covers the shared parsers (``_shared/cpu_facts``), the three execution contexts MIMIR
-can find itself in (no scheduler, login node, inside an allocation), the shared batch
-header (``_shared/slurm_script``) and the recognition of a shell ``srun`` that would
-request a new allocation.
-
-Run:
-    python -m unittest mimir.tests.test_cpu_facts -v
+"""Reading a machine the same way wherever it happens: the shared parsers, the three
+contexts (no scheduler, login node, allocation), the batch header, and shell ``srun``.
 """
 
 from mimir.servers._shared.launcher import launch_argv

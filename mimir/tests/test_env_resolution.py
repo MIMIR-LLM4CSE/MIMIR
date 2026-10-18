@@ -1,15 +1,7 @@
-"""Behavioral tests for the environment-resolution cascade (Tiers 1 & 4).
+"""The environment-resolution cascade.
 
-Covers the two reality signals the cascade rests on and the verification-layer
-nudge they drive:
-
-* ``env.missing_module`` — a failing import-check or a failing run whose output
-  names a missing module flips ``unresolved_modules``; a successful call never does.
-* ``env.env_probe`` — calling any ENV_DISCOVERY tool flips ``env_probed``.
-* the ``env_resolution`` nudge fires once while a module is unresolved and no env has
-  been probed, and stops once the agent probes the environments.
-
-Pure-Python + stubs (no live model/servers): runs on x86 and ARM.
+``env.missing_module`` sets ``unresolved_modules`` on a failing import, ``env.env_probe``
+sets ``env_probed``, and the ``env_resolution`` nudge fires once until a probe.
 """
 from __future__ import annotations
 

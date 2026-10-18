@@ -1,17 +1,8 @@
-"""Shared test oracle for tool classification.
+"""The test oracle for tool classification.
 
-Shipped code no longer contains any hardcoded tool-classification list — each
-server declares its tools' capabilities via ``@mcp.tool(**tool_caps(...))`` and the
-client reads them from the per-agent live registry. So the *expected* classification
-lives here, in the tests, as two pieces:
-
-* ``GOLDEN`` — independent literal snapshots of the intended classification (the
-  regression oracle: drift fails loudly).
-* ``build_declared_registry()`` — the ``{name: ToolCaps}`` registry parsed straight
-  from the server source decorators via AST (no ``mcp`` import needed, so it runs on
-  the x86 build host). This is what the live agent's ``connect_server`` produces.
-
-The faithfulness test asserts the declared registry reproduces ``GOLDEN`` exactly.
+``GOLDEN`` holds literal snapshots of the intended classification;
+``build_declared_registry()`` parses the servers' ``tool_caps`` decorators by AST, as
+``connect_server`` would. A faithfulness test holds the two equal.
 """
 
 import ast

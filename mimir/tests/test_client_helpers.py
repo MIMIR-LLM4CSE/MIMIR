@@ -69,13 +69,8 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(client_module._BASE, client_config_module.SERVER_BASE)
 
     def test_set_model_switches_the_active_model_without_touching_the_environment(self) -> None:
-        """The model is the agent's own, not the process's.
-
-        Several agents live in one process — one per concurrent session, plus every
-        sub-agent — and they share one ``os.environ``, so publishing the model there
-        made one session's switch retarget what every other session's servers were
-        told. The model reaches a server through its own spawn environment instead,
-        built from ``agent.model`` (integration/server_manager.connect_server).
+        """The model is the agent's own, not the process's: agents share ``os.environ``, so a
+        server receives the model through its own spawn environment.
         """
         before = os.environ.get("MIMIR_DEFAULT_MODEL")
         agent = client_module.MimirAgent()
@@ -155,15 +150,8 @@ class ClientHelperTests(unittest.TestCase):
                                 f"{name} declares unknown trait(s): {traits - m.FIELD_TRAITS}")
 
     def test_every_path_valued_field_answers_the_trait_questions(self) -> None:
-        """A path-like field must say what it is, or say explicitly that it is nothing.
-
-        This is the clause that stops the defect from reforming. The per-field
-        properties ("carried across queries?", "purged when a file is deleted?",
-        "counts as discovery?") used to live in eight hand-maintained name lists spread
-        over four modules; nothing made anyone classify a *new* field, so the lists went
-        stale silently — two of them still named a field that is never in carry_context
-        at all. Adding a `*_files` / `*_paths` / `*_dirs` field now fails here until the
-        question has been answered one way or the other.
+        """A new ``*_files``/``*_paths``/``*_dirs`` field fails here until its traits (carried,
+        purged on delete, discovery) are declared.
         """
         m = execution_context_module
         # Fields whose name looks path-like but which genuinely carry no trait. Each
@@ -224,12 +212,8 @@ class ClientHelperTests(unittest.TestCase):
             "inspected_dirs"})
 
     def test_carried_path_purge_drops_the_inert_entry_and_keeps_dirs_out(self) -> None:
-        """`CarryContext.discard_path`'s field set, now derived — two deliberate absences.
-
-        `dirty_written_files` is gone: it was in the hand-written list but is never
-        placed in carry_context, so purging it was theatre. `inspected_dirs` stays out
-        because it holds *directories* — deleting a file does not un-inspect the
-        directory that contained it.
+        """``CarryContext.discard_path``'s field set is derived; ``inspected_dirs`` stays out,
+        since deleting a file does not un-inspect its directory.
         """
         m = execution_context_module
         carried_paths = set(m.fields_with(m.CARRY, m.FILE_PATH))
@@ -306,13 +290,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertIsNone(violation)
 
     def test_deleting_a_file_purges_it_from_every_path_field(self) -> None:
-        """The purge actually runs — not just that the derived field set is right.
-
-        Both purge loops (query context and carry context) had **no** behavioural
-        coverage: an execution trace of the whole suite reached neither. Asserting the
-        derived list without ever running the loop would have re-created exactly the
-        gap this refactor is about — a rule that looks maintained and is not.
-        """
+        """The purge runs, in both the query context and the carry context."""
         from mimir.client.guardrails import observations
         from mimir.client.context.capabilities import REMOVE, ToolCaps
 
@@ -709,14 +687,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertIn("requires reading it first", violation)
 
     def test_write_policy_refuses_a_delete_without_existence_evidence(self) -> None:
-        """The delete guard's *blocking* branch, which nothing exercised.
-
-        Every pre-existing write-policy test asserted a permissive outcome, and each
-        did so from the early `is_write_tool` exit (the bare agent had an empty
-        capability registry), so no test had ever reached a rule at all. Removing two
-        neighbouring guards is only defensible if the ones kept actually block — that
-        claim needs the negative case, not just the positive one.
-        """
+        """The delete guard blocks a delete without existence evidence."""
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
         execution_context = build_execution_context(searched=True, checked_paths={"src/gone.py"}, inspected_dirs=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={}, search_tool_calls=1, edit_loop_state={})
@@ -803,12 +774,8 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(result, "done")
 
     def test_query_starts_with_no_discovery_evidence(self) -> None:
-        """Nothing may pre-fill a discovery signal on the model's behalf.
-
-        The repo-structure snapshot used to seed ``inspected_dirs`` at query start,
-        which silently satisfied any gate reading that field raw. The invariant is
-        cheaper to keep than the discount that used to compensate for it: a fresh
-        context carries zero evidence, so every gate measures the model's own work.
+        """A fresh query context carries no discovery evidence, so every gate measures the
+        model's own work.
         """
         ec = execution_context_module
         execution_context = client_module.MimirAgent.new_execution_context()
@@ -820,12 +787,9 @@ class ClientHelperTests(unittest.TestCase):
     # ── step budget ───────────────────────────────────────────────────────────
 
     def _run_loop_with_budget(self, *, max_steps, answer_after=None):
-        """Drive the agent loop with a stream_chat that emits a tool call every step.
+        """Drive the agent loop with a model that calls a tool every step; return the step count.
 
-        ``answer_after`` makes the model deliver a final answer on that step instead,
-        which is the only way an unbounded run ends. Returns the step count. Heavy
-        per-step helpers are patched to no-ops so the loop's own arithmetic is the
-        only thing under test.
+        *answer_after* makes it answer on that step. Heavy per-step helpers are no-ops.
         """
         stream_calls = {"n": 0}
 
@@ -1639,13 +1603,8 @@ class ClientHelperTests(unittest.TestCase):
         self.assertIn("write target was declared", events[0]["text"])
 
     def test_every_injection_point_announces_itself_not_just_the_table(self) -> None:
-        """The loop-control reminders must emit the event too.
-
-        The webview holds the turn in flight outside the transcript and drops it on
-        ``nudge_injected``. A reminder injected silently leaves the rejected prose on
-        screen as if it were the answer, then swaps it for a different one when the
-        real answer lands — which is the display bug that survived the draft fix,
-        because only the nudge table went through the emitting path.
+        """Every loop-control reminder emits ``nudge_injected``, so the webview drops the
+        rejected draft.
         """
         import importlib
         nudges = importlib.import_module("mimir.client.guardrails.nudges")
@@ -1949,13 +1908,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(messages, [])
 
     def test_blast_radius_and_creation_split_on_whether_the_target_exists(self) -> None:
-        """The two rows describe one state; an existing target is what tells them apart.
-
-        Both fire on "a target was declared, files were read, nothing written yet", and
-        they give opposite advice — look for callers first, versus start writing. A
-        keyword on the query used to arbitrate, which meant the wrong one spoke whenever
-        the request was worded unexpectedly. The arbiter is now the workspace.
-        """
+        """The two rows describe one state; whether the target exists decides which speaks."""
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges")
 
@@ -2440,13 +2393,8 @@ class ClientHelperTests(unittest.TestCase):
 
 
 class SubAgentRungTests(unittest.TestCase):
-    """The ladder, and the name a rung used to have.
-
-    "parallel" named the consequence — children at work at the same time — rather than
-    what the user grants, which is the right to change files and run commands. Renaming
-    it is a one-line change here and a trap everywhere else: the old name is in the
-    preferences file of everyone who set it, and an unknown rung is deliberately read as
-    the weakest one, so the rename would quietly take away a granted right.
+    """The sub-agent ladder, and the legacy name "parallel" a stored preference may still
+    carry (an unknown rung reads as the weakest).
     """
 
     def test_the_rungs_are_explore_then_build(self):

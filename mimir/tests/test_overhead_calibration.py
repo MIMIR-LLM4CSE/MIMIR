@@ -20,13 +20,7 @@ from mimir.client.protocol.messages import message_wire_form
 
 
 class _IsolatedCalibrationCache:
-    """Point the on-disk calibration cache at a directory of this test's own.
-
-    A measurement is remembered across runs on purpose, which makes the cache shared
-    state between tests as much as between sessions: without this, one test's ratio
-    answers for the next one's fresh backend, and the suite writes into the state
-    directory of whoever runs it.
-    """
+    """Point the on-disk calibration cache at this test's own directory."""
 
     def setUp(self) -> None:
         super().setUp()

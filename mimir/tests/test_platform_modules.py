@@ -1,13 +1,5 @@
-"""Tests for the persisted, searchable module catalogue on the platform server.
-
-Three contracts drive most of what is asserted here:
-
-* **Hermetic** — the development machine and CI have no module system at all, so the
-  "none" path must be a normal empty answer that writes nothing to disk.
-* **Deterministic freshness** — the catalogue rebuilds when the module tree changes
-  and at no other time. In particular, cluster *occupancy* must never move the signal.
-* **Useful at the floor** — with no descriptions and no embedding backend, a search by
-  module name must still return the right modules in the right order.
+"""The platform server's module catalogue: hermetic (no module system writes nothing),
+rebuilt only when the module tree changes, and searchable by name with no embeddings.
 """
 
 from mimir.servers.hpc import platform_parsers

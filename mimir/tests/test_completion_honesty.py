@@ -1,20 +1,7 @@
-"""The end-of-run honesty surface: what the machine records vs what the model says.
+"""The end-of-run honesty surface: what the machine recorded next to what the model says.
 
-Nothing else reconciles the two. Without this surface, "verified and working" sits
-directly above a file that has only ever been executed, never checked against anything,
-and above a checklist with most of its boxes still open.
-
-Three separate mechanisms are pinned here:
-  * the verification ledger appended to every answer (`finalize`),
-  * the completion issues/completed lists that feed the incomplete-answer
-    finalizer (`workflow`),
-  * `needs_incomplete_finalization`, the predicate that decides whether that
-    finalizer runs at all (`nudges.cascade`).
-
-Everything degrades to today's behaviour when there is no checklist, which is the
-majority of runs — see the no-plan tests in each class.
-
-Pure-Python + temp files (no live model/servers): runs on x86 and ARM.
+Pinned: the verification ledger (``finalize``), the completion lists (``workflow``),
+and ``needs_incomplete_finalization``. Without a checklist, nothing changes.
 """
 from __future__ import annotations
 
@@ -241,12 +228,8 @@ class LedgerMarkerTests(_ChecklistFixture):
 
 
 class OutputVerdictLedgerTests(_ChecklistFixture):
-    """Machine-observed and model-asserted, side by side and never conflated.
-
-    A file row says what a checker established; a run row says what happened when the
-    code was executed and what the model read in the output. The ledger has to render
-    four run states: never judged, judged pass, judged fail, judged unknown — plus a run
-    that never completed at all.
+    """Machine-observed and model-asserted, side by side: a run row is never judged, pass,
+    fail or unknown, or never completed.
     """
 
     def _run(self, command="python b_test.py", **over):
@@ -361,15 +344,8 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
 
 
 class WorkflowNudgeSequenceTests(unittest.TestCase):
-    """The verification nudges are one workflow, and never speak over each other.
-
-    Write → check → run. Each step has exactly one nudge that owns it, and the
-    predicates are written so that at most one can fire at a time: `validation` while a
-    file still owes a check, `unexercised` once the checks are green and nothing has
-    run. The gap this pins is the second one — before it existed, a model could write
-    code, lint it, and stop, and the whole judging machinery stayed unreachable because
-    it is only ever entered by running something. Judging is where the sequence ends:
-    no nudge asks for a verdict.
+    """The verification nudges are one workflow (write → check → run), and at most one fires
+    at a time. No nudge asks for a verdict.
     """
 
     def _agent(self, *, exec_tool=True, judge_tool=True):
@@ -548,13 +524,8 @@ class IncompleteFinalizationTests(_ChecklistFixture):
 
 
 class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
-    """Only the check axis blocks. Build and run are recommended, and stay that way.
-
-`workflow_state` as a third condition in the gate quietly makes the
-    recommendation mandatory: a failed run — or a `fail` verdict, which drives the same
-    ladder — sends the state machine back to `edit`, so every answer comes back "Task is
-    incomplete" until the run has failed VALIDATION_RETRY_BUDGET times, and the model keeps
-    insisting on a validation it was told was optional.
+    """Only the check axis blocks; build and run stay recommended, so a failed run never
+    makes the answer "incomplete".
     """
 
     def test_a_failing_run_does_not_make_a_checked_change_incomplete(self):
@@ -612,12 +583,8 @@ class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
 
 
 class RefusedActionReportTests(_ChecklistFixture):
-    """How a refused approval reads in the closing report.
-
-    Filing a refusal as a blocker unconditionally gives "the user told me that step was
-    unnecessary" and "the user stopped me" the same verdict: `Task is incomplete.` at high
-    risk. The three readings of a refusal have three different honest endings, and none of
-    them is silence about the skipped step.
+    """How a refused approval reads in the closing report: each of its three readings has
+    its own honest ending.
     """
 
     def _headline(self, out):
@@ -767,15 +734,7 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
 
 
 class WorkspaceRootIsNameableTests(unittest.TestCase):
-    """The workspace root must be stated absolutely, on every query.
-
-    Regression, observed twice. A run told to create files "outside of the codes
-    directory" created them in the workspace root — which *is* `codes` — and reported
-    the constraint satisfied. The line stands on its own and is injected
-    unconditionally — disclosing the root inside an orientation block built only for a
-    query classified as repo-touching leaves it unstated on exactly the greenfield runs
-    where a misplaced file is least visible.
-    """
+    """The workspace root is stated absolutely, on every query."""
 
     def _content(self, root: str) -> str:
         from mimir.client.prompt.system_prompt import build_system_content
@@ -798,12 +757,8 @@ class WorkspaceRootIsNameableTests(unittest.TestCase):
         self.assertIn(f"Workspace root (absolute): {root}", self._content(root))
 
     def test_prompt_points_at_the_root_for_building_absolute_paths(self):
-        """The root is a *prerequisite*, not a hint.
-
-        Placement is enforced at the tool boundary (file tools reject relative
-        paths), so the prompt no longer argues about how relative paths resolve —
-        it only has to tell the model where to join from. The prose that tried to
-        make the inference reliable is gone; see server_files._require_abs.
+        """The root is a prerequisite: file tools reject relative paths, so the prompt only says
+        where to join from.
         """
         content = self._content(os.getcwd())
         self.assertIn("File tools take absolute paths", content)
@@ -997,13 +952,7 @@ class ExerciseRouteTests(unittest.TestCase):
 
 
 class TestRedRunRaisesResidualRisk(unittest.TestCase):
-    """A run left red must not be reported under `Residual risk: low`.
-
-    Observed in the wild: a report listing two `Run failing, unresolved` lines and
-    closing three lines later with `Residual risk: low.` The level read only the file
-    axis, so the run ledger — the axis that carries whether the thing actually works —
-    contributed nothing to it.
-    """
+    """A run left red is never reported under ``Residual risk: low``."""
 
     def _clean_but_for_runs(self):
         # Everything on the file axis settled, so the runs are the only open fact.
@@ -1058,14 +1007,7 @@ if __name__ == "__main__":
 
 
 class CompletionBlockTests(_ChecklistFixture):
-    """The report's marker contract with the front-ends.
-
-    A marked block at the tail, which the front-ends fold into a disclosure. Bare prose
-    concatenated ahead of the answer has nothing to lift it off by, so every front-end
-    renders the whole of it as body text with the model's own words underneath — which is
-    how an ordinary interim turn reads as a wall of machine output. These tests hold the
-    shape that makes the folding possible.
-    """
+    """The report is a marked block at the tail, which the front-ends fold away."""
 
     def _report(self, answer="Le build tourne toujours."):
         ec = _written({"a.py"}, validated=False)

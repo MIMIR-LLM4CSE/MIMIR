@@ -98,12 +98,8 @@ if __name__ == "__main__":
 
 
 class UnwatchedRunNudgeTest(unittest.TestCase):
-    """The row that closes the gap between "the tool exists" and "it gets called".
-
-    A job submitted outside MIMIR is watched by nothing: no poll, no wake, and no
-    reason for the process to stay alive — so a detached run spends the night doing
-    nothing and the result reaches nobody. The remedy is one call, and the only moment
-    it can still be made is before the turn ends.
+    """A job submitted outside MIMIR is watched by nothing; the nudge asks for the one call
+    that fixes it before the turn ends.
     """
 
     def _context(self, **over):

@@ -1,11 +1,7 @@
-"""Shared fixture for the memory server: load it, and point BOTH stores at a tmpdir.
+"""The memory server, loaded with both its stores pointed at a tmpdir.
 
-The server resolves two stores — the per-workspace one off ``MIMIR_STATE_DIR`` and the
-global one off ``MIMIR_GLOBAL_STATE_DIR`` — and `memory_add` reads the global store even
-when writing to the workspace (cross-scope duplicate refusal). So a test that repoints
-only the workspace paths reads, and through embedding backfill *writes*, the developer's
-real ``~/.mimir/global/memory``. Pointing both is what keeps the suite hermetic, and it
-belongs in one place rather than in each test file's setUp.
+``memory_add`` reads the global store even when writing the workspace one, so pointing
+only the workspace store would read and write the developer's ``~/.mimir/global/memory``.
 """
 
 import importlib.util

@@ -1,11 +1,5 @@
-"""Unit tests for the op-dispatched proxy server (servers/proxy/server_proxy.py).
-
-Covers the dispatch layer (unknown ops, per-op required args, confirm gating), the
-`metadata` dict merge in register/update, and the `next_step` contract on the eval
-loop. Slurm submission lives in test_proxy_slurm.py; fixtures in _proxy_fixtures.py.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_ops -v
+"""The op-dispatched proxy server: dispatch (unknown ops, required args, confirm), the
+``metadata`` merge, and the ``next_step`` contract of the eval loop.
 """
 
 import os

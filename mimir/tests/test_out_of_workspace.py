@@ -1,11 +1,5 @@
-"""Out-of-workspace access approval (read/write/run), allow/deny/always.
-
-Covers the client decision + sidecar propagation and the engine gate that prompts.
-The server-honoring half (guards consulting the sidecar) is in test_read_roots.py
-and the smoke checks here.
-
-Run:
-    python -m unittest mimir.tests.test_out_of_workspace -v
+"""Out-of-workspace access approval: the client decision, sidecar propagation, and the
+engine gate. The servers' half is in ``test_read_roots.py``.
 """
 from mimir.client.context.execution_context import build_execution_context
 
@@ -195,15 +189,8 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
                 os.path.realpath(root).startswith(os.path.join(home, ".cache")), root)
 
     def test_state_dir_is_trusted_without_the_env_var(self) -> None:
-        """The client must trust STATE_DIR from its own config, not from the env.
-
-        ``MIMIR_STATE_DIR`` is only ever placed in the *server* subprocesses' env
-        (server_manager), so the shared helper — which resolves the state dir from
-        that variable — returns nothing for it in the client process. The gate then
-        prompted for every read of the agent's own plans and sessions, while the
-        servers, which do see the variable, would have allowed it. This class's setUp
-        happens to export the variable, so it is removed here: with it set, the bug
-        is invisible.
+        """The client trusts its state dir from its own config; ``MIMIR_STATE_DIR`` is only in the
+        servers' environment, so it is removed here.
         """
         old = os.environ.pop("MIMIR_STATE_DIR", None)
         try:
@@ -218,13 +205,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
                 os.environ["MIMIR_STATE_DIR"] = old
 
     def test_scratchpad_writes_are_never_prompted(self) -> None:
-        """The scratchpad is outside the workspace by design.
-
-        Prompting for it would defeat its purpose — it exists so throwaway work has
-        a home that costs no user decision. Checked with MIMIR_STATE_DIR removed:
-        the scratchpad home lives under the temp dir and must not depend on the
-        state dir (only the per-session subdirectory reads its sidecar).
-        """
+        """Scratchpad writes never prompt, with or without ``MIMIR_STATE_DIR``."""
         from mimir.client.context.paths import scratch_roots
         old = os.environ.pop("MIMIR_STATE_DIR", None)
         try:
@@ -256,14 +237,10 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
 
 
 class _FakeExecAgent(_FakeAgent):
-    """A shell-command tool — paths arrive inside the command string.
+    """A shell-command tool: paths arrive inside the command string.
 
-    No `cwd` arg-role: the bash server has no working-directory argument, so every
-    call starts at the workspace root and `cd` is the only way to move.
-
-    The `command_prefix` scope is what makes the extractor read the arguments as shell;
-    CODE_EXEC alone does not, since a tool can execute through structured parameters
-    that no shell parser should be pointed at.
+    Its ``command_prefix`` scope makes the extractor parse the arguments as shell; every
+    call starts at the workspace root.
     """
 
     def __init__(self, mgr, *, script) -> None:
@@ -448,13 +425,7 @@ class _FakeEngineAgent(_FakeExecAgent):
 
 
 class SingleApprovalPerCallTests(_TmpStateDir):
-    """One call, one question.
-
-    A sensitive command reaching outside the workspace used to raise two cards in a
-    row — the out-of-workspace prompt and then the ordinary sensitive-tool prompt —
-    for a single decision. The first already names the tool, its arguments and the
-    path, and rates the call irreversible, so it subsumes the second.
-    """
+    """One call, one question: the out-of-workspace prompt subsumes the sensitive-tool one."""
 
     def _agent(self, script=(True, False)):
         return _FakeEngineAgent(

@@ -1,18 +1,4 @@
-"""A dangling symlink must cost the tree summary one entry, not the whole call.
-
-Incident (2026-09-22): the first tool call of a session, ``tree_summary(".")``, died
-with ``[Errno 2] No such file or directory: '…/.venv39/bin/python'``. The path was
-not an interpreter MIMIR went looking for — it was an entry in the tree being
-summarised: a virtualenv whose base interpreter had moved, leaving ``bin/python`` a
-symlink to nothing. ``os.walk`` lists such a file, ``os.path.getsize`` raises on it,
-and the exception left the model with no map of the workspace at all.
-
-``list_files`` never had the bug — it sizes with ``if os.path.isfile(fp) else None``,
-which reads False on a dangling link — which is why the same session's
-``list_directory`` succeeded in the same millisecond.
-
-Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
-"""
+"""A dangling symlink costs the tree summary one entry, not the whole call."""
 from __future__ import annotations
 
 import os

@@ -1,14 +1,7 @@
-"""The build step the ratchet runs before it measures (servers/proxy/_lib/build.py).
+"""The build step the ratchet runs before it measures (``_lib/build.py``).
 
-A Python proxy needs none: the edited file is the file that runs. A compiled one
-breaks that identity, and the ratchet fingerprints sources only — so an unbuilt
-binary would be measured, and could be *accepted*, against code that never ran.
-These tests pin the three properties that close it: the build happens once per
-run and before any case, a failed build produces no verdict and no ledger entry,
-and a restore leaves sources the build system will notice.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_build -v
+It happens once per run before any case; a failed build gives no verdict and no ledger
+entry; a restore leaves sources the build system notices.
 """
 
 from mimir.servers._shared.launcher import launch_argv
@@ -51,13 +44,8 @@ class SpecTests(_TmpStorageTest):
 
 
 class BuildCwdSpellingTests(_TmpStorageTest):
-    """The build runs in the directory it was configured with, symlinks and all.
-
-    Resolving them is a full rebuild on every run: scratch space is normally presented
-    through a link (/home/me/proj -> /gpfs/.../proj), CMake bakes the absolute path it
-    was configured with into its cache, rules and depfiles, and a build handed the
-    other spelling finds every one of them unequal. It then alternates forever with
-    whatever the user runs from their own shell.
+    """The build runs in the directory as configured, symlinks kept, so CMake's cached paths
+    match and nothing rebuilds.
     """
 
     def _linked_tree(self) -> tuple[str, str]:
@@ -76,13 +64,7 @@ class BuildCwdSpellingTests(_TmpStorageTest):
         self.assertNotEqual(cwd, real)
 
     def test_the_build_process_itself_sees_the_declared_spelling(self) -> None:
-        """The assertion that matters: what the child sees, not what we recorded.
-
-        Popen chdir()s, and getcwd() comes back resolved whichever spelling it was
-        handed — so keeping build_cwd unresolved buys nothing on its own. PWD is the
-        only channel that carries it, and inherited it names the MCP server's directory
-        rather than the one the build is running in.
-        """
+        """The child sees the declared spelling through ``PWD`` (``getcwd()`` comes back resolved)."""
         real, link = self._linked_tree()
         sh = _script(os.path.join(self.root, "b.sh"), 'echo "at=$(pwd)"\n')
         rec = build.run_build({"build_cmd": sh, "build_cwd": link},
@@ -382,14 +364,8 @@ class RestoreMtimeTests(_TmpStorageTest):
 
 
 class SelectiveRestoreTests(_TmpStorageTest):
-    """A restore writes only what differs, because writing means "recompile this".
-
-    A fresh mtime is how a restored file tells `make` it is new. Handing that to a file
-    whose bytes never changed is a false statement: the artifact beside it was built
-    from exactly those bytes. Both backends used to hand it to the whole tracked set, so
-    undoing a one-file edit cost a rebuild of every tracked file — and of everything
-    downstream of a header among them. These pin the narrowing, in both backends, and
-    the invariant it must not cost: the tree still ends up exactly at the snapshot.
+    """A restore writes only the files that differ, in both backends, and the tree still ends
+    up exactly at the snapshot.
     """
 
     def _pair(self) -> tuple[str, str]:
@@ -401,13 +377,7 @@ class SelectiveRestoreTests(_TmpStorageTest):
         return a, b
 
     def _backends(self):
-        """Both restore paths under one name: git, and the copy fallback.
-
-        A machine without git runs the fallback, so an incrementality property that
-        holds in only one of them holds where it is not needed. A machine without
-        git cannot exercise the git backend at all, so that branch is skipped rather
-        than failed (subprocess would raise FileNotFoundError on the missing binary).
-        """
+        """Both restore paths: git (skipped when git is absent) and the copy fallback."""
         git_dir = os.path.join(self.root, "opt.git")
 
         def via_git(paths, snap_of):
@@ -473,12 +443,8 @@ class SelectiveRestoreTests(_TmpStorageTest):
                 self.assertEqual(open(a).read(), "int a(){return 1;}\n")
 
     def test_an_edit_in_the_same_tick_as_a_restore_is_still_seen(self) -> None:
-        """Editing right after reset_to_best is the loop, not a corner case.
-
-        A stat-based comparison answers "identical" here: the edit lands in the same
-        filesystem tick as the restore that preceded it, so size and mtime are
-        unchanged while the content is not. Getting this wrong leaves a file on disk
-        that is not what the snapshot says — the one direction this must never fail in.
+        """An edit in the same filesystem tick as a restore is still seen: size and mtime match,
+        the content does not.
         """
         for name, make in self._backends():
             with self.subTest(backend=name):
@@ -571,12 +537,8 @@ class RunnerPhaseTests(_TmpStorageTest):
 
 
 class SplitPhaseTests(_TmpStorageTest):
-    """The build and the measurement as two jobs on two machines.
-
-    A node dedicated to GPU simulation is not a node to compile on, so an eval run
-    can be split in two: one job builds, a second measures, both over the same run
-    directory. What these pin is the seam — the run half must not rebuild, and must
-    refuse to measure anything the build half did not actually produce.
+    """The build and the measurement as two jobs: the run half never rebuilds and refuses to
+    measure what the build half did not produce.
     """
 
     def _run_phase(self, run_dir: str, phase: str):
@@ -649,13 +611,8 @@ class SplitPhaseTests(_TmpStorageTest):
 
 
 class RunProgressTests(_TmpStorageTest):
-    """What a run says it is doing, read off the run dir while it is still going.
-
-    A blocking call cannot report on itself — it does not answer until the run is
-    over. Both halves of the answer are therefore read from disk: the phase from the
-    sidecar the runner writes at its own boundaries, and the percentage from the
-    build's own output, because the runner is blocked inside the build for its whole
-    duration and is in no position to count it.
+    """What a running run is doing, read from disk: the phase from the runner's sidecar, the
+    percentage from the build's output.
     """
 
     def setUp(self) -> None:

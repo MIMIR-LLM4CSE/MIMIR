@@ -211,12 +211,8 @@ class ScopeNarrowingTests(unittest.TestCase):
 
 
 class ReseedClassificationTests(unittest.TestCase):
-    """Guards MimirAgent.seed_classification_from_caps's in-place mutation pattern.
-
-    The manager is constructed before servers connect, then re-seeded from the
-    live per-agent registry. The mutation must (a) preserve the identity of
-    `approved_scopes` (aliased as `agent.session_approved_scopes`) and the three
-    classification containers, and (b) keep non-batch gating correct.
+    """Re-seeding from the live registry mutates in place: ``approved_scopes`` and the
+    classification containers keep their identity, and non-batch gating stays correct.
     """
 
     @staticmethod
@@ -287,12 +283,8 @@ class ReseedClassificationTests(unittest.TestCase):
 
 
 class SettledRefusalTests(unittest.TestCase):
-    """A refusal the user has already repeated is not put back to them.
-
-    The gate already declined to re-prompt once a scope reached `handback`; what it
-    still did was raise a third card for a scope refused twice, which the ladder had
-    already closed — from `drop_or_stop` on, another attempt at the same goal is off
-    the table, and the same route is one.
+    """A refusal the user has already repeated is not put back to them: from
+    ``drop_or_stop`` on, the same scope raises no card.
     """
 
     def _ctx(self, scope, times):

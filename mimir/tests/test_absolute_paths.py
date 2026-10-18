@@ -1,20 +1,7 @@
-"""File tools take absolute paths only — the structural fix for misplacement.
+"""File tools take absolute paths only.
 
-Two runs were asked to create a solver *outside* the `codes` directory. Both wrote
-it inside, and both reported the constraint satisfied. The cause was not a missing
-fact: `write_file` accepted "absolute or relative to server start directory", and a
-relative path was silently resolved against a root the model had to infer. Two
-prompt-level attempts to make that inference reliable failed.
-
-Requiring an absolute path removes the inference. There is no resolution step left
-to get wrong, and the destination is stated in the call itself.
-
-Pinned here: the rejection covers every mutating tool including the batch path, the
-error is *self-correcting* (it names the path the relative form would have produced),
-nothing is written on rejection, and the new precondition does not weaken the
-sandbox or catch internal helpers.
-
-Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
+Rejection covers every mutating tool, batch included; the error names the path the
+relative form would have meant; nothing is written; the sandbox is not weakened.
 """
 from __future__ import annotations
 
@@ -236,13 +223,8 @@ class ReadsReachWhereWritesReachTests(unittest.TestCase):
 
 
 class PathRoundTripTests(unittest.TestCase):
-    """Every path the model *reads* must be usable where it *writes*.
-
-    The invariant that makes the absolute-path rule coherent: the model copies
-    paths, it never constructs them. If discovery hands back workspace-relative
-    paths while file tools require absolute ones, the model has to join the root
-    itself — which is precisely the inference the rule removed, reintroduced at the
-    moment it is most likely to copy without thinking.
+    """Every path the model *reads* is usable where it *writes*: the model copies paths and
+    never has to join the root itself.
     """
 
     def test_search_returns_absolute_paths(self):

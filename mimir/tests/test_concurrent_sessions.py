@@ -1,17 +1,7 @@
 """Several conversations working at once, and answers reaching the right one.
 
-The property the whole change exists for: leaving a conversation leaves its turn
-running. What that costs is that "the running turn", "the parked card" and "the answer"
-stop being questions with one answer — and every one of them, got wrong, fails silently
-rather than loudly.
-
-The sharpest is the answer to a card. Two conversations can be parked at the same moment,
-and one may be asking while the user reads another. Routing an answer to "the" agent
-would settle a question a different conversation asked, with the user's approval attached
-to a tool call they never saw. So a card says which conversation raised it, the answer
-carries that back, and anything unattributed is dropped rather than guessed at.
-
-Pure-Python: stub workers and a stub pool, because what is under test is the routing.
+A card says which conversation raised it, its answer carries that back, and an
+unattributed answer is dropped. Stub workers and a stub pool.
 """
 from __future__ import annotations
 
@@ -190,12 +180,8 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
                           "runs": 0})
 
     def test_a_sleeping_conversation_with_a_run_going_is_not_reported_idle(self) -> None:
-        """The row the disconnect question is decided from.
-
-        A run in the background and the agent asleep: no turn in flight anywhere, which
-        is the ordinary state of the thing detaching exists for. Reported as idle, the
-        panel let the window close on a two-hour job without asking — the same from the
-        outside as MIMIR having decided to detach on its own.
+        """A conversation asleep with a background run going is not idle, so the panel asks
+        before closing.
         """
         self.a.query_session_id = None                  # nothing is answering
         self.a.jobs.watches = {"j1": _watch(), "j2": _watch()}

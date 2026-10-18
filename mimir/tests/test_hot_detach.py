@@ -1,14 +1,7 @@
 """Letting the server go on without the window that started it.
 
-The extension spawns it as an ordinary child and holds its stdout, and that pipe is the
-real killer: when the extension host dies its end closes, and the next write here takes
-a SIGPIPE. A server that survives the window only to die the first time it logs
-something has not survived.
-
-Both halves of the fix are things the process does to *itself*, which is what lets the
-decision be made when the user is leaving rather than when they connected — the spawn is
-never touched. These tests exercise the real system calls: a fake `dup2` would prove
-nothing about the thing that actually breaks.
+The process protects itself from the closed stdout pipe (SIGPIPE) when the user
+leaves; the tests run the real system calls.
 """
 import json
 import os
@@ -195,20 +188,10 @@ class LeaveProcessGroupTests(unittest.TestCase):
 
 
 class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
-    """What happens when a window opens onto a run that never stopped.
+    """A window opening onto a run that never stopped takes the server back: the claim is
+    dropped, so closing the window ends the run.
 
-    Attaching is the take-back: the user who left is back, so the claim that kept the
-    process alive is dropped and the panel is told the server is this window's again.
-    That is what makes closing the window end the run — nothing else can, since a window
-    that attached to a server holds no child process to kill.
-
-    The level is the other half, and it has to be shown: a worker rebuilt during the
-    absence would otherwise come up on the pool-wide record, and a run quietly dropped
-    from `auto_all` to `manual` parks at its next sensitive call with nothing said. But
-    showing it is all it is — nothing has gone wrong, nothing needs answering, and the
-    only control is a switcher already on screen. Drawn as a warning it reads as a
-    problem to deal with, at the one moment the user is reading for what happened
-    rather than for what to do.
+    The approval level of a worker rebuilt in the absence is shown, as information only.
     """
 
     def setUp(self) -> None:
@@ -480,14 +463,8 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
             [m for m in self.sent if m["type"] == "detached"][0]["sessions"], [])
 
     async def test_a_conversation_whose_agent_is_asleep_is_still_claimed(self):
-        """The failure this exists for, and it compounded the other one.
-
-        An agent is built on a conversation's first query and released after ten
-        minutes of idleness — and a conversation whose work is a job MIMIR cannot see
-        has nothing holding its agent, so it is asleep at exactly the moment the user
-        leaves. Built from the live agents, the claim set came out empty for it; an
-        empty claim is written as "not detached", so the server stopped thirty seconds
-        after the window closed, having just been asked to keep going.
+        """A conversation whose agent was released is still claimed on detach; an empty claim
+        would stop the server.
         """
         from mimir.client.ui.ws.server import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
@@ -599,14 +576,8 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
                          ["background run(s) still going: s1/abc"])
 
     async def test_a_detachment_with_nothing_to_watch_says_so_instead(self):
-        """The night this exists for: detaching onto work MIMIR cannot see.
-
-        A job it did not submit — a raw ``sbatch``, a site launcher, a submission over
-        ``ssh`` — leaves no descriptor, so the scan finds nothing, the process is idle
-        by every measure it has, and it stops on the idle TTL a couple of hours later.
-        The run itself is untouched and nobody is ever woken for it. Saying "this run
-        keeps working" there is the one sentence that cost a whole night, and the
-        moment to say otherwise is the click.
+        """Detaching onto work MIMIR cannot see (no descriptor) says that nothing will watch it
+        and the server will stop on its idle TTL.
         """
         self.sess.pool.idle_reasons = []
         await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto_all"})

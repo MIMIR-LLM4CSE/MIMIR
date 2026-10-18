@@ -1,11 +1,5 @@
-"""The loop stops leaving its own machinery in the conversation.
-
-Session ``b2fd38f1`` ended unable to produce anything, and its saved history showed
-why it could not recover: 21 copies of one reminder sentence, 17 duplicate workflow
-reminders, 9 copies of the same skill block and 9 empty assistant turns — 62 messages
-and ~10% of the prompt, all of it produced by the loop reacting to its own failures.
-The first empty turn arrived on a perfectly ordinary prompt; everything after it was
-the loop's answer to that turn making the next one worse.
+"""The loop leaves none of its own machinery in the conversation: no repeated
+reminders, duplicate skill blocks or empty assistant turns.
 """
 from __future__ import annotations
 
@@ -86,14 +80,7 @@ class EmptyTurnDebrisTests(_LoopRunner):
         self.assertEqual(len(backend.calls), AGENT_EMPTY_TURN_RETRIES + 1)
 
     def test_three_retries_are_three_different_prompts(self) -> None:
-        """A retry that re-sends the same sentence is not a retry.
-
-        The reminder is transient — taken back out after the call it was injected for —
-        so every attempt used to put the identical text to the model: `len(messages)`
-        stayed flat across steps 2/3/4/5 of the recorded session. Three attempts, one
-        prompt. The fix escalates the ask instead of persisting the message, which
-        would re-open the 21-copies regression the rest of this file pins.
-        """
+        """Each retry after an empty turn escalates the ask, without persisting the reminder."""
         _, backend, _, _ = self._run([{"content": ""}] * 10)
         asks = []
         for call in backend.calls[1:]:  # the first call carries no reminder yet
@@ -185,13 +172,7 @@ class _CancelsOnSecondCall(ScriptedBackend):
 
 
 class InterruptedTurnRecordTests(unittest.TestCase):
-    """A turn that never answers still owns the transcript the front-end reads back.
-
-    Session ``505d43a3``: after each stop + "continue", the model replayed the same
-    "Excellent résultat" message. The stopped turn had left the *previous* turn's
-    transcript in ``turn.last_full_messages``; the front-end rolled its history back to it,
-    archived that turn a second time, and "continue" resumed from before the work.
-    """
+    """A stopped turn owns the transcript the front-end reads back, not the previous turn's."""
 
     def _run_cancelled(self):
         agent = RunAgentQueryNonInteractiveTests._query_agent(self)
@@ -230,13 +211,7 @@ class InterruptedTurnRecordTests(unittest.TestCase):
 
 
 class InterleavedReasoningTests(unittest.TestCase):
-    """A step's reasoning reaches the next step of the same turn, and no further.
-
-    Session ``7a598398`` (DeepSeek-V4): before each tool call the model restated
-    "GPU 7 is idle — the 3.7% spread is intrinsic noise…". Its template renders every
-    earlier step as ``<think>{reasoning}</think>``; with the reasoning stripped from
-    history each block was empty, so each step re-derived the same analysis.
-    """
+    """A step's reasoning reaches the next step of the same turn, and no further."""
 
     def _run(self, history=None):
         agent = RunAgentQueryNonInteractiveTests._query_agent(self)
@@ -348,13 +323,7 @@ class SharedRoleNormalizationTests(unittest.TestCase):
 
 
 class PlanModeEmptyTurnTests(unittest.TestCase):
-    """Plan mode had no empty-turn handling at all.
-
-    A turn with neither prose nor a tool call fell into the "no plan recorded yet"
-    branch, was nudged toward the plan and looped — leaving its empty assistant message
-    in history every round, which is exactly the shape the agent loop was taught to
-    refuse: it shows the model, over and over, that an empty message answers a reminder.
-    """
+    """Plan mode handles an empty turn like the agent loop: no empty message left in history."""
 
     def _run(self, script):
         from mimir.client.context.execution_context import build_execution_context

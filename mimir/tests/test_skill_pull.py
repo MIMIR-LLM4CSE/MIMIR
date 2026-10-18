@@ -1,16 +1,5 @@
-"""Loading a skill mid-run: who may, how often, and what keeps it in the context.
-
-A skill used to enter the prompt once, before the first step, chosen by a classifier
-model call from a query that does not yet know what the task is made of. Now the index
-of loadable skills is in the system prompt and the model pulls one with ``load_skill``
-at the step where its own reading tells it which method the work needs.
-
-That moves the body from ``messages[0]`` — which nothing evicts, and which no query may
-rewrite mid-run without costing the prompt prefix for every remaining step — to a tool
-result in the tail, which three separate passes of the context budget would otherwise
-carry away. So the pin is the load-bearing part of the feature, and most of this file is
-about it: the model has been told the method is in its context, and a pull that can
-silently disappear is worse than no pull at all.
+"""Loading a skill mid-run with ``load_skill``: who may, how often, and the pin that keeps
+the body in context, since it lives in a tool result the budget would otherwise evict.
 """
 from mimir.client.context.execution_context import build_execution_context
 import json

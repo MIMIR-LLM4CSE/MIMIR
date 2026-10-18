@@ -1,13 +1,7 @@
-"""A timeout must stop the work, not just stop waiting for it.
+"""A timeout stops the work, grandchildren included, not just the wait for it.
 
-`subprocess.run(..., timeout=...)` kills the process it launched and nothing that
-process forked. The bash tool runs `bash -c "<preamble><command>"`, which is compound,
-so bash forks rather than execs — the kill landed on bash and the fork ran on. Observed:
-`find / -name _proxy_runner.py` outliving its 30s timeout by an hour and forty minutes,
-three at a time, while a ratchet next door was timing a solver on the same disk.
-
-These tests use a marker file a grandchild keeps writing: if it is still growing after
-the timeout returned, the work was never stopped.
+A grandchild keeps writing a marker file; if it still grows after the timeout, the work
+was never stopped.
 """
 from __future__ import annotations
 

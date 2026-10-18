@@ -1,14 +1,5 @@
-"""A successful edit tells the caller where it landed in the file it just produced.
-
-Root cause this covers: an edit renumbers every line below it, so the line numbers the
-model used to find the site — from a search, an outline, an earlier read — stop
-describing the file the instant the write succeeds. When the result carried only a diff,
-the only way back to a usable position was another search plus another read, per edit.
-Now the result carries the new span, the shift applied below it, and the region as it
-now stands.
-
-Run:
-    python -m unittest mimir.tests.test_edit_orientation -v
+"""A successful edit reports where it landed: the new span, the shift below it, and the
+region as it now stands.
 """
 
 import os

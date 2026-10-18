@@ -1,13 +1,5 @@
-"""``proxy_eval(op='run')`` waits for the run instead of returning a handle.
-
-The old shape spent one turn launching and then a turn per poll to learn "still
-running" — the interesting moment of an optimization run is its end, and the
-ratchet verdict is the thing worth reading. These tests pin the three exits:
-the run finishes inside the budget, the budget runs out, and the caller asked
-to detach up front.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_eval_wait -v
+"""``proxy_eval(op='run')`` waits for the run: it finishes in the budget, the budget runs
+out, or the caller detached up front.
 """
 
 import asyncio

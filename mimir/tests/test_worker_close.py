@@ -1,16 +1,5 @@
-"""Closing a worker closes its MCP servers, and never under a live turn.
-
-Two failures hide behind one symptom — ``Tool 'bash_run' failed to execute:
-ClosedResourceError``. ``stdio_client`` anchors its anyio cancel scope to the task that
-entered the context, so exiting the agent's exit stack anywhere else raises and leaves the
-stack half-unwound: the streams closed, the subprocess alive. The turn still running on
-that agent then fails its next tool call on a dead stream, and nothing was reaped.
-
-So the close must happen in the task that opened the servers, and must not happen at all
-while a turn is running or queued. Both are checked here; ``test_agent_pool`` checks what
-the pool does with the second answer.
-
-Pure-Python: a stub agent, because what is under test is which task closes it and when.
+"""Closing a worker closes its MCP servers in the task that opened them, and never while a
+turn is running or queued. A stub agent.
 """
 from __future__ import annotations
 

@@ -1,19 +1,7 @@
-"""The agent pool: one worker per conversation, built late and let go.
+"""The agent pool: one worker per conversation, built lazily, capped, and released.
 
-One ``AgentWorker`` per conversation, which is what lets a turn keep running in one
-nobody is reading. Three properties make that affordable, and each has a failure mode
-worth pinning:
-
-* **lazily** — a worker is built on its conversation's first query. Build it eagerly and
-  every conversation pays the backend wait plus ~19 server spawns whether it asks anything
-  or not.
-* **capped** — past the cap a turn waits for a slot. Evict a working conversation to make
-  room instead, and a visible wait becomes silently lost work.
-* **released** — an idle worker is closed, servers included. Skip that and a few hours of
-  use strands a full set of subprocesses per conversation ever opened.
-
-Pure-Python: the workers here are stubs, because what is under test is the bookkeeping,
-not the agent.
+Past the cap a turn waits rather than evicting a working conversation; an idle worker
+is closed, servers included. The workers are stubs.
 """
 from __future__ import annotations
 
@@ -540,13 +528,7 @@ class ShutdownClosesEverythingAtOnceTests(_PoolCase):
 
 
 class OpeningAConversationCostsNothingTests(_PoolCase):
-    """Reading conversations is free; only asking one something builds its agent.
-
-    The cap bounds how many conversations can be *working*, not how many exist or how many
-    the user looks at. Building on open would spend the backend wait and ~19 server spawns
-    on a conversation the user is only reading, and would have browsing a history of ten
-    hit the cap on the fourth click.
-    """
+    """Reading conversations is free; only asking one something builds its agent."""
 
     async def test_the_pool_is_empty_until_something_is_asked(self) -> None:
         pool = self._pool(cap=1)
@@ -563,18 +545,8 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         self.assertEqual(_StubWorker.built, 0)
 
     async def test_only_an_explicit_ask_can_build_one(self) -> None:
-        """Two asks build an agent: a query, and opening the drawer.
-
-        The query is the obvious one. The other is the scientific-computing drawer being
-        opened: its sections are filled by MCP servers — the clusters this workspace
-        reaches, the machine, the optimisation in progress — and a conversation that has
-        no agent holds none of them, so that drawer showed nothing until something had
-        been asked of the model. It is one build, for the conversation already on screen,
-        that its first query would have paid for anyway.
-
-        What this still forbids is the thing the cap is about: *reading* a conversation —
-        switching to it, listing it, replaying it — must never build, or browsing a
-        history of ten would hit the cap on the fourth click.
+        """Two asks build an agent: a query, and opening the drawer (its sections come from the
+        servers). Switching to, listing or replaying a conversation never builds.
         """
         import asyncio
         from mimir.tests.support.connections import bare_session

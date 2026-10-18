@@ -146,13 +146,8 @@ class ChecklistPlacementTests(unittest.TestCase):
 
 
 class RebuildRuleTests(unittest.TestCase):
-    """messages[0] is the mode's prompt plus the folded skill block, at EVERY rebuild.
-
-    The skill block lives inside messages[0] rather than as a second `system` message
-    (appending made it accumulate — one session carried nine copies). The cost is that
-    every rebuild has to put it back, and the sites that rebuild are the mode switch,
-    the thinking-rung change, the plan→agent handoff and the checklist refresh. Three
-    of the four used to drop it silently, mid-run, on a user action.
+    """``messages[0]`` is the mode's prompt plus the folded skill block at every rebuild: mode
+    switch, thinking rung, plan→agent handoff, checklist refresh.
     """
 
     def _agent(self):
@@ -198,13 +193,8 @@ class RebuildRuleTests(unittest.TestCase):
 
 
 class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
-    """The counterpart to the rule above, and the reason the two differ.
-
-    A skill the USER invokes with /name is folded into messages[0]: the decision is
-    made before the first step, so the prefix is paid for once and binds every step.
-    A skill the MODEL pulls arrives mid-run, where rewriting messages[0] would void
-    the prompt prefix for every remaining step of the query. So it stays where it
-    landed — a tool result in the tail — and is protected there instead.
+    """A skill the model pulls mid-run stays a tool result in the tail, protected there, so
+    the prompt prefix is kept; a /name skill is folded into ``messages[0]``.
     """
 
     def _agent(self):
@@ -257,13 +247,8 @@ class PlanModeChecklistTests(unittest.TestCase):
 
 
 class ToolListStabilityTest(unittest.TestCase):
-    """The tools payload must be byte-identical whenever nothing the user controls moved.
-
-    The list is not trimmed by domain or by a relevance cap, so it is the *whole*
-    advertised surface — the largest single block in the prompt prefix. Constant, it is
-    tokenized and cached once per session; varying by anything the request or the run's
-    progress says, it misses that cache on every call, which costs far more than trimming
-    would ever save.
+    """The tools payload is byte-identical whenever nothing the user controls moved, so it is
+    cached once per session.
     """
 
     TOOLS = [{"function": {"name": n}} for n in

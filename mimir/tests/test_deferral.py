@@ -1,14 +1,7 @@
 """A turn waiting on the user survives the user leaving its conversation.
 
-Leaving disturbs nothing: the turn keeps running, and its card stays up carrying the
-conversation that raised it, so a plan up for approval or a command waiting for its
-go-ahead is still there when the user comes back.
-
-Deferral is for the cases where the wait really must be set aside — the user moving past a
-card, a conversation deleted while one of its turns is parked. The card is stored with the
-conversation and answering it resumes the turn from the exact call it stopped on. Both
-halves are covered here: the worker's side of setting a wait aside, and the session's side
-of resuming on the answer.
+Deferral sets a wait aside (a card moved past, a conversation deleted); the card is
+stored, and answering it resumes the turn from the call it stopped on.
 """
 from __future__ import annotations
 

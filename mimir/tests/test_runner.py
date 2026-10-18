@@ -1,15 +1,7 @@
-"""Tests for the headless run engine (``mimir.runner``).
+"""The headless run engine, model-free with a ``ScriptedBackend`` and no servers.
 
-Driven model-free with a ``ScriptedBackend`` (no live model, no MCP servers — the
-test adapter uses ``servers=()``), mirroring the ScriptedBackend pattern in
-``test_agent_loop.py``. Covers:
-
-- report shape from ``run_benchmark`` (counts, pass_rate, per-task results);
-- the unattended auto-approve hook (``_install_auto_approve``) approves any tool
-  and disables the human continue prompt;
-- per-task state isolation (each task gets a distinct workspace and a *fresh*
-  agent, so nothing leaks between tasks);
-- the skip path (a task with an unavailable ``requires`` is recorded skipped).
+The report shape, the auto-approve hook, a fresh agent and workspace per task, and the
+skip path.
 """
 from __future__ import annotations
 

@@ -1,14 +1,5 @@
-"""Faithfulness gate — the live classification comes entirely from the servers.
-
-Shipped code carries no hardcoded tool-classification list: each server declares
-its tools' capabilities via ``@mcp.tool(**tool_caps(...))`` and the client reads
-them from the per-agent registry. This test parses every server's decorator **from
-source via AST** (no ``mcp`` import, so it runs on the x86 build host), builds the
-``{name: ToolCaps}`` registry exactly as ``connect_server`` would, and asserts it
-reproduces the golden expected classification (``mimir/tests/support/golden_caps.py``).
-
-End-to-end ``meta`` serialization through FastMCP/``list_tools`` is covered by
-``pytest mimir`` + a live agent start on the ARM client.
+"""Faithfulness gate: the registry parsed from every server's ``tool_caps`` decorator by
+AST reproduces the golden classification (``support/golden_caps.py``).
 """
 
 import unittest
@@ -28,12 +19,8 @@ class DeclaredClassificationTest(unittest.TestCase):
                 self.assertEqual(caps.names_with_cap(cap, self.reg), expected)
 
     def test_every_tool_declares_a_known_work_family(self):
-        """Every tool names the family its activity row shows, from the shared vocabulary.
-
-        The row's word and its icon are both drawn from this one declaration, so a tool
-        that forgets it shows up as a generic "tool" with a wrench — which is what the
-        icon table this replaced had decayed into, silently, for ten of its twelve
-        entries. Here it is a failure instead.
+        """Every tool declares a work family from the shared vocabulary; its row's word and icon
+        come from it.
         """
         from mimir.servers._shared import capabilities as srv
         for name, declared in sorted(self.reg.items()):

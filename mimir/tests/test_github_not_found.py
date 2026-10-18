@@ -1,11 +1,5 @@
-"""A 404 from ``github_get_file`` reports what the repository actually holds.
-
-A guessed file name is the common case behind a 404, and a bare "Not Found" leaves
-the model with nothing to correct: in one FUnTiDES session it retried the same
-missing path five times across two tools. The error now walks up to the deepest
-directory that does exist, names its entries, and points at the closest names, so
-the next call is informed rather than another guess. Every request here is faked —
-the test must never reach GitHub.
+"""A 404 from ``github_get_file`` names what the deepest existing directory holds and
+the closest names. Every request is faked.
 """
 
 import unittest
@@ -141,13 +135,8 @@ class GithubGetFileNotFoundTests(unittest.TestCase):
 
 
 class GithubFileWindowTests(unittest.TestCase):
-    """A GitHub file is read in pages, with the keys the local read established.
-
-    Two losses this replaced. A file over 256 KB was refused outright — a total loss
-    of the file to avoid a large one — and a file under it came back whole, up to
-    ~65k tokens, with no way to ask for part of it. Same key names as
-    ``read_file_lines`` on purpose: the client's ``_build_continuation_hint`` already
-    reads them, so a paged GitHub read inherits that for free.
+    """A GitHub file is read in pages, with ``read_file_lines``'s keys, so the client's
+    continuation hint applies.
     """
 
     _TEXT = "".join(f"line {i}\n" for i in range(1, 1001))

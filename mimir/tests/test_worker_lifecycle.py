@@ -1,22 +1,7 @@
 """A worker belongs to one conversation, and can be let go.
 
-Two properties the agent pool depends on, pinned here because neither is visible from
-the pool's own code.
-
-**It knows its conversation.** A worker with a session of its own resolves that session's
-checklist and stamps its output with it, whatever the user happens to be looking at. A
-worker shared between conversations could only stream one of them anywhere the user can
-see, which is what would force leaving a conversation to stop its turn.
-
-**It can be closed.** ``shutdown`` ends the query loop and nothing else; the agent's
-``exit_stack`` holds ~19 MCP server subprocesses, and a worker released when its
-conversation goes quiet must close it or every release strands a full set of servers.
-``aclose`` only asks: the close belongs to the task that opened those servers, because
-``stdio_client`` anchors its anyio cancel scope there and exiting it from any other task
-raises and leaves the stack half-unwound — streams closed, subprocess alive. So the
-sentinel is the mechanism, and the query loop's own ``finally`` does the closing.
-
-Pure-Python (no live model/servers): runs on x86 and ARM.
+It resolves and stamps its own session. ``shutdown`` ends the query loop, and the loop's
+``finally`` closes the servers in the task that opened them.
 """
 from __future__ import annotations
 

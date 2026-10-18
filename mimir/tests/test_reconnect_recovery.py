@@ -1,12 +1,5 @@
-"""A connection that drops under a running turn must not cost the turn.
-
-One ``AgentWorker`` serves the whole server and outlives every connection, but a
-``Connection`` is per-socket. A drop mid-run therefore left a turn alive with nobody
-reading it, and the next connection did three things to it: it emptied the queue the
-turn was writing into, it never put back the card the turn was parked on, and it told
-the client nothing was running. The turn then waited on an answer that could not
-arrive — the query loop is serial, so every later query queued behind that wait — and
-the session read as hung with nothing on screen to say why.
+"""A connection that drops under a running turn costs nothing: the next one keeps the
+queue, puts the parked card back, and says what is running.
 """
 import asyncio
 import json
@@ -164,13 +157,8 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentReadinessTests(unittest.TestCase):
-    """The socket opens long before the agent exists, and both greetings say "ready".
-
-    ``Connection.run`` sends one the moment the socket is accepted, so the webview can
-    leave "connecting"; the worker sends its own only after the LLM backend answers
-    and the agent is constructed, which on a cold vLLM is minutes later. Nothing in
-    either payload told them apart, so the chat showed "Type a message to start" over
-    an agent that could not yet answer one. The flag is what the greeting states.
+    """Both greetings say "ready", and the ``agent_ready`` flag tells the socket's from the
+    agent's.
     """
 
     def test_a_worker_without_an_agent_is_not_ready(self):
@@ -237,13 +225,8 @@ class _ClosedWS(_FakeWS):
 
 
 class HandshakeIsNotBlockedTests(unittest.IsolatedAsyncioTestCase):
-    """Nothing may come between a client connecting and its first message being read.
-
-    The job scan walks every session's job directories, and a job directory is never
-    swept however old — so on a long-lived workspace it is unbounded file work. Awaited
-    inside the handshake it sat between the connection and the message loop: the chat
-    came up, said it was ready, and the query was never read — which reads from a chat
-    window as "MIMIR is frozen and makes no tool call".
+    """Nothing comes between a client connecting and its first message being read: the job
+    scan runs off the handshake.
     """
 
     async def test_a_scan_that_never_finishes_does_not_stop_the_first_message(self):
@@ -308,16 +291,7 @@ async def _noop_async(*_args, **_kwargs):
 
 
 class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
-    """The agent came up while the socket was being set up, and nobody was told.
-
-    The worker announces its readiness exactly once, by queueing a second ``ready``
-    on ``out_q``. ``run`` empties that queue right after greeting the client, on the
-    grounds that an idle worker's queue is debris — and an agent that has just
-    finished starting is idle. The announcement fell in that gap, the client kept the
-    ``agent_ready: False`` it was greeted with, and the chat offered "starting the
-    agent — waiting for the model backend" over an agent that was already up. It
-    stayed there as long as the socket lived: nothing repeats the announcement.
-    """
+    """A worker that becomes ready while the socket is set up still announces it."""
 
     def _session(self, worker):
         sess = SessionFencingTests._session(self, worker)

@@ -1,12 +1,5 @@
-"""What a delegating tool reports while it runs, and how it reaches the UI.
-
-A delegated run is one tool call that lasts minutes. Without a channel out of it the
-frontend has a spinner and nothing else, so the child's tool activity travels back as
-MCP progress notifications and is re-emitted as rows under the parent's row. Tested
-here: the gate (no row, no frontend → no listener), the envelope contract, and the
-isolation between concurrent delegations.
-
-Pure-Python + stubs (no live model/servers): runs on x86 and ARM.
+"""A delegating tool's progress: the child's activity travels as MCP progress and becomes
+rows under the parent's. The gate, the envelope, and isolation between delegations.
 """
 from __future__ import annotations
 from mimir.client.context.execution_context import build_execution_context

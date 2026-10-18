@@ -1,11 +1,7 @@
-"""Coming back to a run that kept going — once each, in order, with no gap.
+"""Coming back to a run that kept going: every event once, in order, with no gap.
 
-The journal's ``seq`` is the watermark. A client says how far its rendered transcript
-reaches, and a re-attach sends back only what came after. The whole no-duplicate /
-no-drop argument is an *ordering*: the subscription is opened before the handshake, so
-nothing produced since can be missed; the journal is then read from the watermark and
-sent; and only afterwards is the subscription's gate raised to where the replay ended,
-so events produced *during* the read — which are in both places — collapse to one copy.
+The subscription opens before the handshake, the journal replays from the watermark,
+then the gate rises to the replay's end, collapsing events seen twice.
 """
 import json
 import tempfile
@@ -182,17 +178,8 @@ class FramingTests(_ReplayCase):
 
 
 class TheGateCannotSilenceAStreamTests(_ReplayCase):
-    """A watermark above the journal must not swallow the conversation.
-
-    A gate above what the journal holds does not read as a dead connection. It reads as
-    a chat that streams the answer's opening text, reasons on, and shows no tool call,
-    no diff and no answer — because `token` and `thinking` are never journaled, so they
-    carry no seq and bypass the gate entirely, while everything else is stamped and
-    filtered.
-
-    The watermark can exceed the journal in two ways, and both are guarded: a new
-    conversation starting with another's mark, and a stored mark outliving the log it
-    counted.
+    """A watermark above the journal never swallows the conversation: neither a new
+    conversation's inherited mark nor a stored mark outliving its log.
     """
 
     async def test_a_watermark_above_the_journal_is_not_honoured(self):
@@ -234,16 +221,7 @@ class TheGateCannotSilenceAStreamTests(_ReplayCase):
 
 
 class OneGatePerConversationTests(_ReplayCase):
-    """``seq`` is counted per conversation, so a watermark has to be as well.
-
-    One number for the socket, raised to the position of whichever chat the connection
-    opened on, gates out every conversation whose journal is shorter — which on a
-    socket that opens on a long chat is every new one: its events start again at 1,
-    below the gate, and are dropped on the way to the client. Streamed text is never
-    journaled and so passes regardless, which is what makes this look like a working
-    chat that has stopped showing tool calls, diffs and answers rather than like a
-    connection that has died.
-    """
+    """``seq`` is counted per conversation, so the watermark is too."""
 
     async def test_a_second_conversation_is_not_gated_by_the_first(self):
         self._produce("a", "b", "c")          # s1's journal reaches seq 3

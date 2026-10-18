@@ -1,12 +1,6 @@
-"""Finding a server that outlived the window which started it.
+"""Finding a server that outlived the window which started it, through its registry entry.
 
-The port used to be learned by regexing the child's stdout, which works exactly as long
-as the extension host is the parent holding that pipe. A server meant to survive that
-window has to leave its address on disk — and a reader has to be able to tell a live
-entry from the leftovers of one that crashed.
-
-Liveness here is three questions, and the tests are mostly about the third: a pid can be
-alive with its listener already gone.
+An entry is live only if its pid is alive and its listener still answers.
 """
 import json
 import os
@@ -187,17 +181,8 @@ class ClearTests(_RegistryCase):
 
 
 class OneServerPerWorkspaceTests(_RegistryCase):
-    """The claim that stops a second server, and why it is a kernel lock.
-
-    Two servers on one workspace is not untidiness. They share the sessions directory,
-    so both append to the same ``transcript.jsonl`` and both derive ``seq`` from it: the
-    numbering collides, the watermark built on it stops meaning anything, and a client
-    attached to one sees nothing of the turn running in the other — a conversation whose
-    tools run and never appear, until a reconnect lands on the other server and replays
-    them.
-
-    ``flock`` rather than a file the process writes, because the kernel releases it
-    however the process dies, and a crashed server must not keep a workspace locked.
+    """One server per workspace, claimed with ``flock``: two would interleave one transcript
+    and its ``seq``, and the kernel releases the lock however the process dies.
     """
 
     def tearDown(self) -> None:

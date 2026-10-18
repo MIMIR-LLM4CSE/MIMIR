@@ -1,18 +1,7 @@
 """The ratchet optimizes the real code, and remembers whole tree states.
 
-Two recorded sessions produced the same shape: asked to speed up a solver, the model
-wrote a self-contained script that reproduced it — 189 lines mirroring a 307-line
-package — and the ratchet optimized the copy. Nothing said not to. `proxy_manage`
-asked for a runnable command and `proxy_eval(init)` answered "Modify '<the harness>'
-between runs", so making "what I edit" and "what I optimize" coincide was the cheapest
-way to satisfy both.
-
-The cost is not the manual port afterwards: the ratchet's accuracy constraints then hold
-for the duplicate and for nothing that ships. These tests pin the contract that makes
-that shape inexpressible, and the atomicity that lets it generalize past one file.
-
-Run:
-    python -m unittest mimir.tests.test_proxy_tree_ratchet -v
+The contract leaves no way to optimize a self-contained copy of the code, and tree
+snapshots are atomic.
 """
 from __future__ import annotations
 
@@ -161,13 +150,7 @@ class TreeAtomicityTests(_Workspace):
 
 
 class GuidanceTests(unittest.TestCase):
-    """The two sentences that produced the duplicate must stay gone.
-
-    Not style: `init`'s reply said "Modify '<proxy_source_path>' between runs" and the
-    skill's last rule said "Modify only the proxy source file". Together they pointed the
-    model at the harness as the thing to edit, and making that the thing being optimized
-    is exactly the copy. A test naming them beats a re-read.
-    """
+    """The two sentences that pointed the model at the harness as the thing to edit stay gone."""
 
     ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
@@ -197,15 +180,7 @@ class GuidanceTests(unittest.TestCase):
 
 
 class RebaselineTests(_Workspace):
-    """Moving a baseline without burning the record of how you got there.
-
-    ``init`` will not move an existing baseline, and it should not: re-snapshotting
-    mid-optimisation promotes already-optimised code to "the original". But that left
-    the other question — *the harness was wrong, measure again from here* — with no
-    supported answer, and in session ``7d322a3b`` the model found the unsupported one
-    twice in three minutes: ``end`` → ``proxy_manage(op='clean')`` → ``init``. The
-    second pass discarded a boundary condition measured 40% better than the incumbent.
-    """
+    """``rebaseline`` moves a baseline and keeps the record; ``init`` never moves one."""
 
     def _session(self) -> tuple:
         from mimir.servers.proxy._ops import eval_session
@@ -279,16 +254,7 @@ class RebaselineTests(_Workspace):
 
 
 class NoiseFloorTests(unittest.TestCase):
-    """A ratchet that cannot see noise ratchets noise in.
-
-    From session ``7d322a3b`` on a 192-core shared node. Two runs of one untouched
-    tree: 0.174488 and 0.179888 — a spread of 3.1%. ``min_improvement`` stood at its
-    default 0.02, documented as guarding timing noise. The next run, a full rewrite of
-    the OpenMP kernels, measured 0.17491 — a 2.8% "gain" the ratchet accepted and the
-    session reported as a step forward. Four later runs of the accepted state spread
-    0.0592-0.0642 against a recorded best of 0.0556, so the headline 3.2x was the
-    minimum of a distribution whose middle said 2.8x.
-    """
+    """The ratchet measures the noise and accepts no gain inside it."""
 
     def _cfg(self, **over) -> dict:
         cfg = {"primary_metric": "time_s", "min_improvement": 0.02}
@@ -382,17 +348,8 @@ class ReplicateAggregationTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("git"), "git not available — shared-snapshot semantics exercise the git-backed shadow repo")
 class CleanKeepsSharedSnapshotsTests(_Workspace):
-    """Tidying one optimisation must not break another's rollback.
-
-    Every proxy writes into ONE snapshot store — a single branch, a shared index, each
-    commit carrying the union of every path ever tracked — so there is no per-proxy
-    history inside it to remove. `clean` handled that by deleting the whole thing, which
-    took the other proxies' snapshots with it: their `best.json` kept an id pointing into
-    a repository that no longer existed, and `reset_to_best` answered "Could not restore
-    the best tree". A rollback lost by cleaning up something else.
-
-    The rule was already stated one paragraph up in `clean`'s own docstring — it does not
-    cascade into references and suites *because they can be shared*. Snapshots are too.
+    """Cleaning one proxy keeps the shared snapshot store, so other proxies can still roll
+    back.
     """
 
     def _optimisation(self, name: str, marker: str) -> None:
@@ -459,18 +416,8 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
 
 
 class ResumeNoticeTests(_Workspace):
-    """Coming back to an old optimisation whose code moved on without it.
-
-    Two guards covered one question between them and left a gap in the middle.
-    `prepare_run` refuses a first run on an already-edited tree — but only while no
-    baseline run is on record (`if paths and not cfg.get("baseline_run_id")`). Once one
-    is, nothing checks again, so resuming a finished session ran it against a best
-    measured on code no longer on disk and said nothing. Both fingerprints were already
-    on the disk; nobody compared them.
-
-    The action stays manual: `rebaseline` moves the point of comparison, and doing that
-    automatically would let a regression read as progress the moment the new reference
-    landed on a degraded state. Only the *detection* is automatic.
+    """Resuming an optimisation whose code moved on says so; ``rebaseline`` stays a manual
+    action.
     """
 
     def _session(self, *, measured: bool = True) -> None:
