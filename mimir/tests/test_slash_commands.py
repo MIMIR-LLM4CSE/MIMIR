@@ -290,12 +290,12 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
         self.assertEqual(host.values, {})
 
     def test_the_webview_applies_that_state(self) -> None:
-        app = os.path.join(_ROOT, "vscode-extension", "webview", "src", "App.tsx")
-        with open(app, encoding="utf-8") as fh:
+        hook = os.path.join(_ROOT, "vscode-extension", "webview", "src", "hooks",
+                            "useAgentSettings.ts")
+        with open(hook, encoding="utf-8") as fh:
             src = fh.read()
-        self.assertIn('case "thinking_depth"', src)
-        self.assertIn('case "streaming"', src)
-        self.assertIn('case "mode"', src)
+        for handler in ("thinking_depth:", "streaming:", "mode:"):
+            self.assertIn(handler, src)
 
     def test_the_webview_has_a_component_for_it(self) -> None:
         # Rendered as a result card, not as agent prose in a bubble.

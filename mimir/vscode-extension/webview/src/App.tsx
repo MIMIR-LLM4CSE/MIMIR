@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import type {
   ChatMessage,
+  ClientMessage,
   ConnectionState,
   ServerMessage,
   SessionMeta,
@@ -24,13 +25,12 @@ import type {
   ToggleItem,
   RunningServer,
   ResourceItem,
-  AgentMode,
   ApprovalMode,
-  ThinkingProfile,
-  TemperatureState,
   RememberedEndpoint,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
+import { routeServerMessage, type ServerHandlers } from "./state/serverMessages";
+import { useAgentSettings } from "./hooks/useAgentSettings";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { useStickToBottom } from "./hooks/useStickToBottom";
 import { ChatThread } from "./components/ChatThread";
@@ -201,18 +201,15 @@ export const App: React.FC = () => {
   // The active VS Code editor file/selection, pushed by the extension host — shown as
   // an opt-in click-to-attach chip above the input.
   const [activeEditor, setActiveEditor] = useState<{ file: string; selection: string | null } | null>(null);
-  const [agentMode, setAgentMode] = useState<AgentMode>("agent");
-  const [thinkingLevel, setThinkingLevel] = useState<number>(1); // 0=off,1=auto,2=quick,3=medium,4=deep,5=max
-  // Which rungs of that ladder the served model can honour — reported by the server
-  // in "ready". Undefined until it arrives, which the control reads as the full ladder.
-  const [thinkingProfile, setThinkingProfile] = useState<ThinkingProfile | undefined>(undefined);
-  const [streaming, setStreaming] = useState(true);
-
-  const [contextMode, setContextMode] = useState<"compact" | "full">("full");
-  const [enforcement, setEnforcement] = useState<"strict" | "light" | "off">("light");
-  // Held by the server, per model and on disk: never replayed from here on connect.
-  const [temperature, setTemperature] = useState<TemperatureState>({ supported: false, value: null });
-  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("manual");
+  // The socket is opened below, by a hook that needs the message handler built from
+  // these; parts that send go through this, which reads the socket once it exists.
+  const sendRef = useRef<(msg: ClientMessage) => void>(() => {});
+  const sendVia = useCallback((msg: ClientMessage) => sendRef.current(msg), []);
+  const settings = useAgentSettings(sendVia);
+  const {
+    agentMode, thinkingLevel, thinkingProfile, streaming, contextMode, enforcement,
+    temperature, approvalMode,
+  } = settings;
   // Set once the server says it has detached. One-way: a detached server has no
   // pipe to go back to.
   const [detached, setDetached] = useState(false);
@@ -418,6 +415,9 @@ export const App: React.FC = () => {
   // A `replay` frame is a bundle of ordinary events, so it goes through this very
   // handler — one reducer for what happened live and what happened while we were away.
   const handlerRef = useRef<(m: ServerMessage) => void>(() => {});
+  // The handler tables of the parts that hold their own state.
+  const tablesRef = useRef<ServerHandlers[]>([]);
+  tablesRef.current = [settings.on];
 
   const handleServerMessage = useCallback((msg: ServerMessage) => {
     // Every journaled event carries the point it was written at. Remembering the
@@ -429,6 +429,9 @@ export const App: React.FC = () => {
       if (seq > seen) renderedSeqRef.current[owner] = seq;
     }
 
+    // The parts that hold their own state answer first; a type only they know ends here.
+    const routed = routeServerMessage(msg, tablesRef.current);
+
     switch (msg.type) {
       case "ready":
         setModel(msg.model);
@@ -437,11 +440,6 @@ export const App: React.FC = () => {
         // such flag, and leaving the UI stuck on "starting" would be worse than
         // the invitation being early.
         setAgentReady(msg.agent_ready !== false);
-        if (msg.context_mode) setContextMode(msg.context_mode);
-        if (msg.enforcement) setEnforcement(msg.enforcement);
-        if (msg.approval_mode) setApprovalMode(msg.approval_mode);
-        if (msg.thinking) setThinkingProfile(msg.thinking);
-        if (msg.temperature) setTemperature(msg.temperature);
         handleReady();
         return;
 
@@ -499,12 +497,8 @@ export const App: React.FC = () => {
         return;
 
       case "model_changed":
-        // The served model switched mid-session — follow the status bar, and
-        // re-sync the model-derived controls (thinking profile, enforcement).
+        // The served model switched mid-session; the settings follow it too.
         setModel(msg.model);
-        if (msg.thinking) setThinkingProfile(msg.thinking);
-        if (msg.enforcement) setEnforcement(msg.enforcement);
-        if (msg.temperature) setTemperature(msg.temperature);
         return;
 
       case "todo":
@@ -561,37 +555,6 @@ export const App: React.FC = () => {
 
       case "active_editor":
         setActiveEditor({ file: msg.file, selection: msg.selection });
-        return;
-
-      case "context_mode":
-        setContextMode(msg.mode);
-        return;
-
-      case "enforcement":
-        setEnforcement(msg.mode);
-        return;
-
-      case "approval_mode":
-        setApprovalMode(msg.mode);
-        return;
-
-      case "mode":
-        setAgentMode(msg.mode);
-        return;
-
-      // The depth the agent actually holds, reported after any change. The panel
-      // used to assert its own stored value on connect and never learn the real
-      // one, which is how a session could open showing a depth it was not on.
-      case "thinking_depth":
-        setThinkingLevel(msg.depth);
-        return;
-
-      case "streaming":
-        setStreaming(msg.enabled);
-        return;
-
-      case "temperature":
-        setTemperature({ supported: msg.supported, value: msg.value });
         return;
 
       // Parks the agent on a person: the card is local state, and the reducer is
@@ -740,6 +703,7 @@ export const App: React.FC = () => {
       }
     }
 
+    if (routed) return;
     // Remaining message-state types (output/status/token/file_progress/
     // approval/thinking*/answer/error) are handled by the reducer; dispatch and
     // run the matching scroll side-effect afterwards.
@@ -797,24 +761,25 @@ export const App: React.FC = () => {
       setAgentReady(false);
     },
   });
+  sendRef.current = send;
 
   // The cards are files the sub-agents leave behind, so the panel asks for them rather
   // than being pushed to: on opening, and whenever the user wants a fresh look.
   const refreshSubAgents = useCallback(
-    () => (send as any)({ type: "list_subagents" }), [send]);
+    () => send({ type: "list_subagents" }), [send]);
   // One call fills the whole drawer: the sub-agents, the runs still going, and each
   // server's own section. Served from the servers' caches, so it is what the timer
   // asks and what opening the drawer asks. `build` because before the first query of
   // a session there is no agent holding the servers — which is why the clusters only
   // ever appeared after the first request; it is a no-op once one is up.
   const refreshPanel = useCallback(
-    () => (send as any)({ type: "list_panel", build: true }), [send]);
+    () => send({ type: "list_panel", build: true }), [send]);
   // The ⟳, and only it: read again past every cache, including the per-host digest a
   // server keeps for its lifetime. That costs an ssh to each cluster, which is a price
   // worth paying when the reader asked for it and not when a drawer was opened.
   const reloadPanel = useCallback(() => {
     setPanelPending(true);
-    (send as any)({ type: "list_panel", build: true, refresh: true });
+    send({ type: "list_panel", build: true, refresh: true });
   }, [send]);
 
   // Creating a session also opens it: the server makes the new session active
@@ -1380,41 +1345,8 @@ export const App: React.FC = () => {
     [send]
   );
 
-  const handleModeChange = useCallback((mode: AgentMode) => {
-    setAgentMode(mode);
-    send({ type: "command", text: `/mode ${mode}` });
-  }, [send]);
-
-  const handleThinkingLevelChange = useCallback((level: number) => {
-    setThinkingLevel(level);
-    send({ type: "command", text: `/thinking-depth ${level}` });
-  }, [send]);
-
-  const handleStreamingToggle = useCallback((val: boolean) => {
-    setStreaming(val);
-    send({ type: "command", text: `/streaming ${val ? "on" : "off"}` });
-  }, [send]);
-
-  const handleContextModeChange = useCallback((val: "compact" | "full") => {
-    setContextMode(val);
-    send({ type: "command", text: `/context ${val}` });
-  }, [send]);
-
-  const handleEnforcementChange = useCallback((val: "strict" | "light" | "off") => {
-    setEnforcement(val);
-    send({ type: "command", text: `/enforcement ${val}` });
-  }, [send]);
-
-  // null = back to the model's own. The server answers with the value it holds.
-  const handleTemperatureChange = useCallback((value: number | null) => {
-    setTemperature((t) => ({ ...t, value }));
-    send({ type: "command", text: `/temperature ${value === null ? "default" : value}` });
-  }, [send]);
-
   const handleApprovalModeChange = useCallback((val: ApprovalMode) => {
-    setApprovalMode(val);
-    // "all" is the spoken form of auto_all, the one the server's command parses.
-    send({ type: "command", text: `/approvals ${val === "auto_all" ? "all" : val}` });
+    settings.changeApprovalMode(val);
     // The switch has to work mid-run, and mid-run is exactly when a card is already
     // on screen with the agent parked on it. The new mode covers that call, so
     // answering it here is what the user just asked for — leaving it standing would
@@ -1429,7 +1361,7 @@ export const App: React.FC = () => {
       (card.approval.oow_paths?.length ?? 0) > 0 || Boolean(card.approval.oow_path);
     const covered = val === "auto_all" || (val === "auto" && !leavesWorkspace);
     if (covered) handleApprovalResponse(card.approval.id, "y");
-  }, [send, handleApprovalResponse]);
+  }, [settings.changeApprovalMode, handleApprovalResponse]);
 
   const connectionColor =
     connection === "connected"
@@ -1479,7 +1411,7 @@ export const App: React.FC = () => {
           onRefresh={refreshSubAgents}
           onOpen={(id) => {
             setOpenedSubAgent(null);
-            (send as any)({ type: "read_subagent", id });
+            send({ type: "read_subagent", id });
           }}
           onClose={() => setOpenedSubAgent(null)}
         />
@@ -1759,25 +1691,25 @@ export const App: React.FC = () => {
             files={batchFiles}
             onAccept={() => {
               setBatchFiles([]);
-              (send as any)({ type: "batch_review_accept" });
+              send({ type: "batch_review_accept" });
             }}
             onRevert={() => {
               setBatchFiles([]);
-              (send as any)({ type: "batch_review_revert" });
+              send({ type: "batch_review_revert" });
             }}
             onAcceptFile={(file) => {
               setBatchFiles((prev) => prev.filter((f) => f.file !== file));
-              (send as any)({ type: "batch_review_accept_file", file });
+              send({ type: "batch_review_accept_file", file });
             }}
             onRevertFile={(file) => {
               setBatchFiles((prev) => prev.filter((f) => f.file !== file));
-              (send as any)({ type: "batch_review_revert_file", file });
+              send({ type: "batch_review_revert_file", file });
             }}
           />
         )}
         {/* Plan bar — shown above input box when todos exist */}
         {hasTodos && <PlanBar items={todos} busy={busy} onClear={() => {
-          (send as any)({ type: "clear_todos" });
+          send({ type: "clear_todos" });
           setTodos([]);
         }} />}
         {/* Clarification / plan-approval question — anchored just above the
@@ -1806,7 +1738,7 @@ export const App: React.FC = () => {
           {/* Bottom toolbar: settings + disconnect */}
           <div className="bottom-toolbar">
             {/* Mode — its own control, colour-coded like the rest of the chat */}
-            <ModeSwitcher mode={agentMode} onModeChange={handleModeChange} />
+            <ModeSwitcher mode={agentMode} onModeChange={settings.changeMode} />
 
             <div className="settings-wrapper">
 
@@ -1832,14 +1764,14 @@ export const App: React.FC = () => {
                   subAgentLevel={subAgentLevel}
                   onSubAgentLevelChange={(lvl) => {
                     setSubAgentLevel(lvl);
-                    (send as any)({ type: "command", text: `/subagents ${lvl}` });
+                    send({ type: "command", text: `/subagents ${lvl}` });
                   }}
                   temperature={temperature}
-                  onTemperatureChange={handleTemperatureChange}
-                  onThinkingLevelChange={handleThinkingLevelChange}
-                  onStreamingToggle={handleStreamingToggle}
-                  onContextModeChange={handleContextModeChange}
-                  onEnforcementChange={handleEnforcementChange}
+                  onTemperatureChange={settings.changeTemperature}
+                  onThinkingLevelChange={settings.changeThinkingLevel}
+                  onStreamingToggle={settings.changeStreaming}
+                  onContextModeChange={settings.changeContextMode}
+                  onEnforcementChange={settings.changeEnforcement}
                   onClose={() => setSettingsOpen(false)}
                 />
               )}

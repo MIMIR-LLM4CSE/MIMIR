@@ -1168,8 +1168,33 @@ export interface ToggleSkillMessage {
   enabled: boolean;
 }
 
+/** The drawer: the sub-agent cards alone, or every section (``build`` starts the agent
+ *  whose servers fill them; ``refresh`` reads past their caches). */
+export interface ListSubagentsMessage {
+  type: "list_subagents";
+}
+
+export interface ListPanelMessage {
+  type: "list_panel";
+  build?: boolean;
+  refresh?: boolean;
+}
+
+export interface ReadSubagentMessage {
+  type: "read_subagent";
+  id: string;
+}
+
+export interface ClearTodosMessage {
+  type: "clear_todos";
+}
+
 export type ClientMessage =
   | QueryMessage
+  | ListSubagentsMessage
+  | ListPanelMessage
+  | ReadSubagentMessage
+  | ClearTodosMessage
   | TranscriptMessage
   | SteerMessage
   | DetachMessage
