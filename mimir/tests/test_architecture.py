@@ -184,6 +184,52 @@ class TestHygieneTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class ComponentTests(unittest.TestCase):
+    """A WebSocket component owns its state: it reads no attribute of a host it does not
+    define itself (or inherit from a class of the package). What it reads of another
+    object it is handed at construction."""
+
+    def _classes(self) -> dict[str, tuple[str, list[str], set[str], set[str]]]:
+        classes = {}
+        for path in _python_files(CLIENT / "ui" / "ws"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                defined: set[str] = set()
+                read: set[str] = set()
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        defined.add(item.name)
+                    elif isinstance(item, ast.Assign):
+                        defined |= {t.id for t in item.targets if isinstance(t, ast.Name)}
+                    elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                        defined.add(item.target.id)
+                for n in ast.walk(node):
+                    if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                            and n.value.id == "self"):
+                        (defined if isinstance(n.ctx, ast.Store) else read).add(n.attr)
+                bases = [ast.unparse(b) for b in node.bases]
+                classes[node.name] = (path.name, bases, defined, read)
+        return classes
+
+    def test_no_class_reads_its_host(self) -> None:
+        classes = self._classes()
+
+        def defined(name: str) -> set[str]:
+            _, bases, own, _ = classes[name]
+            return own.union(*(defined(b) for b in bases if b in classes))
+
+        offenders = []
+        for name, (file, bases, _, read) in sorted(classes.items()):
+            # A class built on something outside the package inherits what it reads.
+            if any(b not in classes for b in bases):
+                continue
+            missing = sorted(read - defined(name))
+            if missing:
+                offenders.append(f"{file}:{name} reads {missing}")
+        self.assertEqual(offenders, [])
+
+
 class JobPollingTests(unittest.TestCase):
     """Only the dispatcher refuses a status poll on a run a watcher holds.
 
