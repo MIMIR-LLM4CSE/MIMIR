@@ -12,8 +12,6 @@ from .._shared.responses import err
 from .._shared.state_paths import sessions_root
 from .._shared.jobs import (
     SLURM_JOB_ID,
-    descriptor,
-    op,
     slurm_state,
 )
 from .._shared.slurm_site import (
@@ -89,12 +87,6 @@ LOG_NAME = "slurm-%j.log"
 # Where that resolved path is written down, so a later status answer can name the file
 # instead of re-deriving a rule that may have changed since the job was submitted.
 LOG_FILE = "log"
-
-
-def slurm_background_job(job_id: str) -> dict:
-    """The handle a client watcher polls this job with (submission, adoption, re-arm)."""
-    return descriptor(server="hpc", kind="slurm-batch", job_key=job_id,
-                      status_op=op("slurm_job_status", job_id=job_id))
 
 
 def recorded_log(job_dir: str) -> str:

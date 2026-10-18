@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+from .._shared.jobs import descriptor, op
 from . import spawn_limits
 from . import spawn_user_channel
 from . import spawn_worktree
@@ -90,14 +91,9 @@ def busy_with() -> str:
 
 def job_descriptor(job_key: str) -> dict:
     """The watcher handle of a detached sub-agent: its ``status_op`` and ``summary_op``."""
-    return {
-        "server": "agent",
-        "kind": "sub-agent",
-        "job_key": job_key,
-        "status_op": {"tool": "subagent_job", "args": {"job_key": job_key}},
-        "summary_op": {"tool": "subagent_job",
-                       "args": {"op": "result", "job_key": job_key}},
-    }
+    return descriptor(server="agent", kind="sub-agent", job_key=job_key,
+                      status_op=op("subagent_job", job_key=job_key),
+                      summary_op=op("subagent_job", op="result", job_key=job_key))
 
 
 def register_job(job_key: str, entry: dict) -> None:

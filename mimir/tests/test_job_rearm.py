@@ -148,6 +148,10 @@ class ScanTests(_ScanCase):
         self._job("s1", "j1", exit_code=2)
         self.assertEqual(scan_session("s1")[0].state, "crashed")
 
+    def test_a_run_killed_by_a_signal_is_unknown_as_the_server_says(self):
+        self._job("s1", "j1", exit_code=137)
+        self.assertEqual(scan_session("s1")[0].state, "unknown")
+
     def test_a_dead_pid_with_no_exit_code_is_unknown_not_done(self):
         # Claiming an outcome nobody observed is worse than saying it is not knowable.
         self._job("s1", "j1", pid=self._dead_pid())
@@ -278,6 +282,8 @@ class ScanTests(_ScanCase):
                           "args": {"job_key": "j1", "run_dir": job.run_dir}})
         self.assertEqual(d["job_key"], "j1")
         self.assertTrue(d["run_dir"].endswith("/s1/jobs/j1"))
+        # Re-armed after a reload, it still wakes with what the run printed.
+        self.assertEqual(d["summary_op"]["args"]["op"], "output")
 
 
 class _RearmWorker(AgentWorker):

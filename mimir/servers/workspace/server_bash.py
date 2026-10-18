@@ -30,6 +30,7 @@ from .._shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROU
 from . import bash_jobs
 from .._shared import build_progress
 from .._shared import run_channel
+from .._shared.jobs import shell_descriptor
 from .._shared.slurm_site import (
     SLURM_COMMANDS,
     slurm_host_from_ssh,
@@ -223,24 +224,6 @@ def _finished_payload(command: str, cwd: str, returncode: int, stdout: str,
     return payload
 
 
-def _job_descriptor(job_key: str, job_dir: str) -> dict:
-    """The handle the client watcher polls.
-
-    Data, not a tool name in loop code: the client reads status_op / summary_op off it
-    and polls them generically, which is how a run gets watched without the agent
-    spending a model call per poll.
-    """
-    return {
-        "server": "bash",
-        "kind": "shell-command",
-        "job_key": job_key,
-        "run_dir": job_dir,
-        "status_op": {"tool": "bash_job", "args": {"job_key": job_key}},
-        "summary_op": {"tool": "bash_job",
-                       "args": {"op": "output", "job_key": job_key}},
-    }
-
-
 def _tick(elapsed: float) -> float:
     for boundary, interval in _TICKS:
         if elapsed < boundary:
@@ -354,7 +337,7 @@ def _run(
                                 "above is what it had produced at that moment, and "
                                 "it continues as job '" + job_key + "'. Do not "
                                 "run it again.",
-                        "background_job": _job_descriptor(job_key,
+                        "background_job": shell_descriptor(job_key,
                                                           launched["job_dir"]),
                     })
                     if truncated:
@@ -392,7 +375,7 @@ def _launch_background(command: str, cwd: str, preamble: str) -> dict:
         # ends its turn on a guarantee nobody is holding.
         "note": "Started in the background; this call returns before it finishes. "
                 "Its log is readable at the path above while it runs.",
-        "background_job": _job_descriptor(job_key, launched["job_dir"]),
+        "background_job": shell_descriptor(job_key, launched["job_dir"]),
     })
 
 
@@ -643,7 +626,7 @@ def _with_live_descriptors(payload: dict, jobs: list[dict], run_dir: str = "") -
 
     Asking about a run is what lets a client that lost its watchers put them back.
     """
-    live = [_job_descriptor(j["job_key"],
+    live = [shell_descriptor(j["job_key"],
                             run_dir or bash_jobs.job_dir(j["job_key"]))
             for j in jobs
             if isinstance(j, dict) and j.get("state") == "running" and j.get("job_key")]
@@ -737,7 +720,7 @@ def bash_watch(pid: int, what: str = "", log: str = "") -> dict:
         # Plural, as every answer about work this call did not start is: see the same
         # key in bash_job_status. Singular is a launch, and a launch is what the
         # client reads only from a tool declaring BACKGROUNDABLE.
-        "background_jobs": [_job_descriptor(handle["job_key"], handle["job_dir"])],
+        "background_jobs": [shell_descriptor(handle["job_key"], handle["job_dir"])],
     })
 
 

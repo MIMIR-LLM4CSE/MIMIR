@@ -87,6 +87,21 @@ def descriptor(*, server: str, kind: str, job_key: str, status_op: dict,
     return out
 
 
+def shell_descriptor(job_key: str, job_dir: str) -> dict:
+    """A detached shell job. Its directory travels in the op args, so a job of a
+    sub-agent's session still resolves from the parent."""
+    return descriptor(server="bash", kind="shell-command", job_key=job_key, run_dir=job_dir,
+                      status_op=op("bash_job", job_key=job_key, run_dir=job_dir),
+                      summary_op=op("bash_job", op="output", job_key=job_key,
+                                    run_dir=job_dir))
+
+
+def slurm_descriptor(job_id: str) -> dict:
+    """A Slurm job of this workspace, polled by the HPC server."""
+    return descriptor(server="hpc", kind="slurm-batch", job_key=job_id,
+                      status_op=op("slurm_job_status", job_id=job_id))
+
+
 def job_key_of(desc: dict) -> str:
     """The key a run is known by: its ``job_key``, else its ``run_dir``."""
     return str(desc.get("job_key") or desc.get("run_dir") or "")

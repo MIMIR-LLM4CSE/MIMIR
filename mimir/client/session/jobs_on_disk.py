@@ -22,6 +22,8 @@ from ...servers._shared.jobs import (
     WATCHER_FILE,
     exit_code_state,
     recorded_terminal_state,
+    shell_descriptor,
+    slurm_descriptor,
 )
 from ...servers._shared.processes import is_running
 from ...servers._shared.state_paths import sessions_root, subagents_dir
@@ -66,30 +68,18 @@ class DetachedJob:
         """
         return "running" if self.live else exit_code_state(self.exit_code)
 
-    def status_op(self) -> dict:
-        """The read-only op a watcher polls this run with."""
-        if self.watcher:
-            return dict(self.watcher.get("status_op") or {})
-        if self.kind == "slurm":
-            # The name the HPC server actually registers, and it has to be: a watcher
-            # polling a tool nothing answers to reads unreadable answers until it gives
-            # the run up as untrackable, settling nothing — so the next scan re-arms it,
-            # and the one after that, for as long as the process lives.
-            return {"tool": "slurm_job_status", "args": {"job_id": self.job_key}}
-        args = {"job_key": self.job_key}
-        if self.run_dir:
-            args["run_dir"] = self.run_dir
-        return {"tool": "bash_job", "args": args}
-
     def descriptor(self) -> dict:
-        """What ``_register_bg_job`` needs to put a watcher back on this run."""
+        """What a watcher is put back on this run with: its own server's watcher when it
+        recorded one, else the stock shape of its kind."""
         if self.watcher:
             return dict(self.watcher)
-        return {"server": "hpc" if self.kind == "slurm" else "bash",
-                "job_key": self.job_key,
-                "kind": "slurm-job" if self.kind == "slurm" else "shell-command",
-                **({"run_dir": self.run_dir} if self.run_dir else {}),
-                "status_op": self.status_op()}
+        if self.kind == "slurm":
+            return slurm_descriptor(self.job_key)
+        return shell_descriptor(self.job_key, self.run_dir)
+
+    def status_op(self) -> dict:
+        """The read-only op a watcher polls this run with."""
+        return dict(self.descriptor().get("status_op") or {})
 
 
 def _read_json(path: str) -> dict | None:

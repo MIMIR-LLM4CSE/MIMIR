@@ -32,6 +32,7 @@ from .._shared.capabilities import (
 from .._shared.responses import err, ok
 from .._shared.jobs import (
     SLURM_JOB_ID,
+    slurm_descriptor,
     is_terminal,
     record_terminal_state,
     recorded_terminal_state,
@@ -93,7 +94,6 @@ from .jobs import (
     record_job_host,
     recorded_log,
     salloc_argv,
-    slurm_background_job,
 )
 from . import node_profiles
 from .node_profiles import (
@@ -516,7 +516,7 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     # A handle for a job of this conversation still in flight, so asking re-arms its watcher;
     # never for another session's job (its wake would land here).
     if state in ("running", "pending") and not from_session:
-        payload["background_jobs"] = [slurm_background_job(job_id)]
+        payload["background_jobs"] = [slurm_descriptor(job_id)]
     return ok(payload)
 
 
@@ -572,7 +572,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
         # Recorded is not watched: hand the descriptor over so a lost watcher is put back (the
         # client dedups). Withheld for a sibling's job, as in slurm_job_status.
         if not settled and not from_session:
-            payload["background_jobs"] = [slurm_background_job(job_id)]
+            payload["background_jobs"] = [slurm_descriptor(job_id)]
         return ok(payload)
 
     # Asked before anything is written, because a descriptor for a job no scheduler has
@@ -629,7 +629,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # nothing, it hands over a run already going. Singular says "this call started it",
     # which is what gates it behind BACKGROUNDABLE — a capability an adopter has no
     # business claiming, and whose absence here is why nothing ever read the descriptor.
-    payload["background_jobs"] = [slurm_background_job(job_id)]
+    payload["background_jobs"] = [slurm_descriptor(job_id)]
     # What is still unaccounted for, named here because this is the moment the model is
     # holding the ids: a launcher prints a server job and a client array, and adopting
     # the first is the usual place to stop.
@@ -893,7 +893,7 @@ def sbatch_submit(
         "comment":      comment or None,
         "note":         f"Slurm job {job_id} submitted to '{partition}' on "
                         f"{_host_name(host)}.",
-        "background_job": slurm_background_job(job_id),
+        "background_job": slurm_descriptor(job_id),
     }
     # The submission is the other moment the model holds job ids: what else of the
     # user's is running unaccounted for can be acted on here, in the same turn.
@@ -1011,12 +1011,7 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
         "partition": partition,
         "note": f"Probe job {job_id} submitted to '{partition}'. Its result is read "
                 "with the node-profile tool once the job ends.",
-        "background_job": {
-            "server":    "hpc",
-            "job_key":   job_id,
-            "kind":      "slurm-batch",
-            "status_op": {"tool": "slurm_job_status", "args": {"job_id": job_id}},
-        },
+        "background_job": slurm_descriptor(job_id),
     })
 
 
