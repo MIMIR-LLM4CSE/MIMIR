@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from ..protocol.tool_result import parse_tool_payload
+from ...servers._shared.jobs import launched
 from ..context.tool_display import COMMAND_KEYS
 
 # CSI / OSC escape sequences (colors, cursor movement) — noise in an HTML panel.
@@ -82,7 +83,7 @@ def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, 
     payload = parse_tool_payload(result_text)
     if payload is None:
         return None
-    running = bool(payload.get("background_job"))
+    running = launched(payload) is not None
     if "returncode" not in payload and not running:
         return None
     if "stdout" not in payload and "stderr" not in payload:
@@ -108,7 +109,7 @@ def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, 
         info["returncode"] = returncode
     if running:
         info["running"] = True
-        job_key = (payload.get("background_job") or {}).get("job_key")
+        job_key = (launched(payload) or {}).get("job_key")
         if isinstance(job_key, str) and job_key:
             info["job_key"] = job_key
 

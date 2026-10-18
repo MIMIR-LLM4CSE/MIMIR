@@ -132,12 +132,6 @@ def _written_at(path: str) -> float | None:
         return None
 
 
-def is_settled(job_dir: str) -> bool:
-    """Whether a run's directory records that it is over: an exit code, or a recorded Slurm state."""
-    return (os.path.exists(os.path.join(job_dir, EXIT_CODE))
-            or _read_slurm_state(job_dir) is not None)
-
-
 def _read_exit_code(job_dir: str) -> int | None:
     path = os.path.join(job_dir, EXIT_CODE)
     try:

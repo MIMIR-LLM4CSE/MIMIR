@@ -266,9 +266,14 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
                 sess = self._session()
                 self.assertEqual(sess.conversations._live_jobs_of("s1"), [])
 
-                # And a real job directory with no exit code still counts.
+                # And a job whose process still runs counts, named by its command.
+                import json
+                from mimir.servers._shared.processes import proc_starttime
                 os.makedirs(os.path.join(jobs, "j1"))
-                self.assertEqual(sess.conversations._live_jobs_of("s1"), ["j1"])
+                with open(os.path.join(jobs, "j1", "meta.json"), "w") as fh:
+                    json.dump({"job_key": "j1", "command": "make all", "pid": os.getpid(),
+                               "pid_starttime": proc_starttime(os.getpid())}, fh)
+                self.assertEqual(sess.conversations._live_jobs_of("s1"), ["make all"])
 
     async def test_the_first_delete_of_a_working_conversation_is_refused(self) -> None:
         sess = self._session()

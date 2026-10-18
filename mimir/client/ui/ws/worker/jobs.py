@@ -19,6 +19,7 @@ from ....session.jobs_on_disk import (
     subagent_sessions,
 )
 from ....query_engine.jobs import poll
+from .....servers._shared.jobs import job_key_of
 
 if TYPE_CHECKING:
     from .worker import AgentWorker
@@ -94,7 +95,7 @@ class JobWatcher:
             logger.warning("background-job registration refused: descriptor is %s, "
                            "not a dict", type(descriptor).__name__)
             return False
-        job_key = str(descriptor.get("job_key") or descriptor.get("run_dir") or "")
+        job_key = job_key_of(descriptor)
         if not job_key:
             logger.warning("background-job registration refused: descriptor carries "
                            "neither 'job_key' nor 'run_dir' (keys: %s)",

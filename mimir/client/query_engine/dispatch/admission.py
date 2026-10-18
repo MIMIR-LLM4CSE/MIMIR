@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...config.limits import HARD_REPEAT_LIMIT
+from ....servers._shared.jobs import job_key_of
 from ...context.bash_classify import segment_program, shell_segments
 from ...context.capabilities import EDIT, has_cap, shell_command_args
 from ...context.execution_context import ExecutionContext
@@ -166,18 +167,24 @@ def _asks_whether_a_watched_run_is_done(
         if _op_matches(descriptor.get("summary_op"), name, args):
             return None            # progress, not "are we there yet" — always allowed
         if _op_matches(descriptor.get("status_op"), name, args):
-            return str(descriptor.get("job_key") or "?")
+            return job_key_of(descriptor) or "?"
     return None
 
 
+# Op args that only say where a job's files are; a call naming the job without them is
+# still a call about that job.
+_LOCATORS = frozenset({"run_dir"})
+
+
 def _op_matches(op: Any, name: str, args: dict) -> bool:
-    """True when the call *name(args)* is the descriptor op *op*, by containment."""
+    """True when the call *name(args)* is the descriptor op *op*: every identifying arg of
+    the op appears in the call with the same value."""
     if not isinstance(op, dict) or op.get("tool") != name:
         return False
     op_args = op.get("args")
     if not isinstance(op_args, dict):
         return False
-    return all(args.get(k) == v for k, v in op_args.items())
+    return all(args.get(k) == v for k, v in op_args.items() if k not in _LOCATORS)
 
 
 def reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) -> str | None:
@@ -187,7 +194,7 @@ def reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) -> 
     """
     for descriptor in _watched_jobs(agent):
         if _op_matches(descriptor.get("summary_op"), name, args):
-            return str(descriptor.get("job_key") or "?")
+            return job_key_of(descriptor) or "?"
     return None
 
 

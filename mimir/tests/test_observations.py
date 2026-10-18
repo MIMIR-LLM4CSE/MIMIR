@@ -1439,7 +1439,8 @@ class UnwatchedRunObservationTests(unittest.TestCase):
         # watcher back on its own job.
         ec = self._run({"status": "ok", "unwatched": ["42"]})
         self._run({"status": "ok",
-                   "background_jobs": [{"server": "bash", "job_key": "42"}]},
+                   "background_jobs": [{"server": "bash", "job_key": "42",
+                                        "status_op": {"tool": "bash_job", "args": {}}}]},
                   tool="bash_job", ec=ec)
         self.assertEqual(ec.unwatched_runs, set())
 

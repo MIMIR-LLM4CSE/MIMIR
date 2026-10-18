@@ -12,10 +12,8 @@ import os
 from datetime import datetime
 
 from ...runtime import todo_file_for_session, write_active_session
-from .....session.jobs_on_disk import is_settled
+from .....session.jobs_on_disk import scan_session
 from .....session.summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
-from ......servers._shared.state_paths import session_dir
-from .....config import paths
 from ...pool.pool import AgentPool
 from ..screen import Screen
 from ..view import Sender, ViewState
@@ -300,32 +298,9 @@ class ConversationHandlers(Handlers):
         return live + self._live_jobs_of(session_id)
 
     def _live_jobs_of(self, session_id: str) -> list[str]:
-        """Commands of *session_id* still running, read off its job dirs (``jobs_on_disk.is_settled``)."""
-        base = session_dir(session_id, paths.STATE_DIR)
-        live = []
-        for kind in ("jobs", "hpc_jobs"):
-            root = os.path.join(base, kind)
-            try:
-                keys = sorted(os.listdir(root))
-            except OSError:
-                continue
-            for key in keys:
-                job = os.path.join(root, key)
-                # A job is a directory. Anything else here is not one, and reporting it
-                # as a run with no exit code — which is to say a live one — makes
-                # deleting the conversation ask about work that does not exist.
-                if not os.path.isdir(job):
-                    continue
-                if is_settled(job):
-                    continue
-                label = key
-                try:
-                    with open(os.path.join(job, "meta.json"), encoding="utf-8") as fh:
-                        label = (json.load(fh).get("command") or key)[:80]
-                except (OSError, ValueError):
-                    pass
-                live.append(label)
-        return live
+        """Commands of *session_id* still running, by the scan's rule (``jobs_on_disk``)."""
+        return [(job.command or job.job_key)[:80]
+                for job in scan_session(session_id, include_reported=True) if job.live]
 
     async def on_delete_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()

@@ -14,6 +14,7 @@ from ...context.capabilities import timeout_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...event_sink import emit
+from ....servers._shared.jobs import job_key_of
 from ...protocol.tool_result import json_error_payload
 from ...tool_execution.exec_preview import extract_exec_preview
 from ...tool_execution.executor import run_post_tool_annotations
@@ -199,7 +200,7 @@ async def _follow_runs(agent: AgentPort, call: Call, result: str, ok: bool) -> s
         if registered:
             # Ties the row to the run, so its progress can be matched to it.
             emit({"type": "tool_backgrounded", "id": call.call_id,
-                  "job_key": str(descriptor.get("job_key") or descriptor.get("run_dir") or "")})
+                  "job_key": job_key_of(descriptor)})
         else:
             result = await await_background_job(descriptor, agent, result)
     if isinstance(result, str):

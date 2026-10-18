@@ -13,6 +13,7 @@ import threading
 from collections import deque
 
 from mimir.client.query_engine.jobs import poll as job_poll
+from .._shared.jobs import job_key_of
 from mimir.client.query_engine.jobs.wakes import wake_text
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class ChildWatcher:
         if not isinstance(descriptor, dict):
             logger.warning("child watcher: refused a descriptor that is not a mapping")
             return False
-        job_key = str(descriptor.get("job_key") or descriptor.get("run_dir") or "")
+        job_key = job_key_of(descriptor)
         if not job_key:
             logger.warning("child watcher: refused a descriptor naming no job")
             return False
@@ -130,7 +131,7 @@ class ChildWatcher:
             self._handed_over = True
             live = [dict(d) for key, d in self._descriptors.items()
                     if key in self._tasks and not self._tasks[key].done()]
-        return [self._parent_resolvable(d) for d in live]
+        return [self._with_origin(d) for d in live]
 
     async def close(self) -> None:
         """Drop the watches. Called from the child's own loop, in its ``finally``.
@@ -154,20 +155,11 @@ class ChildWatcher:
 
     # ── internals ───────────────────────────────────────────────────────────────
 
-    def _parent_resolvable(self, descriptor: dict) -> dict:
-        run_dir = descriptor.get("run_dir")
+    def _with_origin(self, descriptor: dict) -> dict:
+        """*descriptor* as handed to the parent: it says which child it came from. Its ops
+        already name the run's directory, so they resolve from the parent's session."""
         out = dict(descriptor)
         out.setdefault("origin", dict(self._origin))
-        if not run_dir:
-            return out
-        for op_name in ("status_op", "summary_op"):
-            op = descriptor.get(op_name)
-            if not isinstance(op, dict) or not op.get("tool"):
-                continue
-            args = dict(op.get("args") or {})
-            if not args.get("run_dir"):
-                args["run_dir"] = run_dir
-            out[op_name] = {**op, "args": args}
         return out
 
     def _finished(self, job_key: str, task: asyncio.Task) -> None:

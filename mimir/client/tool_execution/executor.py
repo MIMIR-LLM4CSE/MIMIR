@@ -6,6 +6,7 @@ import logging
 import os
 from typing import Any
 
+from ...servers._shared.jobs import launched
 from ...servers._shared.state_paths import scratch_dir
 from ..config import paths
 from ..config.models import (
@@ -482,7 +483,7 @@ async def execute_tool_call(
     # Not for a run that is still going: the probe was taken before the command
     # started and would report the disk halfway through a build. An effect that has
     # not finished happening is not an effect to annotate.
-    if not payload_dict.get("background_job"):
+    if not launched(payload_dict):
         normalized += bash_effect.report(effect_probe)
         # A file created by the shell is a fork candidate exactly like one created by
         # the edit tool — `cp solver.py solver.py.bak` was the observed case. The probe

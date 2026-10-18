@@ -10,6 +10,7 @@ from ..ladder import (
     register_run_failure,
 )
 from ..proxy_state import active_proxy_source
+from ....servers._shared.jobs import handed_over, launched
 from ...context.capabilities import (
     CODE_EXEC,
     PLAN_BLOCKED,
@@ -171,9 +172,10 @@ def unwatched_runs(call: Call) -> None:
     execution_context = call.execution_context
     # Shape first, and this is the hot path: every tool call of every turn comes
     # through here, and all but a handful carry none of these keys.
-    handles = call.payload.get("background_jobs") or []
-    if call.payload.get("background_job"):
-        handles = [*handles, call.payload["background_job"]]
+    handles = handed_over(call.payload)
+    started = launched(call.payload)
+    if started:
+        handles = [*handles, started]
     listed = call.payload.get("unwatched") or ()
     if call.status != "ok" or not (listed or handles):
         return

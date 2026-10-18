@@ -8,9 +8,9 @@ in-turn, polling the descriptor's status op with no model calls. It also emits t
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from ...event_sink import emit
+from ....servers._shared import jobs
 from ...context.capabilities import BACKGROUNDABLE, has_cap
 from ...protocol.tool_result import parse_tool_payload
 from . import poll
@@ -38,36 +38,7 @@ def detect_background_job(name: str, result_text: str, agent: AgentPort) -> dict
     """
     if not has_cap(name, BACKGROUNDABLE, agent.tool_caps):
         return None
-    payload = parse_tool_payload(result_text) if isinstance(result_text, str) else None
-    if not isinstance(payload, dict):
-        return None
-    descriptor = payload.get("background_job")
-    return descriptor if isinstance(descriptor, dict) else None
-
-
-def _detect_rewatchable_jobs(name: str, result_text: str, agent: AgentPort) -> list[dict]:
-    """Descriptors of runs a result reports as still going (``background_jobs``, plural).
-
-    Plural means "still going", not "this call launched it": asking about a run is how
-    tracking resumes after a restart. Each needs a job and a status op to poll.
-    """
-    payload = parse_tool_payload(result_text) if isinstance(result_text, str) else None
-    if not isinstance(payload, dict):
-        return []
-    found = payload.get("background_jobs")
-    if not isinstance(found, list):
-        return []
-    return [d for d in found if _is_rewatchable(d)]
-
-
-def _is_rewatchable(descriptor: Any) -> bool:
-    """Whether *descriptor* names a run a watcher could actually poll."""
-    if not isinstance(descriptor, dict):
-        return False
-    if not (descriptor.get("job_key") or descriptor.get("run_dir")):
-        return False
-    status_op = descriptor.get("status_op")
-    return isinstance(status_op, dict) and bool(status_op.get("tool"))
+    return jobs.launched(parse_tool_payload(result_text) if isinstance(result_text, str) else None)
 
 
 def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort) -> str:
@@ -77,7 +48,10 @@ def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort)
     Silent about the ones already watched: the hook dedups on ``job_key`` and reports
     success either way, so the note names what was re-armed only when that is news.
     """
-    descriptors = _detect_rewatchable_jobs(name, result_text, agent)
+    # Plural means "still going", not "this call launched it": asking about a run is how
+    # tracking resumes after a restart.
+    descriptors = jobs.handed_over(
+        parse_tool_payload(result_text) if isinstance(result_text, str) else None)
     if not descriptors:
         return result_text
     hook = getattr(agent, "register_background_job", None)
@@ -87,13 +61,12 @@ def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort)
     watched = getattr(agent, "watched_background_jobs", None)
     if callable(watched):
         try:
-            known = {str(d.get("job_key") or d.get("run_dir") or "")
-                     for d in (watched() or []) if isinstance(d, dict)}
+            known = {jobs.job_key_of(d) for d in (watched() or []) if isinstance(d, dict)}
         except Exception:
             known = set()
     rearmed = []
     for descriptor in descriptors:
-        job_key = str(descriptor.get("job_key") or descriptor.get("run_dir") or "")
+        job_key = jobs.job_key_of(descriptor)
         if job_key in known:
             continue
         try:
@@ -126,7 +99,7 @@ def maybe_register_background_job(
         descriptor = detect_background_job(name, result_text, agent)
     if descriptor is None:
         return result_text, False
-    job_key = descriptor.get("job_key", "?")
+    job_key = jobs.job_key_of(descriptor) or "?"
     hook = getattr(agent, "register_background_job", None)
     if not hook:
         # CLI: there is no watcher to register with. Not a failure — the caller waits

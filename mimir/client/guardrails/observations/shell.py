@@ -26,6 +26,7 @@ from ...context.capabilities import (
     shell_command_args,
 )
 from ...context.paths import is_python_test_filepath
+from ....servers._shared.jobs import launched
 from ....servers._shared.shell_paths import (
     EFFECT_BUILD,
     EFFECT_RUN,
@@ -221,7 +222,7 @@ def bash_validation(call: Call) -> None:
     command_args = shell_command_args(call.tool_name, call.agent.tool_caps)
     if command_args is None:
         return
-    if call.payload.get("background_job"):
+    if launched(call.payload):
         # The run is still going: this payload is a handle plus whatever it had
         # printed so far, not a verdict. Judging it would credit a whole pending
         # validation set at the instant a suite was launched.
@@ -281,7 +282,7 @@ def command(call: Call) -> None:
     command_args = shell_command_args(call.tool_name, call.agent.tool_caps)
     if command_args is None:
         return
-    if call.payload.get("background_job"):
+    if launched(call.payload):
         return  # still running — its effects have not happened yet
     command = call.arguments.get(command_args[0], "")
     segments = classify_bash_command(command)

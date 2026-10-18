@@ -865,12 +865,8 @@ class _GuardAgent:
 
 
 def _descriptor(job_key: str = "j1") -> dict:
-    return {
-        "server": "bash", "kind": "shell-command", "job_key": job_key,
-        "status_op":  {"tool": "bash_job", "args": {"job_key": job_key}},
-        "summary_op": {"tool": "bash_job",
-                       "args": {"op": "output", "job_key": job_key}},
-    }
+    """What the bash server hands out, its directory in the op args."""
+    return shared_jobs.shell_descriptor(job_key, f"/state/sessions/s1/jobs/{job_key}")
 
 
 class WatchedRunPollGuardTests(unittest.TestCase):

@@ -920,11 +920,10 @@ class _PollingAgent(_FakeAgent):
 
 
 def _bash_descriptor(job_key: str = "k1") -> dict:
-    return {"server": "bash", "kind": "shell-command", "job_key": job_key,
-            "run_dir": f"/state/sessions/parent/subagents/sub-1a2b3c4d/jobs/{job_key}",
-            "status_op": {"tool": "bash_job", "args": {"job_key": job_key}},
-            "summary_op": {"tool": "bash_job",
-                           "args": {"op": "output", "job_key": job_key}}}
+    """What the bash server hands a child out, its directory in the op args."""
+    from mimir.servers._shared.jobs import shell_descriptor
+    return shell_descriptor(job_key,
+                            f"/state/sessions/parent/subagents/sub-1a2b3c4d/jobs/{job_key}")
 
 
 class AChildWatchesItsOwnRunsTests(unittest.TestCase):
