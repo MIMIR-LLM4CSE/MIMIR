@@ -160,9 +160,11 @@ class RoutingTests(unittest.TestCase):
     """A session command must leave the webview as `command`, not as `query`."""
 
     def test_the_app_routes_session_commands_apart(self) -> None:
-        app = os.path.join(_ROOT, "vscode-extension", "webview", "src", "App.tsx")
-        with open(app, encoding="utf-8") as fh:
+        webview = os.path.join(_ROOT, "vscode-extension", "webview", "src")
+        with open(os.path.join(webview, "hooks", "useComposer.ts"), encoding="utf-8") as fh:
             src = fh.read()
+        with open(os.path.join(webview, "App.tsx"), encoding="utf-8") as fh:
+            app = fh.read()
         self.assertIn("isSessionCommand(text)", src)
         # The routing check must come before anything that could put the text to the
         # model, or a command typed during a run would be queued as a steer and handed
@@ -176,7 +178,7 @@ class RoutingTests(unittest.TestCase):
         self.assertLess(body.index("isSessionCommand(text)"),
                         body.index("sendPrompt(text)"))
         # And the thing it defers to is the one place a prompt reaches the model.
-        self.assertEqual(src.count('send({ type: "steer", text });'), 1)
+        self.assertEqual(app.count('send({ type: "steer", text });'), 1)
 
     def test_the_dropdown_offers_both_kinds(self) -> None:
         with open(_SLASH_UTILS, encoding="utf-8") as fh:
