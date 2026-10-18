@@ -23,7 +23,7 @@ from mimir.tests.support.proxy import (
     _TmpStorageTest,
     _script,
     build,
-    eval_session,
+    eval_observe,
     procs,
     ratchet,
     registry,
@@ -348,13 +348,13 @@ class LongBuildAdviceTests(_TmpStorageTest):
     """Advice keyed on a measured number, never on a guess about the project."""
 
     def test_a_long_build_is_told_to_detach_next_time(self) -> None:
-        rec = eval_session._long_build_note(400.0)
+        rec = eval_observe._long_build_note(400.0)
         self.assertIn("background=True", rec)
         self.assertIn("400s", rec)
 
     def test_a_trivial_build_says_nothing(self) -> None:
-        self.assertEqual(eval_session._long_build_note(0.4), "")
-        self.assertEqual(eval_session._long_build_note(0.0), "")
+        self.assertEqual(eval_observe._long_build_note(0.4), "")
+        self.assertEqual(eval_observe._long_build_note(0.0), "")
 
 
 class RestoreMtimeTests(_TmpStorageTest):

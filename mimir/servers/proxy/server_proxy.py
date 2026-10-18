@@ -113,6 +113,7 @@ from ._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT
 from ._lib.procs import validate_slurm_args, validate_slurm_comment, validate_slurm_token
 from .._shared.slurm_script import validate_target
 from ._ops import (
+    eval_observe,
     eval_session,
     exec_jobs,
     references,
@@ -309,21 +310,21 @@ def proxy_eval_status(
         run_a, run_b: For 'diff': run IDs or absolute paths.
     """
     if op == "status":
-        return eval_session.status(proxy_name)
+        return eval_observe.status(proxy_name)
     if op == "results":
-        return eval_session.results(proxy_name)
+        return eval_observe.results(proxy_name)
     if op == "log":
-        return eval_session.log(proxy_name, tail)
+        return eval_observe.log(proxy_name, tail)
     if op == "runs":
-        return eval_session.runs_list(proxy_name)
+        return eval_observe.runs_list(proxy_name)
     if op == "diff":
-        return eval_session.runs_diff(run_a, run_b, proxy_name)
+        return eval_observe.runs_diff(run_a, run_b, proxy_name)
     if op == "config":
-        return eval_session.config_get(proxy_name)
+        return eval_observe.config_get(proxy_name)
     if op == "graph":
         # No proxy_name: every session, because a fan-out of sub-agents is one session
         # per axis and the picture is only worth anything whole.
-        return eval_session.graph(proxy_name)
+        return eval_observe.graph(proxy_name)
     return _unknown_op(op, _EVAL_STATUS_OPS)
 
 
@@ -1020,7 +1021,7 @@ def _axes_lines(proxy_name: str) -> list[dict]:
     if key is not None and key == _PANEL_AXES["key"]:
         return _PANEL_AXES["value"]
     try:
-        axes = eval_session.axes_tried(proxy_name)
+        axes = eval_observe.axes_tried(proxy_name)
     except Exception:
         return []
     if not axes.get("tried"):
@@ -1085,7 +1086,7 @@ def proxy_panel_report() -> dict:
                    "detail": "No optimisation session in this workspace."})
 
     cfg = eval_session.load_opt_config(name) or {}
-    state = eval_session.status(name).get("state", "unknown")
+    state = eval_observe.status(name).get("state", "unknown")
     best = load_best(name) or {}
     metric = cfg.get("primary_metric", "time_s")
     lines = [

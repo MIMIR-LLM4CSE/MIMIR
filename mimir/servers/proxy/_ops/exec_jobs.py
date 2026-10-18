@@ -16,7 +16,8 @@ import sys
 
 from ..._shared.launcher import launch_argv
 from . import with_next, err, ok
-from .eval_session import NEXT_DETACHED, RUN_WAIT_BUDGET_S, await_terminal_state
+from .eval_common import NEXT_DETACHED
+from .eval_session import RUN_WAIT_BUDGET_S, await_terminal_state
 from .._lib import store
 from .._lib.procs import (
     launch_detached,

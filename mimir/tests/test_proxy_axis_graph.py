@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.servers.proxy._ops import _eval_ratchet, eval_session
+from mimir.servers.proxy._ops import _eval_ratchet, eval_observe
 
 
 class _Ledgered(unittest.TestCase):
@@ -41,15 +41,15 @@ class _Ledgered(unittest.TestCase):
         self.bests[proxy] = best or {}
 
     def _graph(self, proxy_name: str = ""):
-        with mock.patch.object(eval_session, "load_registry",
+        with mock.patch.object(eval_observe, "load_registry",
                                return_value={k: {} for k in self.configs}), \
-             mock.patch.object(eval_session, "opt_ledger_file",
+             mock.patch.object(eval_observe, "opt_ledger_file",
                                side_effect=lambda p: os.path.join(self.tmp, f"{p}.jsonl")), \
-             mock.patch.object(eval_session, "load_opt_config",
+             mock.patch.object(eval_observe, "load_opt_config",
                                side_effect=lambda p: self.configs.get(p)), \
-             mock.patch.object(eval_session, "load_best",
+             mock.patch.object(eval_observe, "load_best",
                                side_effect=lambda p: self.bests.get(p)):
-            return eval_session.graph(proxy_name)
+            return eval_observe.graph(proxy_name)
 
 
 class AxisTests(_Ledgered):
@@ -193,11 +193,11 @@ class AttachedToEveryRunTests(_Ledgered):
     """
 
     def _axes(self, proxy: str = "solver"):
-        with mock.patch.object(eval_session, "resolve_proxy_name",
+        with mock.patch.object(eval_observe, "resolve_proxy_name",
                                side_effect=lambda p: p or "solver"), \
-             mock.patch.object(eval_session, "opt_ledger_file",
+             mock.patch.object(eval_observe, "opt_ledger_file",
                                side_effect=lambda p: os.path.join(self.tmp, f"{p}.jsonl")):
-            return eval_session.axes_tried(proxy)
+            return eval_observe.axes_tried(proxy)
 
     def test_what_worked_and_what_was_ruled_out_both_come_back(self):
         self._write("solver", [
@@ -246,9 +246,9 @@ class AttachedToEveryRunTests(_Ledgered):
 
     def test_an_unreadable_ledger_costs_the_account_and_not_the_run(self):
         """A run's verdict must never fail over its own bookkeeping."""
-        with mock.patch.object(eval_session, "resolve_proxy_name",
+        with mock.patch.object(eval_observe, "resolve_proxy_name",
                                side_effect=RuntimeError("store is gone")):
-            self.assertEqual(eval_session.axes_tried("solver"), {})
+            self.assertEqual(eval_observe.axes_tried("solver"), {})
 
 
 class PanelLinesTests(unittest.TestCase):
@@ -256,7 +256,7 @@ class PanelLinesTests(unittest.TestCase):
 
     def _lines(self, axes: dict):
         from mimir.servers.proxy import server_proxy
-        with mock.patch.object(server_proxy.eval_session, "axes_tried",
+        with mock.patch.object(server_proxy.eval_observe, "axes_tried",
                                return_value=axes):
             return server_proxy._axes_lines("solver")
 
@@ -281,7 +281,7 @@ class PanelLinesTests(unittest.TestCase):
                    {"tried": 2, "accepted": [], "rejected": ["unrolling", "simd"]}]
 
         with mock.patch("mimir.servers.proxy._lib.store.opt_ledger_file", return_value=ledger), \
-             mock.patch.object(server_proxy.eval_session, "axes_tried",
+             mock.patch.object(server_proxy.eval_observe, "axes_tried",
                                side_effect=answers):
             first = server_proxy._axes_lines("solver")
             # Same mtime: served from the cache, so the second answer is not consumed.
@@ -294,7 +294,7 @@ class PanelLinesTests(unittest.TestCase):
     def test_the_panel_survives_a_store_it_cannot_read(self):
         """One section that cannot answer costs its own lines, never the drawer."""
         from mimir.servers.proxy import server_proxy
-        with mock.patch.object(server_proxy.eval_session, "axes_tried",
+        with mock.patch.object(server_proxy.eval_observe, "axes_tried",
                                side_effect=RuntimeError("store is gone")):
             self.assertEqual(server_proxy._axes_lines("solver"), [])
 

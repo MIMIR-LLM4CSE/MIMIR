@@ -31,7 +31,8 @@ from .._lib.store import (
     proxy_runs_dir,
     suite_results_dir,
 )
-from .eval_session import prepare_run, eval_background_descriptor
+from .eval_common import eval_background_descriptor
+from .eval_session import prepare_run
 from ..._shared.slurm_site import resolve_host as _slurm_resolve_host
 from .suites import prevalidate_suite
 
