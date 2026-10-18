@@ -13,10 +13,7 @@ import type {
   ConnectionState,
   ServerMessage,
   SessionMeta,
-  PanelSection,
   PromptOrigin,
-  SubAgent,
-  SubAgentLevel,
   TodoItem,
   DiffEntry,
   QuestionSpec,
@@ -31,6 +28,7 @@ import type {
 import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { routeServerMessage, type ServerHandlers } from "./state/serverMessages";
 import { useAgentSettings } from "./hooks/useAgentSettings";
+import { usePanels } from "./hooks/usePanels";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { useStickToBottom } from "./hooks/useStickToBottom";
 import { ChatThread } from "./components/ChatThread";
@@ -102,14 +100,6 @@ function makeId(): string {
 /** How often the rendered transcript is checkpointed to the server mid-turn. */
 const TRANSCRIPT_CHECKPOINT_MS = 5000;
 
-/**
- * How often the sub-agent cards are re-read while any of them may be working.
- *
- * They are files another process writes, so there is nothing to subscribe to. Cheap
- * enough at this cadence to keep the count on the button honest: a session that never
- * delegated has no directory to list at all.
- */
-const SUBAGENT_POLL_MS = 2000;
 
 function modelDisplayName(value: string): string {
   const trimmed = value.trim();
@@ -288,23 +278,6 @@ export const App: React.FC = () => {
     []
   );
   const [showSessionsPanel, setShowSessionsPanel] = useState(false);
-  // Sub-agents of the session in view. Kept apart from `sessions`: they are work this
-  // session sent out, not conversations to come back to.
-  const [subAgents, setSubAgents] = useState<SubAgent[]>([]);
-  const [openedSubAgent, setOpenedSubAgent] = useState<SubAgent | null>(null);
-  const [runningSubAgents, setRunningSubAgents] = useState(0);
-  const [subAgentLevel, setSubAgentLevel] = useState<SubAgentLevel>("explore");
-  const [panelSections, setPanelSections] = useState<PanelSection[]>([]);
-  // An ask for the panel is in flight, so the ⟳ can say so: a button whose press
-  // changes nothing on screen reads as a broken button, and a re-read of the clusters
-  // takes a second or two.
-  const [panelPending, setPanelPending] = useState(false);
-  // Whether the last panel answer came from a conversation that has an agent. Before
-  // the first one is built there are no servers to fill the sections, and the drawer
-  // says that rather than showing an empty page.
-  const [panelAgentReady, setPanelAgentReady] = useState(false);
-  const [showSciencePanel, setShowSciencePanel] = useState(false);
-  const [showSubAgentsPanel, setShowSubAgentsPanel] = useState(false);
   // Cards raised by conversations the user is not reading, newest per conversation.
   // They do not belong in this chat's thread — that is another transcript — but they
   // cannot be hidden either: each one is a turn parked on a person with no timeout, so
@@ -417,7 +390,6 @@ export const App: React.FC = () => {
   const handlerRef = useRef<(m: ServerMessage) => void>(() => {});
   // The handler tables of the parts that hold their own state.
   const tablesRef = useRef<ServerHandlers[]>([]);
-  tablesRef.current = [settings.on];
 
   const handleServerMessage = useCallback((msg: ServerMessage) => {
     // Every journaled event carries the point it was written at. Remembering the
@@ -512,32 +484,6 @@ export const App: React.FC = () => {
 
       case "sessions_list":
         setSessions(msg.sessions);
-        return;
-
-      case "subagents_list":
-        setSubAgents(msg.subagents ?? []);
-        setRunningSubAgents(msg.running ?? 0);
-        return;
-
-      case "subagent_level":
-        setSubAgentLevel(msg.level);
-        return;
-
-      case "panel_report":
-        setPanelPending(false);
-        setPanelAgentReady(msg.agent_ready !== false);
-        setSubAgentLevel(msg.subagent_level);
-        setSubAgents(msg.subagents ?? []);
-        setRunningSubAgents(msg.running ?? 0);
-        // Before the agent is up a report carries at most the recorded clusters; an
-        // empty one keeps what is on screen, and the drawer asks again on `ready`.
-        if (msg.agent_ready !== false || (msg.sections?.length ?? 0) > 0) {
-          setPanelSections(msg.sections ?? []);
-        }
-        return;
-
-      case "subagent":
-        setOpenedSubAgent(msg.subagent ?? null);
         return;
 
       case "toggles_list":
@@ -763,25 +709,6 @@ export const App: React.FC = () => {
   });
   sendRef.current = send;
 
-  // The cards are files the sub-agents leave behind, so the panel asks for them rather
-  // than being pushed to: on opening, and whenever the user wants a fresh look.
-  const refreshSubAgents = useCallback(
-    () => send({ type: "list_subagents" }), [send]);
-  // One call fills the whole drawer: the sub-agents, the runs still going, and each
-  // server's own section. Served from the servers' caches, so it is what the timer
-  // asks and what opening the drawer asks. `build` because before the first query of
-  // a session there is no agent holding the servers — which is why the clusters only
-  // ever appeared after the first request; it is a no-op once one is up.
-  const refreshPanel = useCallback(
-    () => send({ type: "list_panel", build: true }), [send]);
-  // The ⟳, and only it: read again past every cache, including the per-host digest a
-  // server keeps for its lifetime. That costs an ssh to each cluster, which is a price
-  // worth paying when the reader asked for it and not when a drawer was opened.
-  const reloadPanel = useCallback(() => {
-    setPanelPending(true);
-    send({ type: "list_panel", build: true, refresh: true });
-  }, [send]);
-
   // Creating a session also opens it: the server makes the new session active
   // and answers with `session_loaded`, so we only have to show the (empty)
   // thread — panel closed, spinner up until that reply lands.
@@ -805,6 +732,14 @@ export const App: React.FC = () => {
   syncSettingsRef.current = { thinkingLevel, streaming, agentMode };
   const [readyCount, setReadyCount] = useState(0);
   const handleReady = useCallback(() => setReadyCount((n) => n + 1), []);
+  const panels = usePanels(sendVia, { busy, readyCount, agentReady });
+  const {
+    subAgents, openedSubAgent, runningSubAgents, subAgentLevel, panelSections,
+    panelPending, panelAgentReady, showSciencePanel, showSubAgentsPanel,
+    setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
+    refreshSubAgents, refreshPanel, reloadPanel,
+  } = panels;
+  tablesRef.current = [settings.on, panels.on];
   useEffect(() => {
     if (readyCount === 0) return;
     const { thinkingLevel: tl, streaming: st, agentMode: am } = syncSettingsRef.current;
@@ -856,43 +791,8 @@ export const App: React.FC = () => {
     wasBusyRef.current = chatState.busy;
     if (chatState.busy || !wasBusy) return;
     const timer = setTimeout(sendTranscript, 1000);
-    // A turn that delegated left new cards on disk. Ask again rather than watch: the
-    // panel is a reader of files another process writes. Unconditionally for the cards
-    // — the count on the button is shown whether the drawer is open or not, and a
-    // refresh gated on the drawer left it holding a number from minutes ago. The
-    // heavier whole-drawer report stays gated: it calls every server that fills a
-    // section, which is not worth doing for a panel nobody is looking at.
-    refreshSubAgents();
-    if (showSciencePanel) refreshPanel();
     return () => clearTimeout(timer);
-  }, [chatState.busy, sendTranscript, refreshSubAgents,
-      showSciencePanel, refreshPanel]);
-
-  // While a turn is running, or while any sub-agent is still working, keep asking.
-  // Children start and finish inside a turn, and a detached one lands after it; the
-  // badge has to follow both, so this lives here rather than in the drawer that used
-  // to own it. It stops on its own once the turn ends and the count reaches zero, and
-  // a session that never delegated pays a directory that does not exist.
-  //
-  // The interface polls, never the model: the agent is woken when a run lands, and
-  // asking it "are we there yet" is the one thing it must not do.
-  // The agent came up after the drawer was opened: its first ask found no servers to
-  // ask. Ask again, now that there are some.
-  useEffect(() => {
-    if (readyCount > 0 && showSciencePanel) {
-      // The first read after the agent lands is a cold probe; show it is under way.
-      if (agentReady && !panelAgentReady) setPanelPending(true);
-      refreshPanel();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readyCount, showSciencePanel, refreshPanel]);
-
-  const pollCards = showSciencePanel ? refreshPanel : refreshSubAgents;
-  useEffect(() => {
-    if (!chatState.busy && runningSubAgents === 0) return;
-    const timer = setInterval(pollCards, SUBAGENT_POLL_MS);
-    return () => clearInterval(timer);
-  }, [chatState.busy, runningSubAgents, pollCards]);
+  }, [chatState.busy, sendTranscript]);
 
   // And during it. With the end of the turn as the only handover, every long run is a
   // window where the work on screen exists nowhere else: a dropped connection, a reloaded
@@ -1409,10 +1309,7 @@ export const App: React.FC = () => {
           subAgents={subAgents}
           opened={openedSubAgent}
           onRefresh={refreshSubAgents}
-          onOpen={(id) => {
-            setOpenedSubAgent(null);
-            send({ type: "read_subagent", id });
-          }}
+          onOpen={panels.openSubAgent}
           onClose={() => setOpenedSubAgent(null)}
         />
       )}
@@ -1762,10 +1659,7 @@ export const App: React.FC = () => {
                   contextMode={contextMode}
                   enforcement={enforcement}
                   subAgentLevel={subAgentLevel}
-                  onSubAgentLevelChange={(lvl) => {
-                    setSubAgentLevel(lvl);
-                    send({ type: "command", text: `/subagents ${lvl}` });
-                  }}
+                  onSubAgentLevelChange={panels.changeSubAgentLevel}
                   temperature={temperature}
                   onTemperatureChange={settings.changeTemperature}
                   onThinkingLevelChange={settings.changeThinkingLevel}
