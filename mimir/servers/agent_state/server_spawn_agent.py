@@ -500,163 +500,192 @@ async def spawn_agent(
     """
     grantable = _caller_grantable(ctx)
     requested = [str(t).strip() for t in (tools or []) if str(t).strip()]
-    unavailable = [t for t in requested if t not in grantable]
-    if unavailable:
-        offer = ", ".join(sorted(grantable)) if grantable else "(none)"
-        return err(
-            f"cannot grant {', '.join(unavailable)}: not available to you right now, or "
-            f"reserved to you (planning, delegation, asking the user, writing memory, "
-            f"cluster submission). What you may grant: {offer}. Leave `tools` empty for a "
-            f"read-only exploration.",
-            answer="", completed=False, files_read=[], files_written=[],
-        )
+    refusal = _grant_refusal(requested, grantable)
+    if refusal:
+        return err(refusal, **_NO_ANSWER)
     level = _subagent_level(ctx)
-    # What the child was given decides how long it gets, through the same test that
-    # decides whether it gets a copy of the repository below: a child with a writing or
-    # executing tool is working, everything else is reconnaissance. Computed here
-    # because the budget has to be known before the run starts, and the tool
-    # classification that _drive_sub_agent uses is not available until it has connected.
-    working = _level_allows(level, "build") and bool(set(requested) & _caller_writers(ctx))
-    ceiling = (spawn_limits.SUBAGENT_WORKING_BUDGET_SECS if working
-               else spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
-    budget = max(spawn_limits.SUBAGENT_MIN_BUDGET_SECS,
-                 min(int(time_budget_secs or ceiling), ceiling))
-
-    caller_model = _caller_model(ctx)
-    model = (model or "").strip()
-    if model and model != caller_model:
-        refusal = _refuse_model(model)
-        if refusal:
-            return err(refusal, answer="", completed=False, files_read=[], files_written=[])
-    else:
-        model = caller_model
+    working, budget = _budget(ctx, level, requested, time_budget_secs)
+    model, refusal = _resolve_model(ctx, model)
+    if refusal:
+        return err(refusal, **_NO_ANSWER)
 
     spawn_output.silence_stdout_once()
-    approval_mode = _caller_approval_mode(ctx)
     session = _sub_session_id()
-    child_key = session.rsplit("/", 1)[-1]
-    # A run longer than a blocking call can hold is detached whether or not it was
-    # asked for. The client caps any timeout a tool declares at
-    # TOOL_CALL_TIMEOUT_MAX_SECS, so a two-hour child held in a blocking call would be
-    # killed at twenty minutes with nothing to show — and the model, which knows
-    # nothing of that ceiling, cannot choose correctly here.
+    # Longer than a blocking call can hold (the client caps any declared timeout): detached
+    # whether or not it was asked for, since the model cannot see that ceiling.
     detached_for_length = budget > spawn_limits.SUBAGENT_HARD_CAP_SECS
-    background = background or detached_for_length
-    job_key = child_key if background else ""
+    run = _ChildRun(session=session, model=model, requested=requested, budget=budget,
+                    background=background or detached_for_length)
 
-    # A slot, before anything is created and before any clock starts: the wait for one
-    # is not the child's time, and a copy of the repository cut for a child that never
-    # gets to run is litter.
+    # A slot before anything is created or any clock starts: the wait is not the child's
+    # time, and a worktree cut for a child that never runs is litter.
     if not await spawn_jobs.wait_for_slot():
         return err(
             f"no room to start another sub-agent: {spawn_jobs.SUBAGENT_MAX_CONCURRENT} are already "
             f"running ({spawn_jobs.busy_with()}). Do something else and delegate this when one "
             f"lands — you are resumed as each finishes — or do it yourself. Do not "
             f"retry this call immediately: nothing will have changed.",
-            answer="", completed=False, files_read=[], files_written=[],
+            **_NO_ANSWER,
         )
-    slot_held = True
-    spawn_jobs.take_slot(session, task)
+    run.slot.take(task)
 
-    def _release_slot() -> None:
-        """Give the slot back exactly once, whichever way the run ended."""
-        nonlocal slot_held
-        if slot_held:
-            slot_held = False
-            spawn_jobs.free_slot(session)
-
-    # A child that was granted anything writing or executing gets a copy of the
-    # repository — always, and not because it asked. Several of them editing one tree
-    # overwrite each other in silence, and no instruction to the model prevents that;
-    # a separate worktree does, by construction. A reading child stays in these files,
-    # where it can do no harm.
-    worktree: dict | None = None
+    # A child granted anything writing or executing works in its own copy of the
+    # repository, so concurrent children cannot overwrite each other.
     if working:
-        worktree, refusal = spawn_worktree.create_worktree(child_key, session)
-        if worktree is None:
-            _release_slot()
-            return err(refusal, answer="", completed=False, files_read=[], files_written=[])
+        run.worktree, refusal = spawn_worktree.create_worktree(run.child_key, session)
+        if run.worktree is None:
+            run.slot.release()
+            return err(refusal, **_NO_ANSWER)
 
-    # The child runs in a dedicated thread with its own event loop: its MCP exit
-    # stack must be opened and closed in one task on one loop, and the hard cap
-    # below must not become a task cancellation in the middle of a stdio_client.
-    # This tool stays async so waiting on that thread never blocks this server's
-    # loop — that is what makes a fan-out of several calls actually concurrent.
-    events: queue.Queue = queue.Queue(maxsize=spawn_output.CHILD_QUEUE_MAX)
-    counters: dict = {"dropped": 0}
-    state: dict = {"sent": 0, "dropped": 0}
-    future: Future[dict] = Future()
-    # The running child, published here by the thread. A run that overruns its budget
-    # keeps going in its own thread and its result never arrives — without this the
-    # caller was told only that the time was up. Read defensively: whatever is in it
-    # is being written by another thread.
-    child: dict = {}
-    # Taken here, on the server's own loop, not inside the child's thread: this is the
-    # long-lived MCP session (one per stdio connection), and reading it where it is
-    # known to be valid says plainly that it is not the request that travels.
-    # getattr, not attribute access: a caller that hands over no session hands over no
-    # channel, and the child then runs unattended exactly as it always did.
-    ask_session = getattr(ctx, "session", None)
+    run.start(
+        task=task, context=context, grantable=grantable, max_steps=max_steps,
+        approval_mode=_caller_approval_mode(ctx), level=level,
+        # The long-lived MCP session (one per stdio connection), read on this loop:
+        # without one, the child runs unattended.
+        ask_session=getattr(ctx, "session", None),
+    )
+    if run.job_key:
+        return run.detached_reply(detached_for_length)
+    if not await run.wait(ctx):
+        return run.overrun_reply()
+    return run.result_reply()
 
-    def _thread_main() -> None:
-        try:
-            result = asyncio.run(_run_sub_agent(
-                task, context, requested, grantable, max_steps, approval_mode,
-                on_event=spawn_output.make_child_sink(events, counters, job_key, session),
-                model=model, session=session, budget=budget, child=child,
-                level=level, worktree=worktree,
-                # Detached or not, the child can reach the person. What ends when the
-                # delegating call returns is the REQUEST; the session it rode on
-                # outlives it, and the client registers its elicitation callback on
-                # connect rather than per call.
-                ask_session=ask_session,
-                ask_loop=loop,
-            ))
-            future.set_result(result)
-            if job_key:
-                spawn_jobs.settle_job(job_key, "done" if not result.get("error") else "crashed",
-                            result)
-        except Exception as exc:
-            future.set_exception(exc)
-            if job_key:
-                spawn_jobs.settle_job(job_key, "crashed", {"answer": "", "completed": False,
-                                                 "error": str(exc)})
-        finally:
-            # From the child's own thread, so a detached one keeps its slot for its
-            # whole life rather than handing it back when its call returns — and
-            # directly, because the loop its call ran on may be long gone by now.
-            _release_slot()
 
-    # Until the thread runs, nothing else gives the slot back.
-    try:
-        if job_key:
-            # Registered before the thread starts: a watcher polling a key this process
-            # does not know yet would read it as a job that never existed.
-            spawn_jobs.register_job(job_key, {
-                "state": "running", "started": time.time(), "budget": budget,
-                "task": task, "session": session, "model": model, "tools": requested,
-                "phase": "", "result": None, "child": child,
-            })
+_NO_ANSWER: dict = {"answer": "", "completed": False, "files_read": [], "files_written": []}
 
+
+def _grant_refusal(requested: list[str], grantable: dict[str, str]) -> str | None:
+    unavailable = [t for t in requested if t not in grantable]
+    if not unavailable:
+        return None
+    offer = ", ".join(sorted(grantable)) if grantable else "(none)"
+    return (f"cannot grant {', '.join(unavailable)}: not available to you right now, or "
+            f"reserved to you (planning, delegation, asking the user, writing memory, "
+            f"cluster submission). What you may grant: {offer}. Leave `tools` empty for a "
+            f"read-only exploration.")
+
+
+def _budget(ctx: Context | None, level: str, requested: list[str],
+            time_budget_secs: int) -> tuple[bool, int]:
+    """Whether the child is working, and its wall time.
+
+    A child with a writing or executing tool is working (it also gets a worktree);
+    anything else is reconnaissance. Decided before the child connects any server.
+    """
+    working = _level_allows(level, "build") and bool(set(requested) & _caller_writers(ctx))
+    ceiling = (spawn_limits.SUBAGENT_WORKING_BUDGET_SECS if working
+               else spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
+    budget = max(spawn_limits.SUBAGENT_MIN_BUDGET_SECS,
+                 min(int(time_budget_secs or ceiling), ceiling))
+    return working, budget
+
+
+def _resolve_model(ctx: Context | None, model: str) -> tuple[str, str | None]:
+    """The model the child runs on (the caller's unless another is named), or a refusal."""
+    caller_model = _caller_model(ctx)
+    model = (model or "").strip()
+    if model and model != caller_model:
+        return model, _refuse_model(model)
+    return caller_model, None
+
+
+class _SlotLease:
+    """One of the server's sub-agent slots, given back exactly once."""
+
+    def __init__(self, session: str) -> None:
+        self.session = session
+        self.held = False
+
+    def take(self, task: str) -> None:
+        self.held = True
+        spawn_jobs.take_slot(self.session, task)
+
+    def release(self) -> None:
+        if self.held:
+            self.held = False
+            spawn_jobs.free_slot(self.session)
+
+
+class _ChildRun:
+    """One sub-agent run: its thread, its output queue, and the reply to the caller."""
+
+    def __init__(self, *, session: str, model: str, requested: list[str], budget: int,
+                 background: bool) -> None:
+        self.session, self.model, self.requested, self.budget = (
+            session, model, requested, budget)
+        self.child_key = session.rsplit("/", 1)[-1]
+        self.job_key = self.child_key if background else ""
+        self.slot = _SlotLease(session)
+        self.worktree: dict | None = None
+        self.events: queue.Queue = queue.Queue(maxsize=spawn_output.CHILD_QUEUE_MAX)
+        self.counters: dict = {"dropped": 0}
+        self.state: dict = {"sent": 0, "dropped": 0}
+        self.future: Future[dict] = Future()
+        # The running child, published by its thread: what an overrun reports. Read
+        # defensively, another thread writes it.
+        self.child: dict = {}
+
+    def start(self, *, task: str, context: str, grantable: dict[str, str],
+              max_steps: int, approval_mode: str, level: str, ask_session: Any) -> None:
+        """Run the child in its own thread and event loop.
+
+        Its MCP exit stack must open and close in one task on one loop, and the hard cap
+        must not become a cancellation inside a stdio_client. The thread releases the slot,
+        so a detached child holds it for its whole life.
+        """
         loop = asyncio.get_running_loop()
-        # Named so a straggler is identifiable: the thread releases the slot, possibly
-        # after the call has returned.
-        t = threading.Thread(target=_thread_main, daemon=True,
-                             name=spawn_jobs.THREAD_NAME_PREFIX + child_key)
-        t.start()
-    except BaseException:
-        _release_slot()
-        raise
 
-    if job_key:
+        def _thread_main() -> None:
+            try:
+                result = asyncio.run(_run_sub_agent(
+                    task, context, self.requested, grantable, max_steps, approval_mode,
+                    on_event=spawn_output.make_child_sink(
+                        self.events, self.counters, self.job_key, self.session),
+                    model=self.model, session=self.session, budget=self.budget,
+                    child=self.child, level=level, worktree=self.worktree,
+                    # Detached or not, the child can reach the person: the session
+                    # outlives the request.
+                    ask_session=ask_session, ask_loop=loop,
+                ))
+                self.future.set_result(result)
+                if self.job_key:
+                    spawn_jobs.settle_job(
+                        self.job_key, "done" if not result.get("error") else "crashed", result)
+            except Exception as exc:
+                self.future.set_exception(exc)
+                if self.job_key:
+                    spawn_jobs.settle_job(self.job_key, "crashed",
+                                          {"answer": "", "completed": False, "error": str(exc)})
+            finally:
+                self.slot.release()
+
+        # Until the thread runs, nothing else gives the slot back.
+        try:
+            if self.job_key:
+                # Before the thread starts: a watcher polling a key this process does not
+                # know yet would read it as a job that never existed.
+                spawn_jobs.register_job(self.job_key, {
+                    "state": "running", "started": time.time(), "budget": self.budget,
+                    "task": task, "session": self.session, "model": self.model,
+                    "tools": self.requested, "phase": "", "result": None, "child": self.child,
+                })
+            threading.Thread(target=_thread_main, daemon=True,
+                             name=spawn_jobs.THREAD_NAME_PREFIX + self.child_key).start()
+        except BaseException:
+            self.slot.release()
+            raise
+
+    def _identity(self) -> dict:
+        return {"model": self.model, "tools": self.requested, "session": self.session}
+
+    def detached_reply(self, detached_for_length: bool) -> dict:
         return ok({
-            "answer": "",
-            "completed": False,
+            "answer": "", "completed": False,
             "files_read": [], "files_written": [], "blocked_by_mode": [],
-            "model": model, "tools": requested, "session": session,
-            "background_job": spawn_jobs.job_descriptor(job_key),
-            "workspace": {"branch": worktree["branch"], "path": worktree["path"]}
-                         if worktree else {},
+            **self._identity(),
+            "background_job": spawn_jobs.job_descriptor(self.job_key),
+            "workspace": {"branch": self.worktree["branch"], "path": self.worktree["path"]}
+                         if self.worktree else {},
             "note": (
                 ("Detached automatically: its budget is longer than a blocking call "
                  "can hold, so waiting on it here was never possible. "
@@ -666,88 +695,69 @@ async def spawn_agent(
             ),
         })
 
-    started = time.monotonic()
-    state["last_activity"] = started
-    deadline = loop.time() + budget
-    while not future.done() and loop.time() < deadline + spawn_user_channel.paused_secs(session):
-        await spawn_output.forward_pending(ctx, events, state)
-        await spawn_output.maybe_heartbeat(ctx, state, started)
-        await asyncio.sleep(spawn_output.POLL_SECS)
-    # One last drain, before the timeout branch too: the child's final tool result
-    # is what tells the caller where a run that ran out of time actually stopped.
-    await spawn_output.forward_pending(ctx, events, state)
-    dropped = counters.get("dropped", 0) + state.get("dropped", 0)
-    if dropped:
-        await spawn_output.report(ctx, state, {"v": 1, "t": "end", "dropped": dropped})
+    async def wait(self, ctx: Context | None) -> bool:
+        """Forward the child's events until it ends or its budget (plus time spent on the
+        user) runs out. True when it ended."""
+        loop = asyncio.get_running_loop()
+        started = time.monotonic()
+        self.state["last_activity"] = started
+        deadline = loop.time() + self.budget
+        while (not self.future.done()
+               and loop.time() < deadline + spawn_user_channel.paused_secs(self.session)):
+            await spawn_output.forward_pending(ctx, self.events, self.state)
+            await spawn_output.maybe_heartbeat(ctx, self.state, started)
+            await asyncio.sleep(spawn_output.POLL_SECS)
+        # A last drain, on overrun too: the final tool result says where the run stopped.
+        await spawn_output.forward_pending(ctx, self.events, self.state)
+        dropped = self.counters.get("dropped", 0) + self.state.get("dropped", 0)
+        if dropped:
+            await spawn_output.report(ctx, self.state, {"v": 1, "t": "end", "dropped": dropped})
+        return self.future.done()
 
-    if not future.done():
-        # Out of time, with the child still running in its own thread: its answer will
-        # never arrive here, so stop it before reading it. Then hand back what can be
-        # read off it instead of a bare failure line — where it got to is what lets
-        # the caller carry the axis on.
-        _abandon_child(child)
-        partial = _partial_handoff(child)
+    def overrun_reply(self) -> dict:
+        """Stop the child, then hand back where it got to rather than a bare failure."""
+        _abandon_child(self.child)
+        partial = _partial_handoff(self.child)
         return err(
-            _overrun_note(budget) + " Either carry it on yourself, or delegate one "
+            _overrun_note(self.budget) + " Either carry it on yourself, or delegate one "
             "narrower step of it, saying in the task what this run established and "
             "which approaches not to retry.",
-            answer=partial.pop("answer", ""), completed=False, model=model,
-            tools=requested, session=session, workspace=child.get("workspace", {}),
-            **partial,
-        )
-    try:
-        result = future.result(timeout=0)
-    except Exception as exc:
-        # The child's thread crashed — a genuine failure, not an "ok" result.
-        return err(
-            f"sub-agent failed: {exc}",
-            answer="", completed=False, files_read=[], files_written=[],
-            model=model, tools=requested, session=session,
-            workspace=child.get("workspace", {}),
+            answer=partial.pop("answer", ""), completed=False, **self._identity(),
+            workspace=self.child.get("workspace", {}), **partial,
         )
 
-    if result.get("error"):
-        # The sub-agent's own run() raised — surface as an error, keep the partial answer.
-        return err(
-            f"sub-agent crashed: {result['error']}",
-            answer=result.get("answer", ""),
-            completed=False,
-            files_read=result.get("files_read", []),
-            files_written=result.get("files_written", []),
-            blocked_by_mode=result.get("blocked_by_mode", []),
-            model=model, tools=requested, session=session,
-            workspace=result.get("workspace", {}),
-        )
-    if not str(result.get("answer") or "").strip():
-        # The answer IS the payload — a blank one carries nothing back, whatever the
-        # child did. Reported "ok"/completed, it read as a sub-agent that ran and found
-        # nothing to say, and the parent dropped delegation for the rest of the run.
-        return err(
-            "sub-agent returned no answer: nothing was delegated back. Re-issue the "
-            "call with a narrower, self-contained question, or do the work yourself.",
-            answer="",
-            completed=False,
-            files_read=result.get("files_read", []),
-            files_written=result.get("files_written", []),
-            model=model, tools=requested, session=session,
-        )
-    return ok({
-        "answer": result["answer"],
-        "completed": result["completed"],
-        "files_read": result["files_read"],
-        "files_written": result["files_written"],
-        "blocked_by_mode": result["blocked_by_mode"],
-        "model": model,
-        "tools": requested,
-        "session": session,
-        "workspace": result.get("workspace", {}),
-        # Runs it launched and left going. Plural, as every answer about work this call
-        # did not start is: the client adopts these for the caller instead of reading
-        # them as a run this call launched. Absent when there are none, so a child that
-        # finished its work cleanly says nothing about runs at all.
-        **({"background_jobs": result["background_jobs"]}
-           if result.get("background_jobs") else {}),
-    })
+    def result_reply(self) -> dict:
+        try:
+            result = self.future.result(timeout=0)
+        except Exception as exc:
+            return err(f"sub-agent failed: {exc}", **_NO_ANSWER, **self._identity(),
+                       workspace=self.child.get("workspace", {}))
+        files = {"files_read": result.get("files_read", []),
+                 "files_written": result.get("files_written", [])}
+        if result.get("error"):
+            # The child's own run raised: an error, with the partial answer kept.
+            return err(f"sub-agent crashed: {result['error']}",
+                       answer=result.get("answer", ""), completed=False, **files,
+                       blocked_by_mode=result.get("blocked_by_mode", []),
+                       **self._identity(), workspace=result.get("workspace", {}))
+        if not str(result.get("answer") or "").strip():
+            # The answer is the payload: a blank one is not a successful delegation.
+            return err("sub-agent returned no answer: nothing was delegated back. Re-issue "
+                       "the call with a narrower, self-contained question, or do the work "
+                       "yourself.", answer="", completed=False, **files, **self._identity())
+        return ok({
+            "answer": result["answer"],
+            "completed": result["completed"],
+            "files_read": result["files_read"],
+            "files_written": result["files_written"],
+            "blocked_by_mode": result["blocked_by_mode"],
+            **self._identity(),
+            "workspace": result.get("workspace", {}),
+            # Runs it left going, under the plural key: the client adopts them for the
+            # caller. Absent when there are none.
+            **({"background_jobs": result["background_jobs"]}
+               if result.get("background_jobs") else {}),
+        })
 
 
 @mcp.tool(**tool_caps(kind="agent",
