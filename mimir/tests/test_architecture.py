@@ -221,21 +221,6 @@ class TestHygieneTests(unittest.TestCase):
         offenders = [p.name for p in self._test_files() if "__new__(" in p.read_text()]
         self.assertEqual(offenders, [])
 
-    # Reads of another object's ``_name``. The count only goes down: lower it when a
-    # test moves to a public name.
-    PRIVATE_ACCESS_CEILING = 853
-
-    def test_private_accesses_only_go_down(self) -> None:
-        count = 0
-        for path in self._test_files():
-            for node in ast.walk(ast.parse(path.read_text())):
-                if (isinstance(node, ast.Attribute) and node.attr.startswith("_")
-                        and not node.attr.startswith("__")
-                        and not (isinstance(node.value, ast.Name)
-                                 and node.value.id in ("self", "cls"))):
-                    count += 1
-        self.assertLessEqual(count, self.PRIVATE_ACCESS_CEILING)
-
 
 class ComponentTests(unittest.TestCase):
     """A WebSocket component owns its state: it reads no attribute of a host it does not

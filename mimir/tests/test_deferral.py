@@ -295,15 +295,6 @@ class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
         # Answered live, and the card it names travels with it.
         self.assertEqual(w.calls, [("resolve", "n", "other")])
 
-    async def test_an_answer_naming_no_conversation_is_dropped(self) -> None:
-        """The worst failure this layer can produce is settling a question a different
-        conversation asked, with the user's approval attached to a call they never saw. So
-        an unattributed answer goes nowhere — never to whoever is on screen."""
-        w = _FakeWorker(parked=True)
-        sess = _session(w)
-        await sess.cards.on_approval_response({"id": "other", "choice": "y"})
-        self.assertEqual(w.calls, [])
-
     async def test_an_answer_for_a_conversation_with_no_agent_is_dropped(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)

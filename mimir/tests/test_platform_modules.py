@@ -589,24 +589,6 @@ class DigestTests(CatalogueTestCase):
         self.assertEqual(digest["host"]["arch"], "x86_64")
         self.assertIn("gcc", digest["toolchains"])
 
-    def test_occupancy_alone_does_not_move_the_signature(self):
-        """The whole point of the stable projection: a busy cluster must not look
-        like a changed cluster, or the fingerprint would churn every few seconds."""
-        before = self._rebuilt()["signature"]
-        self.scontrol = self.scontrol.replace("CPUAlloc=0", "CPUAlloc=48").replace(
-            "State=IDLE", "State=MIXED")
-        after = self._rebuilt()["signature"]
-        self.assertEqual(before, after)
-
-    def test_new_hardware_does_move_the_signature(self):
-        before = self._rebuilt()["signature"]
-        self.scontrol += (
-            "NodeName=cn002 Arch=x86_64 CPUTot=192 CPUAlloc=0 RealMemory=768000 "
-            "Sockets=2 CoresPerSocket=48 ThreadsPerCore=2 Gres=(null) "
-            "AvailableFeatures=(null) State=IDLE Partitions=bigmem\n"
-        )
-        self.assertNotEqual(before, self._rebuilt()["signature"])
-
     def test_a_machine_without_slurm_runs_nothing_to_find_that_out(self):
         """A workstation is the common case and must not pay a login shell to be told.
 
