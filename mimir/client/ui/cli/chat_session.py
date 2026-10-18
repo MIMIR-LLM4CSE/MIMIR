@@ -127,197 +127,191 @@ def _offer_session_resume(todo_file: str) -> bool:
     return answer in ("y", "yes")
 
 
-async def run_chat_session(agent: Any) -> None:
-    checklist_tool = name_with_arg_role("plan_steps", agent.tool_caps)
-    if checklist_tool:
-        if not _offer_session_resume(agent.todo_file()):
-            await agent.run_tool(checklist_tool, {"steps": []})
+# Queries to skip auto-compact after one fires, so a burst of writes does not compact
+# after every query.
+_COMPACT_COOLDOWN_TURNS: int = 3
 
-    print("\n✅ MIMIR ready. Type 'quit' to exit.")
-    print(
-        "   Commands: /mode [agent|plan], "
-        "/status, /think on|off, /stream on|off, /batch on|off, "
-        "/approvals manual|auto|all, /help\n"
-    )
 
-    # The conversation, in memory only: the terminal keeps no session store. The
-    # same object the WebSocket front-end writes, with the same commit rule.
-    conversation = Conversation(FullSession(id="cli", title="", created_at="",
-                                            updated_at=""), saved=False)
-    # Session-local auto-compact threshold; starts from the module default.
-    auto_compact_threshold = AUTO_COMPACT_THRESHOLD
-    # Cooldown: number of queries to skip auto-compact after one fires.
-    # Prevents compacting after every single write-heavy query.
-    _compact_cooldown: int = 0
-    _COMPACT_COOLDOWN_TURNS: int = 3
+class CliSession:
+    """The terminal conversation: in memory only, written by the same commit rule as
+    the WebSocket front-end."""
 
-    async def do_compact() -> None:
-        """Summarize history in-place, replacing all prior messages with one summary."""
-        nonlocal _compact_cooldown
-        history = conversation.history
+    def __init__(self, agent: Any) -> None:
+        self.agent = agent
+        self.conversation = Conversation(
+            FullSession(id="cli", title="", created_at="", updated_at=""), saved=False)
+        self.compact_threshold = AUTO_COMPACT_THRESHOLD
+        self.compact_cooldown = 0
+        # The last answer's ledger block, which /ledger expands.
+        self.last_ledger: str | None = None
+        self.commands = CliHost(agent, compact=self.compact,
+                                set_compact_threshold=self.set_compact_threshold,
+                                ledger=self.show_ledger)
+
+    def set_compact_threshold(self, n: int) -> None:
+        self.compact_threshold = n
+
+    def show_ledger(self) -> str | None:
+        return format_ledger_full(self.last_ledger) if self.last_ledger else None
+
+    async def compact(self) -> None:
+        """Replace the whole history with one summary message."""
+        history = self.conversation.history
         if not history:
             print("  ↳ Nothing to compact.")
             return
-
-        # Two different counts. The print says what is being collapsed right now; the
-        # marker says what the summary will stand for, which includes everything an
-        # earlier summary in *history* already absorbed.
+        # What is collapsed now, and what the summary stands for (earlier summaries
+        # included), read before the history is cleared.
         n_messages = len(history)
         collapsing = n_messages // 2
         n_exchanges = compacted_exchanges(history)
         print(f"⚡ Compacting history ({collapsing} exchange{'s' if collapsing != 1 else ''})...")
-
-        summary = await agent.compact_history(history)
+        summary = await self.agent.compact_history(history)
         if not summary:
             print("  ↳ Compaction returned empty summary; history unchanged.")
             return
-
         history.clear()
         history.append(compaction_summary_message(n_exchanges, summary))
-        _compact_cooldown = _COMPACT_COOLDOWN_TURNS
-        # Read before the clear above, not after it.
+        self.compact_cooldown = _COMPACT_COOLDOWN_TURNS
         print(f"  ↳ History compacted: {n_messages} messages → 1 summary message "
               f"standing for {n_exchanges} exchanges")
 
-    def set_compact_threshold(n: int) -> None:
-        nonlocal auto_compact_threshold
-        auto_compact_threshold = n
+    async def run(self) -> None:
+        await self._greet()
+        while True:
+            query = _read_query()
+            if query is None:
+                break
+            if await self._handled_as_command(query):
+                continue
+            try:
+                await self._answer(query)
+            except Exception as exc:
+                print(f"❌ Error: {exc}")
 
-    # Ledger block of the last answer, kept so /ledger can expand it on demand.
-    last_ledger: str | None = None
+    async def _greet(self) -> None:
+        checklist_tool = name_with_arg_role("plan_steps", self.agent.tool_caps)
+        if checklist_tool and not _offer_session_resume(self.agent.todo_file()):
+            await self.agent.run_tool(checklist_tool, {"steps": []})
+        print("\n✅ MIMIR ready. Type 'quit' to exit.")
+        print("   Commands: /mode [agent|plan], /status, /think on|off, /stream on|off, "
+              "/batch on|off, /approvals manual|auto|all, /help\n")
 
-    def show_ledger() -> str | None:
-        return format_ledger_full(last_ledger) if last_ledger else None
-
-    command_host = CliHost(agent, compact=do_compact,
-                           set_compact_threshold=set_compact_threshold, ledger=show_ledger)
-
-    while True:
+    async def _handled_as_command(self, query: str) -> bool:
         try:
-            query = input("🟦 You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-
-        if not query or query.lower() in ("quit", "exit"):
-            break
-
-        try:
-            message = await run_cli_command(command_host, query)
+            message = await run_cli_command(self.commands, query)
         except Exception as exc:
-            # A command that fails is one answer gone wrong, not the session: raised,
-            # it ended the chat loop and took the conversation with it.
+            # One command gone wrong, not the session.
             print(f"  ✗ {query.split()[0]} failed: {type(exc).__name__}: {exc}")
-            continue
-        if message is not None:
-            if message:
-                print(message)
-            continue
+            return True
+        if message is None:
+            return False
+        if message:
+            print(message)
+        return True
 
+    async def _answer(self, query: str) -> None:
+        agent = self.agent
         was_plan_mode = agent.mode == "plan"
-        # Resolve any @<uri> resource mentions: read the referenced resources and
-        # prepend their content to the query the model sees. History keeps the raw
-        # `query`, so the attachment is per-turn (Claude/Copilot-style).
-        effective_query, attached_uris = await augment_query_with_resources(agent, query)
-        if attached_uris:
-            print("📎 Attached: " + ", ".join(attached_uris) + "\n")
-
-        # Pre-query budget check: compact before we send to the LLM if the
-        # history already fills the usable window (total − reserved for answer).
-        ctx_total, ctx_reserved, _, _ = context_budget_for(agent.model, agent.context_mode)
-        # Exact token count (vLLM /tokenize) when available, heuristic otherwise.
-        # CLI runs in-process, so a blocking tokenize round-trip here is fine.
-        history_tokens = get_backend().count_messages_tokens(agent.model,
-                                                            conversation.history)
-        if history_tokens >= ctx_total - ctx_reserved and conversation.history:
-            print(f"  ⚡ Context budget reached ({history_tokens:,}/{ctx_total - ctx_reserved:,} tokens) — auto-compacting…")
-            await do_compact()
-
+        effective_query = await self._prepare_query(query)
         if was_plan_mode and _is_proceed_signal(query):
             if not _confirm_plan_execution(agent.todo_file()):
                 print("  ↳ Execution cancelled.")
-                continue
-
+                return
             agent.apply_setting("mode", "agent")
             print("  ↳ Auto-switched to agent mode — executing plan.\n")
+            effective_query = agent.last_plan_query or effective_query
 
-            if agent.last_plan_query:
-                effective_query = agent.last_plan_query
+        print("\n🟩 Agent:\n")
+        submitted = len(self.conversation.history)
+        answer = await agent.run(effective_query, history=self.conversation.history,
+                                 thinking=agent.thinking, streaming=agent.streaming)
+        if was_plan_mode and not _is_proceed_signal(query):
+            agent.last_plan_query = query
 
-        try:
-            role_label = "Agent"
-            print(f"\n🟩 {role_label}:\n")
-            submitted = len(conversation.history)
-            answer = await agent.run(
-                effective_query,
-                history=conversation.history,
-                thinking=agent.thinking,
-                streaming=agent.streaming,
-            )
+        ledger = self._print_summaries(answer)
+        self._commit(query, answer, submitted)
+        await self._after_turn(was_plan_mode, ledger)
+        if agent.mode == "agent" and is_incomplete_answer(answer):
+            _offer_replan(agent)
 
-            if was_plan_mode and not _is_proceed_signal(query):
-                agent.last_plan_query = query
+    async def _prepare_query(self, query: str) -> str:
+        """Attach @-mentioned resources for this turn, and compact first when the
+        history already fills the usable window."""
+        effective_query, attached_uris = await augment_query_with_resources(self.agent, query)
+        if attached_uris:
+            print("📎 Attached: " + ", ".join(attached_uris) + "\n")
+        total, reserved, _, _ = context_budget_for(self.agent.model, self.agent.context_mode)
+        history = self.conversation.history
+        tokens = get_backend().count_messages_tokens(self.agent.model, history)
+        if history and tokens >= total - reserved:
+            print(f"  ⚡ Context budget reached ({tokens:,}/{total - reserved:,} tokens)"
+                  " — auto-compacting…")
+            await self.compact()
+        return effective_query
 
-            # The ledger travels inside `answer` (history keeps it for the model); the
-            # terminal only gets the one-liner unless the user runs /ledger.
-            # Both blocks travel inside `answer` (history keeps them for the model); the
-            # terminal only gets a one-liner for each. The ledger is appended last, so it
-            # comes off first and the report is the tail of what is left.
-            rest, last_ledger = split_answer_ledger(answer)
-            ledger = parse_ledger_block(last_ledger) if last_ledger else None
-            _, last_report = split_answer_completion(rest)
-            if last_report:
-                print(format_completion_summary(last_report))
-            if ledger and last_ledger:
-                print(format_ledger_summary(last_ledger))
+    def _print_summaries(self, answer: str) -> dict | None:
+        """One line each for the completion report and the ledger, which both stay in
+        the answer for the model. The ledger is appended last, so it comes off first."""
+        rest, self.last_ledger = split_answer_ledger(answer)
+        _, report = split_answer_completion(rest)
+        if report:
+            print(format_completion_summary(report))
+        if not self.last_ledger:
+            return None
+        print(format_ledger_summary(self.last_ledger))
+        return parse_ledger_block(self.last_ledger)
 
-            # Written by the rule the WebSocket front-end uses: in full-context mode the
-            # turn's whole transcript (tool calls and results included) becomes the
-            # window, otherwise the question and the answer alone.
-            full = agent.turn.last_full_messages if agent.context_mode == "full" else None
-            if full is None:
-                conversation.add_user_message(query)
-            conversation.commit_answer(
-                {"text": answer},
-                {"_full": list(full) if full else None,
-                 "_turn_start": agent.turn.last_turn_start, "_submitted_len": submitted,
-                 "_context_mode": agent.context_mode})
+    def _commit(self, query: str, answer: str, submitted: int) -> None:
+        """In full-context mode the turn's whole transcript becomes the window,
+        otherwise the question and the answer alone."""
+        agent = self.agent
+        full = agent.turn.last_full_messages if agent.context_mode == "full" else None
+        if full is None:
+            self.conversation.add_user_message(query)
+        self.conversation.commit_answer(
+            {"text": answer},
+            {"_full": list(full) if full else None,
+             "_turn_start": agent.turn.last_turn_start, "_submitted_len": submitted,
+             "_context_mode": agent.context_mode})
 
-            if full is not None:
-                # Evict the oldest messages past the window the model actually has —
-                # its own context budget, not a figure written here.
-                total, reserved, _, _ = context_budget_for(agent.model, "full")
-                history = conversation.history
-                counts = get_backend().message_token_counts(agent.model, history)
-                trim_front(history, counts, max(1, total - reserved))
-            else:
-                # Decrement cooldown each turn so write-bursts don't re-compact
-                # immediately after a recent compact.
-                if _compact_cooldown > 0:
-                    _compact_cooldown -= 1
+    async def _after_turn(self, was_plan_mode: bool, ledger: dict | None) -> None:
+        """Full context: evict the oldest messages past the model's own budget.
+        Otherwise compact after an executed plan, after writes, or past the threshold."""
+        history = self.conversation.history
+        if self.agent.context_mode == "full":
+            total, reserved, _, _ = context_budget_for(self.agent.model, "full")
+            counts = get_backend().message_token_counts(self.agent.model, history)
+            trim_front(history, counts, max(1, total - reserved))
+            return
+        if self.compact_cooldown > 0:
+            self.compact_cooldown -= 1
+        wrote_files = bool(ledger and ledger["files"])
+        n_exchanges = len(history) // 2
+        if (was_plan_mode
+                or (wrote_files and n_exchanges >= 2 and self.compact_cooldown == 0)
+                or n_exchanges >= self.compact_threshold):
+            await self.compact()
 
-                wrote_files = bool(ledger and ledger["files"])
-                n_exchanges = len(conversation.history) // 2
-                # Compact when:
-                #   - plan was executed (always worth summarising)
-                #   - files were written AND we have ≥2 exchanges AND no cooldown
-                #   - exchange count hit the threshold
-                should_compact = (
-                    was_plan_mode
-                    or (wrote_files and n_exchanges >= 2 and _compact_cooldown == 0)
-                    or n_exchanges >= auto_compact_threshold
-                )
-                if should_compact:
-                    await do_compact()
 
-            if agent.mode == "agent" and is_incomplete_answer(answer):
-                try:
-                    replan = input("Return to plan mode to re-plan? [y/N] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    replan = ""
+def _read_query() -> str | None:
+    """The next query, or None when the user leaves."""
+    try:
+        query = input("🟦 You: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return None if not query or query.lower() in ("quit", "exit") else query
 
-                if replan in ("y", "yes"):
-                    agent.apply_setting("mode", "plan")
-                    print("  ↳ Switched to plan mode.\n")
 
-        except Exception as exc:
-            print(f"❌ Error: {exc}")
+def _offer_replan(agent: Any) -> None:
+    try:
+        replan = input("Return to plan mode to re-plan? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        replan = ""
+    if replan in ("y", "yes"):
+        agent.apply_setting("mode", "plan")
+        print("  ↳ Switched to plan mode.\n")
+
+
+async def run_chat_session(agent: Any) -> None:
+    await CliSession(agent).run()
