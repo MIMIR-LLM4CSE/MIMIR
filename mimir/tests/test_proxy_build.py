@@ -24,7 +24,6 @@ from mimir.tests.support.proxy import (
     store,
     tree_snapshot,
 )
-from mimir.tests.support.modules import spec_for
 
 class SpecTests(_TmpStorageTest):
     def test_no_build_cmd_is_no_build(self) -> None:
@@ -476,20 +475,15 @@ class RunnerPhaseTests(_TmpStorageTest):
     """The phase the runner calls, tested without launching a whole run."""
 
     def _runner(self):
-        import importlib.util
-        spec = spec_for(os.path.join(os.path.dirname(os.path.dirname(store.__file__)),
-                         "_proxy_runner.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        from mimir.servers.proxy import _proxy_runner
+        return _proxy_runner
 
     def test_a_failed_build_stops_the_phase_and_writes_the_report(self) -> None:
         runner = self._runner()
         sh = _script(os.path.join(self.root, "b.sh"), "exit 1\n")
         reg = {"tiny": {"build_cmd": sh, "executable_path": self._make_exe()}}
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
-        ok = runner._build_phase(build, tree_snapshot, reg, suite, "tiny",
-                                 reg["tiny"], self.root, {})
+        ok = runner._build_phase(reg, suite, "tiny", reg["tiny"], self.root, {})
         self.assertFalse(ok)
         self.assertEqual(build.read_report(self.root)["status"], "failed")
 
@@ -499,8 +493,7 @@ class RunnerPhaseTests(_TmpStorageTest):
         reg = {"tiny": {"build_cmd": sh,
                         "executable_path": os.path.join(self.root, "never-made")}}
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
-        ok = runner._build_phase(build, tree_snapshot, reg, suite, "tiny",
-                                 reg["tiny"], self.root, {})
+        ok = runner._build_phase(reg, suite, "tiny", reg["tiny"], self.root, {})
         self.assertFalse(ok)
         rec = build.read_report(self.root)["builds"][-1]
         self.assertIn("still missing", rec["error"])
@@ -518,7 +511,7 @@ class RunnerPhaseTests(_TmpStorageTest):
             json.dump({"paths": [tracked],
                        "fingerprint": tree_snapshot.fingerprint(self.root, [tracked])},
                       fh)
-        ok = runner._build_phase(build, tree_snapshot, reg, suite, "tiny",
+        ok = runner._build_phase(reg, suite, "tiny",
                                  reg["tiny"], run_dir, {"optimize_paths": [tracked]})
         self.assertFalse(ok)
         self.assertIn("optimize_paths",
@@ -530,8 +523,7 @@ class RunnerPhaseTests(_TmpStorageTest):
         sh = _script(os.path.join(self.root, "b.sh"), "echo ok\n")
         reg = {"tiny": {"build_cmd": sh, "executable_path": exe}}
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
-        ok = runner._build_phase(build, tree_snapshot, reg, suite, "tiny",
-                                 reg["tiny"], self.root, {})
+        ok = runner._build_phase(reg, suite, "tiny", reg["tiny"], self.root, {})
         self.assertTrue(ok)
         self.assertEqual(build.read_report(self.root)["status"], "ok")
 
