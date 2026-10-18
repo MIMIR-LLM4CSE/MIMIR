@@ -69,7 +69,7 @@ _TERM_GRACE_S = 5.0
 # Popen handles for children we deliberately stopped waiting on (a diverted run).
 # Held only so the garbage collector does not warn about a still-running child; the
 # zombie one of these leaves behind is the case ``is_running`` already reads.
-_ABANDONED: list[subprocess.Popen] = []
+ABANDONED: list[subprocess.Popen] = []
 
 # Set once per server process, so the sweep below costs one listdir per process
 # rather than one per command.

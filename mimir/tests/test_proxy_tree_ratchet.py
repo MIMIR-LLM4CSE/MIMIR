@@ -69,7 +69,7 @@ class HarnessContractTests(_Workspace):
 
     def _check(self, paths, src=None):
         from mimir.servers.proxy._ops import _eval_validate
-        return _eval_validate._check_optimize_paths(paths, src or self.harness)
+        return _eval_validate.check_optimize_paths(paths, src or self.harness)
 
     def test_no_optimize_paths_is_refused(self) -> None:
         msg = self._check([])
@@ -218,12 +218,12 @@ class RebaselineTests(_Workspace):
             "primary_goal": "min", "min_improvement": 0.02,
             "max_stall": 5, "stall": 3,
         }
-        os.makedirs(store._opt_session_runs_dir("p"), exist_ok=True)
-        store._save_opt_config(cfg)
-        with open(store._opt_ledger_file("p"), "w", encoding="utf-8") as fh:
+        os.makedirs(store.opt_session_runs_dir("p"), exist_ok=True)
+        store.save_opt_config(cfg)
+        with open(store.opt_ledger_file("p"), "w", encoding="utf-8") as fh:
             fh.write('{"run_id": "r0", "primary_value": 0.0894}\n')
             fh.write('{"run_id": "r1", "primary_value": 0.0538}\n')
-        write_json(store._opt_best_file("p"),
+        write_json(store.opt_best_file("p"),
                                  {"run_id": "r1", "primary_value": 0.0538})
         return eval_session, store
 
@@ -231,17 +231,17 @@ class RebaselineTests(_Workspace):
         eval_session, store = self._session()
         out = eval_session.rebaseline("p")
         self.assertEqual(out["status"], "ok")
-        self.assertFalse(os.path.exists(store._opt_ledger_file("p")))
+        self.assertFalse(os.path.exists(store.opt_ledger_file("p")))
         # The result that was lost twice: still readable, under a timestamp. The
         # stamp goes before the extension so the archive is still a .jsonl.
         archived = [n for n in out["archived"] if n.startswith("ledger")]
         self.assertEqual(len(archived), 1)
         self.assertTrue(archived[0].endswith(".jsonl"))
-        with open(os.path.join(store._opt_session_runs_dir("p"), archived[0])) as fh:
+        with open(os.path.join(store.opt_session_runs_dir("p"), archived[0])) as fh:
             self.assertIn("0.0538", fh.read())
         # The best-so-far moves with it: both or neither, never a ledger that
         # disagrees with the best it is supposed to explain.
-        self.assertFalse(os.path.exists(store._opt_best_file("p")))
+        self.assertFalse(os.path.exists(store.opt_best_file("p")))
         self.assertEqual(len(out["archived"]), 2)
 
     def test_the_baseline_moves_to_the_tree_as_it_stands(self) -> None:
@@ -250,7 +250,7 @@ class RebaselineTests(_Workspace):
         out = eval_session.rebaseline("p")
         self.assertNotEqual(out["baseline_id"], "ORIGINAL")
         self.assertEqual(out["previous_baseline_id"], "ORIGINAL")
-        cfg = store._load_opt_config("p")
+        cfg = store.load_opt_config("p")
         self.assertEqual(cfg["baseline_id"], out["baseline_id"])
         self.assertEqual(cfg["stall"], 0)   # a new baseline is not a stalled one
         # And it restores to the tree that was there, not the original.
@@ -269,7 +269,7 @@ class RebaselineTests(_Workspace):
     def test_init_still_refuses_to_move_a_baseline_and_names_the_route(self) -> None:
         """The invariant stays; what changes is that the exit is signposted."""
         eval_session, _ = self._session()
-        cfg = store._load_opt_config("p")
+        cfg = store.load_opt_config("p")
         self.assertEqual(cfg["baseline_id"], "ORIGINAL")  # untouched by anything but rebaseline
 
     def test_rebaseline_without_a_session_is_a_structured_error(self) -> None:
@@ -296,12 +296,12 @@ class NoiseFloorTests(unittest.TestCase):
         return cfg
 
     def test_the_configured_margin_stands_until_something_is_measured(self) -> None:
-        margin, source = ratchet._effective_min_improvement(self._cfg())
+        margin, source = ratchet.effective_min_improvement(self._cfg())
         self.assertAlmostEqual(margin, 0.02)
         self.assertEqual(source, "configured")
 
     def test_a_measured_floor_above_the_configured_one_wins(self) -> None:
-        margin, source = ratchet._effective_min_improvement(
+        margin, source = ratchet.effective_min_improvement(
             self._cfg(noise_floor=0.031))
         self.assertAlmostEqual(margin, 0.031)
         self.assertIn("measured", source)
@@ -311,7 +311,7 @@ class NoiseFloorTests(unittest.TestCase):
         from mimir.servers.proxy._lib.ratchet import _is_improvement
         baseline, fused = 0.179888, 0.17491          # what the two runs measured
         floor = abs(0.179888 - 0.174488) / 0.179888  # 3.1%, from the two baseline runs
-        margin, _ = ratchet._effective_min_improvement(
+        margin, _ = ratchet.effective_min_improvement(
             self._cfg(noise_floor=floor))
         self.assertTrue(_is_improvement(fused, baseline, "min", 0.02),
                         "premise: the old 2% margin accepted it")
@@ -321,20 +321,20 @@ class NoiseFloorTests(unittest.TestCase):
     def test_a_real_gain_still_clears_the_measured_floor(self) -> None:
         """The floor rejects noise, not results: float32 was a 22% win."""
         from mimir.servers.proxy._lib.ratchet import _is_improvement
-        margin, _ = ratchet._effective_min_improvement(
+        margin, _ = ratchet.effective_min_improvement(
             self._cfg(noise_floor=0.031))
         self.assertTrue(_is_improvement(0.136145, 0.17491, "min", margin))
 
     def test_repeat_is_decided_from_the_metric_when_unset(self) -> None:
-        self.assertEqual(ratchet._effective_repeat({"primary_metric": "time_s"}), 3)
+        self.assertEqual(ratchet.effective_repeat({"primary_metric": "time_s"}), 3)
         # An accuracy metric against a sealed reference is bit-reproducible.
-        self.assertEqual(ratchet._effective_repeat({"primary_metric": "l2_rel"}), 1)
+        self.assertEqual(ratchet.effective_repeat({"primary_metric": "l2_rel"}), 1)
 
     def test_an_explicit_repeat_is_obeyed(self) -> None:
         self.assertEqual(
-            ratchet._effective_repeat({"primary_metric": "time_s", "repeat": 1}), 1)
+            ratchet.effective_repeat({"primary_metric": "time_s", "repeat": 1}), 1)
         self.assertEqual(
-            ratchet._effective_repeat({"primary_metric": "l2_rel", "repeat": 7}), 7)
+            ratchet.effective_repeat({"primary_metric": "l2_rel", "repeat": 7}), 7)
 
 
 class ReplicateAggregationTests(unittest.TestCase):
@@ -396,16 +396,16 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
     """
 
     def _optimisation(self, name: str, marker: str) -> None:
-        os.makedirs(store._opt_session_runs_dir(name), exist_ok=True)
+        os.makedirs(store.opt_session_runs_dir(name), exist_ok=True)
         self._write(self.a, f"{marker}\n")
         snap = tree_snapshot.snapshot(
             store.opt_git_dir(), self.wt, [self.a, self.b], f"{name} best")
-        store._save_opt_config({
+        store.save_opt_config({
             "proxy_name": name, "benchmark_name": "b", "requirements": [],
             "proxy_source_path": self.harness, "optimize_paths": [self.a, self.b],
             "baseline_id": snap, "baseline_run_id": "r0", "primary_metric": "time_s",
             "primary_goal": "min", "min_improvement": 0.02, "max_stall": 5, "stall": 0})
-        write_json(store._opt_best_file(name),
+        write_json(store.opt_best_file(name),
                                  {"run_id": "r1", "primary_value": 0.1,
                                   "tree_snapshot": snap})
 
@@ -462,7 +462,7 @@ class ResumeNoticeTests(_Workspace):
     """Coming back to an old optimisation whose code moved on without it.
 
     Two guards covered one question between them and left a gap in the middle.
-    `_prepare_run` refuses a first run on an already-edited tree — but only while no
+    `prepare_run` refuses a first run on an already-edited tree — but only while no
     baseline run is on record (`if paths and not cfg.get("baseline_run_id")`). Once one
     is, nothing checks again, so resuming a finished session ran it against a best
     measured on code no longer on disk and said nothing. Both fingerprints were already
@@ -476,10 +476,10 @@ class ResumeNoticeTests(_Workspace):
     def _session(self, *, measured: bool = True) -> None:
         from mimir.servers.proxy._lib import procs
         self._write(self.a, "MEASURED_STATE\n")
-        os.makedirs(store._opt_session_runs_dir("bench"), exist_ok=True)
+        os.makedirs(store.opt_session_runs_dir("bench"), exist_ok=True)
         snap = tree_snapshot.snapshot(
             store.opt_git_dir(), self.wt, [self.a], "baseline")
-        store._save_opt_config({
+        store.save_opt_config({
             "proxy_name": "bench", "benchmark_name": "b", "requirements": [],
             "proxy_source_path": self.harness, "optimize_paths": [self.a],
             "baseline_id": snap,
@@ -487,23 +487,23 @@ class ResumeNoticeTests(_Workspace):
             "baseline_run_id": "r0" if measured else "",
             "primary_metric": "time_s", "primary_goal": "min",
             "min_improvement": 0.02, "max_stall": 5, "stall": 0})
-        run_dir = os.path.join(store._opt_session_runs_dir("bench"), "20240101T000000Z")
+        run_dir = os.path.join(store.opt_session_runs_dir("bench"), "20240101T000000Z")
         os.makedirs(run_dir, exist_ok=True)
         write_json(os.path.join(run_dir, "tree_at_launch.json"), {
             "snapshot_id": snap, "paths": [self.a],
             "fingerprint": tree_snapshot.fingerprint(self.wt, [self.a])})
-        procs._update_opt_active_link("bench", run_dir)
+        procs.update_opt_active_link("bench", run_dir)
 
     def _notice(self) -> str:
         from mimir.servers.proxy._ops import eval_session
-        cfg = store._load_opt_config("bench")
+        cfg = store.load_opt_config("bench")
         return eval_session._resume_notice(cfg, "bench", [self.a])
 
     def _activate(self, name: str | None) -> None:
         if name is None:
-            store._clear_active_session()
+            store.clear_active_session()
         else:
-            store._write_active_session(name)
+            store.write_active_session(name)
 
     def test_a_resumed_session_on_changed_code_is_flagged(self) -> None:
         self._session()
@@ -557,7 +557,7 @@ class ResumeNoticeTests(_Workspace):
         launched = {"status": "ok", "run_dir": "/runs/r1", "proxy_name": "bench",
                     "pid": 1, "resume_notice": "the code moved on"}
         with mock.patch.object(eval_session, "run", return_value=launched), \
-                mock.patch.object(eval_session, "_await_terminal_state",
+                mock.patch.object(eval_session, "await_terminal_state",
                                   mock.AsyncMock(return_value=("done", ""))), \
                 mock.patch.object(eval_session, "results", return_value={"status": "ok"}):
             answer = asyncio.run(eval_session.run_awaited("bench"))

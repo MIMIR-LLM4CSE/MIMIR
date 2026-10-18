@@ -7,7 +7,7 @@ and both leave a descriptor under ``<state>/sessions/<sid>/jobs/<key>/`` or
 still going and which ended while nothing was listening, so a watcher can be put back
 and a finished run reported once.
 
-Two files are contracts with the servers: ``exit_code``, written by ``_bash_jobs``'s
+Two files are contracts with the servers: ``exit_code``, written by ``bash_jobs``'s
 trap, and ``slurm_state`` (done, crashed or unknown), written by ``server_hpc`` once
 Slurm has let a job go. Liveness comes from ``servers/_shared/processes``.
 """
@@ -112,7 +112,7 @@ def _read_json(path: str) -> dict | None:
 
 # What ``server_hpc`` writes into a submission's directory once Slurm has let the job go:
 # one of done|crashed|unknown. The name is shared with that module by convention, the way
-# ``exit_code`` is shared with ``_bash_jobs`` (see the module docstring).
+# ``exit_code`` is shared with ``bash_jobs`` (see the module docstring).
 _SLURM_STATE = "slurm_state"
 
 # How long an unsettled Slurm submission is read as still running. A job's state lives in

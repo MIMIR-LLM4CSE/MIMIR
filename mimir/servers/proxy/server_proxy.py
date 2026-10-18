@@ -109,8 +109,8 @@ from .._shared.capabilities import (
     PANEL_REPORT,
 )
 from .._shared.responses import err, ok
-from ._lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
-from ._lib.procs import _validate_slurm_args, _validate_slurm_comment, _validate_slurm_token
+from ._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT
+from ._lib.procs import validate_slurm_args, validate_slurm_comment, validate_slurm_token
 from .._shared.slurm_script import validate_target
 from ._ops import (
     eval_session,
@@ -504,7 +504,7 @@ async def proxy_exec(
     reference_params: dict | None = None,
     extra_metrics: list[str] | None = None,
     description: str = "",
-    max_output_mb: int = _DEFAULT_MAX_OUTPUT_MB,
+    max_output_mb: int = DEFAULT_MAX_OUTPUT_MB,
     timeout_s: int = 0,
     per_case_timeout_s: int = 0,
     run_id: str = "",
@@ -576,13 +576,13 @@ async def proxy_exec(
                     "proxy_name": proxy_name, "reference_name": reference_name,
                     "extra_params": extra_params, "param_overrides": param_overrides,
                     "max_output_mb": max_output_mb,
-                    "timeout_s": timeout_s or _REF_RUN_TIMEOUT,
+                    "timeout_s": timeout_s or REF_RUN_TIMEOUT,
                 }, background=background))
     if op == "suite":
         return (_missing_args(op, suite_name=suite_name)
                 or await exec_jobs.run_awaited(op, {
                     "suite_name": suite_name, "extra_metrics": extra_metrics,
-                    "timeout_s": timeout_s or suites._SUITE_RUN_TIMEOUT,
+                    "timeout_s": timeout_s or suites.SUITE_RUN_TIMEOUT,
                     "per_case_timeout_s": per_case_timeout_s,
                 }, background=background))
     if op == "benchmark_create":
@@ -591,7 +591,7 @@ async def proxy_exec(
                     "proxy_name": proxy_name, "benchmark_name": benchmark_name,
                     "param_sweeps": param_sweeps, "reference_params": reference_params,
                     "extra_metrics": extra_metrics, "description": description,
-                    "timeout_s": timeout_s or _REF_RUN_TIMEOUT,
+                    "timeout_s": timeout_s or REF_RUN_TIMEOUT,
                 }, background=background))
     # op == "cancel"
     return _missing_args(op, run_id=run_id) or runs.cancel(run_id)
@@ -920,7 +920,7 @@ def proxy_slurm(
         return _unknown_op(op, _SLURM_OPS)
     if not confirm:
         return err("Not confirmed.", hint="Set confirm=True to submit.")
-    slurm_err = (_validate_slurm_args(partition, gpus, cpus_per_task, mem, wall_time)
+    slurm_err = (validate_slurm_args(partition, gpus, cpus_per_task, mem, wall_time)
                  or validate_target(constraint, nodelist, ntasks=ntasks))
     if slurm_err:
         return err(slurm_err)
@@ -934,16 +934,16 @@ def proxy_slurm(
     # caller's choosing.
     for value, field in ((build_partition, "build_partition"),
                          (build_constraint, "build_constraint")):
-        token_err = _validate_slurm_token(value, field)
+        token_err = validate_slurm_token(value, field)
         if token_err:
             return err(token_err)
     # A comment is free text, so it gets the looser check: no control characters
     # (a newline would forge a directive line) and a length Slurm will store.
-    comment_err = _validate_slurm_comment(comment)
+    comment_err = validate_slurm_comment(comment)
     if comment_err:
         return err(comment_err)
     if build_partition or build_mem or build_wall_time or build_cpus_per_task:
-        build_err = _validate_slurm_args(
+        build_err = validate_slurm_args(
             build_partition or partition, build_gpus,
             build_cpus_per_task or cpus_per_task, build_mem or mem,
             build_wall_time or wall_time)
@@ -1012,9 +1012,9 @@ def _axes_lines(proxy_name: str) -> list[dict]:
     Built from the ledger, so the user sees the shape of the search without the agent
     having to report it — and without anyone having to ask for it.
     """
-    from ._lib.store import _opt_ledger_file
+    from ._lib.store import opt_ledger_file
     try:
-        key = (proxy_name, os.path.getmtime(_opt_ledger_file(proxy_name)))
+        key = (proxy_name, os.path.getmtime(opt_ledger_file(proxy_name)))
     except OSError:
         key = None                      # no ledger yet; nothing to cache or to show
     if key is not None and key == _PANEL_AXES["key"]:
@@ -1044,11 +1044,11 @@ def _comparability_lines(cfg: dict, metric: str) -> list[dict]:
     anywhere, so pinning would be noise. Nothing is said at all until a baseline has
     pinned a machine — before that there is nothing to differ from.
     """
-    from ._lib.ratchet import _NOISY_METRICS
+    from ._lib.ratchet import NOISY_METRICS
 
     pinned = cfg.get("machine") or {}
     signature = pinned.get("machine_signature") or ""
-    if not signature or metric not in _NOISY_METRICS:
+    if not signature or metric not in NOISY_METRICS:
         return []
     host = pinned.get("host") or pinned.get("cpu_model") or "another machine"
     here = _this_machine()
@@ -1076,17 +1076,17 @@ def proxy_panel_report() -> dict:
     server's own words — the client renders the lines it is given and knows nothing
     about proxies, which is what lets another server add a section of its own.
     """
-    from ._lib.store import _resolve_proxy_name, _load_registry
-    from ._lib.ratchet import _load_best
+    from ._lib.store import resolve_proxy_name, load_registry
+    from ._lib.ratchet import load_best
 
-    name = _resolve_proxy_name("")
+    name = resolve_proxy_name("")
     if not name:
         return ok({"title": "Optimisation", "lines": [],
                    "detail": "No optimisation session in this workspace."})
 
-    cfg = eval_session._load_opt_config(name) or {}
+    cfg = eval_session.load_opt_config(name) or {}
     state = eval_session.status(name).get("state", "unknown")
-    best = _load_best(name) or {}
+    best = load_best(name) or {}
     metric = cfg.get("primary_metric", "time_s")
     lines = [
         {"label": "proxy", "value": name},
@@ -1101,7 +1101,7 @@ def proxy_panel_report() -> dict:
         lines.append({"label": "benchmark", "value": cfg["benchmark_name"]})
     lines.extend(_comparability_lines(cfg, metric))
     lines.extend(_axes_lines(name))
-    registry_names = sorted(_load_registry().keys())
+    registry_names = sorted(load_registry().keys())
     if len(registry_names) > 1:
         lines.append({"label": "other proxies",
                       "value": ", ".join(n for n in registry_names if n != name)})

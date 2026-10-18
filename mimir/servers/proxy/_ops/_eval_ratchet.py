@@ -5,7 +5,7 @@ asks for results, and the detached runner at completion — so it must be idempo
 and serialized, which is what the flock and the frozen ``ratchet.json`` are for.
 The ledger and best-so-far are the source of truth even if nobody ever asks.
 
-The reusable decision pieces underneath (``_ratchet_verdict``, best-so-far, ledger,
+The reusable decision pieces underneath (``ratchet_verdict``, best-so-far, ledger,
 measurement policy) live in ``_lib/ratchet.py``; this module owns the session-level
 settle on top of them.
 """
@@ -16,18 +16,18 @@ import os
 from datetime import datetime, timezone
 
 from .._lib.ratchet import (
-    _NOISY_METRICS,
-    _append_ledger,
-    _effective_min_improvement,
-    _load_best,
-    _ratchet_verdict,
-    _run_primary_value,
-    _save_best,
+    NOISY_METRICS,
+    append_ledger,
+    effective_min_improvement,
+    load_best,
+    ratchet_verdict,
+    run_primary_value,
+    save_best,
 )
 from ..._shared.atomic import write_json
-from .._lib.store import _file_lock, _opt_session_runs_dir, _read_json, _save_opt_config
+from .._lib.store import file_lock, opt_session_runs_dir, read_json, save_opt_config
 
-def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:
+def ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:
     """Compute the ratchet outcome for a completed run, persisting it once.
 
     Whichever of the runner or ``results`` gets here first wins: the verdict is
@@ -38,17 +38,17 @@ def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict
     outcome_path = os.path.join(run_dir, "ratchet.json")
 
     def _frozen() -> dict | None:
-        frozen = _read_json(outcome_path)  # None when missing or unreadable
+        frozen = read_json(outcome_path)  # None when missing or unreadable
         if frozen is None:
             return None  # recompute under the lock
-        frozen["best"] = _load_best(name)
+        frozen["best"] = load_best(name)
         return frozen
 
     out = _frozen()
     if out is not None:
         return out
 
-    with _file_lock(os.path.join(_opt_session_runs_dir(name), ".ratchet.lock")):
+    with file_lock(os.path.join(opt_session_runs_dir(name), ".ratchet.lock")):
         out = _frozen()
         if out is not None:
             return out
@@ -82,7 +82,7 @@ def _run_axis(run_dir: str) -> str:
     Read back from the run's own config at settle time, because settling happens in the
     runner process minutes or hours after the launch that knew it.
     """
-    return str((_read_json(os.path.join(run_dir, "config.json")) or {}).get("axis") or "")
+    return str((read_json(os.path.join(run_dir, "config.json")) or {}).get("axis") or "")
 
 
 def _ratchet_settle_locked(
@@ -93,23 +93,23 @@ def _ratchet_settle_locked(
     max_stall       = int(cfg.get("max_stall", 5))
     # The tree as it stood when this run was LAUNCHED — what actually ran, immune to
     # edits made while it was in flight.
-    launch = _read_json(os.path.join(run_dir, "tree_at_launch.json")) or {}
+    launch = read_json(os.path.join(run_dir, "tree_at_launch.json")) or {}
     launch_tree = launch.get("snapshot_id", "")
 
     feasible      = bool(final_metrics.get("all_passed"))
-    primary_value = _run_primary_value(final_metrics, primary_metric)
-    wall_value    = _run_primary_value(final_metrics, "wall_time_s")
+    primary_value = run_primary_value(final_metrics, primary_metric)
+    wall_value    = run_primary_value(final_metrics, "wall_time_s")
     run_id        = os.path.basename(os.path.normpath(run_dir))
-    best          = _load_best(name)
+    best          = load_best(name)
 
     # A timing describes the machine as much as the code. The session is pinned to the
     # machine its baseline ran on, and a run elsewhere is not compared at all: judged
     # against a baseline from the login node, a compute node's run would be accepted
     # or rejected on the hardware difference. An accuracy metric is reproducible
     # across machines, so it is never held back.
-    machine = _read_json(os.path.join(run_dir, "machine.json")) or {}
+    machine = read_json(os.path.join(run_dir, "machine.json")) or {}
     pinned = (cfg.get("machine") or {}).get("machine_signature", "")
-    if (primary_metric in _NOISY_METRICS and pinned
+    if (primary_metric in NOISY_METRICS and pinned
             and machine.get("machine_signature") not in ("", None, pinned)):
         return _settle_incomparable(name, run_dir, cfg, outcome_path, machine, feasible,
                                     primary_value, wall_value, primary_metric, goal,
@@ -118,16 +118,16 @@ def _ratchet_settle_locked(
     # The baseline is the one run whose spread describes the machine rather than the
     # change, so it is where the noise floor comes from — recorded once, then applied
     # to every comparison after it.
-    spread = _run_primary_value(final_metrics, "primary_spread")
+    spread = run_primary_value(final_metrics, "primary_spread")
     if not cfg.get("baseline_run_id") and isinstance(spread, (int, float)):
         cfg["noise_floor"] = float(spread)
 
-    min_improvement, margin_source = _effective_min_improvement(cfg)
-    verdict = _ratchet_verdict(feasible, primary_value, best, goal, min_improvement)
+    min_improvement, margin_source = effective_min_improvement(cfg)
+    verdict = ratchet_verdict(feasible, primary_value, best, goal, min_improvement)
 
     timing_warning = _timing_warning(verdict, primary_metric, best, wall_value)
 
-    # The launch gate in _prepare_run guarantees the first run measured the untouched
+    # The launch gate in prepare_run guarantees the first run measured the untouched
     # tree; this records which run that was, so the gate opens exactly once.
     baseline_run = cfg.get("baseline_run_id", "")
     if not baseline_run:
@@ -137,8 +137,8 @@ def _ratchet_settle_locked(
 
     stall = int(cfg.get("stall", 0))
     if verdict == "accept":
-        _save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value)
-        best  = _load_best(name)
+        save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value)
+        best  = load_best(name)
         stall = 0
     elif feasible:
         stall += 1  # feasible but not an improvement — a stalled iteration
@@ -147,9 +147,9 @@ def _ratchet_settle_locked(
         verdict = "converged"
 
     cfg["stall"] = stall
-    _save_opt_config(cfg)
+    save_opt_config(cfg)
 
-    _append_ledger(name, {
+    append_ledger(name, {
         "run_id":        run_id,
         "ts":            datetime.now(timezone.utc).isoformat(),
         # What this run was and where it started. The snapshot is the edge: a run whose
@@ -212,10 +212,10 @@ def _settle_incomparable(
     """
     pinned = cfg.get("machine") or {}
     run_id = os.path.basename(os.path.normpath(run_dir))
-    _append_ledger(name, {
+    append_ledger(name, {
         "run_id": run_id, "ts": datetime.now(timezone.utc).isoformat(),
         "axis": _run_axis(run_dir),
-        "launch_tree": (_read_json(os.path.join(run_dir, "tree_at_launch.json"))
+        "launch_tree": (read_json(os.path.join(run_dir, "tree_at_launch.json"))
                         or {}).get("snapshot_id", ""),
         "feasible": feasible, "primary_value": primary_value, "wall_value": wall_value,
         "verdict": "incomparable", "stall": int(cfg.get("stall", 0)),

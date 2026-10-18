@@ -30,10 +30,10 @@ def active_proxy_source(session_id: str | None = None) -> str:
     try:
         from ...servers.proxy._lib import store
 
-        name = store._resolve_proxy_name("", session_id)
+        name = store.resolve_proxy_name("", session_id)
         if not name:
             return ""
-        cfg = store._read_json(store._opt_config_file(name))
+        cfg = store.read_json(store.opt_config_file(name))
         src = cfg.get("proxy_source_path") if isinstance(cfg, dict) else None
         return src if isinstance(src, str) else ""
     except Exception:

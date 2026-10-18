@@ -4,39 +4,39 @@ from __future__ import annotations
 
 import os
 
-from . import _check_name, _with_next, ok
-from .._lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT, _seal_reference
+from . import check_name, with_next, ok
+from .._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT, seal_reference
 from .._lib.store import (
     refs_dir,
-    _entry_or_err,
-    _ref_dir,
-    _load_ref_metrics,
-    _ref_output_path,
-    _read_json,
+    entry_or_err,
+    reference_dir,
+    load_ref_metrics,
+    ref_output_path,
+    read_json,
 )
 
 
 def list_references() -> dict:
     if not os.path.isdir(refs_dir()):
-        return ok(_with_next({"references": [], "count": 0},
+        return ok(with_next({"references": [], "count": 0},
                              "proxy_exec(op='reference', ...) to seal a first reference."))
 
     out = []
     for name in sorted(os.listdir(refs_dir())):
-        rd = _ref_dir(name)
+        rd = reference_dir(name)
         if not os.path.isdir(rd):
             continue
         entry: dict = {"name": name}
-        cfg = _read_json(os.path.join(rd, "config.json"))
+        cfg = read_json(os.path.join(rd, "config.json"))
         if cfg is not None:
             entry["config"] = cfg
-        m = _load_ref_metrics(name)
+        m = load_ref_metrics(name)
         if m:
             entry["metrics"] = m
-        entry["has_field_output"] = _ref_output_path(name) is not None
+        entry["has_field_output"] = ref_output_path(name) is not None
         out.append(entry)
 
-    return ok(_with_next(
+    return ok(with_next(
         {"references": out, "count": len(out)},
         "proxy_exec(op='run', compare_to_reference=..., confirm=True) to score a run."))
 
@@ -46,17 +46,17 @@ def create(
     reference_name: str,
     extra_params: str = "",
     param_overrides: dict | None = None,
-    max_output_mb: int = _DEFAULT_MAX_OUTPUT_MB,
-    timeout_s: int = _REF_RUN_TIMEOUT,
+    max_output_mb: int = DEFAULT_MAX_OUTPUT_MB,
+    timeout_s: int = REF_RUN_TIMEOUT,
 ) -> dict:
     """Run a proxy synchronously and seal its output as an immutable reference."""
-    if bad := _check_name("reference_name", reference_name):
+    if bad := check_name("reference_name", reference_name):
         return bad
-    entry, error = _entry_or_err(proxy_name)
+    entry, error = entry_or_err(proxy_name)
     if error:
         return error
 
-    result, error = _seal_reference(
+    result, error = seal_reference(
         entry, reference_name,
         extra_params=extra_params, param_overrides=param_overrides,
         max_output_mb=max_output_mb, timeout_s=timeout_s,
@@ -64,7 +64,7 @@ def create(
     if error:
         return error
 
-    return ok(_with_next(
+    return ok(with_next(
         result,
         f"proxy_exec(op='run', proxy_name='{proxy_name}', "
         f"compare_to_reference='{reference_name}', confirm=True) to compare "

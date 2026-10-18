@@ -186,8 +186,8 @@ def _build_phase(build_mod, tree_snapshot, reg: dict, suite: dict,
     # Makefile, a generated header listed in optimize_paths) leaves the measured
     # tree different from the one snapshotted at launch, so the run would be
     # recorded against code that is not what ran.
-    from ._lib.store import _read_json
-    launch = _read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
+    from ._lib.store import read_json
+    launch = read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
     opt_paths = (cfg.get("optimize_paths") or launch.get("paths") or [])
     expected = launch.get("fingerprint", "")
     if expected and opt_paths:
@@ -246,10 +246,10 @@ def main() -> None:
     try:
         from ._lib import build as build_mod
         from ._lib import tree_snapshot
-        from ._lib.execute import _run_benchmark_case
-        from ._lib.metrics import _evaluate_requirements, _convergence_order
-        from ._lib.ratchet import _select_best_case
-        from ._lib.store import _load_registry, _load_suite, _read_json
+        from ._lib.execute import run_benchmark_case
+        from ._lib.metrics import evaluate_requirements, observed_convergence_order
+        from ._lib.ratchet import select_best_case
+        from ._lib.store import load_registry, load_suite, read_json
     except ImportError as exc:
         _log(f"[proxy_runner] ERROR: cannot import _lib: {exc}")
         sys.exit(1)
@@ -270,7 +270,7 @@ def main() -> None:
 
     # ── load registry + proxy entry ──────────────────────────────────────────
     try:
-        reg = _load_registry()
+        reg = load_registry()
     except RuntimeError as exc:
         _log(f"[proxy_runner] ERROR: registry corrupt: {exc}")
         sys.exit(1)
@@ -282,7 +282,7 @@ def main() -> None:
     entry = reg[proxy_name]
 
     # ── load benchmark suite ─────────────────────────────────────────────────
-    suite = _load_suite(benchmark_name)
+    suite = load_suite(benchmark_name)
     if suite is None:
         _log(f"[proxy_runner] ERROR: suite '{benchmark_name}' not found")
         sys.exit(1)
@@ -380,7 +380,7 @@ def main() -> None:
                                  + f" rep {rep + 1}/{repeat}",
                                  index=cases_total, total=planned_cases,
                                  replicate=rep + 1, replicates=repeat)
-                run_case_dir, row = _run_benchmark_case(
+                run_case_dir, row = run_benchmark_case(
                     entry=case_entry,
                     proxy_name=case_proxy,
                     reference_name=reference_name,
@@ -393,7 +393,7 @@ def main() -> None:
                 )
                 if "error" in row:
                     break
-                rep_metrics = _read_json(
+                rep_metrics = read_json(
                     os.path.join(run_case_dir, "metrics.json"), {}) or {}
                 replicate_metrics.append(rep_metrics)
                 if repeat > 1:
@@ -420,7 +420,7 @@ def main() -> None:
             if spread is not None:
                 case_metrics["primary_spread"] = spread
 
-            req_result = _evaluate_requirements(case_metrics, case_requirements)
+            req_result = evaluate_requirements(case_metrics, case_requirements)
             passed     = req_result["passed"]
             if passed:
                 cases_passed += 1
@@ -459,11 +459,11 @@ def main() -> None:
     # convergence_order is inherently cross-case, so it is evaluated here (not
     # per-case) and, when a requirement targets it, folded into all_passed.
     cases_all_passed = cases_passed == cases_total and cases_total > 0
-    convergence_order = _convergence_order(conv_pairs) if conv_pairs else None
+    convergence_order = observed_convergence_order(conv_pairs) if conv_pairs else None
     conv_reqs = [r for r in requirements if r.get("metric") == "convergence_order"]
     run_level_passed = True
     if conv_reqs:
-        run_level = _evaluate_requirements(
+        run_level = evaluate_requirements(
             {"convergence_order": convergence_order}, conv_reqs)
         run_level_passed = run_level["passed"]
         _log(f"[proxy_runner] convergence_order={convergence_order} "
@@ -475,7 +475,7 @@ def main() -> None:
     _write_phase(run_dir, "settle", "settling")
 
     all_passed = cases_all_passed and run_level_passed
-    best_case, best_time = _select_best_case(best_inputs)
+    best_case, best_time = select_best_case(best_inputs)
     _log(
         f"[proxy_runner] summary "
         f"cases_passed={cases_passed} cases_total={cases_total} "
@@ -512,11 +512,11 @@ def main() -> None:
     # results(): settle here, at completion. results() replays the frozen
     # outcome (idempotent, flock-serialized).
     try:
-        from ._lib.store import _load_opt_config
-        from ._ops._eval_ratchet import _ratchet_state
-        cfg = _load_opt_config(proxy_name)
+        from ._lib.store import load_opt_config
+        from ._ops._eval_ratchet import ratchet_state
+        cfg = load_opt_config(proxy_name)
         if cfg and cfg.get("proxy_name") == proxy_name:
-            outcome = _ratchet_state(proxy_name, run_dir, output, cfg)
+            outcome = ratchet_state(proxy_name, run_dir, output, cfg)
             _log(f"[proxy_runner] ratchet verdict={outcome.get('verdict')} "
                  f"feasible={outcome.get('feasible')} stall={outcome.get('stall')}")
             if outcome.get("timing_warning"):

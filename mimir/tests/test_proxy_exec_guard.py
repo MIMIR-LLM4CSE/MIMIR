@@ -61,13 +61,13 @@ class ProxyExecGuardTests(unittest.TestCase):
     # -- helpers ---------------------------------------------------------------
 
     def _init_session(self, name: str = "tiny") -> None:
-        os.makedirs(store._opt_session_runs_dir(name), exist_ok=True)
+        os.makedirs(store.opt_session_runs_dir(name), exist_ok=True)
         write_json(
-            store._opt_config_file(name),
+            store.opt_config_file(name),
             {"proxy_name": name, "proxy_source_path": self.src},
         )
         write_json(store.registry_path(), {name: {"executable_path": self.exe}})
-        store._write_active_session(name)
+        store.write_active_session(name)
 
     def _check(self, tool: str, **args) -> str | None:
         return gates.check_proxy_exec(self.agent, tool, args, {})
@@ -175,7 +175,7 @@ class ProxyExecGuardTests(unittest.TestCase):
     def test_ended_session_allows_execution(self) -> None:
         self._init_session()
         self._assert_blocked(self._check("bash_run", command=f"python {self.src}"))
-        store._clear_active_session()  # what proxy_eval(op='end') does
+        store.clear_active_session()  # what proxy_eval(op='end') does
         self.assertIsNone(self._check("bash_run", command=f"python {self.src}"))
 
     def test_registered_executable_is_read_under_its_real_key(self) -> None:

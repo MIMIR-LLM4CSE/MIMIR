@@ -406,7 +406,7 @@ def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
     # only a conversation running an optimisation ever needs it.
     from ....servers.proxy._lib import store
 
-    name = store._resolve_proxy_name("", session_id)
+    name = store.resolve_proxy_name("", session_id)
     if not name:
         return set()
 
@@ -414,7 +414,7 @@ def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
     src = active_proxy_source(session_id)
     if src:
         paths.add(src)
-    reg = store._read_json(store.registry_path())
+    reg = store.read_json(store.registry_path())
     if isinstance(reg, dict):
         entry = reg.get(name)
         if isinstance(entry, dict):

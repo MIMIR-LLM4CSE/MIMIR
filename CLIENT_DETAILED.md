@@ -1562,7 +1562,7 @@ baseline is about what has ended. Slurm
 jobs are never declared finished by inspection: their state is in the controller, not in a pid
 here, so they come back as live and the watcher's first poll settles it.
 
-The liveness check is a deliberate twin of `_bash_jobs.is_running` rather than a call into
+The liveness check is a deliberate twin of `bash_jobs.is_running` rather than a call into
 it — the MCP servers resolve imports against their own directory, so nothing in
 `mimir.client` can import that tree, the same reason `tool_execution/run_channel.py` twins
 `servers/_shared/run_channel.py`. What must change in both together: a pid is alive only if

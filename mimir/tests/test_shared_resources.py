@@ -53,27 +53,27 @@ class ProxyActiveSessionPointerTests(unittest.TestCase):
 
     def test_one_session_init_does_not_retarget_another(self) -> None:
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s1"}):
-            self.store._write_active_session("alpha")
+            self.store.write_active_session("alpha")
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s2"}):
-            self.store._write_active_session("beta")
-            self.assertEqual(self.store._resolve_proxy_name(""), "beta")
+            self.store.write_active_session("beta")
+            self.assertEqual(self.store.resolve_proxy_name(""), "beta")
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s1"}):
-            self.assertEqual(self.store._resolve_proxy_name(""), "alpha")
+            self.assertEqual(self.store.resolve_proxy_name(""), "alpha")
 
     def test_clearing_one_session_leaves_the_other_pointed(self) -> None:
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s1"}):
-            self.store._write_active_session("alpha")
+            self.store.write_active_session("alpha")
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s2"}):
-            self.store._write_active_session("beta")
-            self.store._clear_active_session()
-            self.assertIsNone(self.store._resolve_proxy_name(""))
+            self.store.write_active_session("beta")
+            self.store.clear_active_session()
+            self.assertIsNone(self.store.resolve_proxy_name(""))
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s1"}):
-            self.assertEqual(self.store._resolve_proxy_name(""), "alpha")
+            self.assertEqual(self.store.resolve_proxy_name(""), "alpha")
 
     def test_an_explicit_name_still_wins_over_any_pointer(self) -> None:
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s1"}):
-            self.store._write_active_session("alpha")
-            self.assertEqual(self.store._resolve_proxy_name("named"), "named")
+            self.store.write_active_session("alpha")
+            self.assertEqual(self.store.resolve_proxy_name("named"), "named")
 
     def test_a_session_less_end_keeps_the_unsuffixed_pointer(self) -> None:
         """The CLI and the tests: same file name it has always had."""
@@ -82,10 +82,10 @@ class ProxyActiveSessionPointerTests(unittest.TestCase):
     def test_the_client_resolves_the_session_it_is_acting_for(self) -> None:
         """In the client, N sessions share one environment — the agent must say."""
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s1"}):
-            self.store._write_active_session("alpha")
-        self.store._write_active_session("fallback", session_id="s2")
-        self.assertEqual(self.store._resolve_proxy_name("", "s1"), "alpha")
-        self.assertEqual(self.store._resolve_proxy_name("", "s2"), "fallback")
+            self.store.write_active_session("alpha")
+        self.store.write_active_session("fallback", session_id="s2")
+        self.assertEqual(self.store.resolve_proxy_name("", "s1"), "alpha")
+        self.assertEqual(self.store.resolve_proxy_name("", "s2"), "fallback")
 
 
 class EnvCreateRaceTests(unittest.TestCase):

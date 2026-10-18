@@ -33,7 +33,7 @@ _TRUE_VALS     = {"true", "yes"}
 _FALSE_VALS    = {"false", "no"}
 
 
-def _coerce(value: str) -> bool | int | float | str:
+def coerce(value: str) -> bool | int | float | str:
     """Read one metric value: a number where it can be, a word-boolean, else the text.
 
     Numbers are tried FIRST so nothing numeric can be captured as a flag.
@@ -54,7 +54,7 @@ def _coerce(value: str) -> bool | int | float | str:
     return value
 
 
-def _parse_metrics_block(stdout: str) -> dict:
+def parse_metrics_block(stdout: str) -> dict:
     """Extract key=value pairs from the PROXY_METRICS_BEGIN…END block.
 
     Falls back to a single-token scan when no block markers are present.
@@ -75,7 +75,7 @@ def _parse_metrics_block(stdout: str) -> dict:
         if in_block:
             m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)", stripped)
             if m:
-                metrics[m.group(1)] = _coerce(m.group(2).strip())
+                metrics[m.group(1)] = coerce(m.group(2).strip())
 
     if not block_found:
         # Fallback: scan only the last 20 lines with a strict single-token RHS pattern.
@@ -83,14 +83,14 @@ def _parse_metrics_block(stdout: str) -> dict:
         for line in stdout.splitlines()[-20:]:
             m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(\S+)$", line.strip())
             if m:
-                metrics[m.group(1)] = _coerce(m.group(2))
+                metrics[m.group(1)] = coerce(m.group(2))
 
     return metrics
 
 
 # ── reserved server-side invariants ───────────────────────────────────────────
 
-def _strip_reserved_metrics(metrics: dict) -> list[str]:
+def strip_reserved_metrics(metrics: dict) -> list[str]:
     """Drop reserved keys the proxy tried to emit; return what was dropped."""
     forged = sorted(RESERVED_METRICS.intersection(metrics))
     for key in forged:
@@ -98,7 +98,7 @@ def _strip_reserved_metrics(metrics: dict) -> list[str]:
     return forged
 
 
-def _normalize_time_metrics(metrics: dict, wall_s: float) -> None:
+def normalize_time_metrics(metrics: dict, wall_s: float) -> None:
     """Record the server-measured wall time and guard the self-reported time_s.
 
     ``time_s`` stays proxy-reported (a kernel may legitimately exclude startup),
@@ -143,7 +143,7 @@ def _load_field_raw(path: str, shape: tuple | None = None):
         return None
 
 
-def _load_field(path: str, output_format: str = "npz", shape: tuple | None = None):
+def load_field(path: str, output_format: str = "npz", shape: tuple | None = None):
     if not os.path.isfile(path):
         return None
     if output_format == "npz":
@@ -153,7 +153,7 @@ def _load_field(path: str, output_format: str = "npz", shape: tuple | None = Non
     return None
 
 
-def _field_norms(a, b) -> dict:
+def field_norms(a, b) -> dict:
     try:
         import numpy as np
     except ImportError:
@@ -187,7 +187,7 @@ def _field_norms(a, b) -> dict:
 
 # ── numerical invariants ──────────────────────────────────────────────────────
 
-def _finite_check(field) -> bool:
+def finite_check(field) -> bool:
     """True iff *field* contains no NaN/Inf (an empty/None field is not finite)."""
     try:
         import numpy as np
@@ -201,7 +201,7 @@ def _finite_check(field) -> bool:
     return bool(np.all(np.isfinite(arr)))
 
 
-def _conservation_residual(run_metrics: dict, ref_metrics: dict, key: str) -> float | None:
+def conservation_discrepancy(run_metrics: dict, ref_metrics: dict, key: str) -> float | None:
     """Relative discrepancy of a conserved scalar *key* between run and reference.
 
     ``|run[key] - ref[key]| / |ref[key]|`` (falls back to absolute error when the
@@ -217,7 +217,7 @@ def _conservation_residual(run_metrics: dict, ref_metrics: dict, key: str) -> fl
     return abs(rv - fv) / denom if denom > 0 else abs(rv - fv)
 
 
-def _convergence_order(pairs: list[tuple[float, float]]) -> float | None:
+def observed_convergence_order(pairs: list[tuple[float, float]]) -> float | None:
     """Observed order of accuracy from ``(h, error)`` pairs via a log-log fit.
 
     Fits ``log(error) = p·log(h) + c`` by least squares and returns the slope
@@ -242,10 +242,10 @@ def _convergence_order(pairs: list[tuple[float, float]]) -> float | None:
 
 # ── requirements engine ───────────────────────────────────────────────────────
 
-_VALID_OPT_OPERATORS = {"lt", "gt", "lte", "gte", "eq"}
+VALID_OPT_OPERATORS = {"lt", "gt", "lte", "gte", "eq"}
 
 
-def _evaluate_requirements(metrics: dict, requirements: list[dict]) -> dict:
+def evaluate_requirements(metrics: dict, requirements: list[dict]) -> dict:
     """Evaluate a list of requirements against a metrics dict.
 
     Each requirement must have keys: metric (str), operator (str), threshold (float).
@@ -265,7 +265,7 @@ def _evaluate_requirements(metrics: dict, requirements: list[dict]) -> dict:
         threshold = req.get("threshold")
 
         actual_raw = metrics.get(metric)
-        if actual_raw is None or threshold is None or operator not in _VALID_OPT_OPERATORS:
+        if actual_raw is None or threshold is None or operator not in VALID_OPT_OPERATORS:
             results.append({
                 "metric":    metric,
                 "operator":  operator,
@@ -281,7 +281,7 @@ def _evaluate_requirements(metrics: dict, requirements: list[dict]) -> dict:
                         if metric in RESERVED_METRICS else
                         "metric not found in results"
                     ) if actual_raw is None else
-                    "invalid operator" if operator not in _VALID_OPT_OPERATORS else
+                    "invalid operator" if operator not in VALID_OPT_OPERATORS else
                     "missing threshold"
                 ),
             })

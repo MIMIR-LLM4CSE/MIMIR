@@ -38,7 +38,7 @@ def _load(name: str, path: Path):
 
 
 spawn = _load("server_spawn_agent", SERVERS_DIR / "agent_state" / "server_spawn_agent.py")
-_child_jobs = _load("_child_jobs", SERVERS_DIR / "agent_state" / "_child_jobs.py")
+child_jobs = _load("child_jobs", SERVERS_DIR / "agent_state" / "child_jobs.py")
 
 
 # What each fake server advertises when the child connects it: the tools, and the one
@@ -961,21 +961,21 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self._intervals = (_child_jobs._FIRST_INTERVAL, _child_jobs._MAX_INTERVAL)
+        self._intervals = (child_jobs._FIRST_INTERVAL, child_jobs._MAX_INTERVAL)
         # Long enough that a watch registered here is still in flight when the
         # assertion runs. The tests about a run *finishing* shorten it themselves.
         self._schedule(5.0)
 
     def tearDown(self) -> None:
-        _child_jobs._FIRST_INTERVAL, _child_jobs._MAX_INTERVAL = self._intervals
+        child_jobs._FIRST_INTERVAL, child_jobs._MAX_INTERVAL = self._intervals
 
     @staticmethod
     def _schedule(seconds: float) -> None:
-        _child_jobs._FIRST_INTERVAL = _child_jobs._MAX_INTERVAL = seconds
+        child_jobs._FIRST_INTERVAL = child_jobs._MAX_INTERVAL = seconds
 
     @staticmethod
     def _watcher(agent, **kw):
-        return _child_jobs.ChildWatcher(
+        return child_jobs.ChildWatcher(
             agent=agent, origin=spawn_user_channel.child_origin(agent, "port the solver to AVX-512"),
             **kw)
 

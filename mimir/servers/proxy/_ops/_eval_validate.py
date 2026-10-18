@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from .._lib.metrics import _VALID_OPT_OPERATORS
+from .._lib.metrics import VALID_OPT_OPERATORS
 from .._lib.store import workspace_root
 
 # Computed server-side from a sealed reference, so a requirement on one of these
@@ -18,7 +18,7 @@ _REFERENCE_METRICS = ("conservation_residual", "l2_abs", "l2_rel",
                       "linf_abs", "linf_rel")
 
 
-def _check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | None:
+def check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | None:
     """The proxy is a HARNESS; the code under optimisation is somewhere else.
 
     Nothing here is language-specific: an entry is checked for being a file, inside
@@ -60,11 +60,11 @@ def _check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | Non
     return None
 
 
-def _check_requirements(requirements: list[dict]) -> str | None:
+def check_requirements(requirements: list[dict]) -> str | None:
     for i, req in enumerate(requirements):
         if not req.get("metric"):
             return f"requirements[{i}] is missing 'metric'."
-        if req.get("operator") not in _VALID_OPT_OPERATORS:
+        if req.get("operator") not in VALID_OPT_OPERATORS:
             return (f"requirements[{i}] has invalid operator '{req.get('operator')}'. "
                     "Use one of: lt, gt, lte, gte, eq.")
         if req.get("threshold") is None:
@@ -72,7 +72,7 @@ def _check_requirements(requirements: list[dict]) -> str | None:
     return None
 
 
-def _check_reference_requirements(
+def check_reference_requirements(
     requirements: list[dict], suite: dict, entry: dict,
 ) -> str | None:
     """Reject requirements that can never be satisfied with this setup.

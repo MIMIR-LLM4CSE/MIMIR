@@ -37,7 +37,7 @@ import uuid
 from concurrent.futures import Future
 from typing import Annotated, Any, Callable
 
-from . import _child_jobs
+from . import child_jobs
 from .._shared.approved_roots import approved_roots
 from .._shared.atomic import write_json
 from .._shared.capabilities import (
@@ -969,7 +969,7 @@ async def _run_sub_agent(
     # every backgroundable launch waits the run out in-turn, inside the child's budget,
     # and a run that outlives the budget outlives the only thing watching it. The child
     # hears about it through its steer channel, at its next step boundary.
-    watcher = _child_jobs.ChildWatcher(
+    watcher = child_jobs.ChildWatcher(
         agent=agent, origin=spawn_user_channel.child_origin(agent, task), on_activity=on_event)
     agent.register_background_job = watcher.register
     agent.watched_background_jobs = watcher.live_descriptors

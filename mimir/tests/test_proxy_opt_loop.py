@@ -72,7 +72,7 @@ class _RatchetFixture(_TmpStorageTest):
     def _complete_run(self, run_id: str, all_passed: bool, time_s: float,
                       wall_time_s: float | None = None) -> str:
         """Fabricate a finished run dir and point the active symlink at it."""
-        session_dir = store._opt_session_runs_dir("tiny")
+        session_dir = store.opt_session_runs_dir("tiny")
         run_dir = os.path.join(session_dir, run_id)
         os.makedirs(run_dir, exist_ok=True)
         case_metrics = {"time_s": time_s}
@@ -85,17 +85,17 @@ class _RatchetFixture(_TmpStorageTest):
                 "results": [{"metrics": case_metrics}],
             }, fh)
         # A summary line so the log-parsing path is exercised too.
-        with open(procs._log_path(run_dir), "w") as fh:
+        with open(procs.run_log_path(run_dir), "w") as fh:
             fh.write(f"[proxy_runner] summary cases_passed={1 if all_passed else 0} "
                      f"cases_total=1 all_passed={all_passed} best_case=a "
                      f"best_time_s={time_s}\n")
         self._record_launch_tree("tiny", run_dir)
-        procs._update_opt_active_link("tiny", run_dir)
+        procs.update_opt_active_link("tiny", run_dir)
         return run_dir
 
     @staticmethod
     def _record_launch_tree(proxy_name: str, run_dir: str) -> None:
-        """What a real run records in _prepare_run: the tree as it stood at launch.
+        """What a real run records in prepare_run: the tree as it stood at launch.
 
         Fabricated run dirs used to skip it, and the ratchet now refuses to accept a run
         with no recorded tree — rightly, since reset_to_best would have nothing to
@@ -103,7 +103,7 @@ class _RatchetFixture(_TmpStorageTest):
         """
         from mimir.servers.proxy._lib import tree_snapshot
         from mimir.servers.proxy._ops import eval_session as _es
-        cfg = _es._load_opt_config(proxy_name) or {}
+        cfg = _es.load_opt_config(proxy_name) or {}
         paths = list(cfg.get("optimize_paths") or [])
         if not paths:
             return
@@ -168,7 +168,7 @@ class RatchetLoopTests(_RatchetFixture):
         self.assertIn("reset_to_best", res_e["next_step"])
 
         # Ledger: best primary_value is monotone non-increasing (min goal).
-        with open(store._opt_ledger_file("tiny")) as fh:
+        with open(store.opt_ledger_file("tiny")) as fh:
             entries = [json.loads(x) for x in fh if x.strip()]
         self.assertEqual(len(entries), 5)
         # best-so-far as recorded per entry never regresses
@@ -186,7 +186,7 @@ class RatchetLoopTests(_RatchetFixture):
         self.assertEqual(first["verdict"], second["verdict"])
         self.assertEqual(first["stall"], second["stall"])
         # Exactly one ledger entry despite two polls.
-        with open(store._opt_ledger_file("tiny")) as fh:
+        with open(store.opt_ledger_file("tiny")) as fh:
             self.assertEqual(sum(1 for x in fh if x.strip()), 1)
 
     def test_reset_to_best_errors_without_a_best(self) -> None:
@@ -213,7 +213,7 @@ class RatchetLoopTests(_RatchetFixture):
         res = self._results()
         self.assertEqual(res["verdict"], "accept")
         self.assertNotIn("timing_warning", res)
-        self.assertEqual(ratchet._load_best("tiny")["wall_value"], 5.0)
+        self.assertEqual(ratchet.load_best("tiny")["wall_value"], 5.0)
 
         # Self-reported time_s "improves" while the measured wall time blows
         # up: still accepted (the objective is time_s) but flagged for audit.
@@ -226,8 +226,8 @@ class RatchetLoopTests(_RatchetFixture):
         self.assertIn("WARNING", res["recommendation"])
         self.assertEqual(res["wall_value"], 9.0)
         # The audit values persist in the ledger and the best pointer.
-        self.assertEqual(ratchet._load_best("tiny")["wall_value"], 9.0)
-        with open(store._opt_ledger_file("tiny")) as fh:
+        self.assertEqual(ratchet.load_best("tiny")["wall_value"], 9.0)
+        with open(store.opt_ledger_file("tiny")) as fh:
             entries = [json.loads(x) for x in fh if x.strip()]
         self.assertIn("timing_warning", entries[-1])
         self.assertEqual(entries[-1]["wall_value"], 9.0)
@@ -296,7 +296,7 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
         )
         self.assertEqual(res.get("status"), "ok")
 
-        cfg, err_response, run_dir, _notice = eval_session._prepare_run("conv")
+        cfg, err_response, run_dir, _notice = eval_session.prepare_run("conv")
         self.assertIsNone(err_response)
 
         from mimir.servers.proxy import _proxy_runner
@@ -361,9 +361,9 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
     def _run_runner(self) -> str:
         import sys
         from unittest import mock
-        cfg, err_response, run_dir, _notice = eval_session._prepare_run("fast")
+        cfg, err_response, run_dir, _notice = eval_session.prepare_run("fast")
         self.assertIsNone(err_response)
-        procs._update_opt_active_link("fast", run_dir)
+        procs.update_opt_active_link("fast", run_dir)
         from mimir.servers.proxy import _proxy_runner
         with mock.patch.object(sys, "argv",
                                ["_proxy_runner", "--run-dir", run_dir]):
@@ -371,7 +371,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         return run_dir
 
     def _ledger_lines(self) -> list[dict]:
-        path = os.path.join(store._opt_session_runs_dir("fast"), "ledger.jsonl")
+        path = os.path.join(store.opt_session_runs_dir("fast"), "ledger.jsonl")
         if not os.path.isfile(path):
             return []
         with open(path) as fh:
@@ -385,7 +385,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         lines = self._ledger_lines()
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["verdict"], "accept")
-        best = ratchet._load_best("fast")
+        best = ratchet.load_best("fast")
         self.assertIsNotNone(best)
         self.assertEqual(best["run_id"], os.path.basename(run_dir))
         self.assertTrue(os.path.isfile(os.path.join(run_dir, "ratchet.json")))
@@ -394,12 +394,12 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
             machine = json.load(fh)
         self.assertTrue(machine["machine_signature"])
         from mimir.servers.proxy._ops import eval_session as _es
-        self.assertEqual(_es._load_opt_config("fast")["machine"]["machine_signature"],
+        self.assertEqual(_es.load_opt_config("fast")["machine"]["machine_signature"],
                          machine["machine_signature"])
         # The accepted state is the TREE as it stood at launch, recorded for the whole
         # optimize_paths set — not a copy of one source file, which could only ever
         # restore part of a multi-file change.
-        launch = store._read_json(os.path.join(run_dir, "tree_at_launch.json"))
+        launch = store.read_json(os.path.join(run_dir, "tree_at_launch.json"))
         self.assertTrue(launch, "no launch tree recorded")
         self.assertEqual(best["tree_snapshot"], launch["snapshot_id"])
 
@@ -525,7 +525,7 @@ class MachinePinningTests(_RatchetFixture):
         self.assertIn("node07", res["recommendation"])
         self.assertIn("rebaseline", res["next_step"])
         # The 4.5x "speedup" is hardware: it must not become the best.
-        self.assertEqual(ratchet._load_best("tiny")["primary_value"], 9.0)
+        self.assertEqual(ratchet.load_best("tiny")["primary_value"], 9.0)
         self.assertEqual(res["stall"], 0)
 
         # Same machine as the baseline: compared as usual.
@@ -553,11 +553,11 @@ class MachinePinningTests(_RatchetFixture):
         self._results()
         _eval(op="rebaseline", confirm=True)
         from mimir.servers.proxy._ops import eval_session as _es
-        self.assertNotIn("machine", _es._load_opt_config("tiny"))
+        self.assertNotIn("machine", _es.load_opt_config("tiny"))
         node = self._complete_run("20240101T000100Z", all_passed=True, time_s=3.0)
         self._on(node, "node07", "sig-node")
         self._results()
-        self.assertEqual(_es._load_opt_config("tiny")["machine"]["host"], "node07")
+        self.assertEqual(_es.load_opt_config("tiny")["machine"]["host"], "node07")
 
 
 class ProxySlurmScriptTests(_RatchetFixture):
@@ -566,14 +566,14 @@ class ProxySlurmScriptTests(_RatchetFixture):
         pin_local_scheduler(self)
 
     def test_header_keeps_one_node_and_adds_targeting(self) -> None:
-        from mimir.servers.proxy._lib.command import _sbatch_header
-        plain = _sbatch_header(job_name="j", partition="p", cpus_per_task=8,
+        from mimir.servers.proxy._lib.command import sbatch_header_lines
+        plain = sbatch_header_lines(job_name="j", partition="p", cpus_per_task=8,
                                wall_time="01:00:00", mem="32G", log_file="/x/log")
         self.assertIn("#SBATCH --nodes=1", plain)
         self.assertIn("#SBATCH --ntasks=1", plain)
         self.assertIn("#SBATCH --mem=32G", plain)
         self.assertFalse([ln for ln in plain if "--exclusive" in ln or "--constraint" in ln])
-        aimed = _sbatch_header(job_name="j", partition="p", cpus_per_task=8,
+        aimed = sbatch_header_lines(job_name="j", partition="p", cpus_per_task=8,
                                wall_time="01:00:00", mem="32G", log_file="/x/log",
                                constraint="icelake", exclusive=True, ntasks=4)
         for want in ("#SBATCH --constraint=icelake", "#SBATCH --exclusive", "#SBATCH --ntasks=4"):
@@ -588,13 +588,13 @@ class ProxySlurmScriptTests(_RatchetFixture):
             seen["script"] = script
             return "321", None
 
-        orig = slurm_ops._submit_sbatch
-        slurm_ops._submit_sbatch = fake_submit
+        orig = slurm_ops.submit_sbatch
+        slurm_ops.submit_sbatch = fake_submit
         try:
             res = server_proxy.proxy_slurm(op="eval", partition="cpu", constraint="icelake",
                                            confirm=True)
         finally:
-            slurm_ops._submit_sbatch = orig
+            slurm_ops.submit_sbatch = orig
         self.assertEqual(res.get("status"), "ok")
         script = seen["script"]
         self.assertIn("#SBATCH --exclusive", script)          # a timing: default on
@@ -611,12 +611,12 @@ class ProxySlurmScriptTests(_RatchetFixture):
             seen["s"] = script
             return "1", None
 
-        orig = slurm_ops._submit_sbatch
-        slurm_ops._submit_sbatch = fake_submit
+        orig = slurm_ops.submit_sbatch
+        slurm_ops.submit_sbatch = fake_submit
         try:
             server_proxy.proxy_slurm(op="run", partition="cpu", proxy_name="tiny", confirm=True)
         finally:
-            slurm_ops._submit_sbatch = orig
+            slurm_ops.submit_sbatch = orig
         self.assertNotIn("--exclusive", seen["s"])
         self.assertIn('"$_MIMIR_PY"', seen["s"])              # post-run step on the node
 

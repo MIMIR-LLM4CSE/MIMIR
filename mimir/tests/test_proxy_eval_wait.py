@@ -33,7 +33,7 @@ _RESULTS = {"status": "ok", "verdict": "accept", "recommendation": "Accepted",
 
 
 class _StateSequence:
-    """``_run_state`` stand-in yielding a scripted sequence, holding the last value."""
+    """``run_state`` stand-in yielding a scripted sequence, holding the last value."""
 
     def __init__(self, states):
         self._states = list(states)
@@ -49,7 +49,7 @@ class RunAwaitedTests(unittest.TestCase):
     def test_waits_then_returns_the_verdict_inline(self) -> None:
         states = _StateSequence(["running", "running", "done"])
         with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
-             patch.object(eval_session, "_run_state", states), \
+             patch.object(eval_session, "run_state", states), \
              patch.object(eval_session, "results", return_value=dict(_RESULTS)), \
              patch.object(eval_session, "_RUN_POLL_S", 0.01):
             res = asyncio.run(eval_session.run_awaited("tiny"))
@@ -67,7 +67,7 @@ class RunAwaitedTests(unittest.TestCase):
     def test_a_crashed_run_ends_the_wait(self) -> None:
         states = _StateSequence(["running", "crashed"])
         with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
-             patch.object(eval_session, "_run_state", states), \
+             patch.object(eval_session, "run_state", states), \
              patch.object(eval_session, "results", return_value=dict(_RESULTS)) as results, \
              patch.object(eval_session, "_RUN_POLL_S", 0.01):
             asyncio.run(eval_session.run_awaited("tiny"))
@@ -78,7 +78,7 @@ class RunAwaitedTests(unittest.TestCase):
     def test_budget_exhaustion_detaches_rather_than_timing_out(self) -> None:
         """A run that outlives the wait is handed over, never abandoned."""
         with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
-             patch.object(eval_session, "_run_state", _StateSequence(["running"])), \
+             patch.object(eval_session, "run_state", _StateSequence(["running"])), \
              patch.object(eval_session, "results") as results, \
              patch.object(eval_session, "_RUN_POLL_S", 0.01):
             res = asyncio.run(eval_session.run_awaited("tiny", wait_s=0.05))
@@ -93,7 +93,7 @@ class RunAwaitedTests(unittest.TestCase):
         launched["background_job"] = {"run_dir": _LAUNCHED["run_dir"]}
         states = _StateSequence(["running"])
         with patch.object(eval_session, "run", return_value=launched) as run, \
-             patch.object(eval_session, "_run_state", states):
+             patch.object(eval_session, "run_state", states):
             res = asyncio.run(eval_session.run_awaited("tiny", background=True))
 
         self.assertEqual(states.calls, 0)  # never even looked
@@ -104,7 +104,7 @@ class RunAwaitedTests(unittest.TestCase):
         states = _StateSequence(["running"])
         with patch.object(eval_session, "run",
                           return_value={"status": "error", "error": "no session"}), \
-             patch.object(eval_session, "_run_state", states):
+             patch.object(eval_session, "run_state", states):
             res = asyncio.run(eval_session.run_awaited("tiny"))
 
         self.assertEqual(states.calls, 0)
@@ -148,7 +148,7 @@ class DivertedWaitTests(unittest.TestCase):
             return out
 
         with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
-             patch.object(eval_session, "_run_state", _state_then_divert), \
+             patch.object(eval_session, "run_state", _state_then_divert), \
              patch.object(eval_session, "results") as results, \
              patch.object(eval_session, "_RUN_POLL_S", 0.01):
             res = asyncio.run(eval_session.run_awaited("tiny", wait_s=30.0))
@@ -171,7 +171,7 @@ class DivertedWaitTests(unittest.TestCase):
             return {"state": "done", "pid": 1, "slurm_job_id": None, "elapsed_s": 1.0}
 
         with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
-             patch.object(eval_session, "_run_state", _capture), \
+             patch.object(eval_session, "run_state", _capture), \
              patch.object(eval_session, "results", return_value=dict(_RESULTS)), \
              patch.object(eval_session, "_RUN_POLL_S", 0.01):
             asyncio.run(eval_session.run_awaited("tiny"))
@@ -183,7 +183,7 @@ class DivertedWaitTests(unittest.TestCase):
     def test_the_announcement_is_retracted_when_the_wait_ends(self) -> None:
         # A stale announcement would let a later click detach whatever ran next.
         with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
-             patch.object(eval_session, "_run_state", _StateSequence(["done"])), \
+             patch.object(eval_session, "run_state", _StateSequence(["done"])), \
              patch.object(eval_session, "results", return_value=dict(_RESULTS)), \
              patch.object(eval_session, "_RUN_POLL_S", 0.01):
             asyncio.run(eval_session.run_awaited("tiny"))
@@ -206,7 +206,7 @@ class DivertedWaitTests(unittest.TestCase):
             return st
 
         with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
-             patch.object(eval_session, "_run_state", _next), \
+             patch.object(eval_session, "run_state", _next), \
              patch.object(eval_session, "results", return_value=dict(_RESULTS)), \
              patch.object(eval_session, "_RUN_POLL_S", 0.01):
             asyncio.run(eval_session.run_awaited("tiny"))
@@ -230,7 +230,7 @@ class ToolDispatchTests(unittest.TestCase):
     def test_the_declared_budget_outlasts_the_wait(self) -> None:
         """The tool's wall must not cut off a wait the session is still inside."""
         self.assertGreater(server_proxy._EVAL_RUN_TIMEOUT,
-                           eval_session._RUN_WAIT_BUDGET_S)
+                           eval_session.RUN_WAIT_BUDGET_S)
 
 
 if __name__ == "__main__":

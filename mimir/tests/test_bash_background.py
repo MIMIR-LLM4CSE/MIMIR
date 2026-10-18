@@ -5,7 +5,7 @@ part that makes a detached run usable rather than merely started: that a termina
 is knowable afterwards (the exit code the shell records on its way out), that stopping
 one takes the whole process group with it, and — the property that must not regress —
 that detaching is a parameter on an already-validated command, not a way around the
-validation. See ``_bash_jobs`` and ``server_bash.bash_run``.
+validation. See ``bash_jobs`` and ``server_bash.bash_run``.
 
 ``BlockingRunTests`` below covers the other half: a blocking call now goes through the
 same launcher, so its output lives in a file. That is what lets a run stopped at the cap
@@ -28,7 +28,7 @@ from mimir.servers._shared import run_channel
 from mimir.servers._shared import slurm_site
 
 from mimir.tests.support.scheduler import local_slurm
-from mimir.servers.workspace import _bash_jobs
+from mimir.servers.workspace import bash_jobs
 from mimir.servers.workspace import server_bash
 from mimir.servers.workspace import bash_validation
 
@@ -38,7 +38,7 @@ from mimir.servers._shared.trusted_read_roots import trusted_read_roots
 def _jobs_on_disk() -> list[str]:
     """What the jobs root holds — a root that was never created holds nothing."""
     try:
-        return os.listdir(_bash_jobs.jobs_root())
+        return os.listdir(bash_jobs.jobs_root())
     except FileNotFoundError:
         return []
 
@@ -46,10 +46,10 @@ def _jobs_on_disk() -> list[str]:
 def _wait_terminal(job_key: str, timeout: float = 15.0) -> dict:
     """Poll until the job leaves 'running', the way the client watcher does."""
     deadline = time.time() + timeout
-    payload = _bash_jobs.state(job_key)
+    payload = bash_jobs.state(job_key)
     while payload["state"] == "running" and time.time() < deadline:
         time.sleep(0.1)
-        payload = _bash_jobs.state(job_key)
+        payload = bash_jobs.state(job_key)
     return payload
 
 
@@ -64,9 +64,9 @@ class BashBackgroundTests(unittest.TestCase):
         os.environ["MIMIR_STATE_DIR"] = self._tmp
 
     def tearDown(self) -> None:
-        for payload in _bash_jobs.listing():
+        for payload in bash_jobs.listing():
             if payload["state"] == "running":
-                _bash_jobs.stop(payload["job_key"])
+                bash_jobs.stop(payload["job_key"])
         if self._orig_state is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
@@ -91,7 +91,7 @@ class BashBackgroundTests(unittest.TestCase):
         for op in (job["status_op"], job["summary_op"]):
             self.assertTrue(hasattr(server_bash, op["tool"]), op["tool"])
 
-        self.assertEqual(_bash_jobs.state(result["job_key"])["state"], "running")
+        self.assertEqual(bash_jobs.state(result["job_key"])["state"], "running")
         self.assertEqual(_wait_terminal(result["job_key"])["state"], "done")
 
     def test_output_is_readable_while_the_job_is_still_running(self) -> None:
@@ -144,7 +144,7 @@ class BashBackgroundTests(unittest.TestCase):
         # machine, while the job already reads as stopped.
         result = server_bash.bash_run("sleep 120 | cat", background=True)
         time.sleep(0.5)
-        self.assertEqual(_bash_jobs.state(result["job_key"])["state"], "running")
+        self.assertEqual(bash_jobs.state(result["job_key"])["state"], "running")
 
         stopped = server_bash.bash_job_stop(job_key=result["job_key"])
         self.assertEqual(stopped["status"], "ok")
@@ -160,7 +160,7 @@ class BashBackgroundTests(unittest.TestCase):
         result = server_bash.bash_run("sleep 120", background=True)
         time.sleep(0.5)
         server_bash.bash_job_stop(job_key=result["job_key"])
-        self.assertEqual(_bash_jobs.state(result["job_key"])["state"], "unknown")
+        self.assertEqual(bash_jobs.state(result["job_key"])["state"], "unknown")
 
     def test_backgrounding_does_not_bypass_validation(self) -> None:
         # The whole guardrail rests on this: background is a parameter on a command
@@ -183,7 +183,7 @@ class BashBackgroundTests(unittest.TestCase):
         # a fixed root under ~/.cache was outside every session, so one conversation
         # listed — and could kill — another's jobs, and nothing ever reclaimed the space.
         self.assertIn(self._tmp, trusted_read_roots())
-        self.assertTrue(_bash_jobs.jobs_root().startswith(self._tmp))
+        self.assertTrue(bash_jobs.jobs_root().startswith(self._tmp))
 
     def test_jobs_of_one_session_are_invisible_to_another(self) -> None:
         # Scoped by resolving the root, not by filtering: each session's jobs sit in
@@ -191,16 +191,16 @@ class BashBackgroundTests(unittest.TestCase):
         # that is not yours.
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             launched = server_bash.bash_run("sleep 30", background=True)["job_key"]
-            self.assertIn(launched, [j["job_key"] for j in _bash_jobs.listing()])
-            mine = _bash_jobs.jobs_root()
+            self.assertIn(launched, [j["job_key"] for j in bash_jobs.listing()])
+            mine = bash_jobs.jobs_root()
             with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
                 # Session B cannot see it, and so cannot reach it: the handle names no
                 # job of B's, and A's run is untouched by B asking to stop it.
-                self.assertEqual(_bash_jobs.listing(), [])
-                self.assertNotEqual(_bash_jobs.jobs_root(), mine)
-                self.assertEqual(_bash_jobs.state(launched)["error"], "No such job.")
+                self.assertEqual(bash_jobs.listing(), [])
+                self.assertNotEqual(bash_jobs.jobs_root(), mine)
+                self.assertEqual(bash_jobs.state(launched)["error"], "No such job.")
                 server_bash.bash_job_stop(job_key=launched)
-            self.assertEqual(_bash_jobs.state(launched)["state"], "running")
+            self.assertEqual(bash_jobs.state(launched)["state"], "running")
             # Stopped from its own session, where it is addressable. Done inside the
             # patch: tearDown's sweep resolves the root too, and would not find it.
             self.assertEqual(server_bash.bash_job_stop(job_key=launched)["status"], "ok")
@@ -232,7 +232,7 @@ class BashBackgroundTests(unittest.TestCase):
         well-formed key naming nothing here.
         """
         absent = "20200101T000000Z-abcd"
-        self.assertTrue(_bash_jobs.valid_key(absent))
+        self.assertTrue(bash_jobs.valid_key(absent))
         for payload in (server_bash.bash_job(op="status", job_key=absent),
                         server_bash.bash_job(op="output", job_key=absent),
                         server_bash.bash_job_stop(job_key=absent)):
@@ -298,9 +298,9 @@ class BlockingRunTests(unittest.TestCase):
         os.environ["MIMIR_STATE_DIR"] = self._state
 
     def tearDown(self) -> None:
-        for payload in _bash_jobs.listing():
+        for payload in bash_jobs.listing():
             if payload["state"] == "running":
-                _bash_jobs.stop(payload["job_key"])
+                bash_jobs.stop(payload["job_key"])
         if self._orig_state is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
@@ -406,10 +406,10 @@ class BlockingRunTests(unittest.TestCase):
         self.assertNotIn("returncode", result)
         job_key = result["job_key"]
         self.assertEqual(result["background_job"]["job_key"], job_key)
-        self.assertEqual(_bash_jobs.state(job_key)["state"], "running")
+        self.assertEqual(bash_jobs.state(job_key)["state"], "running")
 
         self.assertEqual(_wait_terminal(job_key)["state"], "done")
-        with open(_bash_jobs.log_path(job_key)) as fh:
+        with open(bash_jobs.log_path(job_key)) as fh:
             self.assertIn("late", fh.read())
 
     def test_a_diverted_run_keeps_its_job_directory(self) -> None:
@@ -457,7 +457,7 @@ class FinishedOutputClipTests(unittest.TestCase):
 
     def test_a_long_output_keeps_its_first_and_last_lines(self) -> None:
         self._write(5000)
-        text, cut = _bash_jobs._clip(self.path, 4096, "ends")
+        text, cut = bash_jobs._clip(self.path, 4096, "ends")
         self.assertTrue(cut)
         lines = text.splitlines()
         self.assertEqual(lines[0], "[    0] Building CXX object obj0.o")
@@ -471,7 +471,7 @@ class FinishedOutputClipTests(unittest.TestCase):
 
     def test_a_short_output_is_returned_whole(self) -> None:
         self._write(10)
-        text, cut = _bash_jobs._clip(self.path, 4096, "ends")
+        text, cut = bash_jobs._clip(self.path, 4096, "ends")
         self.assertFalse(cut)
         self.assertEqual(len(text.splitlines()), 10)
 
@@ -492,9 +492,9 @@ class RewatchHandleTests(unittest.TestCase):
         os.environ["MIMIR_STATE_DIR"] = self._tmp
 
     def tearDown(self) -> None:
-        for payload in _bash_jobs.listing():
+        for payload in bash_jobs.listing():
             if payload["state"] == "running":
-                _bash_jobs.stop(payload["job_key"])
+                bash_jobs.stop(payload["job_key"])
         if self._orig_state is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
@@ -601,7 +601,7 @@ class AdoptingARunningProcessTests(unittest.TestCase):
         self.assertEqual(handle["job_key"], res["job_key"])
         self.assertNotIn("background_job", res)
         # And the state the watcher polls, through the ordinary seam.
-        self.assertEqual(_bash_jobs.state(res["job_key"])["state"], "running")
+        self.assertEqual(bash_jobs.state(res["job_key"])["state"], "running")
         # What was adopted, not what will happen next: a resume is the client's to
         # promise, and only once it is holding a watcher.
         self.assertNotIn("resumed", res["headline"])
@@ -610,7 +610,7 @@ class AdoptingARunningProcessTests(unittest.TestCase):
     def test_what_it_is_is_kept_as_the_command(self) -> None:
         proc = self._sleeper()
         res = server_bash.bash_watch(pid=proc.pid, what="the overnight solver")
-        self.assertEqual(_bash_jobs.state(res["job_key"])["command"],
+        self.assertEqual(bash_jobs.state(res["job_key"])["command"],
                          "the overnight solver")
 
     def test_the_end_of_an_adopted_run_is_unknown_and_says_why(self) -> None:
@@ -658,7 +658,7 @@ class AdoptingARunningProcessTests(unittest.TestCase):
         proc = self._sleeper()
         target = os.path.join(self._tmp, "solver.log")
         res = server_bash.bash_watch(pid=proc.pid, log=target)
-        payload = _bash_jobs.output(res["job_key"], 4096)
+        payload = bash_jobs.output(res["job_key"], 4096)
         self.assertIn(target, payload.get("note", ""))
 
 

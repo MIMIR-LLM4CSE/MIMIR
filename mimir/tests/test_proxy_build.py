@@ -39,7 +39,7 @@ class SpecTests(_TmpStorageTest):
         self.assertIsNone(build.spec({"build_cmd": "   "}))
         rec = build.run_build({}, self.root, proxy="tiny")
         self.assertEqual(rec["status"], "skipped")
-        self.assertFalse(os.path.exists(procs._build_log_path(self.root)))
+        self.assertFalse(os.path.exists(procs.build_log_path(self.root)))
         self.assertFalse(os.path.exists(build.report_path(self.root)))
 
     def test_defaults_are_filled_and_the_timeout_is_bounded(self) -> None:
@@ -89,7 +89,7 @@ class BuildCwdSpellingTests(_TmpStorageTest):
                               self.root, proxy="tiny")
         self.assertEqual(rec["status"], "ok")
         self.assertEqual(rec["cwd"], link)
-        log = open(procs._build_log_path(self.root)).read()
+        log = open(procs.build_log_path(self.root)).read()
         self.assertIn(f"at={link}", log)
         self.assertNotIn(f"at={real}", log)
 
@@ -113,7 +113,7 @@ class BuildEnvTests(_TmpStorageTest):
             {"build_cmd": sh, "build_env": {"CC": "my-special-gcc"}},
             self.root, proxy="tiny")
         self.assertEqual(rec["status"], "ok")
-        self.assertIn("CC=my-special-gcc", open(procs._build_log_path(self.root)).read())
+        self.assertIn("CC=my-special-gcc", open(procs.build_log_path(self.root)).read())
         self.assertEqual(rec["env_declared"], {"CC": "my-special-gcc"})
 
     def test_nothing_pinned_means_the_process_is_launched_as_before(self) -> None:
@@ -127,7 +127,7 @@ class BuildEnvTests(_TmpStorageTest):
         sh = _script(os.path.join(self.root, "b.sh"), "true\n")
         build.run_build({"build_cmd": sh, "build_env": {"PATH": "/nonexistent"}},
                         self.root, proxy="tiny")
-        log = open(procs._build_log_path(self.root)).read()
+        log = open(procs.build_log_path(self.root)).read()
         self.assertIn("ccache: not on PATH", log)
 
     def test_a_malformed_variable_name_is_refused_at_registration(self) -> None:
@@ -177,7 +177,7 @@ class RunBuildTests(_TmpStorageTest):
         self.assertEqual(rec["status"], "failed")
         self.assertEqual(rec["returncode"], 3)
         self.assertIsInstance(rec["duration_s"], float)
-        log = open(procs._build_log_path(self.root)).read()
+        log = open(procs.build_log_path(self.root)).read()
         self.assertIn("out", log)
         self.assertIn("err", log)
 
@@ -304,19 +304,19 @@ class FailedBuildTests(_TmpStorageTest):
 
     def _session_with_failed_build(self) -> str:
         self._register("tiny")
-        store._save_opt_config({
+        store.save_opt_config({
             "proxy_name": "tiny", "benchmark_name": "suite",
             "proxy_source_path": self._make_exe("harness.py"),
             "optimize_paths": [self._tracked()],
             "requirements": [], "primary_metric": "time_s", "primary_goal": "min",
         }, "tiny")
-        run_dir = procs._new_run_dir(store._opt_session_runs_dir("tiny"), "failed")
+        run_dir = procs.new_run_dir(store.opt_session_runs_dir("tiny"), "failed")
         build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                       "returncode": 2, "duration_s": 4.0,
                                       "error": "build exited 2"}])
-        with open(procs._build_log_path(run_dir), "w") as fh:
+        with open(procs.build_log_path(run_dir), "w") as fh:
             fh.write("solver.cpp:12:5: error: expected ';'\n")
-        procs._update_opt_active_link("tiny", run_dir)
+        procs.update_opt_active_link("tiny", run_dir)
         return run_dir
 
     def test_results_reports_the_build_failure_with_its_log(self) -> None:
@@ -337,9 +337,9 @@ class FailedBuildTests(_TmpStorageTest):
     def test_a_failed_build_leaves_no_verdict_and_no_ledger(self) -> None:
         self._session_with_failed_build()
         server_proxy.proxy_eval_status(op="results", proxy_name="tiny")
-        self.assertIsNone(ratchet._load_best("tiny"))
-        self.assertFalse(os.path.exists(store._opt_ledger_file("tiny")))
-        cfg = store._load_opt_config("tiny")
+        self.assertIsNone(ratchet.load_best("tiny"))
+        self.assertFalse(os.path.exists(store.opt_ledger_file("tiny")))
+        cfg = store.load_opt_config("tiny")
         self.assertEqual(cfg.get("stall", 0), 0)
         self.assertFalse(cfg.get("baseline_run_id"))
 
@@ -547,7 +547,7 @@ class RunnerPhaseTests(_TmpStorageTest):
         exe = self._make_exe()
         reg = {"tiny": {"build_cmd": sh, "executable_path": exe}}
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
-        run_dir = procs._new_run_dir(store._opt_session_runs_dir("tiny"), "g")
+        run_dir = procs.new_run_dir(store.opt_session_runs_dir("tiny"), "g")
         with open(os.path.join(run_dir, "tree_at_launch.json"), "w") as fh:
             json.dump({"paths": [tracked],
                        "fingerprint": tree_snapshot.fingerprint(self.root, [tracked])},
@@ -600,8 +600,8 @@ class SplitPhaseTests(_TmpStorageTest):
         server_proxy.proxy_manage(
             op="suite_define", name="bench",
             cases=[{"case_id": "c0", "proxy_name": "tiny"}], confirm=True)
-        run_dir = procs._new_run_dir(store._opt_session_runs_dir("tiny"))
-        procs._write_run_config(run_dir, {
+        run_dir = procs.new_run_dir(store.opt_session_runs_dir("tiny"))
+        procs.write_run_config(run_dir, {
             "proxy_name": "tiny", "benchmark_name": "bench", "requirements": [],
         })
         return run_dir
@@ -667,7 +667,7 @@ class RunProgressTests(_TmpStorageTest):
             json.dump(fields, fh)
 
     def _write_build_log(self, text: str) -> None:
-        with open(procs._build_log_path(self.run_dir), "w") as fh:
+        with open(procs.build_log_path(self.run_dir), "w") as fh:
             fh.write(text)
 
     # ── the build's own percentage ────────────────────────────────────────────
@@ -729,7 +729,7 @@ class RunProgressTests(_TmpStorageTest):
         # watcher all learn it at once.
         self._write_phase(kind="build", text="building tiny")
         self._write_build_log("[ 12%] a\n")
-        st = procs._run_state(self.run_dir)
+        st = procs.run_state(self.run_dir)
         self.assertEqual(st["phase"], "building tiny")
         self.assertEqual(st["percent"], 12.0)
         self.assertIn("state", st)

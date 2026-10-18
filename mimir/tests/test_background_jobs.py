@@ -247,8 +247,8 @@ class LiveRegistrySeamTests(unittest.TestCase):
     def setUp(self) -> None:
         import shutil
         import tempfile
-        from mimir.tests.test_bash_background import server_bash, _bash_jobs
-        self.server_bash, self._bash_jobs = server_bash, _bash_jobs
+        from mimir.tests.test_bash_background import server_bash, bash_jobs
+        self.server_bash, self.bash_jobs = server_bash, bash_jobs
         # Jobs live under the session's state dir now, so pointing the state dir at a
         # temp tree is what sandboxes them (state_paths.session_state_dir).
         self._tmp = tempfile.mkdtemp(prefix="mimir-seam-state-")
@@ -275,7 +275,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
 
         result = self.server_bash.bash_run("sleep 5", background=True)
         job_key = result["background_job"]["job_key"]
-        self.addCleanup(self._bash_jobs.stop, job_key)
+        self.addCleanup(self.bash_jobs.stop, job_key)
 
         registered: list[dict] = []
         agent = fake_agent(
@@ -374,7 +374,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
         # the client's to say — a server that guarantees it produces a model that ends
         # its turn on a promise nobody is holding.
         result = self.server_bash.bash_run("sleep 5", background=True)
-        self.addCleanup(self._bash_jobs.stop, result["background_job"]["job_key"])
+        self.addCleanup(self.bash_jobs.stop, result["background_job"]["job_key"])
         note = result.get("note", "")
         self.assertNotIn("resumed", note)
         self.assertIn("background", note)
@@ -1060,7 +1060,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         from unittest import mock
         from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
-        with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4242, None)):
+        with mock.patch.object(slurm_ops, "submit_sbatch", return_value=(4242, None)):
             res = server_proxy.proxy_slurm(op="eval", partition="cpu",
                                            proxy_name="fast", background=True,
                                            confirm=True)
@@ -1083,7 +1083,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         from unittest import mock
         from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
-        with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4243, None)):
+        with mock.patch.object(slurm_ops, "submit_sbatch", return_value=(4243, None)):
             res = server_proxy.proxy_slurm(op="eval", partition="cpu",
                                            proxy_name="fast", confirm=True)
         self.assertEqual(res.get("status"), "ok")
@@ -1100,7 +1100,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         from unittest import mock
         from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
-        with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4244, None)):
+        with mock.patch.object(slurm_ops, "submit_sbatch", return_value=(4244, None)):
             res = server_proxy.proxy_slurm(op="run", partition="cpu",
                                            proxy_name="fast", confirm=True)
         self.assertEqual(res.get("status"), "ok")

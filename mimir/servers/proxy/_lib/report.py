@@ -52,7 +52,7 @@ def _compute_roofline(metrics: dict, peak_gf: float, peak_bw: float) -> dict:
     }
 
 
-def _row_with_extra(
+def row_with_extra(
     metrics: dict,
     comparison: dict,
     extra_metrics: list[str],
@@ -78,7 +78,7 @@ def _row_with_extra(
 
 # ── run diffs ─────────────────────────────────────────────────────────────────
 
-def _diff_run_pair(all_runs: list[str], run_a: str, run_b: str, resolve):
+def diff_run_pair(all_runs: list[str], run_a: str, run_b: str, resolve):
     """Diff two runs picked from a newest-first list; returns (payload, error).
 
     ``resolve(run_id, default_idx)`` maps a caller-supplied id (possibly empty)
@@ -99,10 +99,10 @@ def _diff_run_dirs(dir_a: str, dir_b: str) -> dict:
     Numeric metrics get ``{a, b, delta, pct_change}``; non-numeric metrics get
     ``{a, b}`` only when they differ.  Config values are compared verbatim.
     """
-    cfg_a = store._read_json(os.path.join(dir_a, "config.json"), {})
-    cfg_b = store._read_json(os.path.join(dir_b, "config.json"), {})
-    met_a = store._read_json(os.path.join(dir_a, "metrics.json"), {})
-    met_b = store._read_json(os.path.join(dir_b, "metrics.json"), {})
+    cfg_a = store.read_json(os.path.join(dir_a, "config.json"), {})
+    cfg_b = store.read_json(os.path.join(dir_b, "config.json"), {})
+    met_a = store.read_json(os.path.join(dir_a, "metrics.json"), {})
+    met_b = store.read_json(os.path.join(dir_b, "metrics.json"), {})
 
     config_diff: dict = {}
     for k in sorted(set(cfg_a) | set(cfg_b)):
@@ -134,14 +134,14 @@ def parse_runner_log(content: str) -> tuple[list[dict], dict]:
     ``[proxy_runner] summary ...`` at the end. Parsing them is not an op's job, and
     doing it inside one hid the fact that the log IS the interface.
     """
-    from .metrics import _coerce
+    from .metrics import coerce
 
     def _pairs(tokens: list[str]) -> dict:
         row: dict = {}
         for part in tokens:
             if "=" in part:
                 key, _, value = part.partition("=")
-                row[key] = _coerce(value)
+                row[key] = coerce(value)
         return row
 
     cases: list[dict] = []

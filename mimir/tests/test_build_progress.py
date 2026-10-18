@@ -18,7 +18,7 @@ SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
 from mimir.servers._shared import build_progress
 from mimir.servers._shared import run_channel
-from mimir.servers.workspace import _bash_jobs
+from mimir.servers.workspace import bash_jobs
 from mimir.servers.workspace import server_bash
 
 
@@ -155,9 +155,9 @@ class _JobsSandbox(unittest.TestCase):
         os.environ["MIMIR_STATE_DIR"] = self._state
 
     def tearDown(self) -> None:
-        for payload in _bash_jobs.listing():
+        for payload in bash_jobs.listing():
             if payload["state"] == "running":
-                _bash_jobs.stop(payload["job_key"])
+                bash_jobs.stop(payload["job_key"])
         if self._orig_state is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
@@ -223,10 +223,10 @@ class BackgroundTests(_JobsSandbox):
             "cd . && echo '[3/12] Building a.o' && sleep 3", background=True)
         job_key = result["job_key"]
         deadline = time.time() + 5
-        payload = _bash_jobs.state(job_key)
+        payload = bash_jobs.state(job_key)
         while "percent" not in payload and time.time() < deadline:
             time.sleep(0.05)
-            payload = _bash_jobs.state(job_key)
+            payload = bash_jobs.state(job_key)
         self.assertEqual(payload["state"], "running")
         self.assertEqual(payload["percent"], 25.0)
         self.assertEqual(payload["phase"], "[3/12] Building a.o")
@@ -246,34 +246,34 @@ class BackgroundTests(_JobsSandbox):
         os.chmod(fake, 0o755)
         env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ["PATH"])
 
-        job = _bash_jobs.launch("make -j8 2>&1 | tail -2", cwd=self._tmp, env=env)
+        job = bash_jobs.launch("make -j8 2>&1 | tail -2", cwd=self._tmp, env=env)
         job_key = job["job_key"]
         try:
             seen: list[float] = []
             deadline = time.time() + 10
             while job["proc"].poll() is None and time.time() < deadline:
-                found = build_progress.from_file(_bash_jobs.progress_path(job_key))
+                found = build_progress.from_file(bash_jobs.progress_path(job_key))
                 if found and (not seen or seen[-1] != found[0]):
                     seen.append(found[0])
                     # While `tail` holds the pipeline's output, the job's own log is
                     # empty — the copy is the only place the count can be read.
                     if found[0] < 100:
-                        self.assertEqual(open(_bash_jobs.log_path(job_key)).read(), "")
+                        self.assertEqual(open(bash_jobs.log_path(job_key)).read(), "")
                 time.sleep(0.1)
             self.assertEqual(job["proc"].wait(), 0)
             self.assertIn(10.0, seen)
             self.assertIn(70.0, seen)
             # The caller still gets what it asked for, filtered and nothing more.
             self.assertEqual(
-                open(_bash_jobs.log_path(job_key)).read(),
+                open(bash_jobs.log_path(job_key)).read(),
                 "[ 70%] Building CXX object x70.o\n[ 100%] Building CXX object x100.o\n")
         finally:
-            _bash_jobs.discard(job_key)
+            bash_jobs.discard(job_key)
 
     def test_a_job_without_a_count_carries_neither_field(self) -> None:
         result = server_bash.bash_run("echo hello; sleep 2", background=True)
         time.sleep(0.3)
-        payload = _bash_jobs.state(result["job_key"])
+        payload = bash_jobs.state(result["job_key"])
         self.assertEqual(payload["state"], "running")
         self.assertNotIn("percent", payload)
         self.assertNotIn("phase", payload)

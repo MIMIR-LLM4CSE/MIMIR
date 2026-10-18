@@ -807,7 +807,7 @@ Tools:
   an allocation). It never makes the run green — it stays reported as not completed — it only
   stops it being charged as a defect. Unclaimed, a red exit drives the repair ladder as before.
 
-### Detached runs (`_bash_jobs.py`)
+### Detached runs (`bash_jobs.py`)
 
 `bash_run` blocks its turn and is capped at 120 s — the right shape for a search, a
 test suite or a short build, and the wrong one for a dependency tree that takes two
@@ -833,7 +833,7 @@ pipeline's own output, so `make | tail -40` leaves it empty for the whole build 
 count can be read from it. When the command pipes a build tool into anything,
 `build_progress.tee_command` splices a `tee` in ahead of the filter, writing a second
 copy to `progress.log` in the job directory, and every progress read looks there
-(`_bash_jobs.progress_path`). The filter stays, so the output and the exit status are
+(`bash_jobs.progress_path`). The filter stays, so the output and the exit status are
 what the caller asked for; `meta.json` records the rewritten command as
 `effective_command` beside the one that was approved. Deciding this needs the pipeline's
 shape, which is why `ParsedSegment` carries the separator that follows it — without it
@@ -1328,7 +1328,7 @@ Tools:
     (`register_background_job` / `watched_background_jobs`) goes on the agent the
     WebSocket worker owns, and a child's agent is built here, so it gets its own; polled
     in-turn instead, a child would sit on a step until a build finished rather than
-    prepare the next one. `_child_jobs.ChildWatcher` is the watcher, on
+    prepare the next one. `child_jobs.ChildWatcher` is the watcher, on
     the loop `asyncio.run` creates for the child's thread — the only window in which
     `get_running_loop()` can hold one. The resume is a **steer**, not an event: a child
     has no `out_q` and no event bus, and no turn loop to submit to, so a finished run

@@ -2,10 +2,10 @@
 
 The three entry points every launch path funnels through:
 
-* ``_run_benchmark_case`` — one synchronous case run (suite runs + the
+* ``run_benchmark_case`` — one synchronous case run (suite runs + the
   optimization runner), applying the reserved-metrics purge, the ``time_s``
   plausibility guard, and the non-zero-exit gate.
-* ``_seal_reference``    — blocking run whose output becomes an immutable
+* ``seal_reference``    — blocking run whose output becomes an immutable
   reference dataset.
 * ``_post_run_finalize`` — settles a *detached* run (local wrapper or Slurm
   postrun.py) into metrics.json.
@@ -30,8 +30,8 @@ from ..._shared import proc_run
 
 from . import command, metrics as metrics_mod, procs, report, store
 
-_DEFAULT_MAX_OUTPUT_MB = 512
-_REF_RUN_TIMEOUT       = 3600         # seconds
+DEFAULT_MAX_OUTPUT_MB = 512
+REF_RUN_TIMEOUT       = 3600         # seconds
 
 
 # ── shared metrics settling ───────────────────────────────────────────────────
@@ -42,12 +42,12 @@ def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None) -
     Every launch path funnels through here so a forged reserved metric or an
     implausible self-reported time_s is caught identically everywhere.
     """
-    run_metrics = metrics_mod._parse_metrics_block(stdout)
-    forged = metrics_mod._strip_reserved_metrics(run_metrics)
+    run_metrics = metrics_mod.parse_metrics_block(stdout)
+    forged = metrics_mod.strip_reserved_metrics(run_metrics)
     if forged:
         run_metrics["reserved_metrics_ignored"] = forged
     if wall_s is not None:
-        metrics_mod._normalize_time_metrics(run_metrics, wall_s)
+        metrics_mod.normalize_time_metrics(run_metrics, wall_s)
     if returncode is not None:
         run_metrics["returncode"] = returncode
     return run_metrics
@@ -88,14 +88,14 @@ def _apply_invariants(
     """
     comparison: dict = {}
     if reference_name:
-        comparison = _compare_to_reference(run_out, reference_name, output_format)
+        comparison = compare_with_reference(run_out, reference_name, output_format)
         run_metrics["comparison_to_reference"] = {"reference": reference_name, **comparison}
         for k in ("l2_abs", "l2_rel", "linf_abs", "linf_rel"):
             if isinstance(comparison.get(k), (int, float)):
                 run_metrics[k] = comparison[k]
 
     if reference_name:
-        sealed = (store._read_json(os.path.join(store._ref_dir(reference_name),
+        sealed = (store.read_json(os.path.join(store.reference_dir(reference_name),
                                                 "config.json"), {}) or {}
                   ).get("executable_fingerprint") or {}
         current = _binary_fingerprint(entry.get("executable_path", ""))
@@ -107,40 +107,40 @@ def _apply_invariants(
                 "from; the comparison holds only if the reference is still valid "
                 "for this build")
 
-    field = metrics_mod._load_field(run_out, output_format)
+    field = metrics_mod.load_field(run_out, output_format)
     if field is not None:
-        run_metrics["finite"] = 1 if metrics_mod._finite_check(field) else 0
+        run_metrics["finite"] = 1 if metrics_mod.finite_check(field) else 0
     conserved_key = entry.get("conserved_metric")
     if conserved_key and reference_name:
-        residual = metrics_mod._conservation_residual(
-            run_metrics, store._load_ref_metrics(reference_name) or {}, conserved_key)
+        residual = metrics_mod.conservation_discrepancy(
+            run_metrics, store.load_ref_metrics(reference_name) or {}, conserved_key)
         if residual is not None:
             run_metrics["conservation_residual"] = residual
     return comparison
 
 
-def _compare_to_reference(
+def compare_with_reference(
     run_output_path: str | None,
     reference_name: str,
     output_format: str,
 ) -> dict:
-    ref_output = store._ref_output_path(reference_name)
+    ref_output = store.ref_output_path(reference_name)
     if not ref_output:
         return {"error": f"Reference '{reference_name}' has no stored output field."}
     if not run_output_path or not os.path.isfile(run_output_path):
         return {"error": "Run did not produce an output_file — field comparison skipped."}
-    a = metrics_mod._load_field(ref_output, output_format)
-    b = metrics_mod._load_field(run_output_path, output_format)
+    a = metrics_mod.load_field(ref_output, output_format)
+    b = metrics_mod.load_field(run_output_path, output_format)
     if a is None:
         return {"error": f"Could not load reference field from {ref_output}."}
     if b is None:
         return {"error": f"Could not load run output field from {run_output_path}."}
-    return metrics_mod._field_norms(a, b)
+    return metrics_mod.field_norms(a, b)
 
 
 # ── synchronous case run (shared by suite runs and the optimization runner) ───
 
-def _run_benchmark_case(
+def run_benchmark_case(
     entry: dict,
     proxy_name: str,
     reference_name: str,
@@ -158,7 +158,7 @@ def _run_benchmark_case(
     when set (None = no per-case cap beyond the remaining budget).  On timeout
     or error the row contains an ``"error"`` key instead of metrics.
     """
-    srd = store._proxy_runs_dir(proxy_name)
+    srd = store.proxy_runs_dir(proxy_name)
     os.makedirs(srd, exist_ok=True)
     tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + (f"_{tag_suffix}" if tag_suffix else "")
     run_dir = os.path.join(srd, tag)
@@ -172,19 +172,19 @@ def _run_benchmark_case(
         "compare_to_reference": reference_name,
         "started_at":           datetime.now(timezone.utc).isoformat(),
     }
-    procs._write_run_config(run_dir, config)
+    procs.write_run_config(run_dir, config)
 
     _remaining = deadline - time.monotonic()
     if _remaining <= 0:
         return run_dir, {"error": "aggregate timeout"}
 
     try:
-        argv = command._build_run_cmd(entry, run_dir, extra_params, param_overrides)
+        argv = command.build_run_cmd(entry, run_dir, extra_params, param_overrides)
     except Exception as exc:
         return run_dir, {"error": f"cmd build failed: {exc}"}
 
     cap = _remaining if per_case_timeout_s is None else min(float(per_case_timeout_s), _remaining)
-    log_file = procs._log_path(run_dir)
+    log_file = procs.run_log_path(run_dir)
     t0 = time.time()
     try:
         with open(log_file, "w") as log_fh:
@@ -202,18 +202,18 @@ def _run_benchmark_case(
 
     elapsed = round(time.time() - t0, 2)
     # A solver that exits non-zero fails the case even if it printed a metrics
-    # block first (same rule as _seal_reference).  No metrics.json is written,
+    # block first (same rule as seal_reference).  No metrics.json is written,
     # so the run dir reads as 'crashed' — which is what happened.
     if proc.returncode != 0:
         return run_dir, {"error": f"solver exited with code {proc.returncode}",
                          "returncode": proc.returncode}
 
-    stdout = procs._read_log(run_dir)
+    stdout = procs.read_log(run_dir)
 
     run_metrics = _settle_metrics(stdout, elapsed, proc.returncode)
 
     proxy_out_key = run_metrics.pop("output_file", None)
-    ext = command._output_ext(entry.get("output_format", "npz"))
+    ext = command.output_ext(entry.get("output_format", "npz"))
     run_out = os.path.join(run_dir, f"output.{ext}")
     if proxy_out_key and os.path.isfile(str(proxy_out_key)):
         try:
@@ -227,22 +227,22 @@ def _run_benchmark_case(
 
     with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
         json.dump(run_metrics, fh, indent=2)
-    procs._update_active_link(proxy_name, run_dir)
+    procs.update_active_link(proxy_name, run_dir)
 
-    row = report._row_with_extra(run_metrics, comparison, extra_metrics, entry, run_dir)
+    row = report.row_with_extra(run_metrics, comparison, extra_metrics, entry, run_dir)
     return run_dir, row
 
 
 # ── reference sealing ─────────────────────────────────────────────────────────
 
-def _seal_reference(
+def seal_reference(
     entry: dict,
     reference_name: str,
     *,
     extra_params: str = "",
     param_overrides: dict | None = None,
-    max_output_mb: int = _DEFAULT_MAX_OUTPUT_MB,
-    timeout_s: int = _REF_RUN_TIMEOUT,
+    max_output_mb: int = DEFAULT_MAX_OUTPUT_MB,
+    timeout_s: int = REF_RUN_TIMEOUT,
 ) -> tuple[dict, dict | None]:
     """Run a proxy synchronously and store its output as an immutable reference.
 
@@ -257,15 +257,15 @@ def _seal_reference(
     ``proxy_exec(op='reference')`` and ``proxy_exec(op='benchmark_create')``.
     """
     proxy_name = entry.get("name", "")
-    timeout_s = max(10, min(timeout_s, _REF_RUN_TIMEOUT))
+    timeout_s = max(10, min(timeout_s, REF_RUN_TIMEOUT))
     max_out_bytes = max_output_mb * 1024 * 1024
 
-    rd = store._ref_dir(reference_name)
+    rd = store.reference_dir(reference_name)
     os.makedirs(rd, exist_ok=True)
 
     os.makedirs(store.runs_dir(), exist_ok=True)
     tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    tmp_run_dir = os.path.join(store._proxy_runs_dir(proxy_name), f"ref_{tag}")
+    tmp_run_dir = os.path.join(store.proxy_runs_dir(proxy_name), f"ref_{tag}")
     os.makedirs(tmp_run_dir, exist_ok=True)
 
     config = {
@@ -277,14 +277,14 @@ def _seal_reference(
         "executable_fingerprint": _binary_fingerprint(
             entry.get("executable_path", "")),
     }
-    procs._write_run_config(rd, config)
+    procs.write_run_config(rd, config)
 
     try:
-        argv = command._build_run_cmd(entry, tmp_run_dir, extra_params, param_overrides)
+        argv = command.build_run_cmd(entry, tmp_run_dir, extra_params, param_overrides)
     except Exception as exc:
         return {}, err(f"Failed to expand run_cmd_template: {exc}")
 
-    log_file = procs._log_path(tmp_run_dir)
+    log_file = procs.run_log_path(tmp_run_dir)
     t0 = time.time()
     try:
         with open(log_file, "w") as log_fh:
@@ -298,7 +298,7 @@ def _seal_reference(
         return {}, err(f"Failed to launch proxy: {exc}")
 
     elapsed = round(time.time() - t0, 2)
-    stdout = procs._read_log(tmp_run_dir)
+    stdout = procs.read_log(tmp_run_dir)
 
     if proc.returncode != 0:
         return {}, err(f"Solver exited with code {proc.returncode}.",
@@ -314,7 +314,7 @@ def _seal_reference(
     # which is gone by the time anyone reads these metrics.
     declared = str(ref_metrics.pop("output_file", "") or "")
     if output_format != "none":
-        ext = command._output_ext(output_format)
+        ext = command.output_ext(output_format)
         proxy_out = declared
         if not os.path.isfile(proxy_out):
             # The {output_file} path the solver was given: echoing it back in the
@@ -373,22 +373,22 @@ def _post_run_finalize(
     synchronous paths.
     """
     if returncode is None:
-        returncode = procs._read_int_file(os.path.join(run_dir, "returncode"))
+        returncode = procs.read_int_file(os.path.join(run_dir, "returncode"))
     if returncode is not None and returncode != 0:
         return
     if wall_s is None:
-        wall_ms = procs._read_int_file(os.path.join(run_dir, "wall_time_ms"))
+        wall_ms = procs.read_int_file(os.path.join(run_dir, "wall_time_ms"))
         if wall_ms is not None:
             wall_s = round(wall_ms / 1000.0, 3)
 
-    stdout = procs._read_log(run_dir)
+    stdout = procs.read_log(run_dir)
     run_metrics = _settle_metrics(stdout, wall_s, returncode)
 
     # The registry entry only carries conserved_metric here; a missing or
     # unreadable registry just means no conservation residual, not a failure.
-    reg, _ = store._load_registry_or_err()
+    reg, _ = store.load_registry_or_err()
     entry  = (reg or {}).get(proxy_name) or {}
-    run_out = os.path.join(run_dir, f"output.{command._output_ext(output_format)}")
+    run_out = os.path.join(run_dir, f"output.{command.output_ext(output_format)}")
     _apply_invariants(run_metrics, run_out, output_format, entry, compare_to_reference)
 
     mp = os.path.join(run_dir, "metrics.json")

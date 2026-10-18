@@ -24,7 +24,7 @@ class ExecJobTests(_TmpStorageTest):
         self.assertEqual(res.get("status"), "ok", res)
         self.assertEqual(res["reference_name"], "r1")
         self.assertTrue(exec_jobs.is_job_dir(res["job_dir"]))
-        self.assertTrue(os.path.isdir(store._ref_dir("r1")))
+        self.assertTrue(os.path.isdir(store.reference_dir("r1")))
 
     def test_background_detaches_with_a_watchable_handle(self) -> None:
         self._register()

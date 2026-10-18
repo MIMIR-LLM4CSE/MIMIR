@@ -72,7 +72,7 @@ _MAX_TIMEOUT_S = 6 * 3600.0
 # about a missing target, so they are refused up front with the remedy named.
 _SHELL_METACHARS = ("&&", "||", ";", "|", "<", ">", "`", "$(", "&")
 
-_SHELL_HINT = (
+SHELL_HINT = (
     "build_cmd is run as argv, not through a shell. Use 'make -C <dir> <target>', "
     "or put the sequence in a wrapper script and name the script here."
 )
@@ -142,13 +142,13 @@ def check_cmd(cmd: str) -> str | None:
         return None
     for meta in _SHELL_METACHARS:
         if meta in cmd:
-            return f"build_cmd contains the shell operator {meta!r}. {_SHELL_HINT}"
+            return f"build_cmd contains the shell operator {meta!r}. {SHELL_HINT}"
     try:
         argv = shlex.split(cmd)
     except ValueError as exc:
-        return f"build_cmd could not be parsed ({exc}). {_SHELL_HINT}"
+        return f"build_cmd could not be parsed ({exc}). {SHELL_HINT}"
     if not argv:
-        return f"build_cmd is empty after parsing. {_SHELL_HINT}"
+        return f"build_cmd is empty after parsing. {SHELL_HINT}"
     return None
 
 
@@ -243,7 +243,7 @@ def run_build(entry: dict, run_dir: str, proxy: str = "") -> dict:
         return _record(proxy, "invalid", cmd=sp["cmd"], error=bad_env, duration_s=0.0)
 
     argv = shlex.split(sp["cmd"])
-    log_path = procs._build_log_path(run_dir)
+    log_path = procs.build_log_path(run_dir)
     started = time.monotonic()
     # PWD, because the spelling is the whole point of keeping build_cwd unresolved and
     # it is the only channel that carries it. Popen chdir()s, and the child's getcwd()
@@ -335,7 +335,7 @@ def write_report(run_dir: str, records: list[dict]) -> dict:
 
 def read_report(run_dir: str) -> dict | None:
     """Read a run's build.json, or None when the run declared no build."""
-    data = store._read_json(report_path(run_dir))
+    data = store.read_json(report_path(run_dir))
     return data if isinstance(data, dict) else None
 
 

@@ -154,7 +154,7 @@ from .._shared.capabilities import (
 )
 from .._shared.responses import err, ok
 from .._shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
-from . import _bash_jobs
+from . import bash_jobs
 from .._shared import build_progress
 from .._shared import run_channel
 from .._shared.slurm_site import (
@@ -179,7 +179,7 @@ mcp = FastMCP(
 )
 
 _MAX_OUTPUT = 64 * 1024
-# The tail a progress read of a running job gets (see _bash_jobs.output).
+# The tail a progress read of a running job gets (see bash_jobs.output).
 _RUNNING_OUTPUT = 4 * 1024
 # A default that survives an ordinary build or test suite, and a ceiling past which a
 # run belongs to the background-job route rather than to a call that blocks the turn.
@@ -425,7 +425,7 @@ def _run(
                                    there is: an explicit human act, never the clock.
     """
     try:
-        launched = _bash_jobs.launch(
+        launched = bash_jobs.launch(
             command, cwd, _safe_env(cwd), preamble=preamble,
             output_targets=_output_targets(command),
             split_stderr=True, ephemeral=True,
@@ -449,17 +449,17 @@ def _run(
                 # proc.poll(), not the exit_code file: the trap that writes that file
                 # is replaced by any command installing its own EXIT trap, and a
                 # blocking run must report the status its command actually returned.
-                stdout, stderr, truncated = _bash_jobs.streams(job_key, _MAX_OUTPUT)
+                stdout, stderr, truncated = bash_jobs.streams(job_key, _MAX_OUTPUT)
                 payload = _finished_payload(command, cwd, proc.returncode,
                                             stdout, stderr, truncated, segments)
-                _bash_jobs.discard(job_key)
+                bash_jobs.discard(job_key)
                 return payload
 
             now = time.monotonic()
 
             if now >= deadline:
-                stopped = _bash_jobs.stop(job_key)
-                stdout, stderr, truncated = _bash_jobs.streams(
+                stopped = bash_jobs.stop(job_key)
+                stdout, stderr, truncated = bash_jobs.streams(
                     job_key, _MAX_OUTPUT, keep="tail")
                 payload = err(
                     f"Command timed out after {timeout}s and was stopped.",
@@ -476,7 +476,7 @@ def _run(
                 )
                 if truncated:
                     payload["truncated"] = True
-                _bash_jobs.discard(job_key)
+                bash_jobs.discard(job_key)
                 return payload
 
             if now >= next_progress_check:
@@ -486,7 +486,7 @@ def _run(
                 # count that disappears (the build ended, the next step began) is
                 # retracted rather than left standing.
                 progress = build_progress.from_file(
-                    _bash_jobs.progress_path(job_key))
+                    bash_jobs.progress_path(job_key))
                 if progress != last_progress:
                     last_progress = progress
                     percent, phase = progress if progress else (None, "")
@@ -495,9 +495,9 @@ def _run(
             if now >= next_divert_check:
                 next_divert_check = now + _DIVERT_POLL_S
                 if run_channel.requested(_DIVERT_CHANNEL, job_key):
-                    _bash_jobs.promote(job_key, "diverted")
-                    _bash_jobs._ABANDONED.append(proc)
-                    stdout, stderr, truncated = _bash_jobs.streams(
+                    bash_jobs.promote(job_key, "diverted")
+                    bash_jobs.ABANDONED.append(proc)
+                    stdout, stderr, truncated = bash_jobs.streams(
                         job_key, _MAX_OUTPUT, keep="tail")
                     payload = ok({
                         "cwd": cwd,
@@ -538,7 +538,7 @@ def _launch_background(command: str, cwd: str, preamble: str) -> dict:
     buffer.
     """
     try:
-        launched = _bash_jobs.launch(command, cwd, _safe_env(cwd), preamble=preamble,
+        launched = bash_jobs.launch(command, cwd, _safe_env(cwd), preamble=preamble,
                                      output_targets=_output_targets(command))
     except OSError as exc:
         return err(f"Could not start the background job: {exc}", cwd=cwd)
@@ -774,9 +774,9 @@ def bash_job(
     if op not in _JOB_OPS:
         return err(f"Unknown op '{op}'.", valid_ops=list(_JOB_OPS))
     if op == "list":
-        jobs = _bash_jobs.listing()
+        jobs = bash_jobs.listing()
         return ok(_with_live_descriptors({"jobs": jobs}, jobs))
-    if not _bash_jobs.valid_key(job_key):
+    if not bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.",
                    hint="Use op='list' to see the jobs this host knows about.")
     resolved = ""
@@ -785,9 +785,9 @@ def bash_job(
         if refusal is not None:
             return refusal
     if op == "status":
-        payload = _bash_jobs.state(job_key, resolved)
+        payload = bash_jobs.state(job_key, resolved)
         return _job_payload(_with_live_descriptors(payload, [payload], resolved))
-    payload = _bash_jobs.output(job_key, _MAX_OUTPUT,
+    payload = bash_jobs.output(job_key, _MAX_OUTPUT,
                                 running_max_bytes=_RUNNING_OUTPUT, run_dir=resolved)
     return _job_payload(_with_live_descriptors(payload, [payload], resolved))
 
@@ -819,7 +819,7 @@ def _resolve_run_dir(run_dir: str, job_key: str) -> tuple[str, dict | None]:
         return "", err("That run_dir is not a job directory.",
                        hint="A job directory sits under a 'jobs/' directory and is "
                             "named like the handle bash_run returned.")
-    if not _bash_jobs.valid_key(os.path.basename(resolved)):
+    if not bash_jobs.valid_key(os.path.basename(resolved)):
         return "", err("That run_dir is not named like a job.",
                        hint="Its last segment is the handle bash_run returned.")
     if job_key and os.path.basename(resolved) != job_key:
@@ -848,7 +848,7 @@ def _with_live_descriptors(payload: dict, jobs: list[dict], run_dir: str = "") -
     A status read is neither.
     """
     live = [_job_descriptor(j["job_key"],
-                            run_dir or _bash_jobs.job_dir(j["job_key"]))
+                            run_dir or bash_jobs.job_dir(j["job_key"]))
             for j in jobs
             if isinstance(j, dict) and j.get("state") == "running" and j.get("job_key")]
     if live:
@@ -891,9 +891,9 @@ def bash_job_stop(job_key: str) -> dict:
     Args:
         job_key: The handle bash_run returned.
     """
-    if not _bash_jobs.valid_key(job_key):
+    if not bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.")
-    return _job_payload(_bash_jobs.stop(job_key))
+    return _job_payload(bash_jobs.stop(job_key))
 
 
 @mcp.tool(**tool_caps(kind="job", label="Watch process {pid}"))
@@ -934,7 +934,7 @@ def bash_watch(pid: int, what: str = "", log: str = "") -> dict:
     # here would refuse the ordinary case — a job writing to the scratch filesystem,
     # which is outside every workspace by design.
     log = _normalize_path_arg(log, WORKSPACE_ROOT) or ""
-    handle = _bash_jobs.adopt(pid, what or f"adopted pid {pid}", WORKSPACE_ROOT, log)
+    handle = bash_jobs.adopt(pid, what or f"adopted pid {pid}", WORKSPACE_ROOT, log)
     if handle is None:
         return err(f"No process {pid} is running here.",
                    hint="Check the pid — a process that has already ended cannot be "

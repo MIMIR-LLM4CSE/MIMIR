@@ -22,7 +22,7 @@ from . import store
 
 # ── case selection ────────────────────────────────────────────────────────────
 
-def _select_best_case(
+def select_best_case(
     results: list[tuple[str, bool, float | None]],
 ) -> tuple[str | None, float | None]:
     """Pick the best case from ``(case_id, passed, time_s)`` triples.
@@ -42,7 +42,7 @@ def _select_best_case(
     middle said 2.8x.
 
     ``primary_value`` — what the ratchet actually compares — does not come from
-    here in any case; see ``_run_primary_value``, which averages across cases
+    here in any case; see ``run_primary_value``, which averages across cases
     rather than taking the best of them.
     """
     best_case: str | None = None
@@ -78,7 +78,7 @@ def _is_improvement(new, old, goal: str, min_improvement: float = 0.0) -> bool:
     return new > old + tol if goal == "max" else new < old - tol
 
 
-def _ratchet_verdict(feasible: bool, primary_value, best: dict | None,
+def ratchet_verdict(feasible: bool, primary_value, best: dict | None,
                      goal: str, min_improvement: float = 0.0) -> str | None:
     """Decide whether a completed run should be accepted or rejected.
 
@@ -96,7 +96,7 @@ def _ratchet_verdict(feasible: bool, primary_value, best: dict | None,
     return "accept" if _is_improvement(primary_value, best_val, goal, min_improvement) else "reject"
 
 
-def _run_primary_value(run_metrics: dict, primary_metric: str):
+def run_primary_value(run_metrics: dict, primary_metric: str):
     """Scalar objective of a completed run for the given *primary_metric*.
 
     Prefers a run-level metric of that name (e.g. ``best_time_s``,
@@ -116,12 +116,12 @@ def _run_primary_value(run_metrics: dict, primary_metric: str):
 
 # ── best-so-far persistence + ledger ──────────────────────────────────────────
 
-def _load_best(proxy_name: str) -> dict | None:
+def load_best(proxy_name: str) -> dict | None:
     """Return the best-so-far record, or ``None`` if none has been recorded yet."""
-    return store._read_json(store._opt_best_file(proxy_name))
+    return store.read_json(store.opt_best_file(proxy_name))
 
 
-def _save_best(proxy_name: str, run_id: str, primary_value: float | None,
+def save_best(proxy_name: str, run_id: str, primary_value: float | None,
                tree_snapshot_id: str, wall_value: float | None = None) -> str | None:
     """Record *run_id* as best-so-far, pointing at the tree snapshot that produced it.
 
@@ -144,15 +144,15 @@ def _save_best(proxy_name: str, run_id: str, primary_value: float | None,
         "updated_at":    datetime.now(timezone.utc).isoformat(),
     }
     try:
-        write_json(store._opt_best_file(proxy_name), record, indent=2)
+        write_json(store.opt_best_file(proxy_name), record, indent=2)
     except OSError:
         pass
     return snapped
 
 
-def _append_ledger(proxy_name: str, entry: dict) -> None:
+def append_ledger(proxy_name: str, entry: dict) -> None:
     """Append one JSON entry as a line to the session ledger (best-effort)."""
-    path = store._opt_ledger_file(proxy_name)
+    path = store.opt_ledger_file(proxy_name)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
         with open(path, "a") as fh:
@@ -166,7 +166,7 @@ def _append_ledger(proxy_name: str, entry: dict) -> None:
 # Metrics whose value moves between two runs of identical code. A timing metric on a
 # shared node is the whole reason this file needed a notion of noise; an accuracy metric
 # against a sealed reference is reproducible to the bit, and repeating it buys nothing.
-_NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per_s",
+NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per_s",
                   "bandwidth_gbytes_per_s")
 
 # Replicates per case when the primary metric is a noisy one and the caller expressed no
@@ -175,7 +175,7 @@ _NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per
 _AUTO_REPEAT = 3
 
 
-def _effective_repeat(cfg: dict) -> int:
+def effective_repeat(cfg: dict) -> int:
     """How many times to measure each case: what was asked, or what the metric needs.
 
     ``repeat=0`` means "decide for me", and the decision is made on the metric rather
@@ -186,10 +186,10 @@ def _effective_repeat(cfg: dict) -> int:
     asked = int(cfg.get("repeat", 0) or 0)
     if asked > 0:
         return asked
-    return _AUTO_REPEAT if cfg.get("primary_metric", "time_s") in _NOISY_METRICS else 1
+    return _AUTO_REPEAT if cfg.get("primary_metric", "time_s") in NOISY_METRICS else 1
 
 
-def _effective_min_improvement(cfg: dict) -> tuple[float, str]:
+def effective_min_improvement(cfg: dict) -> tuple[float, str]:
     """The margin a run must clear, and where that number came from.
 
     A caller-supplied constant annotated "guards timing noise" is an assertion about a

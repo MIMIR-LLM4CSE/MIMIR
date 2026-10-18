@@ -16,7 +16,7 @@ import shlex
 from . import procs
 from ..._shared.slurm_script import node_python_lines, sbatch_header
 
-_PARAM_EXT: dict[str, str] = {
+PARAM_EXT: dict[str, str] = {
     "text":              "txt",
     "json":              "json",
     "yaml":              "yaml",
@@ -26,7 +26,7 @@ _PARAM_EXT: dict[str, str] = {
 }
 
 
-def _output_ext(output_format: str) -> str:
+def output_ext(output_format: str) -> str:
     return "dat" if output_format == "raw_float64" else "npz"
 
 
@@ -79,7 +79,7 @@ def _render_param_file(
             )
     fixed_path = entry.get("param_file_path", "") or ""
     fmt = entry.get("param_file_format", "") or ""
-    ext = _PARAM_EXT.get(fmt.lower(), "txt")
+    ext = PARAM_EXT.get(fmt.lower(), "txt")
     dest = fixed_path if fixed_path else os.path.join(run_dir, f"params.{ext}")
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
     with open(dest, "w", encoding="utf-8") as fh:
@@ -97,7 +97,7 @@ def _expand_cmd_template(
 
     Single source of truth for the local and sbatch launch paths.
     """
-    output_file = os.path.join(run_dir, f"output.{_output_ext(entry.get('output_format', 'npz'))}")
+    output_file = os.path.join(run_dir, f"output.{output_ext(entry.get('output_format', 'npz'))}")
     param_file  = _render_param_file(entry, run_dir, output_file, param_overrides) or ""
     return _fill_template(entry.get("run_cmd_template", ""), {
         "executable":  shlex.quote(entry.get("executable_path", "")),
@@ -107,7 +107,7 @@ def _expand_cmd_template(
     }, param_overrides)
 
 
-def _build_run_cmd(
+def build_run_cmd(
     entry: dict,
     run_dir: str,
     extra_params: str,
@@ -118,7 +118,7 @@ def _build_run_cmd(
 
 # ── sbatch script building ────────────────────────────────────────────────────
 
-def _sbatch_header(
+def sbatch_header_lines(
     *,
     job_name: str,
     partition: str,
@@ -158,7 +158,7 @@ def _sbatch_header(
     )
 
 
-def _build_sbatch(
+def build_sbatch(
     entry: dict,
     run_dir: str,
     extra_params: str,
@@ -176,10 +176,10 @@ def _build_sbatch(
     target: dict | None = None,
     comment: str = "",
 ) -> str:
-    log_file = procs._log_path(run_dir)
+    log_file = procs.run_log_path(run_dir)
     cmd_str  = shlex.join(shlex.split(
         _expand_cmd_template(entry, run_dir, extra_params, param_overrides)))
-    lines = _sbatch_header(
+    lines = sbatch_header_lines(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
         comment=comment,

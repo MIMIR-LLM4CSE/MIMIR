@@ -6,17 +6,17 @@ import os
 import shutil
 from datetime import datetime, timezone
 
-from . import _check_name, _with_next, err, ok
+from . import check_name, with_next, err, ok
 from .._lib import build
-from .._lib.command import _PARAM_EXT
-from .._lib.procs import _run_state
+from .._lib.command import PARAM_EXT
+from .._lib.procs import run_state
 from .._lib import store
 from .._lib.store import (
-    _load_registry_or_err,
-    _save_registry,
-    _registry_lock,
-    _proxy_runs_dir,
-    _read_json,
+    load_registry_or_err,
+    save_registry,
+    registry_lock,
+    proxy_runs_dir,
+    read_json,
 )
 
 # Registration fields carried by the ``metadata`` dict parameter. Descriptive,
@@ -203,17 +203,17 @@ def _proxy_readme(entry: dict) -> str:
 # ── read-only ─────────────────────────────────────────────────────────────────
 
 def list_proxies() -> dict:
-    reg, _reg_err = _load_registry_or_err()
+    reg, _reg_err = load_registry_or_err()
     if _reg_err:
         return err(_reg_err)
     hint = (f"proxy_get(op='proxy', name='{next(iter(reg))}') to inspect one."
             if reg else "proxy_manage(op='register', ...) to register a proxy.")
-    return ok(_with_next({"proxies": list(reg.values()), "count": len(reg)}, hint))
+    return ok(with_next({"proxies": list(reg.values()), "count": len(reg)}, hint))
 
 
 def inspect_proxy(name: str) -> dict:
     """Full registration details + readme + last-5-runs summary."""
-    reg, _reg_err = _load_registry_or_err()
+    reg, _reg_err = load_registry_or_err()
     if _reg_err:
         return err(_reg_err)
     if name not in reg:
@@ -230,7 +230,7 @@ def inspect_proxy(name: str) -> dict:
     readme_text = _proxy_readme(reg[name])
 
     recent_runs: list[dict] = []
-    srd = _proxy_runs_dir(name)
+    srd = proxy_runs_dir(name)
     if os.path.isdir(srd):
         tags = sorted(
             [d for d in os.listdir(srd) if d != "active" and os.path.isdir(os.path.join(srd, d))],
@@ -238,17 +238,17 @@ def inspect_proxy(name: str) -> dict:
         )
         for tag in tags[:5]:
             run_dir = os.path.join(srd, tag)
-            rs = _run_state(run_dir)
+            rs = run_state(run_dir)
             row: dict = {"run_id": f"{name}/{tag}", "state": rs["state"],
                          "elapsed_s": rs["elapsed_s"]}
-            m = _read_json(os.path.join(run_dir, "metrics.json"))
+            m = read_json(os.path.join(run_dir, "metrics.json"))
             if isinstance(m, dict):
                 row["time_s"] = m.get("time_s")
                 row["misfit"] = m.get("misfit")
                 row["l2_rel"] = m.get("comparison_to_reference", {}).get("l2_rel")
             recent_runs.append(row)
 
-    return ok(_with_next(
+    return ok(with_next(
         {"proxy": entry, "readme": readme_text, "recent_runs": recent_runs},
         f"proxy_exec(op='run', proxy_name='{name}', confirm=True) to run it."))
 
@@ -266,16 +266,16 @@ def register(
     param_file_format: str = "text",
     metadata: dict | None = None,
 ) -> dict:
-    if bad := _check_name("name", name):
+    if bad := check_name("name", name):
         return bad
     if output_format not in ("npz", "raw_float64", "none"):
         return err(f"Invalid output_format '{output_format}'.",
                    hint="Use: npz, raw_float64, or none.")
     if not run_cmd_template.strip():
         return err("run_cmd_template is required.")
-    if param_file_format.lower() not in _PARAM_EXT:
+    if param_file_format.lower() not in PARAM_EXT:
         return err(f"Invalid param_file_format '{param_file_format}'.",
-                   hint="Use one of: " + ", ".join(_PARAM_EXT) + ".")
+                   hint="Use one of: " + ", ".join(PARAM_EXT) + ".")
     meta_err = _check_metadata(metadata)
     if meta_err:
         return err(meta_err)
@@ -294,8 +294,8 @@ def register(
     # creates <workspace>/proxy_bench/. Reads (proxy_get) and the other mutations take
     # the lock without create, so none of them leaves a directory behind on a project
     # that has no proxy registered.
-    with _registry_lock(create=True):
-        reg, _reg_err = _load_registry_or_err()
+    with registry_lock(create=True):
+        reg, _reg_err = load_registry_or_err()
         if _reg_err:
             return err(_reg_err)
         entry = {
@@ -312,7 +312,7 @@ def register(
             "registered_at":       datetime.now(timezone.utc).isoformat(),
         }
         reg[name] = entry
-        _save_registry(reg)
+        save_registry(reg)
     payload: dict = {"registered": entry}
     if not os.path.isfile(abs_exe):
         payload["executable_not_yet_built"] = abs_exe
@@ -320,7 +320,7 @@ def register(
             "The executable does not exist yet; the declared build_cmd is expected to "
             "produce it. Seal the reference after a build, not before: a reference is "
             "immutable, so one sealed from a stale or missing binary is wrong for good.")
-    return ok(_with_next(
+    return ok(with_next(
         payload,
         f"proxy_exec(op='reference', proxy_name='{name}', reference_name='"
         f"{name}_ref', confirm=True) to seal a reference for comparisons."))
@@ -340,8 +340,8 @@ def update(
     meta_err = _check_metadata(metadata)
     if meta_err:
         return err(meta_err)
-    with _registry_lock():
-        reg, _reg_err = _load_registry_or_err()
+    with registry_lock():
+        reg, _reg_err = load_registry_or_err()
         if _reg_err:
             return err(_reg_err)
         if name not in reg:
@@ -369,28 +369,28 @@ def update(
         if param_file_path != "":
             entry["param_file_path"] = param_file_path
         if param_file_format:
-            if param_file_format.lower() not in _PARAM_EXT:
+            if param_file_format.lower() not in PARAM_EXT:
                 return err(f"Invalid param_file_format '{param_file_format}'.")
             entry["param_file_format"] = param_file_format
         for key, value in (metadata or {}).items():
             entry[key] = value
         entry["updated_at"] = datetime.now(timezone.utc).isoformat()
         reg[name] = entry
-        _save_registry(reg)
-    return ok(_with_next({"updated": entry},
+        save_registry(reg)
+    return ok(with_next({"updated": entry},
                          f"proxy_get(op='proxy', name='{name}') to review the entry."))
 
 
 def unregister(name: str) -> dict:
-    with _registry_lock():
-        reg, _reg_err = _load_registry_or_err()
+    with registry_lock():
+        reg, _reg_err = load_registry_or_err()
         if _reg_err:
             return err(_reg_err)
         if name not in reg:
             return err(f"Proxy '{name}' not found in registry.")
         removed = reg.pop(name)
-        _save_registry(reg)
-    return ok(_with_next(
+        save_registry(reg)
+    return ok(with_next(
         {"unregistered": removed,
          "note": "Run history, optimisation state and snapshots for this proxy are "
                  "PRESERVED. proxy_manage(op='clean', name=..., confirm=True) removes "
@@ -475,8 +475,8 @@ def clean(name: str) -> dict:
                 except OSError:
                     pass
 
-    if store._resolve_proxy_name("") == name:
-        store._clear_active_session()
+    if store.resolve_proxy_name("") == name:
+        store.clear_active_session()
         removed.append("active-session pointer")
 
     for d, sink in ((store.refs_dir(), kept_refs), (store.suites_dir(), kept_suites)):
@@ -486,7 +486,7 @@ def clean(name: str) -> dict:
             pass
 
     still_registered = False
-    reg, _e = store._load_registry_or_err()
+    reg, _e = store.load_registry_or_err()
     if not _e:
         still_registered = name in (reg or {})
 
@@ -506,7 +506,7 @@ def clean(name: str) -> dict:
                     f"rollback. It goes when the last proxy with state is cleaned, or by "
                     f"hand from {store.cache_dir()}")
 
-    return ok(_with_next({
+    return ok(with_next({
         "cleaned":  name,
         "removed":  removed or ["nothing — no state was found"],
         "kept":     kept or ["nothing"],

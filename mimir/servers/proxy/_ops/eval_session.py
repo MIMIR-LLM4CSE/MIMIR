@@ -18,26 +18,26 @@ import time
 from datetime import datetime, timezone
 
 from ..._shared.launcher import launch_argv
-from . import _with_next, err, ok
+from . import with_next, err, ok
 from .._lib.procs import (
-    _log_path,
-    _read_log,
-    _run_state,
+    run_log_path,
+    read_log,
+    run_state,
     background_descriptor,
-    _new_run_dir,
-    _write_run_config,
-    _launch_detached,
-    _cancel_run,
-    _opt_active_run_dir,
-    _update_opt_active_link,
+    new_run_dir,
+    write_run_config,
+    launch_detached,
+    cancel_run,
+    opt_active_run_dir,
+    update_opt_active_link,
 )
-from .._lib.ratchet import _effective_repeat, _load_best
-from .._lib.report import _diff_run_pair, parse_runner_log
-from ._eval_ratchet import _ratchet_state
+from .._lib.ratchet import effective_repeat, load_best
+from .._lib.report import diff_run_pair, parse_runner_log
+from ._eval_ratchet import ratchet_state
 from ._eval_validate import (
-    _check_optimize_paths,
-    _check_reference_requirements,
-    _check_requirements,
+    check_optimize_paths,
+    check_reference_requirements,
+    check_requirements,
 )
 from ..._shared import build_progress
 from ..._shared import run_channel
@@ -47,19 +47,19 @@ from .._lib.store import (
     cache_dir,
     opt_git_dir,
     workspace_root,
-    _entry_or_err,
-    _load_registry,
-    _load_suite,
-    _load_opt_config,
-    _save_opt_config,
-    _opt_session_runs_dir,
-    _opt_ledger_file,
-    _opt_best_file,
-    _resolve_proxy_name,
-    _write_active_session,
-    _clear_active_session,
-    _read_json,
-    _run_dir_names,
+    entry_or_err,
+    load_registry,
+    load_suite,
+    load_opt_config,
+    save_opt_config,
+    opt_session_runs_dir,
+    opt_ledger_file,
+    opt_best_file,
+    resolve_proxy_name,
+    write_active_session,
+    clear_active_session,
+    read_json,
+    run_dir_names,
 )
 
 _OPT_RUNNER = "mimir.servers.proxy._proxy_runner"
@@ -68,7 +68,7 @@ _NEXT_RUN       = "proxy_eval(op='run', confirm=True)"
 _NEXT_STATUS    = "proxy_eval_status() to monitor (state 'done' means finished)"
 _NEXT_RESULTS   = "proxy_eval_status(op='results')"
 _NEXT_RESET_BEST = "proxy_eval(op='reset_to_best', confirm=True)"
-_NEXT_DETACHED  = ("this run continues without you; if the result says it is being "
+NEXT_DETACHED  = ("this run continues without you; if the result says it is being "
                    "watched, end your turn on it rather than polling — you are resumed "
                    "with the results")
 
@@ -88,7 +88,7 @@ _DIVERT_CHANNEL = "proxy_eval"
 # a larger value here means the client always cuts the call before the server detaches,
 # and the orderly hand-off to the watcher never happens. With a build ahead of the
 # measurement, that is the common case rather than a corner.
-_RUN_WAIT_BUDGET_S = 1100.0
+RUN_WAIT_BUDGET_S = 1100.0
 # Above this measured build time, a run is worth detaching rather than waiting out.
 # One minute: short enough to catch any real compiled project, long enough that a
 # scripted proxy with a trivial build never triggers it.
@@ -96,7 +96,7 @@ _LONG_BUILD_S = 60.0
 
 
 def _opt_tail_log(run_dir: str, n: int) -> list[str]:
-    lines = _read_log(run_dir).splitlines()
+    lines = read_log(run_dir).splitlines()
     return lines[-n:]
 
 
@@ -130,7 +130,7 @@ def _init_payload(*, proxy_name, benchmark_name, abs_src, abs_paths, baseline_id
     only place the loop's rules are stated to the caller — what to edit, what the
     first run has to be, and what an edit must beat.
     """
-    repeat = _effective_repeat(cfg)
+    repeat = effective_repeat(cfg)
     edited = ", ".join(os.path.basename(p) for p in abs_paths)
     payload = {
         "proxy_name":        proxy_name,
@@ -191,21 +191,21 @@ def init(
     convergence: dict | None = None,
     repeat: int = 0,
 ) -> dict:
-    entry, error = _entry_or_err(proxy_name)
+    entry, error = entry_or_err(proxy_name)
     if error:
         return error
 
-    suite = _load_suite(benchmark_name)
+    suite = load_suite(benchmark_name)
     if suite is None:
         return err(f"Benchmark suite '{benchmark_name}' not found.",
                    hint="Create one with proxy_exec(op='benchmark_create', ...) "
                         "or proxy_manage(op='suite_define', ...) first.")
 
-    req_err = _check_requirements(requirements)
+    req_err = check_requirements(requirements)
     if req_err:
         return err(req_err)
 
-    ref_err = _check_reference_requirements(requirements, suite, entry)
+    ref_err = check_reference_requirements(requirements, suite, entry)
     if ref_err:
         return err(ref_err)
 
@@ -222,7 +222,7 @@ def init(
     if not os.path.isfile(abs_src):
         return err(f"proxy_source_path not found: {abs_src}")
 
-    paths_err = _check_optimize_paths(list(optimize_paths or []), abs_src)
+    paths_err = check_optimize_paths(list(optimize_paths or []), abs_src)
     if paths_err:
         return err(paths_err)
     abs_paths = [os.path.abspath(p) for p in (optimize_paths or [])]
@@ -238,7 +238,7 @@ def init(
     # after which every comparison is against work already done, and the honest question
     # "is this faster than what we started with?" can no longer be asked.
     os.makedirs(cache_dir(), exist_ok=True)
-    prior = _load_opt_config(proxy_name) or {}
+    prior = load_opt_config(proxy_name) or {}
     baseline_existed = bool(prior.get("baseline_id"))
     if baseline_existed:
         baseline_id  = prior["baseline_id"]
@@ -263,7 +263,7 @@ def init(
         "proxy_source_path": abs_src,
         "optimize_paths":    abs_paths,
         "baseline_id":       baseline_id,
-        # Content hash of the untouched tree. _prepare_run refuses the first run if the
+        # Content hash of the untouched tree. prepare_run refuses the first run if the
         # files have already moved away from it, so the baseline is measured, not assumed.
         "baseline_fingerprint": baseline_fp,
         "baseline_run_id":   baseline_run,
@@ -282,10 +282,10 @@ def init(
         "branch":            _workspace_branch(),
         "initialized_at":    datetime.now(timezone.utc).isoformat(),
     }
-    _save_opt_config(cfg)
-    _write_active_session(proxy_name)
+    save_opt_config(cfg)
+    write_active_session(proxy_name)
 
-    return ok(_with_next(_init_payload(
+    return ok(with_next(_init_payload(
         proxy_name=proxy_name, benchmark_name=benchmark_name, abs_src=abs_src,
         abs_paths=abs_paths, baseline_id=baseline_id,
         baseline_existed=baseline_existed, requirements=requirements,
@@ -300,19 +300,19 @@ def configure(
     python_executable: str = "",
     max_hours: float = 0.0,
 ) -> dict:
-    cfg = _load_opt_config(proxy_name)
+    cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
                    hint="Call proxy_eval(op='init', ...) first.")
 
     if requirements is not None:
-        req_err = _check_requirements(requirements)
+        req_err = check_requirements(requirements)
         if req_err:
             return err(req_err)
         cfg["requirements"] = requirements
 
     if benchmark_name:
-        if _load_suite(benchmark_name) is None:
+        if load_suite(benchmark_name) is None:
             return err(f"Benchmark suite '{benchmark_name}' not found.")
         cfg["benchmark_name"] = benchmark_name
 
@@ -326,24 +326,24 @@ def configure(
 
     # Re-check reference-dependent requirements against the (possibly new)
     # suite and registration — same dead-end guard as init.
-    final_suite = _load_suite(cfg.get("benchmark_name", "")) or {}
-    entry, error = _entry_or_err(cfg.get("proxy_name", ""))
+    final_suite = load_suite(cfg.get("benchmark_name", "")) or {}
+    entry, error = entry_or_err(cfg.get("proxy_name", ""))
     if error:
         return error
-    ref_err = _check_reference_requirements(
+    ref_err = check_reference_requirements(
         cfg.get("requirements") or [], final_suite, entry)
     if ref_err:
         return err(ref_err)
 
     cfg["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _save_opt_config(cfg)
-    return ok(_with_next({"config": cfg}, _NEXT_RUN))
+    save_opt_config(cfg)
+    return ok(with_next({"config": cfg}, _NEXT_RUN))
 
 
 def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
     """Say when a run is resuming a session whose code moved on without it.
 
-    ``_prepare_run`` refuses a first run on an already-edited tree, but only while no
+    ``prepare_run`` refuses a first run on an already-edited tree, but only while no
     baseline run is on record; once one is, nothing checks again. That leaves a gap in
     the middle: coming back to a finished optimisation later measures against a best
     taken on code that is no longer there, and says nothing about it.
@@ -364,12 +364,12 @@ def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
     """
     if not paths or not cfg.get("baseline_run_id"):
         return ""
-    if _resolve_proxy_name("") == name:
+    if resolve_proxy_name("") == name:
         return ""  # a live session, not a resumption
-    last_run = _opt_active_run_dir(name)
+    last_run = opt_active_run_dir(name)
     if not last_run:
         return ""
-    measured = (_read_json(os.path.join(last_run, "tree_at_launch.json")) or {}).get(
+    measured = (read_json(os.path.join(last_run, "tree_at_launch.json")) or {}).get(
         "fingerprint", "")
     if not measured or measured == tree_snapshot.fingerprint(workspace_root(), paths):
         return ""
@@ -382,7 +382,7 @@ def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
     )
 
 
-def _prepare_run(
+def prepare_run(
     proxy_name: str,
     axis: str = "",
 ) -> tuple[dict, dict | None, str, str]:
@@ -394,9 +394,9 @@ def _prepare_run(
     (config.json + start_time already written). *notice* is a caller-facing warning about
     the run being launched (see :func:`_resume_notice`), empty when there is nothing to
     say. Returned rather than hung on *cfg*, which is persisted elsewhere by
-    ``_save_opt_config`` — a warning about one run has no business on disk.
+    ``save_opt_config`` — a warning about one run has no business on disk.
     """
-    cfg = _load_opt_config(proxy_name)
+    cfg = load_opt_config(proxy_name)
     if not cfg:
         return {}, err("No optimization session found.",
                          hint="Call proxy_eval(op='init', ...) first."), "", ""
@@ -407,9 +407,9 @@ def _prepare_run(
         return {}, err("proxy_name and benchmark_name must be set.",
                          hint="Call proxy_eval(op='init', ...) first."), "", ""
 
-    active = _opt_active_run_dir(name)
+    active = opt_active_run_dir(name)
     if active:
-        rs = _run_state(active)
+        rs = run_state(active)
         if rs["state"] in ("running", "pending"):
             pid = rs.get("pid")
             jid = rs.get("slurm_job_id")
@@ -435,8 +435,8 @@ def _prepare_run(
 
     notice = _resume_notice(cfg, name, paths)
 
-    run_dir = _new_run_dir(_opt_session_runs_dir(name))
-    _write_run_config(run_dir, {
+    run_dir = new_run_dir(opt_session_runs_dir(name))
+    write_run_config(run_dir, {
         "proxy_name":        name,
         "benchmark_name":    benchmark_name,
         "requirements":      cfg.get("requirements", []),
@@ -444,7 +444,7 @@ def _prepare_run(
         "deadline_s":        (cfg.get("max_hours") or 24.0) * 3600,
         "convergence":       cfg.get("convergence") or {},
         "primary_metric":    cfg.get("primary_metric", "time_s"),
-        "repeat":            _effective_repeat(cfg),
+        "repeat":            effective_repeat(cfg),
         # What this run is trying, in the caller's words. Recorded with the run rather
         # than derived at settle time: by then the edit is measured and nothing on disk
         # says what it was for. It is the only field of the ledger the machine cannot
@@ -472,7 +472,7 @@ def _prepare_run(
     return cfg, None, run_dir, notice
 
 
-def _background_descriptor(name: str, run_dir: str) -> dict:
+def eval_background_descriptor(name: str, run_dir: str) -> dict:
     """The watcher handle for an optimization run: it polls the session, not the run."""
     return background_descriptor(
         run_dir, kind="proxy-optimization",
@@ -493,17 +493,17 @@ def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
     number the run produced, which is what later lets the attempts be read as a set of
     ideas with outcomes rather than a column of timings.
     """
-    cfg, error, run_dir, resume_notice = _prepare_run(proxy_name, axis)
+    cfg, error, run_dir, resume_notice = prepare_run(proxy_name, axis)
     if error:
         return error
     name       = cfg["proxy_name"]
-    log_file   = _log_path(run_dir)
+    log_file   = run_log_path(run_dir)
     python_exe = cfg.get("python_executable") or sys.executable
 
-    pid = _launch_detached(
+    pid = launch_detached(
         [python_exe, *launch_argv(_OPT_RUNNER, "--run-dir", run_dir)], run_dir, log_file=log_file,
     )
-    _update_opt_active_link(name, run_dir)
+    update_opt_active_link(name, run_dir)
 
     payload = {
         "run_dir":        run_dir,
@@ -516,14 +516,14 @@ def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
     if resume_notice:
         payload["resume_notice"] = resume_notice
     if background:
-        payload["background_job"] = _background_descriptor(name, run_dir)
+        payload["background_job"] = eval_background_descriptor(name, run_dir)
         # States what was started; whether a watcher is on it is the client's to say.
         payload["note"] = "Optimization run detached; this call returns before it ends."
-        return ok(_with_next(payload, _NEXT_DETACHED))
-    return ok(_with_next(payload, _NEXT_STATUS))
+        return ok(with_next(payload, NEXT_DETACHED))
+    return ok(with_next(payload, _NEXT_STATUS))
 
 
-async def _await_terminal_state(
+async def await_terminal_state(
     run_dir: str, wait_s: float, channel: str = "", job_key: str = "",
     pid: int = 0, state_fn=None, label: str = "optimization run",
 ) -> tuple[str | None, str]:
@@ -555,9 +555,9 @@ async def _await_terminal_state(
                             run_dir, wait_s)
     try:
         while True:
-            # One read serves both the terminal test and the phase: `_run_state`
+            # One read serves both the terminal test and the phase: `run_state`
             # already folds in what the run says it is doing.
-            st = (state_fn or _run_state)(run_dir)
+            st = (state_fn or run_state)(run_dir)
             state = st["state"]
             if state in _TERMINAL_STATES:
                 return state, ""
@@ -581,7 +581,7 @@ async def _await_terminal_state(
 
 async def run_awaited(
     proxy_name: str = "", background: bool = False,
-    wait_s: float = _RUN_WAIT_BUDGET_S, axis: str = "",
+    wait_s: float = RUN_WAIT_BUDGET_S, axis: str = "",
 ) -> dict:
     """Launch an optimization run and wait for its verdict (the default for op='run').
 
@@ -602,7 +602,7 @@ async def run_awaited(
 
     run_dir = launched.get("run_dir", "")
     name    = launched.get("proxy_name", "")
-    state, reason = await _await_terminal_state(
+    state, reason = await await_terminal_state(
         run_dir, wait_s, _DIVERT_CHANNEL, os.path.basename(run_dir),
         launched.get("pid") or 0)
 
@@ -619,8 +619,8 @@ async def run_awaited(
             if reason == "diverted" else
             f"Still running after {int(wait_s)}s — handed to the background watcher."
         )
-        detached["background_job"] = _background_descriptor(name, run_dir)
-        return ok(_with_next(detached, _NEXT_DETACHED))
+        detached["background_job"] = eval_background_descriptor(name, run_dir)
+        return ok(with_next(detached, NEXT_DETACHED))
 
     settled = results(name)
     # Keep the launch identity on the answer: which run this was, and where its log
@@ -633,17 +633,17 @@ async def run_awaited(
 
 
 def stop(proxy_name: str = "") -> dict:
-    resolved = _resolve_proxy_name(proxy_name)
+    resolved = resolve_proxy_name(proxy_name)
     if not resolved:
         return err("No proxy name or active session.")
-    run_dir = _opt_active_run_dir(resolved)
+    run_dir = opt_active_run_dir(resolved)
     if not run_dir:
         return err("No active optimization run found.")
 
-    result = _cancel_run(run_dir)
+    result = cancel_run(run_dir)
     if "error" in result:
         return err(result["error"])
-    return ok(_with_next({"run_dir": run_dir, **result}, _NEXT_RUN + " to start a new run"))
+    return ok(with_next({"run_dir": run_dir, **result}, _NEXT_RUN + " to start a new run"))
 
 
 def _restored_payload(paths: list[str], rewritten: list[str]) -> dict:
@@ -669,7 +669,7 @@ def _rebuild_note(rewritten: list[str]) -> str:
 
 def reset(proxy_name: str = "") -> dict:
     """Restore every tracked file to the baseline tree taken at init."""
-    cfg = _load_opt_config(proxy_name)
+    cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
                    hint="Call proxy_eval(op='init', ...) first.")
@@ -686,7 +686,7 @@ def reset(proxy_name: str = "") -> dict:
         return err("Could not restore the baseline tree.",
                    hint="The snapshot store may be missing or unwritable.")
 
-    return ok(_with_next({
+    return ok(with_next({
         **_restored_payload(paths, rewritten),
         "from":      "baseline",
         "note": "Every tracked file is back to the baseline taken at init. "
@@ -702,12 +702,12 @@ def reset_to_best(proxy_name: str = "") -> dict:
     to the source of the best *accepted* run — the way to undo a regression without
     discarding the improvements found so far.
     """
-    cfg = _load_opt_config(proxy_name)
+    cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
                    hint="Call proxy_eval(op='init', ...) first.")
     name = cfg.get("proxy_name", "")
-    best = _load_best(name)
+    best = load_best(name)
     if not best:
         return err("No best-so-far recorded yet — no feasible run has been accepted.",
                    hint="Run at least once until requirements pass, or use "
@@ -730,7 +730,7 @@ def reset_to_best(proxy_name: str = "") -> dict:
         return err("Could not restore the best tree.",
                    hint="Use proxy_eval(op='reset', confirm=True) to restore the baseline.")
 
-    return ok(_with_next({
+    return ok(with_next({
         **_restored_payload(paths, rewritten),
         "from_best":    best.get("run_id"),
         "primary_value": best.get("primary_value"),
@@ -763,19 +763,19 @@ def rebaseline(proxy_name: str = "") -> dict:
     stands, and the reply says plainly that comparisons now run against this point and
     not against the original.
     """
-    cfg = _load_opt_config(proxy_name)
+    cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
                    hint="Call proxy_eval(op='init', ...) first.")
 
-    name = cfg.get("proxy_name", "") or _resolve_proxy_name(proxy_name) or ""
+    name = cfg.get("proxy_name", "") or resolve_proxy_name(proxy_name) or ""
     paths = [os.path.abspath(p) for p in (cfg.get("optimize_paths") or [])]
     if not paths:
         return err("optimize_paths not set in config.",
                    hint="Call proxy_eval(op='init', ...) again.")
 
-    active = _opt_active_run_dir(name)
-    if active and _run_state(active).get("state") in ("running", "pending"):
+    active = opt_active_run_dir(name)
+    if active and run_state(active).get("state") in ("running", "pending"):
         return err("A run is still active — stop it before re-baselining.",
                    hint="proxy_eval(op='stop', confirm=True), then retry.")
 
@@ -800,10 +800,10 @@ def rebaseline(proxy_name: str = "") -> dict:
     cfg["stall"] = 0
     cfg["rebaselined_at"] = datetime.now(timezone.utc).isoformat()
     cfg["previous_baseline_id"] = previous
-    _save_opt_config(cfg)
-    _write_active_session(name)
+    save_opt_config(cfg)
+    write_active_session(name)
 
-    return ok(_with_next({
+    return ok(with_next({
         "rebaselined":         name,
         "baseline_id":         baseline_id,
         "previous_baseline_id": previous,
@@ -822,7 +822,7 @@ def _archive_session_history(proxy_name: str, stamp: str) -> list[str]:
     all, and the reason to re-baseline is never "that history was wrong".
     """
     moved: list[str] = []
-    for path in (_opt_ledger_file(proxy_name), _opt_best_file(proxy_name)):
+    for path in (opt_ledger_file(proxy_name), opt_best_file(proxy_name)):
         if not os.path.isfile(path):
             continue
         base, ext = os.path.splitext(path)
@@ -844,19 +844,19 @@ def end(proxy_name: str = "") -> dict:
     guard lifts (the proxy may be run by hand again). Refuses while a run is still
     in flight so a live job is never orphaned. Re-``init`` to optimize again.
     """
-    cfg = _load_opt_config(proxy_name)
+    cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
                    hint="Nothing to end. Call proxy_eval(op='init', ...) to start one.")
-    name = cfg.get("proxy_name", "") or _resolve_proxy_name(proxy_name) or ""
+    name = cfg.get("proxy_name", "") or resolve_proxy_name(proxy_name) or ""
 
-    active = _opt_active_run_dir(name)
-    if active and _run_state(active).get("state") in ("running", "pending"):
+    active = opt_active_run_dir(name)
+    if active and run_state(active).get("state") in ("running", "pending"):
         return err("A run is still active — stop it before ending the session.",
                    hint="proxy_eval(op='stop', confirm=True), then proxy_eval(op='end', confirm=True).")
 
-    _clear_active_session()
-    return ok(_with_next({
+    clear_active_session()
+    return ok(with_next({
         "ended":  name,
         "note": "Optimization session ended; source/snapshots/ledger kept for history. "
                 "The proxy can be run directly again. Re-init to optimize further.",
@@ -882,7 +882,7 @@ def _read_ledger(proxy_name: str) -> list[dict]:
     """
     rows = []
     try:
-        with open(_opt_ledger_file(proxy_name), encoding="utf-8") as fh:
+        with open(opt_ledger_file(proxy_name), encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -907,14 +907,14 @@ def graph(proxy_name: str = "") -> dict:
     combined; whether they actually compose is a question only a run that combines them
     can answer, and this says so in ``note`` rather than scoring it.
     """
-    names = [proxy_name] if proxy_name else sorted(_load_registry().keys())
+    names = [proxy_name] if proxy_name else sorted(load_registry().keys())
     axes, nodes, edges = [], [], []
     for name in names:
-        cfg = _load_opt_config(name) or {}
+        cfg = load_opt_config(name) or {}
         ledger = _read_ledger(name)
         if not cfg and not ledger:
             continue
-        best = _load_best(name) or {}
+        best = load_best(name) or {}
         accepted = sum(1 for row in ledger if row.get("verdict") == "accept")
         axes.append({
             "proxy":           name,
@@ -989,7 +989,7 @@ def axes_tried(proxy_name: str = "") -> dict:
     context and breaks no run.
     """
     try:
-        rows = _read_ledger(_resolve_proxy_name(proxy_name) or "")
+        rows = _read_ledger(resolve_proxy_name(proxy_name) or "")
     except Exception:
         return {}
     if not rows:
@@ -1035,16 +1035,16 @@ def axes_tried(proxy_name: str = "") -> dict:
 # ── observe ops ───────────────────────────────────────────────────────────────
 
 def status(proxy_name: str = "") -> dict:
-    resolved = _resolve_proxy_name(proxy_name)
+    resolved = resolve_proxy_name(proxy_name)
     if not resolved:
-        return ok(_with_next(
+        return ok(with_next(
             {"state": "no_session", "note": "No proxy name or active session."},
             "proxy_eval(op='init', ...)"))
-    run_dir = _opt_active_run_dir(resolved)
+    run_dir = opt_active_run_dir(resolved)
     if not run_dir:
-        return ok(_with_next(
+        return ok(with_next(
             {"state": "no_runs", "note": "No optimization runs found."}, _NEXT_RUN))
-    rs         = _run_state(run_dir)
+    rs         = run_state(run_dir)
     last_lines = _opt_tail_log(run_dir, 3)
     next_step = {
         "running": "poll proxy_eval_status() again until state is 'done'",
@@ -1072,8 +1072,8 @@ def status(proxy_name: str = "") -> dict:
     # Plural, never ``background_job``: that key says *this call launched it*, and this
     # one only looked.
     if rs["state"] in ("running", "pending"):
-        payload["background_jobs"] = [_background_descriptor(resolved, run_dir)]
-    return ok(_with_next(payload, next_step))
+        payload["background_jobs"] = [eval_background_descriptor(resolved, run_dir)]
+    return ok(with_next(payload, next_step))
 
 
 def _recommend(r: dict, summary: dict, proxy_source: str) -> tuple[str, str]:
@@ -1136,18 +1136,18 @@ def _recommend(r: dict, summary: dict, proxy_source: str) -> tuple[str, str]:
 
 def results(proxy_name: str = "") -> dict:
     """Per-case benchmark results + requirements check, parsed from the run log."""
-    resolved = _resolve_proxy_name(proxy_name)
+    resolved = resolve_proxy_name(proxy_name)
     if not resolved:
         return err("No proxy name or active session.")
-    run_dir = _opt_active_run_dir(resolved)
+    run_dir = opt_active_run_dir(resolved)
     if not run_dir:
         return err("No optimization runs found.")
 
-    cases, summary = parse_runner_log(_read_log(run_dir))
+    cases, summary = parse_runner_log(read_log(run_dir))
 
-    final_metrics = _read_json(os.path.join(run_dir, "metrics.json"))
+    final_metrics = read_json(os.path.join(run_dir, "metrics.json"))
 
-    cfg          = _load_opt_config(proxy_name)
+    cfg          = load_opt_config(proxy_name)
     proxy_source = cfg.get("proxy_source_path", "")
     complete     = isinstance(final_metrics, dict) and "all_passed" in final_metrics
 
@@ -1156,11 +1156,11 @@ def results(proxy_name: str = "") -> dict:
     # and invites a wait for a run that is already over.
     bld = build.read_report(run_dir)
     if not complete and bld and bld.get("status") not in (None, "ok"):
-        log_path = procs._build_log_path(run_dir)
+        log_path = procs.build_log_path(run_dir)
         return err(
             build.failure_summary(bld) + " — no measurement was taken.",
             hint="Fix the build and run again; nothing was accepted or recorded. "
-                 + build._SHELL_HINT,
+                 + build.SHELL_HINT,
             run_dir=run_dir,
             state="crashed",
             build=bld,
@@ -1172,16 +1172,16 @@ def results(proxy_name: str = "") -> dict:
 
     if not complete:
         # Run has not produced a summary yet — still in progress.
-        return ok(_with_next({
+        return ok(with_next({
             "run_dir":        run_dir,
-            "state":          _run_state(run_dir)["state"],
+            "state":          run_state(run_dir)["state"],
             "cases":          cases,
             "summary":        summary,
             "final_metrics":  final_metrics,
             "recommendation": "No summary yet — the run may still be in progress.",
         }, "proxy_eval_status() to check the run state"))
 
-    r        = _ratchet_state(proxy_name, run_dir, final_metrics, cfg)
+    r        = ratchet_state(proxy_name, run_dir, final_metrics, cfg)
     verdict  = r["verdict"]
     best     = r.get("best")
     best_id  = best.get("run_id") if best else None
@@ -1201,10 +1201,10 @@ def results(proxy_name: str = "") -> dict:
 
     tried = axes_tried(proxy_name)
 
-    return ok(_with_next({
+    return ok(with_next({
         "run_dir":        run_dir,
         **({"build_s": build_s} if build_s else {}),
-        "state":          _run_state(run_dir)["state"],
+        "state":          run_state(run_dir)["state"],
         "cases":          cases,
         "summary":        summary,
         "final_metrics":  final_metrics,
@@ -1234,20 +1234,20 @@ def _long_build_note(build_s: float) -> str:
 
 def log(proxy_name: str = "", tail: int = 50) -> dict:
     tail = max(1, min(tail, 500))
-    resolved = _resolve_proxy_name(proxy_name)
+    resolved = resolve_proxy_name(proxy_name)
     if not resolved:
         return err("No proxy name or active session.")
-    run_dir = _opt_active_run_dir(resolved)
+    run_dir = opt_active_run_dir(resolved)
     if not run_dir:
         return err("No optimization runs found.")
 
-    if not os.path.isfile(_log_path(run_dir)):
+    if not os.path.isfile(run_log_path(run_dir)):
         return err("Log file not yet created — run may not have started writing output.")
-    content = _read_log(run_dir)
+    content = read_log(run_dir)
 
     all_lines = content.splitlines()
-    rs        = _run_state(run_dir)
-    return ok(_with_next({
+    rs        = run_state(run_dir)
+    return ok(with_next({
         "run_dir":     run_dir,
         "state":       rs["state"],
         "total_lines": len(all_lines),
@@ -1256,62 +1256,62 @@ def log(proxy_name: str = "", tail: int = 50) -> dict:
 
 
 def runs_list(proxy_name: str = "") -> dict:
-    resolved = _resolve_proxy_name(proxy_name)
+    resolved = resolve_proxy_name(proxy_name)
     if not resolved:
-        return ok(_with_next({"runs": [], "count": 0,
+        return ok(with_next({"runs": [], "count": 0,
                               "note": "No proxy name or active session."},
                              "proxy_eval(op='init', ...) to start a session."))
-    session_dir = _opt_session_runs_dir(resolved)
+    session_dir = opt_session_runs_dir(resolved)
     if not os.path.isdir(session_dir):
-        return ok(_with_next({"runs": [], "count": 0},
+        return ok(with_next({"runs": [], "count": 0},
                              "proxy_eval(op='run', confirm=True) to produce a first run."))
 
-    names = _run_dir_names(session_dir)
-    best        = _load_best(resolved)
+    names = run_dir_names(session_dir)
+    best        = load_best(resolved)
     best_run_id = best.get("run_id") if best else None
     runs: list[dict] = []
     for name in names:
         run_dir = os.path.join(session_dir, name)
-        rs      = _run_state(run_dir)
+        rs      = run_state(run_dir)
         entry: dict = {"run_id": name, "run_dir": run_dir,
                        "state": rs["state"], "elapsed_s": rs["elapsed_s"],
                        "is_best": name == best_run_id}
-        m = _read_json(os.path.join(run_dir, "metrics.json"))
+        m = read_json(os.path.join(run_dir, "metrics.json"))
         if isinstance(m, dict):
             for k in ("cases_passed", "cases_total", "all_passed",
                       "best_case", "best_time_s", "convergence_order"):
                 entry[k] = m.get(k)
         runs.append(entry)
-    return ok(_with_next(
+    return ok(with_next(
         {"runs": runs, "count": len(runs), "best_run_id": best_run_id},
         "proxy_eval(op='diff') to compare the last two runs."))
 
 
 def runs_diff(run_a: str = "", run_b: str = "", proxy_name: str = "") -> dict:
-    resolved = _resolve_proxy_name(proxy_name)
+    resolved = resolve_proxy_name(proxy_name)
     if not resolved:
         return err("No proxy name or active session.")
-    session_dir = _opt_session_runs_dir(resolved)
+    session_dir = opt_session_runs_dir(resolved)
     if not os.path.isdir(session_dir):
         return err("No optimization runs found.")
 
-    all_runs = _run_dir_names(session_dir)
+    all_runs = run_dir_names(session_dir)
 
     def _resolve(rid: str, default_idx: int) -> str:
         rid = rid or all_runs[default_idx]
         return rid if os.path.isabs(rid) else os.path.join(session_dir, rid)
 
-    payload, error = _diff_run_pair(all_runs, run_a, run_b, _resolve)
+    payload, error = diff_run_pair(all_runs, run_a, run_b, _resolve)
     if error:
         return err(error, hint="Run proxy_eval(op='run', confirm=True) more times first.")
-    return ok(_with_next(payload,
+    return ok(with_next(payload,
                          "proxy_eval(op='results') for the ratchet view across all runs."))
 
 
 def config_get(proxy_name: str = "") -> dict:
-    cfg = _load_opt_config(proxy_name)
+    cfg = load_opt_config(proxy_name)
     if not cfg:
-        return ok(_with_next({"config": None, "note": "No optimization session initialized."},
+        return ok(with_next({"config": None, "note": "No optimization session initialized."},
                              "proxy_eval(op='init', ...)"))
-    return ok(_with_next({"config": cfg},
+    return ok(with_next({"config": cfg},
                          "proxy_eval(op='configure', ...) to change it, or op='run' to use it."))

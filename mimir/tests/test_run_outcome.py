@@ -166,11 +166,11 @@ class MeasuredTierTests(unittest.TestCase):
         self.source = os.path.join(self._tmp.name, "solver.py")
         with open(self.source, "w") as fh:
             fh.write("x = 1\n")
-        os.makedirs(store._opt_session_runs_dir("p"), exist_ok=True)
+        os.makedirs(store.opt_session_runs_dir("p"), exist_ok=True)
         write_json(
-            store._opt_config_file("p"),
+            store.opt_config_file("p"),
             {"proxy_name": "p", "proxy_source_path": self.source})
-        store._write_active_session("p")
+        store.write_active_session("p")
         self.agent = _runner_agent()
         self.agent.tool_caps["bash_run"] = ToolCaps(
             "bash_run", frozenset({PLAN_READONLY, CODE_EXEC}),

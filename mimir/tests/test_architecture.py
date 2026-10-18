@@ -255,7 +255,7 @@ class JobPollingTests(unittest.TestCase):
     def test_every_watcher_polls_through_run_tool(self) -> None:
         from mimir.client.query_engine.jobs import background
         from mimir.client.ui.ws.worker.jobs import JobWatcher
-        from mimir.servers.agent_state._child_jobs import ChildWatcher
+        from mimir.servers.agent_state.child_jobs import ChildWatcher
         for probe in (background.await_background_job, JobWatcher._poll_to_completion,
                       ChildWatcher._watch):
             with self.subTest(probe=probe.__qualname__):

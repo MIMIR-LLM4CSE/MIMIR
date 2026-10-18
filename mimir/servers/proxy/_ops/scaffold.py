@@ -6,7 +6,7 @@ import ast
 import os
 import re
 
-from . import _with_next, err, ok
+from . import with_next, err, ok
 from .._lib.store import scaffolds_dir
 
 
@@ -127,7 +127,7 @@ def scaffold(
         f"7. proxy_exec(op='suite', suite_name='{found_name}_suite', confirm=True).",
     ]
 
-    return ok(_with_next({
+    return ok(with_next({
         "component":               found_name,
         "language":                lang,
         "source_signature":        found_signature,

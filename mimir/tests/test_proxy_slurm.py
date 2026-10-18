@@ -30,14 +30,14 @@ from mimir.servers._shared import slurm_site
 
 class ValidateSlurmArgsTests(unittest.TestCase):
     def test_valid_args_pass(self) -> None:
-        self.assertIsNone(procs._validate_slurm_args("gpu", 1, 8, "32G", "04:00:00"))
-        self.assertIsNone(procs._validate_slurm_args("cpu", 0, 1, "64000M", "1-12:00:00"))
+        self.assertIsNone(procs.validate_slurm_args("gpu", 1, 8, "32G", "04:00:00"))
+        self.assertIsNone(procs.validate_slurm_args("cpu", 0, 1, "64000M", "1-12:00:00"))
 
     def test_invalid_args_rejected(self) -> None:
-        self.assertIn("partition", procs._validate_slurm_args("", 0, 8, "32G", "04:00:00"))
-        self.assertIn("gpus", procs._validate_slurm_args("p", -1, 8, "32G", "04:00:00"))
-        self.assertIn("mem", procs._validate_slurm_args("p", 0, 8, "lots", "04:00:00"))
-        self.assertIn("wall_time", procs._validate_slurm_args("p", 0, 8, "32G", "4 hours"))
+        self.assertIn("partition", procs.validate_slurm_args("", 0, 8, "32G", "04:00:00"))
+        self.assertIn("gpus", procs.validate_slurm_args("p", -1, 8, "32G", "04:00:00"))
+        self.assertIn("mem", procs.validate_slurm_args("p", 0, 8, "lots", "04:00:00"))
+        self.assertIn("wall_time", procs.validate_slurm_args("p", 0, 8, "32G", "4 hours"))
 
 
 class ValidateSlurmTokenTests(unittest.TestCase):
@@ -46,17 +46,17 @@ class ValidateSlurmTokenTests(unittest.TestCase):
     def test_real_feature_expressions_pass(self) -> None:
         for value in ("", "a100", "bigmem&avx512", "gpu|cpu", "node[01-04]",
                       "(a100|v100)&nvlink", "skylake*2"):
-            self.assertIsNone(procs._validate_slurm_token(value, "constraint"), value)
+            self.assertIsNone(procs.validate_slurm_token(value, "constraint"), value)
 
     def test_a_newline_cannot_smuggle_in_another_directive(self) -> None:
-        bad = procs._validate_slurm_token(
+        bad = procs.validate_slurm_token(
             "a100\n#SBATCH --partition=everything", "constraint")
         self.assertIsNotNone(bad)
         self.assertIn("constraint", bad)
 
     def test_shell_punctuation_is_refused(self) -> None:
         for value in ("a100;rm -rf /", "$(hostname)", "a 100", "a100`id`"):
-            self.assertIsNotNone(procs._validate_slurm_token(value, "nodelist"), value)
+            self.assertIsNotNone(procs.validate_slurm_token(value, "nodelist"), value)
 
 
 class ValidateSlurmCommentTests(unittest.TestCase):
@@ -65,20 +65,20 @@ class ValidateSlurmCommentTests(unittest.TestCase):
     def test_real_comments_pass(self) -> None:
         for value in ("", "ratchet iter 12", "GEOS-X / seismic #4 (baseline)",
                       "why: comparing against ref_2024 — 50% mesh"):
-            self.assertIsNone(procs._validate_slurm_comment(value), value)
+            self.assertIsNone(procs.validate_slurm_comment(value), value)
 
     def test_a_newline_cannot_smuggle_in_another_directive(self) -> None:
-        bad = procs._validate_slurm_comment(
+        bad = procs.validate_slurm_comment(
             "baseline\n#SBATCH --partition=everything")
         self.assertIsNotNone(bad)
         self.assertIn("comment", bad)
 
     def test_other_control_characters_are_refused(self) -> None:
         for value in ("a\tb", "a\rb", "a\x00b", "a\x7fb"):
-            self.assertIsNotNone(procs._validate_slurm_comment(value), value)
+            self.assertIsNotNone(procs.validate_slurm_comment(value), value)
 
     def test_an_overlong_comment_is_refused(self) -> None:
-        bad = procs._validate_slurm_comment("x" * 513)
+        bad = procs.validate_slurm_comment("x" * 513)
         self.assertIsNotNone(bad)
         self.assertIn("too long", bad)
 
@@ -109,8 +109,8 @@ class SubmitSbatchTests(_TmpStorageTest):
     def test_success_parses_and_records_job_id(self) -> None:
         self._fake_sbatch("#!/bin/sh\necho 'Submitted batch job 4242'\n")
         os.environ["PATH"] = self.bin_dir
-        d = procs._new_run_dir(self.root)
-        job_id, error = procs._submit_sbatch(d, "#!/bin/bash\ntrue\n")
+        d = procs.new_run_dir(self.root)
+        job_id, error = procs.submit_sbatch(d, "#!/bin/bash\ntrue\n")
         self.assertIsNone(error)
         self.assertEqual(job_id, 4242)
         self.assertEqual(procs._read_slurm_id(d), 4242)
@@ -120,8 +120,8 @@ class SubmitSbatchTests(_TmpStorageTest):
         """A split build/run submission puts two jobs in one run directory."""
         self._fake_sbatch("#!/bin/sh\necho 'Submitted batch job 4243'\n")
         os.environ["PATH"] = self.bin_dir
-        d = procs._new_run_dir(self.root)
-        job_id, error = procs._submit_sbatch(
+        d = procs.new_run_dir(self.root)
+        job_id, error = procs.submit_sbatch(
             d, "#!/bin/bash\ntrue\n",
             script_name="build_batch_script.sh", id_file="build_slurm_job_id")
         self.assertIsNone(error)
@@ -135,15 +135,15 @@ class SubmitSbatchTests(_TmpStorageTest):
     def test_sbatch_failure_returns_err(self) -> None:
         self._fake_sbatch("#!/bin/sh\necho 'bad partition' >&2\nexit 1\n")
         os.environ["PATH"] = self.bin_dir
-        d = procs._new_run_dir(self.root)
-        job_id, error = procs._submit_sbatch(d, "#!/bin/bash\ntrue\n")
+        d = procs.new_run_dir(self.root)
+        job_id, error = procs.submit_sbatch(d, "#!/bin/bash\ntrue\n")
         self.assertIsNone(job_id)
         self.assertIn("sbatch failed", error["error"])
 
     def test_sbatch_missing_suggests_local_alternative(self) -> None:
         os.environ["PATH"] = self.bin_dir  # empty dir: no sbatch
-        d = procs._new_run_dir(self.root)
-        job_id, error = procs._submit_sbatch(
+        d = procs.new_run_dir(self.root)
+        job_id, error = procs.submit_sbatch(
             d, "#!/bin/bash\ntrue\n",
             local_alternative="proxy_exec(op='run', confirm=True)",
         )
@@ -153,14 +153,14 @@ class SubmitSbatchTests(_TmpStorageTest):
 
 
 class SubmitEvalTests(_FakeSbatchTest):
-    """proxy_slurm(op='eval') must not lose what _prepare_run wrote."""
+    """proxy_slurm(op='eval') must not lose what prepare_run wrote."""
 
     def test_submitted_run_keeps_the_convergence_config(self) -> None:
         self._session(convergence={"h_param": "n", "error_metric": "l2_rel"})
         res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
 
-        cfg = store._read_json(os.path.join(res["run_dir"], "config.json"))
+        cfg = store.read_json(os.path.join(res["run_dir"], "config.json"))
         # The Slurm-specific key is merged in, not written over the rest.
         self.assertEqual(cfg["partition"], "debug")
         self.assertEqual(cfg["convergence"], {"h_param": "n", "error_metric": "l2_rel"})
@@ -212,7 +212,7 @@ class SubmitEvalTests(_FakeSbatchTest):
         self.assertNotEqual(res["slurm_job_id"], res["build_job_id"])
         self.assertTrue(os.path.isfile(os.path.join(run_dir, "build_batch_script.sh")))
 
-        cfg = store._read_json(os.path.join(run_dir, "config.json"))
+        cfg = store.read_json(os.path.join(run_dir, "config.json"))
         self.assertEqual(cfg["placement"]["build"]["partition"], "compile")
         self.assertEqual(cfg["placement"]["run"]["constraint"], "a100")
 
@@ -244,10 +244,10 @@ class SubmitEvalTests(_FakeSbatchTest):
         # squeue is not on PATH here, so the job reads as 'unknown'; force the state
         # the guard is about and assert the build report alone settles it.
         with mock.patch.object(procs, "_squeue_state", return_value="pending"):
-            self.assertEqual(procs._run_state(run_dir)["state"], "pending")
+            self.assertEqual(procs.run_state(run_dir)["state"], "pending")
             build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                           "error": "build exited 2", "duration_s": 1.0}])
-            self.assertEqual(procs._run_state(run_dir)["state"], "crashed")
+            self.assertEqual(procs.run_state(run_dir)["state"], "crashed")
 
     def test_comment_reaches_both_jobs_of_a_split_run(self) -> None:
         """The comment labels the submission, so either job answers 'what was this'."""
@@ -258,7 +258,7 @@ class SubmitEvalTests(_FakeSbatchTest):
         build_script, run_script = self._submitted_scripts()
         for script in (build_script, run_script):
             self.assertIn("#SBATCH --comment='ratchet iter 12'", script)
-        cfg = store._read_json(os.path.join(res["run_dir"], "config.json"))
+        cfg = store.read_json(os.path.join(res["run_dir"], "config.json"))
         self.assertEqual(cfg["placement"]["run"]["comment"], "ratchet iter 12")
         self.assertEqual(cfg["placement"]["build"]["comment"], "ratchet iter 12")
 
@@ -277,7 +277,7 @@ class SubmitEvalTests(_FakeSbatchTest):
         self.assertEqual(self._submitted_scripts(), [])
 
     def test_a_refused_argument_submits_nothing(self) -> None:
-        """_validate_slurm_token covers the refusal; this covers its timing."""
+        """validate_slurm_token covers the refusal; this covers its timing."""
         self._session()
         res = server_proxy.proxy_slurm(
             op="eval", partition="debug",
@@ -303,7 +303,7 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
     def _submitted(self, **kwargs) -> tuple[str, int]:
         run_dir = os.path.join(store.runs_dir(), "run-0001")
         os.makedirs(run_dir, exist_ok=True)
-        job_id, failure = procs._submit_sbatch(run_dir, "#!/bin/bash\necho hi\n",
+        job_id, failure = procs.submit_sbatch(run_dir, "#!/bin/bash\necho hi\n",
                                                **kwargs)
         self.assertIsNone(failure)
         return run_dir, job_id
@@ -319,7 +319,7 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
     def test_both_halves_of_a_split_submission_are_accounted_for(self) -> None:
         """A build job sits in the same queue and is just as much somebody's row."""
         run_dir, run_id = self._submitted()
-        build_id, failure = procs._submit_sbatch(
+        build_id, failure = procs.submit_sbatch(
             run_dir, "#!/bin/bash\nmake\n",
             script_name="build_batch.sh", id_file="build_slurm_job_id")
         self.assertIsNone(failure)
@@ -347,7 +347,7 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
         finished, which is the middle of the run rather than its result.
         """
         run_dir, run_id = self._submitted()
-        procs._submit_sbatch(run_dir, "#!/bin/bash\nmake\n",
+        procs.submit_sbatch(run_dir, "#!/bin/bash\nmake\n",
                              script_name="build_batch.sh",
                              id_file="build_slurm_job_id")
         procs.background_descriptor(

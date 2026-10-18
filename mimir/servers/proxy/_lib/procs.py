@@ -41,7 +41,7 @@ _MAX_LOG = 256 * 1024   # bytes
 
 # ── run-directory files ───────────────────────────────────────────────────────
 
-def _log_path(run_dir: str) -> str:
+def run_log_path(run_dir: str) -> str:
     return os.path.join(run_dir, "stdout.log")
 
 def _pid_path(run_dir: str) -> str:
@@ -62,7 +62,7 @@ def _build_slurm_id_path(run_dir: str) -> str:
     """
     return os.path.join(run_dir, "build_slurm_job_id")
 
-def _build_log_path(run_dir: str) -> str:
+def build_log_path(run_dir: str) -> str:
     return os.path.join(run_dir, "build.log")
 
 def _phase_path(run_dir: str) -> str:
@@ -87,7 +87,7 @@ def _run_owner(run_dir: str) -> str | None:
         return None
 
 
-def _read_int_file(path: str) -> int | None:
+def read_int_file(path: str) -> int | None:
     if os.path.isfile(path):
         try:
             return int(open(path).read().strip())
@@ -97,11 +97,11 @@ def _read_int_file(path: str) -> int | None:
 
 
 def _read_pid(run_dir: str) -> int | None:
-    return _read_int_file(_pid_path(run_dir))
+    return read_int_file(_pid_path(run_dir))
 
 
 def _read_slurm_id(run_dir: str) -> int | None:
-    return _read_int_file(_slurm_id_path(run_dir))
+    return read_int_file(_slurm_id_path(run_dir))
 
 
 def _slurm_host_path(run_dir: str) -> str:
@@ -187,7 +187,7 @@ def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, str]:
 
 
 def _read_build_slurm_id(run_dir: str) -> int | None:
-    return _read_int_file(_build_slurm_id_path(run_dir))
+    return read_int_file(_build_slurm_id_path(run_dir))
 
 
 def _read_text_head(path: str, max_bytes: int = _MAX_LOG) -> str:
@@ -201,9 +201,9 @@ def _read_text_head(path: str, max_bytes: int = _MAX_LOG) -> str:
     return ""
 
 
-def _read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
+def read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
     """Return up to *max_bytes* of the run's stdout.log ('' if unreadable)."""
-    return _read_text_head(_log_path(run_dir), max_bytes)
+    return _read_text_head(run_log_path(run_dir), max_bytes)
 
 
 # ── process state ─────────────────────────────────────────────────────────────
@@ -262,7 +262,7 @@ def _build_percent(run_dir: str,
     A trailing 100% is kept: the runner's phase already says the build is the current
     step, so it cannot be a finished build standing over later work.
     """
-    text = build_progress.read_tail(_build_log_path(run_dir), max_bytes)
+    text = build_progress.read_tail(build_log_path(run_dir), max_bytes)
     found = build_progress.parse(text, drop_finished=False)
     return found[0] if found else None
 
@@ -314,7 +314,7 @@ def _build_job_failed(run_dir: str) -> bool:
     return report.get("status") not in ("ok", "skipped")
 
 
-def _run_state(run_dir: str) -> dict:
+def run_state(run_dir: str) -> dict:
     """Return state dict with keys: state, pid, slurm_job_id, elapsed_s."""
     metrics_path = os.path.join(run_dir, "metrics.json")
     job_id = _read_slurm_id(run_dir)
@@ -337,7 +337,7 @@ def _run_state(run_dir: str) -> dict:
     else:
         pid = _read_pid(run_dir)
         if pid:
-            expected_st = _read_int_file(_pid_starttime_path(run_dir))
+            expected_st = read_int_file(_pid_starttime_path(run_dir))
             if is_running(pid, expected_st):
                 state = "running"
             elif os.path.isfile(metrics_path):
@@ -370,7 +370,7 @@ def _run_state(run_dir: str) -> dict:
     if build_job_id is not None:
         out["build_slurm_job_id"] = build_job_id
     if state == "running":
-        tail = build_progress.last_lines(_log_path(run_dir))
+        tail = build_progress.last_lines(run_log_path(run_dir))
         if tail:
             out["log_tail"] = tail
     return out
@@ -408,7 +408,7 @@ def background_descriptor(run_dir: str, *, kind: str,
 
 # ── run lifecycle ─────────────────────────────────────────────────────────────
 
-def _new_run_dir(base_dir: str, tag_suffix: str = "") -> str:
+def new_run_dir(base_dir: str, tag_suffix: str = "") -> str:
     """Create a timestamped run directory under *base_dir* with a start_time file."""
     os.makedirs(base_dir, exist_ok=True)
     tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -433,20 +433,20 @@ def _new_run_dir(base_dir: str, tag_suffix: str = "") -> str:
     return run_dir
 
 
-def _write_run_config(run_dir: str, config: dict) -> None:
+def write_run_config(run_dir: str, config: dict) -> None:
     with open(os.path.join(run_dir, "config.json"), "w") as fh:
         json.dump(config, fh, indent=2)
 
 
-def _update_run_config(run_dir: str, updates: dict) -> None:
+def update_run_config(run_dir: str, updates: dict) -> None:
     """Merge *updates* into an existing run config, preserving every other key."""
-    from .store import _read_json
-    cfg = _read_json(os.path.join(run_dir, "config.json"), {}) or {}
+    from .store import read_json
+    cfg = read_json(os.path.join(run_dir, "config.json"), {}) or {}
     cfg.update(updates)
-    _write_run_config(run_dir, cfg)
+    write_run_config(run_dir, cfg)
 
 
-def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None,
+def launch_detached(argv: list[str], run_dir: str, log_file: str | None = None,
                      env: dict | None = None) -> int:
     """Spawn *argv* in a new session; record pid + pid_starttime; return the pid.
 
@@ -472,7 +472,7 @@ def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None,
     return proc.pid
 
 
-def _submit_sbatch(
+def submit_sbatch(
     run_dir: str, script: str, *, local_alternative: str = "",
     script_name: str = "batch_script.sh", id_file: str = "slurm_job_id",
     host: str = _SLURM_LOCAL,
@@ -534,7 +534,7 @@ def _submit_sbatch(
     return job_id, None
 
 
-def _scancel(job_id: int, *, host: str = _SLURM_LOCAL,
+def cancel_slurm_job(job_id: int, *, host: str = _SLURM_LOCAL,
              owned: dict[str, set[str]] | None = None) -> str | None:
     """Cancel one Slurm job on *host*; returns an error message, or None when it worked.
 
@@ -555,13 +555,13 @@ def _scancel(job_id: int, *, host: str = _SLURM_LOCAL,
     return None
 
 
-def _cancel_run(run_dir: str) -> dict:
+def cancel_run(run_dir: str) -> dict:
     """Cancel the process owning *run_dir*: scancel for Slurm, else SIGTERM→SIGKILL.
 
     Returns a plain payload dict (an ``"error"`` key signals failure); callers
     wrap it in ``ok()``/``err()``.
     """
-    rs = _run_state(run_dir)
+    rs = run_state(run_dir)
     if rs["state"] not in ("running", "pending"):
         return {"state": rs["state"], "note": "Run is not active."}
 
@@ -594,7 +594,7 @@ def _cancel_run(run_dir: str) -> dict:
             return {"error": f"Slurm job {foreign[0]} was not submitted by this "
                               "conversation or its sub-agents; nothing was cancelled."}
         for jid in jids:
-            error = _scancel(jid, host=host, owned=owned)
+            error = cancel_slurm_job(jid, host=host, owned=owned)
             if error:
                 return {"error": error}
         payload = {"cancelled": "slurm", "job_id": job_id}
@@ -631,7 +631,7 @@ def _cancel_run(run_dir: str) -> dict:
     return {"cancelled": "sigkill", "pid": pid}
 
 
-def _validate_slurm_args(
+def validate_slurm_args(
     partition: str, gpus: int, cpus_per_task: int, mem: str, wall_time: str,
 ) -> str | None:
     """Return an error message for bad Slurm resource args, or None when valid."""
@@ -654,7 +654,7 @@ def _validate_slurm_args(
 _SLURM_TOKEN_RE = re.compile(r"[A-Za-z0-9_,:.&|()\[\]*+-]+")
 
 
-def _validate_slurm_token(value: str, field: str) -> str | None:
+def validate_slurm_token(value: str, field: str) -> str | None:
     """Return why *value* cannot go in a #SBATCH directive, or None when it can."""
     if not value:
         return None
@@ -672,7 +672,7 @@ def _validate_slurm_token(value: str, field: str) -> str | None:
 _SLURM_COMMENT_MAX = 512
 
 
-def _validate_slurm_comment(value: str, field: str = "comment") -> str | None:
+def validate_slurm_comment(value: str, field: str = "comment") -> str | None:
     """Return why *value* cannot be a --comment, or None when it can."""
     if not value:
         return None
@@ -688,17 +688,17 @@ def _validate_slurm_comment(value: str, field: str = "comment") -> str | None:
 
 # ── active-run symlinks ───────────────────────────────────────────────────────
 
-def _update_active_link(proxy_name: str, run_dir: str) -> None:
-    replace_symlink(store._active_link(proxy_name), run_dir)
+def update_active_link(proxy_name: str, run_dir: str) -> None:
+    replace_symlink(store.active_link(proxy_name), run_dir)
 
 
-def _update_opt_active_link(proxy_name: str, run_dir: str) -> None:
-    replace_symlink(store._opt_active_link(proxy_name), run_dir)
+def update_opt_active_link(proxy_name: str, run_dir: str) -> None:
+    replace_symlink(store.opt_active_link(proxy_name), run_dir)
 
 
-def _opt_active_run_dir(proxy_name: str) -> str | None:
-    link = store._opt_active_link(proxy_name)
-    session_dir = store._opt_session_runs_dir(proxy_name)
+def opt_active_run_dir(proxy_name: str) -> str | None:
+    link = store.opt_active_link(proxy_name)
+    session_dir = store.opt_session_runs_dir(proxy_name)
     if os.path.islink(link):
         target = os.readlink(link)
         if not os.path.isabs(target):

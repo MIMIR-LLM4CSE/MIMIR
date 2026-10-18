@@ -7,28 +7,28 @@ import sys
 from datetime import datetime, timezone
 
 from ..._shared.launcher import PACKAGE_PARENT
-from . import _with_next, err, ok
+from . import with_next, err, ok
 from . import exec_jobs
-from .._lib.command import _output_ext, _build_run_cmd
-from .._lib.execute import _compare_to_reference
+from .._lib.command import output_ext, build_run_cmd
+from .._lib.execute import compare_with_reference
 from .._lib.procs import (
-    _log_path,
-    _run_state,
-    _new_run_dir,
-    _write_run_config,
-    _launch_detached,
-    _cancel_run,
-    _update_active_link,
+    run_log_path,
+    run_state,
+    new_run_dir,
+    write_run_config,
+    launch_detached,
+    cancel_run,
+    update_active_link,
 )
-from .._lib.report import _diff_run_pair, _row_with_extra
+from .._lib.report import diff_run_pair, row_with_extra
 from .._lib.store import (
     refs_dir,
     runs_dir,
-    _entry_or_err,
-    _load_registry_or_err,
-    _proxy_runs_dir,
-    _read_json,
-    _run_dir_names,
+    entry_or_err,
+    load_registry_or_err,
+    proxy_runs_dir,
+    read_json,
+    run_dir_names,
 )
 
 
@@ -40,12 +40,12 @@ def _resolve_run_dir(run_id: str) -> str:
 
 def list_runs(proxy_name: str = "") -> dict:
     if not os.path.isdir(runs_dir()):
-        return ok(_with_next({"runs": [], "count": 0},
+        return ok(with_next({"runs": [], "count": 0},
                              "proxy_exec(op='run', ...) to produce a first run."))
 
     proxy_dirs: list[str] = []
     if proxy_name:
-        sd = _proxy_runs_dir(proxy_name)
+        sd = proxy_runs_dir(proxy_name)
         if os.path.isdir(sd):
             proxy_dirs = [sd]
     else:
@@ -63,7 +63,7 @@ def list_runs(proxy_name: str = "") -> dict:
             reverse=True,
         ):
             run_dir = os.path.join(sd, tag)
-            rs = _run_state(run_dir)
+            rs = run_state(run_dir)
             entry: dict = {
                 "proxy":     sname,
                 "run_id":    f"{sname}/{tag}",
@@ -71,12 +71,12 @@ def list_runs(proxy_name: str = "") -> dict:
                 "state":     rs["state"],
                 "elapsed_s": rs["elapsed_s"],
             }
-            m = _read_json(os.path.join(run_dir, "metrics.json"))
+            m = read_json(os.path.join(run_dir, "metrics.json"))
             if m is not None:
                 entry["metrics"] = m
             runs.append(entry)
 
-    return ok(_with_next(
+    return ok(with_next(
         {"runs": runs, "count": len(runs)},
         "proxy_runs(op='logs', run_id=...) to read one, or op='diff' to compare two."))
 
@@ -87,19 +87,19 @@ def run_status(run_id: str) -> dict:
     The single-run counterpart to ``list_runs``, which answers for every run at once
     and so names no ``state`` of its own at the top level. A background watcher polls
     exactly this shape — a top-level ``state`` it can test for a terminal value — so a
-    detached run has something to be tracked by; see ``slurm._background_descriptor``.
+    detached run has something to be tracked by; see ``slurm.eval_background_descriptor``.
     """
     run_dir = _resolve_run_dir(run_id)
     if not os.path.isdir(run_dir):
         return err(f"Run directory not found: {run_dir}")
     if exec_jobs.is_job_dir(run_dir):
         return exec_jobs.status(run_dir)
-    rs = _run_state(run_dir)
-    payload = {"run_id": run_id, "run_dir": run_dir, "log": _log_path(run_dir), **rs}
-    metrics = _read_json(os.path.join(run_dir, "metrics.json"))
+    rs = run_state(run_dir)
+    payload = {"run_id": run_id, "run_dir": run_dir, "log": run_log_path(run_dir), **rs}
+    metrics = read_json(os.path.join(run_dir, "metrics.json"))
     if metrics is not None:
         payload["metrics"] = metrics
-    return ok(_with_next(
+    return ok(with_next(
         payload,
         f"proxy_runs(op='logs', run_id='{run_id}') to read its output."
         if rs["state"] in ("pending", "running") else
@@ -111,12 +111,12 @@ def run_logs(run_id: str, tail: int = 100) -> dict:
     run_dir = _resolve_run_dir(run_id)
     if not os.path.isdir(run_dir):
         return err(f"Run directory not found: {run_dir}")
-    lp = _log_path(run_dir)
+    lp = run_log_path(run_dir)
     if not os.path.isfile(lp):
         # State even with no log yet: a queued Slurm job has nothing to read for as
         # long as it sits in the partition, and a reply that omits the state reads
         # like a run nobody can account for.
-        return ok(_with_next({"run_id": run_id, "state": _run_state(run_dir)["state"],
+        return ok(with_next({"run_id": run_id, "state": run_state(run_dir)["state"],
                               "lines": [], "note": "Log not yet created."},
                              f"proxy_runs(op='logs', run_id='{run_id}') again once it starts."))
     try:
@@ -125,8 +125,8 @@ def run_logs(run_id: str, tail: int = 100) -> dict:
     except OSError as exc:
         return err(f"Could not read log: {exc}")
     lines = [ln.rstrip("\n") for ln in all_lines[-max(1, tail):]]
-    rs = _run_state(run_dir)
-    return ok(_with_next(
+    rs = run_state(run_dir)
+    return ok(with_next(
         {"run_id": run_id, "state": rs["state"],
          "total_lines": len(all_lines), "tail": tail, "lines": lines},
         f"proxy_runs(op='compare', run_id='{run_id}', reference_name=...) "
@@ -140,16 +140,16 @@ def runs_diff(run_a: str = "", run_b: str = "") -> dict:
     all_runs = [
         os.path.join(runs_dir(), sname, tag)
         for sname in sorted(os.listdir(runs_dir()))
-        for tag in _run_dir_names(os.path.join(runs_dir(), sname))
+        for tag in run_dir_names(os.path.join(runs_dir(), sname))
     ]
 
     def _resolve(run_id: str, default_idx: int) -> str:
         return all_runs[default_idx] if not run_id else _resolve_run_dir(run_id)
 
-    payload, error = _diff_run_pair(all_runs, run_a, run_b, _resolve)
+    payload, error = diff_run_pair(all_runs, run_a, run_b, _resolve)
     if error:
         return err(error, hint="Run more experiments first.")
-    return ok(_with_next(payload,
+    return ok(with_next(payload,
                          "proxy_runs(op='aggregate', ...) for a table across all runs."))
 
 
@@ -158,12 +158,12 @@ def compare(run_id: str, reference_name: str) -> dict:
     if not os.path.isdir(run_dir):
         return err(f"Run directory not found: {run_dir}")
 
-    cfg = _read_json(os.path.join(run_dir, "config.json"), {}) or {}
+    cfg = read_json(os.path.join(run_dir, "config.json"), {}) or {}
     output_format = cfg.get("output_format", "npz")
 
-    ext = _output_ext(output_format)
-    result = _compare_to_reference(os.path.join(run_dir, f"output.{ext}"), reference_name, output_format)
-    return ok(_with_next(
+    ext = output_ext(output_format)
+    result = compare_with_reference(os.path.join(run_dir, f"output.{ext}"), reference_name, output_format)
+    return ok(with_next(
         {"run_dir": run_dir, "reference": reference_name, "comparison": result},
         "proxy_runs(op='aggregate', ...) to compare this against the other runs."))
 
@@ -177,7 +177,7 @@ def aggregate(
     if metrics is None:
         metrics = []
 
-    reg, _reg_err = _load_registry_or_err()
+    reg, _reg_err = load_registry_or_err()
     if _reg_err:
         return err(_reg_err)
 
@@ -190,11 +190,11 @@ def aggregate(
             errors.append({"run_id": run_id, "error": "directory not found"})
             continue
 
-        cfg   = _read_json(os.path.join(run_dir, "config.json"), {}) or {}
+        cfg   = read_json(os.path.join(run_dir, "config.json"), {}) or {}
         entry = reg.get(cfg.get("proxy_name", ""), {})
-        met   = _read_json(os.path.join(run_dir, "metrics.json"), {}) or {}
+        met   = read_json(os.path.join(run_dir, "metrics.json"), {}) or {}
 
-        rs = _run_state(run_dir)
+        rs = run_state(run_dir)
         if rs["state"] != "done":
             errors.append({"run_id": run_id, "error": f"run state is '{rs['state']}'",
                            "skipped": True})
@@ -203,9 +203,9 @@ def aggregate(
         comparison: dict = met.get("comparison_to_reference", {})
         if reference_name and not comparison:
             output_fmt = cfg.get("output_format", entry.get("output_format", "npz"))
-            ext = _output_ext(output_fmt)
+            ext = output_ext(output_fmt)
             run_out = os.path.join(run_dir, f"output.{ext}")
-            comparison = _compare_to_reference(run_out, reference_name, output_fmt)
+            comparison = compare_with_reference(run_out, reference_name, output_fmt)
 
         row: dict = {
             "run_id":      run_id,
@@ -215,10 +215,10 @@ def aggregate(
             "parallelism": entry.get("parallelism", ""),
             "state":       rs["state"],
         }
-        row.update(_row_with_extra(met, comparison, metrics, entry, run_dir))
+        row.update(row_with_extra(met, comparison, metrics, entry, run_dir))
         rows.append(row)
 
-    return ok(_with_next({"rows": rows, "count": len(rows), "errors": errors},
+    return ok(with_next({"rows": rows, "count": len(rows), "errors": errors},
                          "proxy_runs(op='diff', run_a=..., run_b=...) to detail two of them."))
 
 
@@ -231,7 +231,7 @@ def launch_run(
     compare_to_reference: str = "",
 ) -> dict:
     """Launch a single proxy run in the background (non-blocking)."""
-    entry, error = _entry_or_err(proxy_name)
+    entry, error = entry_or_err(proxy_name)
     if error:
         return error
 
@@ -241,8 +241,8 @@ def launch_run(
         return err(f"Reference '{compare_to_reference}' not found.",
                    hint="Call proxy_get(op='references') to see available references.")
 
-    run_dir = _new_run_dir(_proxy_runs_dir(proxy_name))
-    _write_run_config(run_dir, {
+    run_dir = new_run_dir(proxy_runs_dir(proxy_name))
+    write_run_config(run_dir, {
         "proxy_name":           proxy_name,
         "extra_params":         extra_params,
         "param_overrides":      param_overrides or {},
@@ -252,11 +252,11 @@ def launch_run(
     })
 
     try:
-        argv = _build_run_cmd(entry, run_dir, extra_params, param_overrides)
+        argv = build_run_cmd(entry, run_dir, extra_params, param_overrides)
     except Exception as exc:
         return err(f"Failed to expand run_cmd_template: {exc}")
 
-    log_file = _log_path(run_dir)
+    log_file = run_log_path(run_dir)
     # _post_run_finalize is called even when the launch itself fails, so the run
     # state resolves instead of stranding the reason on the server's stderr. Wall
     # time and exit code come from here: the timing guard and the crash state
@@ -288,9 +288,9 @@ def launch_run(
         f"    traceback.print_exc()\n"
     )
 
-    pid = _launch_detached([sys.executable, "-c", wrapper], run_dir)
-    _update_active_link(proxy_name, run_dir)
-    return ok(_with_next({
+    pid = launch_detached([sys.executable, "-c", wrapper], run_dir)
+    update_active_link(proxy_name, run_dir)
+    return ok(with_next({
         "run_dir":              run_dir,
         "pid":                  pid,
         "log":                  log_file,
@@ -302,8 +302,8 @@ def cancel(run_id: str) -> dict:
     run_dir = _resolve_run_dir(run_id)
     if not os.path.isdir(run_dir):
         return err(f"Run directory not found: {run_dir}")
-    result = _cancel_run(run_dir)
+    result = cancel_run(run_dir)
     if "error" in result:
         return err(result["error"])
-    return ok(_with_next({"run_id": run_id, **result},
+    return ok(with_next({"run_id": run_id, **result},
                          "proxy_runs() to confirm the run is no longer active."))
