@@ -1,14 +1,6 @@
-"""
-MCP Search Server
-=================
-Workspace reading and directory inspection, sandboxed to an allowed root
-directory. The sandbox root defaults to the project codes directory but can be
-overridden via the SEARCH_ROOT environment variable.
+"""MCP Search Server: reading and listing (read_file_lines, list_directory, tree_summary).
 
-Tools: read_file_lines, list_directory, tree_summary. The File
-server owns write and edit operations; this server owns reading and listing.
-Text search is done with the bash server's `grep`/`rg` (classified read-only,
-so it needs no approval and feeds the same discovery signals).
+Text search goes through the bash server's ``grep``/``rg``; writes are server_files'.
 """
 
 import os
@@ -34,14 +26,7 @@ SEARCH_ROOT = os.environ.get(
 
 
 def _extra_read_roots() -> list[str]:
-    """Trusted out-of-workspace locations this read-only server may read from.
-
-    Agent-produced run artefacts (proxy/HPC job logs, central session state) live
-    outside the workspace; reading them is safe and was a recurring dead-end
-    ("Path outside workspace"). This server is read/search-only, so widening its
-    read roots never grants out-of-workspace writes (server_files stays strict).
-    Extend at deploy time with MIMIR_EXTRA_FILE_ROOTS (os.pathsep-separated).
-    """
+    """Trusted read roots outside the workspace, plus ``MIMIR_EXTRA_FILE_ROOTS``."""
     roots = trusted_read_roots()   # fixed caches + central state dir (shared source of truth)
     extra = os.environ.get("MIMIR_EXTRA_FILE_ROOTS", "")
     roots.extend(p for p in extra.split(os.pathsep) if p.strip())
@@ -145,15 +130,7 @@ def _compute_tree_summary(root: str, max_depth: int, max_entries: int) -> tuple[
 
 
 def _number_lines(text: str, first_line: int) -> str:
-    """*text* with every line prefixed by the number it has in the file.
-
-    A read is the only thing that binds a line number to a line of text, and the edit
-    tools are addressed by number — so a bare block leaves that binding to be counted by
-    hand across the window. A model cannot do that reliably, and its way out is to keep
-    re-reading narrower ranges until the requested range is one line and the number is
-    no longer inferred but asserted. Same ``N: `` format as the search excerpts and the
-    context window an edit hands back.
-    """
+    """*text* with every line prefixed by its number in the file (``N: ``)."""
     return "\n".join(
         f"{first_line + offset}: {line}"
         for offset, line in enumerate(text.splitlines())

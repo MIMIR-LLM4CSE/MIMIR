@@ -1,35 +1,8 @@
-"""Detached shell jobs behind ``bash_run(background=True)``.
+"""Shell jobs: every ``bash_run`` spawned into its own session, output to a log on disk.
 
-``bash_run`` blocks its turn and is capped at two minutes, which is the right shape for a
-search, a test suite or a short build. It is the wrong shape for the work that
-actually motivated this: a dependency tree that takes two hours to compile. The tool's
-own docstring already told the model to "submit the run as a background job" past the
-cap — a handle that did not exist outside Slurm, so on a host with no controller the
-advice named a capability nothing could provide, and the model improvised chunked
-``curl -C -`` resumes instead.
-
-What a job is: the same validated command, spawned into its own session with its
-output redirected to a log, plus a small directory recording pid, start time and — the
-part that makes a terminal state knowable — the exit code the shell wrote on its way
-out. Nothing here relaxes ``bash_run``'s validation: backgrounding is a parameter on a
-command that has already passed the same path checks and denylists, which is why ``&``
-stays refused. Detaching is the server's job, not a shell operator the caller supplies.
-
-The job directory lives under the session's own state directory
-(``<STATE_DIR>/sessions/<sid>/jobs/``) so the log is readable with the ordinary file tools
-while the run is still going — the state dir is a trusted read root. Per session, for two
-reasons that are the same one. Sessions run turns concurrently, and a shared jobs root
-would have ``bash_list`` enumerate every conversation's jobs, letting one read — and
-kill — another's. And a detached job's directory is never swept, however old, so a root
-outside any conversation grows without bound; tied to one it goes when the conversation
-goes. Nothing filters by session here: resolving the root does it.
-
-Every ``bash_run`` comes through here now, detached or not: a blocking call launches a
-job and waits on it. That is what lets a run be abandoned without being lost, since its
-output is on disk rather than in a pipe nobody is left to drain. The two uses want
-different things from a job directory, and ``ephemeral`` is which — a transient output
-buffer for a blocking run, deleted the moment it returns, or a durable handle for a
-detached one, which only ``sweep`` may ever touch and only while still ephemeral.
+A job directory (``<STATE_DIR>/sessions/<sid>/jobs/``) records pid, start time and the
+exit code a trap writes. Blocking runs use an ``ephemeral`` directory deleted on return;
+detached ones keep it. Validation is ``bash_run``'s; ``&`` stays refused.
 """
 
 import json
@@ -47,13 +20,7 @@ from .._shared import build_progress
 from .._shared.processes import is_running, proc_starttime
 
 def jobs_root() -> str:
-    """This session's job directory root, resolved per call.
-
-    Per call rather than frozen at import because the session-less fallback reads the
-    active-session pointer, which a single-session client rewrites as it goes. For a server
-    spawned by an agent, ``MIMIR_SESSION_ID`` is fixed for the process and the answer never
-    moves.
-    """
+    """This session's job root, resolved per call (the session-less fallback can move)."""
     from .._shared.state_paths import session_state_dir
     return os.path.join(session_state_dir(), "jobs")
 
@@ -77,15 +44,7 @@ _swept = False
 
 
 def _job_dir(job_key: str, run_dir: str = "") -> str:
-    """Where this job's files are.
-
-    *run_dir* is an explicit directory, used in place of deriving one from the session.
-    A job's directory is derived from ``MIMIR_SESSION_ID`` for every job this session
-    launched, which is all of them — and not for a job a *sub-agent* of this session
-    launched, which lives under the child's own session. Reading one of those is what
-    the argument is for, and the containment rule that decides whether a caller may is
-    enforced at the tool boundary, where the request arrives.
-    """
+    """This job's directory: *run_dir* when given (a sub-agent's run), else derived from the session."""
     return run_dir or os.path.join(jobs_root(), job_key)
 
 
@@ -149,24 +108,11 @@ def valid_key(job_key: str) -> bool:
 
 
 def _wrap(script: str, rc_path: str) -> str:
-    """The command, under a trap that records how it ended.
+    """*script* under traps that record how it ended in *rc_path*.
 
-    The exit code is what separates 'done' from 'crashed', and a detached child has
-    nobody to wait() on it — so the shell writes its own status before leaving. A trap
-    rather than an epilogue after the command: an epilogue is never reached by a script
-    ending in `exit 3`, which reported a plain non-zero run as 'unknown'. The EXIT trap
-    fires on that path too, and `$?` inside it is the status the shell is leaving with.
-
-    Built here, never supplied by the caller, which is why its substitution is not
-    subject to the command validator's no-substitution rule (cf. the module preamble).
-    The signal traps are not redundant with EXIT. Signalled through its process group,
-    bash still runs its EXIT trap, and `$?` there was 0 — so a stopped run recorded a
-    clean exit and read as 'done'. A killed build reported as a successful one is the
-    worst answer this module could give, so a signal records 128+signum and the state
-    reader treats that range as "did not return a status of its own".
-
-    A command that installs its own EXIT trap replaces this one and will read as
-    'unknown' — correct, since nothing then records what it returned.
+    EXIT records ``$?`` (an epilogue misses ``exit 3``); the signal traps record 128+signum,
+    since a signalled bash runs EXIT with ``$?`` = 0. Built here, so it is outside the
+    validator's no-substitution rule.
     """
     rc = shlex.quote(rc_path)
     return (
@@ -180,13 +126,7 @@ def _wrap(script: str, rc_path: str) -> str:
 
 
 def _write_meta(job_key: str, **fields) -> None:
-    """Write one job's ``meta.json`` — the descriptor every reader here depends on.
-
-    One writer, because there are three recorders: a launch, an adoption, and the
-    promotion of a blocking run to a handle. The schema was spelled out in two of them,
-    and ``launch``'s own ``effective_command`` is the precedent for a field being added
-    to one copy and not the other.
-    """
+    """Write one job's ``meta.json`` (the one writer: launch, adoption, promotion)."""
     meta = {"job_key": job_key, "started_at": time.time(), **fields}
     with open(_path(job_key, "meta.json"), "w") as fh:
         json.dump(meta, fh, indent=2)
@@ -195,21 +135,11 @@ def _write_meta(job_key: str, **fields) -> None:
 def launch(command: str, cwd: str, env: dict, preamble: str = "",
            output_targets: list[str] | None = None, *,
            split_stderr: bool = False, ephemeral: bool = False) -> dict:
-    """Spawn *command* in its own session; return its key, pid, log path and handle.
+    """Spawn *command* in its own session; return its key, pid, log path and ``proc`` handle.
 
-    *output_targets* are the files the command redirects its own output to, taken from
-    the parse the validator already performed. Recorded so an empty log can be told
-    apart from output that went somewhere else, without guessing after the fact.
-
-    *split_stderr* gives stderr its own file. A detached job merges the two, which is
-    what a tailed log wants; a blocking run must keep them apart, because the payload
-    it builds classifies the failure from stderr alone and the UI gives it its own
-    pane. *ephemeral* marks a job dir as a blocking run's scratch buffer rather than a
-    handle somebody was handed — see ``discard`` and ``sweep``.
-
-    ``proc`` is in the returned dict but never in ``meta.json``: a Popen is a handle
-    valid inside this process only, not state a later reader could act on. A blocking
-    caller polls it for the authoritative exit status; a detaching one drops it.
+    *output_targets* are the files it redirects to (from the validator's parse);
+    *split_stderr* keeps stderr apart for a blocking run; *ephemeral* marks a scratch buffer.
+    ``proc`` is never written to ``meta.json``.
     """
     _sweep_once()
     job_key = _new_job_key()
@@ -259,24 +189,10 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
 
 
 def adopt(pid: int, command: str, cwd: str, log: str = "") -> dict | None:
-    """Record a process this server did not start, so the scan finds it.
+    """Record a running process this server did not start, so it is watched; None if not running.
 
-    The counterpart of :func:`launch` for work that is already running: something a
-    script backgrounded, a ``nohup`` of the user's, anything long that was started
-    outside a tool call. Tracking is the descriptor, not the pid — so a process with
-    no descriptor is watched by nothing, owes no wake when it ends, and does not keep
-    this workspace's server alive. Writing the descriptor after the fact is all the
-    watcher ever needed.
-
-    Returns None when the pid is not running, which is also the check: a descriptor for
-    a process that has already gone would be read as live until the next scan looked.
-
-    **What an adopted job cannot have.** :func:`launch` wraps its command in traps that
-    write ``exit_code`` as the shell leaves, and nothing can install those into a
-    process that is already running. So an adopted job reaches a terminal state the
-    moment its pid goes, with no status of its own — ``unknown``, honestly, rather than
-    a ``done`` nobody observed. *log* is recorded as an output target so a reader knows
-    where its output actually went, since this job dir has none of its own.
+    No exit-code trap can be added to it, so its end is ``unknown``. *log* is recorded as
+    its output target.
     """
     starttime = proc_starttime(pid)
     if starttime is None or not is_running(pid, starttime):
@@ -368,13 +284,7 @@ def discard(job_key: str) -> None:
 
 
 def _sweep_once() -> None:
-    """Remove ephemeral leftovers, once per server process.
-
-    A blocking run deletes its own directory on the way out, so anything ephemeral
-    still here belongs to a run that died with the server. Only ephemeral dirs, and
-    only cold ones: a detached job's directory is the only record of it and is never
-    swept, however old.
-    """
+    """Remove cold ephemeral job dirs left by a dead server, once per process (never detached ones)."""
     global _swept
     if _swept:
         return
@@ -403,15 +313,9 @@ def _meta(job_key: str, run_dir: str = "") -> dict:
 
 
 def state(job_key: str, run_dir: str = "") -> dict:
-    """The job's state in the vocabulary the client watcher polls for.
+    """The job's state: running, done (exit 0), crashed (non-zero), or unknown (no own status).
 
-    running — the process is alive. done — it exited 0. crashed — it exited non-zero.
-    unknown — it was killed rather than having returned: either no exit code was
-    recorded at all (SIGKILL, an OOM, a host restart) or the recorded one is a signal
-    (128+signum, written by the signal traps). It is reported as its own answer rather
-    than folded into 'done' or 'crashed', because there is no status of the command's
-    own to act on — and reporting a stopped build as 'done' would be a lie the caller
-    cannot detect.
+    Unknown covers a missing exit code and a recorded signal (128+signum).
     """
     meta = _meta(job_key, run_dir)
     if not meta:
@@ -466,26 +370,10 @@ def state(job_key: str, run_dir: str = "") -> dict:
 
 def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None,
            run_dir: str = "") -> dict:
-    """The tail of the job's log, with its state.
+    """The tail of the job's log, with its state; ``note`` names where output went if elsewhere.
 
-    The tail rather than the head: a long build's interesting part — the error, the
-    last target — is at the end, and the head is configure noise.
-
-    *running_max_bytes* caps the tail while the job is still running. A read mid-run
-    is a progress check, and the state already carries the build's own percent and
-    phase; returning the whole log each time filled one session with 22 near-identical
-    10 KB blocks, which is what a model copying its previous step feeds on. The full
-    log stays on disk at ``log``, and a finished job gets the full *max_bytes*.
-
-    An empty log says nothing on its own: plenty of long jobs — an extraction, a copy,
-    a quiet install — legitimately print nothing, and annotating those would put a
-    caveat on the ordinary case. So the note is attached only where the command is
-    *known* to have sent its output elsewhere, which the validator's own parse already
-    established (``write_targets``), and it names the file instead of describing the
-    possibility. A run that simply stayed silent is reported as silent, uncommented.
-
-    Under ``note``: ``hint`` is reserved to error payloads and ok() drops it from this
-    one, so a message put there never reaches the caller.
+    *running_max_bytes* caps the tail mid-run (a progress check); a finished job gets the
+    full *max_bytes*.
     """
     payload = state(job_key, run_dir)
     if payload.get("error"):

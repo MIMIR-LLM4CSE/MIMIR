@@ -162,14 +162,7 @@ def _denial_kind(name: str) -> str:
 
 
 def module_preamble() -> str:
-    """A wrapper prefix that defines the Lmod 'module' function in a --norc shell.
-
-    Returns a ``source <init>; `` string when this host has Lmod's bash init,
-    else ``""``. This is prepended by the server to the *validated* user command
-    before handing it to ``bash -c``; because the server builds it (the user
-    never supplies it), its source/eval is not — and need not be — subject to
-    the command validator's no-substitution rule.
-    """
+    """``source <Lmod init>; `` when this host has Lmod, else "" (built here, not validated)."""
     home = os.environ.get("MODULESHOME", "")
     if not home:
         return ""
@@ -220,18 +213,7 @@ def is_within_workspace(path: str) -> bool:
 
 
 def _validate_redirections(segment, cwd: str) -> dict | None:
-    """Confine the files a segment's redirections read from and write to.
-
-    A redirection is a path operand written with an operator instead of a flag:
-    ``gcc -o solver.out`` and ``./solver.out > run.log`` both create a file, so both
-    are judged the same way — the target is resolved against *cwd* (which a ``cd``
-    earlier in the chain has already rebased) and must sit inside the workspace or
-    a directory the user approved. Nothing about a redirection reaches outside that,
-    including through a symlink: the resolution is ``realpath``.
-
-    fd dups and ``/dev/null`` never get here — they name no file, so
-    :func:`parse_segments` drops them.
-    """
+    """Confine a segment's redirection targets (resolved with realpath against *cwd*)."""
     for redirection in segment.redirections:
         target = redirection.target
         if "$" in target or "`" in target:
@@ -259,26 +241,10 @@ def _validate_redirections(segment, cwd: str) -> dict | None:
 
 
 def _resolve_cd_target(argv: list[str], cwd: str, call_cwd: str) -> tuple[str, dict | None]:
-    """Resolve where a ``cd`` segment moves the shell, or reject it.
+    """``(new_cwd, None)`` for a ``cd`` segment, or ``("", error)``.
 
-    ``cd``'s target is a path operand, confined like any other —
-    and, crucially, the directory it lands in becomes the base against which every
-    *later* segment's paths are validated. Without that propagation the confinement
-    of the rest of the chain is validated against a directory the shell has already
-    left, and ``cd /etc && cat passwd`` reads outside the sandbox with each segment
-    looking individually fine.
-
-    A bare ``cd`` or ``cd ~`` goes to the user's real home (HOME is inherited, not
-    pinned — see _safe_env), so it is judged like any other destination outside the
-    workspace: refused unless the user approved it. ``cd -`` resets to the workspace
-    root; see :func:`shell_paths.cd_destination` for why that is safe.
-
-    Moving *outside* the workspace is not forbidden, it is **user-approved**: the
-    client surfaces the destination through the ordinary out-of-workspace prompt and
-    a grant lands in the sidecar that ``is_within_workspace`` reads per call. So the
-    check below passes for a directory the user approved this session and refuses one
-    they did not — the refusal says so, because "ask the user" is an action the agent
-    can actually take, unlike a flat denial.
+    Later segments are validated against the new directory. Outside the workspace it
+    needs the user's approval, and the refusal says so (``shell_paths.cd_destination``).
     """
     resolved = _cd_destination(argv, cwd, call_cwd)
     if not is_within_workspace(resolved):
@@ -293,14 +259,7 @@ def _resolve_cd_target(argv: list[str], cwd: str, call_cwd: str) -> tuple[str, d
 
 
 def _validate_path_args(argv: list[str], cwd: str) -> dict | None:
-    """Confine every path a command names to the workspace (or an approved root).
-
-    The operand extraction is ``shell_paths.segment_path_operands`` — the same
-    routine the client's out-of-workspace gate walks to decide what to prompt for,
-    so a path the user is asked about is exactly a path this guard would refuse.
-    A workspace-local binary (``./solver.out``) is covered too: it is an execution
-    like any other, and ``./solver.out /etc/secrets`` would otherwise read out.
-    """
+    """Confine every path a command names (``segment_path_operands``, as the client prompts for)."""
     expanded = expansion_operands(argv)
     if expanded:
         return err(
@@ -323,18 +282,9 @@ def _validate_path_args(argv: list[str], cwd: str) -> dict | None:
 
 
 def validate_command(command: str, cwd: str) -> dict:
-    """Decide whether this command may run at all, before any shell is opened.
+    """Whether this command may run at all, before any shell opens: denylist, flags, paths.
 
-    Segmentation comes from shell_paths.parse_segments, shared with the client's gate.
-    What is left here is the *policy*: the denylist, per-command flag rules and path
-    confinement. Everything else runs — the approval prompt is the barrier.
-
-    Every rejection carries ``refused``. The client cannot otherwise tell one apart from
-    a command that ran and exited non-zero, and the two mean opposite things: a red exit
-    is a finding about the change, while a rejection never reached a shell and is
-    evidence of nothing. Read as a plain error, a refused heredoc was entered in the run
-    ledger as red — charging the repair budget and printing its whole body into the
-    user's chat as an unresolved run.
+    Every rejection carries ``refused``, so the client never reads it as a failed run.
     """
     return _refused(_validate(command, cwd))
 

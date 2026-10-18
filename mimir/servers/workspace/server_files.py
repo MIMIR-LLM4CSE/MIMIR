@@ -42,14 +42,7 @@ _CONTEXT_LINES = 2
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _safe(path: str) -> str:
-    """Resolve absolute path from input (absolute path or path relative to ROOT_DIR_ABS).
-
-    Out-of-workspace paths the user approved this session (read/write/run) are read
-    per-call from the shared allowlist so an approved edit outside the workspace is
-    honored without respawning the server. The scratchpad is granted alongside them
-    as a standing system root — writable without approval, since nothing there is a
-    deliverable (see state_paths.scratch_dir).
-    """
+    """The absolute path of *path* inside the workspace, an approved root or the scratchpad."""
     return resolve_path_in_root(path, ROOT_DIR_ABS, "file root",
                                 extra_roots=list(approved_roots()) + standing_roots())
 
@@ -130,14 +123,7 @@ def _changed_line_span(old_lines: list[str], new_lines: list[str]) -> tuple[int,
 
 
 def _edit_orientation(content: str, updated: str) -> dict:
-    """Where the edit landed in the file it just produced.
-
-    An edit renumbers every line below it, so the line numbers the caller used to find
-    the site — from a search, an outline, an earlier read — stop describing the file the
-    moment the write succeeds. Handing back the new span and the shift applied below it
-    is what lets the next edit be aimed without first re-reading the file; the text
-    itself is already in the returned diff.
-    """
+    """Where an edit landed: the new span and the line shift below it."""
     old_lines = content.splitlines(True)
     new_lines = updated.splitlines(True)
     start, end = _changed_line_span(old_lines, new_lines)
@@ -239,18 +225,7 @@ def _nearest_context(content: str, old_text: str, *, max_snippets: int = 3) -> s
 
 
 def _strip_line_number_prefixes(text: str, expect_start: int | None = None) -> str | None:
-    """*text* without its ``N: `` line-number prefixes, or ``None`` if it has none.
-
-    Reads, search excerpts and the post-edit window all number the text they hand back,
-    so the text a model has in front of it is numbered and the anchor it is asked for is
-    not. Undoing the prefix here costs a few lines; making the model do it costs a
-    failed edit and the re-read that follows.
-
-    Numbering must run consecutively — the text was copied from one contiguous block or
-    it was not — and *expect_start* pins where it must begin. Real code that happens to
-    look numbered (``1: value``) does not survive either test, and callers verify what
-    comes back besides.
-    """
+    """*text* without consecutive ``N: `` prefixes (from *expect_start*), or None if not numbered."""
     lines = text.splitlines()
     if not lines:
         return None
@@ -296,15 +271,7 @@ def _detect_context_bleed(
     old_len: int,
     new_text: str,
 ) -> str | None:
-    """Return an error message when new_text includes lines already adjacent to old_text.
-
-    This is the most common cause of duplicated code after replace_in_file: the model
-    provides new_text that contains context lines from before or after old_text, so those
-    lines end up appearing twice in the resulting file.
-
-    Only flags clear cases where a non-trivial line at the start/end of new_text exactly
-    matches the immediately adjacent line in the file.
-    """
+    """An error when *new_text* repeats a line adjacent to the replaced text (it would duplicate)."""
     before = content[:match_pos]
     after = content[match_pos + old_len:]
 
@@ -418,14 +385,8 @@ def _apply_replace_in_text(content: str, old_text: str, new_text: str) -> tuple[
 
 
 def _edit_already_applied(content: str, old_text: str, new_text: str) -> bool:
-    """True when a text edit's intended result is already present and its anchor gone.
-
-    Detects a benign re-issue of an edit a prior call already made: the ``old_text``
-    anchor is absent AND either the edit was a deletion (empty ``new_text``) or the
-    ``new_text`` is already in the file. Callers use this to report a clear no-op
-    instead of a "not found" error that reads as a failure while the file already
-    holds the change. Requires a non-trivial ``new_text`` (>= 4 non-space chars) so a
-    genuinely wrong anchor with a tiny replacement is not silently swallowed.
+    """True when the anchor is gone and the edit's result (a deletion, or *new_text* of 4+
+    characters) is already in the file.
     """
     if not old_text.strip() or old_text in content:
         return False
@@ -446,16 +407,7 @@ def _already_applied_result(path: str, fp: str) -> dict:
 
 
 def _build_replace_all_pattern(old_text: str, *, whole_word: bool) -> re.Pattern[str]:
-    """
-    Build a regex pattern for replacing old_text everywhere.
-
-    When whole_word=True:
-    - add a left boundary only if old_text starts with an identifier char
-    - add a right boundary only if old_text ends with an identifier char
-
-    This lets patterns like "math." match in "math.sin(...)" while still
-    preventing "math" from matching inside "aftermath".
-    """
+    """The regex replacing *old_text* everywhere; *whole_word* adds a boundary only at identifier ends."""
     escaped = re.escape(old_text)
     if not whole_word:
         return re.compile(escaped)
@@ -477,19 +429,7 @@ def _line_starts(content: str) -> list[int]:
 
 
 def _find_all_occurrences(content: str, old_text: str, *, whole_word: bool) -> list[dict]:
-    """
-    Find all occurrences of old_text in content, including multi-line matches.
-
-    Returns:
-        [
-            {
-                "line": <1-based line>,
-                "column": <0-based column>,
-                "context": <nearby text>
-            },
-            ...
-        ]
-    """
+    """Every occurrence of *old_text* (multi-line too): ``[{"line", "column", "context"}]``."""
     pattern = _build_replace_all_pattern(old_text, whole_word=whole_word)
     matches = list(pattern.finditer(content))
 
@@ -530,13 +470,7 @@ def _replace_all_in_text(content: str, old_text: str, new_text: str, *, whole_wo
 # Not exposed as a tool — directory listing is owned by the search server's
 # list_directory. Retained as a plain helper backing the files://list resource.
 def list_files(subdir: str = ".") -> dict:
-    """List all files and sub-directories inside a directory.
-
-    Returns {"status": "ok", "entries": [{"name", "type", "size_kb"}], "count": <n>}.
-
-    Args:
-        subdir: Directory to list. Can be absolute or relative to server start directory.
-    """
+    """List the files and directories in *subdir*: ``{"entries": [{"name", "type", "size_kb"}], "count"}``."""
     try:
         root = _safe(subdir)
     except ValueError as e:

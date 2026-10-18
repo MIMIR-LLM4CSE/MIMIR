@@ -1,26 +1,7 @@
-"""
-MCP Code-Intelligence Server
-============================
-Backend-abstracted code *navigation* for the agent: one tool per task, with the
-server choosing the best available backend internally so the model never picks
-between redundant tools.
+"""MCP Code-Intelligence Server: code navigation through the best backend available.
 
-Backend ladder (per call, best first):
-    LSP language server  →  universal-ctags index  →  whole-word text scan
-
-Every tier is optional. If neither a language server nor ``ctags`` is installed,
-navigation tools return a structured error and the agent keeps using the search
-server's grep/AST tools — no hard dependency (same graceful-degrade contract the
-compile toolchain has when ``nvcc``/``gfortran`` is absent).
-
-Tools (read-only):
-    find_definition(name)        symbol  -> definition site(s)
-    find_references(name)        symbol  -> use site(s)
-    symbol_outline(path)         file    -> symbol tree
-    hover(path, line, symbol)    LSP type/signature info (LSP-only)
-
-The ``CODE_NAV`` capability exists so the client locates these navigation tools
-by capability, never by literal name.
+LSP, then universal-ctags, then a whole-word scan; without them a structured error.
+Tools: find_definition, find_references, symbol_outline, hover (LSP only), all ``CODE_NAV``.
 """
 
 import json
@@ -85,17 +66,7 @@ def _safe_root(path: str) -> str:
 
 
 def _out_path(path: str) -> str:
-    """The form a navigation result is reported in: absolute.
-
-    Every path the model reads should be one it can hand straight to a file tool,
-    and those require absolute paths. Returning workspace-relative results would
-    make the model join the root itself — reintroducing exactly the inference the
-    absolute-path rule removed (see ``server_files._require_abs``), at the moment
-    it is most likely to copy a path without thinking.
-
-    The client normalizes these back to workspace-relative before storing them, so
-    ``execution_context`` and every gate keep their existing form.
-    """
+    """A navigation result's path, absolute (what the file tools take)."""
     return os.path.abspath(path)
 
 
@@ -200,13 +171,7 @@ def _run_ctags(extra: list[str]) -> str:
 
 
 def _build_ctags_index() -> dict | None:
-    """Build a symbol index from ctags, supporting Universal (JSON) and Exuberant.
-
-    We don't trust the exit code (Exuberant prints "Unknown option" to stderr and
-    may still exit 0); instead we try JSON first and fall back to the traditional
-    extended format when JSON yields nothing. Either way returns a parsed index or
-    None so the caller degrades to the text-scan tier.
-    """
+    """A symbol index from ctags (Universal JSON, else Exuberant), or None."""
     if not _have_ctags():
         return None
     index = _parse_json_tags(_run_ctags(["--output-format=json", "-f", "-"]))
@@ -261,13 +226,7 @@ def _whole_word_scan(name: str, *, max_results: int = _MAX_RESULTS) -> list[dict
 
 
 def _attach_context(entries: list[dict], context_lines: int) -> list[dict]:
-    """Add a numbered excerpt around each hit's line, in place.
-
-    A hit reported as ``{path, line}`` locates a symbol but cannot be acted on: an edit
-    needs the surrounding text exactly as it stands, and a line number alone sends the
-    caller back for a read whose answer this function already has open. Files are read
-    once each and only for the entries that fit the budget.
-    """
+    """Add a numbered excerpt around each hit, in place, reading each file once."""
     if context_lines <= 0:
         return entries
     cache: dict[str, list[str]] = {}
@@ -466,20 +425,7 @@ def _file_line_count(abs_path: str) -> int:
 
 
 def _fill_end_lines(entries: list[dict], total_lines: int) -> list[dict]:
-    """Give every symbol an ``end_line``, deriving the ones no backend reported.
-
-    A symbol map that says only where each symbol *starts* leaves "read the block
-    around line N" to be found by widening the window a few lines at a time. The end
-    line is exact when the backend gives one (LSP ranges, universal-ctags ``+e``) and
-    otherwise derived: a symbol runs until the next one at the same or shallower
-    nesting, and the last one runs to the end of the file. That is an upper bound —
-    trailing blank lines or module-level code between two symbols fall inside it — and
-    an upper bound is the right error to make here: it costs a few extra lines in one
-    read, where a short one costs another read.
-
-    ``inferred_end`` marks which is which, since a derived end must not be taken for
-    the exact boundary of the construct.
-    """
+    """Give every symbol an ``end_line``: the backend's, else up to the next symbol (``inferred_end``)."""
     ordered = sorted(entries, key=lambda e: (int(e.get("line") or 0), int(e.get("depth") or 0)))
     for i, entry in enumerate(ordered):
         start = int(entry.get("line") or 0)

@@ -959,14 +959,23 @@ The read-only vs write/exec decision is the client-side
 exemption in `readonly_exempt`; see POLICY.md). The server still validates and confines
 every accepted call independently.
 
+### What this validation is, and is not
+
+The user's control is the **approval prompt**, which the client puts in front of every
+build or exec command, in the workspace as much as outside. The validation here governs
+the command the agent writes — which program runs, and which paths it names — never what
+that program does once running: `python`, `make` or `./a.out` run with the account's full
+privileges, and `python -c "open('/etc/passwd')"` names no path at all. Constraining that
+needs process isolation (namespaces, seccomp, a container), which MIMIR does not
+implement. Read "confined" with that scope.
+
 ### What is refused, and why
 
 Anything not named below runs. These three groups are refused because no approval
 prompt could make them reviewable, and each rejection names the route that replaces it
 — a refusal with no route is a dead end the model retries variants of. The sets live in
 `servers/_shared/shell_paths.py` (`DENIED_COMMANDS`) so both ends read the same list, and
-`test_the_header_table_is_the_denylist` fails if the server's docstring table drifts
-from it.
+`test_the_documented_table_is_the_denylist` fails if this table drifts from it.
 
 | Group | Commands | Why | Instead |
 |---|---|---|---|

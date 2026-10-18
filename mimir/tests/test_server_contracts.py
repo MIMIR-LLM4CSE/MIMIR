@@ -1,7 +1,6 @@
 from mimir.servers.workspace import bash_validation
 import importlib.util
 import io
-import re
 import shutil
 import tempfile
 import unittest
@@ -1777,22 +1776,20 @@ class BashServerTests(unittest.TestCase):
             sorted(obs.shell.PROJECT_VALIDATORS - set(obs.shell.VALIDATOR_TIER)), [],
             "project checkers absent from _VALIDATOR_TIER are unreachable")
 
-    def test_the_header_table_is_the_denylist(self) -> None:
-        """The module docstring is the denylist's only human-readable form.
+    def test_the_documented_table_is_the_denylist(self) -> None:
+        """SERVERS_DETAILED.md's "What is refused" table is the denylist's readable form.
 
-        It is also the first thing a reader trusts about this server, and prose
-        drifts silently because prose is not imported. A denied command missing from
-        the table reads as available; a listed one that is not denied reads as
-        refused. Both are wrong facts about the one thing this file still gates.
-        """
-        doc = server_bash.__doc__ or ""
-        denied = sorted(_shell_paths.DENIED_COMMANDS)
-        table = doc.split("=============  ====================")[2]
+        A denied command missing from it reads as available; prose is not imported, so
+        only this keeps it level."""
+        doc_path = Path(__file__).resolve().parents[2] / "SERVERS_DETAILED.md"
+        text = doc_path.read_text(encoding="utf-8")
+        section = text.split("### What is refused, and why", 1)[1].split("\n### ", 1)[0]
+        table = "\n".join(line for line in section.splitlines() if line.startswith("|"))
         missing = [
-            c for c in denied
-            if not re.search(rf"(?<![\w.+-]){re.escape(c)}(?![\w.+-])", table)
+            c for c in sorted(_shell_paths.DENIED_COMMANDS)
+            if f"`{c}`" not in table
         ]
-        self.assertEqual(missing, [], "denied commands absent from the header table")
+        self.assertEqual(missing, [], "denied commands absent from the documented table")
 
     def test_a_wrapper_is_unwrapped_never_denied(self) -> None:
         """A wrapper may not be denied, and a denied head may not be a wrapper.

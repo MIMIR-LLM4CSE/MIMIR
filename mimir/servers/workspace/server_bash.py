@@ -1,136 +1,9 @@
-"""
-MCP Bash Server
-===============
-Controlled bash command execution: read-only workspace inspection, plus the
-direct toolchain for compiling, running, validating, and testing code.
+"""MCP Bash Server: workspace shell access, the toolchain for building, running and testing.
 
-WHAT THIS VALIDATION IS, AND IS NOT
------------------------------------
-Read this before trusting anything below, because two mechanisms are in play and
-only one of them lives in this file.
-
-The user's real control is the **approval prompt**, which the client applies to
-every build/exec command — inside the workspace as much as outside. ``python
-solver.py``, ``make``, ``./a.out`` and ``pdflatex main.tex`` all stop and ask.
-Nothing here runs unasked (except under the headless runner, which auto-approves).
-
-The validation *in this file* is the narrower half: it governs the command the
-agent writes — which program runs, and which paths it names. It says nothing about
-what that program does once running. ``python``, ``make``, ``gcc`` and a
-workspace-local ``./a.out`` execute with the full privileges of the account running
-MIMIR, so a script the agent wrote can read any file that account can read, write
-anywhere it can write, and open a socket — none of which this module sees. ``make``
-runs a workspace Makefile, arbitrary shell by construction. ``python -c
-"open('/etc/passwd')"`` passes every check here, because the path never appears as
-an argument.
-
-So the user controls *whether* something runs; nothing here controls *what it does*
-once it does. Constraining the latter needs isolation at the process level
-(namespaces, seccomp, a container, bubblewrap) — a different mechanism, not more
-rules here, and not implemented.
-
-Read "confined" throughout this file with that scope in mind; SERVERS_DETAILED.md
-carries the same note with the bounds on what an "always" approval grants.
-
-WHAT IS REFUSED, AND WHY
-------------------------
-Anything not named below runs. The three groups here are refused because no approval
-prompt could make them reviewable, and each rejection names the route that replaces it
-— a refusal with no route is a dead end the model retries variants of.
-
-=============  ==================================================================
-group          commands
-=============  ==================================================================
-interpreter    bash sh zsh ksh dash csh tcsh fish eval exec . command sudo su doas
-destructive    shred dd mkfs fdisk parted swapoff mkswap
-cluster        sbatch salloc scancel
-=============  ==================================================================
-
-An interpreter runs a nested command this validator never sees, which would void
-segmentation and with it path confinement — so it stays refused in every spelling,
-including by absolute path and behind a wrapper (``timeout 5 /bin/sh -c x`` is refused
-on ``sh``). ``source`` is the deliberate exception: its operand is a *file*, confined
-like any other path, and it is the only way to set the environment the rest of a chain
-runs in (``source venv/bin/activate && pytest``). The ``.`` spelling stays refused.
-Job submission and cancellation have one route, the typed cluster tools: submitting
-returns a handle this session tracks, and cancelling takes one job of the user's at a
-time; ``squeue``/``sinfo``/``sacct`` run here freely. Deletion (``rm``) is
-*not* refused — destructive but reviewable, so it runs under the approval prompt with
-its operands confined, like any other write.
-
-Wrappers whose argument list is another command — ``timeout``, ``nohup``, ``env``,
-``xargs``, ``stdbuf``, ``nice``, ``ionice``, ``srun``, ``mpirun``, ``mpiexec`` — are
-unwrapped before validation (``shell_paths.unwrap_argv``), so ``timeout 60 pytest -q``
-is validated and classified as the pytest run it is.
-
-WHAT A COMMAND'S *CATEGORY* STILL DECIDES
------------------------------------------
-The taxonomy in ``_shared/shell_paths.py`` is no longer a gate; it is what the client's
-classifier reads to decide approval and plan-mode availability. Read/search/inspect
-commands (``cat``, ``grep``, ``ls``, ``pip list``, ``module avail``, ``cd``) are
-read-only: they run unattended and are available while planning. Everything else —
-writes, execution, installs, and every head the taxonomy does not place — is
-approval-gated and blocked while planning.
-
-Per-call shifts: ``sed -i`` / ``sort -o FILE`` and a ``> file`` redirection turn a
-side-effect-free command into a **write**; ``< file`` and fd redirection change nothing;
-for the env managers the sub-command decides (query vs mutation), and an unknown one is
-assumed to mutate. In a chain, one non-read-only segment makes the whole call
-non-read-only.
-
-This server is intentionally restricted:
-- only runs inside the workspace root
-- it is the primary surface for compile/run/test/validate — invoke the toolchain
-  directly with the exact flags the task needs
-- command chaining is allowed (``;``, ``&&``, ``||``, ``|``) since real tasks
-  often need several commands in one call; each command between separators is
-  tokenized and validated independently
-- redirection is allowed — fd forms (``2>&1``, ``1>&2``, ``2>/dev/null``) and
-  named files (``> run.log``, ``>> run.log``, ``< input.txt``). A redirection
-  target is a path operand written with an operator instead of a flag, so it is
-  confined exactly like one (``ls > /tmp/out.txt`` is refused for the same reason
-  ``cat /etc/passwd`` is); a heredoc (``<<EOF``) is not, its body being no argv
-- multi-line commands are accepted: an *unquoted* newline is a separator like
-  ``;``, so it is normalized to one before tokenizing and each line is validated
-  as its own command. Newlines inside quotes (a multi-line ``python3 -c "..."``
-  body) are data and stay untouched
-- still rejected: backgrounding (``&``), command/process substitution
-  (``$(...)``, backticks, ``<(...)``, ``${...}``) and subshells
-- runs ``bash -c`` only after validation, so globbing (``*.py``) and ``$VAR``
-  expansion still work
-- the environment managers (``pip``, ``conda``, ``mamba``) run their whole surface,
-  install and uninstall alike, minus ``conda run``/``mamba run``, which nest an
-  unvalidated command. An install writes into the target interpreter's
-  site-packages — outside the workspace by construction, so the approval prompt,
-  not a path check, is what governs it
-- ``module`` (HPC Lmod) is supported: it is a shell *function*, so the server
-  defines it by sourcing Lmod's init in the wrapper it builds around the
-  validated command. This means ``module load cuda && nvcc ...`` works in a
-  single call; a load does not persist to the next call (fresh subprocess)
-
-Every call starts at the workspace root — there is no working-directory argument.
-``cd`` holds for the rest of a single call (``cd sub && pytest
-t.py``), but each call is a fresh subprocess so it does not carry over. One way to
-say "where", not two: a second mechanism was only ever a second thing to keep
-confined, and the root is the one base every path in the call is judged against.
-
-Critical hardening applied:
-- one segmenter, shared with the client: ``shell_paths.parse_segments`` decides
-  where a command ends and which tokens are a redirection rather than an argument,
-  so the guard that *confines* a path and the gate that *prompts* for it can never
-  read the same command two ways (see that module's docstring)
-- treats an unquoted newline as the command separator it is, so every line of a
-  multi-line command is validated on its own (never folded into the argv of the
-  line above)
-- resolves every path operand with realpath() to prevent symlink escapes
-- per-command denylist of flags whose write/exec target the operand extraction
-  cannot see (find ``-exec``/``-fprint``, rg ``--pre``, grep ``-f``)
-- confines the path arguments of every command that takes a file operand —
-  readers, writers AND the build/exec toolchain — plus every redirection target,
-  to the workspace root or a path the user approved this session
-- threads the current directory through a chain, so a ``cd`` rebases the
-  confinement of the segments after it
-- runs bash with --noprofile --norc and a minimal env
+The approval prompt governs whether a command runs; this validation governs the
+command written (program, paths, redirections), not what it does once running. A short
+denylist, wrappers unwrapped, one segmenter shared with the client; each call starts at
+the workspace root. See SERVERS_DETAILED.md, "workspace/server_bash.py".
 """
 
 import os
@@ -211,13 +84,8 @@ _DIVERT_CHANNEL = "bash_run"
 _NO_MATCH_COMMANDS = {"grep", "rg", "which"}
 
 
-# Outbound HTTP on this site goes through a corporate proxy, and curl/wget/pip/git
-# read it from the environment alone. Left out of the minimal env, every network
-# command hung until its timeout instead of failing fast: a CUDA runfile fetch burned
-# 180s to reach nothing, and an install session stalled with no error to act on.
-# These are endpoint/bypass config, not code — passed through, never synthesized, so
-# a command sees exactly the proxy the user's own shell sees. Both cases: the tools
-# disagree on which they read, and no_proxy is what keeps internal hosts direct.
+# Proxy settings passed through from the user's environment as they are, so network
+# commands use the same proxy (and no_proxy) as the user's shell instead of hanging.
 _PROXY_ENV_PASSTHROUGH = (
     "http_proxy", "https_proxy", "ftp_proxy", "no_proxy",
     "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY",
@@ -225,15 +93,7 @@ _PROXY_ENV_PASSTHROUGH = (
 
 
 def _safe_env(cwd: str) -> dict:
-    """Minimal environment for subprocess execution.
-
-    PATH is prefixed with the directory of the interpreter this server runs under
-    (``sys.executable``). A bare ``python``/``python3`` in a bash_run therefore
-    resolves to the *same* environment MIMIR itself uses — the one that has the
-    project's dependencies — rather than to whatever ``python3`` happens to sit
-    first on the ambient PATH (which may be a different env, or even a different
-    CPU architecture on a mixed x86/ARM host, and would fail or lack the deps).
-    """
+    """Minimal subprocess environment, PATH led by this interpreter's directory (MIMIR's Python)."""
     interp_dir = os.path.dirname(os.path.abspath(sys.executable))
     ambient_path = os.environ.get("PATH", "")
     path = interp_dir + os.pathsep + ambient_path if interp_dir else ambient_path
@@ -288,18 +148,7 @@ def _classify_runtime_error(stderr: str) -> str | None:
 
 
 def _is_clean_no_match(segments: list[list[str]] | None, returncode: int, stdout: str) -> bool:
-    """True when a non-zero exit is really an empty *result*, not a failure.
-
-    Bash reports the exit status of the last command in the chain, so only that
-    segment's leading command decides. See :data:`_NO_MATCH_COMMANDS`.
-
-    ``grep``/``rg`` say "no match" with exactly 1 (2 is a real error, e.g. a bad
-    pattern). ``which`` instead returns *how many* of its arguments it could not
-    find, so the standard multi-name probe — ``which latex pdflatex xelatex`` —
-    exits 4 with nothing found, and testing for 1 reported the most conclusive
-    answer there is as a failure, under a hint telling the agent to re-read stderr
-    for a problem that does not exist.
-    """
+    """True when the last segment's non-zero exit means "nothing found" (``_NO_MATCH_COMMANDS``)."""
     if returncode < 1 or stdout.strip():
         return False
     if not segments or not segments[-1]:
@@ -406,23 +255,10 @@ def _run(
     preamble: str = "",
     segments: list[list[str]] | None = None,
 ) -> dict:
-    """Run *command* to completion, or until the cap, or until the user detaches it.
+    """Run *command* to completion, the cap, or a user divert; output goes to a file.
 
-    The command goes through the job launcher even when nothing is being detached, so
-    its output lands in a file rather than a pipe. That is the whole point: bytes on
-    disk survive the process, so a run that is stopped at the cap still reports what it
-    printed, and one the user moves to the background keeps everything it has done.
-    Output living in a pipe read only by the final communicate() is output a timeout
-    discards every byte of.
-
-    Three ways out, and only one of them leaves a process alive:
-      * the command ended        — the ordinary payload, byte-for-byte as before;
-      * the cap was reached      — the process group is killed, exactly as the old
-                                   timeout did, and the partial output comes back
-                                   with the error instead of being thrown away;
-      * the user asked to detach — the process is left running and the caller gets a
-                                   background handle. This is the only promotion
-                                   there is: an explicit human act, never the clock.
+    At the cap the group is killed and the partial output returned; on a divert the run is
+    left going and a background handle returned (the only promotion, always a user act).
     """
     try:
         launched = bash_jobs.launch(
@@ -681,25 +517,10 @@ _QUEUE_EVERY = 60.0
 
 
 def _note_scheduler(segments: list[list[str]], result: dict) -> None:
-    """Learn from a command that just reached the scheduler, and answer with the gap.
+    """After a successful Slurm command (local or over ``ssh``), record its host and attach
+    the jobs it reported that no descriptor covers.
 
-    A command whose parse shows a Slurm head — locally, or past an ``ssh`` — and that
-    *succeeded* has proved two things this server could not otherwise know: that there
-    is a scheduler on that host, and that it answers. Both are then free to use. The
-    host is *added* to what this workspace reaches rather than becoming "the"
-    scheduler: a queue read on a second cluster is a destination gained, not a
-    redirection of the jobs already running on the first.
-
-    The second is what closes the case this whole path exists for. A job submitted
-    through a site launcher is tracked by nothing, and neither the launcher call nor the
-    ``squeue`` that checks it reaches a typed cluster tool — so the reminder that fires
-    when a turn concludes with unwatched work never got its fact. It gets it here: the
-    ids the scheduler just confirmed it is running, minus the ones a descriptor covers.
-    Attached to this payload, which is all it takes — the client's observer reads the
-    field and not the tool name.
-
-    Deterministic throughout: the validator's own parse and an exit status, never a
-    pattern over the text of a command.
+    From the validator's parse and the exit status, never from command text.
     """
     global _QUEUE_ASKED_AT
     if result.get("status") != "ok" or result.get("returncode") != 0:
@@ -793,20 +614,8 @@ def bash_job(
 
 
 def _resolve_run_dir(run_dir: str, job_key: str) -> tuple[str, dict | None]:
-    """Settle an explicit job directory, or say why it is refused.
-
-    A job directory is derived from this session for every job this session launched.
-    The exception is a job a *sub-agent* of this session launched: a child's session is
-    stored under its parent's (``<parent>/subagents/<child>``), so its runs are real
-    runs of this conversation's work that simply do not resolve from a bare key — and a
-    bare key resolved against the wrong session reads as "No such job", which the
-    watcher vocabulary spells ``unknown``, which is terminal. A parent told that would
-    announce a healthy build as lost.
-
-    So the rule is containment, and it needs no new concept: a directory inside this
-    session's own state directory, named like a job, under a ``jobs/`` parent. That
-    grants exactly this session's runs and its children's, and nothing else — another
-    conversation's job directory is not under this session's, however well formed.
+    """``(run_dir, None)`` for an explicit job directory inside this session's own state dir
+    (its sub-agents' runs), else ``("", error)``.
     """
     from .._shared.state_paths import session_state_dir
     resolved = os.path.realpath(os.path.expanduser(run_dir))
@@ -830,22 +639,9 @@ def _resolve_run_dir(run_dir: str, job_key: str) -> tuple[str, dict | None]:
 
 
 def _with_live_descriptors(payload: dict, jobs: list[dict], run_dir: str = "") -> dict:
-    """Attach a watcher handle for every job in *jobs* that is still running.
+    """Attach a watcher handle (``background_jobs``, plural) for every job still running.
 
-    A watcher lives on the agent that launched the run and dies with it, which an
-    editor window reload is enough to cause; the run itself carries on in its own
-    session directory, indifferent. Answering "what state is it in?" with the handle as
-    well as the state is what lets the client put a watcher back on it — so asking is
-    the gesture that restores tracking, and nothing has to re-arm runs nobody asked
-    about.
-
-    Every op that names a run, not only ``status``: reading a build's log mid-run is as
-    much a "where is it at?" as asking for its state, and the two differ only in which
-    of them the model happened to reach for.
-
-    Plural, and never ``background_job``: that key means *this call launched it*, which
-    makes the row a run and, on a client with no watcher, something to wait out in-turn.
-    A status read is neither.
+    Asking about a run is what lets a client that lost its watchers put them back.
     """
     live = [_job_descriptor(j["job_key"],
                             run_dir or bash_jobs.job_dir(j["job_key"]))
@@ -857,15 +653,7 @@ def _with_live_descriptors(payload: dict, jobs: list[dict], run_dir: str = "") -
 
 
 def _job_payload(payload: dict) -> dict:
-    """Wrap a job-layer answer, letting "no such job" stay an error.
-
-    ``valid_key`` checks the *shape* of a handle, not that it names anything, so a
-    well-formed key for a job this host does not have reaches the job layer and comes back
-    carrying ``error``. Wrapping that in ``ok()`` would assert both at once, and a caller
-    reading ``status`` first would be told a stop succeeded with nothing stopped. Job
-    directories are per session, so a handle from another conversation is exactly a
-    well-formed key naming nothing here.
-    """
+    """Wrap a job-layer answer in ``ok()``, unless it carries ``error`` (a key naming no job)."""
     reason = payload.pop("error", "")
     if reason:
         return err(reason, hint="Use bash_job(op='list') to see this session's jobs.",
