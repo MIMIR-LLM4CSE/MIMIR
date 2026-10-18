@@ -1269,8 +1269,8 @@ Tools:
     child; the server's environment was frozen at spawn and is only a fallback.
   - The caller may name another model **the endpoint serves**. At start-up the server
     asks the backend once for its served models (`served_model_info()`, i.e.
-    `/v1/models`) and renders them with the client's model catalog
-    (`config/model_catalog.py`) into the description of `model`. It is rendered once,
+    `/v1/models`) and renders them with the model catalog
+    (`agent_state/model_catalog.py`) into the description of `model`. It is rendered once,
     so the tool list stays prefix-stable for the session.
   - A model the endpoint does not list, or one the catalog marks `"delegable": false`,
     is refused with the list of usable ones. There is no fuzzy matching.

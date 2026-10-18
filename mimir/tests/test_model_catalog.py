@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import httpx
 
-from mimir.client.config.model_catalog import (
+from mimir.servers.agent_state.model_catalog import (
     catalog_entry,
     decode_cost,
     describe_served_models,

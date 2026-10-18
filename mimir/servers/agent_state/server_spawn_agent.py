@@ -92,7 +92,7 @@ def _probe_served_models() -> list[dict]:
 
 def _model_description(served: list[dict]) -> str:
     try:
-        from mimir.client.config.model_catalog import describe_served_models
+        from .model_catalog import describe_served_models
         return describe_served_models(served)
     except Exception as exc:
         print(f"spawn_agent: model catalog unavailable: {exc}", file=sys.stderr)
@@ -328,7 +328,7 @@ def _caller_model(ctx: Context | None) -> str:
 
 def _refuse_model(model: str) -> str | None:
     """Why *model* cannot run this sub-agent, or None when it can."""
-    from mimir.client.config.model_catalog import subagent_model_refusal
+    from .model_catalog import subagent_model_refusal
     return subagent_model_refusal(model, _SERVED_MODELS)
 
 

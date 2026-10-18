@@ -11,7 +11,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from .models import longest_prefix_key
+from mimir.client.config.models import longest_prefix_key
 
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 
