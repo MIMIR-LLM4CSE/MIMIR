@@ -29,19 +29,10 @@ def server_idle_ttl() -> float:
 
 
 def idle_stop_reason(ttl_secs: float, *, past: bool) -> str:
-    """What this TTL means, in whichever tense the sayer needs.
+    """What the server TTL means, in the past or present tense, for the user.
 
-    Two layers describe it to a user — the notice written into a conversation after the
-    process stops, and the panel's own line when they detach onto nothing — and they
-    were each spelling it out, with the wording and the formatting drifting apart. One
-    author with two tenses, so they cannot disagree about what the clock is.
-
-    What neither may say is a deadline. The clock is measured from when the process
-    *first* had nothing to do and is reset by any work, so "it stops in two hours" names
-    a moment that does not exist; what ends the process is having had nothing to do
-    throughout. The remedy is deliberately absent: this layer knows what it was not
-    watching, not what kind of work the user has — a scheduler is something only the
-    tools that talk to one know about.
+    Never a deadline: the clock starts when the process first had nothing to do, and any
+    work resets it.
     """
     clock = f"{ttl_secs / 3600:.0f}h"
     if past:
@@ -96,34 +87,11 @@ class Lifecycle:
         self._idle_since: float | None = None
 
     def idle_report(self, *, excluding: Any = None) -> dict:
-        """Why this process is or is not still needed, in one interrogable answer.
+        """``{"idle", "reasons"}``: why this process is or is not still needed.
 
-        **The criterion is positive.** "Not busy" is not "has finished": a worker is
-        also not busy between queries, after a turn that broke, and while it waits
-        behind a card. An idle test built on the absence of noise would stop a server
-        whose turn merely paused, so a conversation counts as finished only when it has
-        actually *concluded* — delivered a final answer (or ended in an error, which is
-        also an ending) — which the bus records as it hands that event to the committer.
-
-        And a run launched but not collected is work in progress even with no turn
-        running: that is precisely the "I submitted a two-hour build and left" case
-        this whole path exists for, so a live job on disk holds the process open — and
-        so does one that has *ended* without its wake reaching a turn, which is the same
-        debt one step later.
-
-        The rest are not activity but prohibitions: somebody is attached, a card is
-        parked, a deferral is owed, a turn is queued for a slot.
-
-        One place, deliberately: the idle shutdown reads it, and so does the question
-        "has this window anything worth leaving running?".
-
-        *excluding* is a subscription to leave out of the count, which is what asks
-        that second question properly. A window asking what it would leave behind is
-        itself an attachment, so counting it answers "yes, you" every time — which is
-        how a detachment came to promise that a run keeps working when there was no run
-        and the process was about to stop on idle. Only the asker, not every client: a
-        second window of the same workspace *is* keeping this process alive, and
-        telling the first that nothing is watching would be the same mistake inverted.
+        Positive criterion: a conversation is finished only once it concluded. Live or owed
+        runs, attachments, parked cards, deferrals and queued turns hold it. *excluding* leaves
+        the asking subscription out of the count.
         """
         reasons: list[str] = []
         attached = self._pool.bus.attached(excluding=excluding)
@@ -169,25 +137,9 @@ class Lifecycle:
 
     @staticmethod
     def _job_keys() -> tuple[list[str], list[str]]:
-        """The runs still going, and the finished ones still owed a wake.
+        """``(live, owed)``: runs still going, and finished ones whose wake no turn took, from disk.
 
-        Read from disk rather than from the live workers: a run outlives the agent that
-        launched it, and the session it belongs to may have no worker at all right now.
-        One scan answers both, since ``scan_all_sessions`` already drops the runs whose
-        wake has been delivered — what it returns is exactly "still going" plus "ended
-        and unspoken for".
-
-        **Why an owed wake holds the process open.** A finished run that nothing has
-        taken in is a turn this process still has to start, which is work in progress
-        as surely as the run itself was. Stopping here is how a conversation loses the
-        night: the job ends, its wake is journaled, and the server that owes the turn
-        shuts down two hours later without ever having started it.
-
-        Only sessions that have been scanned before are counted. A job directory is
-        never swept, however old, so an unbaselined session holds every run it ever
-        finished with no marker on any of them — reading that history as debt would
-        leave a workspace permanently un-stoppable, which is worse than stopping one
-        with a wake outstanding and exactly the trade the baseline exists to make.
+        Only baselined sessions count, or an old workspace would never stop.
         """
         live: list[str] = []
         owed: list[str] = []
@@ -207,15 +159,7 @@ class Lifecycle:
         return sorted(live), sorted(owed)
 
     def request_stop(self, headline: str = "") -> None:
-        """Ask the serve loop to shut down. Idempotent.
-
-        *headline* is why, when the answer is this process's own: it is recorded into
-        every conversation being kept before the loop is asked to go. Recorded here
-        rather than at each deciding branch so that "the process decided to stop" is
-        one fact in one place — a stop added later cannot forget to say so. The
-        user-requested stop passes nothing, and should: the user is there, and already
-        has the reasons on screen.
-        """
+        """Ask the serve loop to stop (idempotent), recording *headline* into kept conversations."""
         event = self.stop_requested
         if event is not None and not event.is_set():
             if headline:
@@ -223,27 +167,10 @@ class Lifecycle:
             event.set()
 
     def _nobody_asked_to_keep_it(self) -> bool:
-        """Whether this process has lost its last window with no claim on it.
+        """Whether the last client has been gone past the grace with no detach claim.
 
-        A server exists in one of two states and there is no third: claimed by at least
-        one conversation — detached, which redirected its output to a log and asked not
-        to be killed — or owned by the window that started it, dying with it. What used
-        to be possible was a server in neither: one a window had merely attached to,
-        nobody's to kill, still writing to a pipe whose reader is gone. It kept working,
-        indifferently and unobserved, and nobody had asked it to.
-
-        So a server nobody claimed stops when its last client has been gone for the
-        grace. Server-side, because the only place that can decide this reliably is the
-        process itself: an extension host that is dying has no time to end a process it
-        does not own, and may be killed before it tries. The grace is the one a parked
-        card already uses — a window reload closes and reopens the socket, and that is
-        not a departure.
-
-        This is deliberately not conditioned on what is in flight. A run still going
-        does not earn a server the right to survive unasked: the panel asks before the
-        window goes, and "keep them going" is what claims it. The run itself is not
-        killed either way — it has its own process session and an exit code trap, and
-        the next agent built for its conversation picks it up again.
+        A server is either claimed or owned by its window; an unclaimed one stops, whatever
+        runs (the runs survive on their own).
         """
         if self._pool.bus is None or not self._pool.bus.ever_attached:
             return False
@@ -259,17 +186,7 @@ class Lifecycle:
             return False
 
     def consider_stopping(self) -> None:
-        """Stop once nothing has needed this process for the whole TTL.
-
-        Measured from when it *first* looked idle, and reset by any activity, so the
-        answer is "idle throughout" rather than "idle at some point" — which is the
-        difference between stopping a forgotten server and stopping one between two
-        turns of a conversation the user is coming back to.
-
-        Ahead of all of that: a server nobody claimed and nobody is watching has no
-        reason to live at all, whatever it is in the middle of. See
-        :meth:`_nobody_asked_to_keep_it`.
-        """
+        """Stop when unclaimed and unwatched, or when idle throughout the server TTL."""
         if self.stop_requested is None:
             return
         if self._nobody_asked_to_keep_it():
@@ -296,22 +213,7 @@ class Lifecycle:
             self.request_stop(idle_stop_reason(self.server_idle_ttl, past=True))
 
     def _record_own_stop(self, headline: str) -> None:
-        """Write into every kept conversation that this process stopped itself, and why.
-
-        The counterpart of a run's wake, for the one thing that happens to a
-        conversation which the conversation can never see happen. Nothing reached the
-        transcript when a server stopped on its own: the decision was printed in the
-        process's own log, which the user has no reason to be reading, so a morning
-        opened on a thread whose last line was hours old with nothing between — a night
-        that reads as lost rather than as a decision taken and recorded.
-
-        Stamped with the wall-clock time, which is the half of the answer the file
-        itself cannot give: the gap in the thread is what raises the question, and
-        "stopped at 00:38" is what closes it.
-
-        Best effort throughout, and on purpose: this runs on the way out, and a
-        conversation whose file will not load is not worth holding a shutdown for.
-        """
+        """Note in every kept conversation, with the time, that this process stopped itself and why."""
         stamped = f"⏹ {datetime.now().astimezone():%Y-%m-%d %H:%M} — {headline}"
         try:
             kept = sorted(server_registry.claims())

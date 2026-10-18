@@ -46,18 +46,10 @@ def _announced_address(sockets: Any) -> tuple[str, int]:
 
 
 def _announced_url(sockets: Any) -> str:
-    """The address a client must dial to reach the server.
+    """The address a client must dial: the literal IPv4 socket when there is one.
 
-    ``localhost`` resolves to both 127.0.0.1 and ::1, so the server binds one socket
-    per family — and with ``--port 0`` each gets its own port. The order of the two
-    varies between launches. Announcing ``localhost`` with the port of the first
-    socket sent the client, which picks 127.0.0.1, to the IPv6 port about half the
-    time: refused, on every retry. The literal address of a socket removes the
-    guess.
-
-    The IPv4 socket is named when there is one. ``no_proxy`` lists ``127.0.0.1`` and
-    ``localhost`` almost everywhere, but rarely ``::1``: a client that honours the
-    proxy variables sent ``ws://[::1]`` to the corporate proxy, which closed it.
+    ``localhost`` binds one socket per family, each with its own port under ``--port 0``,
+    and ``::1`` is rarely in ``no_proxy``.
     """
     addr, port = _announced_address(sockets)
     host = f"[{addr}]" if ":" in addr else addr
@@ -134,29 +126,14 @@ async def serve(
     except Exception as _e:
         print(f"WARNING: context-window detection failed: {_e!r}", file=ORIGINAL_STDOUT)
 
-    # The port is deliberately absent here: with --port 0 (what the VS Code extension
-    # passes, so each window gets its own server) it is the kernel that picks one, and
-    # it is not known until the socket is bound. The "Listening on" line below is the
-    # one that carries the real address.
-    # The interpreter line is the server's own view of what it runs on: the extension
-    # logs the binary it launched, but a stray PYTHONHOME/PYTHONPATH in the inherited
-    # environment can still bend that interpreter onto another installation — this is
-    # the line that says so, from inside the process, where it cannot be mistaken.
+    # No port here (with --port 0 the kernel picks it; "Listening on" below says it), and the
+    # interpreter line shows what the process really runs on.
     print(f"MIMIR WS server starting on {host}  (model: {_model})", file=ORIGINAL_STDOUT)
     print(f"Python: {sys.executable}  (prefix {sys.prefix})", file=ORIGINAL_STDOUT)
     print("Initialising agent connections…", file=ORIGINAL_STDOUT)
 
-    # The pool, not an agent: one agent per conversation, built on that conversation's
-    # first query. Process-global and shared by every connection, because two webviews on
-    # one port must see the same live turns.
-    #
-    # Nothing is built here, so the socket listens in milliseconds; the backend wait and
-    # the server spawns are paid by each conversation's first query.
-    # One server per workspace, enforced before anything is bound. Two of them share
-    # the sessions directory, so both append to the same journal and both derive `seq`
-    # from it: the numbering collides, the watermark built on it stops meaning
-    # anything, and a client attached to one sees nothing of the turn running in the
-    # other — a conversation whose tools run and never appear.
+    # The pool: one agent per conversation, built on its first query, shared by every
+    # connection. One server per workspace, enforced before binding (see registry.acquire).
     if not server_registry.acquire():
         existing = server_registry.current()
         if existing:
@@ -214,24 +191,10 @@ async def serve(
 
 
 async def _run_until_signalled(pool: AgentPool) -> None:
-    """Serve until nothing needs this process, then close every agent's MCP servers.
+    """Serve until a signal, a client ``shutdown`` or the pool's idle stop; then close every agent.
 
-    ``stdio_client`` spawns each server with ``start_new_session=True`` — its own process
-    group, so it survives this process dying — and the only thing that terminates one is
-    closing the agent's exit stack. Dying without that leaves up to ``pool.cap`` × ~19
-    orphaned interpreters behind, each holding whatever its own child processes hold; the
-    VS Code extension kills and respawns this server on every connect, so that is the
-    ordinary path, not an edge case.
-
-    ``add_signal_handler`` rather than ``signal.signal``: the close runs on this loop, and
-    a handler that interrupts an arbitrary frame cannot await. Falls back to serving
-    forever where the loop does not support it (Windows), which is where the pool's own
-    idle release is the only reaping there is.
-
-    Three doors, one exit. A signal, an explicit ``shutdown`` from the client, and the
-    pool deciding it is no longer needed all resolve here, because what has to happen on
-    the way out — unwinding each agent's exit stack — is the same in every case and is
-    the only thing that reaps the MCP servers.
+    Only closing an agent's exit stack reaps its MCP servers (each in its own process
+    group). Uses ``add_signal_handler``; without it (Windows) serves until stopped.
     """
     loop = asyncio.get_running_loop()
     stop = loop.create_future()

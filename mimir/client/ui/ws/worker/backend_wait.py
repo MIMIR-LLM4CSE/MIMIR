@@ -20,30 +20,9 @@ logger = logging.getLogger(__name__)
 async def wait_for_backend(out_q: Outbox) -> None:
     """Poll the LLM backend until it answers, or fail fast when it never will.
 
-    The request is the one the agent actually depends on — the backend's
-    ``readiness_urls`` (the model list for every OpenAI-compatible endpoint,
-    ``/api/tags`` for Ollama, nothing for a hosted API) — asked with the same
-    client, proxy posture and TLS policy the backends themselves use. A probe that asks a different question of a different client
-    than the chat path can fail where the chat path succeeds, which is exactly
-    what a readiness check must never do.
-
-    A second URL is a fallback (a local vLLM's ``/health`` answers while the engine
-    is still loading weights, before ``/v1/models`` does). It is only a fallback
-    because it lives at the server root, which an ingress route in front of the
-    endpoint usually does not expose.
-
-    Not every failure is worth waiting on. A refused certificate or a route that
-    is not there answers identically on the first attempt and on the hundredth,
-    so those stop the wait immediately, naming the URL and the reason, instead of
-    spending the full timeout on a verdict already known.
-
-    Progress goes to the client *and* to stdout: during startup the WS server has
-    not bound its port yet, so the client that would show the spinner does not
-    exist, and an attempt reported only there is an attempt reported to no one.
-
-    Controlled by env vars:
-    - MIMIR_BACKEND_TIMEOUT  (seconds, default 600)
-    - MIMIR_BACKEND_POLL_INTERVAL (seconds, default 5)
+    Asks the backend's own ``readiness_urls`` with its client and TLS policy, the second
+    URL a fallback. A refused certificate or a 404 stops at once. Progress goes to the
+    client and stdout. ``MIMIR_BACKEND_TIMEOUT`` (600 s), ``MIMIR_BACKEND_POLL_INTERVAL`` (5 s).
     """
     import httpx
 

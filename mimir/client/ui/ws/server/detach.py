@@ -1,25 +1,7 @@
 """Letting this process go on without the window that started it.
 
-The extension spawns the server as an ordinary child and holds its stdout. Two things
-follow from that, and both are fixable from inside the child — which is why detaching is
-something the server does to itself on request, rather than something the extension has
-to arrange at spawn time. The spawn is not touched at all.
-
-**The pipe is the real killer.** When the extension host dies its end of the pipe closes,
-and the next write here raises EPIPE / takes a SIGPIPE. A server that survives the window
-only to die the first time it logs something has not survived. So the fds are re-pointed
-at a file: ``os.dup2`` replaces what fd 1 and 2 refer to, and Python's ``sys.stdout``
-follows, because the file object writes through the descriptor rather than around it.
-This is also what makes the detached server's output readable afterwards instead of lost.
-
-**Leaving the process group is cheap insurance.** ``os.setsid()`` succeeds only for a
-process that is not already a group leader — and a child of ``cp.spawn()`` without
-``detached: true`` inherits its parent's group, so it is not one. It is best effort on
-purpose: the extension host has no controlling terminal, so no group-wide SIGHUP is
-coming either way, and a failure here must not cancel a detachment whose essential half
-(the fds) already succeeded.
-
-Nothing here can be undone. A detached server has no pipe to go back to.
+The fds are re-pointed at a log file (``dup2``), since the host's pipe closing would
+kill the next write; ``setsid`` leaves its process group, best-effort. Irreversible.
 """
 
 from __future__ import annotations

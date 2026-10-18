@@ -60,13 +60,10 @@ class _QuestionExpired(Exception):
 
 
 def _ask_line(prompt: str, deadline: float | None) -> str:
-    """Read one line from stdin, giving up at *deadline*.
+    """Read one line from stdin, giving up at *deadline* (``_QuestionExpired``).
 
-    With no deadline this is plain ``input()`` — readline editing and history intact,
-    which is what every other CLI prompt gets. With one, stdin is polled instead:
-    ``input()`` cannot be interrupted, and a question nobody is at the keyboard for
-    has to end by itself. Raises :class:`_QuestionExpired` when the deadline passes
-    first, ``EOFError`` when there is no stdin left to read.
+    Without a deadline, plain ``input()``; with one, stdin is polled, since ``input()``
+    cannot be interrupted. ``EOFError`` when stdin is gone.
     """
     if deadline is None:
         return input(prompt).strip()
@@ -98,12 +95,9 @@ def _cli_ask_one(
     progress: str = "",
     deadline: float | None = None,
 ) -> dict:
-    """Prompt the user with a single multiple-choice question. Returns the selection.
+    """Ask one multiple-choice question: ``{"selected": [labels], "other_text": str | None}``.
 
-    Prints the question and numbered options (plus an "Other" free-text entry) and
-    reads a selection from stdin. Returns ``{"selected": [<labels>], "other_text":
-    <str|None>}``; an empty selection means the user declined for this question.
-    Raises :class:`_QuestionExpired` when *deadline* passes with nothing answered.
+    Empty selection means declined; ``_QuestionExpired`` when *deadline* passes.
     """
     labels = [str((o or {}).get("label", "")).strip() for o in options]
     labels = [lbl for lbl in labels if lbl]
@@ -173,18 +167,10 @@ def _cli_ask_one(
 
 def _cli_request_question(questions: list, origin: dict | None = None,
                           timeout_secs: float | None = None) -> dict:
-    """Ask the user one or more clarifying questions sequentially via stdin.
+    """Ask *questions* (``{header, question, multiSelect, options}``) one after another on stdin.
 
-    Each item is a ``{header, question,
-    multiSelect, options}`` spec; questions are asked one at a time and the answers
-    are collected in order. Returns ``{"answers": [{"selected": [...], "other_text":
-    ...}, ...]}``; an all-empty result means the user declined and the agent should
-    proceed with its best judgment.
-
-    ``timeout_secs`` bounds the *whole* batch — it is one tool call, and the caller's
-    wall is on that call, not on each question of it. When it passes, the prompt stops
-    where it is and the result says ``timed_out``, which the tool turns into "nobody
-    answered, go with what you recommended". ``None`` waits indefinitely.
+    Returns ``{"answers": [...]}``; all empty means declined. *timeout_secs* bounds the
+    whole batch, and on expiry the result is flagged ``timed_out``.
     """
     total = len(questions)
     deadline = None if timeout_secs is None else time.monotonic() + timeout_secs

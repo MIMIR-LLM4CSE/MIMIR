@@ -1,13 +1,7 @@
 """How a conversation is told what happened while it was not looking.
 
-A run finishing, a bulletin on runs still going, and steering a turn ended without
-reading: each of these is owed to one conversation, and each becomes either a steer
-into the turn already running or a turn of its own. The router works on the one
-conversation object the pool holds, so it runs whether or not anyone is attached.
-
-Everything here is synchronous. Appending to a conversation, saving it and queueing a
-turn are plain calls — ``submit_query`` is a queue put — so the pump runs this inside
-the tick that drained the event, before any socket sees it.
+Finished runs, bulletins and unread steering each become a steer into the running
+turn or a turn of their own. Synchronous, run by the pump before any socket sees them.
 """
 from __future__ import annotations
 
@@ -56,18 +50,7 @@ class WakeRouter:
 
     def _complete(self, conversation: Conversation, worker: "AgentWorker | None",
                   ev: dict) -> bool:
-        """Hand a finished run to a turn — the running one where possible.
-
-        To the conversation that *launched* the run, which the watcher recorded: a
-        two-hour build outlives the conversation on screen, and dropping its result into
-        whatever the user happens to be reading puts an answer in a conversation that
-        never asked the question.
-
-        With a turn in flight the run is steered into it: the turn learns at its next
-        step boundary that the run finished and carries on, costing no extra turn and no
-        second final answer. Otherwise a turn is started, carrying every run still
-        waiting — so a burst that finished during the last turn arrives as one turn.
-        """
+        """Hand a finished run to the conversation that launched it: steered into its running turn, else a new turn."""
         job_key = ev.get("job_key")
         # One wake per run, however many times it is announced: the watcher holding the
         # run and a scan that found it unspoken-for can both speak before either
@@ -101,14 +84,7 @@ class WakeRouter:
 
     def _checkin(self, conversation: Conversation, worker: "AgentWorker | None",
                  ev: dict) -> bool:
-        """Report on runs still going, without ever interrupting. True if a turn began.
-
-        A completion carries a result the running turn needs; a bulletin carries
-        "nothing to report". Steered into a turn the user is waiting on, it makes the
-        agent answer about the job instead of the question it was asked — so a busy or
-        parked conversation holds it, and the next one overwrites it: a long turn ends
-        with one current status line rather than a backlog of stale ones.
-        """
+        """Report runs still going without interrupting; held while busy, latest wins. True if a turn began."""
         if worker is None:
             # Nothing to preserve either: the run is still going and its own wake is
             # still to come.
@@ -137,16 +113,7 @@ class WakeRouter:
     # ── Delivering what is owed ───────────────────────────────────────────────
 
     def flush(self, conversation: Conversation, worker: "AgentWorker") -> bool:
-        """Start one turn carrying every run this conversation is still owed.
-
-        One turn for all of them: a burst that finished together is one piece of news,
-        and three turns would answer the first and then re-answer it twice. Runs
-        already steered go in too — a steer is only known to have been read when the
-        loop says so, and re-telling a run is recoverable where losing one is not.
-
-        The message is each run's own wake text, concatenated. Nothing is summarised:
-        a wake may relay a next step the *server* wrote, and a précis would drop it.
-        """
+        """Start one turn carrying every run this conversation is owed, each wake text in full."""
         items, conversation.pending_wakes = conversation.pending_wakes, []
         if not items:
             return False
@@ -182,13 +149,7 @@ class WakeRouter:
                 "job": item["ev"].get("job_key")})
 
     def steered(self, owner: str | None, text: str) -> None:
-        """The running turn just took *text* in: forget the runs it named.
-
-        The loop confirming what it read is the only proof a steered wake arrived.
-        Matched on the job key, which every wake names; what is not matched stays
-        pending and is carried by the next turn. Settled on disk too, or every later
-        scan would announce the run again.
-        """
+        """The running turn read *text*: settle the runs it names, in memory and on disk."""
         conversation = self.pool.conversations.get(owner)
         if conversation is None or not conversation.pending_wakes:
             return
@@ -204,17 +165,9 @@ class WakeRouter:
     # ── A turn ended ──────────────────────────────────────────────────────────
 
     def after_turn(self, conversation: Conversation, extras: dict) -> list[str]:
-        """Carry on from an answer: what the turn left unread gets a turn of its own.
+        """Carry on after an answer: unread steering, then finished runs, then the held bulletin.
 
-        A turn ending is not the end of the work, and this is the difference between a
-        chain of steps that runs overnight and one that stops at its first link. In
-        order: the user's own steering the loop never read (the user is waiting on
-        their words), then the runs that finished meanwhile, together, against the
-        history this answer just wrote — and only then the bulletin held back while it
-        worked, if no turn was started and its runs are still going.
-
-        Returns the steering that was given a turn, for a front-end that has to tell
-        the user their message is being answered now.
+        Returns the steering that was given a turn.
         """
         unconsumed = [t for t in (extras.get("_unconsumed_steer") or []) if t]
         # Wakes share the steer queue, so what the loop left unread can be a run's

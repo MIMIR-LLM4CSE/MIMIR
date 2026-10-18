@@ -1,14 +1,7 @@
 """One connection's share of the stream, forwarded to its client.
 
-The pump has already done the work by the time an event arrives here: it journaled it,
-wrote an answer into its conversation, routed a finished run to the turn it is owed.
-What is left is the view: send the event, keep the bookkeeping a screen needs (the
-rows a divert click or a progress bar resolves through, the context bar, the review
-bar), and say what the pool did that the client cannot infer.
-
-It waits on its subscription rather than polling it, so an idle connection costs
-nothing: the loop wakes for an event, and for the once-a-second refreshes only while
-a turn of the conversation on screen is live.
+The pump has journaled and committed by now; this sends, keeps the screen's
+bookkeeping and refreshes the bar once a second while a turn on screen is live.
 """
 from __future__ import annotations
 
@@ -133,16 +126,7 @@ class EventRouter:
         return ev
 
     async def _durable(self, ev: dict, extras: dict) -> None:
-        """A run finished, or a bulletin on runs still going — already routed by the
-        pool to the conversation that launched them. What is left is to say so.
-
-        A wake starts a turn nobody pressed send for, and the client marks itself busy
-        only on its own submit — so it is told, and it cannot work it out for itself:
-        the wake may resume a conversation other than the one on screen, and marking
-        the visible chat busy for a turn running elsewhere leaves a stop button that
-        stops nothing. A run steered into the turn already running starts nothing, and
-        saying it did makes the client drop that turn's live rows.
-        """
+        """Send a routed wake or bulletin, saying whether a turn starts in the conversation on screen."""
         session = self.session
         started = bool(extras.get("_started"))
         await self._send({**ev, "resumes_active_session":
@@ -275,13 +259,7 @@ class EventRouter:
         await self._push_run_progress()
 
     async def _push_run_progress(self) -> None:
-        """What each blocking run of the conversation on screen is doing.
-
-        A run that blocks the turn for twenty minutes shows a spinner and nothing else;
-        the server publishes its phase on the run channel precisely because the call
-        it belongs to cannot answer until it is over. Transient — not recorded, like
-        the context bar: it describes a moment.
-        """
+        """Send what each blocking run on screen is doing (``tool_progress``, transient)."""
         session = self.session
         sid = session.view.active_session_id
         rows = session.view.rows_for(sid)

@@ -54,17 +54,7 @@ class TurnHandlers(Handlers):
         await self.screen.send_sessions_list()
 
     async def _compact_history(self) -> bool:
-        """Summarize the middle of the session history. True when it actually shrank.
-
-        Keeps the opening user message and the last two exchanges and replaces what
-        lies between with a single summary — the same shape the agent loop's
-        intra-query compaction uses. The summarization is an LLM call, so it happens
-        on the worker thread (``Usage.compact_middle``); this coroutine only
-        awaits its future. ``history_full`` is deliberately untouched: it stays the
-        one complete account of the session, exactly as for a front-trim.
-
-        Never raises — the caller falls back to front-trimming on a False.
-        """
+        """Summarize the middle of the window on the worker thread; True when it shrank. Never raises."""
         history = self.screen.conv.history
         middle = history[1:-4]
         if len(middle) < 3:
@@ -208,16 +198,9 @@ class TurnHandlers(Handlers):
         })
 
     async def on_transcript(self, msg: dict) -> None:
-        """Store the client's rendered transcript as this session's display messages.
+        """Store the client's rendered transcript (full or delta) as the session's display.
 
-        The rich transcript — tool rows, reasoning panels, diff cards — is assembled by
-        the webview's reducer and exists nowhere else; the server appends only the text
-        bubbles. Rather than rebuild that assembly here, we take the client's copy of it.
-
-        Two things make that safe to trust: the transcript must name the session it
-        belongs to (one arriving after a switch would otherwise overwrite the session the
-        user just moved to), and it must not have fewer text bubbles than what we hold —
-        a webview that just opened on an empty view must never blank a stored history.
+        Only for the session on screen, and never with fewer text bubbles than held.
         """
         if self.view.active_session_id is None:
             return
@@ -272,26 +255,13 @@ class TurnHandlers(Handlers):
             logger.debug("_send_transcript_resync: the client went away mid-send", exc_info=True)
 
     async def on_steer(self, msg: dict) -> None:
-        """A message typed while the agent is busy — inject it into the running run.
-
-        The message is recorded in history/display (so it persists like a normal
-        turn) and handed to the worker's steer queue, which the agent loop drains at
-        its next step boundary. If no run is actually in flight (race: the agent just
-        finished), fall back to the normal query path so the message isn't dropped.
-        """
+        """Inject a message typed mid-run into the running turn, or start a turn if none is running."""
         text = (msg.get("text") or "").strip()
         if not text:
             return
         if not self.screen.running_turn_is_ours():
-            # Nothing of ours in flight — or a detached wake turn running in another
-            # session, which this message must not be injected into. Either way the
-            # normal query path is right: the serial query loop queues it.
-            #
-            # The client sent a steer because it still believes a run is going, and the
-            # end of a run reaches the worker before its answer reaches the screen: a
-            # message typed in that gap is answered as a turn of its own, so it is also
-            # told so — unannounced, the bubble kept the "queued" tag of a run that was
-            # already over.
+            # No turn of ours in flight (or a wake turn of another session): the query path queues
+            # it, and the client is told the steer became a turn of its own.
             await self._announce_steer_turn(text)
             await self.on_query(msg)
             return
@@ -302,20 +272,7 @@ class TurnHandlers(Handlers):
         self.screen.worker.submit_steer(text)
 
     async def _announce_steer_turn(self, text: str) -> None:
-        """Tell the client the steer it just sent became a turn of its own.
-
-        The same ``steer_injected`` :meth:`_announce_steer_turns` sends, and for the
-        same two reasons: the bubble drops the "queued" tag of a run that is over, and
-        ``busy`` is set for a turn the user is waiting on but never pressed send for.
-
-        It goes on the agent's output queue rather than to the socket, because what
-        makes it read correctly is where it sits relative to the answer of the run the
-        message was typed into. That answer is on that queue, ahead of this, and it is
-        what clears ``busy``: sent straight to the socket this would arrive first and
-        the turn would run with no stop button and no end the composer can see. With no
-        agent there is no queue and no answer in flight either, so nothing to be ordered
-        behind — the socket is then the only route.
-        """
+        """Tell the client its steer became a turn of its own, on the agent's queue behind the answer."""
         ev = {"type": "steer_injected", "text": text, "starts_turn": True,
               # Unstamped it would pass the foreign-event filter and clear a tag in
               # whatever conversation happens to be on screen.
@@ -330,25 +287,10 @@ class TurnHandlers(Handlers):
             logger.debug("_announce_steer_turn: the client went away mid-send", exc_info=True)
 
     async def on_divert_to_background(self, msg: dict) -> None:
-        """Move the run the user pointed at into the background.
+        """Move the run of the clicked row to the background, through its run channel.
 
-        Served here, on the WS loop, and deliberately never through the model: the
-        worker thread is parked awaiting the tool result for the whole call, and the
-        steer queue is drained only at a step boundary, so an instruction routed that
-        way could not arrive until after the run it was meant to divert had ended.
-        Writing the request to the shared state dir is what reaches a server whose
-        event loop that very call is holding.
-
-        Which run is decided by the row the user clicked: the message carries the call
-        id, and the row's tool name is the channel the owning server publishes under.
-        Resolved here rather than shipped by the webview, which has no business
-        knowing a tool name. Sending the request to the shell's channel whatever was
-        clicked has a proxy run report "nothing to move" while a perfectly innocent shell
-        command is the one that gets detached.
-
-        Nothing worker- or agent-side is touched: the confirmation the user sees is
-        the tool result that lands a moment later, carrying the work done so far and
-        the job handle. Saying anything more here would be predicting it.
+        Never through the model, which is parked on that very call; the row's tool name is the
+        channel. The tool result that follows is the confirmation.
         """
         channel = self.view.rows_for(self.view.active_session_id).get(str(msg.get("id") or ""))
         if channel is None or run_channel.request_divert(

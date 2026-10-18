@@ -1,23 +1,7 @@
-"""Where this workspace's server is, written down so it can be found again.
+"""Where this workspace's server is: ``<STATE_DIR>/server.json``, one server per workspace.
 
-A detached server is only useful if something can find it, and a port read off a child's
-stdout is findable exactly as long as the reader is the parent holding that pipe. A
-server that outlives the window which started it has to leave its address on disk.
-
-``<STATE_DIR>/server.json``, and the choice of directory is the whole of "one server per
-workspace": ``STATE_DIR`` is already ``<state home>/<basename>-<sha1(realpath)[:8]>``, so
-two checkouts that share a basename do not collide and two windows on the same workspace
-resolve to the same file. Nothing new had to be invented to scope it.
-
-**Liveness is three questions, not one.** A pid exists; its start time matches the one
-recorded, because a recycled pid wears the same number; and the port actually answers,
-because a process can be alive with its listener already gone — mid-shutdown, or wedged.
-The first two come from :mod:`session.jobs_on_disk`, which holds that contract for detached runs; the
-third is this module's own, and it is the one the other two cannot answer.
-
-The entry is advisory, never authoritative. A stale one costs a connection attempt that
-fails and is then replaced; treating it as proof a server exists is how a window ends up
-waiting on an address nothing is listening at.
+Liveness is a pid, its start time, and a port that answers. Advisory: a stale entry
+costs a failed connection.
 """
 
 from __future__ import annotations
@@ -58,17 +42,9 @@ def lock_path() -> str:
 
 
 def acquire() -> bool:
-    """Claim the right to be *the* server for this workspace. True when claimed.
+    """Claim the right to be this workspace's server with a kernel ``flock``; True when claimed.
 
-    Two servers on one workspace is not a tidiness problem. They share the sessions
-    directory, so both append to the same ``transcript.jsonl`` and both derive ``seq``
-    from it — the numbering collides, the watermark built on it stops meaning anything,
-    and a client attached to one of them sees nothing of the turn running in the other.
-    That is a conversation whose tools run and never appear.
-
-    So the claim is a kernel lock rather than a convention: ``flock`` is released when
-    the process dies however it dies, which no file written by the process can promise.
-    Taken before the socket is bound, because a loser must not occupy a port either.
+    Two servers would share one journal and collide on ``seq``. Taken before binding.
     """
     global _LOCK_FH
     if _LOCK_FH is not None:
@@ -116,15 +92,9 @@ def registry_path() -> str:
 
 
 def publish(*, url: str, host: str, port: int, **extra) -> dict | None:
-    """Record this process as the server for this workspace. Returns the entry.
+    """Record this process as the workspace's server, atomically, once bound; return the entry.
 
-    Written atomically — tmp plus rename — so a reader never sees half a file. Called
-    once the socket is actually bound, because the port is the point: with ``--port 0``
-    the argument was a placeholder and only the bound socket knows the answer.
-
-    Never raises. Failing to publish costs discoverability, not the server: it is still
-    serving, and the extension's other paths (an explicit ``mimir.wsUrl``, a fresh
-    spawn) still work.
+    Never raises: a failure costs discoverability, not the server.
     """
     pid = os.getpid()
     entry = {
@@ -150,13 +120,7 @@ def publish(*, url: str, host: str, port: int, **extra) -> dict | None:
 
 
 def update(**fields) -> dict | None:
-    """Merge *fields* into the recorded entry, keeping the address it already holds.
-
-    What a detachment needs: the url, host and port were settled when the socket was
-    bound and have not changed, so re-deriving them would mean handing them around for
-    no reason. Refuses to touch a stranger's entry — an address this process does not
-    serve is not ours to annotate.
-    """
+    """Merge *fields* into this process's own entry, keeping its address."""
     entry = read()
     if entry is None:
         return None
@@ -196,13 +160,7 @@ def read() -> dict | None:
 
 
 def port_answers(host: str, port: int, timeout: float = _PROBE_TIMEOUT) -> bool:
-    """Whether something accepts a connection there.
-
-    The question the process table cannot answer. Tried for both loopback spellings
-    when the host is a name: a server bound to IPv4 and probed over IPv6 looks dead,
-    which is the same confusion that once sent the extension's own connection through
-    a proxy.
-    """
+    """Whether something accepts a connection at *host*:*port* (both loopbacks for a name)."""
     if not port:
         return False
     try:
@@ -246,16 +204,8 @@ def alive(entry: dict | None, *, probe: bool = True) -> bool:
 
 
 # ── Who asked for this server to survive ──────────────────────────────────────
-#
-# One process serves a workspace, and the redirect that makes it survivable is a
-# property of that process — so "detached" cannot mean one conversation's server lives
-# and another's dies. What *is* per conversation is the claim: each one can ask for the
-# run to be left going, with its own autonomy level, and the process survives for as
-# long as any claim stands. Releasing the last one is what makes it mortal again.
-#
-# Written as ``detached_sessions: {session id: autonomy}``, with ``detached`` kept
-# beside it as "anybody at all" — that one is what the extension reads to decide
-# whether to skip the kill, which is a decision about the process and stays right.
+# Claims are per conversation (``detached_sessions: {session id: autonomy}``); the process
+# survives while any stands. ``detached`` is "anybody at all", what the extension reads.
 
 
 def claims() -> dict[str, str]:

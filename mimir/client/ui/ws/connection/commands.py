@@ -69,13 +69,7 @@ class CancelCommand(Command[WsCommandHost]):
 
 
 class DiagCommand(Command[WsCommandHost]):
-    """The chain the events travel, asked rather than inferred.
-
-    The pump is the only consumer of every worker's queue, so a chat that goes quiet has
-    several causes that look identical from a chat window: the pump never started, it
-    died, a watermark is swallowing what it delivers, or the agent emitted nothing.
-    These rows tell them apart.
-    """
+    """``/diag``: the event chain's state, telling a dead pump from a swallowing watermark from silence."""
     name = "diag"
     surfaces = frozenset({"ws"})
     help = (("", "what the event chain has done — pump, journal, watermark"),)

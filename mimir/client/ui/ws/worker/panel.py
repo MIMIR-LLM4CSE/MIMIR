@@ -64,23 +64,10 @@ class Panel:
             augment_query_with_resources(agent, text), loop)
 
     def sections(self, *, force: bool = False) -> Any:
-        """Collect every section the connected servers can fill. Future of a list.
+        """Every section the connected servers fill (``PANEL_REPORT``), as a future of a list.
 
-        Asked by capability, never by name: a server declares ``PANEL_REPORT`` and the
-        section it fills, and a plugin server's section appears with no client edit.
-        Each answer is whatever that server chose to show — the panel renders lines, it
-        does not interpret them.
-
-        *force* is the reader asking for a re-read rather than a timer asking for the
-        current picture. A section that costs an ``sinfo`` or a reach across ``ssh`` is
-        served from the owning server's cache, which is what makes a panel on a timer
-        affordable and what made pressing ⟳ hand back the page just read. A server that
-        caches names the argument meaning "read it again" in its ``panel`` descriptor;
-        this sets it, and only for that press.
-
-        Straight to the owning session, like the slash commands above: this is the
-        user opening a drawer, not the model taking a step, and routing it through the
-        guardrail pipeline would scatter tool cards through their transcript.
+        *force* passes the server's declared refresh argument, for a user's ⟳. Called straight
+        on the owning sessions, outside the guardrails.
         """
         agent, loop = self._agent(), self._loop()
         if agent is None or loop is None:

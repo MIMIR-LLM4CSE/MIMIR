@@ -1,18 +1,7 @@
-"""Putting the runs the watcher holds onto the machines they are running on.
+"""Placing the runs the watchers hold onto the panel's host and node rows.
 
-The panel's two halves come from different places and only meet here. What a cluster is
-made of is a server's answer, built from a scheduler's own inventory; what is *running*
-is this client's state — the descriptors its watcher holds — and no MCP server can see
-it. So the join is made on the way out, in the one process that has both.
-
-Done here rather than in the webview so that the renderer stays a renderer: placement is
-a rule about data ("a run with no scheduler is on this machine"), and a rule is worth
-unit-testing without a browser.
-
-Nothing here names a tool or a server. A group offers itself as a place to put a run by
-carrying ``host``, ``local`` or ``nodes``; a run says where it is with ``scheduler`` and
-``nodes``, which is whatever its own status op reported. A group that offers none of
-those keys simply never claims anything.
+Groups offer ``host``, ``local`` or ``nodes``; runs carry ``scheduler`` and ``nodes``.
+No tool or server is named.
 """
 
 from __future__ import annotations
@@ -102,17 +91,7 @@ def recorded_hosts_sections(state_dir: str) -> list[dict]:
 
 
 def attach_runs(sections: list[dict], runs: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Hang every run on the host and node rows it is running on.
-
-    Returns ``(sections, unplaced)``. A run lands on its host's row, and also on the row
-    of the node kind whose nodes include one of its own — so a Slurm job is visible both
-    at the cluster and at the machine, which is the two questions a reader has.
-
-    A node kind lists an example of its nodes rather than all of them, so a run on a
-    node outside that sample is placed on its host and not on a kind. The host row is
-    the one that must never miss a run; which kind of machine it landed on is a detail
-    that can be read from the run itself.
-    """
+    """Hang each run on its host row and its node kind's row; ``(sections, unplaced)``."""
     placed: set[str] = set()
     for section in sections:
         for group in section.get("groups") or []:

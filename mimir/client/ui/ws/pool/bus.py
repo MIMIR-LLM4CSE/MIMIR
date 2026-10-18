@@ -1,34 +1,8 @@
-"""The event bus: one pump for the whole process, the journal as the record.
+"""The event bus: one pump for the process, the journal as the record.
 
-The journal is the bus and a socket is one of its followers. The pump lives for the
-process, drains every worker whether or not anyone is listening, writes each event to
-that session's ``transcript.jsonl`` under a monotonic ``seq``, and only then fans it out
-to however many sockets happen to be subscribed — zero included:
-
-    worker.out_q ──(pump)──► seq ──► transcript.jsonl      (durable, authoritative)
-                               │
-                               ├──► the pool               (the conversation: an answer
-                               │                            written, a run's wake routed)
-                               └──► 0..N subscriber queues ──► sockets
-
-Anything that recorded a turn from inside a connection would stop recording when the
-connection dropped: the agents keep working — the pool is process-global, and
-``releasable`` refuses to evict a worker that is busy — so what they do has to be
-written by something that outlives every socket. Three properties follow, and they are
-the whole reason for the module:
-
-**``out_q`` is bounded by a pump tick** rather than by how long the user was away. The
-queue stays unbounded upstream — the worker thread must never block on a full queue
-mid-turn — but it is now always drained.
-
-**The journal is authoritative, so a subscriber may drop events.** A slow or absent
-client cannot hold the process hostage: its queue is bounded, and overflow is reported
-as a gap the client closes by re-reading the journal from its watermark. That is the
-same path as a fresh attach, not a special case.
-
-**``seq`` is assigned here and nowhere else.** One writer per session is what makes the
-number a watermark a client can resume from. Anything else that appends to a session's
-journal must come through :meth:`record_client_event`.
+The pump drains every worker, journals each event under its session's ``seq`` (assigned
+here only), hands it to the pool, then fans it out to 0..N subscribers. A slow
+subscriber may drop events: it re-reads the journal from its watermark.
 """
 
 from __future__ import annotations
@@ -77,17 +51,8 @@ class Subscription:
         # travel beside the event rather than inside it.
         self.queue: asyncio.Queue[tuple[dict, dict]] = asyncio.Queue(maxsize=maxsize)
         # Per conversation, the seq at or below which this client has already rendered
-        # everything: the replay it was just sent covers them. Written by the attach
-        # path, one conversation at a time.
-        #
-        # Per conversation and not one number for the socket, because ``seq`` is
-        # counted per conversation — one journal and one writer each. A single
-        # watermark raised to one conversation's position gates out every conversation
-        # whose journal is shorter, which on a socket that opens on a long chat is
-        # every new one: its events start again at 1, below the gate, and are dropped.
-        # Streamed text is never journaled and so passes regardless, which is what
-        # makes the failure look like a working chat that has stopped showing tool
-        # calls, diffs and answers rather than like a dead connection.
+        # everything (the replay covers it). Per conversation because ``seq`` is: one number for
+        # the socket would gate out every shorter journal.
         self._rendered: dict[str, int] = {}
         # Set when the queue overflowed. The client is told, and closes the gap by
         # replaying from its own watermark.
@@ -276,13 +241,7 @@ class EventBus:
     # ── What counts as finished ───────────────────────────────────────────────
 
     def concluded_at(self, session_id: str) -> float | None:
-        """When this session last delivered a final answer, or None if it has not.
-
-        None is the answer for every state that is not a conclusion — a turn in
-        flight, a turn parked on a card, a worker that has only just been built, a turn
-        that was cancelled. A shutdown predicate must treat all of those as *working*,
-        because none of them is a session that finished.
-        """
+        """When this session last delivered a final answer, or None (every other state is working)."""
         return self._concluded.get(session_id)
 
     def concluded_since(self, session_id: str, now: float | None = None) -> float | None:
@@ -381,13 +340,7 @@ class EventBus:
                 raise
 
     def _publish_attachment(self) -> None:
-        """Tell every worker how long this process has been without a client.
-
-        A worker parked on a card is a *thread*, blocked in a queue poll. It cannot
-        await anything and must not touch the loop's state, so the answer is pushed to
-        it as a plain timestamp rather than asked for. Pushed every tick, including the
-        ticks that move no events, since the thing it reports is the absence of events.
-        """
+        """Push to every worker, each tick, how long the process has been without a client."""
         if self._subs:
             self._unattended_since = None
         elif self._unattended_since is None:

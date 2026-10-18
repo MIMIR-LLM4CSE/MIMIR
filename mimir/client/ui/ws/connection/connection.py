@@ -73,31 +73,11 @@ class Connection:
 
     @property
     def worker(self) -> AgentWorker:
-        """The agent of the conversation on screen, or None if it has none yet.
-
-        A property, not a field: there is one worker per conversation, built on that
-        conversation's first query, and every ``self.worker.*`` call site asks about the
-        session being read — which is what this answers.
-
-        Until that first query the conversation has no worker, and this answers with the
-        pool's detached stand-in rather than None: every getter on it gives the right
-        pre-agent answer and every setter is a no-op. Two things must not be silently
-        dropped that way — submitting a query, and a setting that has to survive into the
-        next worker built — and both go through the pool explicitly.
-        """
+        """The agent of the conversation on screen, or the pool's detached stand-in (``Screen.worker``)."""
         return self.screen.worker
 
     def _greeting(self) -> dict:
-        """The ``ready`` sent the moment the socket is accepted.
-
-        Its ``agent_ready`` is the part worth stating rather than leaving to be
-        inferred. This is sent well before the agent exists — the worker is still
-        waiting on the LLM backend, minutes of it on a cold vLLM — and the worker
-        sends a second greeting, spelled "ready" too, once it really is up. The two
-        were indistinguishable to the client, so the chat invited the user to type
-        into an agent that could not answer. The worker's own says True; this one
-        says what is actually so.
-        """
+        """The ``ready`` sent on accept, with an honest ``agent_ready`` (usually False this early)."""
         return {"type": "ready", **self.pool.ui_state(self.view.active_session_id)}
 
     async def run(self) -> None:
@@ -112,14 +92,8 @@ class Connection:
         # starts them.
         drain_task: asyncio.Task | None = None
         jobs_task: asyncio.Task | None = None
-        # Everything from the subscription on is guarded, and that is the point. A
-        # subscription is what tells the pool a socket will route this process's output
-        # — the committer and the headless wake consumer both stand down while one
-        # exists — so a view that ends without closing it leaves the server believing
-        # somebody is watching for as long as it lives: no turn committed, no finished
-        # run handed to its conversation, no check-in. Every step of the handshake sends
-        # on a socket that can close under it (a window shut mid-replay raises here),
-        # which makes an unguarded exit the ordinary case rather than the exotic one.
+        # Everything from the subscription on is guarded: an open subscription makes the pool's
+        # committer and wake consumer stand down, so it must be closed on every way out.
         try:
             # Send ready immediately so the webview transitions out of "connecting".
             greeting = self._greeting()
@@ -235,32 +209,14 @@ class Connection:
     async def send_replay(self) -> None:
         """Send what this session produced past the client's watermark, then go live.
 
-        The order in :meth:`run` is the whole argument that this neither duplicates nor
-        drops. The subscription was opened *before* the handshake, so everything the
-        agents produced since is already queued behind it — there is no gap to fall
-        into. The journal is then read from the watermark and sent. Events produced
-        while that read was happening are in both places, so the subscription's gate is
-        raised to where the replay ended and the drain loop discards anything at or
-        below it: the overlap collapses to exactly one copy.
-
-        Streamed deltas are not in the journal and so are not replayed — a resumed turn
-        shows the aggregate that closed each block (``thinking_end``, ``answer``) rather
-        than its keystrokes, which is also what makes replaying a twelve-hour run
-        affordable. ``context_usage``, ``batch_status`` and ``todo`` are re-derived on
-        load and are skipped for the same reason.
+        The subscription opened before the handshake, so nothing is missed; the gate is then
+        raised to the replay's end so the overlap is sent once. Deltas are not replayed.
         """
         session_id = self.view.active_session_id
         if not session_id or self.view.sub is None:
             return
-        # Never past what the journal actually holds. The watermark arrives from the
-        # client, and is stored, so it can outlive the journal it counted — a session
-        # whose log was removed, or a number inherited from another conversation. A
-        # claim to have seen more than exists cannot be true, and honouring it sets the
-        # gate above every event this session will ever produce.
-        #
-        # The gate it feeds is this conversation's own, which is what makes the clamp
-        # enough: ``seq`` is counted per conversation, so a number from one says
-        # nothing about another.
+        # Never past what this conversation's journal holds: a stored watermark can outlive its
+        # journal, and honoured it would gate out every future event.
         held = self.pool.bus.last_seq(session_id)
         if self.view.rendered_seq > held:
             logger.warning("replay: session %s claims to have rendered seq %d but its "

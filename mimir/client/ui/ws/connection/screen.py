@@ -104,13 +104,7 @@ class Screen:
         })
 
     def session_activity(self, session_id: str) -> dict:
-        """What a conversation is doing right now, for its row in the panel.
-
-        ``running`` is a turn in flight, ``parked`` one waiting on a card, ``runs`` the
-        background runs it still has going — a conversation that launched a build and
-        answered has no turn in flight, and that is the case detaching exists for.
-        Guarded: read for every row, and a hiccup must lose one dot, not the panel.
-        """
+        """A conversation's ``running``, ``parked``, ``queued`` and ``runs``, for its row; {} on error."""
         try:
             worker = self.pool.get(session_id)
             runs = len(worker.watched_job_keys()) if worker is not None else 0
@@ -189,13 +183,9 @@ class Screen:
     async def command_reply(self, command: str, title: str, *,
                             items: list[dict] | None = None, note: str = "",
                             tone: str = "ok", transient: bool = False) -> None:
-        """One structured answer for a session command: a listing, or something
-        irreversible that just happened (a setting reports its state instead).
+        """Send one structured command answer: a listing, or something irreversible that happened.
 
-        ``tone``: ``ok``, ``warn`` (irreversible), ``empty`` (a listing with nothing in
-        it), ``quiet`` (a state the user walked back into, drawn as a rule). ``items``
-        are ``{label, detail}`` rows. ``transient`` keeps it out of the stored
-        transcript, for a card about this moment rather than the conversation.
+        ``tone`` is ok, warn, empty or quiet; ``transient`` keeps it out of the stored transcript.
         """
         await self.out.send({
             "type": "command_output",

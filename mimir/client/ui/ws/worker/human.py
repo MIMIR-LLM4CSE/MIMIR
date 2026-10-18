@@ -55,15 +55,9 @@ class _Prompt:
 
 
 def detach_grace() -> float:
-    """How long a socket may be gone before this process treats it as gone.
+    """How long a socket may be gone before the window counts as gone (a reload is not).
 
-    Not zero, and this is the whole reason the delay exists: reloading a VS Code window
-    closes and reopens the socket, and acting on that blink would be a regression — the
-    user is right there, and would find their question put away.
-
-    One value, two readers: an unanswered card is set aside past it, and a server no
-    conversation has asked to keep stops past it. Both are answering the same question
-    — has the window actually gone — so both must answer it the same way.
+    One value for both readers: setting a card aside, and stopping an unclaimed server.
     """
     try:
         return max(0.0, float(os.environ.get("MIMIR_DETACH_GRACE", "") or 30.0))
@@ -160,24 +154,10 @@ class HumanBridge:
         return True
 
     def _emit_prompt(self, payload: dict, questions: list | None = None) -> dict:
-        """Register a card the caller is about to park on, and show it when its turn comes.
+        """Register a card the caller will park on; show it when its turn comes. Returns the payload.
 
-        An agent outlives the connections that read it: a socket that drops while it is
-        parked leaves the card on a client nobody is holding, and the turn waiting on an
-        answer nobody can give. This agent's query loop is serial, so every later query of
-        *this conversation* queues behind that wait and it reads as hung, with nothing on
-        screen to explain it. Kept here, the card goes back in front of whoever reconnects
-        (``Connection._resend_parked_prompt``).
-
-        Cards queue rather than overwrite one another: one card on screen at a time, in
-        the order they were raised, each answered by its own id (:meth:`_deliver`). A
-        sub-agent still running after its delegating call has returned raises its card
-        from a thread of its own, so two can be in flight at once; a single slot would
-        mean the second erased the first while an answer went to whichever waiter
-        happened to be listening.
-
-        Returns the attributed payload, so a caller that has to take the card back down
-        (an expired question) addresses the same conversation the card named.
+        Kept here so a reconnect gets it back (``CardHandlers.resend_parked_prompt``). Cards
+        queue, one on screen at a time, each answered by its own id.
         """
         # Which conversation is asking. Structured, never spelled into the label or the
         # question text: that text is also what the model sees, so a marker written there
@@ -198,14 +178,7 @@ class HumanBridge:
         return payload
 
     def _show_next(self) -> None:
-        """Put the oldest card that has not been shown on screen, if none is up.
-
-        Called whenever the set changes — a card raised, a card answered — so the queue
-        advances on its own. Nothing is shown while the turn is deferring (nobody is
-        there to read it) or while the head card is pre-answered (the wait settles it
-        without a card): both are dropped a moment later, and this runs again for the
-        one behind them.
-        """
+        """Show the oldest unshown card if none is up (not while deferring or pre-answered)."""
         with self._prompts_lock:
             if any(p.shown for p in self._prompts.values()):
                 return
@@ -229,17 +202,7 @@ class HumanBridge:
         self._show_next()
 
     def _deliver(self, req_id: str, response: dict, kind: str) -> None:
-        """Hand *response* to the card that asked for it, or drop it.
-
-        Matched by id — which the front-end has always sent back and this had always
-        thrown away. An answer put on a queue shared by kind settles whatever prompt is
-        listening, which with two cards in flight is not necessarily the one the user
-        was reading. ``Connection._answer_deferred`` already refuses a stale answer on
-        exactly this reasoning; this is the same rule for a live one.
-
-        An answer carrying no id at all goes to the card on screen of that kind — the
-        only one it could have been meant for.
-        """
+        """Hand *response* to the card with *req_id*, or, with no id, to the card of that kind on screen."""
         with self._prompts_lock:
             prompt = self._prompts.get(req_id) if req_id else None
             if prompt is None and not req_id:
@@ -252,12 +215,9 @@ class HumanBridge:
             except _queue.Full:
                 pass        # answered twice (a copy of the card on screen): the first wins
     def _unattended_past_grace(self) -> bool:
-        """Whether this process has had no client for longer than the grace period.
+        """Whether this process has had no client for longer than the grace.
 
-        The criterion is *attached*, not *elapsed*: a card with somebody there waits
-        for ever, which is deliberate and what ``test_approval_wait`` pins. What
-        changes when nobody is there is not how long the wait may be but whether there
-        is anything to wait for.
+        What matters is whether anyone is attached, not how long the card has waited.
         """
         # Absent until the pump's first tick reaches this worker, which is a real
         # state and not only a test's: the safe reading of no information is that
@@ -279,14 +239,9 @@ class HumanBridge:
         return pre
 
     def pending_prompt(self) -> dict | None:
-        """The card the parked turn is waiting on, once it is nobody's to deliver.
+        """The card the parked turn waits on once it is out of the queue, else None.
 
-        None while the card is still queued: the drain loop will hand it to whoever is
-        connected, and returning it here as well would put the same card on screen
-        twice. That is not merely cosmetic — an approval renders as one card carrying
-        both ids and is then answered twice, leaving a spare answer on the queue for
-        the *next* prompt to consume, which is the exact failure ``flush_prompts``
-        exists to prevent.
+        Returning a queued card too would show it twice and answer it twice.
         """
         prompt = self._pending_prompt
         if prompt is None:
@@ -297,27 +252,10 @@ class HumanBridge:
 
     def _await_response(self, req_id: str,
                         timeout_secs: float | None = None) -> dict | None:
-        """Block until the answer to card *req_id* lands. ``None`` when it does not.
+        """Block until card *req_id* is answered; ``None`` when the turn is cancelled.
 
-        An unanswered approval must keep the agent *parked*: it must never silently
-        proceed just because the user was slow to respond, so it waits with no
-        wall-clock limit at all. To stay responsive to the Stop button, we poll in
-        short slices and bail the moment the agent's cancel flag is set (from the WS
-        thread), returning ``None`` for cancelled.
-
-        *timeout_secs* gives up waiting after that long and returns :data:`TIMED_OUT`
-        — told apart from the cancelled ``None`` because the caller has a card on
-        screen to take back down, and the two endings read differently to the model.
-        Only a clarification question passes one; whoever raised the card decides,
-        because the same seam carries approvals (a deadline would authorise a command
-        nobody saw) and plan decisions (one would execute a plan nobody approved).
-
-        This is the single seam every WS prompt (approval, out-of-workspace path,
-        question) blocks on, so it is where the wait is marked as *human*
-        time — excluded from the tool-call timeout budget it sits inside.
-
-        Waits on this card's own slot, so a thread only ever wakes on the answer to the
-        card it raised.
+        No time limit unless *timeout_secs* (questions only), which returns :data:`TIMED_OUT`.
+        The wait counts as human time, outside the tool budget.
         """
         with self._prompts_lock:
             prompt = self._prompts.get(req_id)
@@ -345,21 +283,9 @@ class HumanBridge:
                         return prompt.answer.get(timeout=0.25)
                     except _queue.Empty:
                         pass
-                    # Only once the queue has had its turn and come back empty, and
-                    # this order is the point: an answer already in hand must win over
-                    # setting the card aside, or a reply that crossed with the grace
-                    # elapsing is thrown away and the user answered into a void.
-                    #
-                    # Nobody to answer, for long enough that it is not a window
-                    # reload. Set aside rather than waited out: the wait has no
-                    # timeout by design, so without this a detached run meets its
-                    # first sensitive tool and holds this thread for ever — and the
-                    # pool then reaps the agent out from under it.
-                    #
-                    # Only the indefinite waits. A question carries its own five
-                    # minutes and a documented meaning for running out of them
-                    # ("go ahead with what you recommend"); overriding that here
-                    # would change an answer the model has already been promised.
+                    # Only once the queue came back empty, so an answer in hand wins. Nobody attached past
+                    # the grace: the indefinite waits are set aside, or a detached run would hold this thread
+                    # for ever. A question keeps its own deadline and its meaning.
                     if deadline is None and self._unattended_past_grace():
                         self._defer.set()
         finally:
@@ -456,19 +382,9 @@ class HumanBridge:
     def approve_paths(
         self, agent: Any, paths: list[str], tool_name: str, arguments: dict | None = None
     ) -> tuple[bool, bool]:
-        """Out-of-workspace access prompt — reuses the approval UI (y/n/a).
+        """One out-of-workspace card for the whole call: ``(approved, always)``.
 
-        Carries the same descriptive payload as a normal approval (canonical label,
-        the call's real arguments, the owning server) so the card reads like any
-        other tool card; ``oow_paths`` is what makes it an out-of-workspace prompt and
-        names the offending paths. Returns (approved, always). Blocks the worker thread
-        on its card like ``approve_tool``; the engine's out-of-workspace
-        gate records the grants.
-
-        **One card for the whole call.** Every outside path the call names travels in a
-        single payload: the user judges the command, not each of its operands, and the
-        per-path loop this replaced parked the agent on one queue behind several
-        identical questions.
+        The same payload as an approval, plus ``oow_paths``; the engine records the grants.
         """
 
         arguments = arguments or {}
@@ -515,27 +431,11 @@ class HumanBridge:
 
     def ask(self, agent: Any, questions: list, origin: dict | None = None,
             timeout_secs: float | None = None) -> dict:
-        """Sync clarification questions — blocks the calling thread until answered.
+        """Raise a ``user_question`` card for *questions* and block until answered.
 
-        Mirrors ``approve_tool``: emits a ``user_question`` card carrying the whole
-        batch of questions to the client and blocks the thread that raised it (not the
-        WS event loop) until a ``user_question_response`` arrives. The frontend shows
-        the questions one at a time and returns all ``answers`` together. A cancel
-        returns no answers so the agent proceeds with its best judgment.
-
-        *origin* names the asker when it is not the turn on screen — a sub-agent
-        working alongside it, which since it can be one of several is not something
-        the user can infer. It travels as data so the card can render it as a badge,
-        and it is what tells the front end this card does not belong to the main turn.
-
-        *timeout_secs* is how long the asker is willing to wait (``ask_user_question``
-        passes one; plan approval does not). When it runs out, a ``prompt_expired``
-        event takes the card off the client's screen — it is answering a question
-        nobody is waiting on any more — and the answer comes back empty and flagged
-        ``timed_out``, which the asking server reads as "decide for yourself". That is
-        against an empty answer with no flag, which is a refusal and means "do not
-        choose for them"; confusing the two is what left a long run stopped on a card
-        nobody would read.
+        *origin* names an asker other than the turn on screen. On *timeout_secs* the card is
+        withdrawn (``prompt_expired``) and the answer comes back empty and ``timed_out``
+        ("decide for yourself"), which an empty refusal is not.
         """
         req_id = str(uuid.uuid4())
         emitted = self._emit_prompt({

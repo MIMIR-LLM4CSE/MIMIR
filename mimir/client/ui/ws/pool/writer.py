@@ -31,17 +31,10 @@ class Writer:
         self._after_turn = after_turn
 
     def commit_turn(self, ev: dict, extras: dict) -> dict:
-        """Write a finished turn into its conversation, and carry on from there.
+        """Write a finished turn into its conversation, then carry on (``after_turn``).
 
-        Called by the pump for every answer, before any socket sees it, whether or not
-        one is attached: there is one conversation object, so there is one writer, and
-        a connection showing the conversation renders what is already written. Writing
-        it down is half of a turn landing; the other half is carrying on
-        (``WakeRouter.after_turn``), and a process that did only the first half would
-        answer the step that finished and stop there.
-
-        Returns what a connection needs to say about it: the conversation's title, the
-        interaction it is now waiting on, and the steering that was given a turn.
+        Called by the pump for every answer. Returns the title, the deferred interaction and
+        the steering given a turn.
         """
         session_id = ev.get("session_id")
         conversation = self.conversations.get(session_id)

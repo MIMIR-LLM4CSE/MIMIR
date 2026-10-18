@@ -26,19 +26,7 @@ class CardHandlers(Handlers):
     }
 
     async def resend_parked_prompt(self) -> None:
-        """Put back every card a turn is parked on — in any conversation.
-
-        A turn parks on a person: an approval, a clarification, a plan awaiting
-        approval. The agent blocks on that answer with no timeout — deliberately, so
-        nothing proceeds because the user was slow — which means a connection that drops
-        while a card is up parks that conversation for ever, with nothing on screen to
-        explain the silence.
-
-        Every conversation, not just the one on screen: each agent runs its own turn, so
-        several can be parked at once, and a card left out is a turn waiting for ever.
-        Nothing here judges whose conversation it belongs to — the card says so itself, and
-        that is what routes the answer back to the agent that asked.
-        """
+        """Put back every card a turn is parked on, in every conversation."""
         for _sid, worker in self.pool.items():
             prompt = worker.human.pending_prompt()
             if not prompt:
@@ -50,18 +38,9 @@ class CardHandlers(Handlers):
                 return
 
     def _worker_for_answer(self, msg: dict) -> AgentWorker | None:
-        """The agent an answered card belongs to, or None if it belongs to nobody.
+        """The agent of the conversation the answered card names, or None (then dropped).
 
-        The most consequential routing decision here. A card says which conversation asked
-        it — several can be parked at once, and one may be asking while the user reads
-        another — so the answer goes to that conversation's agent. Aiming it at whichever
-        agent is on screen would settle a question a different conversation asked, with the
-        user's approval attached to a tool call they never saw, which is the worst failure
-        this layer can produce.
-
-        So an unknown or missing session is **dropped**. A card carrying no session comes
-        from a client that does not send one; defaulting it to the conversation on screen
-        would make exactly the mistake the attribution exists to prevent.
+        Never the one on screen by default: that would approve a call the user never saw.
         """
         session_id = (msg.get("session_id") or "").strip()
         if not session_id:
@@ -140,16 +119,7 @@ class CardHandlers(Handlers):
         await self._report_unreverted(moved)
 
     def _revert_one(self, path: str, original: str | None) -> bool:
-        """Restore *path* to *original*, unless it has moved since it was reviewed.
-
-        A revert undoes the diff the user looked at. A file that changed since then
-        carries work from outside this review — another conversation editing the same file,
-        or the user's own editor — and writing the baseline over it destroys work nobody
-        asked to discard. The file is left alone and reported instead.
-
-        Returns False only for that case; a file it could not write is a best-effort
-        failure, like the rest of this path.
-        """
+        """Restore *path* to *original*; False when it changed since it was reviewed (left alone)."""
         approvals = self.screen.worker.agent.approvals
         if approvals.batch.reviewed_matches(path) is False:
             return False

@@ -1,11 +1,7 @@
 """The runs a conversation launched and left running: watched, reported, checked on.
 
-A detached run — a build, a training, a Slurm job — outlives the turn that started it.
-The watcher polls it (read-only, through the run's own status op) on the worker's
-loop until it ends, then puts a ``job_complete`` on the worker's outbox; the pool's
-``WakeRouter`` hands that to a turn of the conversation that launched it. While runs
-are going, a check-in cycle sends a short bulletin on a widening schedule, so a run
-gone wrong is found out early rather than at its end.
+A watcher polls a run's status op until it ends and puts a ``job_complete`` on the
+outbox for the pool's ``WakeRouter``; a check-in cycle sends bulletins meanwhile.
 """
 from __future__ import annotations
 
@@ -30,18 +26,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# When a background check-in fires, as seconds from the one before it: T+30s, T+2.5min,
-# T+12.5min, T+42.5min, and hourly from there for as long as the run lasts. A detached
-# run says nothing between its launch and its end, so a two-hour build that went wrong
-# in its third minute is found out in its hundred-and-twentieth.
-#
-# The ramp widens the way the watcher's own backoff does, and for the same reason: so
-# does the cost of having been wrong for that long. Early on, a mistake is minutes of
-# cluster time and the gap should be small; four hours in, a bulletin every few minutes
-# would be noise charged against a turn each time. The hourly tail is the floor under
-# that — an overnight job stays answerable for without ever being chatty, where a
-# schedule that simply ran out would leave the longest runs, the ones with most to
-# lose, as silent as before.
+# When check-ins fire, in seconds from the previous one (T+30s, 2.5min, 12.5min,
+# 42.5min), then hourly for as long as the run lasts: early mistakes are cheap to catch,
+# and the longest runs are never left silent.
 _CHECKIN_SCHEDULE = (30.0, 120.0, 600.0, 1800.0)
 _CHECKIN_INTERVAL = 3600.0
 
@@ -60,18 +47,10 @@ def _checkin_fingerprint(jobs: list[dict]) -> tuple:
 
 @dataclass
 class _Watch:
-    """A live background-job watcher: the polling task, and what it is watching.
+    """A live watcher: its task, the job's descriptor, and the last ``status`` it learned.
 
-    The descriptor is kept next to the task because the dispatch guard compares an
-    incoming call against the *job's own* ``status_op`` — registry data travelling on
-    the descriptor, the same reason the watcher itself can poll generically. Holding
-    only the task would have forced the guard to name a tool.
-
-    ``status`` is the last thing the poll learned — ``{state, phase, percent, at}``,
-    whatever the status op chose to report, shape-driven like everything else here. A
-    check-in reads it instead of polling again: the watcher is already asking, once a
-    tick, and a second asker would double every run's status traffic to say what the
-    first one already knows. It has to be mutable, which is what a dataclass buys here.
+    The descriptor is what the dispatch guard compares calls against; check-ins read the
+    status instead of polling again.
     """
     task: asyncio.Task
     descriptor: dict
@@ -106,22 +85,10 @@ class JobWatcher:
         return tasks
 
     def register(self, descriptor: dict, owner: str | None = None) -> bool:
-        """Register a completion watcher for a detached run (the agent's hook).
+        """Register a watcher for a detached run (the agent's hook); True when one is active.
 
-        Called on the worker loop from the agent's tool dispatch. Dedups on
-        ``job_key`` so re-launching the same job never spawns a second watcher.
-        Returns True when a watcher is (already) active — the loop uses this to
-        tell the model it may end its turn.
-
-        The session that launched the job is captured here and travels with the
-        watcher: a two-hour build outlives the conversation on screen, and the wake
-        belongs to the conversation that asked for it, not to whichever one the user
-        happens to be reading when it lands.
-
-        *owner* names that session explicitly. The running query is the right answer
-        when the agent registers a job it has just launched, and the wrong one when a
-        watcher is being put back on a run found on disk — there is no running query
-        then, and the session is whichever directory the descriptor came out of.
+        Deduplicated by ``job_key``. The wake goes to *owner*, else the session of the running
+        query.
         """
         if not isinstance(descriptor, dict):
             logger.warning("background-job registration refused: descriptor is %s, "
@@ -167,17 +134,9 @@ class JobWatcher:
         return True
 
     def rearm_detached_jobs(self) -> dict:
-        """Put watchers back on this session's runs, and report the ones that ended.
+        """Put watchers back on this session's runs and report those that ended; return what it did.
 
-        What a restart takes away is the *promise to report* a run, never the run: it
-        keeps going in its own session directory, indifferent. So this reads the
-        descriptors off disk and makes the promise again — a watcher for everything
-        still going, and a ``job_complete`` for everything that finished while nothing
-        was listening, which is the wake its conversation has been owed since.
-
-        Only runs nothing is already watching. ``_bg_jobs`` is the authority on that,
-        and the ordinary case — a server that simply stayed up — finds it full and does
-        nothing at all. Returns what it did, for the log and for tests.
+        Only runs no watcher holds; a restart loses the promise to report, never the run.
         """
         session_id = self.worker.session_id
         if not session_id:
@@ -233,13 +192,7 @@ class JobWatcher:
 
     @staticmethod
     def _watcher_died(task: asyncio.Task) -> None:
-        """Report a watcher or check-in cycle that ended on an exception.
-
-        Nothing awaits these tasks, so an exception escaping one is held until the GC
-        notices and prints "Task exception was never retrieved" — long after the run it
-        was holding finished into silence. The failure and the missing wake are the same
-        event, and this is the only place they can be named together.
-        """
+        """Log a watcher or check-in task that ended on an exception (nothing awaits them)."""
         if task.cancelled():
             return
         exc = task.exception()
@@ -248,19 +201,9 @@ class JobWatcher:
                            "not wake anyone", exc, exc_info=exc)
 
     def _start_checkins(self, session_id: str | None) -> None:
-        """Begin a check-in cycle for this conversation, unless one is already running.
+        """Start a check-in cycle for a new wave of runs, replacing a stale one.
 
-        Called on every registration, and a no-op for all but the first of a wave: a job
-        joining a cycle in flight inherits what is left of it rather than restarting the
-        clock, which is what keeps three jobs launched together to one bulletin apiece
-        instead of three.
-
-        What decides is whether this registration *starts* a wave — whether it is the
-        only live run of the conversation. The cycle cannot end on its own the instant
-        the last job does: its tail is hourly, so it is asleep for up to an hour after
-        a wave finishes, and a job launched into that gap would inherit the remainder
-        of a schedule that no longer describes anything and wait out the hour for its
-        first bulletin. A new wave therefore replaces the cycle rather than joining it.
+        A job joining a running wave inherits its schedule.
         """
         wave_starts = len(self.watched_job_keys()) <= 1
         if self._checkin_task is not None and not self._checkin_task.done():
@@ -282,17 +225,9 @@ class JobWatcher:
         self._checkin_task.add_done_callback(self._watcher_died)
 
     async def _checkin_cycle(self, session_id: str | None) -> None:
-        """Emit ``job_checkin`` down ``_CHECKIN_SCHEDULE``, then hourly while runs last.
+        """Emit ``job_checkin`` down ``_CHECKIN_SCHEDULE``, then hourly, while the conversation has live runs.
 
-        Reports what the watchers have already seen — ``_Watch.status``, written by the
-        poll that is running anyway — so a check-in costs no status traffic at all. A
-        point with nothing new since the last bulletin says nothing.
-
-        Ends the moment this conversation has no live run left: past that the completion
-        wakes have landed and there is nothing to be reassured about. That is the only
-        thing that ends it — the tail does not run out — so an overnight run is still
-        answered for at hour six, where a schedule with a last point would have gone
-        quiet exactly where the stakes were highest.
+        Reads what the watchers already know; a point with nothing new says nothing.
         """
         try:
             for delay in chain(_CHECKIN_SCHEDULE, repeat(_CHECKIN_INTERVAL)):
@@ -328,46 +263,20 @@ class JobWatcher:
         return True
 
     def watched_job_keys(self) -> list[str]:
-        """Keys of the runs this conversation still has in flight.
-
-        Asked before delivering a check-in it held back — a bulletin on runs that have
-        since finished is worse than none — and by the panel, which reports a live run
-        beside a live turn so walking away from one is a question rather than a
-        surprise.
-
-        """
+        """Keys of the runs this conversation still has in flight."""
         return [k for k, w in self._bg_jobs.items() if not w.task.done()]
 
     def watched(self) -> list[dict]:
-        """Descriptors of the runs a watcher is currently holding (the agent's hook).
-
-        The deterministic half of the dispatch guard: a job is in this list or it is
-        not, so nothing has to be inferred about what the model meant. Read on the
-        worker loop, which is also the only thread that writes ``_bg_jobs``.
-
-        Finished tasks are filtered rather than trusted to have been popped: a watcher
-        that raised leaves its entry behind, and a guard that refused calls on a job
-        nobody is watching would block the one question the model still needs to ask.
-        """
+        """Descriptors of the runs a live watcher holds (the agent's hook for the dispatch guard)."""
         return [w.descriptor for w in self._bg_jobs.values()
                 if isinstance(w.descriptor, dict) and not w.task.done()]
 
     async def _watch_job(self, job_key: str, descriptor: dict,
                          session_id: str | None = None) -> None:
-        """Poll a detached run to completion, then emit ``job_complete`` on ``out_q``.
+        """Poll a detached run to completion (:func:`poll.poll_until_terminal`), then emit ``job_complete``.
 
-        An independent task on the worker loop that outlives the launching turn.
-        Read-only status polling only (safe to interleave with an active turn on the
-        single-threaded loop). The WS session handles the UI notification and the
-        auto-resume (``WakeRouter``).
-
-        The poll itself is :func:`poll.poll_until_terminal`, shared with the in-turn
-        fallback and with a sub-agent's own watcher; what belongs here is the schedule it
-        is given, the check-in and progress it writes per tick, and the event below.
-
-        The event carries the descriptor's own ops. The session that reads it knows
-        nothing about what kind of job this was, so what it can say to the model comes
-        from the descriptor and the summary rather than from anything it names itself.
+        A task on the worker loop that outlives the launching turn; the event carries the
+        descriptor's own ops.
         """
         try:
             await self._poll_to_completion(job_key, descriptor, session_id)
@@ -456,16 +365,7 @@ class JobWatcher:
         # The consumer writes the marker — see ``jobs_on_disk.mark_wakes_reported``.
 
     def watched_runs(self) -> list[dict]:
-        """What is running outside the current turn: detached jobs the watcher holds.
-
-        The descriptor says what kind of run it is and whose it is; the rest is what
-        the poll learned and was already keeping — where it is running, how far it has
-        got, which pid or job id it wears. Both halves read without being understood,
-        so a status op that starts reporting something new needs no change here.
-
-        ``at`` is deliberately dropped: it is a ``time.monotonic()`` reading, which
-        means nothing outside this process.
-        """
+        """The runs held by watchers, for the panel: descriptor and last status, minus the local ``at``."""
         out = []
         for watch in self._bg_jobs.values():
             descriptor = watch.descriptor

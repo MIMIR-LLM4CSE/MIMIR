@@ -74,13 +74,7 @@ def format_ledger_full(block: str) -> str:
 
 
 def format_completion_summary(block: str) -> str:
-    """The one-liner printed under an answer whose run ended with something open.
-
-    The terminal never reprints the answer — it is streamed as it is produced, and the
-    report is appended after — so without a line of its own the report reaches the CLI not
-    at all. One line is the whole of what it gets: the headline the report already chose as
-    its readable-without-unfolding line, plus the residual risk.
-    """
+    """The one line printed under an answer whose run ended with something open: headline and risk."""
     rep = parse_completion_block(block)
     glyph = _COMPLETION_GLYPH.get(rep["status"], "⚠️")
     risk = f" · risk: {rep['risk']}" if rep["risk"] else ""

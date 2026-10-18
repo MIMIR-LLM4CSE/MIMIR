@@ -55,16 +55,7 @@ class PanelHandlers(Handlers):
         await self._send_command_result(result)
 
     async def _send_command_result(self, result: CommandResult) -> None:
-        """A command's result, the way this front-end shows each shape.
-
-        An error as ``error``. A setting as its STATE message — the webview draws it on
-        the control that owns the setting, and a line in the transcript would only
-        repeat that control. A listing or an irreversible change as ``command_output``,
-        not ``output``: ``output`` is the transient tool-activity channel the webview
-        drops on purpose, which silently swallowed every answer — ``/memory list``
-        printed nothing, and ``/memory clear`` wiped the store while looking like it
-        had done nothing at all.
-        """
+        """Send a command's result: ``error``, its state message, or a ``command_output`` card."""
         if result.failed:
             await self.out.send({"type": "error", "text": result.title})
         elif result.state is not None:
@@ -89,31 +80,11 @@ class PanelHandlers(Handlers):
         await self.send_toggles()
 
     async def on_list_panel(self, msg: dict) -> None:
-        """Serve the scientific-computing panel: the servers' sections, plus ours.
+        """Serve the scientific panel: the servers' sections plus the runs the watchers hold.
 
-        One section is the client's own because its state lives here — the runs the
-        watcher is holding. The rest is whatever the connected servers declared they
-        could fill.
-
-        Two flags, and both are the difference between the reader asking and a timer
-        asking. ``build`` starts this conversation's agent if it has none: the sections
-        are filled by MCP servers, a conversation holds none until its first query, and
-        a drawer opened before that query showed nothing — which is why the clusters
-        only ever appeared once something had been asked of the model. ``refresh`` goes
-        on to the servers as "read it again", past the caches they answer a timer from.
-
-        The build is started, never waited on. It is the LLM backend wait plus ~19
-        server spawns, and this handler runs on the socket's own read loop — awaiting it
-        here would stop the user from typing for as long as it takes, for a drawer. So
-        the report below goes out now, saying no agent answered for it; the worker
-        announces itself with a ``ready`` once it is up, and that is the drawer's cue to
-        ask again — and this end sends the report itself as soon as the build lands, so
-        the drawer fills whether or not that cue makes it back.
-
-        The report is not awaited here either. A cold cluster section is seconds of
-        ``squeue``/``sinfo``, and the read loop held for it kept the user's own messages
-        waiting behind a drawer. Asks that arrive while one is being served are folded
-        into a single further pass, so a timer and a ⟳ never queue up reports.
+        ``build`` starts the agent without waiting (the report follows once it lands);
+        ``refresh`` re-reads past the servers' caches. Reports are served in the background,
+        concurrent asks folded into one pass.
         """
         if msg.get("build") and self.pool.get(self.view.active_session_id) is None:
             self.out.schedule(self._report_panel_once_built(self.screen.ensure_worker()))
@@ -214,18 +185,7 @@ class PanelHandlers(Handlers):
         await self.send_toggles()
 
     async def send_served_models(self) -> None:
-        """Tell the client what the endpoint serves, so it can offer a choice.
-
-        The agent process is the one authority on this: it holds the address and the
-        API key, and it reaches the cluster the way the rest of the client does, so the
-        list does not depend on the extension host's own probe getting through a proxy.
-
-        Sent after the greeting, not inside it: asking the endpoint is a network
-        round trip, and the greeting is what takes the webview out of "connecting".
-        Off-thread for the same reason — a slow endpoint must not hold the event loop
-        that serves every other message. An endpoint that cannot enumerate itself
-        sends nothing; the client keeps naming the active model.
-        """
+        """Tell the client what the endpoint serves (asked off-thread by the agent process)."""
         try:
             models = await asyncio.get_event_loop().run_in_executor(
                 None, self.screen.worker.served_models)
@@ -240,13 +200,7 @@ class PanelHandlers(Handlers):
             logger.debug("_send_served_models: the client went away mid-send", exc_info=True)
 
     async def on_set_model(self, msg: dict) -> None:
-        """Switch the served model mid-session.
-
-        On success, report the new model plus the model-derived settings
-        (thinking profile, enforcement) so the webview's controls stay coherent —
-        the same state-not-narration pattern as ``/mode``. On failure, surface an
-        error rather than silently keeping the old model.
-        """
+        """Switch the served model; report it with its thinking profile, enforcement and temperature."""
         model = (msg.get("model") or "").strip()
         if not model:
             await self.out.send({

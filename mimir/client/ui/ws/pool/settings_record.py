@@ -12,14 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class SettingsRecord:
-    """The choices a newly built worker must start from.
+    """The choices a newly built worker replays: settings, toggles, non-interactive.
 
-    A worker is built long after the user makes these, so it has to arrive already
-    configured: without the record, a conversation started after the user picked "plan
-    mode" would quietly come up in agent mode. Every choice is therefore recorded here
-    *and* applied to every live worker, and a new worker replays the record once its
-    agent exists. The values are validated where they are applied (core.settings), not
-    here, so the two cannot drift apart about what a mode may be.
+    Recorded and applied to live workers alike; validated where applied (core.settings).
     """
 
     def __init__(self) -> None:

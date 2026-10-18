@@ -32,36 +32,10 @@ class DetachHandlers(Handlers):
         self.store = pool.conversations.store
 
     async def report_ended_jobs(self) -> None:
-        """Announce every detached run that finished while nothing was watching it.
+        """Announce every detached run that finished while nothing watched it, through the wake router.
 
-        This is what makes coming back enough. A background run survives anything — its
-        own process session, a trap that records the exit code, a descriptor on disk —
-        but the *watcher* that promised to report it is a task on a worker's loop, and a
-        restart takes it with them. Re-making that promise already existed, through a
-        status tool returning ``background_jobs``, but it needed a turn in which somebody
-        asked; here nobody has to.
-
-        Handed to the pool's wake router, deliberately: a run reported late must be
-        indistinguishable from one reported on time, so it goes through the same routing,
-        the same wake text and the same coalescing. A conversation with no agent yet keeps
-        its wake pending rather than losing it, and its next turn carries it.
-
-        Run as a task rather than awaited in the handshake: it walks every session's
-        job directories, and nothing must be able to come between a client connecting
-        and the loop that reads its messages.
-
-        Marked on disk as it is announced, because two places look for these — a
-        connection arriving and a worker being built — and a run announced twice is a
-        conversation woken twice for one build.
-
-        A session never scanned before gets a *baseline* instead of a backlog. A
-        detached job's directory is never swept, however old, so a long-lived workspace
-        holds every build it ever ran, and an unmarked one there is as likely to have
-        been reported by its own watcher as to be owed a wake. Reading that history as
-        wakes owed wakes a conversation for a two-month-old build — worse than missing a
-        recent one, and unlike a missed wake unbounded. Per session, and a sub-agent's
-        counts as its own: a child seen here for the first time brings no backlog
-        either.
+        A task, off the handshake. Marked on disk as announced; a session never scanned gets a
+        baseline instead of a backlog.
         """
         try:
             found = scan_all_sessions()
@@ -94,28 +68,9 @@ class DetachHandlers(Handlers):
                 })
 
     async def restore_detached_autonomy(self) -> None:
-        """Take a run that was left going back, in the mode it was left under.
+        """Take back a run left going: drop the claims, restore each conversation's level.
 
-        A window opening onto a run that never stopped is the user who left it coming
-        back, so attaching *is* the take-back: the claim that kept the process alive is
-        dropped here, and the panel is told the server is attached. That is what makes
-        closing this window end the run again — a server no conversation claims stops
-        once its last client has been gone for the grace, and a claim nothing drops on
-        arrival makes the process immortal, since a window that merely attached to a
-        server holds no handle on it to kill.
-
-        The level is a separate question, and the run's own answer is the truth: it is
-        read before the claim goes and applied to the agents. Two things disagree with
-        it otherwise — a webview arrives on its default, and a worker rebuilt during the
-        absence comes up on the pool-wide record rather than the level chosen for this
-        session, which would quietly drop a run from ``auto`` to ``manual`` and park it
-        at its next sensitive call, with nothing said.
-
-        Scoped to the run, not persisted past it: the level is read from the registry
-        entry, which is cleared on a clean stop and liveness-checked. That is what keeps
-        this from becoming the thing the approval mode is deliberately never persisted
-        for — a mode that suppresses prompts being inherited by a later session that
-        never asked for it.
+        The level is read from the claim before it goes; it lives only as long as the run.
         """
         held = {sid: lvl for sid, lvl in server_registry.claims().items()
                 if lvl in ("manual", "auto", "auto_all")}
@@ -160,35 +115,9 @@ class DetachHandlers(Handlers):
                 "setsid": False,
             })
             await self.out.send({"type": "approval_mode", "mode": level})
-            # Rendered, not notified: ``_notify`` writes to the transcript's transient
-            # channel, which is dropped. Both halves of this are the kind of thing a
-            # user walks back in needing to know — that the run has been approving
-            # sensitive calls on its own, and that closing this window now ends it —
-            # and neither is chatter.
-            #
-            # Quiet, though, and that is the point. It is not a warning: nothing has
-            # gone wrong, nothing needs answering, and the user cannot act on it except
-            # through controls already on screen. A badge and a coloured border read as
-            # a problem to deal with on a conversation the user has just walked back
-            # into — the one moment they are reading for what happened rather than for
-            # what to do. So it reads as a rule across the thread, marking where they
-            # rejoined and under what.
-            #
-            # Transient: it describes the state at this attachment, not anything that
-            # happened in the conversation. Stored, every later load would replay it —
-            # and a conversation rejoined twenty times would open on twenty of them,
-            # each claiming to be now.
-            #
-            # It opens with the state the toggle shows — "attached" — because that is
-            # the word the button answers to, and a line that only says what the run
-            # has been doing leaves the user to work out which of the two positions
-            # they are in. Then the consequence, which the glyph cannot show: the
-            # process survived their absence and will not survive the next one unless
-            # they ask again.
-            #
-            # The level is named only when something was deciding on its own, and the
-            # count only when more than one conversation was left running: the levels
-            # can differ, and "under auto_all" says nothing about which of them.
+            # Rendered as a quiet, transient rule: where the user rejoined and under what. It opens
+            # with "attached" (the toggle's word), then the consequence: closing this window now ends
+            # the run. The level is named only if not manual, the count only if several.
             under = f", under “{level}”" if level != "manual" else ""
             title = (
                 f"attached — this conversation kept working with no window open"
@@ -205,17 +134,7 @@ class DetachHandlers(Handlers):
                     "the detached run", len(held), level)
 
     async def on_shutdown(self, msg: dict) -> None:
-        """Stop the server, now or once it has nothing left to do.
-
-        ``force`` stops it whatever is in flight — the user's own decision about their
-        own machine, and the only way to end a run that is waiting on an answer they
-        have decided not to give. Without it the request is refused while anything is
-        still working, and the reasons are sent back: an arrest that silently discarded
-        a two-hour build would be the worst answer this path could give.
-
-        Either way it goes through the same exit as a signal, which is the only thing
-        that closes the agents' MCP servers.
-        """
+        """Stop the server; refused with the reasons while work runs, unless ``force``."""
         report = self.pool.lifecycle.idle_report()
         force = bool(msg.get("force"))
         if not report["idle"] and not force:
@@ -240,13 +159,7 @@ class DetachHandlers(Handlers):
         self.pool.lifecycle.request_stop()
 
     def _safe_list_sessions(self) -> list:
-        """The stored conversations, or none when the directory cannot be read.
-
-        Guarded because its one caller is deciding what to claim: a listing that
-        raises must not turn a detachment into an error, and an unreadable store is
-        the one case where "this names no conversation" cannot be concluded — so it
-        falls back to the agents, which is the stricter answer.
-        """
+        """The stored conversations, or [] when the store cannot be read."""
         try:
             return self.store.list_sessions()
         except Exception:
@@ -255,26 +168,10 @@ class DetachHandlers(Handlers):
             return []
 
     async def on_detach(self, msg: dict) -> None:
-        """Let the server go on without this window — "continue without me".
+        """"Continue without me": make this process survivable and set its autonomy.
 
-        Served here, on the WS loop, because the two things that make this process
-        survivable are things it does to *itself*: re-pointing its output fds away from
-        the pipe the extension host holds, and leaving that host's process group. The
-        spawn is not touched at all, which is why this works on a server that was
-        started as an ordinary child — and why it can be decided when the user is
-        leaving rather than when they connected, which is the moment they actually know
-        whether anything is worth leaving running.
-
-        The autonomy level is the user's answer to "what may it do while I am gone", and
-        it is required rather than defaulted: a detachment at ``manual`` parks at the
-        first sensitive tool and does almost nothing overnight, and that has to be a
-        choice rather than something that happened to them. It is applied to the
-        conversations named, through the same seam ``/approvals`` uses, so a turn
-        already in flight picks the new level up at its next gate.
-
-        Naming no conversation means all of them, and then the level is recorded
-        pool-wide as well — which is the only form that survives a worker being rebuilt,
-        since the pool's record of UI settings is per-pool and not per-session.
+        The level is required and applied to the named conversations (none: all of them, and
+        recorded pool-wide). ``enabled: false`` takes the claim back.
         """
         # Giving the decision back. The process-level work cannot be undone — fds that
         # point at a log file have no pipe to return to — but none of it needs undoing:
@@ -336,19 +233,9 @@ class DetachHandlers(Handlers):
                 logger.debug("on_detach: the client went away mid-send", exc_info=True)
             return
 
-        # A claim is a *conversation's* request to be left running, so the set is the
-        # conversations named — never the live agents. An agent is built on a
-        # conversation's first query and released after ten minutes of idleness, and
-        # the ones with no agent at that moment are exactly the ones this exists for: a
-        # conversation whose work is a job MIMIR cannot see has nothing holding its
-        # agent, so it is asleep when the user leaves. Built from the workers, the set
-        # came out empty for it — and an empty claim is written as "not detached", so
-        # the server stopped thirty seconds after the window closed, having just been
-        # asked to keep going.
-        #
-        # The *level* still needs an agent to be applied to, and that is a separate
-        # thing: one asleep gets it back from the claim when a window reattaches, and
-        # from the pool-wide record when something rebuilds it meanwhile.
+        # A claim belongs to the conversations named, never to the live agents: one whose agent
+        # is asleep is exactly the case detaching exists for. Its level comes back from the claim
+        # on reattach, or from the pool-wide record on a rebuild.
         session_ids = msg.get("session_ids")
         targeted: list[str] = []
         if isinstance(session_ids, list) and session_ids:
@@ -378,27 +265,13 @@ class DetachHandlers(Handlers):
             if self.view.active_session_id and self.view.active_session_id not in targeted:
                 targeted.append(self.view.active_session_id)
 
-        # The agent's stdout is about to become a log file, which is not a tty but is
-        # also not proof that nobody is reachable. Saying so plainly keeps the
-        # interactive fallbacks — the bare ``input()`` calls behind the CLI's hooks —
-        # from being attempted at all.
-        #
-        # Through the pool, so it is recorded as well as pushed: a detached process
-        # builds agents after this point — a conversation whose own agent was released
-        # gets it back when a run of its finishes — and the redirect cannot be undone,
-        # so one that came up without this would reach for a terminal that is a log
-        # file for the rest of the process's life.
+        # No terminal behind any agent from now on, recorded in the pool so agents built later
+        # know it too.
         self.pool.set_non_interactive()
 
         info = detach_process(paths.STATE_DIR)
-        # The entry already holds the address; this only adds what has changed about
-        # the process behind it, so a window that attaches later knows which
-        # conversations were left running and under which level each.
-        #
-        # Per conversation, because that is the unit the user chose. The *process* is
-        # not: one serves the whole workspace, and the redirect that makes it
-        # survivable is its own — so it lives for as long as any conversation claims
-        # it, and becomes mortal again when the last claim goes.
+        # Record which conversations were left running and under which level; the process lives
+        # while any claim stands.
         server_registry.claim(targeted, autonomy, log=info.get("log"))
 
         try:
@@ -411,28 +284,11 @@ class DetachHandlers(Handlers):
                 "pid": info.get("pid"),
                 "setsid": info.get("setsid"),
             })
-            # The other half of the switch — see the take-back above. Named here as
-            # what the run may do while unwatched, because that is the part of
-            # detaching the user chose and the part the glyph cannot show.
-            #
-            # And checked against what this process would actually still have to do
-            # once this window has gone, because "this run keeps working" is a claim
-            # about that and nothing was testing it. A conversation whose work is a
-            # job MIMIR never submitted — a raw ``sbatch`` in a shell, a submission
-            # over ``ssh`` — has nothing on disk for the scan to find, so the process
-            # is idle by every measure it has and stops on the idle TTL a couple of
-            # hours later. Detaching into that is a night lost to a sentence that was
-            # never true, and the moment to say so is the click.
+            # Checked against what the process would still have to do without this window: work
+            # MIMIR never started is invisible, and the server would stop on the idle TTL.
             idle = self.pool.lifecycle.idle_report(excluding=self.view.sub)
             if idle["idle"]:
-                # Conditional, and that is not hedging: this is the state at the click,
-                # and the click can land while a turn is one tool call away from
-                # submitting the very job that would keep the process alive. Said
-                # flatly — "nothing is running, this will stop" — the line would be
-                # false by the time it was read, which is how a true warning becomes
-                # one the user learns to skip. So it says what is so now, and what
-                # follows only if nothing starts. The clock itself is described by the
-                # one author of that sentence, next to the TTL it is measured against.
+                # Conditional on purpose: the state at the click, and what follows only if nothing starts.
                 title = f"detached under “{autonomy}” — nothing is being watched yet"
                 items = [{"label": "autonomy", "detail": autonomy}]
                 note = ("No turn in flight and no run MIMIR is watching at this "

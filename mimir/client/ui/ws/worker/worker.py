@@ -84,13 +84,8 @@ class AgentWorker:
     def _init_fields(self, model: str, session_id: str | None) -> None:
         """Every field, and nothing that starts running (see :class:`NoAgentWorker`)."""
         self.model = model
-        # The conversation this worker exists for, fixed for its whole life. One worker
-        # per session is what lets a turn keep running in a conversation nobody is looking
-        # at: a worker shared between conversations can stream only one of them anywhere
-        # the user can see.
-        #
-        # None only for the ends that have no session (tests, standalone construction),
-        # where everything session-scoped falls back to the active-session pointer.
+        # The conversation this worker exists for, for its whole life. None only without a
+        # session (tests, standalone), falling back to the active-session pointer.
         self.session_id: str | None = session_id
         # This conversation's title, for cards raised while the user is reading another.
         # Pushed in by Connection, which is the side that knows what the session is called.
@@ -146,16 +141,10 @@ class AgentWorker:
             loop.close()
 
     async def _live(self) -> None:
-        """Connect, serve queries, close the servers — all in one task.
+        """Connect, serve queries, close the servers, all in one task.
 
-        One task, not three, because of where ``stdio_client`` keeps its cancel scope:
-        anyio anchors it to the task that entered the context, and exiting it anywhere
-        else raises ``RuntimeError: Attempted to exit cancel scope in a different task``.
-        The exit stack is then left half-unwound — the streams closed, the subprocess
-        alive — so the next tool call of a turn still running on this agent fails with
-        ``ClosedResourceError`` and no server is reaped. Setup, the query loop and the
-        close therefore share the task that owns the stack, and the close runs when the
-        query loop has returned, which is when no turn can be in flight.
+        ``stdio_client``'s cancel scope belongs to the task that entered it; closing from any
+        other task leaves the servers half-unwound.
         """
         await self._setup()
         try:
@@ -274,13 +263,8 @@ class AgentWorker:
 
         cancelled = False
         try:
-            # The prose of the streamed block, kept so it can be *recorded*. The
-            # deltas themselves are not: hundreds per turn, and a journal of them is
-            # unreadable. But without an aggregate the record keeps only the tool rows
-            # and the final answer, so a turn read back after an absence has lost
-            # everything the agent said between its tools — which is most of what makes
-            # a turn legible. Flushed at each boundary, in order, so the replay
-            # interleaves prose and tools the way the live stream did.
+            # The prose of the streamed block, recorded as one aggregate at each boundary, so a
+            # replay interleaves prose and tools as the live stream did.
             text_buf: list[str] = []
 
             def _flush_text() -> None:
@@ -379,13 +363,8 @@ class AgentWorker:
         deferred = self.human._deferred_record()
         if deferred is not None and not cancelled:
             answer_ev["_deferred"] = deferred
-        # Steering the loop never read. It is drained at a step boundary, and the step
-        # that produces the final answer has none after it: a message typed while that
-        # answer streams lands in the queue after the loop has stopped looking. Taken
-        # off the queue here, so it cannot bleed into whatever runs next, and handed to
-        # the session, which starts a turn for it — unanswered, it is a message the user
-        # sees waiting for a run that has ended. Dropped after a cancel: the turn it was
-        # aimed at is abandoned, and so is the instruction aimed at it.
+        # Steering the loop never read (typed while the final answer streamed): handed to the
+        # session, which gives it a turn of its own. Dropped after a cancel.
         unread = self._drain_steer_q()
         if unread and not cancelled:
             answer_ev["_unconsumed_steer"] = unread
@@ -396,26 +375,14 @@ class AgentWorker:
 
 
     def emit_assistant_text(self, text: str) -> bool:
-        """Record one streamed prose block. True when it was worth recording.
-
-        The one rule in the aggregation, and the reason it is a method rather than a
-        line inside the streaming closure: whitespace between a tool result and the
-        next call is not something the agent *said*, and a journal of empty blocks
-        would put a blank bubble in every replayed turn.
-        """
+        """Record one streamed prose block, unless it is only whitespace; True when recorded."""
         if not text or not text.strip():
             return False
         self.out_q.put({"type": "assistant_text", "text": text})
         return True
 
     def set_non_interactive(self, value: bool = True) -> None:
-        """Tell the agent there is no terminal behind it.
-
-        Read by the policy ``violations._is_interactive_session``, which otherwise has to
-        infer it from the tty — and a detached server's stdout is a log file, which is
-        not a tty but also not proof that nobody is reachable. Saying so plainly is
-        what keeps the interactive path from being attempted at all.
-        """
+        """Tell the agent there is no terminal behind it (a detached server logs to a file)."""
         agent = self._agent
         if agent is not None:
             agent.non_interactive = bool(value)
@@ -436,27 +403,14 @@ class AgentWorker:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def full_history(self) -> list | None:
-        """The structured transcript from the last completed query (system excluded).
-
-        Mirrors what the CLI chat loop uses in full-context mode: the full message
-        list ``[*prior_history, user_turn, assistant(tool_calls), tool_results,
-        final_assistant]`` with the model's chain-of-thought already stripped (see
-        ``process_response`` in the agent loop). Returns ``None`` when no query has
-        completed yet so callers can fall back to flattened history.
-        """
+        """The structured transcript of the last completed query (system excluded), or None."""
         if self._agent is None:
             return None
         msgs = self._agent.turn.last_full_messages
         return list(msgs) if msgs else None
 
     def last_turn_start(self) -> int | None:
-        """Index in :meth:`full_history` where the last completed turn's own messages begin.
-
-        The loop's own answer to "which of these did this turn produce", so a caller
-        keeping a record of its own need not infer it from the length it submitted —
-        an inference the in-turn budget rewrites invalidate. ``None`` when the boundary
-        cannot be given honestly and the caller must fall back.
-        """
+        """Where the last turn's own messages begin in :meth:`full_history`, or None to fall back."""
         if self._agent is None:
             return None
         start = self._agent.turn.last_turn_start
@@ -513,13 +467,7 @@ class AgentWorker:
         self._steer_q.put(text)
 
     def agent_ready(self) -> bool:
-        """Whether the agent exists yet.
-
-        The socket is bound long before this is true: the worker waits on the LLM
-        backend first, which on a cold vLLM is minutes. The same test ``set_model``
-        applies, and the honest one — ``_ready`` is set in a ``finally`` and is
-        therefore also set when construction raised.
-        """
+        """Whether the agent exists yet (the socket is up long before it)."""
         return self._agent is not None
 
     def is_busy(self) -> bool:
@@ -527,13 +475,7 @@ class AgentWorker:
         return self._current_task is not None
 
     def has_work_pending(self) -> bool:
-        """True while a turn is running here *or* queued to run. What eviction reads.
-
-        ``is_busy`` answers a different question — is there a run to steer into — and is
-        False for the stretch between a turn being submitted and the query loop picking it
-        up. Releasing the agent in that gap closes the MCP servers under a turn that is
-        about to start, and every tool call it makes then fails on a dead stream.
-        """
+        """True while a turn runs here or is queued to run: what eviction reads."""
         return self._current_task is not None or not self._query_q.empty()
 
 
@@ -559,14 +501,10 @@ class AgentWorker:
         return out
 
     def apply_setting(self, name: str, value: Any) -> str:
-        """Apply one of the user's settings to this agent: "" on success, else why not.
+        """Apply a setting to this agent: "" on success, else the refusal to show.
 
-        The caller reports a refusal to the front-end — swallowed, it left the webview
-        showing a mode the agent was never switched to. With no agent yet there is
-        nothing to apply: the pool records the setting and replays it on the agent
-        built later. Called from the WS event loop while the worker thread may be
-        running a query; a setting only rebinds an attribute the loop reads afresh at
-        each step, so it applies from the next step on.
+        With no agent yet the pool replays it later; from the WS loop it takes effect at the
+        next step.
         """
         if self._agent is None:
             return ""
@@ -590,16 +528,9 @@ class AgentWorker:
         return read_setting(self._agent, name)
 
     def served_models(self) -> list[str]:
-        """Model ids the endpoint is serving, or [] if it cannot say.
+        """Model ids the endpoint serves, or [] (never raises).
 
-        The agent process is the one authority on this: it holds the address and the
-        API key, and it reaches the cluster with the proxy posture the whole client
-        uses. Reporting it from here keeps the panel's model picker working when the
-        extension host's own probe is swallowed by a proxy.
-
-        Never raises: a backend that cannot enumerate itself, or an endpoint that
-        does not answer, reads as "nothing to offer" and the caller falls back to
-        naming the active model.
+        Asked from the agent process, which holds the address and reaches it the client's way.
         """
         if self._agent is None:
             return []
@@ -624,13 +555,7 @@ class AgentWorker:
         return {"supported": backend in TEMPERATURE_BACKENDS, "value": value}
 
     def get_thinking_profile(self) -> dict:
-        """What the panel needs to draw a depth control this model can honour.
-
-        The rung labels are the family's own (`low`/`high`/`max` for some, OpenAI's
-        `low`/`medium`/`high` for others), and `can_disable` says whether an "off"
-        rung would do anything — so the control never offers a setting the request
-        builder cannot express.
-        """
+        """The depth control this model can honour: mechanism, its own rung labels, ``can_disable``."""
         backend = os.environ.get("LLM_BACKEND", "vllm").lower()
         if backend not in ("vllm", "ray"):
             # Ollama takes a `think` flag and Anthropic a thinking block; both are
@@ -656,13 +581,7 @@ class AgentWorker:
 
 
     def call_session_tool(self, tool: str, args: dict) -> Any:
-        """Call *tool* directly (``call_tool_directly``) on the worker's OWN loop.
-
-        Returns a Future of the decoded payload. Same constraint as
-        :meth:`Panel.resolve_resources`: the MCP ClientSession objects are bound to this loop,
-        so a call made from the WebSocket thread is scheduled onto it rather than
-        awaited where it was asked for.
-        """
+        """Call *tool* directly (``call_tool_directly``) on the worker's loop; a future of the payload."""
         if self._agent is None or self._loop is None:
             fut: Any = concurrent.futures.Future()
             fut.set_result(err(NO_AGENT))
@@ -697,16 +616,7 @@ class AgentWorker:
         return False
 
     def drain(self) -> list[dict]:
-        """Drain all pending output events (non-blocking), stamped with their session.
-
-        Single choke point for everything the engine emits, so the stamp is applied
-        here rather than at the dozens of emit sites.
-
-        An event produced outside a query — the ``ready`` the setup emits, an error from
-        it — carries this worker's own session rather than ``None``. It belongs to that
-        conversation as much as a turn's own output does, and a worker building lazily
-        emits it while the user may well be reading a different one.
-        """
+        """Every pending output event, stamped with its session (this worker's own outside a query)."""
         events: list[dict] = []
         while True:
             try:
@@ -728,27 +638,10 @@ class AgentWorker:
         self._wake_query_loop()
 
     def aclose(self, timeout: float = 20.0) -> None:
-        """Shut the worker down AND close the agent's servers, then join the thread.
+        """Shut the worker down, close its agent's servers, and join the thread (bounded).
 
-        ``shutdown`` only ends the query loop. ``agent.exit_stack`` is where the ~19 MCP
-        server subprocesses are held, and a worker released when its conversation goes
-        quiet must close it, or each release strands a full set of servers and a few hours
-        of use exhausts the machine rather than freeing anything.
-
-        The close itself belongs to :meth:`_live`, the task that opened those servers;
-        this asks for it and waits. ``stdio_client`` is an anyio context whose cancel
-        scope is anchored to the entering task, and exiting it from any other task raises
-        and leaves the stack half-unwound: streams closed, subprocess alive, and a turn
-        still running on that agent failing its next tool call with
-        ``ClosedResourceError``. So the sentinel is the whole mechanism — the query loop
-        returns, and its own ``finally`` closes the servers.
-
-        A turn in flight is cancelled first. Without that the sentinel waits behind it:
-        shutdown would cost the rest of a turn per conversation, and a turn allowed to
-        run into the close would be the one that hits the dead streams.
-
-        Best-effort and bounded: a server wedged in its own shutdown must not hold the
-        pool, and the subprocess dies with this process in the worst case.
+        The close belongs to :meth:`_live`; this cancels any turn, sends the sentinel and
+        waits. A worker released without it strands its servers.
         """
         loop = self._loop
         if self._agent is None or loop is None or loop.is_closed():
@@ -770,12 +663,10 @@ class AgentWorker:
 
 
 class NoAgentWorker(AgentWorker):
-    """A conversation's worker before its first query: no thread, no servers, no agent.
+    """A conversation's worker before its first query: no thread, servers or agent.
 
-    Every read of ``AgentWorker`` answers for an absent agent (``setting`` gives the
-    caller's default, ``toggles_state`` is empty, the temperature is the stored
-    preference) and every setter does nothing, so this class only refuses what needs
-    an agent: a query. The pool builds a real worker for that.
+    Every read answers for an absent agent and every setter does nothing; only a query is
+    refused (the pool builds a real worker for it).
     """
 
     def __init__(self, model: str) -> None:

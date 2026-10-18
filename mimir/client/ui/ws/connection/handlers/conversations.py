@@ -153,19 +153,9 @@ class ConversationHandlers(Handlers):
         await self.screen.emit_context_usage()
 
     async def _remind_untracked_jobs(self, session_id: str) -> None:
-        """Say when this conversation has runs going that nothing is watching.
+        """Say when this conversation has runs going that nothing watches.
 
-        A watcher lives on the agent that launched the run, so it goes when that agent
-        goes — which the VS Code extension causes on every connect, tearing the server
-        down and respawning it. The run itself does not care: it is a detached process
-        with its own session directory, and it will finish whether or not anything is
-        listening. What is lost is only the promise to say so.
-
-        Deliberately a line and not a re-registration. Re-arming every run found on disk
-        at load would poll jobs the user has long stopped caring about, in every
-        conversation they open; asking for their state is what re-arms them (the status
-        ops hand back a descriptor while a run is in flight), and that is a decision
-        that belongs to the person, not to a reconnect.
+        A line, not a re-registration: asking about the run is what re-arms it.
         """
         worker = self.pool.get(session_id)
         if worker is not None and worker.watched_job_keys():
@@ -182,25 +172,10 @@ class ConversationHandlers(Handlers):
         self, todos: list[dict], todo_deps: list | None = None,
         *, snapshot_at: str = "",
     ) -> bool:
-        """Write todo items back to the session-scoped todo file. Returns whether it did.
+        """Write the saved checklist (and its deps) back to the todo file; True when written.
 
-        Also restores the todo_deps.json sidecar when deps are provided.
-
-        REFUSES to write over a file that is newer than *snapshot_at*, the session's
-        ``updated_at``. ``session.todos`` is captured at autosave time, so a run cut
-        short — a dropped connection mid-query — leaves the store holding the checklist
-        as it stood at the last save while the file on disk holds the one the model has
-        since written. Restoring unconditionally then destroys the live list and hands
-        the model a finished one: observed in session ba8eee87, where a disconnect
-        during an optimisation task restored the *previous* task's five completed steps,
-        so the next query ran with a plan of record reading "0 pending" and the
-        completion gate (``unchecked_checklist_items``) had nothing left to block on.
-
-        The snapshot is trusted when it is at least as recent as the file, when the file
-        does not exist, and when either timestamp cannot be read — restoring is the old
-        behaviour and the right default; only *destroying newer work* is refused. The
-        deps sidecar follows the same decision as the list it describes, since restoring
-        one without the other yields dependencies pointing at steps that are not there.
+        Refused when the file is newer than *snapshot_at*: the model may have written it
+        since the last save.
         """
         try:
             todo_file = todo_file_for_session(self.view.active_session_id)
@@ -230,14 +205,7 @@ class ConversationHandlers(Handlers):
 
     @staticmethod
     def _snapshot_is_current(todo_file: str, snapshot_at: str) -> bool:
-        """May a session snapshot taken at *snapshot_at* overwrite *todo_file*?
-
-        Only when the file is not newer than the snapshot. ``updated_at`` is written
-        with an explicit UTC offset, so its epoch is directly comparable to the file's
-        mtime. Anything unreadable — no timestamp, a malformed one, a missing file —
-        answers yes: the guard exists to stop one specific loss, not to become a second
-        way for a restore to fail.
-        """
+        """Whether a snapshot taken at *snapshot_at* may overwrite *todo_file* (yes when unreadable)."""
         if not snapshot_at:
             return True
         try:
@@ -251,13 +219,7 @@ class ConversationHandlers(Handlers):
             return True  # nothing on disk to lose
 
     def schedule_summary_refresh(self) -> None:
-        """Kick off a background regeneration of the session's description.
-
-        Called once each turn has answered, so the description covers the work and
-        not just the request. Fire-and-forget: the model call runs in an executor so
-        the WS event loop stays responsive, and the refreshed sessions list is pushed
-        when it lands. At most one refresh is in flight per connection.
-        """
+        """Regenerate the session's description in the background, at most one at a time."""
         if self.view.active_session_id is None:
             return
         if self.summary_task is not None and not self.summary_task.done():
@@ -329,14 +291,7 @@ class ConversationHandlers(Handlers):
         await self.screen.send_sessions_list()
 
     def _live_work_of(self, session_id: str) -> list[str]:
-        """Everything of *session_id*'s that deleting it would cut short.
-
-        Its turn counts, not only its jobs: conversations run turns at once, so the one
-        being deleted may be mid-task somewhere the user is not looking — and deleting it
-        closes its agent under the turn, which fails its next tool call rather than ending
-        it. Its card counts too, for the same reason read the other way: a turn parked on
-        a person is work waiting to continue, not work that has stopped.
-        """
+        """Everything deleting *session_id* would cut short: its turn, its card, its runs."""
         live: list[str] = []
         if self.pool.is_parked(session_id):
             live.append("a turn waiting for your answer")
@@ -345,22 +300,7 @@ class ConversationHandlers(Handlers):
         return live + self._live_jobs_of(session_id)
 
     def _live_jobs_of(self, session_id: str) -> list[str]:
-        """Commands of *session_id* still running, as far as the job dirs can say.
-
-        A session's detached shell jobs and submitted Slurm jobs live in its own
-        directory now, which is what gives them a retention policy — they go when the
-        conversation goes. The flip side is that deleting a conversation would take the
-        log of a process that is still running, and for a Slurm job still queued, the
-        only record of what was submitted. So the deletion asks first.
-
-        Read off the files rather than any in-memory registry: the job outlives the
-        worker that launched it, and may outlive the server. A shell job is live when it
-        wrote no ``exit_code``, a Slurm submission when no poll has recorded the state
-        Slurm last gave it — ``jobs_on_disk.is_settled`` holds both halves of that question,
-        because a Slurm job records no exit code and asking only for one reads every job
-        a conversation ever submitted as still running. Neither is a certainty, which is
-        why this reports and does not act.
-        """
+        """Commands of *session_id* still running, read off its job dirs (``jobs_on_disk.is_settled``)."""
         base = session_dir(session_id, paths.STATE_DIR)
         live = []
         for kind in ("jobs", "hpc_jobs"):
@@ -394,13 +334,7 @@ class ConversationHandlers(Handlers):
         running = self._live_work_of(target_id)
         if running and not msg.get("force") and target_id not in self.view.delete_refused:
             self.view.delete_refused.add(target_id)
-            # Said rather than done: the user may well want it gone anyway, and the
-            # answer is theirs. Nothing is deleted in the meantime.
-            #
-            # On the rendered channel, not ``status``. The transcript drops status text
-            # as transient tool chatter, so a refusal sent there is a click that does
-            # nothing visible followed by one that deletes — the warning this exists to
-            # give, not given.
+            # Said rather than done, on the rendered channel (status text is dropped as chatter).
             await self.screen.command_reply(
                 "delete",
                 "Not deleted — that conversation still has work running",

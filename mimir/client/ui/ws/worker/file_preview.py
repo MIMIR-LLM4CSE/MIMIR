@@ -1,16 +1,7 @@
 """Pre-write diff previews for file-mutating tool calls.
 
-A tool that mutates a file declares a ``preview`` spec in its capability
-descriptor — ``{"kind": "<edit shape>", "args": [...]}`` — and the builders here
-reconstruct the proposed post-write content from the call arguments so a UI can
-render a red/green diff *before* the write executes.
-
-Like approval scope kinds (``policy/approval.py``), the
-``kind`` names a generic edit shape reused across tools, never a tool identity:
-a new tool (first-party or from a user extension server) gets previews by
-declaring a shape, with zero client edits. No tool names appear here.
-
-Kept free of UI/transport imports so it is unit-testable hermetically.
+A tool declares a ``preview`` spec (``{"kind": <edit shape>, "args": [...]}``) and the
+builders here reconstruct the content it would write. No tool names; no UI imports.
 """
 
 from __future__ import annotations
@@ -114,14 +105,9 @@ def build_preview_diffs(
     registry: dict[str, ToolCaps],
     root: str | None = None,
 ) -> list[dict]:
-    """Pre-write unified diff entries for a previewable file-mutation call.
+    """Unified-diff entries (``file``, ``patch``, ``new_content``, ``is_new``, ``is_delete``) for a write.
 
-    Returns a list of diff entries (usually one) shaped for the UI's
-    ``file_progress`` card: ``{"file": <rel path>, "patch": <unified diff>}``
-    plus ``new_content`` for whole-content writes (so an editor can open a real
-    diff view), ``is_new`` for file creations and ``is_delete`` for deletions.
-    Empty list when the tool declares no preview spec, the target path is
-    missing/unreadable, or the arguments produce no visible change.
+    Empty without a preview spec, a readable target, or a visible change.
     """
     spec = preview_spec(tool_name, registry)
     if not spec:
