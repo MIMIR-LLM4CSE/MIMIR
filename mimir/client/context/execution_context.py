@@ -622,6 +622,26 @@ def unsettled_runs(execution_context: ExecutionContext) -> dict[str, dict[str, A
     }
 
 
+#: What a run's record says about it, most actionable first.
+RUN_CLASSES: tuple[str, ...] = ("blocked", "broken", "unknown", "pass", "unjudged")
+
+
+def run_class(run: dict[str, Any]) -> str:
+    """Which of :data:`RUN_CLASSES` *run* falls in.
+
+    Blocked (a wall of this environment) comes first; broken is a run that did not
+    reach its end or was judged wrong; any other verdict reads as pass.
+    """
+    if run.get("blocked"):
+        return "blocked"
+    if not run.get("completed") or run.get("verdict") == "fail":
+        return "broken"
+    verdict = run.get("verdict")
+    if verdict == "unknown":
+        return "unknown"
+    return "pass" if verdict else "unjudged"
+
+
 def failed_runs(execution_context: ExecutionContext) -> dict[str, dict[str, Any]]:
     """Runs that did not reach their end, or whose output the model judged wrong.
 
@@ -630,8 +650,7 @@ def failed_runs(execution_context: ExecutionContext) -> dict[str, dict[str, Any]
     """
     return {
         command: run for command, run in (execution_context.runs or {}).items()
-        if (not run.get("completed") or run.get("verdict") == "fail")
-        and not run.get("blocked")
+        if run_class(run) == "broken"
     }
 
 

@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import re
 
+from collections import Counter
+
 from ..context import (
+    RUN_CLASSES,
+    run_class,
     validation_tier,
     weakest_validation_tier,
 )
@@ -63,30 +67,12 @@ _COMMAND_WIDTH = 110
 #: one turn listed 22 runs the summary had already counted.
 _MAX_RUN_ROWS = 6
 
-#: Ordering for the cap: what a reader has to act on survives, what is merely
-#: outstanding is the first to become a count. An unjudged run is the bulk of every
-#: long session (65% of one measured ledger) and the least actionable row in it.
-_RUN_ROW_PRIORITY = ("blocked", "broken", "unknown", "pass", "unjudged")
 
 
 def _short_command(command: str) -> str:
     """*command* on one line, cut to :data:`_COMMAND_WIDTH`."""
     flat = " ".join(str(command).split())
     return flat if len(flat) <= _COMMAND_WIDTH else flat[:_COMMAND_WIDTH - 1] + "…"
-
-
-def _run_class(run: dict) -> str:
-    """Which :data:`_RUN_ROW_PRIORITY` bucket *run* falls in."""
-    if run.get("blocked"):
-        return "blocked"
-    if not run.get("completed") or run.get("verdict") == "fail":
-        return "broken"
-    verdict = run.get("verdict")
-    if verdict == "unknown":
-        return "unknown"
-    if verdict:
-        return "pass"
-    return "unjudged"
 
 
 def _run_row(command: str, run: dict) -> str:
@@ -114,6 +100,88 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
+def _file_rows(execution_context: ExecutionContext, written: list[str],
+               unvalidated: list[str]) -> list[str]:
+    unverifiable = execution_context.unverifiable_files or set()
+    rows = []
+    for f in written:
+        if f not in unvalidated:
+            tier = validation_tier(execution_context, f) or "structural"
+            rows.append(f"`{f}` — checked: {tier}")
+        elif f in unverifiable:
+            rows.append(f"`{f}` — **not checked** (not readable as text)")
+        else:
+            rows.append(f"`{f}` — **not checked**")
+    return rows
+
+
+def _run_rows(runs: dict) -> list[str]:
+    """Runs by what the reader has to act on, cut at :data:`_MAX_RUN_ROWS`.
+
+    The row shows the command as typed, not its ledger key; the chips keep the totals.
+    """
+    ordered = sorted(runs.items(),
+                     key=lambda kv: (RUN_CLASSES.index(run_class(kv[1])), kv[0]))
+    rows = [_run_row(run.get("command") or command, run)
+            for command, run in ordered[:_MAX_RUN_ROWS]]
+    if len(ordered) > _MAX_RUN_ROWS:
+        hidden = len(ordered) - _MAX_RUN_ROWS
+        rows.append(f"{_plural(hidden, 'further run')} not listed — counted above")
+    return rows
+
+
+def _notes(execution_context: ExecutionContext, written: list[str],
+           unvalidated: list[str], runs: dict) -> list[str]:
+    notes = []
+    if written and not unvalidated and not runs:
+        notes.append(_UNCHECKED_OUTPUT_NOTE)
+        reason = str(execution_context.exercise_blocked_reason or "").strip()
+        if reason:
+            notes.append(_EXERCISE_BLOCKED_NOTE.format(reason=reason))
+    if set(unvalidated) & (execution_context.unverifiable_files or set()):
+        notes.append(_UNVERIFIABLE_NOTE)
+    if any(r.get("verdict") for r in runs.values()):
+        notes.append(_VERDICT_NOTE)
+    return notes
+
+
+def _checklist_rows(required: list[dict], optional: list[dict]) -> list[str]:
+    # Bold marks the rows a reader has to act on: the webview tints rows by it.
+    rows = []
+    if required:
+        preview = "; ".join(it["text"] for it in required[:2])
+        more = f" (+{len(required) - 2} more)" if len(required) > 2 else ""
+        rows.append(f"Checklist: **{_plural(len(required), 'step')} unchecked** — {preview}{more}")
+    if optional:
+        rows.append(f"Checklist: {_plural(len(optional), 'optional step')} not done")
+    return rows
+
+
+def _chips(execution_context: ExecutionContext, written: list[str], unvalidated: list[str],
+           runs: dict, by_class: Counter, required: list[dict],
+           optional: list[dict]) -> list[str]:
+    chips: list[str] = []
+    if written:
+        chips.append(_plural(len(written), "file"))
+        if unvalidated:
+            chips.append(f"{len(unvalidated)} not checked")
+        else:
+            tier = weakest_validation_tier(execution_context, written) or "static"
+            chips.append(f"checked: {tier}")
+    if runs:
+        chips.append(_plural(len(runs), "run"))
+        open_runs = by_class["unknown"] + by_class["unjudged"]
+        for count, label in ((open_runs, "unjudged"), (by_class["broken"], "failed"),
+                             (by_class["blocked"], "not attempted")):
+            if count:
+                chips.append(f"{count} {label}")
+    if required:
+        chips.append(f"{_plural(len(required), 'step')} open")
+    if optional:
+        chips.append(f"{_plural(len(optional), 'optional step')} left")
+    return chips
+
+
 def build_ledger(execution_context: ExecutionContext) -> dict | None:
     """``{"status", "files", "summary", "rows"}`` for this run, or None if nothing happened.
 
@@ -121,106 +189,33 @@ def build_ledger(execution_context: ExecutionContext) -> dict | None:
     an execution showed and what the model read.
     """
     written = sorted(execution_context.dirty_written_files)
-    validated = execution_context.validated_files
     unchecked = unchecked_checklist_items(execution_context)
     runs = execution_context.runs or {}
-    required = [it for it in unchecked if not it.get("optional")]
-    optional = [it for it in unchecked if it.get("optional")]
-
-    # A run nobody judged is worth reporting even when no file was touched: an
-    # analysis-only session is exactly the one whose whole answer rests on that output.
+    # A run nobody judged is worth reporting even when no file was touched.
     if not written and not unchecked and not runs:
         return None
 
-    rows: list[str] = []
-    notes: list[str] = []
-    unverifiable = set(execution_context.unverifiable_files or set())
-    unvalidated = [f for f in written if f not in validated]
-
-    for f in written:
-        if f in unvalidated:
-            rows.append(
-                f"`{f}` — **not checked** (not readable as text)" if f in unverifiable
-                else f"`{f}` — **not checked**"
-            )
-        else:
-            rows.append(f"`{f}` — checked: {validation_tier(execution_context, f) or 'structural'}")
-
-    # The dict key is the run's identity (flags and pipelines dropped); the report must
-    # show what was actually typed. Ordered by what the reader has to act on, then cut:
-    # a ledger that names every run stops being read at all, and the counts below say
-    # how many there were either way.
-    ordered = sorted(
-        runs.items(),
-        key=lambda kv: (_RUN_ROW_PRIORITY.index(_run_class(kv[1])), kv[0]),
-    )
-    for command, run in ordered[:_MAX_RUN_ROWS]:
-        rows.append(_run_row(run.get("command") or command, run))
-    if len(ordered) > _MAX_RUN_ROWS:
-        hidden = len(ordered) - _MAX_RUN_ROWS
-        rows.append(f"{_plural(hidden, 'further run')} not listed — counted above")
-
-    open_runs = [c for c, r in runs.items() if r.get("completed") and r.get("verdict") in ("", "unknown")]
-    failed = [
-        c for c, r in runs.items()
-        if (not r.get("completed") or r.get("verdict") == "fail") and not r.get("blocked")
-    ]
-    blocked = [c for c, r in runs.items() if r.get("blocked")]
-    if written and not unvalidated and not runs:
-        notes.append(_UNCHECKED_OUTPUT_NOTE)
-        reason = str(execution_context.exercise_blocked_reason or "").strip()
-        if reason:
-            notes.append(_EXERCISE_BLOCKED_NOTE.format(reason=reason))
-    if any(f in unverifiable for f in unvalidated):
-        notes.append(_UNVERIFIABLE_NOTE)
-    if any(r.get("verdict") for r in runs.values()):
-        notes.append(_VERDICT_NOTE)
-    rows.extend(notes)
-
-    # Bold marks the rows a reader has to act on — it is what the webview tints rows by.
-    if required:
-        preview = "; ".join(it["text"] for it in required[:2])
-        more = f" (+{len(required) - 2} more)" if len(required) > 2 else ""
-        rows.append(f"Checklist: **{_plural(len(required), 'step')} unchecked** — {preview}{more}")
-    if optional:
-        rows.append(f"Checklist: {_plural(len(optional), 'optional step')} not done")
-
+    required = [it for it in unchecked if not it.get("optional")]
+    optional = [it for it in unchecked if it.get("optional")]
+    unvalidated = [f for f in written if f not in execution_context.validated_files]
+    by_class = Counter(run_class(r) for r in runs.values())
+    notes = _notes(execution_context, written, unvalidated, runs)
+    rows = (_file_rows(execution_context, written, unvalidated) + _run_rows(runs)
+            + notes + _checklist_rows(required, optional))
     if not rows:
         return None
 
-    chips: list[str] = []
-    if written:
-        chips.append(_plural(len(written), "file"))
-        if unvalidated:
-            chips.append(f"{len(unvalidated)} not checked")
-        else:
-            chips.append(f"checked: {weakest_validation_tier(execution_context, written) or 'static'}")
-    if runs:
-        chips.append(_plural(len(runs), "run"))
-        if open_runs:
-            chips.append(f"{len(open_runs)} unjudged")
-        if failed:
-            chips.append(f"{len(failed)} failed")
-        if blocked:
-            chips.append(f"{len(blocked)} not attempted")
-    if required:
-        chips.append(f"{_plural(len(required), 'step')} open")
-    if optional:
-        chips.append(f"{_plural(len(optional), 'optional step')} left")
-
-    if unvalidated or required or open_runs or failed:
+    if unvalidated or required or by_class["unknown"] or by_class["unjudged"] \
+            or by_class["broken"]:
         status = "warn"
-    elif notes or optional or blocked:
+    elif notes or optional or by_class["blocked"]:
         status = "note"
     else:
         status = "ok"
-
-    return {
-        "status": status,
-        "files": len(written),
-        "summary": " · ".join(chips),
-        "rows": rows,
-    }
+    chips = _chips(execution_context, written, unvalidated, runs, by_class,
+                   required, optional)
+    return {"status": status, "files": len(written), "summary": " · ".join(chips),
+            "rows": rows}
 
 
 def render_ledger(ledger: dict) -> str:

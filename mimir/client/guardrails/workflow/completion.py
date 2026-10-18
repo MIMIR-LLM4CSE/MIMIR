@@ -6,6 +6,7 @@ from ...context.signals import SOURCE_FILE_EXTENSIONS
 from ..proxy_state import active_proxy_source
 from ...context.execution_context import (
     failed_runs,
+    unsettled_runs,
     validation_tier,
     weakest_validation_tier,
 )
@@ -39,93 +40,89 @@ def _run_label(run: dict) -> str:
     return "Build" if run.get("effect") == "build" else "Run"
 
 
-def collect_completion_issues(
-    execution_context: ExecutionContext, termination: str = TERMINATION_ANSWERED,
-) -> tuple[list[str], list[str]]:
-    """Return (issues, completed) describing the final completion state."""
-    issues: list[str] = []
-    completed: list[str] = []
-
-    termination_issue = _TERMINATION_ISSUE.get(termination)
-    if termination_issue:
-        issues.append(termination_issue)
-
+def _validation_findings(execution_context: ExecutionContext) -> tuple[list[str], list[str]]:
+    """Pending files by how far their checks got, or what the checks proved."""
     pending = pending_validation_paths(execution_context)
-    fail_counts: dict = execution_context.validation_fail_count_by_file
-    dirty: set = execution_context.dirty_written_files
-
-    if pending:
-        # Split pending files into three sub-buckets for clearer feedback.
-        stuck_paths = [p for p in pending if fail_counts.get(p, 0) >= VALIDATION_RETRY_BUDGET]
-        retry_paths = [p for p in pending if fail_counts.get(p, 0) > 0 and fail_counts.get(p, 0) < VALIDATION_RETRY_BUDGET]
-        fresh_paths = [p for p in pending if fail_counts.get(p, 0) == 0]
-        if stuck_paths:
-            issues.append("Checks failing, budget exhausted: " + ", ".join(stuck_paths[:5]))
-        if retry_paths:
-            issues.append("Checks failing, unresolved: " + ", ".join(retry_paths[:5]))
-        if fresh_paths:
-            issues.append("Modified files never checked: " + ", ".join(fresh_paths[:5]))
-    else:
-        # Name what a check actually proves. "All modified files validated" is what a
-        # model reads back as licence to report the work as verified, when all it means
-        # is that the files parse and are whole — the answer's correctness lives on the runs.
+    if not pending:
+        # Name what a check proves: "validated" reads back as licence to call the work
+        # verified, when it only means the files parse and are whole.
+        dirty = execution_context.dirty_written_files
         tier = weakest_validation_tier(execution_context, dirty) if dirty else None
         if tier:
-            completed.append(f"All modified files checked ({tier}) — parses, says nothing about the result")
-        else:
-            completed.append("All modified files checked")
+            return [], [f"All modified files checked ({tier}) — parses, says nothing about the result"]
+        return [], ["All modified files checked"]
+    fails = execution_context.validation_fail_count_by_file
+    issues = []
+    for label, keep in (
+        ("Checks failing, budget exhausted: ", lambda n: n >= VALIDATION_RETRY_BUDGET),
+        ("Checks failing, unresolved: ", lambda n: 0 < n < VALIDATION_RETRY_BUDGET),
+        ("Modified files never checked: ", lambda n: n == 0),
+    ):
+        paths = [p for p in pending if keep(fails.get(p, 0))]
+        if paths:
+            issues.append(label + ", ".join(paths[:5]))
+    return issues, []
 
-    # A refusal is only a *blocker* when it ended the run — the hand-back case. A step
-    # the user judged unnecessary is not a failure to fix, and listing it as one is what
-    # made every refusal come back as "Task is incomplete". It is still reported, in its
-    # own section (see refused_action_lines), because a skipped step must never be silent.
-    denied_calls = execution_context.denied_tool_calls
-    if denied_calls and handback_required(execution_context):
-        issues.append("Stopped at the user's request: " + ", ".join(refused_action_lines(execution_context)))
-    elif not denied_calls:
-        completed.append("No denied actions")
 
-    # `workflow_state` is deliberately NOT reported: it is the loop's own steering
-    # variable, and "still in 'edit' state" names no gap the user can act on. Every
-    # real one — a file unchecked, a run failing or unjudged, a step never started —
-    # has its own line here.
+def _refusal_findings(execution_context: ExecutionContext) -> tuple[list[str], list[str]]:
+    """A refusal is a blocker only when it ended the run (hand-back); otherwise it is
+    reported in its own section (:func:`refused_action_lines`), never as a failure."""
+    if not execution_context.denied_tool_calls:
+        return [], ["No denied actions"]
+    if handback_required(execution_context):
+        return ["Stopped at the user's request: "
+                + ", ".join(refused_action_lines(execution_context))], []
+    return [], []
 
-    # No plan-vs-implementation issue: the declared set comes from prose the model may have
-    # revised, and a dropped file is indistinguishable from a skipped one.
 
-    # The reminder budget stops asking after two tries; what it must not do is let a run
-    # disappear. Every run still open at completion is named here, with what was tried.
-    runs = execution_context.runs or {}
-    never_judged = [c for c, r in sorted(runs.items()) if r.get("completed") and not r.get("verdict")]
-    unresolved = [c for c, r in sorted(runs.items()) if r.get("verdict") == "unknown"]
-    # A blocked run is red, and stays reported as red — but by a wall this environment put
-    # there, not by the change. Charging it here is what turned "I tried the recommended
-    # build and gcc is not installed" into "Task is incomplete."; see blocked_run_lines.
-    broken = [(c, r) for c, r in sorted(runs.items())
-              if (not r.get("completed") or r.get("verdict") == "fail")
-              and not r.get("blocked")]
-    # never_judged / unresolved are reported by unjudged_run_lines, not charged here: a
-    # verdict is a recommendation, and charging its absence made the model spend turns
-    # producing a label to clear the headline rather than because it had read something.
-    # A run that actually *failed* stays an issue below — that is a machine fact.
-    for command, run in broken[:5]:
+def _run_findings(execution_context: ExecutionContext) -> tuple[list[str], list[str]]:
+    """Every failed run, with what was tried once its budget is spent.
+
+    Unjudged and blocked runs are reported elsewhere and never charged: a verdict is a
+    recommendation, and a missing prerequisite is not a defect of the change.
+    """
+    issues = []
+    for command, run in sorted(failed_runs(execution_context).items())[:5]:
         spent = int(run.get("failures", 0)) >= VALIDATION_RETRY_BUDGET
         label = "budget exhausted" if spent else "unresolved"
         issues.append(f"{_run_label(run)} failing, {label}: {run.get('command') or command}")
-        # Naming the run says a wall was hit; naming the attempts says what the wall was,
-        # which is the part the user needs to take it from here.
         attempts = run.get("attempts") or []
         if spent and attempts:
             issues.append("  tried: " + "; ".join(attempts[:3]))
-    if runs and not never_judged and not unresolved and not broken:
-        completed.append(_plural_runs(len(runs)) + " judged pass by the model")
+    runs = execution_context.runs or {}
+    if runs and not issues and not unsettled_runs(execution_context):
+        return [], [_plural_runs(len(runs)) + " judged pass by the model"]
+    return issues, []
 
-    unchecked = [it for it in unchecked_checklist_items(execution_context) if not it.get("optional")]
-    if unchecked and turn_made_commitments(execution_context):
-        issues.append(
-            f"Checklist incomplete: {len(unchecked)} step(s) unchecked — "
-            + "; ".join(it["text"] for it in unchecked[:3])
-        )
+
+def _checklist_findings(execution_context: ExecutionContext) -> list[str]:
+    unchecked = [it for it in unchecked_checklist_items(execution_context)
+                 if not it.get("optional")]
+    if not unchecked or not turn_made_commitments(execution_context):
+        return []
+    return [f"Checklist incomplete: {len(unchecked)} step(s) unchecked — "
+            + "; ".join(it["text"] for it in unchecked[:3])]
+
+
+def collect_completion_issues(
+    execution_context: ExecutionContext, termination: str = TERMINATION_ANSWERED,
+) -> tuple[list[str], list[str]]:
+    """Return (issues, completed) describing the final completion state.
+
+    ``workflow_state`` is not reported: it steers the loop and names no gap the user can
+    act on; every real gap has its own line.
+    """
+    issues: list[str] = []
+    completed: list[str] = []
+    termination_issue = _TERMINATION_ISSUE.get(termination)
+    if termination_issue:
+        issues.append(termination_issue)
+    for found, done in (_validation_findings(execution_context),
+                        _refusal_findings(execution_context),
+                        _run_findings(execution_context)):
+        issues += found
+        completed += done
+    issues += _checklist_findings(execution_context)
 
     if (
         not issues
@@ -134,7 +131,6 @@ def collect_completion_issues(
         and not unjudged_run_lines(execution_context)
     ):
         issues.append("Unknown blocker; explicit completion criteria were not met")
-
     return issues, completed
 
 
