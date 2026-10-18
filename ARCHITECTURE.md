@@ -124,8 +124,8 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
 - **One home per concept.** The on-disk layout (`_shared/state_paths`), the atomic write
   (`_shared/atomic`), the shape of a tool answer (`_shared/responses`), the clock, the
   pid liveness check, the SKILL.md format: each has one module.
-- **No private name crosses a module.** A name another module imports is public; a
-  server's private packages (the proxy's `_lib`, `_ops`) are internal to that server.
+- **No private name crosses a module.** A name another module imports or reads off a
+  module (`store.read_json`) is public, in the client and the servers alike.
 - **Comments say what the code does now.** History belongs in the commits and
   [CHANGELOG.md](CHANGELOG.md).
 - **Tests go through public construction and behaviour.** No test reads the source or

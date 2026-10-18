@@ -125,26 +125,37 @@ class LayerTests(unittest.TestCase):
         self.assertEqual(sorted(offenders), [])
 
 
+def _module_aliases(path: Path, tree: ast.Module) -> set[str]:
+    """The names this file binds to modules of the package (``from . import store``)."""
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            target = PACKAGE.parent / _resolve(path, node).replace(".", "/")
+            for alias in node.names:
+                if ((target / f"{alias.name}.py").exists()
+                        or (target / alias.name / "__init__.py").exists()):
+                    aliases.add(alias.asname or alias.name)
+    return aliases
+
+
 class PrivateNameTests(unittest.TestCase):
-    """A name imported by another module is public: no ``from x import _name``."""
+    """A name another module uses is public: no ``from x import _name``, no
+    ``module._name``, in the client and the servers alike."""
 
-    def test_the_client_imports_no_private_name(self) -> None:
-        offenders = [f"{p.relative_to(PACKAGE)}: {target}.{name}"
-                     for p in _python_files(CLIENT)
-                     for _n, target, name in _imports(p, top_level_only=False)
-                     if name and name.startswith("_") and not name.startswith("__")]
-        self.assertEqual(offenders, [])
-
-    def test_a_server_imports_private_names_only_within_its_own_package(self) -> None:
-        """The proxy's ``_lib`` and ``_ops`` are private packages, internal to it."""
+    def test_no_private_name_crosses_a_module(self) -> None:
         offenders = []
-        for path in _python_files(SERVERS):
-            home = _module_name(path).split(".")[:3]
+        for path in _python_files(CLIENT) + _python_files(SERVERS):
+            tree = ast.parse(path.read_text())
             for _n, target, name in _imports(path, top_level_only=False):
-                if not name or not name.startswith("_") or name.startswith("__"):
-                    continue
-                if target.split(".")[:3] != home:
+                if name and name.startswith("_") and not name.startswith("__"):
                     offenders.append(f"{path.relative_to(PACKAGE)}: {target}.{name}")
+            aliases = _module_aliases(path, tree)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                        and node.value.id in aliases and node.attr.startswith("_")
+                        and not node.attr.startswith("__")):
+                    offenders.append(f"{path.relative_to(PACKAGE)}: "
+                                     f"{node.value.id}.{node.attr}")
         self.assertEqual(offenders, [])
 
 
