@@ -1,11 +1,6 @@
 /**
- * Placing a sub-agent's tool rows among the main agent's.
- *
- * A delegated run is one tool call that lasts minutes, and several of them run at
- * once. Its steps are shown as ordinary tool rows so they read like the agent's own
- * work; what these helpers add is the little that keeps a flat list legible when the
- * work has two sources — rows grouped under the call that spawned them, and a badge
- * saying which sub-agent a row came from.
+ * Placing a sub-agent's tool rows among the main agent's: grouped under the call that
+ * spawned them, with a badge naming the sub-agent.
  */
 import type { ToolActivity } from "../types";
 

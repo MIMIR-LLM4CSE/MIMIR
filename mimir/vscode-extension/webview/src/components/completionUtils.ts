@@ -1,12 +1,5 @@
-// Completion-report parsing — mirrors client/guardrails/workflow.py.
-//
-// Same contract as the verification ledger next door: the agent appends the report to
-// the answer behind a marker comment so the model's history keeps it, and the webview
-// lifts it out of the prose to render it as a collapsed panel (CompletionReport).
-//
-// The marker is what makes that possible: concatenated ahead of the answer as bare prose,
-// the report has nothing to lift it by, so the whole of it renders as body text with the
-// model's own words underneath. Nothing is dropped, only folded.
+// The completion report the agent appends to an answer behind a marker comment
+// (client/guardrails/workflow), lifted off the prose and shown as CompletionReport.
 
 export type CompletionStatus = "incomplete" | "handback" | "refused-only";
 

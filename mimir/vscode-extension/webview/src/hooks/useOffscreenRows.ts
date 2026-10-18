@@ -1,21 +1,11 @@
 import { useEffect, useState } from "react";
 
 /**
- * Which of *ids* name rows that have scrolled out of the visible thread.
+ * Which of *ids* name rows scrolled out of the visible thread, so the dock shows only
+ * what the reader cannot see.
  *
- * A run can outlast the part of the conversation it started in: the agent keeps
- * working, the thread grows, and the row carrying the progress leaves the screen.
- * Knowing that is what lets the dock appear only when it is actually needed — a
- * card duplicating a row the reader can already see is just clutter.
- *
- * Rows are found by their `data-tool-id`, not by a ref threaded through every
- * component between here and the row: a row moves from the live list into a frozen
- * message mid-run, which replaces its element, and an attribute survives that where
- * a captured ref does not. *revision* is what re-runs the search when it happens.
- *
- * An id whose row is not in the DOM at all is deliberately NOT reported offscreen:
- * "not rendered yet" and "scrolled away" are different, and only the second one is
- * worth interrupting the reader for.
+ * Rows are found by `data-tool-id`, which survives a row moving into a frozen message;
+ * *revision* re-runs the search. A row not rendered at all is not offscreen.
  */
 export function useOffscreenRows(
   ids: string[],

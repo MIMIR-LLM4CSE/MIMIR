@@ -6,21 +6,11 @@ const DEFAULT_SLACK = 40;
 const GESTURE_WINDOW_MS = 700;
 
 /**
- * Keep a scrollable pane pinned to its bottom while content streams into it, and
- * stop following as soon as the reader scrolls away.
+ * Keep a scrollable pane pinned to its bottom while content streams into it, and stop
+ * following as soon as the reader scrolls away.
  *
- * The whole difficulty is telling those two apart, because a scroll event says
- * nothing about what caused it: our own `scrollTop` writes fire one too. Deciding
- * from the position at event time is what broke both panes that used to do it.
- * The write happens in a layout effect, the event is delivered later, and by then
- * the next chunk has landed and made the content taller — so the pane measures as
- * "scrolled up" by exactly the text that just arrived, and the follow switches
- * itself off in the middle of a stream nobody touched. Which is why it looked
- * intermittent: it takes a chunk taller than the slack landing inside that window,
- * so a slow stream follows fine and a fast one stops following.
- *
- * So: reaching the bottom resumes the follow whatever moved the pane there, and
- * leaving it pauses the follow only when a real gesture happened just before.
+ * A scroll event does not say what caused it, so reaching the bottom resumes the follow
+ * whatever moved the pane, and leaving it pauses only after a real gesture.
  */
 export function useStickToBottom<T extends HTMLElement>(slack: number = DEFAULT_SLACK) {
   const ref = useRef<T>(null);
@@ -75,16 +65,9 @@ export function useStickToBottom<T extends HTMLElement>(slack: number = DEFAULT_
     };
   }, []);
 
-  // Re-pin when the content grows after the commit that added it.
-  //
-  // Most late growth is avoidable and was fixed at the source, but some is not: a
-  // panel that has to measure the DOM to know whether it clips its own content can
-  // only add its control in a second commit, and that commit changes no state the
-  // pinning effect watches. The pane was then left pinned to the height the row had
-  // before it grew, with the new part below the fold.
-  //
-  // Children are (re)observed whenever the list changes, so the observation set
-  // follows the transcript without the rendering components knowing about any of it.
+  // Re-pin when content grows after the commit that added it (a panel that measures
+  // the DOM adds its control in a second commit the pinning effect does not watch).
+  // Children are re-observed as the list changes.
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof ResizeObserver === "undefined") return;

@@ -20,15 +20,9 @@ let serverProcess: cp.ChildProcess | undefined;
 // `deactivate()` reads both.
 let serverDetached = false;
 
-// The pid of a server this window attached to rather than started, from the registry
-// entry it was found through. The third answer to "who owns this process", and the one
-// that was missing: `serverProcess` is undefined for an attached server, so a window
-// leaving had nothing to end and the run outlived every departure — including the
-// deliberate ones, where the panel had just promised the opposite.
-//
-// Only ever this workspace's own entry. A server reached through `mimir.wsUrl` is the
-// user's own statement about where a server is — possibly one they run by hand, for
-// several windows — and is not ours to kill.
+// The pid of a server this window attached to rather than started (from this
+// workspace's registry entry), so leaving the window can end it. A server reached
+// through `mimir.wsUrl` is the user's own, and never killed.
 let attachedPid: number | undefined;
 
 // The timer mirroring a server's log into its output channel, reachable from
@@ -87,22 +81,10 @@ function sharedReleasePython(): string {
 }
 
 /**
- * Interpreter that runs the WS server.
- *
- * `bash -c` is neither a login nor an interactive shell, so it sources no profile:
- * the child gets this extension host's environment and nothing else. `python3` from
- * that PATH is therefore whatever the machine's default is — frequently older than
- * MIMIR's 3.10 minimum, and almost never the venv the package was installed into.
- *
- * Rather than making every user write a setting, resolve it in order:
- *   1. `mimir.pythonPath` — an explicit override still wins.
- *   2. `MIMIR_PYTHON` — for people who would rather export it than click.
- *   3. `<releaseHome>/current/PYTHON_COMMAND` — part of a shared site release:
- *      every user of the cluster runs the current release with no configuration
- *      of their own. Ignored where the release tree does not exist.
- *   4. `<state home>/python` — written by install.sh, so a plain `./install.sh`
- *      needs no configuration at all.
- *   5. `python3` from PATH.
+ * Interpreter that runs the WS server: `bash -c` sources no profile, so `python3` from
+ * PATH is rarely the right one. In order: `mimir.pythonPath`, `MIMIR_PYTHON`,
+ * `<releaseHome>/current/PYTHON_COMMAND` (a shared site release), `<state home>/python`
+ * (written by install.sh), then `python3` from PATH.
  */
 function resolvePython(): string {
   const configured = vscode.workspace.getConfiguration("mimir").get<string>("pythonPath");
@@ -129,21 +111,9 @@ function resolvePython(): string {
 }
 
 /**
- * Environment the MIMIR server process is spawned with.
- *
- * The extension host inherits the user's login-shell environment — on
- * Remote-SSH it is resolved from that shell at connection — and two of its
- * variables poison any interpreter they reach. `PYTHONHOME` (exported by some
- * module systems and setup snippets) overrides the interpreter's own home, so
- * the shared venv's python runs on the user's stdlib and site-packages, or
- * refuses to start outright; `PYTHONPATH` puts the user's packages ahead of
- * the venv's in `sys.path`. Either one makes MIMIR "use the user's python"
- * although the right binary was launched.
- *
- * Both are dropped here, for the processes MIMIR starts and nothing else. The
- * user's shell is never touched (the 1.0.0 pollution fix promised as much),
- * and nothing the user runs through the agent loses them: the bash tool
- * already rebuilds a minimal environment for every command it executes.
+ * Environment the MIMIR server process is spawned with: the extension host's, without
+ * `PYTHONHOME` and `PYTHONPATH`, which would run the venv's python on the user's
+ * packages. Only for the processes MIMIR starts; the user's shell is untouched.
  */
 function mimirServerEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -155,11 +125,8 @@ function mimirServerEnv(): NodeJS.ProcessEnv {
 /**
  * Update this extension from the shared release when it ships a newer version.
  *
- * Runs at most once per window (called from activate), never blocks startup, and
- * is a no-op on machines without the release tree. Downgrades are deliberately
- * ignored: `current` may be rolled back to an older release, and the extension
- * must not fight that. On success the user is invited to reload the window to
- * switch to the newly installed code.
+ * Once per window, off the startup path, a no-op without the release tree. Never
+ * downgrades, so a rolled-back `current` is not fought; the user is offered a reload.
  */
 function maybeSelfUpdate(context: vscode.ExtensionContext): void {
   const root = releaseRoot();
@@ -279,23 +246,10 @@ const _diffContentProvider = new class implements vscode.TextDocumentContentProv
 
 // ── Plan preview: our own panel, rendered from the bytes on disk ─────────────
 //
-// VS Code's Markdown preview renders a cached TextDocument, and nothing we can
-// call makes it re-read a given revision on demand: previewing the plan file
-// misses updates when the watcher does not fire (network mount), and previewing
-// a virtual document races the model update — the refresh often re-renders the
-// previous plan. Three rounds of invalidate/await/refresh narrowed that race
-// without closing it. So the plan is not previewed through a document at all:
-// each show reads the file, renders it with the Markdown extension's own engine
-// (`markdown.api.render`) and writes the HTML into a panel we own. What is on
-// screen is whatever was read last, by construction.
-//
-// One panel for every plan: a new plan (new title → new file) replaces the
-// content of the same tab rather than opening another.
-//
-// A webview has no notion of the plan's folder, so what the preview used to
-// resolve for us is done here: relative image paths are rewritten to webview
-// URIs (and their folders allowed), and a small script hands link clicks back
-// to the extension, which resolves them against the plan's folder.
+// VS Code's Markdown preview renders a cached document and can show a stale plan, so
+// each show reads the file, renders it with the Markdown extension's engine
+// (`markdown.api.render`) into a panel we own: one tab for every plan. Relative image
+// paths become webview URIs; link clicks come back here to resolve.
 
 /** The plan panel, while it is open. */
 let _planPanel: vscode.WebviewPanel | undefined;
@@ -553,17 +507,9 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 /**
- * End the server this window is responsible for, if it is responsible for one.
- *
- * Two handles, one decision. A server we spawned is a child process; one we attached to
- * is a pid read out of this workspace's registry entry — and SIGTERM is what both get,
- * because it is the server's own handler that unwinds each agent's exit stack and so
- * reaps the MCP servers. A SIGKILL, or no signal at all, leaves those behind.
- *
- * A detached server is exempt: it was deliberately kept going, and killing it here
- * would make "continue without me" mean nothing at the one moment it takes effect.
- * Nothing else is: a server nobody claimed dies with the window that was watching it,
- * whether or not that window started it.
+ * End the server this window is responsible for: a child it spawned, or the pid of one
+ * it attached to. SIGTERM, so the server's own handler reaps the MCP servers. A
+ * detached server is exempt: it was kept going on purpose.
  */
 function endServerUnlessKeptRunning(): void {
   if (!serverDetached) {
@@ -636,14 +582,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   /**
    * The model list the auto-connect probe already received, kept for the webview.
    *
-   * The probe asks the endpoint what it serves and used to weigh only whether it
-   * answered at all. But the status bar's model picker appears when the endpoint
-   * reported a real choice, and on an auto-connect nothing else ever asks: the
-   * connect form is the only other caller and it is never shown. So a remembered
-   * endpoint came up connected with the list already fetched, thrown away, and the
-   * model rendered as a static label — no way to switch, on a server serving
-   * several. Replayed on `get_config` rather than posted once, because the React
-   * app usually does not exist yet when the probe answers.
+   * On an auto-connect nothing else asks the endpoint what it serves, and the status
+   * bar's model picker needs that list. Replayed on `get_config` rather than posted
+   * once, because the React app usually does not exist yet when the probe answers.
    */
   private _autoConnectModels: { backend: string; models: string[] } | undefined;
   /**
@@ -701,15 +642,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Reconnect to the remembered address, if it answers.
-   *
-   * The user opts in with the "Remember this address" checkbox in the connect
-   * form; we store backend/address/model (never a key) in global state. Once per
-   * window — at activation, so an unopened chat panel still comes up connected —
-   * we probe the endpoint's model list, the same request the form makes, and
-   * only start the server when it replies. An unreachable address (laptop off
-   * the VPN, compute node released) is not an error here: the connect form
-   * simply comes up as usual, pre-filled.
+   * Reconnect to the remembered address (opted into in the connect form; never a key),
+   * once per window at activation, if its model list answers. An unreachable address
+   * just leaves the form up, pre-filled.
    */
   async maybeAutoConnect(): Promise<void> {
     return this._maybeAutoConnect();
@@ -773,17 +708,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Attach to the server this workspace already has, if it has one.
-   *
-   * Nothing is started, so `serverProcess` stays undefined; what stands in for it is
-   * the pid from the entry this server was found through, because attaching to a run
-   * is taking it back. The server drops the claim that kept it alive the moment this
-   * socket arrives, so from here on it lives exactly as long as this window does —
-   * leaving it running again is a decision, made with the same button that made it the
-   * first time.
-   *
-   * Returns whether it attached, so the caller can skip the connect form entirely:
-   * a window that reopens on a live run must not ask the user to connect to it.
+   * Attach to the server this workspace already has, if it has one; true when it did,
+   * so the connect form is skipped. The registry pid stands in for a child process: the
+   * server drops its claim on this socket, and now lives as long as this window.
    */
   private async _attachToRunningServer(
     { silent = true }: { silent?: boolean } = {},
@@ -878,14 +805,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Bring a freshly mounted webview up to date with a connection it never saw.
-   *
-   * Called from the `get_config` handshake — the first moment the React app is
-   * known to be listening. Two cases: the connect is still in flight (replay
-   * `auto_connect`, so the app shows the connecting state instead of the form),
-   * or the socket is already live and its `ready` greeting went to a webview that
-   * did not exist. The Python server greets every new client, so re-attaching is
-   * what moves the UI to "connected".
+   * Bring a freshly mounted webview up to date (on `get_config`, the first moment it
+   * listens): replay `auto_connect` for a connect in flight, or re-attach a live socket
+   * so the server greets the webview with `ready`.
    */
   private _resumeAutoConnect(): void {
     if (!this._pendingAutoConnect) return; // nothing was missed — leave the socket alone
@@ -938,15 +860,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Answer the webview's "@" autocomplete with the workspace files matching `query`.
+   * Answer the "@" autocomplete with the workspace files matching `query`.
    *
-   * The scan happens once per window and is kept: a keystroke must not cost a walk of
-   * the tree, and the dropdown is typed into a character at a time. A file created or
-   * deleted afterwards drops the cache (see `_watchWorkspaceFiles`), so the list stays
-   * true without rescanning on a timer.
-   *
-   * The query is echoed back because the answers are asynchronous and the user keeps
-   * typing: the webview drops a reply that no longer matches what is in the box.
+   * The scan is cached per window and dropped when a file is created or deleted. The
+   * query is echoed back, so the webview drops an answer the typing has overtaken.
    */
   private async _sendFileMatches(query: string): Promise<void> {
     let files: string[];
@@ -1041,12 +958,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   /**
    * Open the socket to *wsUrl*, retrying while the server is still coming up.
    *
-   * *gen* identifies the attempt. Omit it to start a new one — that supersedes
-   * any attempt already in flight, whose retries then find a newer generation and
-   * stop. Without that, a chain still retrying the previous server's port would
-   * reassign `_ws` to its own dead socket and, once out of retries, tell the
-   * webview the connection closed — dropping a working session back to the
-   * connect form.
+   * *gen* identifies the attempt; a new one supersedes any still retrying, which then
+   * stops instead of reassigning `_ws` to a dead socket.
    */
   private _connectToServer(wsUrl: string, retryCount = 0, gen?: number): void {
     const maxRetries = 40; // retry for up to ~40 seconds while server starts
@@ -1274,27 +1187,14 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Start the WS server here and connect to it.
-   *
-   * The server always runs on the machine VS Code runs on; *baseUrl* points it at
-   * an LLM endpoint that is already serving (vLLM, Ray Serve or Ollama), wherever
-   * that is.
-   * Anthropic needs no URL at all — the hosted API is reached over the network
-   * with the key from the form or the environment.
+   * Start the WS server here and connect to it. *baseUrl* is an LLM endpoint already
+   * serving (vLLM, Ray Serve or Ollama); Anthropic needs only the key.
    */
   /**
    * Connect, starting a server only if this workspace does not already have one.
    *
-   * The check is not an optimisation. Two servers on one workspace share its sessions
-   * directory, so both append to the same journal and both derive `seq` from it: the
-   * numbering collides, and a client attached to one sees nothing of the turn running
-   * in the other — a conversation whose tools run and never appear, until a reconnect
-   * lands on the right server and replays them. The server refuses the second claim
-   * itself, which is the guarantee; this is what keeps the ordinary path from relying
-   * on being refused.
-   *
-   * Every path that would start a server asks this first — auto-connect through
-   * `_attachToRunningServer`, and this one through the same call.
+   * Two servers on one workspace would interleave one journal and its `seq`. The server
+   * refuses a second claim itself; this keeps the ordinary path from relying on that.
    */
   private async _startServerAndConnect(
     model: string,
@@ -1349,15 +1249,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       : backend === "ollama" ? ` --backend ollama --ollama-base-url ${baseUrl}`
       : backend === "anthropic" ? " --backend anthropic"
       : "";
-    // `--port 0`: the OS picks a free port, so two VS Code windows never contend for
-    // one — the server publishes the port it actually bound and we connect to that.
-    // `exec` replaces the shell with python, so `serverProcess.kill()` reaches the
-    // server itself rather than orphaning it on its port.
-    //
-    // Its output goes to a file, and this is not only for readability. A pipe held by
-    // this extension host is a tether: when the host goes, the next write here takes a
-    // SIGPIPE, so a server meant to outlive the window would die the first time it
-    // logged anything. A file has no reader to lose.
+    // `--port 0`: the OS picks a free port, which the server publishes. `exec` makes
+    // `serverProcess.kill()` reach python itself. Output goes to a file: a pipe held by
+    // this host would SIGPIPE a server meant to outlive the window.
     const serverLog = logPath(cwd, new Date().toISOString().replace(/[:.]/g, "-"));
     const quotedLog = `'${serverLog.replace(/'/g, "'\\''")}'`;
     const spawnCmd =
@@ -1719,21 +1613,11 @@ function workspacePath(rel: string): string {
 }
 
 /**
- * Stop the server this workspace has, detached or not.
+ * Stop the server this workspace has, detached or not, after confirming with what is
+ * running named.
  *
- * The counterpart of leaving one running: a detached server is no longer killed by
- * closing the window, so there has to be a way to end it on purpose. It is signalled
- * rather than asked over the socket, because the window that wants it stopped may not
- * be connected to it — that is the whole situation this exists for.
- *
- * SIGTERM, which lands on the server's own handler and takes the ordinary exit: the one
- * that unwinds each agent's exit stack and so reaps the MCP servers. A SIGKILL here
- * would leave up to sixty orphaned interpreters behind, which is precisely the thing
- * that path exists to prevent.
- *
- * Confirmed first, with what is actually running named in the prompt. "Stop the server"
- * is cheap to type and can end a two-hour build, so the decision is made with the facts
- * in front of the user rather than after.
+ * Signalled, since the window asking may not be connected to it; SIGTERM, so the
+ * server's own exit reaps the MCP servers.
  */
 async function stopServer(): Promise<void> {
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();

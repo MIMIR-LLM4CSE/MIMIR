@@ -31,25 +31,12 @@ interface Props {
 }
 
 /**
- * What is specific to scientific computing, in one drawer.
+ * What is specific to scientific computing, in one drawer: the host, the clusters it
+ * reaches, the optimisation in progress, each section filled by the server that owns
+ * it, asked by capability.
  *
- * None of it is the client's own. The machine, the clusters this workspace reaches, the
- * optimisation in progress — each is filled by the server that owns those facts, asked
- * by capability rather than by name, so a plugin server adds its own section without a
- * line changing here. Nearest first: the host, then the clusters it reaches, then what
- * is being optimised on them.
- *
- * The sub-agent rung is deliberately not here: how far delegation may go is an agent
- * setting, set once alongside thinking depth and enforcement, not a fact about the
- * machine. It lives in the settings popover, and the sub-agents at work have their own
- * drawer under the session that spawned them.
- *
- * A server's section may answer with a tree as well as with lines — the clusters, the
- * kinds of machine on each, what a probe found on one — and the runs in flight are hung
- * on the machines they are running on, as badges. That is the only place they appear: a
- * flat list of them under the sections said where a run was not, which is the one thing
- * a reader of this drawer never asks. Which rows are open is held here, because it
- * belongs to the reader rather than to any one section.
+ * Runs in flight appear as badges on the machines they run on. Which rows are open
+ * belongs to the reader, so it is held here.
  */
 export const SciencePanel: React.FC<Props> = ({
   sections,

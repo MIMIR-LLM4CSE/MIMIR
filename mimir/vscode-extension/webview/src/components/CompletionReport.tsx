@@ -27,14 +27,9 @@ function tone(report: Completion): "ok" | "note" | "warn" {
 }
 
 /**
- * The machine's account of how the run ended, as a collapsed disclosure under the
- * answer — the same shape as the verification ledger it sits beside, and reusing its
- * styling for that reason.
- *
- * Collapsed because the headline and the residual risk are what belong in view, with the
- * sections one click away. Bare prose concatenated ahead of the answer has no marker a
- * front-end can lift it off by, so the whole report renders as body text with the model's
- * own words underneath it.
+ * The machine's account of how the run ended, a collapsed disclosure under the answer
+ * styled like the ledger: the headline and residual risk in view, the sections a click
+ * away.
  */
 export const CompletionReport: React.FC<Props> = ({ block }) => {
   const report = parseCompletion(block);

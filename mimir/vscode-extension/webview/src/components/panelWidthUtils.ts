@@ -1,12 +1,8 @@
 /**
  * How wide a side drawer is, and where that answer is kept.
  *
- * The drawers used to be fixed at 220px with a 280px ceiling, which is narrower than
- * most of what they have to show: a scheduler's name next to its hardware, a node
- * kind's feature list, a sub-agent's task. Everything past the edge was cut to an
- * ellipsis, and no amount of reading got it back. So the width is the reader's to set,
- * and it is remembered — a drawer that forgets has to be widened again every time it
- * is opened.
+ * What a drawer shows (a scheduler next to its hardware, a sub-agent's task) is often
+ * wider than a fixed width, so the reader sets it, and it is remembered.
  */
 
 /** Narrow enough to park a drawer out of the way, wide enough to stay readable. */

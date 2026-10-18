@@ -8,15 +8,8 @@ function introVideoUrl(): string | undefined {
 }
 
 /**
- * MIMIR brand mark shown on the connection screen.
- *
- * - `loop` (while connecting): plays the intro clip (norse-myth "M" logo)
- *   continuously as a loading animation.
- * - otherwise (idle / disconnected / connected): shows the static transparent
- *   logo, no video.
- *
- * Falls back to the static mark when the video asset is unavailable (e.g.
- * outside a webview).
+ * MIMIR brand mark on the connection screen: the intro clip looping while `loop` is set
+ * (connecting), the static logo otherwise or when the video is unavailable.
  */
 export function MimirIntro({ loop = false }: { loop?: boolean }): JSX.Element {
   const src = introVideoUrl();

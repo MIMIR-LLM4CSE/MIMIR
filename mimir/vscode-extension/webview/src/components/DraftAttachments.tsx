@@ -10,14 +10,9 @@ interface Props {
 }
 
 /**
- * What the message in the box will attach, as chips above the input.
- *
- * The tint inside the textarea says which words are mentions, but a textarea's text
- * cannot be clicked through to anything — so the same mentions are listed here, where a
- * file one opens the file (`open_file`, at the attached line range) and "×" takes it
- * back out of the draft. The chips are derived from the text on every keystroke and own
- * no state: the message is the only record of what it attaches, so a hand-typed path and
- * a path picked from the dropdown appear and behave alike.
+ * What the message in the box will attach, as chips above the input: a file chip opens
+ * the file (`open_file`, at the attached lines), "×" takes it out of the draft. Derived
+ * from the text on every keystroke; the message is the only record.
  */
 export function DraftAttachments({ text, onRemove }: Props) {
   const mentions = useMemo(

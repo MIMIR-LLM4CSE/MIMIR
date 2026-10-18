@@ -68,15 +68,9 @@ export interface CommandItem {
 export type CommandTone = "ok" | "warn" | "empty" | "quiet";
 
 /**
- * The answer to a session command the user typed ("/memory list", "/proxy clean x").
- *
- * Separate from OutputMessage because that one is transient tool-activity text the
- * reducer drops — which silently swallowed every command answer, including the
- * confirmation of an irreversible "/memory clear".
- *
- * Structured rather than a formatted line: a setting change and a listing of twenty
- * memories want different shapes on screen, and the frontend cannot lay out what
- * arrives as an already-indented blob.
+ * The answer to a session command the user typed ("/memory list"), structured so a
+ * setting and a listing get different shapes. Not an OutputMessage, which the reducer
+ * drops as transient.
  */
 export interface CommandOutputMessage {
   type: "command_output";
@@ -89,13 +83,8 @@ export interface CommandOutputMessage {
   note?: string;
   tone?: CommandTone;
   /**
-   * Rendered, never stored.
-   *
-   * For a card that describes the state at this moment rather than something that
-   * happened in the conversation. Kept in the transcript it is replayed on every load,
-   * so a conversation reconnected to twenty times reopens on twenty copies of it, each
-   * above whatever answer it happened to follow and every one of them describing a
-   * past moment as if it were now.
+   * Rendered, never stored: the card describes this moment, and replayed on every load
+   * it would read as current.
    */
   transient?: boolean;
 }
@@ -648,18 +637,10 @@ export interface SessionLoadedMessage {
   agent_ready?: boolean;
 }
 
-/** A whole streamed prose block, recorded rather than streamed.
+/** A whole prose block, recorded for replay only (live clients have its `token`s).
  *
- *  Never sent live: a connected client has already had every one of its deltas as
- *  `token`, and the aggregate on top would print the paragraph twice. It exists for
- *  the replay, where the deltas are gone — the journal deliberately keeps hundreds of
- *  `token` events out of itself, and without this a turn read back after an absence
- *  would have only its tool rows and its final answer, having lost everything the
- *  agent said in between.
- *
- *  Fed to the reducer as a `token`, which is what keeps a replayed turn interleaving
- *  prose and tool cards the way the live one did: the same draft-and-boundary logic
- *  decides where the block sits relative to the calls that followed it. */
+ *  Fed to the reducer as a `token`, so a replayed turn interleaves prose and tool cards
+ *  as the live one did. */
 export interface AssistantTextMessage {
   type: "assistant_text";
   text: string;
@@ -683,23 +664,12 @@ export interface DetachedMessage {
   setsid: boolean;
 }
 
-/** What this conversation produced while nobody was attached.
+/** What this conversation produced while nobody was attached, read from its journal
+ *  past the client's watermark, in frames. Each event is fed to the same reducer.
  *
- *  Read back from the session's journal past the watermark the client last reported,
- *  and sent on attach in frames of at most a few hundred. Each event is the same shape
- *  a live one has, so feed them to the same reducer: that is what rebuilds the rich
- *  transcript — tool rows, diff cards, reasoning panels — for a period this window was
- *  not there for.
- *
- *  Streamed deltas are deliberately absent. `token` and `thinking` are not journaled,
- *  so a replayed turn arrives as the aggregates that closed its blocks (`thinking_end`,
- *  `answer`) rather than its keystrokes — which is also what makes replaying a
- *  twelve-hour run affordable. `context_usage`, `batch_status` and `todo` are re-derived
- *  on load for the same reason.
- *
- *  `through_seq` is the watermark to send back on the next `transcript`; `more` says
- *  another frame follows; `truncated` says older events were elided because the replay
- *  hit its cap. */
+ *  Streamed deltas are absent: a turn arrives as its closing aggregates. `through_seq`
+ *  is the next watermark, `more` says a frame follows, `truncated` that old events were
+ *  cut at the cap. */
 export interface ReplayMessage {
   type: "replay";
   session_id: string;
@@ -1048,14 +1018,8 @@ export interface DetachMessage {
 }
 
 /**
- * Stop the server, now or once it has nothing left to do.
- *
- * Sent rather than inferred from closing the socket, because a server this window did
- * not start is not killed by the host: it has no process to signal, and ending a
- * workspace's server is a decision in any case. `force` stops it whatever is in
- * flight — the user's own call about their own machine, and the only way to end a run
- * waiting on an answer they have decided not to give. Without it the request is
- * refused while anything is still working, and the reasons come back.
+ * Stop the server, now or once it has nothing left to do. Refused with the reasons while
+ * anything works, unless `force`: the user's call about their own machine.
  */
 export interface ShutdownMessage {
   type: "shutdown";

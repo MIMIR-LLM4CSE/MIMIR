@@ -60,16 +60,9 @@ function RunCard({ run, onFocus }: { run: ToolActivity; onFocus: (id: string) =>
 }
 
 /**
- * Runs still going, whose rows have scrolled off the top of the thread.
- *
- * A build takes twenty minutes and the agent does not wait for it: the thread grows,
- * the row that carries the progress leaves the screen, and checking on it means
- * scrolling back and finding it again. This keeps it where it can be read, out of the
- * way, and one click from its place in the conversation.
- *
- * It has no close button on purpose. There is nothing to dismiss: a card is here
- * because a run is going and its row is not visible, and it leaves the moment either
- * stops being true.
+ * Runs still going whose rows have scrolled off the top of the thread, one click from
+ * their place in it. No close button: a card leaves when its run ends or its row is
+ * visible again.
  */
 export function RunProgressDock({ runs, onFocus }: Props) {
   if (runs.length === 0) return null;

@@ -37,9 +37,8 @@ export function grantSummary(sub: SubAgent): string {
 /**
  * Where a child's work is, in one line.
  *
- * The copy is kept now, so saying that it was is no longer news — where it is, is. A
- * child that changed nothing has no branch (an empty one is dropped rather than left
- * pointing at HEAD), and a card written before copies were kept says `kept: false`.
+ * A child that changed nothing has no branch (an empty one is dropped rather than
+ * left pointing at HEAD); an older card says `kept: false`.
  */
 export function workspaceLine(sub: SubAgent): string {
   const ws = sub.workspace;
@@ -86,18 +85,9 @@ export interface ActivityRow {
 }
 
 /**
- * The activity log, paired into rows.
- *
- * The log holds one line per event — a call (`tc`) and later its result (`tr`) —
- * because it is appended to while the child works and a line is never rewritten. The
- * panel wants the other shape: one row per step, still running until its result
- * lands. A result whose call was trimmed off the head of the log is dropped rather
- * than shown headless.
- *
- * A status line (`st`) is neither: it is the loop saying why it is about to ask the
- * model again without calling anything — an empty turn retried, a nudge, a refreshed
- * checklist. It stands as its own row, in order, so the minutes between two tool calls
- * have something in them instead of reading as a hang.
+ * The activity log, paired into rows: a call (`tc`) and its result (`tr`) make one row,
+ * running until the result lands; a result whose call was trimmed is dropped. A status
+ * line (`st`) is its own row, so the time between calls is not read as a hang.
  */
 export function activityRows(activity: unknown): ActivityRow[] {
   if (!Array.isArray(activity)) return [];

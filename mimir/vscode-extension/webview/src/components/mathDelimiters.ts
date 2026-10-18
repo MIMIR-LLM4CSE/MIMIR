@@ -1,17 +1,7 @@
-/** Normalize LaTeX delimiters to the ones remark-math understands.
+/** Normalize LaTeX delimiters to the ones remark-math understands (`$…$`, `$$…$$`).
  *
- * The math pipeline (remark-math → rehype-katex) only recognizes `$…$` and
- * `$$…$$`. Models routinely emit the other standard LaTeX pair, `\(…\)` and
- * `\[…\]`, and Markdown then reads those backslashes as escapes: `\[` becomes a
- * literal `[`, the `\\` row separators inside an `aligned` block collapse to a
- * single `\`, and the equation reaches the reader as one mangled line of text.
- *
- * So rewrite the delimiters before parsing. Display math is emitted as its own
- * block (blank lines around it) — `\[…\]` is display math even when it appears
- * mid-sentence, and a paragraph break is the correct rendering of that.
- *
- * Code is left strictly alone: a fenced block or an inline span showing LaTeX
- * source, or C code indexing `arr\[i\]`, must survive verbatim.
+ * `\(…\)` and `\[…\]` would otherwise reach Markdown as escapes and mangle the equation;
+ * display math becomes its own block. Code spans and fences are left untouched.
  */
 
 // Fenced blocks (``` or ~~~, any info string) and inline spans (`…`). Kept as

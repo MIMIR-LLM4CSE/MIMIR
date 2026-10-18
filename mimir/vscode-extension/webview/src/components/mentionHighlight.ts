@@ -1,12 +1,6 @@
-// Splitting a sent message into prose and the "@"-mentions it attached, so the chat
-// bubble can mark the attached context instead of burying it in a wall of text.
-//
-// The scan mirrors the backend's rule (`_MENTION_RE` in client/context/
-// resource_context.py): "@" then a run of non-whitespace, and only where the "@" opens
-// a token — at the start of the message or after whitespace — so "mail@host" and a
-// mid-word "@" are prose, exactly as the server reads them.
-//
-// Kept free of React so it is unit-testable (see mentionHighlight.test.ts).
+// A sent message split into prose and the "@"-mentions it attached, by the backend's
+// rule (`_MENTION_RE` in client/context/resource_context.py): "@" opening a token.
+// Free of React, so unit-testable.
 
 /** Trailing characters that belong to the sentence, not to the mention. */
 const TRAILING = ".,;:!?)]}\"'";
@@ -33,13 +27,8 @@ export type MentionSegment =
     };
 
 /**
- * Whether a mention token names a file rather than an MCP resource.
- *
- * Decided on shape alone: the webview has no filesystem and no registry to ask, and a
- * wrong guess costs little in either direction — an unopenable path says so when
- * clicked, and a resource mention is still highlighted, just not a link. A path has a
- * separator or an extension; a URI scheme (``memory://all``) never counts, as the
- * ``//`` would otherwise make every resource look like a path.
+ * Whether a mention token names a file rather than an MCP resource, by shape alone: a
+ * separator or an extension, and never a URI scheme (``memory://all``).
  */
 export function looksLikeFile(target: string): boolean {
   if (!target || /^[a-z][a-z0-9+.-]*:\/\//i.test(target)) return false;

@@ -1,21 +1,9 @@
 // Pure helpers for the "/"-command autocomplete in the chat input.
 //
-// TWO KINDS OF SLASH share the input, and they travel differently:
-//
-//  * a SKILL ("/fix-bug …") is part of the query. It is sent as `type: "query"` and the
-//    backend honours it only when the slash is the first non-space character
-//    (agent_loop.py: `query.strip().startswith("/")`).
-//  * a SESSION COMMAND ("/mode agent", "/memory clear") never reaches the model. It is
-//    handled by ws_session._handle_command and must be sent as `type: "command"`.
-//
-// Until the two were listed together, only skills appeared in the dropdown and typed
-// session commands went to the model as ordinary text — so a command like
-// "/proxy clean foo" was silently a request for the model to do it rather than an
-// instruction to the session. Both are offered here, and `isSessionCommand` is what
-// routes them apart at send time.
-//
-// The dropdown opens ONLY at the start of the input, unlike "@" mentions. Kept free of
-// React/DOM so the caret/token logic is unit-testable with vitest.
+// Two kinds of slash share the input: a skill ("/fix-bug …") is part of the query, sent
+// as `type: "query"`; a session command ("/mode agent") never reaches the model and is
+// sent as `type: "command"`. Both are offered; `isSessionCommand` routes them. The
+// dropdown opens only at the start of the input. Free of React, so unit-testable.
 
 import type { ToggleItem } from "../types";
 

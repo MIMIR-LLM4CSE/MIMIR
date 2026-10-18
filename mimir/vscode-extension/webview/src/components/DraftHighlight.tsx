@@ -11,17 +11,9 @@ interface Props {
 /**
  * The mention tints inside the chat input.
  *
- * A `<textarea>` holds characters, not elements, so nothing in it can be coloured — and
- * the input has to stay a textarea: the caret arithmetic the "@" and "/" dropdowns, the
- * history browse and the steer path all do is `value` + `selectionStart`, and a
- * contenteditable has neither. So the text is drawn a second time in a div underneath,
- * with the same metrics, and only the mentions are painted; the textarea sits on top
- * with a transparent background and keeps every behaviour it had.
- *
- * Nothing is rendered when the draft carries no mention, so the ordinary case is the
- * input exactly as it was. The mirror's box is taken from the textarea itself
- * (`clientWidth`/`clientHeight`, which exclude a scrollbar when one appears), because a
- * width that disagrees by a pixel wraps a line early and slides every tint below it.
+ * A textarea cannot colour its text, and must stay one (the dropdowns, history and
+ * steers all work on `value` + `selectionStart`), so the text is drawn again underneath
+ * with the same metrics, taken from the textarea itself. Nothing renders without a mention.
  */
 export function DraftHighlight({ text, inputRef }: Props) {
   const segments = useMemo(() => splitMentionSegments(text), [text]);

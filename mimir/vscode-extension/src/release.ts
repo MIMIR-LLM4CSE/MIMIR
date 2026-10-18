@@ -1,16 +1,7 @@
 /**
- * Shared-release helpers for enterprise deployments.
- *
- * A site deployment is an immutable `releases/<version>` subtree published
- * through a `current` symlink, so a developer's update is visible to every user
- * the moment `current` flips. The build tooling for such a deployment is
- * private to the site and documented there, not in this repository. This module
- * holds the generic, dependency-free pieces — they run under plain vitest; the
- * vscode/fs glue that calls them lives in extension.ts.
- *
- * A deployment activates the mechanism by shipping a `site.json` file next to
- * the extension bundle (see `loadSiteConfig`); nothing site-specific is
- * committed here.
+ * Shared-release helpers: a site deployment publishes immutable `releases/<version>`
+ * trees behind a `current` symlink, activated by a `site.json` next to the bundle.
+ * Dependency-free pieces only; the vscode/fs glue is in extension.ts.
  */
 
 /** Site configuration a deployment may ship as site.json beside the extension. */
@@ -42,20 +33,10 @@ export function loadSiteConfig(
 }
 
 /**
- * Combine the `mimir.releaseHome` setting with the site.json value into the
- * release root to probe, before any filesystem check.
+ * The release root to probe: a non-empty `mimir.releaseHome` setting, else site.json.
  *
- * An explicitly set, non-empty setting wins. Otherwise the deployment's
- * site.json is used. Empty and unset are the same thing here — and that is the
- * fix: the setting declares `""` as its default, so VS Code hands back `""`
- * (not undefined) for every user who never touched it. `??` treats that empty
- * string as a real value and site.json was never consulted — the whole
- * shared-release mode (interpreter resolution and self-update) was dead for
- * everyone but the users who had set the path by hand.
- *
- * Disabling the shared-release mode is still possible: point the setting at a
- * path without a `current` release — the existence probe in the caller is what
- * actually decides.
+ * Empty and unset are the same (VS Code returns `""` for an untouched setting). A path
+ * without a `current` release disables the mode; the caller's existence probe decides.
  */
 export function resolveReleaseRoot(
   configured: string | undefined,

@@ -19,19 +19,9 @@ export type LiveEntry<B, M = never> =
 /**
  * Order the live streams of one step by arrival.
  *
- * Tool rows keep their **array order** rather than being sorted on `seq`: a
- * sub-agent's row is spliced in under the call that spawned it (insertAfterFamily),
- * so the array — not the stamp — is what says where a row belongs inside its
- * family. Stamps only decide where the *group* sits relative to the prose and the
- * reasoning blocks around it, and a family shares its parent's stamp so it is
- * never split across two groups.
- *
- * Consecutive tool rows stay one group, so a step that called four tools in a row
- * still shows one card rather than four.
- *
- * Both the live view and the freeze go through here, which is what keeps them
- * agreeing: a card cannot sit below the prose while it streams and above it once
- * the step ends.
+ * Tool rows keep their array order (a sub-agent's row sits under its parent); stamps
+ * only place each group among the prose and reasoning, and consecutive rows stay one
+ * card. The live view and the freeze both use this, so they agree.
  */
 export function orderLiveStream<
   B extends { seq: number },

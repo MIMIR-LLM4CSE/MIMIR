@@ -38,14 +38,8 @@ export const APPROVAL_OPTIONS: {
   },
 ];
 
-/** Approval-mode picker, stacked directly above the send button.
- *
- *  Its own control rather than a section of the settings popover: an auto mode
- *  answers for the user, and it is switched mid-run — both of which argue for a
- *  state visible without opening anything, at the spot where the user is already
- *  looking when they send work off. Icon-only, because the column it shares with
- *  the send button is width the message box would otherwise have; the icon and its
- *  colour carry the state, and the tooltip and the picker rows carry the words.
+/** Approval-mode picker, stacked directly above the send button: switched mid-run and
+ *  answering for the user, so always visible. Icon-only; the tooltip carries the words.
  */
 export const ApprovalSwitcher: React.FC<Props> = ({ mode, onModeChange }) => {
   const [open, setOpen] = useState(false);

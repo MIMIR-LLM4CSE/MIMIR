@@ -30,12 +30,9 @@ const MAX_HL_LINES = 1500;
 
 /** One diff line's content: intra-line word emphasis + optional syntax colors.
  *
- * Two render paths. Without a language: plain React text nodes split around the
- * word range (React escapes; no innerHTML). With a language: each segment is
- * highlighted separately (hljs escapes its input) and joined, so the word-range
- * span never cuts through hljs markup. Per-line highlighting loses multi-line
- * construct context (block comments, template strings) — accepted, GitHub does
- * the same. If ever needed: highlight whole lines and re-split via a DOM walk.
+ * Without a language, React text nodes split around the word range; with one, each
+ * segment is highlighted separately so the emphasis never cuts hljs markup. Per-line
+ * highlighting loses multi-line context (block comments), as GitHub's does.
  */
 const DiffLineContent: React.FC<{ line: DiffLine; lang?: string }> = ({ line, lang }) => {
   if (line.type === "hunk" || line.type === "header" || line.type === "meta") {

@@ -1,9 +1,7 @@
 /**
  * Model discovery — asks the backend endpoint what it serves.
  *
- * The connect form used to read its model list from `mimir.vllmAvailableModels` /
- * `mimir.availableModels` in a hand-written `.vscode/settings.json`. The endpoint
- * already knows the answer, so we ask it instead and the user only ever types a URL.
+ * The endpoint knows what it serves, so the user only types a URL.
  *
  * The fetch lives in the extension host, not the webview: the webview's CSP only
  * allows `connect-src ws://localhost:*`, so React cannot reach an HTTP endpoint.
@@ -54,18 +52,10 @@ export function parseModels(backend: DiscoverableBackend, body: unknown): string
 }
 
 /**
- * GET the model list from *baseUrl*.
+ * GET the model list from *baseUrl*, through `directGet` (no proxy, see directHttp).
  *
- * The request goes through `directGet`, not `http.get`: see `directHttp.ts` for why
- * the extension host must reach a cluster address without the proxy VS Code would
- * otherwise impose. `verifySsl` mirrors the `mimir.vllmVerifySsl` setting — one
- * switch for both OpenAI-compatible endpoints — for HTTPS routes behind a private CA.
- *
- * The default deadline is generous (30 s) because the endpoints this asks about are
- * often slow to *answer*, not absent: a cluster route behind a VPN, a gateway that
- * queues the first request, a vLLM server still loading weights. A short deadline
- * turns "it is coming" into "it is broken" — the user reads a failure under the
- * address field and retypes an address that was right all along.
+ * `verifySsl` mirrors `mimir.vllmVerifySsl`. The 30 s default is generous because these
+ * endpoints are often slow to answer, not absent (VPN routes, weights still loading).
  */
 export async function fetchModels(
   backend: DiscoverableBackend,

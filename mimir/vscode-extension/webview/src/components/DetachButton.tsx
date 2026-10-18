@@ -14,24 +14,11 @@ interface Props {
 }
 
 /**
- * "Continue without me" — the moment the user leaves.
+ * "Continue without me": a toggle of who owns the process, revocable until the window
+ * closes. The socket stays open.
  *
- * Deliberately not a setting chosen when connecting. The question is whether anything
- * is worth leaving running, and that is only answerable once something is: at connect
- * time there is nothing to decide about.
- *
- * It carries no autonomy picker of its own. The level is whatever the approval switcher
- * immediately above it already says, which is the control that exists for exactly this
- * question and already explains what each level does not lift. A second picker here
- * would be two places to answer one question, and the two would disagree.
- *
- * The title spells out the consequence rather than naming the level, because at
- * `manual` a detached run parks at its first sensitive tool and does almost nothing
- * overnight — a user who has not been told that reads "detached" as "it will finish".
- *
- * Detaching does not disconnect: the socket stays open and the turn goes on in front of
- * the user. So the state is a toggle rather than a destination — what it changed is who
- * owns the process, and that is a decision, revocable until the window actually closes.
+ * It takes the level of the approval switcher above it, and its title says the
+ * consequence: at `manual` a detached run parks at its first sensitive tool.
  */
 export const DetachButton: React.FC<Props> = ({
   mode, detached, onDetach, onReattach,

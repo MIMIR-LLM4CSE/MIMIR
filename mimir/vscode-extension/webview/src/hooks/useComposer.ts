@@ -90,11 +90,8 @@ export function useComposer({ skillToggles, sendCommand, sendPrompt }: Senders) 
     setInput("");
     setMention(null);
     setSlash(null);
-    // A session command acts on the session, not on the conversation: it goes out as
-    // `type: "command"` for ws_session._handle_command. Sent as a query it would simply
-    // reach the model as text — which is what used to happen, so "/memory clear" asked
-    // the model to clear memory instead of clearing it, and typed session commands were
-    // indistinguishable from ordinary prose.
+    // A session command acts on the session, not the conversation: sent as a query it
+    // would reach the model as text.
     if (isSessionCommand(text)) {
       sendCommand(text);
       return;

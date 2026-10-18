@@ -31,9 +31,7 @@ function formatTokens(n: number): string {
 export const ThinkingPanel: React.FC<Props> = ({ text, live, startedAt, durationMs, tokens }) => {
   const elapsed = useElapsed(startedAt ?? Date.now(), live);
   // The reasoning stream follows its own bottom as tokens land, and lets go when
-  // the reader scrolls up to re-read. Only a gesture stops the follow: measuring
-  // the position when the scroll event arrives is what used to stop it on its own,
-  // since by then the tokens that fired it have already made the pane taller.
+  // the reader scrolls up to re-read (see useStickToBottom).
   const { ref: contentRef, scrollToBottom, onScroll } = useStickToBottom<HTMLPreElement>(24);
 
   useLayoutEffect(() => {

@@ -45,13 +45,8 @@ interface Props {
 }
 
 /**
- * Owns the scrollable conversation pane: the message list (dispatched by kind)
- * and the typing indicator. App keeps connection, session and settings
- * orchestration; this component is purely presentational.
- *
- * Frozen `tools` and `thinking` messages are rendered as their own cards
- * (tool-activity list and collapsible reasoning panels). Live, in-flight tool
- * calls and reasoning blocks are rendered at the bottom until they freeze.
+ * The scrollable conversation pane: messages by kind, frozen tool and reasoning cards,
+ * and the live ones at the bottom until they freeze. Purely presentational.
  */
 export const ChatThread: React.FC<Props> = ({
   messages,

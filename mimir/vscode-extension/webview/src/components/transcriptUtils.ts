@@ -36,18 +36,11 @@ function pruneTool(tool: ToolActivity): ToolActivity {
 }
 
 /**
- * The transcript as it should be stored: no in-flight state, no unbounded output.
+ * The transcript as it should be stored: no in-flight state (`streaming`, `live`,
+ * `queued`), no unanswered approval card, no unbounded output.
  *
- * `streaming`, `live` and `queued` describe a turn that is still happening; restoring
- * them would put a spinner over work that finished long ago. A message still holding an
- * `approval` is a prompt nobody answered — the reducer rewrites answered ones into text
- * or drops them — and it renders as nothing, so it is left out entirely.
- *
- * `provisional` is the exception that is deliberately kept: it marks prose whose turn
- * has not landed yet, and the turn it belongs to can outlive this transcript by a long
- * way — a plan parked on its approval card waits for a person. A reload in that window
- * must come back still knowing the bubble is provisional, or the `answer` that finally
- * arrives repeats it instead of replacing it.
+ * `provisional` is kept: a reload while its turn is still parked must know the bubble
+ * is provisional, so the `answer` replaces it rather than repeating it.
  */
 export function pruneForStorage(messages: ChatMessage[]): ChatMessage[] {
   return messages.filter(keepForStorage).map(pruneMessage);
@@ -141,19 +134,11 @@ export interface RestoreChoice {
 }
 
 /**
- * Decide between the stored transcript and the one already on screen.
+ * Decide between the stored transcript and the one on screen.
  *
- * A `session_loaded` for a *different* session is a switch: whatever it carries is the
- * conversation, and what was on screen belongs to the one being left.
- *
- * For the *same* session it is a reconnect, and the two copies are rivals. The one on
- * screen is the richer by construction — the server only ever assembles text bubbles,
- * and it is handed the rendered transcript at points the client chooses — so taking the
- * stored copy unconditionally is what turned a dropped connection into a conversation
- * reduced to its questions. Kept whenever it holds at least as much, which is the same
- * test the server applies to transcripts we send it (``_handle_transcript``), read from
- * the other side. Pushed back when it holds strictly more, so the disk copy stops being
- * behind rather than waiting for the next turn to end.
+ * A different session is a switch: take the stored one. The same session is a
+ * reconnect: keep the screen's copy when it holds at least as much (the server's test,
+ * from the other side), and push it back when it holds more.
  */
 export function chooseRestoredMessages(
   incoming: ChatMessage[] | undefined,

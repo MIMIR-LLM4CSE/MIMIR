@@ -419,10 +419,8 @@ export const App: React.FC = () => {
         // it would show the same question twice.
         forgetForeign(msg.session_id);
         const prevMessages = chatStateRef.current.messages;
-        // Reconnecting to the session already on screen is the case that used to
-        // lose a turn: the stored copy is whatever the server had assembled by
-        // itself, and taking it over a live transcript it is behind is how a drop
-        // mid-run came back as the questions alone. See chooseRestoredMessages.
+        // Reconnecting to the session on screen keeps the live transcript when the
+        // stored copy is behind it (chooseRestoredMessages).
         const restore = chooseRestoredMessages(
           msg.display_messages, prevMessages, prevSessionId === msg.session_id,
         );
@@ -567,9 +565,8 @@ export const App: React.FC = () => {
 
   // Hand the rendered chat to the server so a reload can show it again.
   //
-  // The server only ever recorded the text bubbles: tool rows, reasoning panels and
-  // diff cards are assembled by the reducer and live nowhere else, which is why a
-  // reconnect used to come back stripped to prose.
+  // Tool rows, reasoning panels and diff cards are assembled by the reducer and live
+  // nowhere else, so the server keeps this copy for a reconnect.
   //
   // Sending is skipped when the list is the one already sent, so the checkpoint below
   // costs nothing on a quiet turn. The reducer never mutates, so identity is the whole
@@ -608,15 +605,8 @@ export const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [chatState.busy, sendTranscript]);
 
-  // And during it. With the end of the turn as the only handover, every long run is a
-  // window where the work on screen exists nowhere else: a dropped connection, a reloaded
-  // window or a VS Code restart inside it comes back to a conversation holding the
-  // questions and nothing that was done about them. A turn can run for many minutes, so
-  // that window would be most of the session.
-  //
-  // Streaming prose is not in `messages` — it is held in `draft` until the loop accepts
-  // it — so this fires at step boundaries (a tool card frozen, a card answered) rather
-  // than per token: a few frames per turn, not one per word.
+  // And during it, at step boundaries (streaming prose is held in `draft`), so a drop
+  // or reload mid-turn does not lose the work on screen.
   useEffect(() => {
     if (!chatState.busy) return;
     const timer = setInterval(sendTranscript, TRANSCRIPT_CHECKPOINT_MS);
@@ -634,13 +624,9 @@ export const App: React.FC = () => {
   // ── User actions ──────────────────────────────────────────────────────────
 
   /**
-   * Put one message to the model, as the user's own turn.
-   *
-   * Its own function because the input box is not the only thing that asks: the
-   * science panel offers a request a server wrote — "probe one node of this kind" —
-   * and that must arrive the way a typed one does, so whatever tool the model reaches
-   * for goes through the approval that tool already requires. A panel button is not a
-   * second way to start an irreversible call.
+   * Put one message to the model, as the user's own turn. The science panel's offered
+   * requests go through here too, so whatever tool the model reaches for still asks
+   * for approval.
    */
   const sendPrompt = useCallback((text: string) => {
     // Chat-while-busy: a message sent during a run is a "steer" — queued and

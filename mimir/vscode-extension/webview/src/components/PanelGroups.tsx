@@ -13,13 +13,9 @@ interface Props {
 /**
  * A section's nested half: a scheduler, the kinds of machine on it, what one of them is.
  *
- * Generic on purpose. It renders whatever a server put in `groups` without knowing what
- * any of it means — the same promise `panel_sections` makes for sections — so a server
- * that starts answering with a tree gets one here with nothing changed.
- *
- * Open state is controlled and lives in the panel, keyed on the server's own ids. Not
- * native `<details>`: the drawer re-renders on every `panel_report`, and nodes rebuilt
- * from fresh data would lose their own open state and collapse under the reader.
+ * Renders whatever a server put in `groups` without knowing what it means. Open state is
+ * held by the panel, keyed on the server's ids, so a fresh `panel_report` does not
+ * collapse what the reader opened.
  */
 export const PanelGroupList: React.FC<Props> = ({
   groups,
@@ -141,13 +137,9 @@ const RunBadge: React.FC<{ run: WatchedRun; open: boolean; onToggle: () => void 
 );
 
 /**
- * What the panel can offer when the answer is missing: the request that would get it.
- *
- * It asks, it does not act. The click puts the server's own sentence into the
- * conversation, so whatever tool the model reaches for goes through the approval the
- * tool already requires — a panel button must not become a second way to start an
- * irreversible call. The confirmation sits here because a submission is a decision,
- * and one click is not how a decision should read.
+ * What the panel offers when an answer is missing: the request that would get it. The
+ * click sends the server's sentence to the conversation, so the tool still asks for
+ * approval; the confirmation is here because a submission is a decision.
  */
 const GroupAction: React.FC<{
   label: string;

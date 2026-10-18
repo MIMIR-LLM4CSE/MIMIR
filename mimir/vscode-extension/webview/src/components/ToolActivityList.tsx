@@ -7,18 +7,9 @@ import { subAgentTail } from "./subAgentUtils";
 import { iconForKind, labelForKind } from "./toolIcons";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
-/** Terminal-style in/out panel for an exec-shaped tool result (shell, code
- *  runner, compiler): the command that ran (IN) and its output (OUT). Each pane
- *  scrolls on its own inside its own height cap, so a long command can never
- *  push the output off-panel — IN and OUT are both always in view. Both caps are
- *  restricted by default and grow on demand; stderr is shown in a neutral tone
- *  and only turns red when the command actually failed (non-zero exit), so
- *  routine stderr chatter doesn't read as an error.
- *
- *  While the row is still running the panel is half-built: the command is known
- *  from the call, the output does not exist yet. `pending` is what tells the two
- *  apart — an empty OUT under a finished run is the fact "(no output)", under a
- *  live one it is simply not in yet, and saying "(no output)" there is wrong. */
+/** Terminal-style in/out panel for an exec-shaped result: the command (IN) and its
+ *  output (OUT), each scrolling inside its own cap. stderr turns red only on a failed
+ *  exit. While `pending` (the row still runs) an empty OUT is not "(no output)". */
 const ExecOutput: React.FC<{ exec: ExecResult; pending?: boolean }> = ({
   exec,
   pending,
@@ -138,15 +129,9 @@ const MathOutput: React.FC<{ math: MathResult }> = ({ math }) => {
   );
 };
 
-/** Full-width panel carrying the error text of a failed tool call. The row tail
- *  can only show a cropped one-liner, so the real message lives here: wrapped
- *  over as many lines as it needs, scrolling past a bounded height.
- *
- *  Deliberately has NO height toggle of its own: the row's expand/collapse is the
- *  single control. A second "Collapse" button inside the panel only shrank its
- *  height, so clicking it — the obvious target once the panel is open — left the
- *  panel open and read as "the row won't collapse". Its footer button now closes
- *  the row itself, same as clicking the row head. */
+/** Full-width panel carrying the error text of a failed tool call, wrapped and scrolling
+ *  past a bounded height. Its button closes the row itself: the row's expand/collapse is
+ *  the one control. */
 const ErrorOutput: React.FC<{ error: string; onCollapse: () => void }> = ({
   error,
   onCollapse,
@@ -212,20 +197,9 @@ function withFileLink(text: string, target?: FileTarget): React.ReactNode {
 
 /** What the row says: the tool's family of work, then what this call is doing.
  *
- *  The family is one declared word — "edit", "bash", "proxy eval" — in full colour,
- *  and it is the same word the icon was picked from. Shown with a capital — see
- *  `labelForKind`, which also keeps the one brand whose capital is not its first letter.
- *  Beside it, dim, the model's own
- *  sentence about this particular call, which is the only part of the row that knows
- *  *why* it is happening. A derived label ("Running shell command") said neither: ten
- *  identical calls read as ten identical rows. It survives as the row's tooltip.
- *
- *  No sentence — the model did not write one, or the row comes from a session recorded
- *  before this existed — and the derived label stands in for it. The family alone was
- *  tried first and is too coarse to read: eight tools answer to "Plan", so a bare
- *  `Plan` row left no way to tell a checklist being written from one being read. The
- *  label is the one thing that always says which call this was, and it is already on
- *  the wire for the tooltip and the approval card. */
+ *  The family is one declared word ("edit", "bash"), the one the icon is drawn from
+ *  (`labelForKind` capitalises it). Beside it, dim, the model's sentence about this call;
+ *  without one, the derived label, which is also the tooltip. */
 const ToolHead: React.FC<{
   kind: string;
   doing?: string;
@@ -273,18 +247,9 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // cropped mid-sentence. Failed rows keep it clear — the ✕ carries the status and
   // the full command/error is one click away.
   const tailSummary = isError ? "" : tool.summary;
-  // Only *successful* exec-shaped rows (shell / code runner / compiler) open by
-  // default, so the terminal IN/OUT panel is visible without a click. Failed or
-  // blocked rows stay collapsed — the explanation is a dropdown the user opens on
-  // demand — and non-exec rows have nothing to reveal.
-  // A live row mounts as "running" with no exec and the payload lands later, on
-  // tool_result, so the panel has to open on that transition. Derived during
-  // render rather than set from an effect: an effect opens it in a SECOND commit,
-  // and the transcript is pinned to its bottom in the first one — so the pane was
-  // pinned to the height of the collapsed row and the terminal panel unrolled
-  // below the fold, which is how a bash call came out cut off at the bottom. A
-  // click is kept as an override, and until then the default is re-derived, so a
-  // row the user has not touched is always shown at its natural size.
+  // Successful exec rows open by default (the IN/OUT panel visible), others stay
+  // collapsed. Derived during render, so the panel opens in the same commit as the
+  // result and the bottom-pinned thread sees its full height; a click overrides it.
   const [toggled, setToggled] = useState<boolean | null>(null);
   // A typeset calculation opens the same way: the equation is the result.
   const openByDefault = (hasExec && !isError) || hasMath;
@@ -323,18 +288,9 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // before the field existed has no family, and the generic glyph is the honest answer.
   const kind = tool.kind || "tool";
 
-  // Beside the description, the salient argument of the call: the url it is reaching,
-  // the job id it is cancelling, the verdict it is recording, the file it is reading.
-  // The description says what the call is for and this says what it is for *on*, so
-  // they are two facts and not two renderings of one — the server has already dropped
-  // this when the description happens to name it (`dedup_row_detail`).
-  //
-  // Dropped only where the panel below restates it in full: a command under an open IN
-  // pane, an expression under its typeset equation. A *failed* exec row is collapsed,
-  // so its command stays on the line — that row would otherwise read "Bash" alone.
-  //
-  // The file name stands in when there is no preview, since it is a link rather than a
-  // sentence and the row is where the file is opened from.
+  // Beside the description, the salient argument (the url, the job id, the file): what
+  // the call acts on. Dropped where the panel below restates it (an open IN pane, a
+  // typeset equation); the file name stands in when there is no preview.
   const detail = tool.detail || (!linkInDoing && fileTarget ? fileTarget.name : "");
 
   const running = tool.status === "running";

@@ -79,14 +79,9 @@ export type ChatAction =
   | { type: "approval_response"; id: string; choice: "y" | "n" | "a" };
 
 /**
- * Apply *transform* to whichever list currently holds the row *id*.
- *
- * A row lives in `liveToolCalls` during its step, then gets baked into a
- * `kind:"tools"` message. Late-arriving news about it (its result, a verdict, a
- * sub-agent step) can land on either side of that boundary — showing an approval
- * card mid-flight runs flushLive on a still-running row — so every patch has to
- * look in both places. Returns null when the row is nowhere: an event for a turn the
- * user has already cleared is dropped, not applied to a stranger.
+ * Apply *transform* to whichever list holds the row *id*: the live calls or a frozen
+ * `tools` message, since late news can land on either side of the freeze. Null when
+ * the row is nowhere (a cleared turn's event is dropped).
  */
 function patchToolWhere(
   state: ChatState,
@@ -111,17 +106,9 @@ function patchToolWhere(
 }
 
 /**
- * Apply *transform* to every list that holds a row matching *match*.
- *
- * The twin of :func:`patchToolWhere`, for news that arrives keyed by a job rather
- * than by a call id. A call id names one row, so stopping at the first list that has
- * it is right; a job key does not. The launch row carries it, so does any status call
- * whose exec payload names the same run, and so does a row a re-watch adopted — and
- * settling only the first of those left the one the dock was drawing still marked
- * `background`, still mid-"compiling", for the rest of the session.
- *
- * Returns null when no list holds a match, so a caller can tell "nothing to do" from
- * "done" exactly as with the single-target form.
+ * Apply *transform* to every list holding a row that matches *match*: news keyed by a
+ * job reaches the launch row, a status call naming the same run, and a re-watched row
+ * alike. Null when nothing matched.
  */
 function patchToolsEverywhere(
   state: ChatState,
@@ -152,15 +139,9 @@ function patchToolById(
 /**
  * Append *msg* to the transcript, keeping stamped messages in arrival order.
  *
- * Anything that can land while a step is still in flight is stamped — a steer
- * bubble, an edit card, a session-command reply — and so is everything that step
- * freezes. The tail of the transcript is therefore a run of stamped messages in
- * stamp order, and a new one is inserted into that run instead of being dropped at
- * the end. Which is what a steer needs in both directions: the bubble goes under
- * the cards that were already there, and the prose that was in flight when it
- * arrived is later committed back above it.
- *
- * An unstamped message (a query, an answer, an error) goes last and closes the run.
+ * What lands while a step is in flight (a steer bubble, an edit card, a command reply)
+ * is stamped, as is what the step freezes; a new stamped message is inserted into that
+ * run. An unstamped one (a query, an answer, an error) goes last.
  */
 function appendStamped(messages: ChatMessage[], msg: ChatMessage): ChatMessage[] {
   const seq = msg.seq;
@@ -175,18 +156,9 @@ function appendStamped(messages: ChatMessage[], msg: ChatMessage): ChatMessage[]
 }
 
 /**
- * Append *msg* above the messages the turn in flight has not claimed.
- *
- * A steer bubble carries its "queued" tag until the server says the run read it, so a
- * tagged bubble still at the tail when the turn ends is one no step of it took in: it
- * is answered by a turn of its own, and the message was typed *during* the step that
- * is ending here. What closes that step therefore belongs above it — appended after
- * it, the answer of the turn before reads as a reply to a message not yet sent.
- *
- * This is the other half of {@link appendStamped}, which puts a bubble under the cards
- * and prose that were already on screen: there the step's own output comes back above
- * the bubble, and the authoritative text that supersedes it has to land in the same
- * place.
+ * Append *msg* above the steer bubbles the ending turn never read: they were typed
+ * during it and are answered by a turn of their own. The other half of
+ * {@link appendStamped}.
  */
 function appendAboveUnclaimed(
   messages: ChatMessage[], msg: ChatMessage,
@@ -199,19 +171,9 @@ function appendAboveUnclaimed(
 /**
  * Bake the turn's live state into the transcript and clear it, in arrival order.
  *
- * Prose, reasoning blocks and tool rows are collected in three separate streams,
- * so the order has to be reconstructed from the stamps they were handed
- * (orderLiveStream). The live view reads the same stamps through the same
- * function: a card the user watched arrive under a paragraph stays under it once
- * the step ends, instead of jumping above it as the freeze regrouped by kind.
- *
- * Reasoning and tools stay decorrelated — each non-empty block is its own
- * `kind:"thinking"` message, and each run of consecutive tool rows one
- * `kind:"tools"` message.
- *
- * *provisional* flags the committed prose for the two cases where the turn was
- * not accepted and the draft is nonetheless the only copy of it anywhere: it
- * parked on a question, or the connection dropped under it. See commitDraft.
+ * The three streams (prose, reasoning, tools) are ordered by their stamps through
+ * orderLiveStream, as the live view is; each reasoning block and each run of tool rows
+ * is one message. *provisional* is as in commitDraft.
  */
 function flushLive(
   state: ChatState, makeId: () => string, provisional = false,
@@ -292,18 +254,11 @@ function flushLive(
 }
 
 /**
- * Move the draft into the transcript, if there is anything in it.
+ * Move the draft into the transcript before anything is appended under it. Not on
+ * `answer` (which supersedes it) nor on `nudge_injected` (the turn was not accepted).
  *
- * Called before anything else is appended below it — a card, a frozen tool list,
- * an error — so committed prose keeps its place in the order it was written.
- * NOT called on `answer` (the authoritative text supersedes the draft) or on
- * `nudge_injected` (the turn was not accepted, so there is nothing to keep).
- *
- * *provisional* is for the two places where the turn has not been accepted and yet
- * the draft must not be thrown away: it parked on a question, or the connection
- * dropped under it. Both interrupt the turn at a point where this prose is the only
- * copy of it anywhere — it is not in `messages`, not on the server, not on disk — so
- * it is committed, flagged, and dropped again by the `answer` that supersedes it.
+ * *provisional*: the turn parked on a question or lost its connection, and this prose is
+ * its only copy; the `answer` that supersedes it drops it again.
  */
 function commitDraft(
   state: ChatState, makeId: () => string, provisional = false,
@@ -324,13 +279,8 @@ function commitDraft(
 }
 
 /**
- * True when *answer* is the finished form of the provisional prose *held*.
- *
- * The two shapes that produce one: a turn whose prose was committed because it parked
- * on a question nobody was asked anything else about, and a turn cut off mid-sentence
- * that later finished — the held text is then a prefix of the answer. Compared on
- * collapsed whitespace, since the draft's paragraph breaks are inserted by the token
- * coalescing rather than by the model.
+ * True when *answer* is the finished form of the provisional prose *held*: equal, or
+ * extending it, on collapsed whitespace.
  */
 function isRewordedBy(answer: string, held: string | undefined): boolean {
   const flat = (t: string) => t.replace(/\s+/g, " ").trim();
@@ -350,13 +300,9 @@ function clearProvisional(messages: ChatMessage[]): ChatMessage[] {
 }
 
 /**
- * Commit the draft and stop the turn's live state, for a turn parked on a question.
- *
- * A plan approval and a clarification batch both park the worker thread
- * indefinitely: the agent is waiting on a person, and until they answer there
- * is no `answer` event, so nothing else marks this moment. That matters beyond the
- * spinner — the transcript only travels back to the server when `busy` falls, and the
- * plan the user is being asked to approve lives, until this runs, in `draft` alone.
+ * Commit the draft and stop the turn's live state, for a turn parked on a question:
+ * nothing else marks the moment, and the transcript (the plan up for approval included)
+ * only reaches the server when `busy` falls.
  */
 function parkOnPrompt(state: ChatState, makeId: () => string): ChatState {
   const s = flushLive(state, makeId, true);
@@ -412,17 +358,9 @@ export function createChatReducer(makeId: () => string) {
         };
       }
 
-      // Server confirmed a queued steer reached the agent. Clear the "queued" tag on
-      // the oldest still-queued bubble (FIFO injection order).
-      //
-      // `starts_turn` means it reached the agent as a turn of its own: the run it was
-      // typed into ended before any step boundary read it, so the server submitted it.
-      // Nobody pressed send for that turn, so `busy` is set here — it is what offers
-      // the stop button and makes the end of the turn observable at all.
-      //
-      // Where the bubble sits is settled by the tag, not here: while it is set, the
-      // turn in flight has not claimed the message, and whatever ends that turn is
-      // placed above it.
+      // A queued steer reached the agent: clear the tag on the oldest queued bubble.
+      // `starts_turn`: it arrived after the run ended and is a turn of its own, so `busy`
+      // is set here. While tagged, the bubble stays below whatever ends the turn.
       case "steer_injected": {
         const busy = action.starts_turn ? true : state.busy;
         const idx = state.messages.findIndex((m) => m.queued);
@@ -436,16 +374,9 @@ export function createChatReducer(makeId: () => string) {
         };
       }
 
-      // A guardrail nudge fired, which means the loop did not accept the turn the
-      // model just wrote as its answer. Two things follow.
-      //
-      // The nudge is not rendered: it occupies the user's turn slot without coming
-      // from the user, and as a bubble it reads as instructions nobody typed.
-      //
-      // The draft is dropped, because nothing has been answered yet — the model is
-      // about to reconsider and either go back to work or write a different ending.
-      // Nothing disappears from the transcript here: a provisional turn never
-      // entered it, which is the whole point of holding it in `draft`.
+      // A nudge fired: the loop did not accept the turn the model just wrote. The nudge
+      // is not rendered (it is not the user's), and the draft is dropped; it never
+      // entered the transcript.
       case "nudge_injected":
         return state.draft ? { ...state, draft: "", draftSeq: null } : state;
 
@@ -569,20 +500,10 @@ export function createChatReducer(makeId: () => string) {
       // runs a turn elsewhere, and marking this chat busy for it would show a stop
       // button that stops nothing.
       case "job_complete": {
-        // First, close the loop on the row the user detached, if this is that job:
-        // it has been sitting on "moved to background" with only partial output, and
-        // this is the only message that ever says how the run actually ended. Done
-        // before the branch below clears liveToolCalls, since the row may still be
-        // there.
-        // Either handle finds the row: a shell run detached mid-flight is known by
-        // the job key on its terminal panel, while a run with no output to preview —
-        // an optimization run — carries the key on the row itself. Before the second
-        // one existed, such a row settled as an ordinary success and its ending
-        // landed nowhere.
-        // A row still waiting on this run: the one the launch left `background`, and
-        // any other row that adopted the same key. Settled rows are left alone — a
-        // finished status probe happens to carry the key too, and rewriting it as
-        // "background run done" would relabel a call that only asked a question.
+        // Settle the row still waiting on this run: the one the launch left
+        // `background` (known by the job key on its terminal panel or on the row) and any
+        // row that adopted the key. Settled rows, such as a finished status probe that
+        // carries the key, are left alone.
         const isThisJob = (t: ToolActivity) =>
           (t.status === "background" || t.status === "running") &&
           (t.exec?.job_key === action.job_key || t.jobKey === action.job_key);
@@ -1122,15 +1043,9 @@ export function createChatReducer(makeId: () => string) {
         const diffs = [...s.pendingDiffs];
         const thinkingText = s.pendingThinking;
         s = { ...s, pendingDiffs: [], pendingThinking: "", busy: false };
-        // Dropped alongside the unanswered approval cards: a provisional bubble the
-        // answer turns out to be a fuller copy of. Only *that* one — a plan the user
-        // approved is followed by the report of executing it, and a plan they rejected
-        // by the refusal, neither of which repeats the plan; dropping those would take
-        // the plan out of a transcript the user watched it arrive in. What does repeat
-        // is a plan nobody was asked about (delivered as the answer) and a turn cut off
-        // mid-prose that later finished, whose bubble is a prefix of the answer.
-        // Whitespace-insensitive, and a comparison that fails leaves both: a visible
-        // duplicate is recoverable, a silently deleted answer is not.
+        // Dropped with the unanswered approval cards: a provisional bubble the answer is a
+        // fuller copy of (a plan nobody was asked about, a turn cut off mid-prose). A
+        // failed comparison keeps both: a duplicate is recoverable, a lost answer is not.
         const noApproval = s.messages.filter(
           (m) => !(m.kind === "approval" && !m.text)
             && !(m.provisional && isRewordedBy(action.text, m.text))

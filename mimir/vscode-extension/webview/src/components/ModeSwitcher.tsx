@@ -9,7 +9,7 @@ interface Props {
 }
 
 // Mirrors VALID_MODES in client/config/models.py. Each mode carries its own
-// description because the labels alone no longer say what the mode will do.
+// description because the labels alone do not say what the mode will do.
 // The colour is the mode's identity across the whole chat (see --mode-accent in
 // main.css): blue = agent, red = plan, green = ask.
 const MODE_OPTIONS: {

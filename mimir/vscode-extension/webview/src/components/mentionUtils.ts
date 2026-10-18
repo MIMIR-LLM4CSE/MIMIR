@@ -99,14 +99,8 @@ export type MentionItem =
     };
 
 /**
- * The dropdown's rows for `query`: the matching resources, then the matching files.
- *
- * Resources lead because there are a handful of them against a workspace's thousands,
- * so a file list would bury them, and because a name shorthand like `@memory` is
- * otherwise indistinguishable from a path the user has half-typed.
- *
- * `files` arrives already ranked by the extension host (it owns the index); this only
- * shapes it for display.
+ * The dropdown's rows for `query`: the matching resources first (a handful, which a
+ * file list would bury), then the files the host already ranked.
  */
 export function buildMentionItems(
   resources: ResourceItem[],

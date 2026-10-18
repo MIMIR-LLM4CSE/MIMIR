@@ -1,29 +1,10 @@
 /**
  * HTTP from the extension host, straight to the address asked for.
  *
- * The one network path the extension host has of its own. Everything it talks to —
- * a vLLM endpoint, a Ray Serve router, an Ollama daemon — is an internal cluster
- * address, and this exists because the obvious way to reach one does not work here.
- *
- * `http.get`/`https.get` are patched in the extension host by VS Code's proxy
- * support (`http.proxySupport`, "override" by default), which routes requests
- * through the proxy it resolves from the settings and the environment — and does so
- * even when the caller passes an agent of its own, so an explicit agent is not a way
- * out. A corporate proxy has no route to a cluster address: it accepts the CONNECT
- * and then holds it, so a proxied request hangs until its own deadline rather than
- * failing. What the user sees is "did not answer in time" about a server that in
- * fact answers in under a second, and the natural conclusion — wrong address — sends
- * them editing a setting that was right.
- *
- * `net`/`tls` are not on that patch's path, so speaking HTTP/1.1 over a socket we
- * open ourselves goes where the address says. This is the same posture the Python
- * side takes deliberately at every cluster call (`httpx.Client(trust_env=False)`,
- * `_direct_opener()`); this module is where the extension host holds it, so a new
- * caller gets it by using this rather than by remembering why.
- *
- * Deliberately not a general HTTP client: no redirects, no keep-alive, no proxy
- * support. If a caller ever needs to reach something that *is* behind the proxy,
- * that is `http.get` — and this comment is the reason the two are different calls.
+ * VS Code patches `http`/`https` to route through the user's proxy, even with an
+ * explicit agent, and a corporate proxy holds a cluster address until the deadline.
+ * `net`/`tls` are not patched, so this speaks HTTP/1.1 over its own socket, as the
+ * Python side does with `trust_env=False`. No redirects, keep-alive or proxy support.
  */
 import * as net from "net";
 import * as tls from "tls";
@@ -78,15 +59,9 @@ function decodeChunked(buf: Buffer): string | undefined {
 /**
  * GET *target*, reporting how far the attempt got if it does not finish.
  *
- * The deadline is a timer of our own, because no socket-level timeout covers the
- * phase before a connection exists: a name that never resolves or a route that
- * black-holes the SYN leaves the request with no error and no end — a promise that
- * never settles, which strands whatever is waiting on it with nothing to show. The
- * rejection names the last phase reached, because "it hung" and "it hung before DNS
- * even answered" call for different fixes.
- *
- * `Connection: close` keeps the body honest: it ends at content-length, at the
- * terminating chunk, or at EOF, and never waits on a kept-alive socket.
+ * The deadline is our own timer: no socket timeout covers the phase before a
+ * connection exists, and the rejection names the last phase reached. `Connection:
+ * close` ends the body at content-length, the last chunk, or EOF.
  */
 export function directGet(
   target: string | URL,

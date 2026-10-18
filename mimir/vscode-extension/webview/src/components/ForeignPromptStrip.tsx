@@ -13,19 +13,11 @@ interface Props {
 }
 
 /**
- * Conversations that are waiting on the user, other than the one on screen.
+ * Cards raised by conversations other than the one on screen: a turn blocked on the
+ * user with no timeout, so shown above the thread.
  *
- * Conversations run turns at once, so a card can be raised by one the user is not reading.
- * It belongs neither in this chat's thread — that is another transcript — nor nowhere: the
- * agent blocks on the answer with no timeout, by design, so an unseen card is a
- * conversation stopped until somebody notices. Hence a strip above the thread, the level
- * that cannot be missed while the panel is open.
- *
- * An approval is answerable here, because yes/no is the whole decision and making the user
- * switch conversations to say "no" is friction with no purpose. "Always" is deliberately
- * absent: it widens a sandbox, which is not a choice to offer beside a one-line summary of
- * a call the user has not read in context. A question is not answerable here at all — its
- * options need the conversation around them — so it offers the jump instead.
+ * An approval is answered here (no "Always": it widens a sandbox from a one-line
+ * summary); a question needs its conversation, so it offers the jump instead.
  */
 export function ForeignPromptStrip({ prompts, onOpen, onApprove }: Props) {
   const entries = Object.entries(prompts);

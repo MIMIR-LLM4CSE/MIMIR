@@ -2,18 +2,10 @@ import React from "react";
 import type { CommandOutputMessage } from "../types";
 
 /**
- * The answer to a session command ("/memory list", "/memory clear", "/proxy list").
+ * The answer to a session command ("/memory list", "/mode agent").
  *
- * Two shapes from one payload, chosen here rather than by the backend — which has no
- * business knowing how wide the panel is:
- *
- *  * a SETTING change is one value with nothing to explain, so it reads as a single
- *    line: `✓ /mode  Mode  agent`.
- *  * a LISTING, or anything with a note under it, gets a card with rows.
- *
- * Both carry the command that produced them, because an answer arriving in a chat
- * transcript with no question above it is a sentence with no subject — the command
- * itself never appears as a user bubble.
+ * A setting reads as one line (`✓ /mode  Mode  agent`); a listing, or anything with a
+ * note, as a card with rows. Both name the command, which never appears as a bubble.
  */
 
 const TONE_ICON: Record<string, string> = { ok: "✓", warn: "⚠", empty: "·" };

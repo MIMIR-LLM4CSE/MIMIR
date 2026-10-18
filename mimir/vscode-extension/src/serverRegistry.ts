@@ -1,25 +1,9 @@
 /**
- * Finding the MIMIR server this workspace already has.
+ * Finding the MIMIR server this workspace already has, from `<state dir>/server.json`.
  *
- * The connect path learns a spawned server's port by regexing its stdout, which works
- * exactly as long as this extension host is the parent holding that pipe. A server that
- * outlived the window which started it cannot be found that way, so it writes its
- * address to `<state dir>/server.json` and this module reads it back.
- *
- * The state dir is the same one the Python side computes, and agreeing on it is the
- * whole of "one server per workspace": `<state home>/<basename>-<sha1(realpath)[:8]>`.
- * The hash is of the resolved path, so two checkouts that share a basename do not
- * collide; `workspaceId` here must stay byte-identical to `state_paths.workspace_id`
- * there, which is what `extension.test.ts` pins.
- *
- * Liveness is three questions, and the third is the one the other two cannot answer:
- * the pid exists; its start time matches what was recorded, because a recycled pid
- * wears the same number; and the port actually accepts a connection, because a process
- * can be alive with its listener already gone.
- *
- * The entry is advisory. A stale one costs a connection attempt that fails and is then
- * replaced — treating it as proof a server exists is how a window ends up waiting on an
- * address nothing is listening at.
+ * `workspaceId` must stay byte-identical to `state_paths.workspace_id` (pinned by
+ * extension.test.ts). An entry is live when its pid exists, its start time matches, and
+ * its port accepts a connection; a stale entry costs one failed attempt.
  */
 import * as crypto from "crypto";
 import * as fs from "fs";
@@ -82,17 +66,11 @@ export function logPath(workspaceRoot: string, stamp: string): string {
 }
 
 /**
- * Wait for a server to publish its address, polling the registry.
+ * Wait for a server to publish its address, polling the registry (the file is created,
+ * renamed and possibly replaced, which a watcher handles badly).
  *
- * A server spawned in its own process session has no pipe back here, so its address
- * cannot be read off its stdout: it writes `server.json` once the socket is bound and
- * this reads it. Polling rather than watching, because the file is created, renamed
- * into place and possibly replaced, and a watcher on a path that does not exist yet is
- * the harder thing to get right.
- *
- * Resolves with the entry whose `pid` is *ours* — or, when one appears for another live
- * pid, with that one: a server that loses this workspace's lock exits without serving,
- * so the right answer is the server that already holds it.
+ * Resolves with our pid's entry, or with another live server's: the one holding this
+ * workspace's lock, which ours then yields to.
  */
 export async function waitForServer(
   workspaceRoot: string,

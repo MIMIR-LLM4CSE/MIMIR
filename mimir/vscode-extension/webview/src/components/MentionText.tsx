@@ -7,15 +7,9 @@ interface Props {
 }
 
 /**
- * A sent message with its "@"-attachments marked out of the prose.
- *
- * What was attached is the part of a message the user comes back to — which file, which
- * lines — and as plain text it is the hardest part to find again. Each mention is drawn
- * as a chip, and a file mention opens the file in a real editor tab, at the attached
- * line range when it named one (`open_file`, the host handler the edit cards use).
- *
- * A resource mention (`@memory://all`) is marked the same way but is not a link: it
- * addresses a server, not a path, and there is nothing to open.
+ * A sent message with its "@"-attachments drawn as chips: a file chip opens the file at
+ * the attached lines (`open_file`); a resource mention (`@memory://all`) is marked but
+ * has nothing to open.
  */
 export function MentionText({ text }: Props) {
   const segments = useMemo(() => splitMentionSegments(text), [text]);

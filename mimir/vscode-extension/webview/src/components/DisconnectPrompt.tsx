@@ -14,18 +14,10 @@ interface Props {
 }
 
 /**
- * Asked when disconnecting would end work that is still running.
+ * Asked when disconnecting would end work still running; the conversations are named.
  *
- * Three answers, and the mapping is deliberate: dismissing the dialog cancels the
- * disconnect rather than choosing one of the outcomes. A dialog that defaults to an
- * action on being dismissed makes Escape a decision, and the decision here can end a
- * two-hour build.
- *
- * It names the conversations rather than counting them. "2 conversations are running"
- * tells the user to go and look; their titles let them answer from here.
- *
- * Only shown when something is actually running — disconnecting from an idle agent is
- * not a decision and must not be made into one.
+ * Dismissing cancels the disconnect, so Escape never ends a build. Never shown when
+ * nothing runs.
  */
 export const DisconnectPrompt: React.FC<Props> = ({
   running, onDetach, onDiscard, onCancel,

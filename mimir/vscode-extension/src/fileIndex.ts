@@ -1,17 +1,9 @@
 /**
- * Workspace file ranking for the chat's "@" autocomplete.
+ * Workspace file ranking for the chat's "@" autocomplete: the host scans once, caches
+ * the relative paths, and scores each keystroke against them.
  *
- * The webview cannot enumerate the workspace: it has no filesystem and its CSP
- * reaches nothing but the extension host. So the host scans once, caches the
- * relative paths, and answers each keystroke from that list — the scoring below.
- *
- * Matching is subsequence-based like VS Code's own Quick Open: the typed letters
- * have to appear in order, not contiguously, so `apcx` finds
- * `webview/src/App.tsx`. A match in the file name outranks one in the directory,
- * because that is the part the user is usually typing.
- *
- * Kept free of the `vscode` module so it is unit-testable (see fileIndex.test.ts);
- * extension.ts owns the scan, the cache and the message plumbing.
+ * Subsequence matching like Quick Open (`apcx` finds `webview/src/App.tsx`); a match in
+ * the file name outranks one in the directory. Free of `vscode`, so unit-testable.
  */
 
 /**
