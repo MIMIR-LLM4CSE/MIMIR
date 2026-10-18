@@ -1,8 +1,7 @@
-"""When the pool lets an idle worker go, and when the whole server may stop.
+"""When the whole server may stop, and how long a worker may sit idle.
 
-A worker idle past its TTL is released (its conversation is on disk); the server
-stops once nothing is left that anyone could come back to: no connection, no
-worker, no detached run, no claim from a window that asked to keep it."""
+The server stops once nothing is left that anyone could come back to: no connection,
+no worker, no detached run, no claim from a window that asked to keep it."""
 from __future__ import annotations
 
 import asyncio
@@ -10,11 +9,13 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from ..server import registry as server_registry
 from ....session.jobs_on_disk import has_baseline, scan_all_sessions
 from ..worker.human import detach_grace
-from ..worker.worker import AgentWorker
+
+if TYPE_CHECKING:
+    from .pool import AgentPool
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,9 @@ def idle_stop_reason(ttl_secs: float, *, past: bool) -> str:
             "— any work restarts that clock.")
 
 
-# How often the reaper looks. Nothing here is urgent — a worker that lives thirty seconds
+# How often the pool's reaper looks. Nothing here is urgent — a worker that lives thirty seconds
 # past its welcome costs nothing — and a tight tick would walk the pool for no reason.
-_REAP_INTERVAL = 30.0
+REAP_INTERVAL = 30.0
 
 
 # How long a worker may sit unused before it is released. Long enough that switching back
@@ -75,10 +76,24 @@ def default_idle_ttl() -> float:
         return _DEFAULT_IDLE_TTL
 
 
-class PoolLifecycle:
-    _reaper: asyncio.Task[None] | None
+class Lifecycle:
+    """Whether this process is still needed, and stopping it once it is not.
 
-    # ── Is this process still needed ──────────────────────────────────────────
+    Reads the pool it belongs to through its public face: the bus, the workers, the
+    waiting line, the conversations and their writer.
+    """
+
+    def __init__(self, pool: AgentPool) -> None:
+        self._pool = pool
+        # Resolved when this process decides it is no longer needed. Awaited beside the
+        # signal handlers, so an idle stop and a SIGTERM take the same path out — the
+        # one that closes the MCP servers.
+        self.stop_requested: asyncio.Event | None = None
+        self.server_idle_ttl = server_idle_ttl()
+        # When the whole process first looked idle, or None while it does not. The TTL
+        # is measured from here, so a moment of activity restarts it rather than
+        # shortening it.
+        self._idle_since: float | None = None
 
     def idle_report(self, *, excluding: Any = None) -> dict:
         """Why this process is or is not still needed, in one interrogable answer.
@@ -111,16 +126,17 @@ class PoolLifecycle:
         telling the first that nothing is watching would be the same mistake inverted.
         """
         reasons: list[str] = []
-        attached = self.bus.attached(excluding=excluding)
+        attached = self._pool.bus.attached(excluding=excluding)
         if attached:
             reasons.append(f"{attached} client(s) attached")
-        if self._queue:
-            reasons.append(f"{len(self._queue)} turn(s) waiting for a slot")
-        if self._building:
-            reasons.append(f"{len(self._building)} agent(s) being built")
+        waiting, building = self._pool.waiting(), self._pool.building()
+        if waiting:
+            reasons.append(f"{waiting} turn(s) waiting for a slot")
+        if building:
+            reasons.append(f"{building} agent(s) being built")
 
         unfinished: list[str] = []
-        for session_id, worker in list(self._workers.items()):
+        for session_id, worker in self._pool.items():
             try:
                 if worker.has_work_pending():
                     reasons.append(f"session {session_id} has a turn in flight")
@@ -134,7 +150,7 @@ class PoolLifecycle:
             if worker.human.has_deferral:
                 reasons.append(f"session {session_id} is owed an answer")
                 continue
-            if self.bus.concluded_at(session_id) is None:
+            if self._pool.bus.concluded_at(session_id) is None:
                 # Never answered, and not running: a turn that ended without saying so.
                 # Counted as working, because nothing observed it finishing.
                 unfinished.append(session_id)
@@ -206,129 +222,6 @@ class PoolLifecycle:
                 self._record_own_stop(headline)
             event.set()
 
-    # ── Releasing ─────────────────────────────────────────────────────────────
-
-    def releasable(self, session_id: str) -> bool:
-        """Whether this worker may be closed without throwing work or attention away.
-
-        Each clause is a thing that would be lost:
-
-        * **busy** — a turn is running, or is queued and about to.
-        * **watching a background job** — a two-hour build's watcher lives on this
-          worker's loop. Evicting it loses the wake that watcher exists to deliver, so
-          the build finishes and nothing ever says so.
-        * **parked on a card** — the turn is waiting on a person, with no timeout, by
-          design. Closing it discards a question the user may be about to answer.
-        * **holding a deferral** — the same debt, set aside. A deferred turn has
-          cleared its pending card, so the clause above no longer sees it, and the
-          user still owes it an answer; releasing the agent here throws away the ~19
-          servers that answer will be resumed against.
-        * **owed a wake** — a run of its finished and no turn has taken that news in
-          yet. The debt one step later than "watching a job", and the clause that
-          closes the gap between them: a watcher drops the job the instant it reports
-          it, so without this the agent is releasable for the one moment at which it
-          is needed most — and the conversation it belongs to has by definition been
-          idle for hours, because it was waiting on a long run.
-        * **holding undrained output** — its last word has not been acted on. Each
-          event wakes the pump, which does the whole handover inside one synchronous
-          tick; before it, closing the worker discards what it had just said — the
-          completion event included — and the agent that event is addressed to with
-          it.
-        * **on screen** — the conversation the user is reading must stay instant.
-
-    Together these are what make "ten minutes idle" safe to act on. Idleness is counted
-    from the last time the pool was asked for the worker, which for a conversation
-    waiting on an overnight run is hours ago throughout — so the clock never protects
-    it and these clauses are the whole of what does. Their sum is one invariant: an
-    agent is released only when nothing of its is unresolved, which is why a wake can
-    never arrive for a conversation whose agent has been closed.
-        """
-        worker = self._workers.get(session_id)
-        if worker is None:
-            return False
-        if session_id == self.active_session_id:
-            return False
-        try:
-            if worker.has_work_pending():
-                return False
-        except Exception:
-            logger.debug("releasable: a best-effort step failed and was skipped", exc_info=True)
-            return False
-        if worker.watched_job_keys():
-            return False
-        if worker.human.awaiting_user():
-            return False
-        if worker.human.has_deferral:
-            return False
-        conversation = self.conversations._open.get(session_id)
-        if conversation is not None and conversation.pending_wakes:
-            return False
-        out_q = getattr(worker, "out_q", None)
-        if out_q is not None:
-            try:
-                if not out_q.empty():
-                    return False
-            except Exception:
-                logger.debug("releasable: a best-effort step failed and was skipped", exc_info=True)
-                return False
-        return True
-
-    def idle_for(self, session_id: str) -> float:
-        return time.monotonic() - self._last_use.get(session_id, 0.0)
-
-    def _take_one_idle_locked(self) -> AgentWorker | None:
-        """Take out the longest-idle releasable worker, to free its slot. Caller holds
-        the lock, and closes what it is given once it has let go of it.
-
-        None when nothing may be released — every worker is working, waiting on the
-        user, or being read. The caller then queues instead of evicting: taking a slot
-        from a conversation that is mid-task to give it to a new one trades a visible
-        wait for silent lost work.
-        """
-        candidates = sorted(
-            (sid for sid in self._workers if self.releasable(sid)),
-            key=self.idle_for, reverse=True,
-        )
-        if not candidates:
-            return None
-        return self._take_locked(candidates[0], reason="a slot was needed")
-
-    async def release_idle(self) -> list[str]:
-        """Close every releasable worker idle past the TTL. Returns the sessions closed."""
-        closed: list[str] = []
-        taken: list[AgentWorker] = []
-        async with self._lock:
-            for session_id in list(self._workers):
-                if not self.releasable(session_id):
-                    continue
-                if self.idle_for(session_id) < self.idle_ttl:
-                    continue
-                taken.append(self._take_locked(session_id, reason="idle"))
-                closed.append(session_id)
-        await self._close_workers(taken)
-        return closed
-
-    def ensure_reaper(self) -> None:
-        """Start the idle sweep, if it is not already running."""
-        if self._reaper is not None and not self._reaper.done():
-            return
-        try:
-            self._reaper = asyncio.get_running_loop().create_task(self._reap_loop())
-        except RuntimeError:
-            self._reaper = None   # no loop (tests calling the pool synchronously)
-
-    async def _reap_loop(self) -> None:
-        while True:
-            await asyncio.sleep(_REAP_INTERVAL)
-            try:
-                await self.release_idle()
-                await self.pump()
-                self._consider_stopping()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("pool: idle sweep failed", exc_info=True)
-
     def _nobody_asked_to_keep_it(self) -> bool:
         """Whether this process has lost its last window with no claim on it.
 
@@ -352,9 +245,9 @@ class PoolLifecycle:
         killed either way — it has its own process session and an exit code trap, and
         the next agent built for its conversation picks it up again.
         """
-        if self.bus is None or not self.bus.ever_attached:
+        if self._pool.bus is None or not self._pool.bus.ever_attached:
             return False
-        unattended = self.bus.unattended_for()
+        unattended = self._pool.bus.unattended_for()
         if unattended is None or unattended < detach_grace():
             return False
         try:
@@ -365,7 +258,7 @@ class PoolLifecycle:
             logger.warning("pool: the detach claims could not be read", exc_info=True)
             return False
 
-    def _consider_stopping(self) -> None:
+    def consider_stopping(self) -> None:
         """Stop once nothing has needed this process for the whole TTL.
 
         Measured from when it *first* looked idle, and reset by any activity, so the
@@ -429,11 +322,11 @@ class PoolLifecycle:
         # The conversations that were being kept, or — in the unclaimed case, where by
         # definition there are none — the ones with an agent still here. Those are the
         # threads a user comes back to.
-        for session_id in kept or sorted(sid for sid, _w in self.items()):
-            conversation = self.conversations.get(session_id)
+        for session_id in kept or sorted(sid for sid, _w in self._pool.items()):
+            conversation = self._pool.conversations.get(session_id)
             if conversation is None:
                 continue
             conversation.note(stamped)
-            if self.save_conversation(conversation):
-                self.bus.record_client_event(
+            if self._pool.writer.save_conversation(conversation):
+                self._pool.bus.record_client_event(
                     session_id, {"type": "server_stopped", "text": headline})

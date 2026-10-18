@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import types
 import unittest
 
 from mimir.client.ui.ws.server.serving import _run_until_signalled
@@ -22,6 +23,7 @@ class _StubPool:
     def __init__(self) -> None:
         self.closed = False
         self.cap = 3
+        self.lifecycle = types.SimpleNamespace(stop_requested=None)
 
     async def aclose_all(self) -> None:
         self.closed = True

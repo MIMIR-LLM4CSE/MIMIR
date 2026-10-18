@@ -5,16 +5,30 @@ connection or wake produced the turn."""
 from __future__ import annotations
 
 import logging
+from typing import Callable
+
 from ..runtime import todo_file_for_session
 from ..worker.worker import AgentWorker
 from ....context.todo import load_todo_deps, load_todo_items
-from ....session.conversation import Conversation
+from ....session.conversation import Conversation, Conversations
 
 logger = logging.getLogger(__name__)
 
 
-class PoolWriter:
-    # ── Writing a conversation ────────────────────────────────────────────────
+class Writer:
+    """The one writer of every conversation of the pool.
+
+    *worker_of* finds a conversation's live worker, whose agent state a save records;
+    *after_turn* carries a conversation on once its turn is written
+    (``WakeRouter.after_turn``).
+    """
+
+    def __init__(self, conversations: Conversations,
+                 worker_of: Callable[[str | None], AgentWorker | None],
+                 after_turn: Callable[[Conversation, dict], list[str]]) -> None:
+        self.conversations = conversations
+        self._worker_of = worker_of
+        self._after_turn = after_turn
 
     def commit_turn(self, ev: dict, extras: dict) -> dict:
         """Write a finished turn into its conversation, and carry on from there.
@@ -38,7 +52,7 @@ class PoolWriter:
         conversation.commit_answer(ev, extras)
         self.save_conversation(conversation)
         try:
-            steering = self.wakes.after_turn(conversation, extras)
+            steering = self._after_turn(conversation, extras)
         except Exception:
             logger.warning("session %s could not be carried on after its turn",
                            session_id, exc_info=True)
@@ -73,7 +87,7 @@ class PoolWriter:
         where the agent keeps it.
         """
         record = conversation.record
-        worker = self.get(conversation.id)
+        worker = self._worker_of(conversation.id)
         if worker is not None:
             try:
                 record.carry_context = worker.export_agent_state().get("carry_context", {})

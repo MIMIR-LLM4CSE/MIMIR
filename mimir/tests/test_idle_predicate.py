@@ -116,13 +116,13 @@ class WhatCountsAsFinishedTests(_IdleCase):
         w = _Worker()
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
-        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"], pool.lifecycle.idle_report()["reasons"])
 
     def test_a_conversation_that_never_answered_is_not_idle(self):
         # The case "not busy" gets wrong: a turn that ended without saying so. Nothing
         # observed it finishing, so nothing may conclude that it did.
         pool = self._pool({"s1": _Worker()})
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("never delivered an answer" in r for r in report["reasons"]))
 
@@ -133,13 +133,13 @@ class WhatCountsAsFinishedTests(_IdleCase):
         pool = self._pool({"s1": w})
         w.out_q.put({"type": "error", "text": "backend gone", "session_id": "s1"})
         pool.bus.pump_once()
-        self.assertTrue(pool.idle_report()["idle"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"])
 
     def test_a_turn_in_flight_is_not_idle(self):
         w = _Worker(pending=True)
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)   # an earlier turn did finish
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("in flight" in r for r in report["reasons"]))
 
@@ -147,10 +147,10 @@ class WhatCountsAsFinishedTests(_IdleCase):
         w = _Worker()
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
-        self.assertTrue(pool.idle_report()["idle"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"])
         w.out_q.put({"type": "output", "text": "a new turn speaks\n"})
         pool.bus.pump_once()
-        self.assertFalse(pool.idle_report()["idle"])
+        self.assertFalse(pool.lifecycle.idle_report()["idle"])
 
 
 class SlurmSubmissionsEndTests(_IdleCase):
@@ -168,7 +168,7 @@ class SlurmSubmissionsEndTests(_IdleCase):
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
         self._slurm_job("s1", "123456")
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("still going" in r for r in report["reasons"]))
 
@@ -179,7 +179,7 @@ class SlurmSubmissionsEndTests(_IdleCase):
         self._baseline("s1")
         self._slurm_job("s1", "123456", state="done")
         jobs_on_disk.mark_job_reported("s1", "123456", "hpc")
-        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"], pool.lifecycle.idle_report()["reasons"])
 
     def test_a_finished_job_still_owed_its_wake_keeps_holding(self):
         # Settled is not delivered: the conversation is still owed the turn, which is
@@ -189,7 +189,7 @@ class SlurmSubmissionsEndTests(_IdleCase):
         self._conclude(pool, "s1", w)
         self._baseline("s1")
         self._slurm_job("s1", "123456", state="done")
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("nobody has taken in" in r for r in report["reasons"]),
                         report["reasons"])
@@ -203,7 +203,7 @@ class SlurmSubmissionsEndTests(_IdleCase):
         aged = time.time() - 30 * 24 * 3600
         os.utime(os.path.join(job_dir, "slurm_job_id"), (aged, aged))
         jobs_on_disk.mark_job_reported("s1", "123456", "hpc")
-        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"], pool.lifecycle.idle_report()["reasons"])
 
 
 class JobsHoldItOpenTests(_IdleCase):
@@ -214,7 +214,7 @@ class JobsHoldItOpenTests(_IdleCase):
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
         self._live_job("s1", "j1")
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("still going" in r for r in report["reasons"]))
 
@@ -227,7 +227,7 @@ class JobsHoldItOpenTests(_IdleCase):
         self._conclude(pool, "s1", w)
         self._ended_job("s1", "j1")
         self._baseline("s1")
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("nobody has taken in" in r for r in report["reasons"]),
                         report["reasons"])
@@ -239,7 +239,7 @@ class JobsHoldItOpenTests(_IdleCase):
         self._ended_job("s1", "j1")
         self._baseline("s1")
         self._deliver("s1", "j1")
-        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"], pool.lifecycle.idle_report()["reasons"])
 
     def test_a_finished_run_of_a_never_scanned_session_does_not(self):
         # A job directory is never swept, however old, so an unbaselined session holds
@@ -250,14 +250,14 @@ class JobsHoldItOpenTests(_IdleCase):
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
         self._ended_job("s1", "j1")
-        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"], pool.lifecycle.idle_report()["reasons"])
 
     def test_a_run_of_a_conversation_with_no_agent_still_counts(self):
         # A run outlives the agent that launched it, and its session may have no worker
         # at all right now — which is why this is read from disk and not from the pool.
         pool = self._pool()
         self._live_job("gone-session", "j1")
-        self.assertFalse(pool.idle_report()["idle"])
+        self.assertFalse(pool.lifecycle.idle_report()["idle"])
 
     def test_an_unreadable_state_dir_is_treated_as_busy(self):
         # Unknown must not read as "nothing is running": erring the other way stops a
@@ -268,7 +268,7 @@ class JobsHoldItOpenTests(_IdleCase):
         # would pass for the wrong reason.
         with mock.patch("mimir.client.ui.ws.pool.lifecycle.scan_all_sessions",
                         side_effect=OSError("gone")):
-            report = pool.idle_report()
+            report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("unreadable" in r for r in report["reasons"]))
 
@@ -280,7 +280,7 @@ class ProhibitionsTests(_IdleCase):
             pool = self._pool({"s1": w})
             self._conclude(pool, "s1", w)
             pool.bus.subscribe()
-            report = pool.idle_report()
+            report = pool.lifecycle.idle_report()
             self.assertFalse(report["idle"])
             self.assertTrue(any("attached" in r for r in report["reasons"]))
         asyncio.run(run())
@@ -289,7 +289,7 @@ class ProhibitionsTests(_IdleCase):
         w = _Worker(prompt={"id": "a1"})
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("parked" in r for r in report["reasons"]))
 
@@ -297,7 +297,7 @@ class ProhibitionsTests(_IdleCase):
         w = _Worker(deferral=True)
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("owed" in r for r in report["reasons"]))
 
@@ -306,14 +306,14 @@ class ProhibitionsTests(_IdleCase):
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
         pool._queue = [("s2", lambda _w: None)]
-        self.assertFalse(pool.idle_report()["idle"])
+        self.assertFalse(pool.lifecycle.idle_report()["idle"])
 
     def test_an_agent_being_built_forbids_it(self):
         w = _Worker()
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)
         pool._building = {"s2": object()}
-        self.assertFalse(pool.idle_report()["idle"])
+        self.assertFalse(pool.lifecycle.idle_report()["idle"])
 
     def test_a_worker_that_cannot_be_asked_forbids_it(self):
         class _Broken(_Worker):
@@ -321,35 +321,35 @@ class ProhibitionsTests(_IdleCase):
                 raise RuntimeError("thread is wedged")
 
         pool = self._pool({"s1": _Broken()})
-        self.assertFalse(pool.idle_report()["idle"])
+        self.assertFalse(pool.lifecycle.idle_report()["idle"])
 
     def test_an_empty_pool_with_nothing_on_disk_is_idle(self):
-        self.assertTrue(self._pool().idle_report()["idle"])
+        self.assertTrue(self._pool().lifecycle.idle_report()["idle"])
 
 
 class TheClockTests(_IdleCase):
     def _idle_pool(self):
         w = _Worker()
         pool = self._pool({"s1": w})
-        pool.stop_requested = asyncio.Event()
+        pool.lifecycle.stop_requested = asyncio.Event()
         self._conclude(pool, "s1", w)
         return pool, w
 
     def test_the_clock_starts_rather_than_stopping_immediately(self):
         async def run():
             pool, _w = self._idle_pool()
-            pool._consider_stopping()
-            self.assertIsNotNone(pool._idle_since)
-            self.assertFalse(pool.stop_requested.is_set())
+            pool.lifecycle.consider_stopping()
+            self.assertIsNotNone(pool.lifecycle._idle_since)
+            self.assertFalse(pool.lifecycle.stop_requested.is_set())
         asyncio.run(run())
 
     def test_it_stops_once_the_ttl_has_passed(self):
         async def run():
             pool, _w = self._idle_pool()
-            pool.server_idle_ttl = 0.0
-            pool._consider_stopping()      # starts the clock
-            pool._consider_stopping()      # and now the TTL has passed
-            self.assertTrue(pool.stop_requested.is_set())
+            pool.lifecycle.server_idle_ttl = 0.0
+            pool.lifecycle.consider_stopping()      # starts the clock
+            pool.lifecycle.consider_stopping()      # and now the TTL has passed
+            self.assertTrue(pool.lifecycle.stop_requested.is_set())
         asyncio.run(run())
 
     def test_the_stop_is_written_into_the_conversation(self):
@@ -361,10 +361,10 @@ class TheClockTests(_IdleCase):
             pool, w = self._idle_pool()
             sid = next(sid for sid, _w in pool.items())
             conversation = pool.conversations.new(sid)
-            pool.server_idle_ttl = 0.0
-            pool._consider_stopping()
-            pool._consider_stopping()
-            self.assertTrue(pool.stop_requested.is_set())
+            pool.lifecycle.server_idle_ttl = 0.0
+            pool.lifecycle.consider_stopping()
+            pool.lifecycle.consider_stopping()
+            self.assertTrue(pool.lifecycle.stop_requested.is_set())
             self.assertTrue(pool.store.session_exists(sid), "the notice was never saved")
             text = conversation.display[-1]["text"]
             self.assertIn("MIMIR stopped", text)
@@ -399,8 +399,8 @@ class TheClockTests(_IdleCase):
             pool.store = _Store()
             with mock.patch.object(pool_lifecycle.server_registry, "claims",
                                    return_value={}):
-                pool._consider_stopping()
-            self.assertTrue(pool.stop_requested.is_set())
+                pool.lifecycle.consider_stopping()
+            self.assertTrue(pool.lifecycle.stop_requested.is_set())
         asyncio.run(run())
 
     def _journal(self, session_id: str) -> list[dict]:
@@ -416,33 +416,33 @@ class TheClockTests(_IdleCase):
         # a forgotten server and stopping one between two turns.
         async def run():
             pool, w = self._idle_pool()
-            pool._consider_stopping()
-            started = pool._idle_since
+            pool.lifecycle.consider_stopping()
+            started = pool.lifecycle._idle_since
             self.assertIsNotNone(started)
             w.out_q.put({"type": "output", "text": "back to work\n"})
             pool.bus.pump_once()
-            pool._consider_stopping()
-            self.assertIsNone(pool._idle_since)
+            pool.lifecycle.consider_stopping()
+            self.assertIsNone(pool.lifecycle._idle_since)
             self._conclude(pool, "s1", w)
             time.sleep(0.01)
-            pool._consider_stopping()
-            self.assertIsNotNone(pool._idle_since)
-            self.assertNotEqual(pool._idle_since, started)
-            self.assertFalse(pool.stop_requested.is_set())
+            pool.lifecycle.consider_stopping()
+            self.assertIsNotNone(pool.lifecycle._idle_since)
+            self.assertNotEqual(pool.lifecycle._idle_since, started)
+            self.assertFalse(pool.lifecycle.stop_requested.is_set())
         asyncio.run(run())
 
     def test_nothing_stops_when_no_stop_was_wired(self):
         # A pool driven synchronously by a test has no serve loop to ask.
         pool, _w = self._idle_pool()
-        pool.stop_requested = None
-        pool._consider_stopping()          # must not raise
+        pool.lifecycle.stop_requested = None
+        pool.lifecycle.consider_stopping()          # must not raise
 
     def test_request_stop_is_idempotent(self):
         async def run():
             pool, _w = self._idle_pool()
-            pool.request_stop()
-            pool.request_stop()
-            self.assertTrue(pool.stop_requested.is_set())
+            pool.lifecycle.request_stop()
+            pool.lifecycle.request_stop()
+            self.assertTrue(pool.lifecycle.stop_requested.is_set())
         asyncio.run(run())
 
     def test_the_ttl_is_configurable_and_floored(self):
@@ -491,27 +491,27 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
 
     def test_a_window_still_here_keeps_it_whatever_the_claims(self):
         pool = self._pool(claims={}, unattended=None)
-        self.assertFalse(pool._nobody_asked_to_keep_it())
+        self.assertFalse(pool.lifecycle._nobody_asked_to_keep_it())
 
     def test_a_blink_is_not_a_departure(self):
         # Reloading a VS Code window closes and reopens the socket.
         pool = self._pool(claims={}, unattended=5.0)
-        self.assertFalse(pool._nobody_asked_to_keep_it())
+        self.assertFalse(pool.lifecycle._nobody_asked_to_keep_it())
 
     def test_gone_past_the_grace_with_no_claim_is_the_end_of_it(self):
         pool = self._pool(claims={}, unattended=45.0)
-        self.assertTrue(pool._nobody_asked_to_keep_it())
+        self.assertTrue(pool.lifecycle._nobody_asked_to_keep_it())
 
     def test_one_conversation_asking_is_enough(self):
         # One process serves the workspace, so any claim keeps all of it alive.
         pool = self._pool(claims={"s2": "auto_all"}, unattended=9999.0)
-        self.assertFalse(pool._nobody_asked_to_keep_it())
+        self.assertFalse(pool.lifecycle._nobody_asked_to_keep_it())
 
     def test_a_server_nobody_has_connected_to_yet_has_lost_nothing(self):
         # "Its last client left" presupposes one. A server started by hand must not
         # stop itself out from under the window about to attach.
         pool = self._pool(claims={}, unattended=9999.0, ever=False)
-        self.assertFalse(pool._nobody_asked_to_keep_it())
+        self.assertFalse(pool.lifecycle._nobody_asked_to_keep_it())
 
     def test_claims_that_cannot_be_read_are_not_read_as_nobody(self):
         from unittest import mock
@@ -519,7 +519,7 @@ class NobodyAskedToKeepItTests(unittest.TestCase):
         pool = self._pool(claims={}, unattended=9999.0)
         with mock.patch.object(server_registry, "claims",
                                side_effect=OSError("unreadable")):
-            self.assertFalse(pool._nobody_asked_to_keep_it())
+            self.assertFalse(pool.lifecycle._nobody_asked_to_keep_it())
 
 
 if __name__ == "__main__":

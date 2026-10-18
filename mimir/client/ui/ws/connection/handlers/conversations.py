@@ -300,7 +300,7 @@ class ConversationHandlers:
             return
         record = self.conv.record
         record.rendered_seq = max(record.rendered_seq, self._rendered_seq)
-        self.pool.save_conversation(self.conv)
+        self.pool.writer.save_conversation(self.conv)
 
     def _schedule_summary_refresh(self) -> None:
         """Kick off a background regeneration of the session's description.
@@ -505,6 +505,6 @@ class ConversationHandlers:
             return
         conv.record.title = new_title
         conv.record.title_custom = True  # a hand-picked title outranks the generated description
-        self.pool.save_conversation(conv)
+        self.pool.writer.save_conversation(conv)
         self._publish_title(target_id, new_title)
         await self._send_sessions_list()

@@ -640,13 +640,13 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # it answers "yes, you" every time — which is how the promise came to be made
         # with nothing behind it.
         seen: list = []
-        real = self.sess.pool.idle_report
+        real = self.sess.pool.lifecycle.idle_report
 
         def _spy(*, excluding=None):
             seen.append(excluding)
             return real(excluding=excluding)
 
-        self.sess.pool.idle_report = _spy
+        self.sess.pool.lifecycle.idle_report = _spy
         await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
         # Its own subscription, and only that one: a second window of the same
         # workspace really is keeping the process alive, and telling this one that

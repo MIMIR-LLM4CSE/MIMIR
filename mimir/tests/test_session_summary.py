@@ -211,9 +211,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
     def _session(self, store):
         from mimir.client.ui.ws.connection.connection import Connection
         from mimir.client.session.conversation import Conversations
-        pool = FakePool(type("W", (), {"model": "m"})())
-        pool.conversations = Conversations(store)
-        pool.store = store
+        pool = FakePool(type("W", (), {"model": "m"})(), conversations=Conversations(store))
         sess = Connection(_FakeWS(), pool)
         sess.store = store
         sess.conv = None

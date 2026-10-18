@@ -225,7 +225,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
         never_read = wake_text(self._complete(s.id))
 
         ev, extras = self._answer(s.id, unread=[never_read])
-        pool.commit_turn(ev, extras)
+        pool.writer.commit_turn(ev, extras)
 
         self.assertEqual(len(w.queries), 1,
                          "the run that finished during the turn was never answered for")
@@ -239,7 +239,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
         self._steered(pool, w, s)
 
         ev, extras = self._answer(s.id, unread=[])      # the loop took it in
-        pool.commit_turn(ev, extras)
+        pool.writer.commit_turn(ev, extras)
 
         self.assertEqual(w.queries, [], "a run already dealt with was told again")
         self.assertEqual(jobs_on_disk.scan_session(s.id), [],
@@ -257,7 +257,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
                   wake_text(self._complete(s.id, "j2"))]
 
         ev, extras = self._answer(s.id, unread=unread)
-        pool.commit_turn(ev, extras)
+        pool.writer.commit_turn(ev, extras)
 
         self.assertEqual(len(w.queries), 1, "one turn apiece, not one for the burst")
         self.assertIn("j1", w.queries[0]["text"])
@@ -287,7 +287,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
         self.assertEqual(w.queries, [], "a bulletin interrupted a running turn")
 
         w._busy = False
-        pool.commit_turn(*self._answer(s.id))
+        pool.writer.commit_turn(*self._answer(s.id))
 
         self.assertEqual(len(w.queries), 1)
         self.assertIn("still", w.queries[0]["text"].lower())
@@ -304,7 +304,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
 
         w._busy = False
         w.watched = []
-        pool.commit_turn(*self._answer(s.id))
+        pool.writer.commit_turn(*self._answer(s.id))
 
         self.assertEqual(w.queries, [])
         self.assertIsNone(pool.conversations.get(s.id).held_checkin)

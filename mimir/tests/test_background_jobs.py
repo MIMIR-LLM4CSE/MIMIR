@@ -1437,7 +1437,7 @@ class DetachedSessionResumeTests(unittest.TestCase):
         # Filtered out of this socket's stream, it is still written: the pump commits
         # every answer into its own conversation, whichever one is on screen.
         self.assertTrue(self.session._is_foreign_event(answer))
-        self.session.pool.commit_turn(answer, {})
+        self.session.pool.writer.commit_turn(answer, {})
 
         stored_a = self.session.store.load_session(self.a.id)
         self.assertEqual(stored_a.llm_history[-1],
@@ -1459,9 +1459,9 @@ class DetachedSessionResumeTests(unittest.TestCase):
         self.session.pool.wakes.consume(
             self._event(session_id=c.id, job_key="other-job"))
 
-        self.session.pool.commit_turn(
+        self.session.pool.writer.commit_turn(
             {"type": "answer", "text": "A done", "session_id": self.a.id}, {})
-        self.session.pool.commit_turn(
+        self.session.pool.writer.commit_turn(
             {"type": "answer", "text": "C done", "session_id": c.id}, {})
 
         self.assertEqual(self.session.store.load_session(self.a.id).llm_history[-1],

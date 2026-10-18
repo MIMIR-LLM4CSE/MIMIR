@@ -124,7 +124,7 @@ class WakeRouter:
                          ev: dict) -> bool:
         conversation.held_checkin = None
         text = checkin_text(ev)
-        if not self.pool.submit_turn(conversation, worker, text):
+        if not self.pool.writer.submit_turn(conversation, worker, text):
             return False
         # No bubble: the instruction is addressed to the model, and a conversation
         # checked on twenty times would reopen on twenty blocks of it. The journal still
@@ -153,7 +153,7 @@ class WakeRouter:
         self._record_wakes(conversation, [i for i in items if not i["told"]])
         events = [i["ev"] for i in items]
         text = "\n\n".join(wake_text(e) for e in events)
-        if not self.pool.submit_turn(conversation, worker, text):
+        if not self.pool.writer.submit_turn(conversation, worker, text):
             # Nothing started, so nothing is settled: put them back for the next
             # announcement, answer or scan.
             conversation.pending_wakes = items + conversation.pending_wakes
@@ -175,7 +175,7 @@ class WakeRouter:
         for item in items:
             conversation.note(f"🔔 {wake_text(item['ev'])}")
             item["told"] = True
-        self.pool.save_conversation(conversation)
+        self.pool.writer.save_conversation(conversation)
         for item in items:
             self.pool.bus.record_client_event(conversation.id, {
                 "type": "job_wake", "text": wake_text(item["ev"]),
@@ -240,7 +240,7 @@ class WakeRouter:
                                "agent to answer them", conversation.id)
             return []
         started_steer: list[str] = []
-        if steering and self.pool.submit_turn(conversation, worker, "\n\n".join(steering)):
+        if steering and self.pool.writer.submit_turn(conversation, worker, "\n\n".join(steering)):
             started_steer = steering
         started_wakes = self.flush(conversation, worker)
         if started_steer or started_wakes:

@@ -210,7 +210,7 @@ class DetachHandlers:
         Either way it goes through the same exit as a signal, which is the only thing
         that closes the agents' MCP servers.
         """
-        report = self.pool.idle_report()
+        report = self.pool.lifecycle.idle_report()
         force = bool(msg.get("force"))
         if not report["idle"] and not force:
             try:
@@ -231,7 +231,7 @@ class DetachHandlers:
             logger.debug("_handle_shutdown: the client went away mid-send", exc_info=True)
         logger.info("shutdown: requested by the client (forced=%s; %s)", force,
                     "; ".join(report["reasons"]) or "nothing was running")
-        self.pool.request_stop()
+        self.pool.lifecycle.request_stop()
 
     def _safe_list_sessions(self) -> list:
         """The stored conversations, or none when the directory cannot be read.
@@ -417,7 +417,7 @@ class DetachHandlers:
             # is idle by every measure it has and stops on the idle TTL a couple of
             # hours later. Detaching into that is a night lost to a sentence that was
             # never true, and the moment to say so is the click.
-            idle = self.pool.idle_report(excluding=self._sub)
+            idle = self.pool.lifecycle.idle_report(excluding=self._sub)
             if idle["idle"]:
                 # Conditional, and that is not hedging: this is the state at the click,
                 # and the click can land while a turn is one tool call away from
@@ -431,7 +431,7 @@ class DetachHandlers:
                 items = [{"label": "autonomy", "detail": autonomy}]
                 note = ("No turn in flight and no run MIMIR is watching at this "
                         "moment. "
-                        + idle_stop_reason(self.pool.server_idle_ttl, past=False)
+                        + idle_stop_reason(self.pool.lifecycle.server_idle_ttl, past=False)
                         + " Work it did not start itself is not watched: ask it to "
                         "watch the job or the process before you go.")
             else:

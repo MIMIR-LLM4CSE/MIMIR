@@ -355,10 +355,10 @@ class TheNightThatWasLostTests(_HeadlessCase):
         pool = self._pool({s.id: w})
         w.out_q.put({"type": "answer", "text": "waiting", "session_id": s.id})
         pool.bus.pump_once()
-        self.assertTrue(pool.idle_report()["idle"])
+        self.assertTrue(pool.lifecycle.idle_report()["idle"])
 
         self._ended_job(s.id, "j1")
-        report = pool.idle_report()
+        report = pool.lifecycle.idle_report()
         self.assertFalse(report["idle"])
         self.assertTrue(any("nobody has taken in" in r for r in report["reasons"]),
                         report["reasons"])

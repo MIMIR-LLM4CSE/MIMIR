@@ -150,9 +150,7 @@ class ThePumpCommitsEveryAnswerTests(_CommitCase):
     def _pool_with_bus(self, session_id: str):
         from mimir.tests.support.pools import FakePool
         worker = _bare_worker(session_id)
-        pool = FakePool(worker, workers={session_id: worker})
-        pool.conversations = self.conversations
-        pool.store = self.store
+        pool = FakePool(worker, workers={session_id: worker}, conversations=self.conversations)
         return pool, worker
 
     def _answer(self, session_id: str) -> dict:

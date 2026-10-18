@@ -128,7 +128,5 @@ strict_equality = true
 [[tool.mypy.overrides]]
 module = [
     "mimir.client.ui.ws.connection.handlers.*",
-    "mimir.client.ui.ws.pool.lifecycle",
-    "mimir.client.ui.ws.pool.writer",
 ]
 ignore_errors = true

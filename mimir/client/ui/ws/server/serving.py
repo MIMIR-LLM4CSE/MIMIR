@@ -244,8 +244,8 @@ async def _run_until_signalled(pool: AgentPool) -> None:
     # this process any more. It goes through the same exit precisely because that exit
     # is the only thing that closes the MCP servers — a stop that took a shortcut would
     # leave the orphans this function exists to prevent.
-    pool.stop_requested = asyncio.Event()
-    asked = loop.create_task(pool.stop_requested.wait())
+    pool.lifecycle.stop_requested = asyncio.Event()
+    asked = loop.create_task(pool.lifecycle.stop_requested.wait())
 
     installed = []
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -256,7 +256,7 @@ async def _run_until_signalled(pool: AgentPool) -> None:
             pass
     try:
         await asyncio.wait([stop, asked], return_when=asyncio.FIRST_COMPLETED)
-        why = "idle" if pool.stop_requested.is_set() else "asked to"
+        why = "idle" if pool.lifecycle.stop_requested.is_set() else "asked to"
         print(f"Stopping ({why}) — closing agent connections…",
               file=ORIGINAL_STDOUT, flush=True)
     finally:

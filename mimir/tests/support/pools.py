@@ -24,13 +24,37 @@ from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.pool.bus import EventBus
 from mimir.client.ui.ws.pool.wakes import WakeRouter
 from mimir.client.ui.ws.pool.pool import AgentPool
+from mimir.client.ui.ws.pool.writer import Writer
+
+
+class _FakeLifecycle:
+    """The pool's lifecycle, answering from the reasons the test set up.
+
+    The real one asks the workers, the queue and the job directories on disk; what
+    callers do with it is decide whether there is anything worth leaving running,
+    and that is what this stands in for.
+    """
+
+    def __init__(self, pool: "FakePool") -> None:
+        self._pool = pool
+        self.server_idle_ttl = 7200.0
+        self.stop_requested = None
+        self.stops: list[str] = []
+
+    def idle_report(self, *, excluding: Any = None) -> dict:
+        reasons = self._pool.idle_reasons
+        return {"idle": not reasons, "reasons": list(reasons)}
+
+    def request_stop(self, headline: str = "") -> None:
+        self.stops.append(headline)
 
 
 class FakePool:
     def __init__(self, worker: Any = None, *, active: str | None = None,
                  workers: dict[str, Any] | None = None,
                  idle_reasons: list[str] | None = None,
-                 store: SessionStore | None = None) -> None:
+                 store: SessionStore | None = None,
+                 conversations: Conversations | None = None) -> None:
         self.worker = worker
         self.workers = dict(workers or {})
         self.active_session_id = active
@@ -42,7 +66,6 @@ class FakePool:
         # warning path. Pass ``idle_reasons=[]`` for the case where there is nothing.
         self.idle_reasons = (["session s1 has a turn in flight"]
                              if idle_reasons is None else list(idle_reasons))
-        self.server_idle_ttl = 7200.0
         self.queued: list[tuple[str, Any]] = []
         self.closed: list[str] = []
         # The real conversations, router and bus over this stand-in: what carries a
@@ -51,19 +74,19 @@ class FakePool:
         # seam. Tests drive the bus with ``bus.pump_once()``.
         # In a directory of its own unless the test hands one in: a stand-in that saved
         # into the real state directory would leave conversations in the user's panel.
+        if conversations is not None:
+            store = conversations.store
         if store is None:
             self._tmp = tempfile.TemporaryDirectory(prefix="mimir-fakepool-")
             store = SessionStore(self._tmp.name)
-        self.conversations = Conversations(store)
+        self.conversations = conversations if conversations is not None else Conversations(store)
         self.store = store
         self.wakes = WakeRouter(self)
-        self.bus = EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,
+        # The pool's own: how a conversation is written is not what a stand-in may vary.
+        self.writer = Writer(self.conversations, self.get, self.wakes.after_turn)
+        self.bus = EventBus(self, commit=self.writer.commit_turn, durable=self.wakes.consume,
                              steered=self.wakes.steered)
-
-    # The pool's own: how a conversation is written is not what a stand-in may vary.
-    commit_turn = AgentPool.commit_turn
-    submit_turn = AgentPool.submit_turn
-    save_conversation = AgentPool.save_conversation
+        self.lifecycle = _FakeLifecycle(self)
 
     def _for(self, session_id: str | None) -> Any:
         """The agent of *session_id*: the per-session table when there is one."""
@@ -114,15 +137,6 @@ class FakePool:
         running = getattr(worker, "_query_session_id", None)
         return running is None or session_id is None or running == session_id
 
-    def idle_report(self, *, excluding: Any = None) -> dict:
-        """Why this process is still needed, from the list the test set up.
-
-        The real one asks the workers, the queue and the job directories on disk; what
-        callers do with it is decide whether there is anything worth leaving running,
-        and that is what this stands in for.
-        """
-        return {"idle": not self.idle_reasons, "reasons": list(self.idle_reasons)}
-
     def is_parked(self, session_id: str | None) -> bool:
         human = getattr(self._for(session_id), "human", None)
         return human is not None and human.awaiting_user()
@@ -156,6 +170,12 @@ class FakePool:
 
     def ensure_reaper(self) -> None:
         pass
+
+    def waiting(self) -> int:
+        return len(self.queued)
+
+    def building(self) -> int:
+        return 0
 
     def ensure_pump(self) -> None:
         pass
@@ -203,10 +223,9 @@ class FakePool:
 
 
 def pool_with(conversations: Any, workers: dict | None = None, *,
-              server_idle_ttl: float = 100.0) -> "AgentPool":
+              server_idle_ttl: float = 100.0) -> AgentPool:
     """A real ``AgentPool`` over *conversations*, holding *workers* as already built."""
-    from mimir.client.ui.ws.pool.pool import AgentPool
     pool = AgentPool("test-model", conversations=conversations)
     pool._workers.update(workers or {})
-    pool.server_idle_ttl = server_idle_ttl
+    pool.lifecycle.server_idle_ttl = server_idle_ttl
     return pool
