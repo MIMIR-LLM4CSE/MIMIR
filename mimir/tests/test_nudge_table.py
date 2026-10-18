@@ -63,9 +63,10 @@ class CoreNudgeTableTest(unittest.TestCase):
         self.assertEqual(verif & set(ALL_GUIDANCE), set())
 
     def test_guidance_categories_match_guidance_table(self):
-        # Every guidance category gated by _GUIDANCE_BY_LEVEL_MODE has exactly one row.
+        # Every guidance category has exactly one row, except env_resolution, which
+        # speaks mid-loop right after the failing call.
         guidance = {n.name for n in CORE_NUDGES if n.layer == "guidance"}
-        self.assertEqual(guidance, set(ALL_GUIDANCE))
+        self.assertEqual(guidance, set(ALL_GUIDANCE) - {"env_resolution"})
 
     def test_validation_is_not_enforcement_gated(self):
         # Checking a file one just modified is the working order's one requirement,

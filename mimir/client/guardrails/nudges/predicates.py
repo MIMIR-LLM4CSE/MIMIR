@@ -5,7 +5,6 @@ predicates are a reasoning aid, gated by enforcement and mode through ``tiers``.
 """
 from __future__ import annotations
 
-from __future__ import annotations
 import os
 from ...config.limits import VALIDATION_RETRY_BUDGET
 from ..workflow import (
@@ -16,9 +15,7 @@ from ..workflow import (
     unchecked_checklist_items,
 )
 from ...context.execution_context import (
-    declared_edit_set_complete,
     failed_runs,
-    idle_steps,
     known_existing_files,
     nudge_count,
 )
@@ -31,12 +28,10 @@ from ...config.limits import (
     NUDGE_MAX_ENV_CLEANUP,
     NUDGE_MAX_ENV_RESOLUTION,
     NUDGE_MAX_ERROR_RECOVERY,
-    NUDGE_MAX_STATE,
     NUDGE_MAX_TODO,
     NUDGE_MAX_UNFINISHED_PLAN,
     NUDGE_MAX_UNWATCHED_RUN,
     NUDGE_MAX_VALIDATION,
-    NUDGE_STATE_IDLE_STEPS,
     STUCK_REPAIR_ADVISE_AFTER,
     STUCK_REPAIR_CONSTRAIN_AFTER,
     TODO_NUDGE_MULTIFILE_THRESHOLD,
@@ -300,23 +295,6 @@ def should_nudge_doc(
         and not has_pending_validation(execution_context)
         and _has_non_doc_code_changes(execution_context)
         and nudge_count(execution_context, "doc") < NUDGE_MAX_DOC
-    )
-
-
-def should_nudge_state(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
-) -> bool:
-    """Softer catch-all: editing paused post-validation but not concluded yet."""
-    return (
-        guidance_enabled("state", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.edits.code_mutation_started)
-        and execution_context.workflow_state != "conclude"
-        and nudge_count(execution_context, "state") < NUDGE_MAX_STATE
-        and idle_steps(execution_context) >= NUDGE_STATE_IDLE_STEPS
-        and nudge_count(execution_context, "validation") >= 1
-        and declared_edit_set_complete(execution_context)
-        and not has_pending_validation(execution_context)
-        and not _all_pending_budget_exhausted(execution_context)
     )
 
 

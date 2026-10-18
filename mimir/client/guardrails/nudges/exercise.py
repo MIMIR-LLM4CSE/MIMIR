@@ -5,7 +5,6 @@ model has answered, the subject is closed for the query. No nudge asks for a ver
 """
 from __future__ import annotations
 
-from __future__ import annotations
 import os
 from ..workflow import (
     has_pending_validation,

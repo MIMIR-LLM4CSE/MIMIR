@@ -255,12 +255,11 @@ class NudgeCoverageTests(unittest.TestCase):
     # keyword match on the query, which is a guess, and the prompt keeps the rule ("Grep
     # first, read second") along with the policy engine's own discover-state evidence
     # gate. That is the removal working as intended, not an obligation going missing.
+    # `env_resolution` speaks mid-loop, not from the table; its prompt line is asserted above.
     _EXPECTED = {
-        "state": "discover (gather evidence)",
         "doc": "Update documentation when a change affects",
         "todo": "record the concrete steps as a todo list",
         "blast_radius": "search all references and summarise the impact",
-        "env_resolution": "environment problem, not a code defect",
         "env_cleanup": "reversible obligation",
         "unwatched_run": "Long work started outside a tool call is watched by nothing",
     }

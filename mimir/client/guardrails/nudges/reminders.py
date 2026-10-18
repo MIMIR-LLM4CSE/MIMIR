@@ -1,7 +1,6 @@
 """Putting a reminder into the conversation, and taking the transient ones out again."""
 from __future__ import annotations
 
-from __future__ import annotations
 from typing import Any
 from ...event_sink import emit
 from ...context.execution_context import ExecutionContext

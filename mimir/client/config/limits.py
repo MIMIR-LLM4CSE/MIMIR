@@ -89,8 +89,6 @@ LLM_RETRY_MAX_DELAY_SECS: float = 30.0
 NUDGE_MAX_VALIDATION: int = 2
 NUDGE_MAX_DENIAL: int = 2
 NUDGE_MAX_ERROR_RECOVERY: int = 2
-# One fire per rung of the stuck-repair ladder (see the section below).
-NUDGE_MAX_STUCK_REPAIR: int = 2
 NUDGE_MAX_UNFINISHED_PLAN: int = 1
 # One shared budget for the whole advisory axis — "run the existing test"
 # (regression) and "nothing has been exercised" (unexercised) are two phrasings of one
@@ -107,7 +105,6 @@ NUDGE_MAX_ENV_CLEANUP: int = 1
 # not going to act on the third.
 NUDGE_MAX_UNWATCHED_RUN: int = 1
 NUDGE_MAX_DOC: int = 1
-NUDGE_MAX_STATE: int = 1
 NUDGE_MAX_BLAST_RADIUS: int = 1
 
 # Application-pack (extension) nudges: max fires per query per registered rule.
@@ -137,11 +134,6 @@ NUDGE_MAX_CONSECUTIVE_NOOP: int = 1
 # is a model that keeps reaching for one more playbook instead of doing the work. The
 # user's own /<name> counts towards it: it put a body in the context the same way.
 SKILL_PULL_MAX: int = 3
-
-# Idle-step gate: how many steps the agent must have paused editing before the
-# nudge fires, so an in-progress refactor is not interrupted. Validation has no such
-# gate — its nudge carries a finding the loop already made, not a request to pace.
-NUDGE_STATE_IDLE_STEPS: int = 3
 
 # Multi-file thresholds: at least this many touched/planned files before the
 # todo-tracking nudge fires.

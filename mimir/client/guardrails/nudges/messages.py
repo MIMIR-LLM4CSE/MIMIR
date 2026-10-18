@@ -14,7 +14,6 @@ from ..workflow import (
     worst_denial_stage,
     STAGE_DROP_OR_STOP,
     STAGE_HANDBACK,
-    WORKFLOW_STATES,
 )
 from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER, VALIDATION_RETRY_BUDGET
 from ...context.execution_context import ExecutionContext
@@ -47,36 +46,6 @@ _DENIAL_HANDBACK: str = (
     "here. Make no further tool calls toward it: end your turn with what you completed, what the "
     "refusal leaves undone, and what you need from the user to go further."
 )
-
-
-def state_nudge_message(agent: AgentPort, execution_context: ExecutionContext) -> str:
-    state = execution_context.workflow_state
-    if state == "discover":
-        return (
-            "Workflow state is DISCOVER (gather evidence). Collect enough material — repository context "
-            "(list/search/read), symbolic/numeric results, or references — "
-            "then, only when grounded, proceed to produce the artifact."
-        )
-    if state == "edit":
-        return (
-            "Workflow state is EDIT (produce the artifact). Work from the exact current text "
-            "of the target, then apply a focused change. "
-            "A successful edit returns its diff and the new line numbers it produced, and "
-            "a failed anchor returns the site's current text — use those rather than a "
-            "previous draft from memory, and read the file only when neither covers what you "
-            "need."
-        )
-    if state == "validate":
-        return (
-            "Workflow state is VALIDATE (verify). The modified files are checked here, without "
-            "you having to invoke anything; repair whatever that check reports. Exercising the "
-            "change on top of it — building it, running it, running the tests around it — is the "
-            "part that is yours, wherever it is simply feasible. Going back to editing, here or "
-            "elsewhere, is a normal move, not a step out of order."
-        )
-    if state == "conclude":
-        return "Workflow state is CONCLUDE. Summarize completion and residual risks."
-    return f"Unknown workflow state '{state}'. Expected one of: {', '.join(WORKFLOW_STATES)}."
 
 
 def _validation_nudge_message(findings: dict[str, str]) -> str:

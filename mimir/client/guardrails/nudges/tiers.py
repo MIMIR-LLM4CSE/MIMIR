@@ -1,13 +1,11 @@
 """Which guidance nudges may speak at each enforcement level and mode."""
 from __future__ import annotations
 
-from __future__ import annotations
-
 
 # Guidance nudges permitted per (enforcement, mode), by cascade category name. Each
 # nudge's own gate still applies; "off" is absent (the layer is skipped before this).
 ALL_GUIDANCE = frozenset({
-    "env_resolution", "doc", "state",
+    "env_resolution", "doc",
     "blast_radius", "creation", "todo", "env_cleanup", "unwatched_run",
 })
 

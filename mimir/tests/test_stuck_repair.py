@@ -8,7 +8,6 @@ import unittest
 
 
 from mimir.client.config.limits import (
-    NUDGE_MAX_STUCK_REPAIR,
     STUCK_REPAIR_ADVISE_AFTER,
     STUCK_REPAIR_CONSTRAIN_AFTER,
     VALIDATION_RETRY_BUDGET,
@@ -114,7 +113,7 @@ class LadderTests(unittest.TestCase):
         # Past the two rungs the existing release takes over: at
         # VALIDATION_RETRY_BUDGET failures register_run_failure moves the workflow to
         # `conclude`. Saying it a third time would just be louder.
-        ec = _ctx(failures=VALIDATION_RETRY_BUDGET, fired=NUDGE_MAX_STUCK_REPAIR)
+        ec = _ctx(failures=VALIDATION_RETRY_BUDGET, fired=2)
         self.assertFalse(should_nudge_stuck_repair(ec))
 
     def test_the_rungs_are_ordered_inside_the_repair_window(self) -> None:

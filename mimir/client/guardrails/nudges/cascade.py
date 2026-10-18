@@ -15,7 +15,6 @@ from .messages import (
     stuck_repair_nudge_message,
     regression_nudge_message,
     unexercised_code_nudge_message,
-    state_nudge_message,
     unfinished_plan_nudge_message,
     todo_nudge_message,
     unwatched_run_nudge_message,
@@ -39,7 +38,6 @@ from .predicates import (
     should_nudge_env_cleanup,
     should_nudge_env_resolution,
     should_nudge_error_recovery,
-    should_nudge_state,
     should_nudge_stuck_repair,
     should_nudge_todo,
     should_nudge_unfinished_plan,
@@ -185,10 +183,7 @@ def maybe_inject_env_resolution(
     execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
 ) -> bool:
-    """Fire the env-resolution nudge right after the failing call, not at the end of the turn.
-
-    Charged to the same counter and gated like its table row, so only one of the two speaks.
-    """
+    """Fire the env-resolution nudge right after the failing call: the one place it speaks."""
     if not _enabled(agent, "env_resolution"):
         return False
     level = resolve_enforcement(agent)
@@ -242,13 +237,13 @@ CORE_NUDGES: tuple[CoreNudge, ...] = (
         lambda agent, query, mode, ec, level: should_nudge_error_recovery(ec),
         lambda agent, ec: error_recovery_nudge_message(first_failing_edit_path(ec) or ""),
     ),
-    # The one required advisory row (an unchecked modified file blocks the conclusion), yet
-    # after `stuck_repair`: a model circling a failure is not stuck on finishing its checks.
     CoreNudge(
         "stuck_repair", "verification",
         lambda agent, query, mode, ec, level: should_nudge_stuck_repair(ec),
         lambda agent, ec: stuck_repair_nudge_message(worst_run_failure_streak(ec)),
     ),
+    # The one required advisory row (an unchecked modified file blocks the conclusion), yet
+    # after `stuck_repair`: a model circling a failure is not stuck on finishing its checks.
     CoreNudge(
         "validation", "verification",
         lambda agent, query, mode, ec, level: should_nudge_validation(ec),
@@ -276,11 +271,6 @@ CORE_NUDGES: tuple[CoreNudge, ...] = (
     ),
     # ── Guidance (reasoning shim; each predicate owns its enforcement/mode gate) ──
     CoreNudge(
-        "env_resolution", "guidance",
-        lambda agent, query, mode, ec, level: should_nudge_env_resolution(ec, level=level, active_mode=mode),
-        lambda agent, ec: env_resolution_nudge_message(ec),
-    ),
-    CoreNudge(
         "env_cleanup", "guidance",
         lambda agent, query, mode, ec, level: should_nudge_env_cleanup(ec, level=level, active_mode=mode),
         lambda agent, ec: env_cleanup_nudge_message(ec),
@@ -294,11 +284,6 @@ CORE_NUDGES: tuple[CoreNudge, ...] = (
         "doc", "guidance",
         lambda agent, query, mode, ec, level: should_nudge_doc(ec, level=level, active_mode=mode),
         lambda agent, ec: documentation_nudge_message(ec),
-    ),
-    CoreNudge(
-        "state", "guidance",
-        lambda agent, query, mode, ec, level: should_nudge_state(ec, level=level, active_mode=mode),
-        lambda agent, ec: state_nudge_message(agent, ec),
     ),
     CoreNudge(
         "blast_radius", "guidance",

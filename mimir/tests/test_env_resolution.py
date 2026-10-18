@@ -194,10 +194,9 @@ class EnvResolutionNudgeTests(unittest.TestCase):
             tool_caps=_REGISTRY, enforcement=enforcement,
             normalize_workspace_path=lambda p: p or "",turn=TurnState())
         messages: list[dict] = []
-        maybe_append_nudge(
-            agent=agent, query="check this file", active_mode="agent",
-            execution_context=ctx, messages=messages,
-        )
+        # Right after the failing call: the one place this nudge speaks.
+        maybe_inject_env_resolution(
+            agent=agent, active_mode="agent", execution_context=ctx, messages=messages)
         return messages
 
     def test_fires_when_unresolved_and_not_probed(self) -> None:
