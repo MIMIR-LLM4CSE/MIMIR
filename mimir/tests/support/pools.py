@@ -134,7 +134,7 @@ class FakePool:
             return False
         if self.workers:
             return True   # that session's own agent said so
-        running = getattr(worker, "_query_session_id", None)
+        running = getattr(worker, "query_session_id", None)
         return running is None or session_id is None or running == session_id
 
     def is_parked(self, session_id: str | None) -> bool:

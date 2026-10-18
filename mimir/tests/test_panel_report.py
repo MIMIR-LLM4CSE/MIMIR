@@ -599,12 +599,12 @@ def test_the_worker_reports_what_its_poll_learned():
 
     worker = AgentWorker("test-model", start=False)
 
-    worker.jobs._bg_jobs = {"15306620": _Watch(
+    worker.jobs.watches = {"15306620": _Watch(
         _Task(),
         {"job_key": "15306620", "kind": "slurm-batch", "server": "hpc",
          "origin": {"kind": "main", "label": "", "session": "s1"}},
     )}
-    worker.jobs._bg_jobs["15306620"].status = {
+    worker.jobs.watches["15306620"].status = {
         "state": "running", "phase": "linking", "percent": 62,
         "scheduler": "hpc1", "nodes": ["gpu007"], "at": 1234.5,
     }

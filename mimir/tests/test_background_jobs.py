@@ -512,7 +512,7 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["type"], "job_complete")
         self.assertEqual(ev["state"], "done")
         self.assertEqual(ev["summary"]["verdict"], "accept")
-        self.assertNotIn("fast", worker.jobs._bg_jobs)  # cleaned up
+        self.assertNotIn("fast", worker.jobs.watches)  # cleaned up
         self.assertGreaterEqual(agent.status_calls, 3)
 
     def test_the_event_carries_the_launching_session_and_the_descriptor_ops(self) -> None:
@@ -549,7 +549,7 @@ class WatchJobTests(unittest.TestCase):
     def test_a_status_op_that_never_answers_ends_as_unknown_too(self) -> None:
         # The one failure that genuinely loses a run. There is no deadline under the
         # watcher — ``session.call_tool`` takes none and the MCP sessions carry no read
-        # timeout — so a status op that stops answering holds the job in ``_bg_jobs``
+        # timeout — so a status op that stops answering holds the job in ``watches``
         # for ever: the agent is never released and never woken, and the bulletins keep
         # repeating a status frozen at the moment it stopped. A watcher that dies at
         # least says so; this one says nothing.
@@ -563,7 +563,7 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["type"], "job_complete")
         self.assertEqual(ev["state"], "unknown")
         self.assertIn("did not answer", ev["reason"])
-        self.assertNotIn("fast", worker.jobs._bg_jobs)
+        self.assertNotIn("fast", worker.jobs.watches)
         self.assertLessEqual(agent.status_calls, 6)        # bounded, not forever
 
     def test_a_timed_out_probe_is_reported_as_unreadable_not_as_running(self) -> None:
@@ -574,7 +574,7 @@ class WatchJobTests(unittest.TestCase):
         worker = self._make_worker(agent)
         seen: list[dict] = []
         watch = _Watch(task=mock.Mock(), descriptor=self._descriptor())
-        worker.jobs._bg_jobs["fast"] = watch
+        worker.jobs.watches["fast"] = watch
         with mock.patch.object(job_poll, "STATUS_CALL_TIMEOUT", 0.01):
             self._run(worker, self._descriptor())
             seen.append(dict(watch.status))
@@ -595,7 +595,7 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["state"], "done")
         self.assertEqual(ev["summary"], {})
         self.assertEqual(agent.summary_calls, 1)
-        self.assertNotIn("fast", worker.jobs._bg_jobs)
+        self.assertNotIn("fast", worker.jobs.watches)
 
     def test_a_probe_that_raises_also_ends_as_unknown(self) -> None:
         agent = _MuteAgent(raises=True)
@@ -642,13 +642,13 @@ class WatchJobTests(unittest.TestCase):
             with self.subTest(states=states):
                 worker = self._make_worker(_ScriptedAgent(states=states, summary={}))
                 self._run(worker, self._descriptor())
-                self.assertEqual(worker.jobs._bg_jobs, {})
+                self.assertEqual(worker.jobs.watches, {})
 
     def test_a_run_nothing_can_poll_leaves_the_table(self) -> None:
         worker = self._make_worker(_ScriptedAgent(states=["done"], summary={}))
-        worker.jobs._bg_jobs["fast"] = object()
+        worker.jobs.watches["fast"] = object()
         self._run(worker, {"job_key": "fast", "status_op": {}})
-        self.assertEqual(worker.jobs._bg_jobs, {})
+        self.assertEqual(worker.jobs.watches, {})
 
     def test_a_watch_that_raises_leaves_the_table_too(self) -> None:
         """The one exit that used to leave an entry behind."""
@@ -659,7 +659,7 @@ class WatchJobTests(unittest.TestCase):
         worker = self._make_worker(_Exploding())
         with self.assertRaises(KeyboardInterrupt):
             self._run(worker, self._descriptor())
-        self.assertEqual(worker.jobs._bg_jobs, {})
+        self.assertEqual(worker.jobs.watches, {})
 
 
 class SharedPollLoopTests(unittest.TestCase):
@@ -874,7 +874,7 @@ class RegisterBgJobTests(unittest.TestCase):
         with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
             self.assertFalse(w.jobs.register({"server": "bash", "status_op": {}}))
         self.assertIn("job_key", "\n".join(log.output))
-        self.assertEqual(w.jobs._bg_jobs, {})
+        self.assertEqual(w.jobs.watches, {})
 
     def test_non_dict_descriptor_is_refused_out_loud(self) -> None:
         w = self._worker()
@@ -888,7 +888,7 @@ class RegisterBgJobTests(unittest.TestCase):
         with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
             self.assertFalse(w.jobs.register({"job_key": "fast", "status_op": {}}))
         self.assertIn("event loop", "\n".join(log.output))
-        self.assertEqual(w.jobs._bg_jobs, {})
+        self.assertEqual(w.jobs.watches, {})
 
 
 # ── 3c. The dispatch guards: a watched run is neither polled nor waited on ─────
@@ -1329,7 +1329,7 @@ class _FakeWorker:
     def __init__(self, watching: list[str] | None = None) -> None:
         self.submitted: list[tuple] = []
         self.steered: list[str] = []
-        self._query_session_id = None
+        self.query_session_id = None
         self._agent = types.SimpleNamespace(context_mode="flat")
         self.model = "test-model"
         self.watching = list(watching or [])
@@ -1338,7 +1338,7 @@ class _FakeWorker:
 
     def submit_query(self, text, history, session_id=None) -> None:
         self.submitted.append((text, list(history), session_id))
-        self._query_session_id = session_id
+        self.query_session_id = session_id
 
     def submit_steer(self, text) -> None:
         self.steered.append(text)
@@ -1347,7 +1347,7 @@ class _FakeWorker:
         return None
 
     def is_busy(self) -> bool:
-        return self._query_session_id is not None
+        return self.query_session_id is not None
 
     def watched_job_keys(self) -> list[str]:
         return list(self.watching)
@@ -1364,7 +1364,7 @@ class _FakeWorker:
             ev = q.get_nowait()
             if isinstance(ev, dict):
                 ev.setdefault("session_id",
-                              self._query_session_id or getattr(self, "session_id", None))
+                              self.query_session_id or getattr(self, "session_id", None))
             out.append(ev)
         return out
 
@@ -1487,9 +1487,9 @@ class DetachedSessionResumeTests(unittest.TestCase):
             self.session.screen.is_foreign_event({"type": "token", "session_id": self.a.id}))
 
     def test_a_message_typed_here_is_not_steered_into_a_detached_turn(self) -> None:
-        self.worker._query_session_id = self.a.id      # a detached turn is running
+        self.worker.query_session_id = self.a.id      # a detached turn is running
         self.assertFalse(self.session.screen.running_turn_is_ours())
-        self.worker._query_session_id = self.b.id      # our own turn is running
+        self.worker.query_session_id = self.b.id      # our own turn is running
         self.assertTrue(self.session.screen.running_turn_is_ours())
 
 
@@ -1532,7 +1532,7 @@ class WakeCoalescingTests(unittest.TestCase):
 
     def _running(self, session_id: str | None) -> None:
         """Pretend a turn of *session_id* is in flight."""
-        self.worker._query_session_id = session_id
+        self.worker.query_session_id = session_id
 
     def _wake(self, ev: dict) -> None:
         self.session.pool.wakes.consume(ev)
@@ -1777,7 +1777,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
             self.addCleanup(task.cancel)
         watch = _Watch(task, {"job_key": key, "kind": "shell-command"},
                                       status or {"state": "running"})
-        self.worker.jobs._bg_jobs[key] = watch
+        self.worker.jobs.watches[key] = watch
         return watch
 
     def _emitted(self) -> list[dict]:
@@ -1798,7 +1798,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         async def _sleep(delay: float) -> None:
             slept.append(delay)
             if len(slept) >= ticks:
-                self.worker.jobs._bg_jobs.clear()
+                self.worker.jobs.watches.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
@@ -1825,7 +1825,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
                             "phase": "link" if n >= 3 else "compile",
                             "elapsed_s": 10 * n, "at": float(n)}
             if n >= 5:
-                self.worker.jobs._bg_jobs.clear()
+                self.worker.jobs.watches.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
@@ -1843,7 +1843,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
             if len(slept) == 2:
                 b.task.cancel()
             if len(slept) >= 3:
-                self.worker.jobs._bg_jobs.clear()
+                self.worker.jobs.watches.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
@@ -1860,7 +1860,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
             watch.status = {"state": "running",
                             "log_tail": [f"it {len(slept)} res=0.{len(slept)}"]}
             if len(slept) >= 4:
-                self.worker.jobs._bg_jobs.clear()
+                self.worker.jobs.watches.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
@@ -2015,7 +2015,7 @@ class CheckinDeliveryTests(unittest.TestCase):
                           "phase": "compile", "percent": 40} for k in (keys or ("j1",))]}
 
     def _busy(self, on: str | None) -> None:
-        self.worker._query_session_id = on
+        self.worker.query_session_id = on
 
     def _landed(self) -> None:
         """A turn of this conversation has just answered."""
@@ -2224,7 +2224,7 @@ class WakeDeliveryLossTests(unittest.TestCase):
         self.assertFalse(started)
 
     def test_a_steered_wake_starts_no_turn_either(self) -> None:
-        self.launcher._query_session_id = self.a.id         # A is mid-turn
+        self.launcher.query_session_id = self.a.id         # A is mid-turn
         started = self.pool.wakes.consume(self._event())
         self.assertFalse(started)
         self.assertEqual(len(self.launcher.steered), 1)
@@ -2254,7 +2254,7 @@ class ReconnectLosesNothingTests(unittest.TestCase):
         self.worker = _FakeWorker()
         self.worker.out_q = _q.Queue()
         self.worker.session_id = "s1"
-        self.worker._query_session_id = None
+        self.worker.query_session_id = None
         self.pool = FakePool(self.worker, active="s1")
 
     def _recorded(self, *events: dict) -> list[dict]:
@@ -2299,7 +2299,7 @@ class ReconnectLosesNothingTests(unittest.TestCase):
 
     def test_a_busy_conversations_output_is_recorded_like_any_other(self) -> None:
         """Its turn is still running; what it emits is that turn's own output."""
-        self.worker._query_session_id = "s1"
+        self.worker.query_session_id = "s1"
         kept = self._recorded({"type": "status", "text": "mid-answer"})
         self.assertEqual([e["text"] for e in kept], ["mid-answer"])
 

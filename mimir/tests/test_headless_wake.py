@@ -41,7 +41,7 @@ class _Worker:
         self.out_q = _queue.Queue()
         self.session_id = session_id
         self.active_session_id = None
-        self._query_session_id = None
+        self.query_session_id = None
         self._busy = busy
         self.human._pending_prompt = prompt
         self.queries: list[dict] = []

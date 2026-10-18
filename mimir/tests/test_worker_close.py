@@ -105,7 +105,7 @@ class CloseRunsInTheOwningTaskTests(unittest.IsolatedAsyncioTestCase):
         await worker._live()
         self.assertEqual(agent.closes, 1)
         self.assertTrue(worker._closed.is_set(), "nothing told the caller it was closed")
-        self.assertIsNone(worker._agent, "a closed agent still reads as ready")
+        self.assertIsNone(worker.agent, "a closed agent still reads as ready")
 
 
 class WorkPendingTests(unittest.TestCase):

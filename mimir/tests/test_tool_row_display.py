@@ -510,7 +510,7 @@ class RowPathsAreShortenedTests(unittest.TestCase):
             tool_owner={}, tool_caps={},
             approvals=types.SimpleNamespace(describe_risk=lambda tool: ""))
         paths = ["/far/away/data.csv", "/elsewhere/out.log"]
-        with mock.patch.object(bridge, "_emit_prompt", _capture), \
+        with mock.patch.object(bridge, "emit_prompt", _capture), \
                 self.assertRaises(_Raised):
             bridge.approve_paths(agent, paths, "t", {"path": paths[0]})
         self.assertEqual(cards[0]["oow_paths"], paths)

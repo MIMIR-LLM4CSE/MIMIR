@@ -23,13 +23,13 @@ def _bare_worker(session_id: str | None = None) -> AgentWorker:
 class WorkerStampTests(unittest.TestCase):
     def test_drain_stamps_events_with_the_running_query_session(self):
         w = _bare_worker()
-        w._query_session_id = "s1"
+        w.query_session_id = "s1"
         w.out_q.put({"type": "open_editor", "path": "/plans/a.md"})
         self.assertEqual(w.drain()[0]["session_id"], "s1")
 
     def test_drain_leaves_an_explicit_stamp_alone(self):
         w = _bare_worker()
-        w._query_session_id = "s1"
+        w.query_session_id = "s1"
         w.out_q.put({"type": "output", "text": "x", "session_id": "s2"})
         self.assertEqual(w.drain()[0]["session_id"], "s2")
 
@@ -53,7 +53,7 @@ class WorkerStampTests(unittest.TestCase):
     def test_a_running_turn_outranks_the_workers_own_session(self):
         """A wake turn names the session it resumes, whoever hosts it."""
         w = _bare_worker(session_id="s1")
-        w._query_session_id = "s2"
+        w.query_session_id = "s2"
         w.out_q.put({"type": "output", "text": "x"})
         self.assertEqual(w.drain()[0]["session_id"], "s2")
 
@@ -64,8 +64,8 @@ class WorkerStampTests(unittest.TestCase):
         the answers with them.
         """
         w = _bare_worker()
-        w.human._emit_prompt({"type": "approval", "id": "a1"})
-        w.human._emit_prompt({"type": "user_question", "id": "q1"}, questions=[])
+        w.human.emit_prompt({"type": "approval", "id": "a1"})
+        w.human.emit_prompt({"type": "user_question", "id": "q1"}, questions=[])
         w._steer_q.put("hurry up")
         w.flush_prompts()
         self.assertEqual(dict(w.human._prompts), {})
@@ -102,7 +102,7 @@ With an agent per conversation the turn has somewhere to go: it streams into
         it, so neither needs the user to be looking at it.
         """
         w = _bare_worker(session_id="s1")
-        w._query_session_id = "s1"
+        w.query_session_id = "s1"
         w.is_busy = lambda: True
         w.cancel = lambda: self.fail("the turn of the conversation being left was cancelled")
         w.defer = lambda: self.fail("the turn of the conversation being left was deferred")
@@ -117,7 +117,7 @@ With an agent per conversation the turn has somewhere to go: it streams into
         """Its answer arrives after the user has moved on, and goes to the conversation
         it belongs to — the pool writes it, whichever one is on screen."""
         w = _bare_worker(session_id="s1")
-        w._query_session_id = "s1"
+        w.query_session_id = "s1"
         w.is_busy = lambda: True
         sess = self._session(w)
         sess.pool.workers = {"s1": w}

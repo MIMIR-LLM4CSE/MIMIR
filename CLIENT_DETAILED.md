@@ -1300,7 +1300,7 @@ nothing is watching says so in one line, and leaves the asking to the person.
 `session.call_tool` takes no timeout and the MCP sessions are built without a read timeout, so
 a status op that stops answering — a wedged server, a scheduler that hangs, a queue command
 that never returns — blocks the watcher for ever. That is the one failure that genuinely loses
-a run, and the quietest: the job stays in `_bg_jobs`, so the agent is never released and never
+a run, and the quietest: the job stays in `watches`, so the agent is never released and never
 woken, and the bulletins keep repeating a status frozen at the moment it stopped. A watcher
 that *dies* at least says so. `_TOOL_CALL_TIMEOUT` (60s) is the line between "slow" and
 "never", not a budget to work inside; a tick that crosses it counts as unreadable, which is a
@@ -1774,7 +1774,7 @@ under it. So the condition added is *attached*, not *elapsed*, and `test_approva
 green unmodified, which is the check that no timeout crept in.
 
 The mechanism was already written and had no caller: `query_engine/deferral.py` parks a turn,
-hands the call a placeholder result, and resumes it when the answer comes. `_await_response`
+hands the call a placeholder result, and resumes it when the answer comes. `await_response`
 already polled in quarter-second slices and already had a `_deferring()` branch; one condition
 joins it. The grace period (`MIMIR_DETACH_GRACE`, 30s) is not decoration — reloading a VS Code
 window closes and reopens the socket, and parking every card on that blink would put the

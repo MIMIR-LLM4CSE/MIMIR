@@ -28,12 +28,12 @@ class _Worker:
     def __init__(self) -> None:
         self.batch: list[dict] = []
         self.todos: list[dict] = []
-        self._query_session_id = None
+        self.query_session_id = None
         self.review = types.SimpleNamespace(batch_status=lambda: list(self.batch),
                                             todos=lambda: list(self.todos))
 
     def is_busy(self) -> bool:
-        return self._query_session_id is not None
+        return self.query_session_id is not None
 
 
 class _RouterCase(unittest.IsolatedAsyncioTestCase):
@@ -55,7 +55,7 @@ class WaitingTests(_RouterCase):
             await asyncio.wait_for(self.router._next(self.sess.view.sub.queue), 0.2)
 
     async def test_a_live_turn_wakes_it_once_a_tick_for_its_refreshes(self) -> None:
-        self.worker._query_session_id = "s1"
+        self.worker.query_session_id = "s1"
         with mock.patch.object(event_router, "_TICK", 0.05):
             self.assertIsNone(await asyncio.wait_for(
                 self.router._next(self.sess.view.sub.queue), 1.0))

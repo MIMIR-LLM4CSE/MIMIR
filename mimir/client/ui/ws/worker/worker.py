@@ -115,7 +115,7 @@ class AgentWorker:
         # session they were produced for, so a turn running in a conversation that is not
         # on screen can be told apart from the one that is — and routed to its own
         # transcript rather than streamed into whatever the user is reading.
-        self._query_session_id: str | None = None
+        self.query_session_id: str | None = None
         # The runs this conversation left going, and the check-ins about them.
         self.jobs = JobWatcher(self)
         # What the review bar, the side panel and the context bar read of this worker.
@@ -232,7 +232,7 @@ class AgentWorker:
                 return  # shutdown sentinel
 
             self._current_task = asyncio.current_task()
-            self._query_session_id = item.get("session_id") or self.session_id
+            self.query_session_id = item.get("session_id") or self.session_id
             # What this turn was handed, so whoever writes its answer can tell the
             # turn's own messages from the prefix it inherited. Recorded here because
             # this is where the turn begins, and carried on the answer rather than kept
@@ -241,7 +241,7 @@ class AgentWorker:
             self._turn_submitted_len = len(item.get("history") or [])
             await self._run_query(item)
             self._current_task = None
-            self._query_session_id = None
+            self.query_session_id = None
 
     async def _run_query(self, item: dict) -> None:
         query = item.get("text", "")
@@ -348,7 +348,7 @@ class AgentWorker:
         answer_ev: dict = {"type": "answer", "text": answer, "cancelled": cancelled,
                            # Stamped here: the turn is over by the time the drain
                            # loop reads this, and its session must not be guessed.
-                           "session_id": self._query_session_id}
+                           "session_id": self.query_session_id}
         # The turn's own transcript travels with its answer. Read later from the agent,
         # it may already be the next turn's: a queued turn starts, and resets it, as
         # soon as this one ends. Private keys — the session strips them before sending.
@@ -624,7 +624,7 @@ class AgentWorker:
             except _queue.Empty:
                 break
             if isinstance(ev, dict):
-                ev.setdefault("session_id", self._query_session_id or self.session_id)
+                ev.setdefault("session_id", self.query_session_id or self.session_id)
             events.append(ev)
         return events
 

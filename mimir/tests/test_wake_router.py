@@ -36,12 +36,12 @@ class _Worker:
         self.out_q = _queue.Queue()
         self.session_id = session_id
         self.active_session_id = None
-        self._query_session_id = None
+        self.query_session_id = None
         self._busy = busy
         self.queries: list[dict] = []
         self.steers: list[str] = []
         self.watched: list[str] = []
-        self.jobs._bg_jobs: dict = {}
+        self.jobs.watches: dict = {}
 
     def is_busy(self) -> bool:
         return self._busy
@@ -331,7 +331,7 @@ class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
         pool._last_use[s.id] = 0.0
-        w.jobs._bg_jobs = {}                       # the watcher has just let go
+        w.jobs.watches = {}                       # the watcher has just let go
         w.out_q.put(self._complete(s.id))
         self.assertFalse(pool.releasable(s.id), "releasable with its news unread")
 

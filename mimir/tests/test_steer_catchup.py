@@ -58,7 +58,7 @@ def _worker() -> AgentWorker:
     """A worker with just the state ``_run_query`` touches."""
     w = AgentWorker("test-model", start=False)
     w.session_id = "s1"
-    w._query_session_id = "s1"
+    w.query_session_id = "s1"
     w._agent = _FakeAgent()
     w.human._defer = set()
     w._turn_submitted_len = 0
@@ -91,8 +91,8 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
     def test_a_turn_that_read_its_steering_carries_nothing(self) -> None:
         w = _worker()
         w.submit_steer("read me")
-        w._agent.poll_steer = w._drain_steer_q   # what the loop patches on
-        w._agent.run = lambda **_kw: _read_then_answer(w)
+        w.agent.poll_steer = w._drain_steer_q   # what the loop patches on
+        w.agent.run = lambda **_kw: _read_then_answer(w)
         self.assertNotIn("_unconsumed_steer", _answer(w))
 
     def test_a_cancelled_turn_abandons_its_steering(self) -> None:
@@ -103,7 +103,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
             w.submit_steer("too late")
             raise asyncio.CancelledError
 
-        w._agent.run = _cancelled
+        w.agent.run = _cancelled
         ev = _answer(w)
         self.assertNotIn("_unconsumed_steer", ev)
         self.assertTrue(w._steer_q.empty())
@@ -117,7 +117,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
 
 
 async def _read_then_answer(w: AgentWorker) -> str:
-    w._agent.poll_steer()
+    w.agent.poll_steer()
     return "done"
 
 
@@ -133,7 +133,7 @@ class _FakeWorker:
     def __init__(self) -> None:
         self.submitted: list[tuple] = []
         self.steered: list[str] = []
-        self._query_session_id = "s1"
+        self.query_session_id = "s1"
         self._agent = types.SimpleNamespace(context_mode="flat")
         self.model = "test-model"
         self.usage = types.SimpleNamespace()

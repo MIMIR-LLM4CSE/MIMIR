@@ -68,7 +68,7 @@ class JobWatcher:
         # job_key -> _Watch(task, descriptor), polling a detached run to completion.
         # Written by ``register`` (the agent's hook) and read back by ``watched``,
         # which the dispatch guard uses. Only ever touched on the worker loop.
-        self._bg_jobs: dict[str, _Watch] = {}
+        self.watches: dict[str, _Watch] = {}
         # The check-in cycle covering every job of this conversation, or None between
         # waves. One per conversation rather than one per job: three jobs launched in
         # the same step share a schedule and report together instead of waking it
@@ -79,7 +79,7 @@ class JobWatcher:
 
     def tasks(self) -> list[asyncio.Task]:
         """Every task this holds — watchers and the check-in cycle — for shutdown."""
-        tasks = [w.task for w in self._bg_jobs.values()]
+        tasks = [w.task for w in self.watches.values()]
         if self._checkin_task is not None:
             tasks.append(self._checkin_task)
         return tasks
@@ -100,10 +100,10 @@ class JobWatcher:
                            "neither 'job_key' nor 'run_dir' (keys: %s)",
                            sorted(descriptor))
             return False
-        existing = self._bg_jobs.get(job_key)
+        existing = self.watches.get(job_key)
         if existing is not None and not existing.task.done():
             return True  # already watched
-        session_id = owner or self.worker._query_session_id or self.worker.session_id
+        session_id = owner or self.worker.query_session_id or self.worker.session_id
         # Whose run this is, which is not the same question as who gets woken: a run a
         # sub-agent launched and handed over is watched for the parent and still named
         # after the child. setdefault, never an assignment: a descriptor that arrived
@@ -127,7 +127,7 @@ class JobWatcher:
                            "event loop to host the watcher", job_key, exc_info=True)
             return False
         task.add_done_callback(self._watcher_died)
-        self._bg_jobs[job_key] = _Watch(task, descriptor)
+        self.watches[job_key] = _Watch(task, descriptor)
         logger.info("background job %r of session %s is now watched by %r",
                     job_key, session_id, (descriptor.get("status_op") or {}).get("tool"))
         self._start_checkins(session_id)
@@ -160,7 +160,7 @@ class JobWatcher:
         rearmed: list[str] = []
         reported: list[str] = []
         for job in jobs:
-            existing = self._bg_jobs.get(job.job_key)
+            existing = self.watches.get(job.job_key)
             if existing is not None and not existing.task.done():
                 continue   # a watcher is already holding it
             if job.live:
@@ -247,7 +247,7 @@ class JobWatcher:
         jobs = [
             {"job_key": key, "kind": w.descriptor.get("kind"),
              "server": w.descriptor.get("server"), **w.status}
-            for key, w in self._bg_jobs.items() if not w.task.done()
+            for key, w in self.watches.items() if not w.task.done()
         ]
         if not jobs:
             return False
@@ -264,11 +264,11 @@ class JobWatcher:
 
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs this conversation still has in flight."""
-        return [k for k, w in self._bg_jobs.items() if not w.task.done()]
+        return [k for k, w in self.watches.items() if not w.task.done()]
 
     def watched(self) -> list[dict]:
         """Descriptors of the runs a live watcher holds (the agent's hook for the dispatch guard)."""
-        return [w.descriptor for w in self._bg_jobs.values()
+        return [w.descriptor for w in self.watches.values()
                 if isinstance(w.descriptor, dict) and not w.task.done()]
 
     async def _watch_job(self, job_key: str, descriptor: dict,
@@ -287,7 +287,7 @@ class JobWatcher:
             # it, so an entry that outlives its task is the table saying what is not
             # true. Every reader already filters a finished task out; this is what
             # keeps the table itself honest.
-            self._bg_jobs.pop(job_key, None)
+            self.watches.pop(job_key, None)
 
     async def _poll_to_completion(self, job_key: str, descriptor: dict,
                                   session_id: str | None) -> None:
@@ -306,7 +306,7 @@ class JobWatcher:
             # state goes with it: "running" and "its status stopped being readable" are
             # the two things a bulletin most needs to tell apart, and only the poll knows
             # which one it is looking at.
-            watch = self._bg_jobs.get(job_key)
+            watch = self.watches.get(job_key)
             if watch is not None:
                 fresh = {k: v for k, v in
                          poll.log_alerts(tick.fields.get("log_tail")).items()
@@ -367,7 +367,7 @@ class JobWatcher:
     def watched_runs(self) -> list[dict]:
         """The runs held by watchers, for the panel: descriptor and last status, minus the local ``at``."""
         out = []
-        for watch in self._bg_jobs.values():
+        for watch in self.watches.values():
             descriptor = watch.descriptor
             if not isinstance(descriptor, dict) or watch.task.done():
                 continue

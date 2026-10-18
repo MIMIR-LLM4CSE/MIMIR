@@ -86,7 +86,7 @@ class DiagCommand(Command[WsCommandHost]):
             rows.append(Item(
                 f"worker {sid[:8]}",
                 f"queue {worker.out_q.qsize()}, "
-                f"running {getattr(worker, '_query_session_id', None)}, "
+                f"running {worker.query_session_id}, "
                 f"parked {worker.human.awaiting_user()}, "
                 f"deferral {worker.human.has_deferral}"))
         return CommandResult("Event chain", rows)

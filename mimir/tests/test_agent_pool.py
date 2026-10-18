@@ -41,7 +41,7 @@ class _StubWorker:
         self.closed = False
         self.busy = False
         self.queued = False
-        self._bg_jobs: dict = {}
+        self.watches: dict = {}
         self.human._pending_prompt = None
         self.applied: list[tuple] = []
         self.out_q = Outbox()
@@ -56,7 +56,7 @@ class _StubWorker:
         return self.busy
 
     def watched_job_keys(self) -> list:
-        return list(self._bg_jobs)
+        return list(self.watches)
 
     def has_work_pending(self) -> bool:
         return self.busy or self.queued
@@ -273,7 +273,7 @@ class ReleaseTests(_PoolCase):
     async def test_a_worker_watching_a_job_is_never_released(self) -> None:
         """Its loop hosts the watcher; evicting it loses the wake the build is owed."""
         pool = self._pool(idle_ttl=0.0)
-        (await pool.worker_for("s1"))._bg_jobs = {"k": object()}
+        (await pool.worker_for("s1")).watches = {"k": object()}
         self.assertEqual(await pool.release_idle(), [])
 
     async def test_a_worker_parked_on_a_card_is_never_released(self) -> None:

@@ -41,18 +41,18 @@ def _card(req_id: str, kind: str = "approval") -> dict:
 class AwaitResponseTests(unittest.TestCase):
     def test_returns_response_when_answered(self) -> None:
         w = _make_worker()
-        w.human._emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c1"))
         w.human.resolve_approval("y", None, "c1")
-        self.assertEqual(w.human._await_response("c1"), {"choice": "y", "approved_files": None})
+        self.assertEqual(w.human.await_response("c1"), {"choice": "y", "approved_files": None})
 
     def test_blocks_until_answered_does_not_time_out(self) -> None:
         """No response, no cancel → the call stays blocked (never returns on its own)."""
         w = _make_worker()
-        w.human._emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c1"))
         result: list = []
 
         def _run() -> None:
-            result.append(w.human._await_response("c1"))
+            result.append(w.human.await_response("c1"))
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -68,16 +68,16 @@ class AwaitResponseTests(unittest.TestCase):
     def test_cancel_flag_interrupts_wait(self) -> None:
         """Pressing Stop (cancel flag) unblocks the wait with None (cancelled)."""
         w = _make_worker()
-        w.human._emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c1"))
         result: list = []
 
         def _run() -> None:
-            result.append(w.human._await_response("c1"))
+            result.append(w.human.await_response("c1"))
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         time.sleep(0.05)
-        w._agent.turn.cancel_flag.set()
+        w.agent.turn.cancel_flag.set()
         t.join(timeout=2.0)
         self.assertFalse(t.is_alive())
         self.assertEqual(result, [None])
@@ -95,7 +95,7 @@ class TwoCardsAtOnceTests(unittest.TestCase):
 
     def _park(self, w, req_id, results):
         def _run():
-            results[req_id] = w.human._await_response(req_id)
+            results[req_id] = w.human.await_response(req_id)
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         return t
@@ -103,8 +103,8 @@ class TwoCardsAtOnceTests(unittest.TestCase):
     def test_an_answer_goes_to_the_card_it_names(self) -> None:
         w = _make_worker()
         results: dict = {}
-        w.human._emit_prompt(_card("c1"))
-        w.human._emit_prompt(_card("c2"))
+        w.human.emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c2"))
         first = self._park(w, "c1", results)
         second = self._park(w, "c2", results)
         time.sleep(0.05)
@@ -124,8 +124,8 @@ class TwoCardsAtOnceTests(unittest.TestCase):
         """Serialised, so the user answers one question at a time and the answers
         cannot be attributed to the wrong one."""
         w = _make_worker()
-        w.human._emit_prompt(_card("c1"))
-        w.human._emit_prompt(_card("c2"))
+        w.human.emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c2"))
         self.assertEqual([ev["id"] for ev in list(w.out_q.queue)], ["c1"])
 
         results: dict = {}
@@ -142,7 +142,7 @@ class TwoCardsAtOnceTests(unittest.TestCase):
         answer nobody is waiting on would otherwise settle the next prompt."""
         w = _make_worker()
         results: dict = {}
-        w.human._emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c1"))
         t = self._park(w, "c1", results)
         time.sleep(0.05)
         w.human.resolve_approval("y", None, "card-that-was-dismissed")
@@ -156,8 +156,8 @@ class TwoCardsAtOnceTests(unittest.TestCase):
         """A client that sends none can only have meant the one it was shown."""
         w = _make_worker()
         results: dict = {}
-        w.human._emit_prompt(_card("c1"))
-        w.human._emit_prompt(_card("c2"))
+        w.human.emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c2"))
         t = self._park(w, "c1", results)
         time.sleep(0.05)
         w.human.resolve_approval("y", None, "")
@@ -167,7 +167,7 @@ class TwoCardsAtOnceTests(unittest.TestCase):
     def test_a_question_and_an_approval_do_not_answer_each_other(self) -> None:
         w = _make_worker()
         results: dict = {}
-        w.human._emit_prompt(_card("c1", kind="user_question"), questions=[{"question": "q?"}])
+        w.human.emit_prompt(_card("c1", kind="user_question"), questions=[{"question": "q?"}])
         t = self._park(w, "c1", results)
         time.sleep(0.05)
         w.human.resolve_approval("y", None, "")     # no id, and the wrong kind
@@ -192,17 +192,17 @@ class DeadlineTests(unittest.TestCase):
         a card on screen to take back down, and the two endings read differently to
         the model."""
         w = _make_worker()
-        w.human._emit_prompt(_card("c1", kind="user_question"))
+        w.human.emit_prompt(_card("c1", kind="user_question"))
         started = time.monotonic()
-        self.assertIs(w.human._await_response("c1", timeout_secs=0.3), TIMED_OUT)
+        self.assertIs(w.human.await_response("c1", timeout_secs=0.3), TIMED_OUT)
         self.assertGreaterEqual(time.monotonic() - started, 0.3)
 
     def test_a_card_without_one_keeps_waiting(self) -> None:
         """The default, and what every approval uses."""
         w = _make_worker()
-        w.human._emit_prompt(_card("c1"))
+        w.human.emit_prompt(_card("c1"))
         result: list = []
-        t = threading.Thread(target=lambda: result.append(w.human._await_response("c1")),
+        t = threading.Thread(target=lambda: result.append(w.human.await_response("c1")),
                              daemon=True)
         t.start()
         t.join(timeout=1.0)
@@ -213,17 +213,17 @@ class DeadlineTests(unittest.TestCase):
 
     def test_an_answer_that_arrives_before_the_deadline_still_wins(self) -> None:
         w = _make_worker()
-        w.human._emit_prompt(_card("c1", kind="user_question"))
+        w.human.emit_prompt(_card("c1", kind="user_question"))
         w.human.resolve_question([{"selected": ["a"]}], "c1")
-        self.assertEqual(w.human._await_response("c1", timeout_secs=5),
+        self.assertEqual(w.human.await_response("c1", timeout_secs=5),
                          {"answers": [{"selected": ["a"]}]})
 
     def test_the_expired_card_is_dropped_so_the_next_one_shows(self) -> None:
         """Otherwise a card nobody is waiting on holds the queue behind it."""
         w = _make_worker()
-        w.human._emit_prompt(_card("c1", kind="user_question"))
-        w.human._emit_prompt(_card("c2"))
-        w.human._await_response("c1", timeout_secs=0.2)
+        w.human.emit_prompt(_card("c1", kind="user_question"))
+        w.human.emit_prompt(_card("c2"))
+        w.human.await_response("c1", timeout_secs=0.2)
         self.assertEqual((w.human._pending_prompt or {}).get("id"), "c2")
 
 
@@ -232,21 +232,21 @@ class ExpiryIsNotRefusalTests(unittest.TestCase):
 
     def test_running_out_of_time_is_flagged_as_such(self) -> None:
         w = _make_worker()
-        out = w.human.ask(w._agent, [{"question": "which?"}], None, 0.2)
+        out = w.human.ask(w.agent, [{"question": "which?"}], None, 0.2)
         # The wall it ran out of travels with the verdict: the card says so on screen.
         self.assertEqual(out, {"answers": [], "timed_out": True, "timeout_secs": 0.2})
 
     def test_being_cancelled_is_not(self) -> None:
         """Stop means the person is gone, not that they delegated the choice."""
         w = _make_worker()
-        w._agent.turn.cancel_flag.set()
-        out = w.human.ask(w._agent, [{"question": "which?"}], None, 30)
+        w.agent.turn.cancel_flag.set()
+        out = w.human.ask(w.agent, [{"question": "which?"}], None, 30)
         self.assertEqual(out, {"answers": []})
 
     def test_a_shim_with_no_deadline_never_reports_a_timeout(self) -> None:
         w = _make_worker()
-        w._agent.turn.cancel_flag.set()
-        self.assertEqual(w.human.ask(w._agent, [{"question": "which?"}]), {"answers": []})
+        w.agent.turn.cancel_flag.set()
+        self.assertEqual(w.human.ask(w.agent, [{"question": "which?"}]), {"answers": []})
 
 
 class ExpiryClosesTheCardTests(unittest.TestCase):
@@ -262,7 +262,7 @@ class ExpiryClosesTheCardTests(unittest.TestCase):
         w = _make_worker()
         w.session_id = "s1"
         w.session_title = "Picking a database"
-        result = w.human.ask(w._agent, [{"question": "Which DB?", "header": "Database"}],
+        result = w.human.ask(w.agent, [{"question": "Which DB?", "header": "Database"}],
                                   timeout_secs=0.05)
 
         self.assertEqual(result["answers"], [])
@@ -279,14 +279,14 @@ class ExpiryClosesTheCardTests(unittest.TestCase):
     def test_a_late_answer_cannot_settle_the_next_question(self) -> None:
         """The card was dropped on the way out, so its id names nothing to settle."""
         w = _make_worker()
-        w.human.ask(w._agent, [{"question": "Which DB?", "header": "Database"}],
+        w.human.ask(w.agent, [{"question": "Which DB?", "header": "Database"}],
                          timeout_secs=0.05)
         expired_id = self._events(w)[0]["id"]
 
         results: dict = {}
-        w.human._emit_prompt(_card("next", kind="user_question"))
+        w.human.emit_prompt(_card("next", kind="user_question"))
         t = threading.Thread(
-            target=lambda: results.update(next=w.human._await_response("next")), daemon=True)
+            target=lambda: results.update(next=w.human.await_response("next")), daemon=True)
         t.start()
         time.sleep(0.05)
         w.human.resolve_question([{"selected": ["Postgres"]}], expired_id)
@@ -302,7 +302,7 @@ class ExpiryClosesTheCardTests(unittest.TestCase):
         done: list = []
 
         t = threading.Thread(
-            target=lambda: done.append(w.human.ask(w._agent, [{"header": "Plan approval"}])),
+            target=lambda: done.append(w.human.ask(w.agent, [{"header": "Plan approval"}])),
             daemon=True,
         )
         t.start()

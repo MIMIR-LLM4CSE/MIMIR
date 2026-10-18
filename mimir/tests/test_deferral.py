@@ -49,7 +49,7 @@ def _worker() -> AgentWorker:
     w = AgentWorker("test-model", start=False)
     w._current_task = object()
     w.session_id = "s1"
-    w._query_session_id = "s1"
+    w.query_session_id = "s1"
     w._agent = types.SimpleNamespace(turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=[]))
     return w
 
@@ -57,15 +57,15 @@ def _worker() -> AgentWorker:
 class WorkerDeferralTests(unittest.TestCase):
     def test_a_deferred_wait_returns_and_names_its_call(self) -> None:
         w = _worker()
-        w.human._emit_prompt(dict(_PROMPT))
+        w.human.emit_prompt(dict(_PROMPT))
         self.assertTrue(w.human.defer_turn())
         token = CURRENT_CALL_ID.set("call-7")
         try:
-            self.assertIsNone(w.human._await_response(_PROMPT["id"]))
+            self.assertIsNone(w.human.await_response(_PROMPT["id"]))
         finally:
             CURRENT_CALL_ID.reset(token)
         self.assertEqual(
-            w._agent.turn.deferred_prompts,
+            w.agent.turn.deferred_prompts,
             [{"call_id": "call-7",
               "prompt": {**_PROMPT, "session_id": "s1", "session_title": ""},
               "questions": []}])
@@ -76,18 +76,18 @@ class WorkerDeferralTests(unittest.TestCase):
     def test_a_card_raised_while_deferring_is_not_sent(self) -> None:
         w = _worker()
         w.human._defer.set()
-        w.human._emit_prompt(dict(_PROMPT))
+        w.human.emit_prompt(dict(_PROMPT))
         self.assertTrue(w.out_q.empty())
 
     def test_a_resume_answers_its_card_without_showing_it(self) -> None:
         w = _worker()
         w.human._preanswer = {"type": "approval", "response": {"choice": "y"}}
-        w.human._emit_prompt(dict(_PROMPT))
+        w.human.emit_prompt(dict(_PROMPT))
         self.assertTrue(w.out_q.empty())
-        self.assertEqual(w.human._await_response(_PROMPT["id"]), {"choice": "y"})
+        self.assertEqual(w.human.await_response(_PROMPT["id"]), {"choice": "y"})
         # One answer, one card: the next one is asked for real.
         self.assertIsNone(w.human._preanswer)
-        w.human._emit_prompt(dict(_PROMPT))
+        w.human.emit_prompt(dict(_PROMPT))
         self.assertFalse(w.out_q.empty())
 
 
@@ -218,7 +218,7 @@ class _FakeWorker:
         self.human = self   # plays its own bridge: the answers are what is recorded
         self.parked = parked
         self.calls: list = []
-        self._query_session_id = "s1"
+        self.query_session_id = "s1"
         self.resumed = None
 
     def is_busy(self) -> bool:

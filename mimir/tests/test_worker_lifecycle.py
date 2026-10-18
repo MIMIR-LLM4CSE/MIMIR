@@ -52,7 +52,7 @@ def _worker_with_loop(agent: object | None) -> tuple[AgentWorker, threading.Thre
     w = AgentWorker("test-model", start=False)
     w.session_id = "s1"
     w._agent = agent
-    w.jobs._bg_jobs = {}
+    w.jobs.watches = {}
     w.jobs._checkin_task = None
     w._closed = threading.Event()
 

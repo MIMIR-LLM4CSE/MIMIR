@@ -36,7 +36,7 @@ class _Worker:
         self.human = HumanBridge(self)
         self.out_q = _queue.Queue()
         self.session_id = "s1"
-        self._query_session_id = None
+        self.query_session_id = None
         self._pending = pending
         self.human._pending_prompt = prompt
         self.human.has_deferral = deferral

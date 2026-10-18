@@ -237,7 +237,7 @@ class MeasuredOverheadTests(unittest.TestCase):
 
     def test_a_remembered_figure_is_reported_as_measured(self):
         """It is: a server counted it, against this very prompt and tool set."""
-        agent = self._worker._agent
+        agent = self._worker.agent
         key = token_calibration.overhead_key(
             "m", agent.context_mode, agent.build_system_content_now(agent.mode),
             json.dumps(agent.tools),
@@ -248,7 +248,7 @@ class MeasuredOverheadTests(unittest.TestCase):
         self.assertTrue(self._worker.usage.overhead_is_measured())
 
     def test_a_changed_tool_set_falls_back_to_the_estimate(self):
-        agent = self._worker._agent
+        agent = self._worker.agent
         token_calibration.remember_overhead(
             token_calibration.overhead_key(
                 "m", agent.context_mode, agent.build_system_content_now(agent.mode),

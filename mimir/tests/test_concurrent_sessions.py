@@ -86,7 +86,7 @@ class _ManyPool:
 
     def is_busy(self, session_id):
         w = self._workers.get(session_id or "")
-        return w is not None and w._query_session_id is not None
+        return w is not None and w.query_session_id is not None
 
     def is_parked(self, session_id):
         w = self._workers.get(session_id or "")
@@ -113,8 +113,8 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
         self.sess = _session(self.pool, active="s1")
 
     def _park(self, worker: AgentWorker, card_id: str) -> dict:
-        worker._query_session_id = worker.session_id
-        worker.human._emit_prompt({"type": "approval", "id": card_id, "tool": "bash_run"})
+        worker.query_session_id = worker.session_id
+        worker.human.emit_prompt({"type": "approval", "id": card_id, "tool": "bash_run"})
         return worker.out_q.get_nowait()
 
     def test_each_card_names_the_conversation_that_raised_it(self) -> None:
@@ -148,8 +148,8 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.a.answered, [])
 
     async def test_a_question_answer_routes_the_same_way(self) -> None:
-        self.b._query_session_id = "s2"
-        self.b.human._emit_prompt({"type": "user_question", "id": "q1", "questions": []},
+        self.b.query_session_id = "s2"
+        self.b.human.emit_prompt({"type": "user_question", "id": "q1", "questions": []},
                             questions=[])
         await self.sess.cards.on_user_question_response(
             {"id": "q1", "answers": [{"selected": ["yes"]}], "session_id": "s2"})
@@ -174,13 +174,13 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         self.sess = _session(self.pool, active="s1")
 
     def test_busy_is_asked_of_the_conversation_on_screen(self) -> None:
-        self.b._query_session_id = "s2"          # the other one is working
+        self.b.query_session_id = "s2"          # the other one is working
         self.assertFalse(self.sess.screen.running_turn_is_ours())
-        self.a._query_session_id = "s1"
+        self.a.query_session_id = "s1"
         self.assertTrue(self.sess.screen.running_turn_is_ours())
 
     def test_the_panel_says_which_conversations_are_live(self) -> None:
-        self.a._query_session_id = "s1"
+        self.a.query_session_id = "s1"
         self.b.human._pending_prompt = {"id": "card-b"}
         self.assertEqual(self.sess.screen.session_activity("s1"),
                          {"running": True, "parked": False, "queued": False,
@@ -197,8 +197,8 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         panel let the window close on a two-hour job without asking — the same from the
         outside as MIMIR having decided to detach on its own.
         """
-        self.a._query_session_id = None                  # nothing is answering
-        self.a.jobs._bg_jobs = {"j1": _watch(), "j2": _watch()}
+        self.a.query_session_id = None                  # nothing is answering
+        self.a.jobs.watches = {"j1": _watch(), "j2": _watch()}
         activity = self.sess.screen.session_activity("s1")
         self.assertFalse(activity["running"], "no turn is in flight")
         self.assertEqual(activity["runs"], 2)
@@ -206,8 +206,8 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
     def test_a_run_that_has_ended_stops_being_counted(self) -> None:
         # Otherwise the row goes on claiming it and every later disconnect asks about
         # work that finished hours ago.
-        self.a._query_session_id = None
-        self.a.jobs._bg_jobs = {"j1": _watch(done=True)}
+        self.a.query_session_id = None
+        self.a.jobs.watches = {"j1": _watch(done=True)}
         self.assertEqual(self.sess.screen.session_activity("s1")["runs"], 0)
 
     def test_every_conversations_output_is_drained_busy_or_not(self) -> None:
@@ -217,7 +217,7 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         sweep that spared one and emptied the other was guarding output that the journal
         already holds.
         """
-        self.a._query_session_id = "s1"          # busy
+        self.a.query_session_id = "s1"          # busy
         self.a.out_q.put({"type": "output", "text": "mid-run"})
         self.b.out_q.put({"type": "output", "text": "idle"})
         moved = self.sess.pool.bus.pump_once()
@@ -246,13 +246,13 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_a_turn_in_progress_is_reported(self) -> None:
         sess = self._session()
-        self.a._query_session_id = "s1"
+        self.a.query_session_id = "s1"
         self.assertEqual(sess.conversations._live_work_of("s1"), ["a turn in progress"])
 
     def test_a_turn_waiting_on_the_user_is_reported_as_such(self) -> None:
         """Parked is work waiting to continue, not work that has stopped."""
         sess = self._session()
-        self.a._query_session_id = "s1"
+        self.a.query_session_id = "s1"
         self.a.human._pending_prompt = {"id": "card-a"}
         self.assertEqual(sess.conversations._live_work_of("s1"), ["a turn waiting for your answer"])
 
@@ -286,7 +286,7 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_first_delete_of_a_working_conversation_is_refused(self) -> None:
         sess = self._session()
-        self.a._query_session_id = "s1"
+        self.a.query_session_id = "s1"
         sess.store = type("S", (), {"delete_session": lambda self, sid: 1 / 0})()
         sess.screen.send_sessions_list = lambda: _noop()
         await sess.conversations.on_delete_session({"session_id": "s1"})

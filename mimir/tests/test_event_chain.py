@@ -68,10 +68,10 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> AgentWorker:
     # A stand-in agent with the surface the worker actually calls on it. `_approvals`
     # is what the policy engine reads afresh at each gate, so setting the mode is a
     # rebind and nothing has to be queued.
-    w._agent = types.SimpleNamespace(context_mode="full", enforcement="light", non_interactive=False, approvals=types.SimpleNamespace(approval_mode="manual"), apply_setting=lambda name, mode: setattr(w._agent.approvals, name, mode), toggles_state=lambda: {"servers": [], "skills": [], "nudges": []}, turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=None, deferred_turn=None))
+    w._agent = types.SimpleNamespace(context_mode="full", enforcement="light", non_interactive=False, approvals=types.SimpleNamespace(approval_mode="manual"), apply_setting=lambda name, mode: setattr(w.agent.approvals, name, mode), toggles_state=lambda: {"servers": [], "skills": [], "nudges": []}, turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=None, deferred_turn=None))
     w._expired_prompt_ids = set()
-    w.jobs._bg_jobs = {}
-    w.is_busy = lambda: w._query_session_id is not None
+    w.jobs.watches = {}
+    w.is_busy = lambda: w.query_session_id is not None
     w.has_work_pending = lambda: False
     w.agent_ready = lambda: True
     w.human.pending_prompt = lambda: None
@@ -89,16 +89,16 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> AgentWorker:
 
     def submit_query(text, history, session_id=None):
         # Stamped with the session the turn was submitted *for*, which is what the real
-        # worker does: `_query_session_id` is set from the submission and `drain()`
+        # worker does: `query_session_id` is set from the submission and `drain()`
         # reads it. Leaving the events to fall back on `w.session_id` would make this
         # fixture report a conversation the turn does not belong to — and the drain
         # loop would then correctly refuse to draw them, so the test would be measuring
         # the fixture.
         owner = session_id or w.session_id
-        w._query_session_id = owner
+        w.query_session_id = owner
         for event in (turn if turn is not None else _TURN):
             w.out_q.put({**event, "session_id": owner})
-        w._query_session_id = None
+        w.query_session_id = None
 
     w.submit_query = submit_query
     return w
@@ -391,7 +391,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         # finished transcript back.
         self._stored_session("s1")
         worker = _worker("s1")
-        worker._query_session_id = "s1"            # a turn of ours, mid-flight
+        worker.query_session_id = "s1"            # a turn of ours, mid-flight
         pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([], linger=0.3)
 
@@ -423,7 +423,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         await self._run(Connection(first, pool), pool, first)
 
         # Mid-turn output, produced while nothing is attached.
-        worker._query_session_id = "s1"
+        worker.query_session_id = "s1"
         worker.out_q.put({"type": "status", "text": "  → still going\n",
                           "session_id": "s1"})
 
@@ -518,9 +518,9 @@ class TheApprovalCardReachesTheClientTests(_ChainCase):
             answer: dict = {}
 
             def _park():
-                worker.human._emit_prompt({"type": "approval", "id": "a1",
+                worker.human.emit_prompt({"type": "approval", "id": "a1",
                                      "tool": "bash_run"})
-                answer["seen"] = worker.human._await_response("a1")
+                answer["seen"] = worker.human.await_response("a1")
 
             thread = threading.Thread(target=_park, daemon=True)
             thread.start()

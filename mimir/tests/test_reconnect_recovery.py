@@ -31,14 +31,14 @@ def _parked_worker(prompt: dict | None = None, session_id: str = "s1",
     w = _bare_worker(session_id=session_id)
     w.session_title = title
     if prompt is not None:
-        w.human._emit_prompt(prompt)
+        w.human.emit_prompt(prompt)
         w.out_q.get_nowait()
     return w
 
 
 def _attributed(card: dict, session_id: str = "s1",
                 title: str = "Install the toolchain") -> dict:
-    """*card* as _emit_prompt stamps it: carrying the conversation that is asking."""
+    """*card* as emit_prompt stamps it: carrying the conversation that is asking."""
     return {**card, "session_id": session_id, "session_title": title}
 
 
@@ -46,7 +46,7 @@ class PendingPromptTests(unittest.TestCase):
     def test_emitting_a_card_marks_the_turn_parked_on_it(self):
         w = _parked_worker()
         card = {"type": "user_question", "id": "q1", "questions": []}
-        w.human._emit_prompt(card)
+        w.human.emit_prompt(card)
         self.assertEqual(w.out_q.get_nowait(), _attributed(card))
         self.assertEqual(w.human.pending_prompt(), _attributed(card))
 
@@ -56,7 +56,7 @@ class PendingPromptTests(unittest.TestCase):
         that cannot be answered — and the attribution is structured rather than written
         into the question text, which the model also sees."""
         w = _parked_worker(session_id="s2", title="Port the solver")
-        w.human._emit_prompt({"type": "approval", "id": "a1"})
+        w.human.emit_prompt({"type": "approval", "id": "a1"})
         card = w.out_q.get_nowait()
         self.assertEqual(card["session_id"], "s2")
         self.assertEqual(card["session_title"], "Port the solver")
@@ -64,15 +64,15 @@ class PendingPromptTests(unittest.TestCase):
     def test_a_turn_resuming_another_conversation_names_that_one(self):
         """A background-job wake runs a turn for the session that launched the job."""
         w = _parked_worker(session_id="s1")
-        w._query_session_id = "s2"
-        w.human._emit_prompt({"type": "approval", "id": "a1"})
+        w.query_session_id = "s2"
+        w.human.emit_prompt({"type": "approval", "id": "a1"})
         self.assertEqual(w.out_q.get_nowait()["session_id"], "s2")
 
     def test_the_card_is_a_copy_of_what_was_sent(self):
         """The queued dict is drained and stamped downstream; the record must not follow."""
         w = _parked_worker()
         card = {"type": "approval", "id": "a1"}
-        w.human._emit_prompt(card)
+        w.human.emit_prompt(card)
         w.out_q.get_nowait()["id"] = "tampered"
         self.assertEqual(w.human.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))
 
@@ -80,7 +80,7 @@ class PendingPromptTests(unittest.TestCase):
         w = _parked_worker({"type": "approval", "id": "a1"})
         w._agent = None
         w.human.resolve_approval("y", None, "a1")
-        self.assertEqual(w.human._await_response("a1"),
+        self.assertEqual(w.human.await_response("a1"),
                          {"choice": "y", "approved_files": None})
         self.assertIsNone(w.human.pending_prompt())
 
@@ -92,13 +92,13 @@ class PendingPromptTests(unittest.TestCase):
 
         w = _parked_worker({"type": "approval", "id": "a1"})
         w._agent = _Cancelled()
-        self.assertIsNone(w.human._await_response("a1"))
+        self.assertIsNone(w.human.await_response("a1"))
         self.assertIsNone(w.human.pending_prompt())
 
     def test_a_card_still_on_its_way_out_is_not_handed_out_twice(self):
         """The drain loop will deliver it; resending it too is a card answered twice."""
         w = _parked_worker()
-        w.human._emit_prompt({"type": "approval", "id": "a1"})
+        w.human.emit_prompt({"type": "approval", "id": "a1"})
         self.assertIsNone(w.human.pending_prompt())
         w.out_q.get_nowait()                      # delivered to whoever was connected
         self.assertEqual(w.human.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))

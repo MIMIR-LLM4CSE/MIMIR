@@ -287,7 +287,7 @@ class _RearmWorker(AgentWorker):
         self.out_q = _queue.Queue()
         self.session_id = session_id
         self.active_session_id = None
-        self._query_session_id = None
+        self.query_session_id = None
         self.jobs = JobWatcher(self)
         self.registered: list[tuple[dict, str | None]] = []
         self.jobs.register = self._record
@@ -462,7 +462,7 @@ class RearmTests(_ScanCase):
         self._job("s1", "j1", pid=os.getpid(),
                   starttime=proc_starttime(os.getpid()))
         w = self._worker()
-        w.jobs._bg_jobs["j1"] = mock.Mock(task=mock.Mock(done=lambda: False))
+        w.jobs.watches["j1"] = mock.Mock(task=mock.Mock(done=lambda: False))
         result = w.rearm_detached_jobs()
         self.assertEqual(result, {"rearmed": [], "reported": []})
         self.assertEqual(w.registered, [])
@@ -470,7 +470,7 @@ class RearmTests(_ScanCase):
     def test_a_watcher_that_has_finished_does_not_count_as_holding_the_run(self):
         self._job("s1", "j1", exit_code=0)
         w = self._worker()
-        w.jobs._bg_jobs["j1"] = mock.Mock(task=mock.Mock(done=lambda: True))
+        w.jobs.watches["j1"] = mock.Mock(task=mock.Mock(done=lambda: True))
         self.assertEqual(w.rearm_detached_jobs()["reported"], ["j1"])
 
     def test_several_runs_are_sorted_into_the_two_piles(self):

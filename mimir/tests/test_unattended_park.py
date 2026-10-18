@@ -32,14 +32,14 @@ def _worker(session_id: str = "s1") -> AgentWorker:
     """A worker with only what the wait touches: no agent loop, no MCP servers."""
     w = AgentWorker("test-model", start=False)
     w.session_id = session_id
-    w._query_session_id = session_id
+    w.query_session_id = session_id
     w._agent = types.SimpleNamespace(non_interactive=False, turn=TurnState(cancel_flag=threading.Event(), deferred_prompts=None, deferred_turn=None))
     return w
 
 
 def _card(w: AgentWorker, req_id: str = "a1", kind: str = "approval") -> str:
     """Raise one card on *w* and answer with the id the wait names."""
-    w.human._emit_prompt({"type": kind, "id": req_id, "tool": "bash_run"},
+    w.human.emit_prompt({"type": kind, "id": req_id, "tool": "bash_run"},
                    questions=[] if kind == "user_question" else None)
     return req_id
 
@@ -96,7 +96,7 @@ class TheWaitTests(unittest.TestCase):
         req = _card(w)
         done: list = []
         t = threading.Thread(
-            target=lambda: done.append(w.human._await_response(req)), daemon=True)
+            target=lambda: done.append(w.human.await_response(req)), daemon=True)
         t.start()
         t.join(0.6)
         self.assertTrue(t.is_alive(), "the wait gave up while a client was attached")
@@ -108,18 +108,18 @@ class TheWaitTests(unittest.TestCase):
     def test_a_card_with_nobody_there_is_set_aside(self):
         w = _worker()
         w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
-        self.assertIsNone(w.human._await_response(_card(w)))
+        self.assertIsNone(w.human.await_response(_card(w)))
         # Deferred, not cancelled: the record of what it was holding up is kept, which
         # is what lets the answer resume the turn rather than restart it.
         self.assertTrue(w.human._deferring())
         self.assertTrue(w.human.has_deferral)
         self.assertEqual(
-            [p["prompt"]["id"] for p in w._agent.turn.deferred_prompts], ["a1"])
+            [p["prompt"]["id"] for p in w.agent.turn.deferred_prompts], ["a1"])
 
     def test_the_card_is_let_go_of_so_nothing_resends_it(self):
         w = _worker()
         w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
-        w.human._await_response(_card(w))
+        w.human.await_response(_card(w))
         self.assertIsNone(w.human._pending_prompt)
 
     def test_a_wait_with_its_own_deadline_is_left_alone(self):
@@ -130,7 +130,7 @@ class TheWaitTests(unittest.TestCase):
         w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         from mimir.client.ui.ws.worker.human import TIMED_OUT
         req = _card(w, "q1", "user_question")
-        self.assertIs(w.human._await_response(req, timeout_secs=0.05), TIMED_OUT)
+        self.assertIs(w.human.await_response(req, timeout_secs=0.05), TIMED_OUT)
         self.assertFalse(w.human.has_deferral)
 
     def test_an_answer_already_in_hand_wins_over_the_grace(self):
@@ -141,7 +141,7 @@ class TheWaitTests(unittest.TestCase):
         w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         req = _card(w)
         w.human.resolve_approval("y", None, req)
-        self.assertEqual(w.human._await_response(req),
+        self.assertEqual(w.human.await_response(req),
                          {"choice": "y", "approved_files": None})
         self.assertFalse(w.human.has_deferral, "set a card aside that had been answered")
 
@@ -152,7 +152,7 @@ class TheWaitTests(unittest.TestCase):
         w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
         req = _card(w)
         threading.Timer(0.05, lambda: w.human.resolve_approval("n", None, req)).start()
-        self.assertEqual(w.human._await_response(req),
+        self.assertEqual(w.human.await_response(req),
                          {"choice": "n", "approved_files": None})
 
     def test_answering_the_deferral_clears_the_debt(self):
@@ -161,7 +161,7 @@ class TheWaitTests(unittest.TestCase):
         w._loop = None
         w._query_wake = None
         w.human.unattended_since = time.monotonic() - (detach_grace() + 1)
-        w.human._await_response(_card(w))
+        w.human.await_response(_card(w))
         self.assertTrue(w.human.has_deferral)
         w.submit_resume({"query": "go", "kind": "calls"}, {"choice": "y"}, [], "s1")
         self.assertFalse(w.human.has_deferral)
@@ -240,7 +240,7 @@ class TheReaperTests(unittest.TestCase):
     def _releasable_worker(self):
         w = _worker()
         w.has_work_pending = lambda: False
-        w.jobs._bg_jobs = {}
+        w.jobs.watches = {}
         return w
 
     def test_an_idle_worker_is_releasable(self):
@@ -265,9 +265,9 @@ class NonInteractiveTests(unittest.TestCase):
         # infer it from a tty — and a log file is not a tty but also not proof that
         # nobody is reachable.
         w = _worker()
-        self.assertFalse(w._agent.non_interactive)
+        self.assertFalse(w.agent.non_interactive)
         w.set_non_interactive()
-        self.assertTrue(w._agent.non_interactive)
+        self.assertTrue(w.agent.non_interactive)
 
     def test_a_worker_with_no_agent_yet_is_not_an_error(self):
         w = _worker()

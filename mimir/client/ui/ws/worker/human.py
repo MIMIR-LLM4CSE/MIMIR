@@ -73,11 +73,11 @@ class HumanBridge:
         self.worker = worker
         # Cards waiting on the user, oldest first, each holding the slot the thread
         # that raised it blocks on. One is shown at a time and each is answered by its
-        # own id (see _emit_prompt).
+        # own id (see emit_prompt).
         self._prompts: "OrderedDict[str, _Prompt]" = OrderedDict()
         self._prompts_lock = threading.Lock()
         # The card currently on screen, set for exactly as long as it is up. Read by a
-        # connection that arrives while the wait is on (see _emit_prompt).
+        # connection that arrives while the wait is on (see emit_prompt).
         self._pending_prompt: dict | None = None
         # The raw questions of the pending question card — how a deferred question is
         # matched to the call that asked it.
@@ -153,7 +153,7 @@ class HumanBridge:
         self._defer.set()
         return True
 
-    def _emit_prompt(self, payload: dict, questions: list | None = None) -> dict:
+    def emit_prompt(self, payload: dict, questions: list | None = None) -> dict:
         """Register a card the caller will park on; show it when its turn comes. Returns the payload.
 
         Kept here so a reconnect gets it back (``CardHandlers.resend_parked_prompt``). Cards
@@ -167,7 +167,7 @@ class HumanBridge:
         # screen.
         payload = {
             **payload,
-            "session_id": self.worker._query_session_id or self.worker.session_id,
+            "session_id": self.worker.query_session_id or self.worker.session_id,
             "session_title": self.worker.session_title or "",
         }
         with self._prompts_lock:
@@ -250,7 +250,7 @@ class HumanBridge:
             queued = [ev.get("id") for ev in self.worker.out_q.queue if isinstance(ev, dict)]
         return None if prompt.get("id") in queued else prompt
 
-    def _await_response(self, req_id: str,
+    def await_response(self, req_id: str,
                         timeout_secs: float | None = None) -> dict | None:
         """Block until card *req_id* is answered; ``None`` when the turn is cancelled.
 
@@ -361,11 +361,11 @@ class HumanBridge:
             # here — the front-end must not learn which tool happens to be a shell.
             "kind": kind_for(tool_name, agent.tool_caps),
         }
-        self._emit_prompt(payload)
+        self.emit_prompt(payload)
 
         # Block background thread (not WS event loop) until the client responds.
         # No timeout: an unanswered prompt keeps the agent parked (Stop cancels).
-        response = self._await_response(req_id)
+        response = self.await_response(req_id)
         if response is None:
             return False, "cancelled"
 
@@ -391,7 +391,7 @@ class HumanBridge:
         scope = (f"this path ({os.path.basename(paths[0])})" if len(paths) == 1
                  else f"these {len(paths)} paths")
         req_id = str(uuid.uuid4())
-        self._emit_prompt({
+        self.emit_prompt({
             "type": "approval",
             "id": req_id,
             "tool": tool_name,
@@ -419,7 +419,7 @@ class HumanBridge:
             "oow_path": paths[0],
         })
         # No timeout: keep the agent parked until answered (Stop cancels).
-        response = self._await_response(req_id)
+        response = self.await_response(req_id)
         if response is None:
             return (False, False)
         choice = response.get("choice", "n")
@@ -438,7 +438,7 @@ class HumanBridge:
         ("decide for yourself"), which an empty refusal is not.
         """
         req_id = str(uuid.uuid4())
-        emitted = self._emit_prompt({
+        emitted = self.emit_prompt({
             "type": "user_question",
             "id": req_id,
             "questions": list(questions),
@@ -448,7 +448,7 @@ class HumanBridge:
             "timeout_secs": int(timeout_secs) if timeout_secs else None,
             **({"origin": origin} if origin else {}),
         }, questions=list(questions))
-        response = self._await_response(req_id, timeout_secs)
+        response = self.await_response(req_id, timeout_secs)
         if response is TIMED_OUT:
             self.worker.out_q.put({
                 "type": "prompt_expired",
