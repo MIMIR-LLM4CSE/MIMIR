@@ -1,14 +1,5 @@
-"""A tool call the user made themselves, around the guardrail pipeline.
-
-What a session command such as ``/memory clear`` or ``/proxy clean`` goes through. The
-ops are reachable by the model too, but the person who wants to drop a memory that has
-gone stale, or start an optimisation over, should not have to ask the model for it.
-
-The call goes STRAIGHT to the owning MCP session. Approvals, plan-shape gates and the
-write policy exist to judge what the *model* asked for: routed through them, a command
-the user typed was weighed as if the model had proposed it — in plan or ask mode the
-plan gate answered with a refusal string, so the command did nothing and said nothing —
-and each one scattered tool cards through the transcript on its way.
+"""A tool call the user made themselves (``/memory clear``, ``/proxy clean``), around the
+guardrails: straight to the owning MCP session, with no approval, gate or tool card.
 """
 from __future__ import annotations
 

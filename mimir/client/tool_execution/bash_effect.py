@@ -1,30 +1,8 @@
-"""What a bash command actually changed on disk, reported back to the model.
+"""What a bash command that was not read-only changed on disk, reported to the model.
 
-An edit through the file tools returns a diff, and the prompt tells the model to check
-it. A write through the shell returns nothing — ``sed -i`` prints an empty line and
-exits 0 — so the one actor that could catch a bad edit (a ``sed -i`` whose address
-matches every closing brace) would have nothing to look at.
-
-**The trigger is "the command was not read-only", not "the command was a write."**
-Classifying by kind would miss the cases that surprise most: ``git checkout -- f.py``
-and ``patch -p1`` come back ``unknown`` with no operands at all, and ``python fix.py``
-comes back ``exec`` crediting the script rather than the twelve files it rewrites.
-``bash_command_is_readonly`` already draws the line the other way round and is already
-the basis of the approval exemption, so it is reused here rather than re-derived. A
-``grep`` that prints nothing stays silent: its silence *is* the finding.
-
-Detection is by observation, never by parsing the command — the sed script is data, not
-a path, and reading it would be guessing at intent instead of reading the result:
-
-* **In a git repo** (the normal case): the delta between ``git status --porcelain`` +
-  ``git diff --numstat`` before and after. Pre-existing modifications cancel out,
-  ``.gitignore`` removes build trees, and files created anywhere show up as ``??``.
-  Nothing is snapshotted.
-* **Outside one**: a bounded, non-recursive ``os.scandir`` over the directories the
-  command names, with content kept for source files under a size cap.
-
-Everything here is best-effort and fails open: a git error, an oversized delta or a
-binary file costs the annotation, never the tool call.
+Observed, never parsed from the command: in a git repo, the delta of ``git status`` and
+``git diff --numstat`` around the call; elsewhere, a bounded scan of the directories it
+names. Best-effort: any failure costs the annotation, never the call.
 """
 
 from __future__ import annotations
@@ -105,14 +83,10 @@ def _is_source(path: str) -> bool:
 
 
 def repeated_block(added: list[str]) -> tuple[int, int] | None:
-    """(block length, repeat count) when *added* is one block repeated, else None.
+    """``(block length, repeats)`` when *added* is one block repeated end to end, else None.
 
-    Tests the sequence for a **period** rather than for any repeated window. A window
-    scan fires on ordinary code — three closing braces recur in every C++ file — and,
-    worse, once a block genuinely repeats every longer window repeats too, so the
-    largest match is meaningless. A period says something much narrower and much more
-    diagnostic: the whole inserted region is the same block over and over, which is the
-    signature of an unanchored address matching everywhere it looked.
+    A period, not a repeated window: the signature of an unanchored address matching
+    everywhere.
     """
     lines = [ln for ln in added if ln.strip()]
     if len(lines) < 2 * BASH_EFFECT_DUP_MIN_BLOCK or len(lines) > BASH_EFFECT_DUP_MAX_LINES:
@@ -140,14 +114,8 @@ class _Probe:
 def _candidate_dirs(
     agent: AgentPort, command: str, root: str, execution_context: ExecutionContext | None,
 ) -> list[str]:
-    """Directories worth watching when git cannot answer.
-
-    The workspace root and the directories already written to this query are always in,
-    and the command's own operands only widen the set. Deriving the set from the command
-    alone does not work and cannot be made to: ``printf … >> hdr.h`` classifies as
-    ``unknown`` and yields the format string rather than the redirect target, and the
-    multi-line ``sed`` that motivated this module is opaque to the classifier outright.
-    Guessing at the command is the failure mode this whole module exists to avoid.
+    """Directories to watch when git cannot answer: the root, those written to this query, and
+    the command's own operands.
     """
     dirs: set[str] = {root}
     dirty = execution_context.dirty_written_files if execution_context is not None else ()
@@ -228,13 +196,7 @@ def _git_changes(probe: _Probe) -> list[tuple[str, int, int, bool]]:
 
 
 def _added_lines(probe: _Probe, relpath: str, was_clean: bool) -> list[str]:
-    """Lines this command added to *relpath*, when they can be attributed to it.
-
-    Only claimed for a file that was clean before the command: there the whole diff
-    against HEAD is this command's work. A file already carrying edits would mix them
-    in, and blaming this call for a block somebody else added is worse than saying
-    nothing.
-    """
+    """Lines this command added to *relpath*, claimed only for a file that was clean before."""
     if not was_clean:
         return []
     full = os.path.join(probe.root, relpath)

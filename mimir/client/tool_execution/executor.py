@@ -54,14 +54,7 @@ _OUTLINE_STRUCTURAL_KINDS = frozenset({
 
 
 def _build_continuation_hint(agent: AgentPort, tool_name: str, payload: dict) -> str:
-    """Return a MORE_CONTENT hint when a read stopped short of the end of the file.
-
-    Read off what the server reported, not off the arguments: the window that comes
-    back is clamped by a default and by a per-call cap, so the range asked for is not
-    the range served — and a caller who is not told the difference cannot tell "this is
-    the file" from "this is its first page", which is how re-reading a header becomes a
-    loop.
-    """
+    """A MORE_CONTENT hint when the window the server returned stops short of the file's end."""
     if not payload.get("truncated"):
         return ""
     path = payload.get("path") or ""
@@ -85,16 +78,7 @@ def _build_continuation_hint(agent: AgentPort, tool_name: str, payload: dict) ->
 async def _build_outline_hint(
     agent: AgentPort, tool_name: str, payload: dict, execution_context: ExecutionContext | None,
 ) -> str:
-    """Return a symbol map of the file a truncated read only showed a slice of.
-
-    A page of a large file is the wrong unit of orientation: it answers "what is at the
-    top?" when the question is "where is the thing I need?". The outline answers the
-    second in a few dozen tokens, which is the difference between one targeted read and
-    a walk through the file.
-
-    Advisory and best-effort — no outline backend, no annotation. Once per file per
-    query: a map the model ignored twice is noise.
-    """
+    """A symbol map of the file a truncated read showed a slice of (once per file per query)."""
     if execution_context is None or not payload.get("truncated"):
         return ""
     path = payload.get("path") or ""
@@ -151,13 +135,7 @@ async def _build_outline_hint(
 def _build_verdict_due_hint(
     agent: AgentPort, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
-    """Return a VERDICT_DUE line when this call left a run nobody has judged yet.
-
-    Said where and when it applies — attached to the run's own result, not carried in
-    the system prompt for the whole session. The judging tool is named from the
-    registry, so the name lives in the server that declares it and nowhere else; with
-    no such tool connected there is nothing to ask for and the hint stays silent.
-    """
+    """A VERDICT_DUE line on the result of a call that left an unjudged run, naming the judge tool."""
     if execution_context is None:
         return ""
     opened = sorted(set(unsettled_runs(execution_context)) - before)
@@ -179,16 +157,10 @@ def _build_verdict_due_hint(
 def _build_imputation_hint(
     agent: AgentPort, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
-    """Return an IMPUTATION_DUE line when this call left a run red for the first time.
+    """An IMPUTATION_DUE line when this call left a run red for the first time.
 
-    The mirror of :func:`_build_verdict_due_hint`, for the other half of what an exit code
-    cannot say. A green exit does not say the answer is right; a red one does not say whose
-    fault it was — and only the second question has a wrong default, because a wall the
-    environment put there was being charged to the change and reported as an unfinished
-    task. Asked here, on the failing result itself, at the moment the model is deciding
-    what to do about it; the alternative it needs is precisely the one it never had.
-
-    Costs no extra step: the model was going to react to the red exit anyway.
+    A red exit does not say whose fault it was; asked on the failing result, where the model
+    decides what to do about it.
     """
     if execution_context is None:
         return ""
@@ -209,14 +181,7 @@ def _build_imputation_hint(
 
 
 def _path_stamp(agent: AgentPort, arguments: dict) -> tuple | None:
-    """``(mtime_ns, size)`` of the file this call names, or ``None`` if it names none.
-
-    What makes the read cache safe to answer from. The cache is invalidated on every
-    call to an EDIT-capable tool, which covers the edit tools and nothing else: a
-    ``sed -i``, a script the model ran, or the user editing in their IDE all change the
-    file with no tool call to notice it. Stamping each entry closes that hole — an entry
-    whose file moved is dropped and read again.
-    """
+    """``(mtime_ns, size)`` of the file this call names, or ``None``: what keeps the read cache honest."""
     raw = arguments.get("path") or arguments.get("filepath") or ""
     if not isinstance(raw, str) or not raw.strip():
         return None
@@ -228,13 +193,7 @@ def _path_stamp(agent: AgentPort, arguments: dict) -> tuple | None:
 
 
 def _fork_base_stem(stem: str) -> str:
-    """*stem* minus a trailing ``_<word>``, or "" when it carries none.
-
-    Generic on purpose: ``convergence_test_fixed`` → ``convergence_test`` and
-    ``solver_ghost`` → ``solver`` without a list of suffixes anyone has to keep up to
-    date, which the next model would coin its way around anyway. A remainder under
-    three characters is discarded — it matches too much to mean anything.
-    """
+    """*stem* minus a trailing ``_<word>`` (kept only if three characters or more remain), or ""."""
     base, sep, _suffix = stem.rpartition("_")
     return base if sep and len(base) >= 3 else ""
 
@@ -244,21 +203,10 @@ def _build_fork_hint(
     execution_context: ExecutionContext | None,
     require_edit_cap: bool = True,
 ) -> str:
-    """Flag a file that duplicates one already written, or a probe in the wrong place.
+    """Flag a write that duplicates an existing file, or a probe outside the scratchpad.
 
-    Said at the write, not at the end of the turn: the model is still holding the file
-    it just forked, so the cheap repair (edit the original, drop the copy) is one call
-    away. It is an annotation rather than a refusal because nothing is lost by the
-    extra file — the write policy deliberately blocks only losses, so a working-order
-    rule has no business there.
-
-    Both triggers point at the scratchpad, which exists for exactly the file being
-    misplaced here and costs no approval. Capped at one per query: the observation is
-    worth making once, and a model that ignored it will ignore the second.
-
-    ``require_edit_cap=False`` is for the shell path, where the caller has already
-    established that the file was created — by observing the disk, since a shell tool
-    carries neither the EDIT capability nor a ``path`` argument.
+    An annotation, once per query, said while the cheap repair is one call away.
+    ``require_edit_cap=False`` for the shell path, which observed the file's creation.
     """
     if execution_context is None:
         return ""
@@ -320,14 +268,9 @@ async def run_post_write_validation(
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str:
-    """Return the advisory AUTO_VALIDATION annotation for a write, or "".
+    """The AUTO_VALIDATION annotation for a write by an EDIT tool, or "" (best-effort).
 
-    Runs the post-write validation ladder for an EDIT-capable tool with a target
-    path; no-ops (returns "") for anything else. Best-effort: any error yields "".
-
-    Apart from ``execute_tool_call`` so a caller runs it OUTSIDE the write's timeout
-    budget: the file is already on disk, and a slow or crashing validator must not turn
-    a successful write into a failed tool row.
+    Separate so a caller can run it outside the write's timeout budget.
     """
     target_path = agent.normalize_workspace_path(arguments.get("path"))
     if not (has_cap(tool_name, EDIT, agent.tool_caps) and target_path):
@@ -349,12 +292,9 @@ async def run_post_tool_annotations(
     result: str,
     execution_context: ExecutionContext | None,
 ) -> str:
-    """Everything appended to a successful tool result: built-in ladder, then hooks.
+    """Everything appended to a successful result: the built-in annotation, then the hooks.
 
-    The registered hooks (:mod:`tool_execution.plugins`) are the user's own checks, so
-    they run last and see the built-in annotation already in *result*. One misbehaving
-    hook is skipped rather than allowed to cost the others their turn — same contract as
-    a nudge pack, for the same reason.
+    A hook that fails is skipped.
     """
     text = await run_post_write_validation(agent, tool_name, arguments, execution_context)
     for rule in agent.extensions.post_tool_rules():
@@ -371,17 +311,9 @@ async def run_post_tool_annotations(
 
 
 def _make_subagent_progress_cb(call_id: str):
-    """Turn a tool's progress notifications into sub-agent activity events, or None.
+    """Turn a delegating tool's progress notifications into events under its row, or None.
 
-    A tool that delegates has a whole run happening inside one call; it reports what
-    its child is doing as progress notifications, which the MCP session correlates to
-    this call (and only this one), so concurrent delegations never cross. We forward
-    each one as an event carrying the parent's row id, and the frontend renders it as
-    an ordinary tool row under that parent.
-
-    Returns None when there is nothing to feed: no row to hang the activity on, or no
-    frontend bound — the CLI already prints raw event lines, and multiplying those by
-    every child tool call would be noise, not a view.
+    None without a row id or a bound front-end.
     """
     # Captured here, not read inside the callback: the callback runs on the session's
     # receive loop, a task started at connect time whose context predates the sink.
@@ -445,22 +377,11 @@ async def execute_tool_call(
     call_id: str = "",
     record_observations: bool = True,
 ) -> str:
-    """Run the full policy-and-execution pipeline for one tool call.
+    """Run the policy-and-execution pipeline for one tool call.
 
-    ``run_auto_validation`` controls whether the post-write validation ladder is
-    appended inline. The agent loop's dispatcher passes ``False`` and runs
-    validation itself under a separate budget (so a slow validator cannot fail an
-    already-written file); every other caller keeps the inline default.
-
-    ``call_id`` is the id the UI put this call's row under; it travels with a run that
-    ends up awaiting a verdict so the verdict can be shown on that row.
-
-    ``record_observations=False`` runs the call without adding it to what the
-    guardrails have seen. It is for a call the *client* makes on its own account — a
-    background-job watcher polling a status op — where crediting the observation to
-    the agent would put a step it never took into the record the nudges read. Only
-    the bookkeeping is skipped: the policy gates, the registry and the approval path
-    all still apply, because the tool being called is still a real tool call.
+    ``run_auto_validation`` False lets the dispatcher validate under its own budget;
+    ``call_id`` is the UI row a verdict will badge; ``record_observations`` False is for the
+    client's own calls (a watcher's poll), still gated but not credited to the agent.
     """
     evaluation = evaluate_tool_preconditions(
         agent=agent,
@@ -511,14 +432,9 @@ async def execute_tool_call(
     # system that returns no diff, so what it did has to be observed rather than
     # reported. Returns None for a read-only command, and never raises.
     effect_probe = bash_effect.capture(agent, tool_name, arguments, execution_context)
-    # The progress callback is passed unconditionally: it only adds a progress token
-    # to the request, and a server that never reports progress pays nothing for it.
-    # Which tools are worth listening to is decided by what comes back, not by a list
-    # of names here.
-    # The approval mode and the model ride on every call for the same reason: a server
-    # that spawns an agent of its own (a sub-agent) must run it in the mode the user
-    # chose and default to the model in use, and both change mid-session while a
-    # server's environment is frozen at spawn.
+    # The progress callback costs nothing when a server never reports. The approval mode and
+    # the model ride on every call: a server that spawns a sub-agent needs both, and its own
+    # environment is frozen at spawn.
     call_meta: dict[str, Any] = {APPROVAL_MODE_META: agent.approvals.approval_mode,
                  CALLER_MODEL_META: agent.model}
     if has_cap(tool_name, DELEGATE, agent.tool_caps):

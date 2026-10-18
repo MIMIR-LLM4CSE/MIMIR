@@ -1,38 +1,8 @@
-"""Pluggable post-tool hooks — the extension seam for user-owned verification.
+"""Post-tool hooks: user checks run after a successful call, appending to its result.
 
-The policy seam (:mod:`guardrails.policy.plugins`) runs *before* a tool call and can
-block it; the nudge seam (:mod:`guardrails.nudges.plugins`) runs at the *end of a turn*
-and can re-prompt. Between them sits the one thing neither can do: react to what a tool
-call actually produced. That is what this seam is for — a check the machine performs and
-records, next to the verdict the model states about itself.
-
-A hook runs after a successful tool call, outside the call's own timeout budget, and
-returns text appended to the tool result (empty string for "nothing to say"). It cannot
-block: the call already happened. What it *can* do is write to the blackboard through
-the ordinary entry points, and the turn-end gates read that — a hook that runs the
-project's tests and records a failure makes the existing verification nudges refuse the
-conclusion, with no new blocking mechanism.
-
-A pack registers a :class:`PostToolRule` at import time::
-
-    from mimir.client.extensions import PostToolRule, register_post_tool
-    from mimir.client.context.capabilities import EDIT, has_cap
-
-    async def _project_checks(agent, tool_name, arguments, result, execution_context):
-        if not has_cap(tool_name, EDIT, agent.tool_caps):
-            return ""
-        out = await agent.run_tool(
-            "bash_run", {"command": "pytest -q"}, execution_context=execution_context,
-        )
-        return "" if '"status": "ok"' in out else "\\n\\nPROJECT_CHECK: the suite is red."
-
-    register_post_tool(PostToolRule(name="project_checks", run=_project_checks))
-
-``run`` may be sync or async. Reference *capabilities*, never literal tool names.
-
-Running a command goes through the ordinary tool path, so the approval gate still
-applies: a hook cannot execute shell the user never agreed to. An "always" grant on the
-command prefix covers it for the session.
+A hook cannot block, but may write to the blackboard, which the turn-end gates read.
+Register at import time with ``register_post_tool(PostToolRule(name, run))``; ``run`` may
+be async. Its commands go through the ordinary approval path.
 """
 
 from __future__ import annotations

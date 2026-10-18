@@ -1,32 +1,8 @@
-"""The client half of the divert channel — see servers/_shared/run_channel.py.
+"""The client half of the divert channel (see servers/_shared/run_channel.py).
 
-A blocking run cannot be reached through the model: the worker thread is parked
-awaiting the tool result, and steering is only drained at a step boundary, so an
-instruction routed that way would arrive after the run it meant to divert had
-already ended. It cannot be reached through MCP either, since the call itself is
-what the server is busy with.
-
-What is left is the shared state dir, which both ends can touch at any moment. The
-server announces the run it is waiting on; this module names that run in a request
-file the server's wait loop consumes on its next tick, and reads back the phase the
-server republishes so a blocking call can show what it is doing.
-
-*channel* is the name of the tool that blocks. It reaches here off the tool row
-being diverted, which carries it as registry data — this module never tests it
-against a literal, and the name is never shown to the user.
-
-*session_id* says whose run is meant. Sessions run turns concurrently, so two of them
-can each have a ``bash_run`` blocking, and the channel directory lives under each
-session's own state dir; a divert addressed to no session in particular would detach
-whichever command happened to announce itself there. It is passed in rather than read
-from the environment because this half runs in the client, where every session shares
-one ``os.environ``.
-
-Two small files, one format, and the two ends of it are pinned together by
-tests/test_run_channel.py.
-
-Best-effort throughout: if anything here fails, the run simply carries on blocking, which
-is what it does when nothing asks it to detach.
+A blocking run is reachable through neither the model nor MCP, so the two ends meet in
+the session's state dir: the server announces its run, this writes the divert request
+and reads back the phase. *channel* is the blocking tool's name; best-effort throughout.
 """
 
 import json
@@ -42,15 +18,7 @@ def _dir(channel: str, session_id: str | None = None) -> str:
 
 
 def _server_alive(run: dict) -> bool:
-    """Whether the server that made this announcement is still there.
-
-    A server that crashed mid-run leaves ``current.json`` behind, and without this a
-    divert would report success while nothing at all was listening. Both ends are on
-    one machine — the state dir is local — so the process table is the honest answer.
-
-    Fail-open, as everything here is: an announcement from a server that predates the
-    ``server_pid`` field, or a platform with no ``/proc``, is accepted.
-    """
+    """Whether the announcing server is still running (fail-open without ``server_pid`` or ``/proc``)."""
     pid = run.get("server_pid")
     if not isinstance(pid, int) or pid <= 0:
         return True

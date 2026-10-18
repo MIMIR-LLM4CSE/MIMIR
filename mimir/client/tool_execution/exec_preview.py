@@ -1,15 +1,7 @@
-"""Structured exec-output preview for command-like tool results.
+"""The terminal-panel preview of an exec-shaped result (``returncode`` + ``stdout``/``stderr``).
 
-A tool result is "exec-shaped" when its JSON payload carries a ``returncode``
-plus ``stdout``/``stderr`` — the envelope every command runner (shell, code
-runner, compiler) returns. Detection is by payload *shape*, never by tool name,
-so any current or future execution tool gets the terminal panel in the UI for
-free, and non-exec tools stay summary-only.
-
-The extracted preview is attached to the ``tool_result`` event as an ``exec``
-object: ``{command?, stdout, stderr, returncode, cwd?, truncated?}``. Streams
-are ANSI-stripped and clipped for the wire (the full text still reaches the
-model through history; this is a display copy only).
+Detected by shape, never by tool name. Attached to ``tool_result`` as ``exec``; streams
+are ANSI-stripped and clipped for display only.
 """
 
 from __future__ import annotations
@@ -72,17 +64,9 @@ def _command_from_args(arguments: dict | None) -> str | None:
 
 
 def exec_input_preview(arguments: dict | None) -> dict[str, Any] | None:
-    """The IN half of the terminal panel, known before the run starts.
+    """The IN half of the panel, sent on ``tool_call`` so it shows while the run is going.
 
-    A command's output only exists once it has finished, so a panel built solely
-    from the result appears whole, late — the user watches an unexplained spinner
-    for as long as the run takes. This carries the input on the ``tool_call``
-    event instead, so IN is on screen while OUT is still being produced; the
-    result then replaces this preview with the complete one.
-
-    Empty streams rather than absent ones: the shape is the same ``exec`` object,
-    so the panel has one renderer and the pending state is just a row still
-    running. Returns ``None`` when the arguments carry no command to show.
+    Same ``exec`` shape with empty streams; ``None`` when there is no command to show.
     """
     command = _command_from_args(arguments)
     if not command:
@@ -91,17 +75,9 @@ def exec_input_preview(arguments: dict | None) -> dict[str, Any] | None:
 
 
 def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, Any] | None:
-    """Build the ``exec`` display object for an exec-shaped tool result.
+    """The ``exec`` display object for a finished run, or for a run moved to the background.
 
-    Two shapes qualify. A finished run carries a ``returncode`` alongside its
-    streams. A run the user moved to the background carries no returncode — it has
-    not produced one — but does carry a ``background_job`` handle and whatever it had
-    printed by then; that one previews as ``running``, and the panel shows the output
-    so far instead of an exit badge.
-
-    Returns ``None`` for anything that is neither (unparseable result, or no
-    returncode/stdout/stderr keys), which is also the signal that the UI should keep
-    a plain summary row.
+    ``None`` for anything else, which keeps the row a plain summary.
     """
     payload = parse_tool_payload(result_text)
     if payload is None:

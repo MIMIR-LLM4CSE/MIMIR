@@ -20,15 +20,9 @@ async def auto_validate_written_file(
     is_code_filepath: Callable[[str], bool],
     absolute_workspace_path_fn: Callable[[str], str],
 ) -> str:
-    """Post-write completeness checks after a source-file write.
+    """The completeness checks of an edit: a leftover ``old_text``, stale cross-file references.
 
-    The deterministic syntax→imports→lint→typecheck→tests validation *ladder* was
-    removed, and the mandatory check that replaced it does not run here either: it is
-    one sweep at the conclusion gate (``guardrails.builtin_check``), so a file the model
-    edits back and forth is read once, on its final content, rather than once per write.
-    What remains here are the two *completeness* checks that belong to the edit itself —
-    a leftover ``old_text`` after a replace, and stale cross-file references after a
-    workspace-wide rename. Best-effort and advisory only.
+    The mandatory check runs at the conclusion gate (``guardrails.builtin_check``), not here.
     """
     if execution_context is None or not path or not is_code_filepath(path):
         return ""
@@ -134,16 +128,10 @@ async def _check_cross_file_references(
     tool_owner: dict[str, str],
     run_tool: Callable[[str, dict[str, Any], ExecutionContext | None], Awaitable[str]],
 ) -> str:
-    """After replace_all_in_file, grep the workspace for the old symbol in OTHER files.
+    """After ``replace_all_in_file``, grep the other workspace files for the old symbol.
 
-    This catches cases where renaming a symbol in one file leaves callers in
-    other files broken.  Only fires when ``cross_file_grep_old_text`` is set
-    in the execution context (i.e. a confirmed replace_all_in_file just ran).
-
-    Runs the search through the bash server's ``grep`` (there is no dedicated grep
-    tool): a leading ``grep`` classifies read-only, so it is auto-exempt from
-    approval and confined to the workspace. Gracefully no-ops if bash is
-    unavailable or ``old_text`` is not a plain identifier.
+    Through the bash server's ``grep`` (read-only, so exempt from approval); a no-op without
+    it or for anything but a plain identifier.
     """
     if execution_context is None:
         return ""

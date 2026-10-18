@@ -1,13 +1,6 @@
-"""The file a tool call touched, and where, for the row's clickable file name.
+"""The file a call touched, and where, for the row's clickable name (``target`` on ``tool_result``).
 
-A row shows the file name alone (see ``tool_display.shorten_display_args``),
-so the UI cannot open the file from what it displays. This rides on the
-``tool_result`` event as ``target: {path, name, line?, end_line?}``: the absolute
-path, the name the row shows, and the lines to select.
-
-Found by argument name and result keys, never by tool name, like the shortening it
-undoes. Sent only for a call that succeeded on an existing file: a failed read or
-edit says nothing reliable about the file, and a directory has no lines to show.
+Found by argument names and result keys; sent only for a successful call on a file.
 """
 
 from __future__ import annotations
