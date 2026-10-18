@@ -1,8 +1,8 @@
 """The detached runs a session left behind, read off the disk.
 
 Descriptors under ``<state>/sessions/<sid>/jobs/`` and ``.../hpc_jobs/`` say which runs
-still go and which ended unwatched. Contracts with the servers: ``exit_code`` (the
-``bash_jobs`` trap) and ``slurm_state`` (``server_hpc``).
+still go and which ended unwatched. The files and
+words are the servers' own (``_shared.jobs``).
 """
 
 from __future__ import annotations
@@ -13,6 +13,16 @@ import os
 import time
 from dataclasses import dataclass
 
+from ...servers._shared.jobs import (
+    EXIT_CODE,
+    META,
+    REPORTED,
+    SLURM_JOB_ID,
+    WAKE_BASELINE,
+    WATCHER_FILE,
+    exit_code_state,
+    recorded_terminal_state,
+)
 from ...servers._shared.processes import is_running
 from ...servers._shared.state_paths import sessions_root, subagents_dir
 from ..config import paths
@@ -54,11 +64,7 @@ class DetachedJob:
         ``unknown`` is not a tidier word for failure: it means the run stopped being
         trackable, and claiming an outcome nobody observed is worse than saying so.
         """
-        if self.live:
-            return "running"
-        if self.exit_code is None:
-            return "unknown"
-        return "done" if self.exit_code == 0 else "crashed"
+        return "running" if self.live else exit_code_state(self.exit_code)
 
     def status_op(self) -> dict:
         """The read-only op a watcher polls this run with."""
@@ -96,11 +102,6 @@ def _read_json(path: str) -> dict | None:
         return None
 
 
-# What ``server_hpc`` writes into a submission's directory once Slurm has let the job go:
-# one of done|crashed|unknown. The name is shared with that module by convention, the way
-# ``exit_code`` is shared with ``bash_jobs`` (see the module docstring).
-_SLURM_STATE = "slurm_state"
-
 # How long an unsettled Slurm submission reads as running: far past any wall-time, since
 # a live watcher settles a finished job within a poll. Only an unwatched submission is
 # bounded by it; erring short would stop a server that still owes a wake.
@@ -117,12 +118,7 @@ def _slurm_stale_after() -> float:
 
 def _read_slurm_state(job_dir: str) -> str | None:
     """The terminal state recorded for this submission, or None while it has none."""
-    try:
-        with open(os.path.join(job_dir, _SLURM_STATE), encoding="utf-8") as fh:
-            word = fh.read().strip()
-    except OSError:
-        return None
-    return word if word in ("done", "crashed", "unknown") else None
+    return recorded_terminal_state(job_dir) or None
 
 
 def _older_than(path: str, age: float) -> bool:
@@ -148,12 +144,12 @@ def _written_at(path: str) -> float | None:
 
 def is_settled(job_dir: str) -> bool:
     """Whether a run's directory records that it is over: an exit code, or a recorded Slurm state."""
-    return (os.path.exists(os.path.join(job_dir, "exit_code"))
+    return (os.path.exists(os.path.join(job_dir, EXIT_CODE))
             or _read_slurm_state(job_dir) is not None)
 
 
 def _read_exit_code(job_dir: str) -> int | None:
-    path = os.path.join(job_dir, "exit_code")
+    path = os.path.join(job_dir, EXIT_CODE)
     try:
         with open(path, encoding="utf-8") as fh:
             return int(fh.read().strip())
@@ -173,7 +169,7 @@ def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
     found: list[DetachedJob] = []
     for name in sorted(os.listdir(root)):
         job_dir = os.path.join(root, name)
-        meta = _read_json(os.path.join(job_dir, "meta.json"))
+        meta = _read_json(os.path.join(job_dir, META))
         if meta is None:
             continue
         # A blocking run's scratch buffer, not a handle anybody was handed. Nothing is
@@ -209,7 +205,7 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
     found: list[DetachedJob] = []
     for name in sorted(os.listdir(root)):
         job_dir = os.path.join(root, name)
-        id_path = os.path.join(job_dir, "slurm_job_id")
+        id_path = os.path.join(job_dir, SLURM_JOB_ID)
         try:
             with open(id_path, encoding="utf-8") as fh:
                 job_id = fh.read().strip()
@@ -220,7 +216,7 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
             continue
         # A run whose own server watches it says so beside its id; the key then is
         # that watcher's, so a watcher still live is recognised as already holding it.
-        watcher = _read_json(os.path.join(job_dir, "watcher.json"))
+        watcher = _read_json(os.path.join(job_dir, WATCHER_FILE))
         if not isinstance(watcher, dict) or not watcher.get("job_key"):
             watcher = None
         state = _read_slurm_state(job_dir)
@@ -244,15 +240,10 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
     return found
 
 
-# The marker that a finished run's wake was handed to a turn, in the run's own
-# directory so it survives the process. Written where the wake enters a turn, never
-# where it is queued: marked early, a debt would read as paid.
-_REPORTED = "reported"
-
-# The per-session marker that this session was scanned before. The first scan marks
-# everything already finished as reported and emits nothing: job directories are never
-# swept, and waking for a months-old build is worse than missing one.
-_BASELINE = ".wake_baseline"
+# REPORTED marks, in the run's own directory, that its wake was handed to a turn: written
+# where the wake enters a turn, never where it is queued. WAKE_BASELINE marks a session
+# scanned before: the first scan marks what already ended as reported and wakes nothing,
+# since job directories are never swept.
 
 
 def _job_dir(session_id: str, job_key: str, kind: str = "shell") -> str:
@@ -287,14 +278,14 @@ def _slurm_job_dir(session_id: str, job_id: str, *, invent: bool = True) -> str:
     for name in names:
         job_dir = os.path.join(root, name)
         try:
-            with open(os.path.join(job_dir, "slurm_job_id"), encoding="utf-8") as fh:
+            with open(os.path.join(job_dir, SLURM_JOB_ID), encoding="utf-8") as fh:
                 if fh.read().strip() == job_id:
                     return job_dir
         except OSError:
             continue
         # A run watched by its own server is keyed by that watcher, not by the Slurm
         # id, and its marker belongs beside the descriptor all the same.
-        watcher = _read_json(os.path.join(job_dir, "watcher.json"))
+        watcher = _read_json(os.path.join(job_dir, WATCHER_FILE))
         if isinstance(watcher, dict) and str(watcher.get("job_key") or "") == job_id:
             return job_dir
     if not invent:
@@ -307,7 +298,7 @@ def _baseline_path(session_id: str) -> str:
     # job handles and is read as a list of them: anything else in it is a job to
     # whoever enumerates it, and a marker there reads as a run with no exit code —
     # which is to say a live one.
-    return os.path.join(_sessions_root(), session_id, _BASELINE)
+    return os.path.join(_sessions_root(), session_id, WAKE_BASELINE)
 
 
 def has_baseline(session_id: str) -> bool:
@@ -350,7 +341,7 @@ def was_reported(job: DetachedJob) -> bool:
                                        job.job_key))
     if job.kind == "slurm":
         candidates.append(os.path.join(_slurm_hpc_root(job.session_id), job.job_key))
-    return any(os.path.exists(os.path.join(base, _REPORTED))
+    return any(os.path.exists(os.path.join(base, REPORTED))
                for base in dict.fromkeys(candidates))
 
 
@@ -364,7 +355,7 @@ def mark_reported(job: DetachedJob) -> None:
     try:
         path = _job_dir(job.session_id, job.job_key, job.kind)
         os.makedirs(path, exist_ok=True)
-        with open(os.path.join(path, _REPORTED), "w", encoding="utf-8") as fh:
+        with open(os.path.join(path, REPORTED), "w", encoding="utf-8") as fh:
             fh.write("1")
     except Exception:
         logger.warning("job scan: could not mark %s/%s reported",

@@ -25,6 +25,7 @@ from mimir.tests.support.proxy import _TmpStorageTest, pin_local_scheduler, serv
 from mimir.tests.support.state import pin_state_dir
 from mimir.client.core.turn_state import TurnState
 from mimir.tests.support.agents import fake_agent
+from mimir.servers._shared import jobs as shared_jobs
 
 
 def _eval(*args, **kwargs):
@@ -1602,7 +1603,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self._wake(self._event("j2"))
         self._inject(self.worker.steered[0])   # j1 only
         reported = {key: os.path.exists(os.path.join(
-            jobs_on_disk._job_dir(self.here.id, key, "shell"), jobs_on_disk._REPORTED))
+            jobs_on_disk._job_dir(self.here.id, key, "shell"), shared_jobs.REPORTED))
             for key in ("j1", "j2")}
         self.assertEqual(reported, {"j1": True, "j2": False})
 

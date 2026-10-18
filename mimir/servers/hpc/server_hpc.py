@@ -30,10 +30,15 @@ from .._shared.capabilities import (
     PANEL_REPORT,
 )
 from .._shared.responses import err, ok
+from .._shared.jobs import (
+    SLURM_JOB_ID,
+    is_terminal,
+    record_terminal_state,
+    recorded_terminal_state,
+)
 from .._shared.slurm_site import (
     ADOPTED_FILE as _ADOPTED_FILE,
     HOST_FILE as _HOST_FILE,
-    ID_FILE as _ID_FILE,
     LOCAL as _LOCAL_HOST,
     LOCAL_NAME as _LOCAL_NAME,
     covered_by as _covered_by,
@@ -82,14 +87,11 @@ from .jobs import (
     JOB_ID_RE,
     LOG_FILE,
     LOG_NAME,
-    TERMINAL_STATES,
     add_unwatched,
     find_job_dir,
     locate_job,
     record_job_host,
-    record_terminal_state,
     recorded_log,
-    recorded_terminal_state,
     salloc_argv,
     slurm_background_job,
 )
@@ -498,7 +500,7 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
         # And if Slurm has let go, say so in the directory. See record_terminal_state:
         # this poll is the only thing that will ever know, and the readers that decide
         # whether a workspace still has work running cannot ask the scheduler.
-        if state in TERMINAL_STATES:
+        if is_terminal(state):
             record_terminal_state(job_dir, state)
             # A finished job whose log never appeared says something specific, and it
             # is not about the job: the directory it was told to write to is not one
@@ -609,7 +611,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # keeps what its poll learned, and "on which node" is what a badge says.
     if nodes:
         payload["nodes"] = nodes
-    if state in TERMINAL_STATES:
+    if is_terminal(state):
         # Already over. Settled rather than watched: a watcher put on a finished job
         # reports it at its first poll, which is a wake for news the caller is holding.
         record_terminal_state(job_dir, state)
@@ -866,7 +868,7 @@ def sbatch_submit(
     job_id = match.group(1)
     log_file = os.path.join(work_dir, LOG_NAME.replace("%j", job_id))
     try:
-        with open(os.path.join(job_dir, _ID_FILE), "w") as fh:
+        with open(os.path.join(job_dir, SLURM_JOB_ID), "w") as fh:
             fh.write(job_id)
         with open(os.path.join(job_dir, LOG_FILE), "w") as fh:
             fh.write(log_file)

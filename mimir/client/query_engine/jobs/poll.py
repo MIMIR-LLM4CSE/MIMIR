@@ -1,6 +1,6 @@
 """Polling a detached run to a terminal state: the one loop every watcher uses.
 
-Four words end a run (:data:`TERMINAL`); answers are read with ``parse_tool_payload``;
+Three words end a run (:data:`TERMINAL`); answers are read with ``parse_tool_payload``;
 a status op that stays unreadable ends as lost. The op travels in the descriptor.
 """
 from __future__ import annotations
@@ -12,13 +12,10 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from ...protocol.tool_result import parse_tool_payload
+from ....servers._shared.jobs import TERMINAL
 
 logger = logging.getLogger(__name__)
 
-# The four words that end a run. Anything else the status op says is "still going", so a
-# descriptor's own vocabulary stays its own business — see the translation table in
-# ``server_spawn_agent._CARD_STATE_TO_JOB`` for what speaking it costs.
-TERMINAL = frozenset({"done", "crashed", "unknown"})
 
 # Consecutive status probes that come back without a state we recognise before a
 # poll gives up. A probe that stopped working — a policy violation, a dead server,

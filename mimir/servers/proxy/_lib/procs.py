@@ -18,8 +18,8 @@ from datetime import datetime, timezone
 
 from ..._shared import build_progress
 from ..._shared.responses import err
+from ..._shared.jobs import WATCHER_FILE as _WATCHER_FILE
 from ..._shared.slurm_site import (
-    WATCHER_FILE as _WATCHER_FILE,
     record_job_dir as _record_job_dir,
     HOST_FILE as _SLURM_HOST_FILE,
     LOCAL as _SLURM_LOCAL,

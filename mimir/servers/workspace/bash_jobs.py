@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .._shared import build_progress
+from .._shared.jobs import EXIT_CODE, META
 from .._shared.processes import is_running, proc_starttime
 
 def jobs_root() -> str:
@@ -128,7 +129,7 @@ def _wrap(script: str, rc_path: str) -> str:
 def _write_meta(job_key: str, **fields) -> None:
     """Write one job's ``meta.json`` (the one writer: launch, adoption, promotion)."""
     meta = {"job_key": job_key, "started_at": time.time(), **fields}
-    with open(_path(job_key, "meta.json"), "w") as fh:
+    with open(_path(job_key, META), "w") as fh:
         json.dump(meta, fh, indent=2)
 
 
@@ -145,7 +146,7 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
     job_key = _new_job_key()
     os.makedirs(_job_dir(job_key), exist_ok=True)
 
-    rc_path = _path(job_key, "exit_code")
+    rc_path = _path(job_key, EXIT_CODE)
     # A build piped into a filter gets a second copy of its output, taken before the
     # filter, or nothing here would see its progress until it had finished. The
     # command the caller wrote still runs, and still decides the exit status.
@@ -306,7 +307,7 @@ def _sweep_once() -> None:
 
 def _meta(job_key: str, run_dir: str = "") -> dict:
     try:
-        with open(_path(job_key, "meta.json", run_dir)) as fh:
+        with open(_path(job_key, META, run_dir)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return {}
@@ -321,7 +322,7 @@ def state(job_key: str, run_dir: str = "") -> dict:
     if not meta:
         return {"state": "unknown", "job_key": job_key, "error": "No such job."}
 
-    rc_raw = _read(job_key, "exit_code", run_dir=run_dir)
+    rc_raw = _read(job_key, EXIT_CODE, run_dir=run_dir)
     alive = is_running(int(meta.get("pid") or 0), meta.get("pid_starttime"))
 
     payload = {

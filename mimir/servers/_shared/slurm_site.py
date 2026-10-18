@@ -12,6 +12,7 @@ import shlex
 import subprocess
 import time
 
+from .jobs import SLURM_JOB_ID
 from .state_paths import SUBAGENTS_DIRNAME, session_state_dir, sessions_root, state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
@@ -268,17 +269,9 @@ def _choices(known: list[str]) -> str:
 # Untracked work is what the queue lists minus the descriptors on disk. Here because
 # both the bash and the hpc server need the same answer.
 
-# The file a submission's directory is identified by, and the name every reader of a
-# descriptor agrees on. :func:`record_job_dir` below is the one writer.
-ID_FILE = "slurm_job_id"
-
-# The descriptor a client watcher is to be re-armed from, when the job is not watched
-# by the stock poll. Written by a submitter that runs its own watcher — the proxy's
-# runs are Slurm jobs of this workspace and its own state machine both — so that a
-# reload puts *its* watcher back rather than a second one beside it, and so that
-# "is anything watching this id" has one answer. Absent for an ordinary submission,
-# whose watcher is slurm_job_status and needs nothing recorded.
-WATCHER_FILE = "watcher.json"
+# A submission's directory is identified by its SLURM_JOB_ID file (:func:`record_job_dir`
+# is the one writer). WATCHER_FILE is written by a submitter that runs its own watcher
+# (a proxy run), so a reload re-arms that watcher rather than a second one beside it.
 
 _JOBS_SUBDIR = "hpc_jobs"
 
@@ -317,7 +310,7 @@ def record_job_dir(job_id: str, **files: str) -> str:
     The one writer of the layout: submissions, adoptions and the proxy's runs.
     """
     job_dir = new_job_dir()
-    for name, content in {ID_FILE: job_id, **files}.items():
+    for name, content in {SLURM_JOB_ID: job_id, **files}.items():
         with open(os.path.join(job_dir, name), "w") as fh:
             fh.write(content)
     return job_dir
@@ -349,7 +342,7 @@ def _descriptors(roots: list[str]):
         for name in names:
             job_dir = os.path.join(root, name)
             try:
-                with open(os.path.join(job_dir, ID_FILE)) as fh:
+                with open(os.path.join(job_dir, SLURM_JOB_ID)) as fh:
                     recorded = fh.read().strip()
             except OSError:
                 continue

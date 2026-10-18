@@ -15,7 +15,7 @@ from mimir.tests.support.proxy import (
     server_proxy,
     store,
 )
-from mimir.servers._shared import slurm_site
+from mimir.servers._shared import jobs as shared_jobs, slurm_site
 
 
 class ValidateSlurmArgsTests(unittest.TestCase):
@@ -318,7 +318,7 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
             status_op={"tool": "proxy_eval_status", "args": {"proxy_name": "solver"}},
             summary_op={})
         job_dir = procs._workspace_job_dir(run_dir)
-        with open(os.path.join(job_dir, slurm_site.WATCHER_FILE)) as fh:
+        with open(os.path.join(job_dir, shared_jobs.WATCHER_FILE)) as fh:
             watcher = json.load(fh)
         self.assertEqual(watcher["server"], "proxy")
         self.assertEqual(watcher["job_key"], "run-0001")
@@ -341,7 +341,7 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
         dirs = [os.path.join(slurm_site.jobs_dir(), n)
                 for n in os.listdir(slurm_site.jobs_dir())]
         carried = [d for d in dirs
-                   if os.path.exists(os.path.join(d, slurm_site.WATCHER_FILE))]
+                   if os.path.exists(os.path.join(d, shared_jobs.WATCHER_FILE))]
         self.assertEqual(len(dirs), 2)
         self.assertEqual(carried, [procs._workspace_job_dir(run_dir)])
         with open(os.path.join(carried[0], "slurm_job_id")) as fh:

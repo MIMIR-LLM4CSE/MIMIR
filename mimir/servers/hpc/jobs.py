@@ -10,9 +10,14 @@ import re
 import shlex
 from .._shared.responses import err
 from .._shared.state_paths import sessions_root
+from .._shared.jobs import (
+    SLURM_JOB_ID,
+    descriptor,
+    op,
+    slurm_state,
+)
 from .._shared.slurm_site import (
     HOST_FILE as _HOST_FILE,
-    ID_FILE as _ID_FILE,
     LOCAL as _LOCAL_HOST,
     hosts as slurm_hosts,
     job_host as _job_host,
@@ -21,7 +26,6 @@ from .._shared.slurm_site import (
     unwatched_by_host as slurm_unwatched_by_host,
     unwatched_hint as slurm_unwatched_hint,
 )
-from .._shared import cpu_facts
 from . import cli
 from .cli import (
     TIMEOUT_READ,
@@ -55,7 +59,7 @@ def find_job_dir(job_id: str) -> tuple[str, str]:
             return ""
         for name in names:
             try:
-                with open(os.path.join(base, name, _ID_FILE)) as fh:
+                with open(os.path.join(base, name, SLURM_JOB_ID)) as fh:
                     if fh.read().strip() == job_id:
                         return os.path.join(base, name)
             except OSError:
@@ -88,35 +92,9 @@ LOG_FILE = "log"
 
 
 def slurm_background_job(job_id: str) -> dict:
-    """The handle a client watcher polls this job with.
-
-    One author: the three producers — a submission, an adoption, and a status answer
-    re-arming its own job — were each writing this literal, so a new field or a renamed
-    status op had three places to be remembered in.
-    """
-    return {
-        "server":    "hpc",
-        "job_key":   job_id,
-        "kind":      "slurm-batch",
-        "status_op": {"tool": "slurm_job_status", "args": {"job_id": job_id}},
-    }
-
-
-# The word a poll writes into a submission's directory once Slurm has stopped having an
-# opinion about the job. This is the counterpart of a detached shell job's exit-code
-# trap, and it exists for the same reader: whoever asks later whether this workspace
-# still has work running has nothing but the descriptors on disk, and cannot ask Slurm.
-# Without it a submission's directory says "there is a job" for ever — the one thing it
-# records is an id, and an id never stops existing.
-_STATE_FILE = "slurm_state"
-
-
-# The states that mean Slurm is done answering for a job. ``unknown`` belongs here and is
-# not a failure: it is what a job that has left both squeue and sacct reads as — the
-# scheduler has forgotten it — and it is already what the client's watcher treats as
-# terminal. Recording it keeps the directory saying what the watcher concluded, where
-# leaving it blank would read as "still running" for ever.
-TERMINAL_STATES = ("done", "crashed", "unknown")
+    """The handle a client watcher polls this job with (submission, adoption, re-arm)."""
+    return descriptor(server="hpc", kind="slurm-batch", job_key=job_id,
+                      status_op=op("slurm_job_status", job_id=job_id))
 
 
 def recorded_log(job_dir: str) -> str:
@@ -133,30 +111,6 @@ def recorded_log(job_dir: str) -> str:
         return recorded
     in_dir = os.path.join(job_dir, "slurm.log")
     return in_dir if os.path.exists(in_dir) else ""
-
-
-def record_terminal_state(job_dir: str, state: str) -> None:
-    """Write the terminal state of *job_dir* once, at the first poll that sees it; best-effort.
-
-    Write-once: a later poll may read ``unknown`` past sacct's retention.
-    """
-    try:
-        with open(os.path.join(job_dir, _STATE_FILE), "x") as fh:
-            fh.write(state)
-    except FileExistsError:
-        pass
-    except OSError:
-        pass
-
-
-def recorded_terminal_state(job_dir: str) -> str:
-    """The terminal state a poll wrote in *job_dir*, or "" (no need to ask Slurm)."""
-    try:
-        with open(os.path.join(job_dir, _STATE_FILE)) as fh:
-            word = fh.read().strip()
-    except OSError:
-        return ""
-    return word if word in TERMINAL_STATES else ""
 
 
 def record_job_host(job_dir: str, host: str) -> None:
@@ -196,86 +150,12 @@ def locate_job(job_id: str, requested: str = "",
     return "", "unknown", "", []
 
 
-_SACCT_CRASH_PREFIXES = (
-    "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
-    "BOOT_FAIL", "DEADLINE", "PREEMPTED",
-)
-
-
-_ACTIVE_STATES = ("RUNNING", "COMPLETING")
-
-
-_WAITING_STATES = ("PENDING", "CONFIGURING", "REQUEUED")
-
-
-# A job is over when it says so, wherever it says it. squeue reports the same words
-# sacct does and keeps a finished job for a while — a cancelled one can sit there
-# saying CANCELLED — so these are read from either answer. Prefixes because Slurm
-# qualifies some of them ("CANCELLED by 1234").
-_DONE_PREFIXES = ("COMPLETED",)
-
-
-def _is_crash_state(state: str) -> bool:
-    return any(state.startswith(prefix) for prefix in _SACCT_CRASH_PREFIXES)
-
-
-def _is_done_state(state: str) -> bool:
-    return any(state.startswith(prefix) for prefix in _DONE_PREFIXES)
-
-
 def normalized_job_state(job_id: str, *,
                           host: str = _LOCAL_HOST) -> tuple[str, str, list[str]]:
-    """``(state, raw, nodes)`` of a job: running, pending, done, crashed or unknown.
-
-    ``squeue`` for live jobs, ``sacct`` for finished ones; nodes only while running. For an
-    array, any live element keeps it live, and the verdict is the worst element's.
-    """
-    rows = lines_of(cli.run_bash(f"squeue -j {shlex.quote(job_id)} -h -o '%T|%R'",
-                            TIMEOUT_READ, host=host))
-    queued, where = [], []
-    for row in rows:
-        state, _, reason_or_node = row.partition("|")
-        queued.append(state.strip())
-        where.append(reason_or_node.strip())
-    raw = ",".join(sorted(set(queued)))
-    if any(state in _ACTIVE_STATES for state in queued):
-        nodes = sorted({node
-                        for state, expr in zip(queued, where)
-                        if state in _ACTIVE_STATES
-                        for node in cpu_facts.expand_hostlist(expr) if node})
-        return "running", raw, nodes
-    if queued and all(state in _WAITING_STATES for state in queued):
-        return "pending", raw, []
-    # Over, by the queue's own answer. Read before sacct is asked, for two reasons: it
-    # saves a round trip in the ordinary case, and it is the only thing that settles a
-    # job on a site with no accounting at all — where ``sacct`` answers nothing and the
-    # fallthrough below reads "in the queue with a state I do not recognise" as still
-    # running. For a CANCELLED job that is a watcher polling, for as long as the process
-    # lives, something that will never change again.
-    if queued and all(_is_done_state(s) or _is_crash_state(s) for s in queued):
-        # The worst outcome among the elements, as below: an array where one task was
-        # cancelled is not an array that completed.
-        if any(_is_crash_state(s) for s in queued):
-            return "crashed", raw, []
-        return "done", raw, []
-
-    accounted = lines_of(cli.run_bash(f"sacct -j {shlex.quote(job_id)} -n -X -o State",
-                                 TIMEOUT_READ, host=host))
-    sraw = ",".join(sorted(set(accounted)))
-    # Ahead of the "anything not COMPLETED is crashed" fallback below, which is where
-    # most of these land anyway. What this earns is the one case the fallback cannot
-    # reach: a terminal crash line present *while* squeue still reports a state that is
-    # neither active nor waiting, which the clause below would read as running.
-    crashed = [state for state in accounted if _is_crash_state(state)]
-    if crashed:
-        return "crashed", sraw, []
-    if accounted and all(_is_done_state(state) for state in accounted):
-        return "done", sraw, []
-    if queued:                    # in the queue with a non-standard active state
-        return "running", raw, []
-    if accounted:                 # some other terminal state we don't classify
-        return "crashed", sraw, []
-    return "unknown", "", []
+    """``(state, raw, nodes)`` of a job on *host*: running, pending, done, crashed or
+    unknown (``_shared.jobs.slurm_state``)."""
+    return slurm_state(job_id, lambda script: lines_of(cli.run_bash(script, TIMEOUT_READ,
+                                                                    host=host)))
 
 
 # A job, or one task of a job array. Anything wider — a user, a partition, a name — is
