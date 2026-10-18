@@ -535,21 +535,13 @@ _NESTED_COMMAND_FLAGS = frozenset({"-exec", "-execdir"})
 _EXEC_TERMINATORS = frozenset({";", "+"})
 
 
-def parse_segments(command: str) -> list[ParsedSegment]:
-    """Split *command* into the commands the shell would run, with their redirections.
-
-    Quote-aware; redirections are lifted out of argv (fd dups and ``/dev/null`` vanish).
-    Raises :class:`ShellParseError` on substitution, subshells, backgrounding, heredocs or
-    dangling operators.
-    """
+def _tokenize(command: str) -> list[str]:
+    """Quote-aware tokens of *command*; refuses substitution, which only the quoted text
+    can show (shlex strips the quotes)."""
     if not isinstance(command, str) or not command.strip():
         raise ShellParseError("empty", "Command must be a non-empty string.")
-
     command = flatten_unquoted_newlines(command)
-    # Before tokenizing, while the quotes are still there to read: shlex strips them,
-    # so this cannot be decided per token afterwards.
-    marker = unquoted_substitution_marker(command)
-    if marker is not None:
+    if unquoted_substitution_marker(command) is not None:
         raise ShellParseError(
             "substitution", "Command/parameter substitution is not allowed.")
     try:
@@ -559,114 +551,129 @@ def parse_segments(command: str) -> list[ParsedSegment]:
         tokens = list(lexer)
     except ValueError as e:
         raise ShellParseError("quoting", f"Invalid shell quoting: {e}") from e
-
     if not tokens:
         raise ShellParseError("empty", "Invalid command syntax.")
+    return tokens
 
-    segments: list[ParsedSegment] = []
-    argv: list[str] = []
-    redirections: list[Redirection] = []
-    # A `find -exec` payload: tokens after the flag belong to a nested command, not to
-    # find's own argv, and the `;`/`+` ending it is a terminator, not a chaining
-    # separator that would split the command in the wrong place.
-    nested_argv: list[str] | None = None
-    nested_segments: list[ParsedSegment] = []
-    i, n = 0, len(tokens)
-    while i < n:
+
+def _is_operator(tok: str) -> bool:
+    return bool(tok) and all(ch in _OPERATOR_CHARS for ch in tok)
+
+
+def _operator_error(tok: str) -> ShellParseError:
+    # An unquoted parenthesis starts a subshell whatever was meant; for a `find`
+    # expression, saying which shape works saves a planning phase a detour.
+    hint = ""
+    if tok in ("(", ")"):
+        hint = (" An unquoted parenthesis starts a subshell. For a `find`"
+                " expression, drop the grouping: `-name a -o -name b` already"
+                " means either.")
+    return ShellParseError("operator", f"Shell operator '{tok}' is not allowed.{hint}")
+
+
+class _SegmentBuilder:
+    """Folds tokens into segments: argv, redirections, separators, and `find -exec`
+    payloads, which become nested segments after the chain."""
+
+    def __init__(self) -> None:
+        self.segments: list[ParsedSegment] = []
+        self.argv: list[str] = []
+        self.redirections: list[Redirection] = []
+        # Open while inside a `-exec` payload: its tokens belong to a nested command, and
+        # the `;`/`+` ending it is a terminator, not a separator.
+        self.nested_argv: list[str] | None = None
+        self.nested: list[ParsedSegment] = []
+
+    def feed(self, tokens: list[str], i: int) -> int:
+        """Consume the token at *i* (and any it owns); return the next index."""
         tok = tokens[i]
-
-        is_operator = bool(tok) and all(ch in _OPERATOR_CHARS for ch in tok)
-
-        if nested_argv is not None:
-            if tok in _EXEC_TERMINATORS:
-                if nested_argv:
-                    nested_segments.append(ParsedSegment(nested_argv, [], nested=True))
-                nested_argv = None
-                i += 1
-                continue
-            if not is_operator:
-                nested_argv.append(tok)
-                i += 1
-                continue
-            # The shell reads an operator inside the payload as its own: a redirection
-            # applies to find (handled below), anything else ends find's command first.
-            if not ("<" in tok or ">" in tok):
-                raise ShellParseError(
-                    "separator",
-                    f"Shell operator '{tok}' inside -exec/-execdir ends the command"
-                    " before its ';' or '+'.")
-
-        if tok in _NESTED_COMMAND_FLAGS and argv:
-            # The flag is dropped from the outer argv: not an operand, and keeping it
-            # would trip the server's flag denylist on the very token whose payload has
-            # just been made inspectable. The nested segment records that it existed.
-            nested_argv = []
-            i += 1
-            continue
-
+        if self.nested_argv is not None and not self._redirects(tok):
+            return self._nested_token(tok, i)
+        if tok in _NESTED_COMMAND_FLAGS and self.argv:
+            # Dropped from find's argv: keeping it would trip the flag denylist on the
+            # very token whose payload has just been made inspectable.
+            self.nested_argv = []
+            return i + 1
         if tok in COMMAND_SEPARATORS:
-            if not argv:
+            if not self.argv:
                 raise ShellParseError(
                     "separator", "A command separator must join two real commands.")
-            segments.append(ParsedSegment(argv, redirections, sep=tok))
-            argv, redirections = [], []
-            i += 1
-            continue
+            self.segments.append(ParsedSegment(self.argv, self.redirections, sep=tok))
+            self.argv, self.redirections = [], []
+            return i + 1
+        if self._redirects(tok):
+            return self._redirection(tokens, i)
+        if _is_operator(tok):
+            raise _operator_error(tok)
+        self.argv.append(tok)
+        return i + 1
 
-        if is_operator and ("<" in tok or ">" in tok):
-            if tok.startswith("<<"):
-                # Heredoc / herestring: its body is not an argv this can segment,
-                # and for '<<' the body lines would each be read as a command.
-                raise ShellParseError(
-                    "heredoc", f"Redirection operator '{tok}' is not supported.")
-            # Quote-aware tokenization detaches the source fd (the '2' in
-            # '2>/dev/null') into its own token; drop it so it never lands in argv.
-            words = nested_argv if nested_argv is not None else argv
-            if words and len(words[-1]) == 1 and words[-1].isdigit():
-                words.pop()
-            target = tokens[i + 1] if i + 1 < n else None
-            if target is None or target in COMMAND_SEPARATORS or all(
-                ch in _OPERATOR_CHARS for ch in target
-            ):
-                raise ShellParseError("redirect", "Redirection is missing a target.")
-            # A pure fd reference ('1', '2-', '-') or the null sink names no file.
-            if not (target == "-" or target.rstrip("-").isdigit() or target in _FD_SINKS):
-                redirections.append(Redirection(tok, target, writes=">" in tok))
-            i += 2  # the operator and its target
-            continue
+    @staticmethod
+    def _redirects(tok: str) -> bool:
+        return _is_operator(tok) and ("<" in tok or ">" in tok)
 
-        if is_operator:
-            # Grouping parentheses are the one operator a caller routinely means as an
-            # argument rather than as a subshell: `find . \( -name a -o -name b \)`.
-            # The refusal stands — an unquoted `(` starts a subshell whatever was
-            # intended — but saying only "not allowed" sent a planning phase off to
-            # walk the filesystem instead of rewriting one expression, so the reply
-            # names the shape that does work.
-            hint = ""
-            if tok in ("(", ")"):
-                hint = (" An unquoted parenthesis starts a subshell. For a `find`"
-                        " expression, drop the grouping: `-name a -o -name b` already"
-                        " means either.")
+    def _nested_token(self, tok: str, i: int) -> int:
+        assert self.nested_argv is not None
+        if tok in _EXEC_TERMINATORS:
+            if self.nested_argv:
+                self.nested.append(ParsedSegment(self.nested_argv, [], nested=True))
+            self.nested_argv = None
+        elif _is_operator(tok):
+            # The shell reads it as its own and ends find's command first.
             raise ShellParseError(
-                "operator", f"Shell operator '{tok}' is not allowed.{hint}")
+                "separator", f"Shell operator '{tok}' inside -exec/-execdir ends the "
+                "command before its ';' or '+'.")
+        else:
+            self.nested_argv.append(tok)
+        return i + 1
 
-        argv.append(tok)
-        i += 1
+    def _redirection(self, tokens: list[str], i: int) -> int:
+        """A redirection belongs to the outer command, inside a payload too (the shell
+        applies it to find). An fd dup or the null sink names no file."""
+        tok = tokens[i]
+        if tok.startswith("<<"):
+            # A heredoc body is not an argv; its lines would each read as a command.
+            raise ShellParseError(
+                "heredoc", f"Redirection operator '{tok}' is not supported.")
+        # The source fd ('2' in '2>/dev/null') was tokenized on its own.
+        words = self.nested_argv if self.nested_argv is not None else self.argv
+        if words and len(words[-1]) == 1 and words[-1].isdigit():
+            words.pop()
+        target = tokens[i + 1] if i + 1 < len(tokens) else None
+        if target is None or target in COMMAND_SEPARATORS or _is_operator(target):
+            raise ShellParseError("redirect", "Redirection is missing a target.")
+        if not (target == "-" or target.rstrip("-").isdigit() or target in _FD_SINKS):
+            self.redirections.append(Redirection(tok, target, writes=">" in tok))
+        return i + 2
 
-    if nested_argv is not None:
-        raise ShellParseError(
-            "separator",
-            "A nested command (-exec/-execdir) must be terminated by ';' or '+'.",
-        )
-    if argv:
-        segments.append(ParsedSegment(argv, redirections))
-    elif redirections:
-        raise ShellParseError("redirect", "A redirection must belong to a command.")
-    if not segments:
-        raise ShellParseError("empty", "Invalid command syntax.")
-    # Nested commands trail the chain they were lifted from, so top-level order stays
-    # intact for callers reasoning about `cd` rebasing.
-    return segments + nested_segments
+    def finish(self) -> list[ParsedSegment]:
+        if self.nested_argv is not None:
+            raise ShellParseError(
+                "separator",
+                "A nested command (-exec/-execdir) must be terminated by ';' or '+'.")
+        if self.argv:
+            self.segments.append(ParsedSegment(self.argv, self.redirections))
+        elif self.redirections:
+            raise ShellParseError("redirect", "A redirection must belong to a command.")
+        if not self.segments:
+            raise ShellParseError("empty", "Invalid command syntax.")
+        # Nested commands trail the chain, so top-level order stays intact for `cd`.
+        return self.segments + self.nested
+
+
+def parse_segments(command: str) -> list[ParsedSegment]:
+    """Split *command* into the commands the shell would run, with their redirections.
+
+    Quote-aware; redirections are lifted out of argv (fd dups and ``/dev/null`` vanish).
+    Raises :class:`ShellParseError` on substitution, subshells, backgrounding, heredocs or
+    dangling operators.
+    """
+    tokens = _tokenize(command)
+    builder = _SegmentBuilder()
+    i = 0
+    while i < len(tokens):
+        i = builder.feed(tokens, i)
+    return builder.finish()
 
 
 def unquoted_pipe_offsets(command: str) -> list[int]:
