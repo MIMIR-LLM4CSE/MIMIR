@@ -179,6 +179,35 @@ class CommentTests(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+class ProseTests(unittest.TestCase):
+    """A docstring says what the code is in a few lines; the reasoning lives in the
+    .md docs. An MCP tool's docstring is exempt: it is what the model reads."""
+
+    FUNCTION_MAX, MODULE_MAX = 6, 8
+
+    def test_docstrings_stay_short(self) -> None:
+        offenders = []
+        for path in _python_files(PACKAGE):
+            if (PACKAGE / "tests") in path.parents:
+                continue
+            tree = ast.parse(path.read_text())
+            if ast.get_docstring(tree, clean=False) is not None:
+                doc = tree.body[0]
+                if doc.end_lineno - doc.lineno + 1 > self.MODULE_MAX:
+                    offenders.append(f"{path.relative_to(PACKAGE)}: module")
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                if ast.get_docstring(node, clean=False) is None:
+                    continue
+                if any("tool" in ast.unparse(d) for d in node.decorator_list):
+                    continue
+                doc = node.body[0]
+                if doc.end_lineno - doc.lineno + 1 > self.FUNCTION_MAX:
+                    offenders.append(f"{path.relative_to(PACKAGE)}: {node.name}")
+        self.assertEqual(offenders, [])
+
+
 class TestHygieneTests(unittest.TestCase):
     """Tests go through public construction and behaviour, never the source text."""
 
