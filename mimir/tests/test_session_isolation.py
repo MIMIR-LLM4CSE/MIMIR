@@ -90,9 +90,9 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
 
     def test_foreign_events_are_dropped_and_own_events_kept(self):
         sess = self._session(_bare_worker())
-        self.assertTrue(sess._is_foreign_event({"type": "open_editor", "session_id": "s2"}))
-        self.assertFalse(sess._is_foreign_event({"type": "open_editor", "session_id": "s1"}))
-        self.assertFalse(sess._is_foreign_event({"type": "output"}))  # unstamped
+        self.assertTrue(sess.screen.is_foreign_event({"type": "open_editor", "session_id": "s2"}))
+        self.assertFalse(sess.screen.is_foreign_event({"type": "open_editor", "session_id": "s1"}))
+        self.assertFalse(sess.screen.is_foreign_event({"type": "output"}))  # unstamped
 
     async def test_leaving_a_conversation_leaves_its_turn_running(self):
         """The property the whole feature is for.
@@ -108,10 +108,10 @@ With an agent per conversation the turn has somewhere to go: it streams into
         w.defer = lambda: self.fail("the turn of the conversation being left was deferred")
         w.flush_prompts = lambda: self.fail("its pending card was thrown away")
         sess = self._session(w)
-        sess._save = lambda: None
-        sess._send_sessions_list = _noop_async
-        sess._load_session = _noop_async
-        await sess._handle_switch_session({"session_id": "s2"})
+        sess.screen.save = lambda: None
+        sess.screen.send_sessions_list = _noop_async
+        sess.conversations.load_session = _noop_async
+        await sess.conversations.on_switch_session({"session_id": "s2"})
 
     async def test_the_answer_of_a_conversation_left_still_lands_in_it(self):
         """Its answer arrives after the user has moved on, and goes to the conversation
@@ -121,9 +121,9 @@ With an agent per conversation the turn has somewhere to go: it streams into
         w.is_busy = lambda: True
         sess = self._session(w)
         sess.pool.workers = {"s1": w}
-        sess._send_sessions_list = _noop_async
-        sess._load_session = _noop_async
-        await sess._handle_switch_session({"session_id": "s2"})
+        sess.screen.send_sessions_list = _noop_async
+        sess.conversations.load_session = _noop_async
+        await sess.conversations.on_switch_session({"session_id": "s2"})
         w.out_q.put({"type": "answer", "text": "done", "session_id": "s1"})
         sess.pool.bus.pump_once()
         self.assertEqual(sess.pool.conversations.get("s1").display[-1]["text"], "done")
@@ -137,7 +137,7 @@ With an agent per conversation the turn has somewhere to go: it streams into
         w.setting = lambda name, default=None: {"enforcement": "light"}.get(name, default)
         w.get_temperature_state = lambda: {"supported": True, "value": 0.6}
         sess = self._session(w)
-        await sess._handle_set_model({"model": "qwen3:30b"})
+        await sess.panel.on_set_model({"model": "qwen3:30b"})
         self.assertEqual(len(sess.ws.sent), 1)
         payload = json.loads(sess.ws.sent[0])
         self.assertEqual(payload["type"], "model_changed")
@@ -154,7 +154,7 @@ With an agent per conversation the turn has somewhere to go: it streams into
         w = _bare_worker()
         w.served_models = lambda: ["a", "b"]
         sess = self._session(w)
-        await sess._send_served_models()
+        await sess.panel.send_served_models()
         payload = json.loads(sess.ws.sent[0])
         self.assertEqual(payload["type"], "served_models")
         self.assertEqual(payload["models"], ["a", "b"])
@@ -165,7 +165,7 @@ With an agent per conversation the turn has somewhere to go: it streams into
         w = _bare_worker()
         w.served_models = lambda: []
         sess = self._session(w)
-        await sess._send_served_models()
+        await sess.panel.send_served_models()
         self.assertEqual(sess.ws.sent, [])
 
     async def test_a_failing_lookup_does_not_break_the_connection(self):
@@ -176,12 +176,12 @@ With an agent per conversation the turn has somewhere to go: it streams into
             raise RuntimeError("endpoint down")
         w.served_models = _boom
         sess = self._session(w)
-        await sess._send_served_models()
+        await sess.panel.send_served_models()
         self.assertEqual(sess.ws.sent, [])
 
     async def test_set_model_with_no_name_sends_an_error_not_a_change(self):
         sess = self._session(_bare_worker())
-        await sess._handle_set_model({"model": "  "})
+        await sess.panel.on_set_model({"model": "  "})
         self.assertEqual(len(sess.ws.sent), 1)
         payload = json.loads(sess.ws.sent[0])
         self.assertEqual(payload["type"], "error")
@@ -192,7 +192,7 @@ With an agent per conversation the turn has somewhere to go: it streams into
         w.model = "old-model"
         w.apply_setting = lambda name, v: "Agent is not ready yet."
         sess = self._session(w)
-        await sess._handle_set_model({"model": "qwen3:30b"})
+        await sess.panel.on_set_model({"model": "qwen3:30b"})
         self.assertEqual(len(sess.ws.sent), 1)
         payload = json.loads(sess.ws.sent[0])
         self.assertEqual(payload["type"], "error")

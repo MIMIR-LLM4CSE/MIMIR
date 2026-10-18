@@ -1398,10 +1398,10 @@ class DetachedSessionResumeTests(unittest.TestCase):
 
         self.b = self.session.store.new_session()
         self.session.store.save_session(self.b)
-        self.session._active_session_id = self.b.id
-        self.session.conv = self.session.pool.conversations.get(self.b.id)
-        self.session.conv.history = [{"role": "user", "content": "something else"}]
-        self.session.conv.record.llm_history_full = list(self.session.conv.history)
+        self.session.view.active_session_id = self.b.id
+        self.session.view.conv = self.session.pool.conversations.get(self.b.id)
+        self.session.view.conv.history = [{"role": "user", "content": "something else"}]
+        self.session.view.conv.record.llm_history_full = list(self.session.view.conv.history)
 
     def _event(self, **over) -> dict:
         ev = {"type": "job_complete", "job_key": "20260909T170922Z-d123",
@@ -1426,8 +1426,8 @@ class DetachedSessionResumeTests(unittest.TestCase):
                             for m in stored_a.display_messages))
 
         # B — the conversation on screen — is untouched.
-        self.assertEqual(self.session.conv.history, [{"role": "user", "content": "something else"}])
-        self.assertEqual(self.session.conv.display, [])
+        self.assertEqual(self.session.view.conv.history, [{"role": "user", "content": "something else"}])
+        self.assertEqual(self.session.view.conv.display, [])
 
     def test_a_detached_answer_is_written_to_its_own_session(self) -> None:
         self.session.pool.wakes.consume(self._event())
@@ -1436,7 +1436,7 @@ class DetachedSessionResumeTests(unittest.TestCase):
 
         # Filtered out of this socket's stream, it is still written: the pump commits
         # every answer into its own conversation, whichever one is on screen.
-        self.assertTrue(self.session._is_foreign_event(answer))
+        self.assertTrue(self.session.screen.is_foreign_event(answer))
         self.session.pool.writer.commit_turn(answer, {})
 
         stored_a = self.session.store.load_session(self.a.id)
@@ -1444,7 +1444,7 @@ class DetachedSessionResumeTests(unittest.TestCase):
                          {"role": "assistant", "content": "Build finished, 0 errors."})
         self.assertTrue(any(m.get("text") == "Build finished, 0 errors."
                             for m in stored_a.display_messages))
-        self.assertEqual(self.session.conv.history,
+        self.assertEqual(self.session.view.conv.history,
                          [{"role": "user", "content": "something else"}])
 
     def test_two_detached_turns_are_tracked_apart(self) -> None:
@@ -1472,9 +1472,9 @@ class DetachedSessionResumeTests(unittest.TestCase):
     def test_a_wake_for_the_visible_session_lands_in_it(self) -> None:
         self.session.pool.wakes.consume(self._event(session_id=self.b.id))
         self.assertEqual(self.worker.submitted[0][2], self.b.id)
-        self.assertIn("Built target", self.session.conv.history[-1]["content"])
+        self.assertIn("Built target", self.session.view.conv.history[-1]["content"])
         self.assertTrue(any("🔔" in m.get("text", "")
-                            for m in self.session.conv.display))
+                            for m in self.session.view.conv.display))
 
     def test_a_prompt_from_a_detached_turn_still_reaches_the_user(self) -> None:
         # An approval or a question parks the turn until it is answered. Filtered as
@@ -1482,15 +1482,15 @@ class DetachedSessionResumeTests(unittest.TestCase):
         for kind in ("approval", "user_question"):
             with self.subTest(kind=kind):
                 self.assertFalse(
-                    self.session._is_foreign_event({"type": kind, "session_id": self.a.id}))
+                    self.session.screen.is_foreign_event({"type": kind, "session_id": self.a.id}))
         self.assertTrue(
-            self.session._is_foreign_event({"type": "token", "session_id": self.a.id}))
+            self.session.screen.is_foreign_event({"type": "token", "session_id": self.a.id}))
 
     def test_a_message_typed_here_is_not_steered_into_a_detached_turn(self) -> None:
         self.worker._query_session_id = self.a.id      # a detached turn is running
-        self.assertFalse(self.session._running_turn_is_ours())
+        self.assertFalse(self.session.screen.running_turn_is_ours())
         self.worker._query_session_id = self.b.id      # our own turn is running
-        self.assertTrue(self.session._running_turn_is_ours())
+        self.assertTrue(self.session.screen.running_turn_is_ours())
 
 
 # ── 6. A burst of finished jobs is one turn, not one turn apiece ───────────────
@@ -1517,10 +1517,10 @@ class WakeCoalescingTests(unittest.TestCase):
         self.session = Connection(self.ws, FakePool(self.worker))
         self.here = self.session.store.new_session()
         self.session.store.save_session(self.here)
-        self.session._active_session_id = self.here.id
-        self.session.conv = self.session.pool.conversations.get(self.here.id)
-        self.session.conv.history = [{"role": "user", "content": "go"}]
-        self.session.conv.record.llm_history_full = list(self.session.conv.history)
+        self.session.view.active_session_id = self.here.id
+        self.session.view.conv = self.session.pool.conversations.get(self.here.id)
+        self.session.view.conv.history = [{"role": "user", "content": "go"}]
+        self.session.view.conv.record.llm_history_full = list(self.session.view.conv.history)
         # The steers the loop confirmed reading (``steer_injected``).
         self.read: list[str] = []
 
@@ -1547,7 +1547,7 @@ class WakeCoalescingTests(unittest.TestCase):
         puts it there."""
         self._running(None)
         unread = [t for t in self.worker.steered if t not in self.read]
-        self.session.pool.wakes.after_turn(self.session.conv,
+        self.session.pool.wakes.after_turn(self.session.view.conv,
                                            {"_unconsumed_steer": unread})
 
     # ── idle: unchanged behaviour ────────────────────────────────────────────
@@ -1594,7 +1594,7 @@ class WakeCoalescingTests(unittest.TestCase):
             # The pump owns the draining now, so turn its crank once to move the event
             # off the worker and into this connection's subscription; the drain loop
             # then forwards what arrived.
-            self.session._sub = self.session.pool.bus.subscribe()
+            self.session.view.sub = self.session.pool.bus.subscribe()
             self.session.pool.bus.pump_once()
             task = asyncio.create_task(self.session._drain_loop())
             # Waited for by type: handling a finished run also refreshes the session
@@ -1708,13 +1708,13 @@ class WakeCoalescingTests(unittest.TestCase):
         The history is the one thing it must NOT write: the running turn receives the
         wake in its own messages, and adding it here as well put the same text in twice.
         """
-        before = list(self.session.conv.history)
+        before = list(self.session.view.conv.history)
         self._running(self.here.id)
         self._wake(self._event("j1"))
         self.assertEqual(self.worker.submitted, [])
         self.assertTrue(any("🔔" in m.get("text", "")
-                            for m in self.session.conv.display))
-        self.assertEqual(self.session.conv.history, before)
+                            for m in self.session.view.conv.display))
+        self.assertEqual(self.session.view.conv.history, before)
 
     def test_a_steered_wake_is_recorded_once_even_if_a_later_flush_retells_it(self) -> None:
         """The re-tell is for the model, not for the record.
@@ -1728,7 +1728,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self._running(None)
         self._wake(self._event("jB"))            # idle → flushes jA and jB together
 
-        notes = [m for m in self.session.conv.display if "🔔" in m.get("text", "")]
+        notes = [m for m in self.session.view.conv.display if "🔔" in m.get("text", "")]
         self.assertEqual(len(notes), 2, "one notice per job, not one per telling")
         # The model is told about both, because jA's steer was never confirmed read.
         self.assertEqual(len(self.worker.submitted), 1)
@@ -1736,7 +1736,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self.assertIn("jA", text)
         self.assertIn("jB", text)
         # ...but the history carries jA once, not once per route.
-        occurrences = sum(str(m.get("content", "")).count("jA") for m in self.session.conv.history)
+        occurrences = sum(str(m.get("content", "")).count("jA") for m in self.session.view.conv.history)
         self.assertEqual(occurrences, 1)
 
     # ── a wake for another conversation is never steered into this turn ──────
@@ -2006,8 +2006,8 @@ class CheckinDeliveryTests(unittest.TestCase):
         self.here.llm_history = [{"role": "user", "content": "build it"}]
         self.here.llm_history_full = list(self.here.llm_history)
         self.session.store.save_session(self.here)
-        self.session._active_session_id = self.here.id
-        self.session.conv = self.session.pool.conversations.get(self.here.id)
+        self.session.view.active_session_id = self.here.id
+        self.session.view.conv = self.session.pool.conversations.get(self.here.id)
 
     def _event(self, *keys: str) -> dict:
         return {"type": "job_checkin", "session_id": self.here.id,
@@ -2019,7 +2019,7 @@ class CheckinDeliveryTests(unittest.TestCase):
 
     def _landed(self) -> None:
         """A turn of this conversation has just answered."""
-        self.session.pool.wakes.after_turn(self.session.conv, {})
+        self.session.pool.wakes.after_turn(self.session.view.conv, {})
 
     def test_an_idle_conversation_gets_its_short_turn(self) -> None:
         started = self.session.pool.wakes.consume(self._event())
@@ -2036,7 +2036,7 @@ class CheckinDeliveryTests(unittest.TestCase):
         self.assertFalse(started)
         self.assertEqual(self.worker.steered, [], "a bulletin is not worth a derail")
         self.assertEqual(self.worker.submitted, [])
-        self.assertIsNotNone(self.session.conv.held_checkin)
+        self.assertIsNotNone(self.session.view.conv.held_checkin)
 
     def test_a_parked_conversation_is_never_steered(self) -> None:
         """The card is waiting on a person, not on a status line."""
@@ -2044,7 +2044,7 @@ class CheckinDeliveryTests(unittest.TestCase):
         started = self.session.pool.wakes.consume(self._event())
         self.assertFalse(started)
         self.assertEqual(self.worker.submitted, [])
-        self.assertIsNotNone(self.session.conv.held_checkin)
+        self.assertIsNotNone(self.session.view.conv.held_checkin)
 
     def test_the_held_bulletin_lands_after_the_answer(self) -> None:
         self._busy(self.here.id)
@@ -2078,7 +2078,7 @@ class CheckinDeliveryTests(unittest.TestCase):
         self._busy(self.here.id)
         self.session.pool.wakes.consume(self._event())
         self._busy(None)
-        self.session.conv.pending_wakes = [{"ev": {
+        self.session.view.conv.pending_wakes = [{"ev": {
             "type": "job_complete", "job_key": "j1", "session_id": self.here.id,
             "state": "done", "summary": {}}, "told": False}]
         self._landed()
@@ -2094,7 +2094,7 @@ class CheckinDeliveryTests(unittest.TestCase):
         as a bubble it was replayed on every reload, once per wake the session ever had.
         """
         self.session.pool.wakes.consume(self._event())
-        self.assertEqual(self.session.conv.display, [])
+        self.assertEqual(self.session.view.conv.display, [])
         stored = self.session.store.load_session(self.here.id)
         self.assertEqual(
             [m for m in stored.display_messages if "🔔" in str(m.get("text", ""))], [],
@@ -2116,7 +2116,7 @@ class CheckinDeliveryTests(unittest.TestCase):
         """``job_wake`` is counted against the jobs that recorded an exit code."""
         from mimir.client.session import journal
         self.session.pool.wakes.consume(self._event())
-        lines, _truncated = journal.read_since(self.session._active_session_id, 0)
+        lines, _truncated = journal.read_since(self.session.view.active_session_id, 0)
         kinds = [e["type"] for e in lines if "type" in e]
         self.assertIn("job_checkin", kinds)
         self.assertNotIn("job_wake", kinds)
@@ -2158,9 +2158,9 @@ class WakeDeliveryLossTests(unittest.TestCase):
 
         self.pool.workers = {self.a.id: self.launcher, self.b.id: self.onscreen}
         self.pool.active_session_id = self.b.id
-        self.session._active_session_id = self.b.id
-        self.session.conv = self.session.pool.conversations.get(self.b.id)
-        self.session.conv.history = [{"role": "user", "content": "something else"}]
+        self.session.view.active_session_id = self.b.id
+        self.session.view.conv = self.session.pool.conversations.get(self.b.id)
+        self.session.view.conv.history = [{"role": "user", "content": "something else"}]
 
     def _event(self, key: str = "j1") -> dict:
         return {"type": "job_complete", "job_key": key, "kind": "shell-command",
@@ -2207,12 +2207,12 @@ class WakeDeliveryLossTests(unittest.TestCase):
             async def send(self, raw: str) -> None:
                 raise ConnectionResetError("client went away")
 
-        self.session.ws = _DeadWS()
+        self.session.out.ws = _DeadWS()
         self.launcher.out_q = queue.Queue()
         self.launcher.out_q.put(self._event())
-        self.session._sub = self.pool.bus.subscribe()
+        self.session.view.sub = self.pool.bus.subscribe()
         self.pool.bus.pump_once()
-        started = self.session._sub.queue.get_nowait()[1]["_started"]
+        started = self.session.view.sub.queue.get_nowait()[1]["_started"]
         self.assertTrue(started)
         self.assertEqual(len(self.launcher.submitted), 1)
 

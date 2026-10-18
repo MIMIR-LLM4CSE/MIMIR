@@ -1,101 +1,45 @@
 """A turn of the conversation on screen: the query, its budget, steering, the transcript.
 
-A part of ``Connection``: a mixin over the connection's own state, so a
-handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
-types it answers.
+A handler group of ``Connection``, built with its view state, its socket, the pool
+and the shared ``Screen``. ``MESSAGES`` names the inbound message types it answers.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 
 from .....protocol.messages import reconcile_tool_pairs
 from .....session.conversation import trim_front
 from .....tool_execution import run_channel
-from ...runtime import context_budget_for, get_backend
+from ...runtime import get_backend
 from ...worker.worker import AgentWorker
+from .base import Handlers
 
 logger = logging.getLogger(__name__)
 
 
-class TurnHandlers:
+class TurnHandlers(Handlers):
     MESSAGES: dict[str, str] = {
-        "query": "_handle_query",
-        "transcript": "_handle_transcript",
-        "steer": "_handle_steer",
-        "divert_to_background": "_handle_divert_to_background",
+        "query": "on_query",
+        "transcript": "on_transcript",
+        "steer": "on_steer",
+        "divert_to_background": "on_divert_to_background",
     }
 
-    def _ctx_budget(self) -> tuple:
-        """Return (total_tokens, reserved_tokens) for the current context mode.
-
-        For vLLM the window tracks the server's reported max_model_len (primed at
-        startup so this runs against the cache, never blocking the event loop).
-        """
-        mode = self.worker.setting("context_mode", self.conv.record.context_mode)
-        total, reserved, _, _ = context_budget_for(self.worker.model, mode)
-        return total, reserved
-
-    async def _emit_context_usage(self) -> None:
-        """Push a context_usage event to the WS client (best-effort, never raises)."""
-        try:
-            total, reserved = self._ctx_budget()
-            # While a query runs, the transcript that matters is the agent's in-flight
-            # one: the conversation only gains the turn once the answer lands, so the bar
-            # would sit frozen for the whole run.
-            messages = self.worker.live_history()
-            if messages is None:
-                messages = self.conv.history
-            # allow_network=False: on the WS event loop, which must not block on a
-            # tokenize round-trip. Already-counted messages hit the shared cache for
-            # exact numbers; the rest fall back to the heuristic.
-            history_used = get_backend().count_messages_tokens(
-                self.worker.model, messages, allow_network=False
-            )
-            # Include the fixed per-call overhead (system prompt + tools schema).
-            # Without it the bar shows only the conversation and hides the tens of
-            # thousands of tokens (~30k with every tool server on) that ride on each call.
-            overhead = self.worker.usage.overhead_tokens()
-            used = history_used + overhead
-            if used == self._last_context_usage:
-                return  # nothing moved — don't spend a frame on an identical payload
-            self._last_context_usage = used
-            await self.ws.send(json.dumps({
-                "type": "context_usage",
-                "used_tokens": used,
-                "total_tokens": total,
-                "reserved_tokens": reserved,
-                "overhead_tokens": overhead,
-                "overhead_measured": self.worker.usage.overhead_is_measured(),
-                # No agent yet, so the fixed part — tens of thousands of tokens — is not
-                # in `used_tokens` at all. Said out loud rather than left to be read off
-                # a missing figure: this is the one moment the bar is too low by more
-                # than a rounding error, and a bar that claims an overflow it cannot
-                # have measured teaches the user to distrust the one that can.
-                "provisional": overhead == 0,
-                # What the model actually has this turn, against the untrimmed record
-                # kept behind it — so a trimmed window is visible, not silent.
-                "history_messages": len(self.conv.history),
-                "history_messages_full": len(self.conv.history_full),
-            }))
-        except Exception:
-            logger.debug("_emit_context_usage: the client went away mid-send", exc_info=True)
-
-    async def _announce_steer_turns(self, texts: list[str]) -> None:
+    async def announce_steer_turns(self, texts: list[str]) -> None:
         """Tell the client its unread steering is being answered by a turn of its own:
         ``steer_injected`` per message, the last one saying a turn started."""
         for i, one in enumerate(texts):
             try:
-                await self.ws.send(json.dumps({
+                await self.out.send({
                     "type": "steer_injected", "text": one,
                     "starts_turn": i == len(texts) - 1,
-                }))
+                })
             except Exception:
                 logger.debug("_announce_steer_turns: the client went away mid-send", exc_info=True)
                 return
 
-    async def _announce_detached_answer(self, extras: dict) -> None:
+    async def announce_detached_answer(self, extras: dict) -> None:
         """A conversation not on screen finished a turn: say so, and that its row moved.
 
         The pool has already written it into its conversation, and carried on from it.
@@ -104,10 +48,10 @@ class TurnHandlers:
         if not committed:
             return
         title = committed.get("title") or ""
-        await self._notify(f"“{title}” is waiting for your decision."
+        await self.out.notify(f"“{title}” is waiting for your decision."
                            if committed.get("deferred")
                            else f"“{title}” finished its background turn.")
-        await self._send_sessions_list()
+        await self.screen.send_sessions_list()
 
     async def _compact_history(self) -> bool:
         """Summarize the middle of the session history. True when it actually shrank.
@@ -121,14 +65,14 @@ class TurnHandlers:
 
         Never raises — the caller falls back to front-trimming on a False.
         """
-        history = self.conv.history
+        history = self.screen.conv.history
         middle = history[1:-4]
         if len(middle) < 3:
             return False
-        await self.ws.send(json.dumps({"type": "output",
-            "text": "  ⚡ Context budget reached — compacting older history…\n"}))
+        await self.out.send({"type": "output",
+            "text": "  ⚡ Context budget reached — compacting older history…\n"})
         try:
-            summary = await asyncio.wrap_future(self.worker.usage.compact_middle(list(middle)))
+            summary = await asyncio.wrap_future(self.screen.worker.usage.compact_middle(list(middle)))
         except Exception:
             logger.debug("_compact_history: a best-effort step failed and was skipped", exc_info=True)
             return False
@@ -139,50 +83,13 @@ class TurnHandlers:
         # Slicing across a turn boundary can strand an assistant tool call or its
         # result; strict backends reject that outright.
         history[:] = reconcile_tool_pairs(history)
-        self.pool.bus.record_client_event(self._active_session_id, {
+        self.pool.bus.record_client_event(self.screen.session_id, {
             "type": "context_compact",
             "dropped": len(middle),
             "kept": len(history),
-            "archived": len(self.conv.history_full),
+            "archived": len(self.screen.conv.history_full),
         })
         return True
-
-    async def _ensure_worker(self) -> AgentWorker | None:
-        """This conversation's agent, built now if it has none and there is room.
-
-        None means the pool is full of conversations that are working, waiting on the user,
-        or watching a job — none of which may be evicted to make room. The caller queues
-        instead, and the user is told, because a queue nobody can see reads as a hang.
-
-        The build costs the LLM backend wait plus ~19 MCP server spawns, so it runs off the
-        event loop — the other conversations keep streaming — and this one announces it.
-        """
-        session_id = self._active_session_id
-        if not session_id:
-            return None
-        existing = self.pool.get(session_id)
-        if existing is not None:
-            return existing
-
-        def _announce() -> None:
-            self._schedule(self.ws.send(json.dumps({
-                "type": "status",
-                "session_id": session_id,
-                "text": "  ⏳ Starting an agent for this conversation…",
-            })))
-
-        try:
-            worker = await self.pool.worker_for(session_id, on_wait=_announce)
-            if worker is not None:
-                worker.session_title = self._session_title(session_id)
-            return worker
-        except Exception as exc:
-            await self.ws.send(json.dumps({
-                "type": "error",
-                "session_id": session_id,
-                "text": f"Could not start an agent for this conversation: {exc}",
-            }))
-            return None
 
     async def _fit_history_to_budget(self) -> None:
         """Make the window fit the budget before a new query is added to it.
@@ -194,15 +101,15 @@ class TurnHandlers:
         # Pre-query budget check: front-trim the oldest history so the new query fits.
         # Deliberately not compact_history — an LLM call from the event loop is unsafe
         # while the worker thread owns the agent.
-        total, reserved = self._ctx_budget()
+        total, reserved = self.screen.ctx_budget()
         # Subtract the per-call overhead (system prompt + tools schema) that rides on
         # every call: without it the bar reads past 100% while this check says it fits.
-        usable_tokens = max(1, total - reserved - self.worker.usage.overhead_tokens())
+        usable_tokens = max(1, total - reserved - self.screen.worker.usage.overhead_tokens())
         # allow_network=False: never block the WS event loop on tokenize.
         backend = get_backend()
-        history = self.conv.history
+        history = self.screen.conv.history
         counts = backend.message_token_counts(
-            self.worker.model, history, allow_network=False
+            self.screen.worker.model, history, allow_network=False
         )
         used_tokens = sum(counts)
         if used_tokens >= usable_tokens and len(history) > 1:
@@ -211,35 +118,35 @@ class TurnHandlers:
             # (too short a middle) or the summary still doesn't fit do we drop turns.
             if await self._compact_history():
                 counts = backend.message_token_counts(
-                    self.worker.model, history, allow_network=False
+                    self.screen.worker.model, history, allow_network=False
                 )
                 used_tokens = sum(counts)
-                await self._emit_context_usage()
+                await self.screen.emit_context_usage()
         if used_tokens >= usable_tokens and len(history) > 1:
-            await self.ws.send(json.dumps({"type": "output",
-                "text": "  ⚡ Context budget reached — trimming oldest history…\n"}))
+            await self.out.send({"type": "output",
+                "text": "  ⚡ Context budget reached — trimming oldest history…\n"})
             dropped = trim_front(history, counts, usable_tokens)
             # `history_full` is deliberately untouched above — this records what the
             # window lost, so the log stays the one complete account of the session.
-            self.pool.bus.record_client_event(self._active_session_id, {
+            self.pool.bus.record_client_event(self.screen.session_id, {
                 "type": "context_trim",
                 "dropped": dropped,
                 "kept": len(history),
-                "archived": len(self.conv.history_full),
+                "archived": len(self.screen.conv.history_full),
             })
-            await self._emit_context_usage()
+            await self.screen.emit_context_usage()
 
-    async def _handle_query(self, msg: dict) -> None:
+    async def on_query(self, msg: dict) -> None:
         text = (msg.get("text") or "").strip()
         if not text:
             return
         # Writing instead of answering moves past a deferred card: the call keeps its
         # "not run" result, and a late answer to the card goes nowhere.
-        if self.conv.pending_interaction is not None:
-            prompt_id = (self.conv.pending_interaction.get("prompt") or {}).get("id")
+        if self.screen.conv.pending_interaction is not None:
+            prompt_id = (self.screen.conv.pending_interaction.get("prompt") or {}).get("id")
             if prompt_id:
-                self._stale_prompt_ids.add(prompt_id)
-            self.conv.pending_interaction = None
+                self.view.stale_prompt_ids.add(prompt_id)
+            self.screen.conv.pending_interaction = None
 
         # Resolve @<uri> mentions on the worker's loop (where the MCP sessions live),
         # then submit the augmented text. History and display keep the RAW `text`, so
@@ -250,7 +157,7 @@ class TurnHandlers:
         # worker's own loop, where the MCP sessions live. None means the pool is full,
         # and the turn is queued below with the mentions left unresolved — the text is
         # still exactly what the user wrote.
-        worker = await self._ensure_worker()
+        worker = await self.screen.ensure_worker()
         # After the agent, never before it: the budget is sized from its context mode
         # and its prompt overhead, and neither can be read off a conversation that has
         # no agent yet. A resumed session asked too early was budgeted at compact's 32k,
@@ -266,21 +173,21 @@ class TurnHandlers:
             except Exception:
                 attached_uris = []
         if attached_uris:
-            await self.ws.send(json.dumps({
+            await self.out.send({
                 "type": "output",
                 "text": "📎 Attached: " + ", ".join(attached_uris) + "\n",
-            }))
+            })
 
-        self.conv.add_user_message(text, show=True)
+        self.screen.conv.add_user_message(text, show=True)
         self.pool.bus.record_client_event(
-            self._active_session_id, {"type": "query", "text": text})
+            self.screen.session_id, {"type": "query", "text": text})
         # Save on arrival so a reconnect mid-turn (e.g. while waiting for an edit
         # approval) reloads from disk instead of minting a blank session ID, which
         # would wipe the chat on the frontend.
-        self._save()
-        messages = (list(self.conv.history[:-1])
+        self.screen.save()
+        messages = (list(self.screen.conv.history[:-1])
                     + [{"role": "user", "content": effective_text}])
-        session_id = self._active_session_id
+        session_id = self.view.active_session_id
 
         def _submit(worker: AgentWorker) -> None:
             worker.submit_query(effective_text, messages, session_id=session_id)
@@ -291,30 +198,16 @@ class TurnHandlers:
         # Every slot is held by a conversation that is working, waiting on the user, or
         # watching a job. Wait for one rather than evicting: taking a slot from a
         # conversation mid-task trades a visible wait for silently lost work.
-        position = self.pool.enqueue(session_id, _submit)
-        await self.ws.send(json.dumps({
+        position = self.pool.enqueue(self.screen.session_id, _submit)
+        await self.out.send({
             "type": "queued",
             "session_id": session_id,
             "position": position,
             "text": (f"  ⏸ Waiting for a free agent slot (#{position} in line). "
                      f"At most {self.pool.cap} conversations run at once."),
-        }))
+        })
 
-    @staticmethod
-    def _text_count(messages: list) -> int:
-        """Number of plain-text bubbles — the part of a transcript both sides share.
-
-        A note this layer wrote itself (``role: "system"``) is not that part: the
-        webview never received it, so counting it made every later transcript the
-        client sent look short by one and the guard below refused them all. The stored
-        chat then froze at the moment of the first notice and came back stripped of
-        every tool row, diff card and reasoning panel after it.
-        """
-        return sum(1 for m in messages
-                   if isinstance(m, dict) and m.get("kind", "text") == "text"
-                   and m.get("role") != "system")
-
-    async def _handle_transcript(self, msg: dict) -> None:
+    async def on_transcript(self, msg: dict) -> None:
         """Store the client's rendered transcript as this session's display messages.
 
         The rich transcript — tool rows, reasoning panels, diff cards — is assembled by
@@ -326,16 +219,13 @@ class TurnHandlers:
         user just moved to), and it must not have fewer text bubbles than what we hold —
         a webview that just opened on an empty view must never blank a stored history.
         """
-        if self._active_session_id is None:
+        if self.view.active_session_id is None:
             return
-        if msg.get("session_id") != self._active_session_id:
+        if msg.get("session_id") != self.view.active_session_id:
             return
-        sid = self._active_session_id
-        # Per session: the client's copy as last applied, by id, and which revision of
-        # which run of full-then-deltas it is. A delta is only ever applied to that.
-        syncs = getattr(self, "_transcript_sync", None)
-        if syncs is None:
-            syncs = self._transcript_sync = {}
+        sid = self.view.active_session_id
+        # A delta is only ever applied to the copy it was computed against.
+        syncs = self.view.transcript_sync
         if msg.get("delta"):
             held = syncs.get(sid)
             order = msg.get("order")
@@ -354,34 +244,34 @@ class TurnHandlers:
                 return
             messages = [by_id[i] for i in order]
         else:
-            messages = msg.get("messages")
-            if not isinstance(messages, list):
+            sent = msg.get("messages")
+            if not isinstance(sent, list):
                 return
-        if self._text_count(messages) < self._text_count(self.conv.display):
+            messages = sent
+        if self.screen.text_count(messages) < self.screen.text_count(self.screen.conv.display):
             return
         syncs[sid] = {
             "epoch": msg.get("epoch"),
             "rev": msg.get("rev", 0),
             "by_id": {m["id"]: m for m in messages if isinstance(m, dict) and m.get("id")},
         }
-        self.conv.display = messages
+        self.screen.conv.display = messages
         # The client says how far the transcript it just sent reaches. Taken on trust
         # the same way the transcript itself is, and only ever forward: a webview that
         # reopened on less than we hold must not shorten the watermark either.
         through = msg.get("through_seq")
-        if isinstance(through, int) and through > self._rendered_seq:
-            self._rendered_seq = through
-        self._save()
+        if isinstance(through, int) and through > self.view.rendered_seq:
+            self.view.rendered_seq = through
+        self.screen.save()
 
     async def _send_transcript_resync(self, session_id: str) -> None:
         """Ask for the transcript whole: a delta arrived on a revision not held here."""
         try:
-            await self.ws.send(json.dumps(
-                {"type": "transcript_resync", "session_id": session_id}))
+            await self.out.send({"type": "transcript_resync", "session_id": session_id})
         except Exception:
             logger.debug("_send_transcript_resync: the client went away mid-send", exc_info=True)
 
-    async def _handle_steer(self, msg: dict) -> None:
+    async def on_steer(self, msg: dict) -> None:
         """A message typed while the agent is busy — inject it into the running run.
 
         The message is recorded in history/display (so it persists like a normal
@@ -392,7 +282,7 @@ class TurnHandlers:
         text = (msg.get("text") or "").strip()
         if not text:
             return
-        if not self._running_turn_is_ours():
+        if not self.screen.running_turn_is_ours():
             # Nothing of ours in flight — or a detached wake turn running in another
             # session, which this message must not be injected into. Either way the
             # normal query path is right: the serial query loop queues it.
@@ -403,13 +293,13 @@ class TurnHandlers:
             # told so — unannounced, the bubble kept the "queued" tag of a run that was
             # already over.
             await self._announce_steer_turn(text)
-            await self._handle_query(msg)
+            await self.on_query(msg)
             return
-        self.conv.add_steer(text)
+        self.screen.conv.add_steer(text)
         self.pool.bus.record_client_event(
-            self._active_session_id, {"type": "steer", "text": text})
-        self._save()
-        self.worker.submit_steer(text)
+            self.screen.session_id, {"type": "steer", "text": text})
+        self.screen.save()
+        self.screen.worker.submit_steer(text)
 
     async def _announce_steer_turn(self, text: str) -> None:
         """Tell the client the steer it just sent became a turn of its own.
@@ -429,27 +319,17 @@ class TurnHandlers:
         ev = {"type": "steer_injected", "text": text, "starts_turn": True,
               # Unstamped it would pass the foreign-event filter and clear a tag in
               # whatever conversation happens to be on screen.
-              "session_id": self._active_session_id}
-        out_q = getattr(self.pool.get(self._active_session_id), "out_q", None)
+              "session_id": self.view.active_session_id}
+        out_q = getattr(self.pool.get(self.view.active_session_id), "out_q", None)
         if out_q is not None:
             out_q.put(ev)
             return
         try:
-            await self.ws.send(json.dumps(ev))
+            await self.out.send(ev)
         except Exception:
             logger.debug("_announce_steer_turn: the client went away mid-send", exc_info=True)
 
-    def _rows_for(self, session_id: str | None) -> dict[str, str]:
-        """The divertible tool rows of one conversation's running turn."""
-        return self._live_rows.setdefault(session_id or "", {})
-
-    def _forget_row(self, call_id: str, session_id: str | None = None) -> None:
-        """Drop a finished row from the divert/progress bookkeeping."""
-        sid = session_id if session_id is not None else self._active_session_id
-        self._rows_for(sid).pop(call_id, None)
-        self._sent_progress.setdefault(sid or "", {}).pop(call_id, None)
-
-    async def _handle_divert_to_background(self, msg: dict) -> None:
+    async def on_divert_to_background(self, msg: dict) -> None:
         """Move the run the user pointed at into the background.
 
         Served here, on the WS loop, and deliberately never through the model: the
@@ -470,38 +350,10 @@ class TurnHandlers:
         the tool result that lands a moment later, carrying the work done so far and
         the job handle. Saying anything more here would be predicting it.
         """
-        channel = self._rows_for(self._active_session_id).get(str(msg.get("id") or ""))
+        channel = self.view.rows_for(self.view.active_session_id).get(str(msg.get("id") or ""))
         if channel is None or run_channel.request_divert(
-                channel, self._active_session_id) is None:
-            await self.ws.send(json.dumps({
+                channel, self.view.active_session_id) is None:
+            await self.out.send({
                 "type": "status",
                 "text": "  ⓘ Nothing to move — that run had already finished.",
-            }))
-
-    async def _admit_waiting(self) -> None:
-        """Start the turn of a conversation that was waiting for an agent slot.
-
-        Called the moment a turn ends, because that is when its conversation stops being
-        busy and so becomes the one the pool may release to make room. Leaving it to the
-        idle sweep makes a queued conversation wait out the sweep interval after the slot
-        it needs has already freed — half a minute of nothing, having just been told it is
-        next in line.
-        """
-        try:
-            for session_id in await self.pool.pump():
-                await self.ws.send(json.dumps({
-                    "type": "status",
-                    "session_id": session_id,
-                    "text": "  ▶ An agent slot freed — this conversation is starting.",
-                }))
-        except Exception:
-            logger.warning("could not admit a queued conversation", exc_info=True)
-
-    def _running_turn_is_ours(self) -> bool:
-        """True when the conversation on screen has a turn in flight.
-
-        Asked of that conversation's own agent. Several can be working at once, so what
-        matters for a message the user typed is whether *this* conversation is busy, in
-        which case the message steers its turn instead of starting one.
-        """
-        return self.pool.is_busy(self._active_session_id)
+            })

@@ -440,22 +440,22 @@ class AViewThatEndsReleasesWhatItHoldsTests(_WakeCase):
         sess = Connection(_NoWS(), pool)
         sess.store = self.store
         sess.worker_for_test = worker
-        sess.conv = None
-        sess._active_session_id = None
-        sess._rendered_seq = 0
-        sess._summary_task = None
+        sess.view.conv = None
+        sess.view.active_session_id = None
+        sess.view.rendered_seq = 0
+        sess.conversations.summary_task = None
         sess._greeting = lambda: {"type": "ready", "agent_ready": True}
-        sess._purge_empty_sessions = lambda: None
-        sess._send_sessions_list = _noop
-        sess._send_toggles = _noop
-        sess._load_session = _noop
-        sess._create_new_session = _noop
-        sess._send_replay = _noop
-        sess._restore_detached_autonomy = _noop
-        sess._resend_parked_prompt = _noop
-        sess._send_served_models = _noop
+        sess.conversations.purge_empty_sessions = lambda: None
+        sess.screen.send_sessions_list = _noop
+        sess.panel.send_toggles = _noop
+        sess.conversations.load_session = _noop
+        sess.conversations.create_new_session = _noop
+        sess.send_replay = _noop
+        sess.detach.restore_detached_autonomy = _noop
+        sess.cards.resend_parked_prompt = _noop
+        sess.panel.send_served_models = _noop
         sess._drain_loop = _noop
-        sess._report_ended_jobs = _noop
+        sess.detach.report_ended_jobs = _noop
         return sess
 
     def test_a_handshake_that_raises_does_not_leave_the_server_attended(self):
@@ -465,7 +465,7 @@ class AViewThatEndsReleasesWhatItHoldsTests(_WakeCase):
         async def _boom():
             raise ConnectionResetError("the window closed during the replay")
 
-        sess._send_replay = _boom
+        sess.send_replay = _boom
 
         with self.assertRaises(ConnectionResetError):
             asyncio.run(sess.run())
@@ -500,7 +500,7 @@ class AViewThatEndsReleasesWhatItHoldsTests(_WakeCase):
         async def _boom():
             raise ConnectionResetError("the window closed during the replay")
 
-        sess._send_replay = _boom
+        sess.send_replay = _boom
         with self.assertRaises(ConnectionResetError):
             asyncio.run(sess.run())
 

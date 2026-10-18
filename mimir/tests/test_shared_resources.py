@@ -261,7 +261,7 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
         approvals.batch.snapshots[path] = original
         worker = bare_worker(agent=fake_agent(approvals=approvals))
         worker.review.batch_status()
-        return types.SimpleNamespace(worker=worker)
+        return types.SimpleNamespace(screen=types.SimpleNamespace(worker=worker))
 
     def test_a_revert_restores_the_file_the_user_reviewed(self) -> None:
         from mimir.client.ui.ws.connection.handlers.cards import CardHandlers

@@ -56,9 +56,9 @@ class EventRouter:
     async def run(self) -> None:
         """Until the socket goes. Every event of the subscription, in order."""
         session = self.session
-        if session._sub is None:
-            session._sub = session.pool.bus.subscribe()
-        queue = session._sub.queue
+        if session.view.sub is None:
+            session.view.sub = session.pool.bus.subscribe()
+        queue = session.view.sub.queue
         try:
             while True:
                 item = await self._next(queue)
@@ -86,8 +86,8 @@ class EventRouter:
     def _live(self) -> bool:
         """Whether the conversation on screen has anything a refresh would show."""
         session = self.session
-        return (session._running_turn_is_ours()
-                or bool(session._rows_for(session._active_session_id)))
+        return (session.screen.running_turn_is_ours()
+                or bool(session.view.rows_for(session.view.active_session_id)))
 
     async def _send(self, payload: dict) -> None:
         try:
@@ -101,12 +101,12 @@ class EventRouter:
         session = self.session
         # Which conversation this belongs to. Everything below addresses a session
         # rather than "the session", because more than one may be producing at once.
-        owner = ev.get("session_id") or session._active_session_id
+        owner = ev.get("session_id") or session.view.active_session_id
         etype = ev.get("type")
         if etype in DURABLE_EVENTS:
             await self._durable(ev, extras)
             return
-        if session._is_foreign_event(ev):
+        if session.screen.is_foreign_event(ev):
             await self._foreign(ev, extras, owner)
             return
         ev = self._unwrapped(ev)
@@ -146,11 +146,11 @@ class EventRouter:
         session = self.session
         started = bool(extras.get("_started"))
         await self._send({**ev, "resumes_active_session":
-                          started and not session._is_foreign_event(ev)})
+                          started and not session.screen.is_foreign_event(ev)})
         if ev.get("type") != "job_checkin":
             # One run fewer. Behind the notification: the news is what the user is
             # waiting for, and this is bookkeeping.
-            await session._send_sessions_list()
+            await session.screen.send_sessions_list()
 
     async def _foreign(self, ev: dict, extras: dict, owner: str | None) -> None:
         """An event of a conversation that is not on screen: not drawn here.
@@ -161,11 +161,11 @@ class EventRouter:
         """
         session = self.session
         if owner:
-            session._foreign_withheld[owner] = session._foreign_withheld.get(owner, 0) + 1
+            session.view.foreign_withheld[owner] = session.view.foreign_withheld.get(owner, 0) + 1
         if ev.get("type") == "answer":
-            await session._announce_detached_answer(extras)
+            await session.turns.announce_detached_answer(extras)
         if ev.get("type") in ("answer", "error"):
-            await session._admit_waiting()
+            await session.screen.admit_waiting()
 
     # ── After the send ────────────────────────────────────────────────────────
 
@@ -173,10 +173,10 @@ class EventRouter:
         # Only divertible rows: they are exactly the ones a channel can answer for, and
         # the map is what both the divert click and the progress refresh resolve through.
         if ev.get("divertible"):
-            self.session._rows_for(owner)[str(ev.get("id") or "")] = str(ev.get("name") or "")
+            self.session.view.rows_for(owner)[str(ev.get("id") or "")] = str(ev.get("name") or "")
 
     async def _after_tool_result(self, ev: dict, extras: dict, owner: str | None) -> None:
-        self.session._forget_row(str(ev.get("id") or ""), owner)
+        self.session.view.forget_row(str(ev.get("id") or ""), owner)
         # A tool is what writes the checklist, so a result is when it may have changed.
         await self._push_todos()
 
@@ -184,8 +184,8 @@ class EventRouter:
         # A turn failed (often a context-overflow 400) and no answer follows: its rows
         # are over, and the bar must show the failure, not the usage before it.
         self._turn_over(owner)
-        await self.session._emit_context_usage()
-        await self.session._admit_waiting()
+        await self.session.screen.emit_context_usage()
+        await self.session.screen.admit_waiting()
 
     async def _after_file_progress(self, ev: dict, extras: dict, owner: str | None) -> None:
         # The review bar appears and grows mid-turn, not only once the agent finishes.
@@ -203,17 +203,17 @@ class EventRouter:
         self._turn_over(owner)
         if extras.get("_deferred"):
             # Set aside while this conversation was on screen: its card comes back.
-            await session._resend_deferred_prompt()
+            await session.screen.resend_deferred_prompt()
         # Now, so the description says what was done rather than what was asked, and
         # its model call no longer competes with the query the user is waiting on.
-        session._schedule_summary_refresh()
-        await session._emit_context_usage()
+        session.conversations.schedule_summary_refresh()
+        await session.screen.emit_context_usage()
         # This conversation stopping may let the pool free a slot for one waiting.
-        await session._admit_waiting()
+        await session.screen.admit_waiting()
         # What it is still doing, now that it has stopped answering: a turn that
         # launched a background run ends with none in flight and a run going, and the
         # panel decides from this whether walking away would abandon work.
-        await session._send_sessions_list()
+        await session.screen.send_sessions_list()
         # Read now rather than queued by the worker, so a review accepted mid-run has
         # already cleared what this reports.
         await self._push_batch_status(only_if_any=False)
@@ -222,13 +222,13 @@ class EventRouter:
         # Steering past the last step boundary was never read, and the pool gave it a
         # turn of its own. Each bubble loses its "queued" tag, and the last says a turn
         # started: without it the catch-up turn runs with no stop button.
-        await session._announce_steer_turns(committed.get("steer_turn") or [])
+        await session.turns.announce_steer_turns(committed.get("steer_turn") or [])
 
     def _turn_over(self, owner: str | None) -> None:
         """No row of the finished turn is still running. Its own conversation's rows —
         another turn may be running in another one, and its rows are live."""
-        self.session._rows_for(owner).clear()
-        self.session._sent_progress.setdefault(owner or "", {}).clear()
+        self.session.view.rows_for(owner).clear()
+        self.session.view.sent_progress.setdefault(owner or "", {}).clear()
 
     async def _push_batch_status(self, *, only_if_any: bool) -> None:
         try:
@@ -243,7 +243,7 @@ class EventRouter:
         """Send the checklist of the conversation on screen, if its file changed."""
         session = self.session
         try:
-            path = todo_file_for_session(session._active_session_id)
+            path = todo_file_for_session(session.view.active_session_id)
             mtime = os.path.getmtime(path) if os.path.exists(path) else 0.0
         except OSError:
             return
@@ -267,11 +267,11 @@ class EventRouter:
             return
         self._last_tick = now
         session = self.session
-        if session._running_turn_is_ours():
+        if session.screen.running_turn_is_ours():
             # A turn can run dozens of tool calls over minutes; without this the bar
             # only moves when the answer lands. A wake turn of another conversation is
             # not this one's usage.
-            await session._emit_context_usage()
+            await session.screen.emit_context_usage()
         await self._push_run_progress()
 
     async def _push_run_progress(self) -> None:
@@ -283,11 +283,11 @@ class EventRouter:
         the context bar: it describes a moment.
         """
         session = self.session
-        sid = session._active_session_id
-        rows = session._rows_for(sid)
+        sid = session.view.active_session_id
+        rows = session.view.rows_for(sid)
         if not rows:
             return
-        sent = session._sent_progress.setdefault(sid or "", {})
+        sent = session.view.sent_progress.setdefault(sid or "", {})
         names = list(rows.values())
         for call_id, name in list(rows.items()):
             # A name serving two running rows cannot be attributed to either of them.

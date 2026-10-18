@@ -124,9 +124,3 @@ check_untyped_defs = true
 warn_return_any = true
 strict_equality = true
 
-# Mixins that read their host's attributes, which mypy cannot follow.
-[[tool.mypy.overrides]]
-module = [
-    "mimir.client.ui.ws.connection.handlers.*",
-]
-ignore_errors = true

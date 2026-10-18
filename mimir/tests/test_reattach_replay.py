@@ -53,7 +53,7 @@ class _ReplayCase(unittest.IsolatedAsyncioTestCase):
         self.pool.bus.pump_once()
 
     def _attach(self) -> None:
-        self.sess._sub = self.pool.bus.subscribe()
+        self.sess.view.sub = self.pool.bus.subscribe()
 
     def _frames(self) -> list[dict]:
         return [m for m in self.sess.ws.sent if m.get("type") == "replay"]
@@ -66,55 +66,55 @@ class WatermarkTests(_ReplayCase):
     async def test_everything_is_replayed_to_a_client_that_has_seen_nothing(self):
         self._produce("a", "b", "c")
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self.assertEqual(self._replayed(), ["a", "b", "c"])
         self.assertEqual(self._frames()[-1]["through_seq"], 3)
 
     async def test_only_what_came_after_the_watermark_is_replayed(self):
         self._produce("a", "b", "c", "d")
-        self.sess._rendered_seq = 2
+        self.sess.view.rendered_seq = 2
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self.assertEqual(self._replayed(), ["c", "d"])
 
     async def test_a_client_that_has_seen_everything_is_sent_nothing(self):
         self._produce("a", "b")
-        self.sess._rendered_seq = 2
+        self.sess.view.rendered_seq = 2
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self.assertEqual(self._frames(), [])
 
     async def test_a_session_with_no_journal_replays_nothing(self):
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self.assertEqual(self._frames(), [])
 
     async def test_the_gate_moves_even_when_there_is_nothing_to_replay(self):
         # Otherwise a live event this connection was already handed is sent twice.
         self._produce("a", "b")
-        self.sess._rendered_seq = 2
+        self.sess.view.rendered_seq = 2
         self._attach()
-        await self.sess._send_replay()
-        self.assertEqual(self.sess._sub.rendered_at("s1"), 2)
+        await self.sess.send_replay()
+        self.assertEqual(self.sess.view.sub.rendered_at("s1"), 2)
 
 
 class NoDuplicateNoGapTests(_ReplayCase):
     async def test_the_gate_lands_where_the_replay_ended(self):
         self._produce("a", "b", "c")
         self._attach()
-        await self.sess._send_replay()
-        self.assertEqual(self.sess._sub.rendered_at("s1"), 3)
+        await self.sess.send_replay()
+        self.assertEqual(self.sess.view.sub.rendered_at("s1"), 3)
 
     async def test_an_already_replayed_event_is_not_delivered_live_as_well(self):
         # The overlap: the subscription was open while the journal was being read, so
         # it holds the same events the replay just sent.
         self._attach()
         self._produce("a", "b")           # queued on the subscription AND journaled
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         delivered = []
-        while not self.sess._sub.queue.empty():
-            ev, _extras = self.sess._sub.queue.get_nowait()
-            if self.sess._sub.wants(ev):
+        while not self.sess.view.sub.queue.empty():
+            ev, _extras = self.sess.view.sub.queue.get_nowait()
+            if self.sess.view.sub.wants(ev):
                 delivered.append(ev["text"])
         self.assertEqual(self._replayed(), ["a", "b"])
         self.assertEqual(delivered, [], "an event was both replayed and delivered live")
@@ -122,12 +122,12 @@ class NoDuplicateNoGapTests(_ReplayCase):
     async def test_an_event_produced_after_the_replay_still_arrives_live(self):
         self._produce("a")
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self._produce("b")
         live = [ev["text"] for ev, _x in
-                [self.sess._sub.queue.get_nowait()
-                 for _ in range(self.sess._sub.queue.qsize())]
-                if self.sess._sub.wants(ev)]
+                [self.sess.view.sub.queue.get_nowait()
+                 for _ in range(self.sess.view.sub.queue.qsize())]
+                if self.sess.view.sub.wants(ev)]
         self.assertEqual(live, ["b"])
 
     async def test_nothing_produced_between_subscribing_and_reading_is_lost(self):
@@ -135,7 +135,7 @@ class NoDuplicateNoGapTests(_ReplayCase):
         # held by the subscription even though the journal read has not happened yet.
         self._attach()
         self._produce("during")
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self.assertIn("during", self._replayed())
 
 
@@ -144,7 +144,7 @@ class FramingTests(_ReplayCase):
         with mock.patch("mimir.client.ui.ws.connection.connection._REPLAY_CHUNK", 2):
             self._produce("a", "b", "c", "d", "e")
             self._attach()
-            await self.sess._send_replay()
+            await self.sess.send_replay()
         frames = self._frames()
         self.assertEqual([len(f["events"]) for f in frames], [2, 2, 1])
         self.assertEqual([f["more"] for f in frames], [True, True, False])
@@ -157,14 +157,14 @@ class FramingTests(_ReplayCase):
         with mock.patch("mimir.client.ui.ws.connection.connection._REPLAY_MAX_EVENTS", 3):
             self._produce("a", "b", "c", "d", "e")
             self._attach()
-            await self.sess._send_replay()
+            await self.sess.send_replay()
         self.assertEqual(self._replayed(), ["c", "d", "e"])
         self.assertTrue(self._frames()[0]["truncated"])
 
     async def test_every_frame_names_its_session(self):
         self._produce("a")
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self.assertEqual(self._frames()[0]["session_id"], "s1")
 
     async def test_a_socket_that_dies_mid_replay_leaves_the_gate_alone(self):
@@ -177,8 +177,8 @@ class FramingTests(_ReplayCase):
             raise ConnectionResetError("gone")
 
         self.sess.ws.send = _boom
-        await self.sess._send_replay()        # must not raise
-        self.assertEqual(self.sess._sub.rendered_at("s1"), 0)
+        await self.sess.send_replay()        # must not raise
+        self.assertEqual(self.sess.view.sub.rendered_at("s1"), 0)
 
 
 class TheGateCannotSilenceAStreamTests(_ReplayCase):
@@ -197,20 +197,20 @@ class TheGateCannotSilenceAStreamTests(_ReplayCase):
 
     async def test_a_watermark_above_the_journal_is_not_honoured(self):
         self._produce("a")                      # the journal holds seq 1
-        self.sess._rendered_seq = 9000          # inherited from somewhere else
+        self.sess.view.rendered_seq = 9000          # inherited from somewhere else
         self._attach()
-        await self.sess._send_replay()
-        self.assertLessEqual(self.sess._sub.rendered_at("s1"), 1)
+        await self.sess.send_replay()
+        self.assertLessEqual(self.sess.view.sub.rendered_at("s1"), 1)
 
     async def test_the_stream_still_arrives_after_such_a_watermark(self):
-        self.sess._rendered_seq = 9000
+        self.sess.view.rendered_seq = 9000
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         self._produce("the tool row", "the answer")
         delivered = []
-        while not self.sess._sub.queue.empty():
-            ev, _x = self.sess._sub.queue.get_nowait()
-            if self.sess._sub.wants(ev):
+        while not self.sess.view.sub.queue.empty():
+            ev, _x = self.sess.view.sub.queue.get_nowait()
+            if self.sess.view.sub.wants(ev):
                 delivered.append(ev["text"])
         self.assertEqual(delivered, ["the tool row", "the answer"],
                          "the gate silenced the conversation")
@@ -218,18 +218,18 @@ class TheGateCannotSilenceAStreamTests(_ReplayCase):
     async def test_a_filtered_event_is_counted_rather_than_vanishing(self):
         self._produce("a", "b")
         self._attach()
-        self.sess._sub.rendered_through("s1", 5)
-        self.assertFalse(self.sess._sub.wants(
+        self.sess.view.sub.rendered_through("s1", 5)
+        self.assertFalse(self.sess.view.sub.wants(
             {"type": "answer", "seq": 2, "session_id": "s1"}))
-        self.assertEqual(self.sess._sub.filtered, 1)
+        self.assertEqual(self.sess.view.sub.filtered, 1)
 
     async def test_a_stream_delta_bypasses_the_gate(self):
         # Which is exactly why the failure looks like a half-working chat.
         self._attach()
-        self.sess._sub.rendered_through("s1", 9000)
-        self.assertTrue(self.sess._sub.wants(
+        self.sess.view.sub.rendered_through("s1", 9000)
+        self.assertTrue(self.sess.view.sub.wants(
             {"type": "token", "text": "tok", "session_id": "s1"}))
-        self.assertFalse(self.sess._sub.wants(
+        self.assertFalse(self.sess.view.sub.wants(
             {"type": "tool_call", "seq": 1, "session_id": "s1"}))
 
 
@@ -247,26 +247,26 @@ class OneGatePerConversationTests(_ReplayCase):
 
     async def test_a_second_conversation_is_not_gated_by_the_first(self):
         self._produce("a", "b", "c")          # s1's journal reaches seq 3
-        self.sess._rendered_seq = 3
+        self.sess.view.rendered_seq = 3
         self._attach()
-        await self.sess._send_replay()
-        self.assertEqual(self.sess._sub.rendered_at("s1"), 3)
+        await self.sess.send_replay()
+        self.assertEqual(self.sess.view.sub.rendered_at("s1"), 3)
 
         # A conversation this client has rendered nothing of. Its own journal starts
         # again at 1, which is under the gate the first chat raised.
         fresh = [{"type": "tool_call", "seq": 1, "session_id": "s2"},
                  {"type": "tool_result", "seq": 2, "session_id": "s2"},
                  {"type": "answer", "seq": 3, "session_id": "s2"}]
-        self.assertTrue(all(self.sess._sub.wants(ev) for ev in fresh),
+        self.assertTrue(all(self.sess.view.sub.wants(ev) for ev in fresh),
                         "the gate of one conversation silenced another")
-        self.assertEqual(self.sess._sub.rendered_at("s2"), 0)
+        self.assertEqual(self.sess.view.sub.rendered_at("s2"), 0)
 
     async def test_the_gate_of_one_conversation_still_holds_for_its_own(self):
         self._produce("a", "b", "c")
-        self.sess._rendered_seq = 3
+        self.sess.view.rendered_seq = 3
         self._attach()
-        await self.sess._send_replay()
-        self.assertFalse(self.sess._sub.wants(
+        await self.sess.send_replay()
+        self.assertFalse(self.sess.view.sub.wants(
             {"type": "answer", "seq": 2, "session_id": "s1"}))
 
 
@@ -275,15 +275,15 @@ class ANewConversationRendersNothingYetTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self.sess = bare_session(FakePool(_bare_worker("s1"), active="s1"))
-        self.sess._rendered_seq = 1234          # the conversation being left
-        self.sess._publish_title = lambda *a, **k: None
-        self.sess._send_sessions_list = _noop
-        self.sess._emit_context_usage = _noop
+        self.sess.view.rendered_seq = 1234          # the conversation being left
+        self.sess.screen.publish_title = lambda *a, **k: None
+        self.sess.screen.send_sessions_list = _noop
+        self.sess.screen.emit_context_usage = _noop
         self.sess._push_todos = lambda *a, **k: None
 
     async def test_creating_one_clears_the_watermark(self):
-        await self.sess._create_new_session()
-        self.assertEqual(self.sess._rendered_seq, 0,
+        await self.sess.conversations.create_new_session()
+        self.assertEqual(self.sess.view.rendered_seq, 0,
                          "a new conversation inherited another's rendered watermark")
 
 
@@ -298,7 +298,7 @@ class WhatIsNotReplayedTests(_ReplayCase):
         self.worker.out_q.put({"type": "answer", "text": "done"})
         self.pool.bus.pump_once()
         self._attach()
-        await self.sess._send_replay()
+        await self.sess.send_replay()
         kinds = [e["type"] for f in self._frames() for e in f["events"]]
         self.assertEqual(kinds, ["thinking_end", "answer"])
 
@@ -359,7 +359,7 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_run_that_ended_while_away_is_handed_to_the_wake_routing(self):
         self._ended_job("s1", "j1", 0)
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual(len(self.handled), 1)
         ev = self.handled[0]
         self.assertEqual(ev["type"], "job_complete")
@@ -370,12 +370,12 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         # A two-hour build outlives the conversation on screen, and its result belongs
         # to the one that asked for it.
         self._ended_job("s2", "theirs", 0)
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual(self.handled[0]["session_id"], "s2")
 
     async def test_a_run_still_going_is_left_to_the_worker_that_will_watch_it(self):
         self._live_job("s1", "j1")
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual(self.handled, [])
 
     async def test_a_second_connection_reports_it_again_until_it_is_taken_in(self):
@@ -384,31 +384,31 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         # strength of having *announced* it is how a conversation ends up waiting for
         # ever on a job that finished while its window was shut.
         self._ended_job("s1", "j1", 0)
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.handled.clear()
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual([ev["job_key"] for ev in self.handled], ["j1"])
 
     async def test_a_run_whose_wake_reached_a_turn_is_not_reported_again(self):
         self._ended_job("s1", "j1", 0)
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         # What a consumer does once the turn carrying the wake is submitted.
         jobs_on_disk.mark_wakes_reported(self.handled)
         self.handled.clear()
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual(self.handled, [])
 
     async def test_a_late_report_is_shaped_like_an_on_time_one(self):
         # The wake text names the job's kind, which only the descriptor knows. A run
         # reported late with that missing reads as a different job to the model.
         self._ended_job("s1", "j1", 0)
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual(self.handled[0]["server"], "bash")
         self.assertEqual(self.handled[0]["kind"], "shell-command")
 
     async def test_a_crash_keeps_its_exit_code_in_the_summary(self):
         self._ended_job("s1", "j1", 3)
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual(self.handled[0]["state"], "crashed")
         self.assertEqual(self.handled[0]["summary"]["exit_code"], 3)
 
@@ -425,20 +425,20 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
             with open(os.path.join(job_dir, "exit_code"), "w") as fh:
                 fh.write("0")
 
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual(self.handled, [])
         self.assertTrue(jobs_on_disk.has_baseline("s1"))
 
     async def test_a_job_that_ends_after_the_first_look_is_reported(self):
-        await self.sess._report_ended_jobs()      # establishes the baseline
+        await self.sess.detach.report_ended_jobs()      # establishes the baseline
         self._ended_job("s1", "j1", 0)
-        await self.sess._report_ended_jobs()
+        await self.sess.detach.report_ended_jobs()
         self.assertEqual([e["job_key"] for e in self.handled], ["j1"])
 
     async def test_an_unreadable_state_dir_is_not_fatal(self):
         with mock.patch.object(jobs_on_disk, "scan_all_sessions",
                                side_effect=OSError("gone")):
-            await self.sess._report_ended_jobs()   # must not raise
+            await self.sess.detach.report_ended_jobs()   # must not raise
         self.assertEqual(self.handled, [])
 
 
@@ -447,29 +447,29 @@ class TheStoredWatermarkTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self.sess = bare_session(FakePool(_bare_worker("s1"), active="s1"))
-        self.sess._save = lambda: None
+        self.sess.screen.save = lambda: None
 
     async def test_the_transcript_carries_the_watermark_forward(self):
-        await self.sess._handle_transcript(
+        await self.sess.turns.on_transcript(
             {"session_id": "s1", "messages": [{"role": "user", "text": "hi"}],
              "through_seq": 7})
-        self.assertEqual(self.sess._rendered_seq, 7)
+        self.assertEqual(self.sess.view.rendered_seq, 7)
 
     async def test_the_watermark_only_ever_moves_forward(self):
         # A webview that reopened on less than we hold must not shorten it either.
-        self.sess._rendered_seq = 9
-        await self.sess._handle_transcript(
+        self.sess.view.rendered_seq = 9
+        await self.sess.turns.on_transcript(
             {"session_id": "s1", "messages": [{"role": "user", "text": "hi"}],
              "through_seq": 3})
-        self.assertEqual(self.sess._rendered_seq, 9)
+        self.assertEqual(self.sess.view.rendered_seq, 9)
 
     async def test_a_transcript_without_a_watermark_is_still_accepted(self):
         # An older client sends none; the watermark simply does not advance, and the
         # next attach replays more than it needed to.
-        await self.sess._handle_transcript(
+        await self.sess.turns.on_transcript(
             {"session_id": "s1", "messages": [{"role": "user", "text": "hi"}]})
-        self.assertEqual(self.sess._rendered_seq, 0)
-        self.assertEqual(len(self.sess.conv.display), 1)
+        self.assertEqual(self.sess.view.rendered_seq, 0)
+        self.assertEqual(len(self.sess.view.conv.display), 1)
 
 
 if __name__ == "__main__":

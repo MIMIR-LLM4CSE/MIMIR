@@ -247,7 +247,7 @@ class _FakeWorker:
 
 def _session(worker) -> Connection:
     sess = bare_session(FakePool(worker))
-    sess._save = lambda: None
+    sess.screen.save = lambda: None
     return sess
 
 
@@ -262,42 +262,42 @@ class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
         w = _FakeWorker(parked=True)
         sess = _session(w)
         sess.pool.conversations.new("s2")
-        sess._send_sessions_list = _noop
-        sess._load_session = _noop
-        await sess._handle_switch_session({"session_id": "s2"})
+        sess.screen.send_sessions_list = _noop
+        sess.conversations.load_session = _noop
+        await sess.conversations.on_switch_session({"session_id": "s2"})
         self.assertEqual(w.calls, [])
 
     async def test_leaving_a_working_turn_leaves_it_working(self) -> None:
         w = _FakeWorker(parked=False)
         sess = _session(w)
         sess.pool.conversations.new("s2")
-        sess._send_sessions_list = _noop
-        await sess._handle_create_session({})
+        sess.screen.send_sessions_list = _noop
+        await sess.conversations.on_create_session({})
         self.assertEqual(w.calls, [])
 
     async def test_answering_the_card_resumes_the_turn(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)
         record = {"kind": KIND_CALLS, "call_ids": ["a"], "prompt": dict(_PROMPT)}
-        sess.conv.pending_interaction = record
+        sess.view.conv.pending_interaction = record
         placeholder = {"role": "tool", "tool_call_id": "a", "content": DEFERRED_RESULT}
-        sess.conv.history = [{"role": "assistant", "tool_calls": [{"id": "a"}]},
+        sess.view.conv.history = [{"role": "assistant", "tool_calls": [{"id": "a"}]},
                              dict(placeholder)]
-        sess.conv.record.llm_history_full = [
+        sess.view.conv.record.llm_history_full = [
             {"role": "assistant", "tool_calls": [{"id": "a"}]}, dict(placeholder)]
-        await sess._handle_approval_response({"id": "card-1", "choice": "y"})
+        await sess.cards.on_approval_response({"id": "card-1", "choice": "y"})
         rec, answer, history, sid = w.resumed
         self.assertEqual((rec, sid), (record, "s1"))
         self.assertEqual(answer["choice"], "y")
         self.assertEqual(len(history), 1)          # placeholder gone from the window
-        self.assertEqual(len(sess.conv.history_full), 1)  # …and from the record
-        self.assertIsNone(sess.conv.pending_interaction)
+        self.assertEqual(len(sess.view.conv.history_full), 1)  # …and from the record
+        self.assertIsNone(sess.view.conv.pending_interaction)
         self.assertFalse([c for c in w.calls if c[0] == "resolve"])
 
     async def test_a_live_card_is_still_answered_live(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)
-        await sess._handle_approval_response(
+        await sess.cards.on_approval_response(
             {"id": "other", "choice": "n", "session_id": "s1"})
         # Answered live, and the card it names travels with it.
         self.assertEqual(w.calls, [("resolve", "n", "other")])
@@ -308,22 +308,22 @@ class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
         an unattributed answer goes nowhere — never to whoever is on screen."""
         w = _FakeWorker(parked=True)
         sess = _session(w)
-        await sess._handle_approval_response({"id": "other", "choice": "y"})
+        await sess.cards.on_approval_response({"id": "other", "choice": "y"})
         self.assertEqual(w.calls, [])
 
     async def test_an_answer_for_a_conversation_with_no_agent_is_dropped(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)
         sess.pool.worker = None
-        await sess._handle_approval_response(
+        await sess.cards.on_approval_response(
             {"id": "other", "choice": "y", "session_id": "gone"})
         self.assertEqual(w.calls, [])
 
     async def test_an_answer_to_a_card_moved_past_goes_nowhere(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)
-        sess._stale_prompt_ids = {"card-1"}
-        await sess._handle_approval_response({"id": "card-1", "choice": "y"})
+        sess.view.stale_prompt_ids = {"card-1"}
+        await sess.cards.on_approval_response({"id": "card-1", "choice": "y"})
         self.assertEqual(w.calls, [])
         self.assertIsNone(w.resumed)
 

@@ -237,8 +237,8 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
                 return self.mode
 
         self.sess = Connection(_WS(), FakePool(_Worker(), active="s1"))
-        self.sess._active_session_id = "s1"
-        self.sess._apply_setting = lambda name, *args: None
+        self.sess.view.active_session_id = "s1"
+        self.sess.screen.apply_setting = lambda name, *args: None
 
     def _detached_at(self, level: str, sessions: list[str] | None = None) -> None:
         from mimir.client.ui.ws.server import registry as server_registry
@@ -252,14 +252,14 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_says_what_the_run_is_under(self):
         self._detached_at("auto_all")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         self.assertIn("auto_all", (self._notice() or {}).get("title", ""))
 
     async def test_it_is_informative_rather_than_a_warning(self):
         # The tone is the whole of this: `warn` draws a badge and a coloured border,
         # which is the vocabulary of something to deal with.
         self._detached_at("auto_all")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         self.assertEqual((self._notice() or {}).get("tone"), "quiet")
 
     async def test_it_is_not_kept_in_the_conversation(self):
@@ -267,18 +267,18 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         # it is replayed on every load — and a conversation rejoined twenty times opens
         # on twenty copies of it, each claiming to be now.
         self._detached_at("auto_all")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         self.assertTrue((self._notice() or {}).get("transient"))
 
     async def test_it_does_not_explain_a_control_already_on_screen(self):
         self._detached_at("auto")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         self.assertEqual((self._notice() or {}).get("note", ""), "")
 
     async def test_the_level_still_reaches_the_panel_and_the_agents(self):
         # The notice is chrome; this is the part that must not be lost with it.
         self._detached_at("auto")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         modes = [m for m in self.sent if m.get("type") == "approval_mode"]
         self.assertEqual([m["mode"] for m in modes], ["auto"])
 
@@ -288,7 +288,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         # will not survive the next unless the user asks again, and that is the half
         # whose silence let a window be closed on a run believed immortal.
         self._detached_at("manual")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         title = (self._notice() or {}).get("title", "")
         self.assertIn("closing this window now stops it", title)
         self.assertNotIn("manual", title)
@@ -299,7 +299,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         # attached to a server holds no handle on it either.
         from mimir.client.ui.ws.server import registry as server_registry
         self._detached_at("auto_all", ["s1", "s2"])
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         self.assertEqual(server_registry.claims(), {})
         self.assertFalse(server_registry.read()["detached"])
 
@@ -308,7 +308,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         # is still claimed, it would offer to walk away from turns that end the moment
         # the window does.
         self._detached_at("auto")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         owner = [m for m in self.sent if m.get("type") == "detached"]
         self.assertEqual([m["detached"] for m in owner], [False])
         self.assertEqual(owner[0]["sessions"], [])
@@ -322,7 +322,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         self._detached_at("auto_all")
         with mock.patch.object(server_registry, "unclaim",
                                side_effect=OSError("read-only")):
-            await self.sess._restore_detached_autonomy()
+            await self.sess.detach.restore_detached_autonomy()
         modes = [m["mode"] for m in self.sent if m.get("type") == "approval_mode"]
         self.assertEqual(modes, ["auto_all"])
 
@@ -336,7 +336,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         server_registry.claim(["s2"], "auto_all")
         self.assertEqual(server_registry.claims(), {"s1": "auto", "s2": "auto_all"})
 
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         modes = [m["mode"] for m in self.sent if m.get("type") == "approval_mode"]
         self.assertEqual(modes, ["auto"], "the level of the conversation on screen")
 
@@ -360,7 +360,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         from mimir.client.ui.ws.server import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
                                 model="m")
-        await self.sess._restore_detached_autonomy()
+        await self.sess.detach.restore_detached_autonomy()
         self.assertEqual(self.sent, [])
 
 
@@ -415,17 +415,17 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.sess = Connection(_WS(), FakePool(self.a, active="s1",
                                   workers={"s1": self.a, "s2": self.b}))
-        self.sess._active_session_id = "s1"
+        self.sess.view.active_session_id = "s1"
         # The subscription this view holds. ``_handle_detach`` passes it to
         # ``idle_report`` so the asking window is not counted as the answer, and a
         # bare session has none until ``run()`` opens one.
-        self.sess._sub = None
+        self.sess.view.sub = None
         self.applied: list[tuple] = []
-        self.sess._apply_setting = lambda name, value: self.applied.append((name, value))
+        self.sess.screen.apply_setting = lambda name, value: self.applied.append((name, value))
         self.sess.pool.set_non_interactive = lambda: self.applied.append(("non_interactive", True))
 
     async def test_it_replies_with_what_it_managed(self):
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         reply = [m for m in self.sent if m["type"] == "detached"][0]
         self.assertEqual(reply["autonomy"], "auto")
         self.assertEqual(reply["pid"], 4242)
@@ -433,7 +433,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.detach_called.called)
 
     async def test_naming_conversations_sets_only_those(self):
-        await self.sess._handle_detach(
+        await self.sess.detach.on_detach(
             {"type": "detach", "autonomy": "auto_all", "session_ids": ["s2"]})
         self.assertEqual(self.b.mode, "auto_all")
         self.assertEqual(self.a.mode, "manual", "a conversation not named was changed")
@@ -446,7 +446,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_naming_none_records_the_level_pool_wide(self):
         # The only form that outlives a worker being rebuilt, since the pool records UI
         # settings per pool rather than per session.
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         self.assertIn(("approval_mode", "auto"), self.applied)
 
     async def test_there_is_no_terminal_whichever_conversations_are_named(self):
@@ -455,26 +455,26 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # undone. A detached process goes on building agents — a conversation whose own
         # was released gets it back when a run of its finishes — and one built without
         # this would reach for a terminal that is a log file.
-        await self.sess._handle_detach(
+        await self.sess.detach.on_detach(
             {"type": "detach", "autonomy": "auto_all", "session_ids": ["s2"]})
         self.assertIn(("non_interactive", True), self.applied)
 
     async def test_an_unknown_level_is_refused_and_nothing_is_detached(self):
-        await self.sess._handle_detach({"type": "detach", "autonomy": "yolo"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "yolo"})
         self.assertEqual([m["type"] for m in self.sent], ["error"])
         self.assertFalse(self.detach_called.called)
 
     async def test_a_missing_level_is_the_safe_one(self):
         # Not an error: "continue without me" with nothing said about autonomy means
         # the run survives and parks at its first sensitive tool.
-        await self.sess._handle_detach({"type": "detach"})
+        await self.sess.detach.on_detach({"type": "detach"})
         self.assertEqual(
             [m for m in self.sent if m["type"] == "detached"][0]["autonomy"], "manual")
 
     async def test_an_id_that_names_no_conversation_is_skipped_quietly(self):
         # Not asleep — not a conversation at all. A claim on it would hold the process
         # open for something that can never come back to take the claim off.
-        await self.sess._handle_detach(
+        await self.sess.detach.on_detach(
             {"type": "detach", "autonomy": "auto", "session_ids": ["never-existed"]})
         self.assertEqual(
             [m for m in self.sent if m["type"] == "detached"][0]["sessions"], [])
@@ -491,11 +491,12 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         """
         from mimir.client.ui.ws.server import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
+        from mimir.client.ui.ws.connection.connection import Connection
         from mimir.tests.support.pools import FakePool
-        self.sess.store = _StoreWith(["asleep"])
-        self.sess.pool = FakePool(self.a, active="s1", workers={})
+        self.sess = Connection(self.sess.ws, FakePool(self.a, active="s1", workers={}))
+        self.sess.detach.store = _StoreWith(["asleep"])
 
-        await self.sess._handle_detach(
+        await self.sess.detach.on_detach(
             {"type": "detach", "autonomy": "auto", "session_ids": ["asleep"]})
         self.assertEqual(server_registry.claims(), {"asleep": "auto"})
         self.assertTrue(server_registry.read()["detached"])
@@ -504,17 +505,18 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # A window detached the moment it opened claimed nothing at all: agents are
         # built on the first query, so the pool was empty and "all of them" was none.
         from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.connection.connection import Connection
         from mimir.tests.support.pools import FakePool
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
-        self.sess.pool = FakePool(self.a, active="s1", workers={})
+        self.sess = Connection(self.sess.ws, FakePool(self.a, active="s1", workers={}))
 
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         self.assertEqual(server_registry.claims(), {"s1": "auto"})
 
     async def test_the_registry_entry_records_the_detachment(self):
         from mimir.client.ui.ws.server import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         entry = server_registry.read()
         self.assertTrue(entry["detached"])
         self.assertEqual(entry["autonomy"], "auto")
@@ -529,11 +531,11 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # state of the process.
         from mimir.client.ui.ws.server import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         self.assertTrue(server_registry.read()["detached"])
 
         self.sent.clear()
-        await self.sess._handle_detach({"type": "detach", "enabled": False})
+        await self.sess.detach.on_detach({"type": "detach", "enabled": False})
         self.assertFalse(server_registry.read()["detached"])
         reply = [m for m in self.sent if m["type"] == "detached"][0]
         self.assertIs(reply["detached"], False)
@@ -541,20 +543,20 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_taking_it_back_does_not_redo_the_process_work(self):
         # The redirect cannot be undone and does not need to be: fds pointing at a log
         # file are harmless either way.
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         self.detach_called.reset_mock()
-        await self.sess._handle_detach({"type": "detach", "enabled": False})
+        await self.sess.detach.on_detach({"type": "detach", "enabled": False})
         self.assertFalse(self.detach_called.called)
 
     async def test_a_detachment_says_so_explicitly(self):
         # The flag is on the message rather than implied by its arrival, so the two
         # directions cannot be told apart by accident.
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         reply = [m for m in self.sent if m["type"] == "detached"][0]
         self.assertIs(reply["detached"], True)
 
     async def test_no_registry_entry_is_not_an_error(self):
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         self.assertEqual(
             [m["type"] for m in self.sent], ["detached", "command_output"])
 
@@ -565,7 +567,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         from mimir.client.ui.ws.server import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
 
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto_all"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto_all"})
         note = [m for m in self.sent if m["type"] == "command_output"][-1]
         self.assertEqual(note["command"], "detach")
         self.assertEqual(note["tone"], "quiet")
@@ -575,14 +577,14 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("auto_all", note["title"])
 
         self.sent.clear()
-        await self.sess._handle_detach({"type": "detach", "enabled": False})
+        await self.sess.detach.on_detach({"type": "detach", "enabled": False})
         note = [m for m in self.sent if m["type"] == "command_output"][-1]
         self.assertIn("attached", note["title"])
         self.assertIn("closing it", note["title"])
 
     async def test_a_manual_detachment_says_it_will_park(self):
         # "under manual" reads as "it will finish"; it will not.
-        await self.sess._handle_detach({"type": "detach", "autonomy": "manual"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "manual"})
         note = [m for m in self.sent if m["type"] == "command_output"][-1]
         self.assertIn("parks at the first call", note["title"])
 
@@ -590,7 +592,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # The claim "this run keeps working" is about what the process still owes, so
         # the line shows it: the user walking away reads what is actually being left.
         self.sess.pool.idle_reasons = ["background run(s) still going: s1/abc"]
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         note = [m for m in self.sent if m["type"] == "command_output"][-1]
         self.assertIn("keeps working", note["title"])
         self.assertEqual([i["detail"] for i in note["items"]],
@@ -607,7 +609,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         moment to say otherwise is the click.
         """
         self.sess.pool.idle_reasons = []
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto_all"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto_all"})
         note = [m for m in self.sent if m["type"] == "command_output"][-1]
         self.assertIn("nothing is being watched yet", note["title"])
         self.assertNotIn("keeps working", note["title"])
@@ -626,7 +628,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # the time it is read — and a warning that is sometimes false is one the user
         # learns to skip. Quiet for the same reason: nothing has gone wrong yet.
         self.sess.pool.idle_reasons = []
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         note = [m for m in self.sent if m["type"] == "command_output"][-1]
         self.assertEqual(note["tone"], "quiet")
         self.assertIn("at this moment", note["note"])
@@ -647,11 +649,11 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
             return real(excluding=excluding)
 
         self.sess.pool.lifecycle.idle_report = _spy
-        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         # Its own subscription, and only that one: a second window of the same
         # workspace really is keeping the process alive, and telling this one that
         # nothing is watching would be the same mistake inverted.
-        self.assertEqual(seen, [self.sess._sub])
+        self.assertEqual(seen, [self.sess.view.sub])
 
 
 if __name__ == "__main__":

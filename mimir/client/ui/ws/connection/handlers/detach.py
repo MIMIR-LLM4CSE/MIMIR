@@ -1,12 +1,10 @@
 """Leaving the server running without this window, taking it back, stopping it.
 
-A part of ``Connection``: a mixin over the connection's own state, so a
-handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
-types it answers.
+A handler group of ``Connection``, built with its view state, its socket, the pool
+and the shared ``Screen``. ``MESSAGES`` names the inbound message types it answers.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 
@@ -15,17 +13,25 @@ from .....config import paths
 from ...server.detach import detach as detach_process
 from .....session.jobs_on_disk import establish_baseline, has_baseline, scan_all_sessions
 from ...pool.lifecycle import idle_stop_reason
+from ...pool.pool import AgentPool
+from ..screen import Screen
+from ..view import Sender, ViewState
+from .base import Handlers
 
 logger = logging.getLogger(__name__)
 
 
-class DetachHandlers:
+class DetachHandlers(Handlers):
     MESSAGES: dict[str, str] = {
-        "detach": "_handle_detach",
-        "shutdown": "_handle_shutdown",
+        "detach": "on_detach",
+        "shutdown": "on_shutdown",
     }
 
-    async def _report_ended_jobs(self) -> None:
+    def __init__(self, view: ViewState, out: Sender, pool: AgentPool, screen: Screen) -> None:
+        super().__init__(view, out, pool, screen)
+        self.store = pool.conversations.store
+
+    async def report_ended_jobs(self) -> None:
         """Announce every detached run that finished while nothing was watching it.
 
         This is what makes coming back enough. A background run survives anything — its
@@ -87,7 +93,7 @@ class DetachHandlers:
                     "status_op": job.status_op(),
                 })
 
-    async def _restore_detached_autonomy(self) -> None:
+    async def restore_detached_autonomy(self) -> None:
         """Take a run that was left going back, in the mode it was left under.
 
         A window opening onto a run that never stopped is the user who left it coming
@@ -128,8 +134,8 @@ class DetachHandlers:
             except Exception:
                 logger.warning("reattach: session %s refused the level %s it was left "
                                "under", sid, lvl, exc_info=True)
-        level = held.get(self._active_session_id or "") or sorted(held.values())[-1]
-        self._apply_setting("approval_mode", level)
+        level = held.get(self.view.active_session_id or "") or sorted(held.values())[-1]
+        self.screen.apply_setting("approval_mode", level)
         # Before anything is announced, because what the panel is about to be told —
         # that this window owns the server — has to be true of the registry the idle
         # sweep reads, and not only of the message. Every claim at once: one process
@@ -148,12 +154,12 @@ class DetachHandlers:
             # under. The panel decides from this what disconnecting costs, and it now
             # costs the runs: a window told otherwise would offer to walk away from
             # turns that end the moment it does.
-            await self.ws.send(json.dumps({
+            await self.out.send({
                 "type": "detached", "detached": False, "log": None,
                 "autonomy": level, "sessions": [], "pid": os.getpid(),
                 "setsid": False,
-            }))
-            await self.ws.send(json.dumps({"type": "approval_mode", "mode": level}))
+            })
+            await self.out.send({"type": "approval_mode", "mode": level})
             # Rendered, not notified: ``_notify`` writes to the transcript's transient
             # channel, which is dropped. Both halves of this are the kind of thing a
             # user walks back in needing to know — that the run has been approving
@@ -191,14 +197,14 @@ class DetachHandlers:
                 f"attached — {len(held)} conversations kept working with no window "
                 f"open, this one{under or ' at manual'}; closing this window now "
                 f"stops them")
-            await self._command_reply("detach", title, tone="quiet", transient=True)
+            await self.screen.command_reply("detach", title, tone="quiet", transient=True)
         except Exception:
             logger.debug("_restore_detached_autonomy: the client went away mid-send", exc_info=True)
             return
         logger.info("reattach: %d claim(s) taken back; autonomy restored to %s from "
                     "the detached run", len(held), level)
 
-    async def _handle_shutdown(self, msg: dict) -> None:
+    async def on_shutdown(self, msg: dict) -> None:
         """Stop the server, now or once it has nothing left to do.
 
         ``force`` stops it whatever is in flight — the user's own decision about their
@@ -214,21 +220,21 @@ class DetachHandlers:
         force = bool(msg.get("force"))
         if not report["idle"] and not force:
             try:
-                await self.ws.send(json.dumps({
+                await self.out.send({
                     "type": "shutdown_refused",
                     "reasons": report["reasons"],
-                }))
+                })
             except Exception:
-                logger.debug("_handle_shutdown: the client went away mid-send", exc_info=True)
+                logger.debug("on_shutdown: the client went away mid-send", exc_info=True)
             return
         try:
-            await self.ws.send(json.dumps({
+            await self.out.send({
                 "type": "shutting_down",
                 "forced": force,
                 "reasons": report["reasons"],
-            }))
+            })
         except Exception:
-            logger.debug("_handle_shutdown: the client went away mid-send", exc_info=True)
+            logger.debug("on_shutdown: the client went away mid-send", exc_info=True)
         logger.info("shutdown: requested by the client (forced=%s; %s)", force,
                     "; ".join(report["reasons"]) or "nothing was running")
         self.pool.lifecycle.request_stop()
@@ -248,7 +254,7 @@ class DetachHandlers:
                            exc_info=True)
             return []
 
-    async def _handle_detach(self, msg: dict) -> None:
+    async def on_detach(self, msg: dict) -> None:
         """Let the server go on without this window — "continue without me".
 
         Served here, on the WS loop, because the two things that make this process
@@ -288,22 +294,22 @@ class DetachHandlers:
             # detached stops guarding something nothing is guarding.
             try:
                 level = self.pool.worker_or_detached(
-                    self._active_session_id).setting("approval_mode")
+                    self.view.active_session_id).setting("approval_mode")
             except Exception:
                 level = "manual"
             try:
-                await self.ws.send(json.dumps({
+                await self.out.send({
                     "type": "detached", "detached": bool(held), "log": None,
                     "autonomy": level, "sessions": sorted(held), "pid": os.getpid(),
                     "setsid": False,
-                }))
+                })
                 # The switch itself, in the same quiet rule the attachment notice
                 # uses. The button is one glyph and both of its positions look like a
                 # chain: a line in the thread is what tells the user which way it just
                 # went, and it says the consequence rather than only the word, since
                 # "attached" on its own does not warn anybody that closing the window
                 # now ends the run.
-                await self._command_reply(
+                await self.screen.command_reply(
                     "detach",
                     ("attached — this window owns the server again, and closing it "
                      "stops the run" if not held else
@@ -311,7 +317,7 @@ class DetachHandlers:
                      f"other conversation(s) still keep it alive"),
                     tone="quiet", transient=True)
             except Exception:
-                logger.debug("_handle_detach: the client went away mid-send", exc_info=True)
+                logger.debug("on_detach: the client went away mid-send", exc_info=True)
                 return
             logger.info("detach: taken back for %s; %d claim(s) left",
                         ", ".join(str(s) for s in named) if isinstance(named, list)
@@ -321,13 +327,13 @@ class DetachHandlers:
         autonomy = str(msg.get("autonomy") or "manual")
         if autonomy not in ("manual", "auto", "auto_all"):
             try:
-                await self.ws.send(json.dumps({
+                await self.out.send({
                     "type": "error",
                     "text": (f"Unknown autonomy level: {autonomy}. "
                              "Use manual, auto, or auto_all."),
-                }))
+                })
             except Exception:
-                logger.debug("_handle_detach: the client went away mid-send", exc_info=True)
+                logger.debug("on_detach: the client went away mid-send", exc_info=True)
             return
 
         # A claim is a *conversation's* request to be left running, so the set is the
@@ -364,13 +370,13 @@ class DetachHandlers:
                     logger.warning("detach: session %s refused the autonomy level %s",
                                    sid, autonomy, exc_info=True)
         else:
-            self._apply_setting("approval_mode", autonomy)
+            self.screen.apply_setting("approval_mode", autonomy)
             # Naming none means all of them, and "all" includes the conversation on
             # screen even before it has asked anything: a window detached the moment it
             # opened claimed nothing at all, because no agent had been built yet.
             targeted = [sid for sid, _w in self.pool.items()]
-            if self._active_session_id and self._active_session_id not in targeted:
-                targeted.append(self._active_session_id)
+            if self.view.active_session_id and self.view.active_session_id not in targeted:
+                targeted.append(self.view.active_session_id)
 
         # The agent's stdout is about to become a log file, which is not a tty but is
         # also not proof that nobody is reachable. Saying so plainly keeps the
@@ -396,7 +402,7 @@ class DetachHandlers:
         server_registry.claim(targeted, autonomy, log=info.get("log"))
 
         try:
-            await self.ws.send(json.dumps({
+            await self.out.send({
                 "type": "detached",
                 "detached": True,
                 "log": info.get("log"),
@@ -404,7 +410,7 @@ class DetachHandlers:
                 "sessions": targeted,
                 "pid": info.get("pid"),
                 "setsid": info.get("setsid"),
-            }))
+            })
             # The other half of the switch — see the take-back above. Named here as
             # what the run may do while unwatched, because that is the part of
             # detaching the user chose and the part the glyph cannot show.
@@ -417,7 +423,7 @@ class DetachHandlers:
             # is idle by every measure it has and stops on the idle TTL a couple of
             # hours later. Detaching into that is a night lost to a sentence that was
             # never true, and the moment to say so is the click.
-            idle = self.pool.lifecycle.idle_report(excluding=self._sub)
+            idle = self.pool.lifecycle.idle_report(excluding=self.view.sub)
             if idle["idle"]:
                 # Conditional, and that is not hedging: this is the state at the click,
                 # and the click can land while a turn is one tool call away from
@@ -442,10 +448,10 @@ class DetachHandlers:
                 items = [{"label": "keeping it going", "detail": reason}
                          for reason in idle["reasons"]]
                 note = ""
-            await self._command_reply("detach", title, items=items, note=note,
+            await self.screen.command_reply("detach", title, items=items, note=note,
                                       tone="quiet", transient=True)
         except Exception:
-            logger.debug("_handle_detach: the client went away mid-send", exc_info=True)
+            logger.debug("on_detach: the client went away mid-send", exc_info=True)
             return
         logger.info("detach: this server is now survivable (autonomy %s over %d "
                     "conversation(s))", autonomy, len(targeted))

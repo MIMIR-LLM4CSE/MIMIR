@@ -145,14 +145,14 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _sess_with_history(n_middle):
         sess = _session()
-        sess.ws = _FakeWS()
+        sess.out.ws = _FakeWS()
         history = [{"role": "user", "content": "opening question"}]
         history += [{"role": "assistant", "content": f"step {i}"} for i in range(n_middle)]
         history += [{"role": "user", "content": "last"},
                          {"role": "assistant", "content": "answer"},
                     {"role": "user", "content": "follow-up"},
                     {"role": "assistant", "content": "ok"}]
-        sess.conv.history = history
+        sess.view.conv.history = history
         return sess
 
     async def test_the_middle_is_summarized_and_the_head_and_tail_survive(self):
@@ -160,10 +160,10 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
         summary = [{"role": "assistant", "content": "[Context summary] what happened"}]
         sess.worker.usage.compact_middle = lambda middle: _done_future(summary)
 
-        self.assertTrue(await sess._compact_history())
-        self.assertEqual(sess.conv.history[0]["content"], "opening question")
-        self.assertEqual(sess.conv.history[1], summary[0])
-        self.assertEqual([m["content"] for m in sess.conv.history[-4:]],
+        self.assertTrue(await sess.turns._compact_history())
+        self.assertEqual(sess.view.conv.history[0]["content"], "opening question")
+        self.assertEqual(sess.view.conv.history[1], summary[0])
+        self.assertEqual([m["content"] for m in sess.view.conv.history[-4:]],
                          ["last", "answer", "follow-up", "ok"])
         # The compaction is recorded through the bus, which owns the journal: it is
         # what makes the log the one complete account of a session, including the turns
@@ -176,18 +176,18 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
         # compact_messages returns its input unchanged when the backend call fails —
         # the caller must read that as "no compaction" and fall back to trimming.
         sess = self._sess_with_history(5)
-        before = list(sess.conv.history)
+        before = list(sess.view.conv.history)
         sess.worker.usage.compact_middle = lambda middle: _done_future(middle)
 
-        self.assertFalse(await sess._compact_history())
-        self.assertEqual(sess.conv.history, before)
+        self.assertFalse(await sess.turns._compact_history())
+        self.assertEqual(sess.view.conv.history, before)
 
     async def test_too_short_a_middle_is_not_worth_an_llm_call(self):
         sess = self._sess_with_history(1)
         called = []
         sess.worker.usage.compact_middle = lambda middle: called.append(middle) or _done_future([])
 
-        self.assertFalse(await sess._compact_history())
+        self.assertFalse(await sess.turns._compact_history())
         self.assertEqual(called, [])
         self.assertEqual(sess.ws.sent, [])  # not even an announcement
 
@@ -312,28 +312,28 @@ class StaleRunningCardTests(unittest.TestCase):
 class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_client_transcript_replaces_the_text_only_messages(self):
         sess = _session()
-        sess.conv.display = [{"role": "user", "kind": "text", "text": "profile the solver"}]
-        await sess._handle_transcript({"session_id": "s1", "messages": RICH_MESSAGES})
-        self.assertEqual(sess.conv.display, RICH_MESSAGES)
+        sess.view.conv.display = [{"role": "user", "kind": "text", "text": "profile the solver"}]
+        await sess.turns.on_transcript({"session_id": "s1", "messages": RICH_MESSAGES})
+        self.assertEqual(sess.view.conv.display, RICH_MESSAGES)
         self.assertEqual(sess.store.saved["s1"].display_messages, RICH_MESSAGES)
 
     async def test_a_transcript_for_another_session_is_ignored(self):
         """It would land on the session the user just switched to."""
         sess = _session(active="s1")
-        await sess._handle_transcript({"session_id": "s2", "messages": RICH_MESSAGES})
-        self.assertEqual(sess.conv.display, [])
+        await sess.turns.on_transcript({"session_id": "s2", "messages": RICH_MESSAGES})
+        self.assertEqual(sess.view.conv.display, [])
 
     async def test_a_shorter_transcript_never_blanks_a_stored_history(self):
         """A webview that just opened on an empty view must not erase the session."""
         sess = _session()
-        sess.conv.display = list(RICH_MESSAGES)
-        await sess._handle_transcript({"session_id": "s1", "messages": []})
-        self.assertEqual(sess.conv.display, RICH_MESSAGES)
+        sess.view.conv.display = list(RICH_MESSAGES)
+        await sess.turns.on_transcript({"session_id": "s1", "messages": []})
+        self.assertEqual(sess.view.conv.display, RICH_MESSAGES)
 
     async def test_only_prose_counts_when_comparing_lengths(self):
         """Tool rows are re-derived per turn; they must not gate the comparison."""
         sess = _session()
-        sess.conv.display = [
+        sess.view.conv.display = [
             {"role": "user", "kind": "text", "text": "a"},
             {"role": "agent", "kind": "tools", "tools": []},
             {"role": "agent", "kind": "tools", "tools": []},
@@ -342,8 +342,8 @@ class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "kind": "text", "text": "a"},
             {"role": "agent", "kind": "text", "text": "done"},
         ]
-        await sess._handle_transcript({"session_id": "s1", "messages": incoming})
-        self.assertEqual(sess.conv.display, incoming)
+        await sess.turns.on_transcript({"session_id": "s1", "messages": incoming})
+        self.assertEqual(sess.view.conv.display, incoming)
 
 
     async def test_a_notice_this_layer_wrote_does_not_freeze_the_transcript(self):
@@ -354,7 +354,7 @@ class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
         a tool row, a diff card or a reasoning panel from that point on.
         """
         sess = _session()
-        sess.conv.display = [
+        sess.view.conv.display = [
             {"role": "user", "kind": "text", "text": "build it"},
             {"role": "system", "kind": "text", "text": "🔔 'j1' finished"},
             {"role": "agent", "kind": "text", "text": "it is done"},
@@ -364,8 +364,8 @@ class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"role": "agent", "kind": "tools", "tools": []},
             {"role": "agent", "kind": "text", "text": "it is done"},
         ]
-        await sess._handle_transcript({"session_id": "s1", "messages": incoming})
-        self.assertEqual(sess.conv.display, incoming)
+        await sess.turns.on_transcript({"session_id": "s1", "messages": incoming})
+        self.assertEqual(sess.view.conv.display, incoming)
 
 
 class TranscriptDeltaTests(unittest.IsolatedAsyncioTestCase):
@@ -373,8 +373,8 @@ class TranscriptDeltaTests(unittest.IsolatedAsyncioTestCase):
 
     async def _with_full(self):
         sess = _session()
-        sess.ws = _FakeWS()
-        await sess._handle_transcript({"session_id": "s1", "messages": RICH_MESSAGES,
+        sess.out.ws = _FakeWS()
+        await sess.turns.on_transcript({"session_id": "s1", "messages": RICH_MESSAGES,
                                        "epoch": "e1", "rev": 0})
         return sess
 
@@ -382,59 +382,59 @@ class TranscriptDeltaTests(unittest.IsolatedAsyncioTestCase):
         sess = await self._with_full()
         edited = {"id": "m5", "role": "agent", "kind": "text", "text": "solve() and setup()."}
         added = {"id": "m6", "role": "user", "kind": "text", "text": "fix it"}
-        await sess._handle_transcript({
+        await sess.turns.on_transcript({
             "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
             "order": ["m1", "m2", "m3", "m4", "m5", "m6"], "changed": [edited, added]})
-        self.assertEqual(sess.conv.display, RICH_MESSAGES[:4] + [edited, added])
-        self.assertEqual(sess.store.saved["s1"].display_messages, sess.conv.display)
+        self.assertEqual(sess.view.conv.display, RICH_MESSAGES[:4] + [edited, added])
+        self.assertEqual(sess.store.saved["s1"].display_messages, sess.view.conv.display)
         self.assertEqual(sess.ws.sent, [])
 
     async def test_a_message_left_out_of_the_order_is_dropped(self):
         sess = await self._with_full()
-        await sess._handle_transcript({
+        await sess.turns.on_transcript({
             "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
             "order": ["m1", "m2", "m3", "m5"], "changed": []})
-        self.assertEqual([m["id"] for m in sess.conv.display], ["m1", "m2", "m3", "m5"])
+        self.assertEqual([m["id"] for m in sess.view.conv.display], ["m1", "m2", "m3", "m5"])
 
     async def test_deltas_chain_on_the_revision_just_applied(self):
         sess = await self._with_full()
         order = [m["id"] for m in RICH_MESSAGES]
         for rev, text in ((1, "a"), (2, "b")):
-            await sess._handle_transcript({
+            await sess.turns.on_transcript({
                 "session_id": "s1", "delta": True, "epoch": "e1",
                 "base_rev": rev - 1, "rev": rev, "order": order + [f"x{rev}"],
                 "changed": [{"id": f"x{rev}", "role": "user", "kind": "text", "text": text}]})
             order = order + [f"x{rev}"]
-        self.assertEqual(sess.conv.display[-1]["text"], "b")
+        self.assertEqual(sess.view.conv.display[-1]["text"], "b")
         self.assertEqual(sess.ws.sent, [])
 
     async def test_a_delta_on_a_revision_not_held_asks_for_the_whole(self):
         """A restarted server, or a delta whose predecessor was lost on the wire."""
         for held in (False, True):
             sess = await self._with_full() if held else _session()
-            sess.ws = getattr(sess, "ws", None) or _FakeWS()
-            before = list(sess.conv.display)
-            await sess._handle_transcript({
+            sess.out.ws = getattr(sess, "ws", None) or _FakeWS()
+            before = list(sess.view.conv.display)
+            await sess.turns.on_transcript({
                 "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 7, "rev": 8,
                 "order": ["m1"], "changed": []})
-            self.assertEqual(sess.conv.display, before)
+            self.assertEqual(sess.view.conv.display, before)
             self.assertEqual(json.loads(sess.ws.sent[-1]),
                              {"type": "transcript_resync", "session_id": "s1"})
 
     async def test_a_delta_naming_a_message_never_sent_asks_for_the_whole(self):
         sess = await self._with_full()
-        await sess._handle_transcript({
+        await sess.turns.on_transcript({
             "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
             "order": ["m1", "ghost"], "changed": []})
-        self.assertEqual(sess.conv.display, RICH_MESSAGES)
+        self.assertEqual(sess.view.conv.display, RICH_MESSAGES)
         self.assertEqual(json.loads(sess.ws.sent[-1])["type"], "transcript_resync")
 
     async def test_a_delta_still_cannot_shorten_the_history(self):
         sess = await self._with_full()
-        await sess._handle_transcript({
+        await sess.turns.on_transcript({
             "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
             "order": ["m2"], "changed": []})
-        self.assertEqual(sess.conv.display, RICH_MESSAGES)
+        self.assertEqual(sess.view.conv.display, RICH_MESSAGES)
 
 
 class UntrimmedHistoryTests(unittest.TestCase):
@@ -442,12 +442,12 @@ class UntrimmedHistoryTests(unittest.TestCase):
         sess = _session()
         for i in range(4):
             msg = {"role": "user", "content": f"turn {i}"}
-            sess.conv.history.append(msg)
-            sess.conv.history_full.append(dict(msg))
+            sess.view.conv.history.append(msg)
+            sess.view.conv.history_full.append(dict(msg))
         # What the pre-query front-trim does to the window, and only to it.
-        sess.conv.history.pop(0)
-        sess.conv.history.pop(0)
-        sess._save()
+        sess.view.conv.history.pop(0)
+        sess.view.conv.history.pop(0)
+        sess.screen.save()
         saved = sess.store.saved["s1"]
         self.assertEqual(len(saved.llm_history), 2)
         self.assertEqual(len(saved.llm_history_full), 4)
@@ -478,7 +478,7 @@ class AnswerDeltaTests(unittest.TestCase):
     def _added(full, turn_start, submitted_len):
         """What the commit puts in the record, from the boundary the loop gave and the
         length the turn was handed — the two extras the worker puts on its answer."""
-        conversation = _session().conv
+        conversation = _session().view.conv
         conversation.commit_answer(
             {"type": "answer", "text": "done"},
             {"_full": full, "_turn_start": turn_start, "_submitted_len": submitted_len,
@@ -545,8 +545,8 @@ class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
             base = datetime.now(timezone.utc).timestamp() + mtime_offset
             os.utime(todo_file, (base, base))
         sess = _session()
-        sess.ws = _FakeWS()
-        sess._emit_context_usage = mock.AsyncMock()
+        sess.out.ws = _FakeWS()
+        sess.screen.emit_context_usage = mock.AsyncMock()
         return sess, todo_file
 
     async def _load(self, sess, todo_file, todos, updated_at):
@@ -556,7 +556,7 @@ class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"), \
              mock.patch("mimir.client.ui.ws.connection.handlers.conversations.todo_file_for_session",
                         lambda _sid: todo_file):
-            await sess._load_session("s1")
+            await sess.conversations.load_session("s1")
 
     SNAPSHOT = [{"text": "old step", "done": True}]
     LIVE = "- [ ] the step the model is actually working on\n"
@@ -613,7 +613,7 @@ class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"), \
              mock.patch("mimir.client.ui.ws.connection.handlers.conversations.todo_file_for_session",
                         lambda _sid: todo_file):
-            await sess._load_session("s1")
+            await sess.conversations.load_session("s1")
         self.assertFalse(os.path.exists(deps_file))
 
 
@@ -631,8 +631,8 @@ class AlwaysResumeTests(unittest.IsolatedAsyncioTestCase):
     def _loaded(self, todos):
         async def _run():
             sess = _session()
-            sess.ws = _FakeWS()
-            sess._emit_context_usage = mock.AsyncMock()
+            sess.out.ws = _FakeWS()
+            sess.screen.emit_context_usage = mock.AsyncMock()
             sess.store.saved["s1"] = FullSession(
                 id="s1", title="t", created_at="x",
                 updated_at=datetime.now(timezone.utc).isoformat(), todos=todos,
@@ -641,7 +641,7 @@ class AlwaysResumeTests(unittest.IsolatedAsyncioTestCase):
             with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"), \
                  mock.patch("mimir.client.ui.ws.connection.handlers.conversations.todo_file_for_session",
                             lambda _sid: os.path.join(d, "todo_list.md")):
-                await sess._load_session("s1")
+                await sess.conversations.load_session("s1")
             return [json.loads(m) for m in sess.ws.sent]
         return _run()
 
@@ -673,12 +673,12 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             llm_history_full=[{"role": "user", "content": f"turn {i}"} for i in range(4)],
         )
         sess.store.saved["s1"] = stored
-        sess.ws = mock.AsyncMock()
-        sess._emit_context_usage = mock.AsyncMock()
+        sess.out.ws = mock.AsyncMock()
+        sess.screen.emit_context_usage = mock.AsyncMock()
         with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
-            await sess._load_session("s1")
-        self.assertEqual(len(sess.conv.history), 4)
-        self.assertEqual(len(sess.conv.history_full), 4)
+            await sess.conversations.load_session("s1")
+        self.assertEqual(len(sess.view.conv.history), 4)
+        self.assertEqual(len(sess.view.conv.history_full), 4)
 
     async def test_the_window_does_not_share_message_objects_with_the_archive(self):
         """The budgeting pass rewrites `content` and `tool_calls` in place.
@@ -691,12 +691,12 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             id="s1", title="t", created_at="x", updated_at="y",
             llm_history_full=[{"role": "user", "content": f"turn {i}"} for i in range(4)],
         )
-        sess.ws = mock.AsyncMock()
-        sess._emit_context_usage = mock.AsyncMock()
+        sess.out.ws = mock.AsyncMock()
+        sess.screen.emit_context_usage = mock.AsyncMock()
         with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
-            await sess._load_session("s1")
-        sess.conv.history[0]["content"] = "…[truncated]…"
-        self.assertEqual(sess.conv.history_full[0]["content"], "turn 0")
+            await sess.conversations.load_session("s1")
+        sess.view.conv.history[0]["content"] = "…[truncated]…"
+        self.assertEqual(sess.view.conv.history_full[0]["content"], "turn 0")
 
     async def test_a_compacted_window_is_what_a_resume_reloads(self):
         """A summary already stands in for what was cut — reloading the record undoes it.
@@ -717,16 +717,16 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             llm_history=window,
             llm_history_full=[{"role": "user", "content": f"turn {i}"} for i in range(600)],
         )
-        sess.ws = mock.AsyncMock()
-        sess._emit_context_usage = mock.AsyncMock()
+        sess.out.ws = mock.AsyncMock()
+        sess.screen.emit_context_usage = mock.AsyncMock()
         with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
-            await sess._load_session("s1")
-        self.assertEqual(len(sess.conv.history), 3)
-        self.assertIn("Handoff Note", sess.conv.history[1]["content"])
+            await sess.conversations.load_session("s1")
+        self.assertEqual(len(sess.view.conv.history), 3)
+        self.assertIn("Handoff Note", sess.view.conv.history[1]["content"])
         # The record is still kept whole beside it: nothing is lost, it is just not
         # what the model is handed.
-        self.assertEqual(len(sess.conv.history_full), 600)
-        self.assertEqual(sess.conv.submitted_len, 3)
+        self.assertEqual(len(sess.view.conv.history_full), 600)
+        self.assertEqual(sess.view.conv.submitted_len, 3)
 
     async def test_a_compacted_window_is_not_shared_with_the_archive_either(self):
         sess = _session()
@@ -736,12 +736,12 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             llm_history_full=[compaction_summary_message(9, "note"),
                               {"role": "user", "content": "after"}],
         )
-        sess.ws = mock.AsyncMock()
-        sess._emit_context_usage = mock.AsyncMock()
+        sess.out.ws = mock.AsyncMock()
+        sess.screen.emit_context_usage = mock.AsyncMock()
         with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
-            await sess._load_session("s1")
-        sess.conv.history[0]["content"] = "…[truncated]…"
-        self.assertIn("note", sess.conv.history_full[0]["content"])
+            await sess.conversations.load_session("s1")
+        sess.view.conv.history[0]["content"] = "…[truncated]…"
+        self.assertIn("note", sess.view.conv.history_full[0]["content"])
 
     async def test_an_older_session_falls_back_to_the_window_it_saved(self):
         sess = _session()
@@ -749,11 +749,11 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
             id="s1", title="t", created_at="x", updated_at="y",
             llm_history=[{"role": "user", "content": "only this"}],
         )
-        sess.ws = mock.AsyncMock()
-        sess._emit_context_usage = mock.AsyncMock()
+        sess.out.ws = mock.AsyncMock()
+        sess.screen.emit_context_usage = mock.AsyncMock()
         with mock.patch("mimir.client.ui.ws.connection.handlers.conversations.write_active_session"):
-            await sess._load_session("s1")
-        self.assertEqual(sess.conv.history_full, [{"role": "user", "content": "only this"}])
+            await sess.conversations.load_session("s1")
+        self.assertEqual(sess.view.conv.history_full, [{"role": "user", "content": "only this"}])
 
 
 class CompactionMarkerTests(unittest.TestCase):

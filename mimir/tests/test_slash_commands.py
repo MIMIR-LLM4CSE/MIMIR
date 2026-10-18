@@ -27,7 +27,6 @@ from mimir.client.ui.ws.connection.commands import WS_COMMANDS
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SLASH_UTILS = os.path.join(
     _ROOT, "vscode-extension", "webview", "src", "components", "slashUtils.ts")
-_WS_SESSION = os.path.join(_ROOT, "client", "ui", "ws", "connection", "handlers", "panel.py")
 
 
 def _advertised() -> list[str]:
@@ -250,20 +249,27 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
     Answers go out as `command_output`, which the reducer renders.
     """
 
-    def _sender(self) -> str:
-        with open(_WS_SESSION, encoding="utf-8") as fh:
-            src = fh.read()
-        return src[src.index("async def _command_reply("):src.index("async def _send_toggles")]
+    def _reply(self) -> dict:
+        from mimir.client.ui.ws.connection.screen import Screen
+        from mimir.client.ui.ws.connection.view import Sender, ViewState
+        from mimir.tests.support.connections import FakeWS
+        from mimir.tests.support.pools import FakePool
+        ws = FakeWS()
+        screen = Screen(ViewState(), Sender(ws), FakePool())
+        asyncio.run(screen.command_reply("memory", "2 memories",
+                                         items=[{"label": "a", "detail": "b"}],
+                                         note="n", tone="ok"))
+        return ws.sent[-1]
 
     def test_no_answer_uses_the_dropped_output_channel(self) -> None:
-        self.assertNotIn('"type": "output"', self._sender())
+        self.assertNotEqual(self._reply()["type"], "output")
 
     def test_the_answer_is_structured_not_a_formatted_line(self) -> None:
         """A frontend cannot lay out what reaches it as an indented blob of text."""
-        sender = self._sender()
-        for field in ('"command_output"', '"command"', '"title"', '"items"', '"note"',
-                      '"tone"'):
-            self.assertIn(field, sender)
+        self.assertEqual(self._reply(), {
+            "type": "command_output", "command": "memory", "title": "2 memories",
+            "items": [{"label": "a", "detail": "b"}], "note": "n", "tone": "ok",
+            "transient": False})
 
     def test_the_webview_renders_that_channel(self) -> None:
         reducer = os.path.join(

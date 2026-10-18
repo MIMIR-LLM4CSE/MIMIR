@@ -47,9 +47,9 @@ class _NoAgentWorker:
         return None
 
 
-def _session(mode: str = "full") -> Connection:
-    sess = bare_session(FakePool(_NoAgentWorker(), active="s1"))
-    sess.conv.record.context_mode = mode
+def _session(mode: str = "full", worker: object = None) -> Connection:
+    sess = bare_session(FakePool(worker or _NoAgentWorker(), active="s1"))
+    sess.view.conv.record.context_mode = mode
     return sess
 
 
@@ -58,25 +58,23 @@ class ResumedBudgetTests(unittest.TestCase):
 
     def test_a_resumed_full_session_keeps_the_full_window(self):
         full_total, _, _, _ = context_budget_for("test-model", "full")
-        total, reserved = _session("full")._ctx_budget()
+        total, reserved = _session("full").screen.ctx_budget()
         self.assertEqual(total, full_total)
         self.assertGreater(total, limits.CTX_TOTAL_COMPACT)
 
     def test_a_resumed_compact_session_keeps_the_compact_window(self):
-        total, _ = _session("compact")._ctx_budget()
+        total, _ = _session("compact").screen.ctx_budget()
         self.assertEqual(total, limits.CTX_TOTAL_COMPACT)
 
     def test_a_live_agent_still_answers_for_itself(self):
         """The saved mode is a fallback, not an override: a mode switched mid-session
         must not be undone by what the session was saved with."""
-        sess = _session("compact")
-
         class _Live(_NoAgentWorker):
             def setting(self, name, default=None):
                 return "full"
 
-        sess.pool = FakePool(_Live(), active="s1")
-        total, _ = sess._ctx_budget()
+        sess = _session("compact", _Live())
+        total, _ = sess.screen.ctx_budget()
         self.assertEqual(total, context_budget_for("test-model", "full")[0])
 
 
@@ -107,17 +105,17 @@ class BudgetOrderTests(unittest.IsolatedAsyncioTestCase):
         async def _fit():
             order.append("budget")
 
-        sess._ensure_worker = _ensure_worker
-        sess._fit_history_to_budget = _fit
-        sess._save = lambda: None
+        sess.screen.ensure_worker = _ensure_worker
+        sess.turns._fit_history_to_budget = _fit
+        sess.screen.save = lambda: None
         sess.transcript = type("T", (), {"append": lambda *_: None})()
         sess.pool.enqueue = lambda *_a, **_k: 1
-        sess.ws = type("WS", (), {"send": staticmethod(lambda *_: _done())})()
+        sess.out.ws = type("WS", (), {"send": staticmethod(lambda *_: _done())})()
 
         async def _done():
             return None
 
-        await sess._handle_query({"text": "carry on"})
+        await sess.turns.on_query({"text": "carry on"})
         self.assertEqual(order, ["agent", "budget"])
 
 

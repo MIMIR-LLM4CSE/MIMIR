@@ -31,8 +31,8 @@ class HandlerIsolationTests(unittest.TestCase):
         async def _boom(_msg):
             raise AttributeError("'NoneType' object has no attribute 'set_backend'")
 
-        sess._handle_rename_session = _boom
-        asyncio.run(sess._handle(json.dumps({"type": "rename_session"})))
+        sess.conversations.on_rename_session = _boom
+        asyncio.run(sess.handle(json.dumps({"type": "rename_session"})))
         self.assertEqual(sess.ws.sent[-1]["type"], "error")
         self.assertIn("rename_session", sess.ws.sent[-1]["text"])
 
@@ -90,13 +90,13 @@ class _SettingsPool:
 class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
     def _session(self, payload: dict | None = None) -> Connection:
         sess = Connection(_FakeWS(), _SettingsPool(_StandIn(payload)))
-        sess._active_session_id = "s1"
+        sess.view.active_session_id = "s1"
         return sess
 
     def test_memory_list_reports_an_error_as_an_error(self) -> None:
         # Read as an empty listing, a tool error said "No memories stored".
         sess = self._session({"status": "error", "error": "No agent session is running."})
-        asyncio.run(sess._handle_command("/memory list"))
+        asyncio.run(sess.panel.run_command("/memory list"))
         self.assertEqual(sess.ws.sent[-1]["type"], "error")
         self.assertIn("No agent session", sess.ws.sent[-1]["text"])
 
@@ -106,7 +106,7 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
 
         sess = self._session()
         with mock.patch.object(settings, "switch_backend") as switch:
-            asyncio.run(sess._handle_command("/backend ray"))
+            asyncio.run(sess.panel.run_command("/backend ray"))
         switch.assert_called_once_with("ray")
         self.assertIn(("backend", "ray"), sess.pool.applied)
         self.assertEqual(sess.ws.sent[-1]["type"], "command_output")
@@ -119,7 +119,7 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
         level = SUBAGENT_LEVELS[-1]
         sess = self._session()
         with mock.patch.object(settings, "save_subagent_level") as save:
-            asyncio.run(sess._handle_command(f"/subagents {level}"))
+            asyncio.run(sess.panel.run_command(f"/subagents {level}"))
         save.assert_called_once_with(level)
         self.assertIn(("subagent_level", level), sess.pool.applied)
         self.assertEqual(sess.ws.sent[-1], {"type": "subagent_level", "level": level})
@@ -129,11 +129,12 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
 class DeletedSessionTests(unittest.TestCase):
     def test_a_deleted_conversation_leaves_no_bookkeeping_behind(self) -> None:
         sess = Connection(_FakeWS(), FakePool())
-        for name in ("_live_rows", "_sent_progress", "_foreign_withheld"):
-            setattr(sess, name, {"gone": object(), "kept": object()})
-        sess._forget_session_state("gone")
-        for name in ("_live_rows", "_sent_progress", "_foreign_withheld"):
-            self.assertEqual(set(getattr(sess, name)), {"kept"}, name)
+        names = ("live_rows", "sent_progress", "foreign_withheld", "transcript_sync")
+        for name in names:
+            setattr(sess.view, name, {"gone": object(), "kept": object()})
+        sess.view.forget_session("gone")
+        for name in names:
+            self.assertEqual(set(getattr(sess.view, name)), {"kept"}, name)
 
     def test_the_pool_forgets_what_it_owed_a_deleted_conversation(self) -> None:
         from mimir.client.ui.ws.pool.pool import AgentPool

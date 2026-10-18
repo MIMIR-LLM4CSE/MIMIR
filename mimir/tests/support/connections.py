@@ -24,11 +24,11 @@ class FakeWS:
 def bare_session(pool: Any, *, active: str | None = "s1", ws: Any = None,
                  history: list[dict] | None = None) -> Connection:
     sess = Connection(ws if ws is not None else FakeWS(), pool)
-    sess._active_session_id = active
+    sess.view.active_session_id = active
     if active is not None:
-        sess.conv = pool.conversations.get(active) or pool.conversations.new(active)
+        sess.view.conv = pool.conversations.get(active) or pool.conversations.new(active)
         if history is not None:
-            sess.conv.history = list(history)
-            sess.conv.record.llm_history_full = list(history)
-            sess.conv.submitted_len = len(history)
+            sess.view.conv.history = list(history)
+            sess.view.conv.record.llm_history_full = list(history)
+            sess.view.conv.submitted_len = len(history)
     return sess

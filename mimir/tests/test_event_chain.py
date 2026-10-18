@@ -23,6 +23,7 @@ from unittest import mock
 from mimir.client.session import store as session_store
 from mimir.client.session import journal
 from mimir.client.ui.ws.connection.connection import Connection
+from mimir.client.ui.ws.connection.handlers.conversations import ConversationHandlers
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.pools import FakePool
 from mimir.tests.support.state import pin_state_dir
@@ -109,7 +110,7 @@ class _ChainCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self._tmp.cleanup)
         pin_state_dir(self, self._tmp.name)
         # The summary refresh calls the backend; nothing here has one.
-        patcher = mock.patch.object(Connection, "_schedule_summary_refresh",
+        patcher = mock.patch.object(ConversationHandlers, "schedule_summary_refresh",
                                     lambda _self: None)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -169,9 +170,9 @@ class ATurnReachesTheClientTests(_ChainCase):
 
         await self._run(sess, pool, ws)
 
-        self.assertEqual(sess._sub.filtered, 0,
+        self.assertEqual(sess.view.sub.filtered, 0,
                          "the replay watermark dropped live events")
-        self.assertEqual(sess._sub.dropped, 0)
+        self.assertEqual(sess.view.sub.dropped, 0)
 
     async def test_the_journal_holds_the_same_turn_the_client_saw(self):
         self._stored_session("s1")
@@ -215,7 +216,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         pool = FakePool(worker, active=None, store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
         sess = Connection(ws, pool)
-        sess._rendered_seq = 4321          # as a previous conversation would leave it
+        sess.view.rendered_seq = 4321          # as a previous conversation would leave it
 
         await self._run(sess, pool, ws)
 
@@ -223,7 +224,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         for expected in ("status", "tool_call", "tool_result", "answer"):
             self.assertIn(expected, kinds,
                           f"{expected} was silenced in a new conversation")
-        self.assertEqual(sess._sub.filtered, 0)
+        self.assertEqual(sess.view.sub.filtered, 0)
 
 
 class ProseSurvivesAnAbsenceTests(_ChainCase):

@@ -170,18 +170,18 @@ class TheCatchUpTurnTests(unittest.TestCase):
         conv.history = [{"role": "user", "content": "do it"}]
         conv.record.llm_history_full = list(conv.history)
         self.sid = conv.id
-        self.session.conv = conv
-        self.session._active_session_id = self.sid
-        self.session._running_turn_is_ours = lambda: True
+        self.session.view.conv = conv
+        self.session.view.active_session_id = self.sid
+        self.session.screen.running_turn_is_ours = lambda: True
 
     def _steer(self, text: str) -> None:
-        asyncio.run(self.session._handle_steer({"text": text}))
+        asyncio.run(self.session.turns.on_steer({"text": text}))
 
     def _flush(self, texts: list[str]) -> None:
         """What happens when the answer lands: the pool carries on, the view says so."""
         started = self.session.pool.wakes.after_turn(
-            self.session.conv, {"_unconsumed_steer": texts})
-        asyncio.run(self.session._announce_steer_turns(started))
+            self.session.view.conv, {"_unconsumed_steer": texts})
+        asyncio.run(self.session.turns.announce_steer_turns(started))
 
     def test_the_unread_message_starts_the_next_turn(self) -> None:
         self._steer("use the other file")
@@ -202,8 +202,8 @@ class TheCatchUpTurnTests(unittest.TestCase):
 
     def test_an_older_identical_turn_is_not_swallowed(self) -> None:
         """Removal is by identity: the same words said before are a different turn."""
-        self.session.conv.history.append({"role": "user", "content": "again"})
-        self.session.conv.record.llm_history_full = list(self.session.conv.history)
+        self.session.view.conv.history.append({"role": "user", "content": "again"})
+        self.session.view.conv.record.llm_history_full = list(self.session.view.conv.history)
         self._steer("again")
         self._flush(["again"])
         _text, history, _sid = self.worker.submitted[0]
@@ -259,7 +259,7 @@ class TheCatchUpTurnTests(unittest.TestCase):
         """Entries kept past the turn would delete a later turn's history from under it."""
         self._steer("read in time")
         self._flush([])
-        self.assertEqual(self.session.conv.live_steer, [])
+        self.assertEqual(self.session.view.conv.live_steer, [])
 
 
 class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
@@ -294,11 +294,11 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
         conv.history = [{"role": "user", "content": "do it"}]
         conv.record.llm_history_full = list(conv.history)
         self.sid = conv.id
-        self.session.conv = conv
-        self.session._active_session_id = self.sid
+        self.session.view.conv = conv
+        self.session.view.active_session_id = self.sid
 
     def _steer(self, text: str) -> None:
-        asyncio.run(self.session._handle_steer({"text": text}))
+        asyncio.run(self.session.turns.on_steer({"text": text}))
 
     def _injected(self) -> list[dict]:
         return [ev for ev in list(self.worker.out_q.queue)
@@ -330,14 +330,14 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
     def test_with_no_agent_at_all_the_notice_goes_straight_to_the_socket(self) -> None:
         """No agent means no run and no answer in flight: nothing to be ordered behind."""
         self.session.pool.worker = None
-        asyncio.run(self.session._announce_steer_turn("use the other file"))
+        asyncio.run(self.session.turns._announce_steer_turn("use the other file"))
         injected = [ev for ev in self.ws.sent if ev.get("type") == "steer_injected"]
         self.assertEqual([ev["text"] for ev in injected], ["use the other file"])
 
     def test_the_turn_is_not_bookkept_as_live_steering(self) -> None:
         """It steers nothing, so the answer flush must not delete its history entry."""
         self._steer("use the other file")
-        self.assertEqual(self.session.conv.live_steer, [])
+        self.assertEqual(self.session.view.conv.live_steer, [])
 
 
 if __name__ == "__main__":

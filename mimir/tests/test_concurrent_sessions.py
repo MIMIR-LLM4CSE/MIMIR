@@ -128,7 +128,7 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_answer_reaches_only_the_conversation_that_asked(self) -> None:
         self._park(self.a, "card-a")
         self._park(self.b, "card-b")
-        await self.sess._handle_approval_response(
+        await self.sess.cards.on_approval_response(
             {"id": "card-b", "choice": "y", "session_id": "s2"})
         self.assertEqual(self.b.answered, [("approval", "y")])
         self.assertEqual(self.a.answered, [], "answered a question another conversation asked")
@@ -138,12 +138,12 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
         attribution exists to prevent, and it attaches the user's approval to a call
         they never saw."""
         self._park(self.a, "card-a")
-        await self.sess._handle_approval_response({"id": "card-a", "choice": "y"})
+        await self.sess.cards.on_approval_response({"id": "card-a", "choice": "y"})
         self.assertEqual(self.a.answered, [])
 
     async def test_an_answer_for_an_unknown_conversation_is_dropped(self) -> None:
         self._park(self.a, "card-a")
-        await self.sess._handle_approval_response(
+        await self.sess.cards.on_approval_response(
             {"id": "card-a", "choice": "y", "session_id": "never-existed"})
         self.assertEqual(self.a.answered, [])
 
@@ -151,7 +151,7 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
         self.b._query_session_id = "s2"
         self.b.human._emit_prompt({"type": "user_question", "id": "q1", "questions": []},
                             questions=[])
-        await self.sess._handle_user_question_response(
+        await self.sess.cards.on_user_question_response(
             {"id": "q1", "answers": [{"selected": ["yes"]}], "session_id": "s2"})
         self.assertEqual(self.b.answered, [("question", [{"selected": ["yes"]}])])
         self.assertEqual(self.a.answered, [])
@@ -161,7 +161,7 @@ class TwoConversationsParkedAtOnceTests(unittest.IsolatedAsyncioTestCase):
         self._park(self.a, "card-a")
         self._park(self.b, "card-b")
         self.a.out_q.get_nowait() if not self.a.out_q.empty() else None
-        await self.sess._resend_parked_prompt()
+        await self.sess.cards.resend_parked_prompt()
         ids = {m["id"] for m in self.sess.ws.sent}
         self.assertEqual(ids, {"card-a", "card-b"})
 
@@ -175,17 +175,17 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
 
     def test_busy_is_asked_of_the_conversation_on_screen(self) -> None:
         self.b._query_session_id = "s2"          # the other one is working
-        self.assertFalse(self.sess._running_turn_is_ours())
+        self.assertFalse(self.sess.screen.running_turn_is_ours())
         self.a._query_session_id = "s1"
-        self.assertTrue(self.sess._running_turn_is_ours())
+        self.assertTrue(self.sess.screen.running_turn_is_ours())
 
     def test_the_panel_says_which_conversations_are_live(self) -> None:
         self.a._query_session_id = "s1"
         self.b.human._pending_prompt = {"id": "card-b"}
-        self.assertEqual(self.sess._session_activity("s1"),
+        self.assertEqual(self.sess.screen.session_activity("s1"),
                          {"running": True, "parked": False, "queued": False,
                           "runs": 0})
-        self.assertEqual(self.sess._session_activity("s2"),
+        self.assertEqual(self.sess.screen.session_activity("s2"),
                          {"running": False, "parked": True, "queued": False,
                           "runs": 0})
 
@@ -199,7 +199,7 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         """
         self.a._query_session_id = None                  # nothing is answering
         self.a.jobs._bg_jobs = {"j1": _watch(), "j2": _watch()}
-        activity = self.sess._session_activity("s1")
+        activity = self.sess.screen.session_activity("s1")
         self.assertFalse(activity["running"], "no turn is in flight")
         self.assertEqual(activity["runs"], 2)
 
@@ -208,7 +208,7 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         # work that finished hours ago.
         self.a._query_session_id = None
         self.a.jobs._bg_jobs = {"j1": _watch(done=True)}
-        self.assertEqual(self.sess._session_activity("s1")["runs"], 0)
+        self.assertEqual(self.sess.screen.session_activity("s1")["runs"], 0)
 
     def test_every_conversations_output_is_drained_busy_or_not(self) -> None:
         """The pump drains them all, and the journal keeps what it drained.
@@ -241,24 +241,24 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         self.a = _worker("s1")
         pool = _ManyPool({"s1": self.a})
         sess = _session(pool, active="s2")
-        sess._delete_refused = set()
+        sess.view.delete_refused = set()
         return sess
 
     def test_a_turn_in_progress_is_reported(self) -> None:
         sess = self._session()
         self.a._query_session_id = "s1"
-        self.assertEqual(sess._live_work_of("s1"), ["a turn in progress"])
+        self.assertEqual(sess.conversations._live_work_of("s1"), ["a turn in progress"])
 
     def test_a_turn_waiting_on_the_user_is_reported_as_such(self) -> None:
         """Parked is work waiting to continue, not work that has stopped."""
         sess = self._session()
         self.a._query_session_id = "s1"
         self.a.human._pending_prompt = {"id": "card-a"}
-        self.assertEqual(sess._live_work_of("s1"), ["a turn waiting for your answer"])
+        self.assertEqual(sess.conversations._live_work_of("s1"), ["a turn waiting for your answer"])
 
     def test_an_idle_conversation_has_nothing_to_report(self) -> None:
         sess = self._session()
-        self.assertEqual(sess._live_work_of("s1"), [])
+        self.assertEqual(sess.conversations._live_work_of("s1"), [])
 
     def test_a_sidecar_among_the_job_dirs_is_not_a_live_run(self) -> None:
         """``jobs/`` is read as a list of job handles, and a job is a directory.
@@ -278,18 +278,18 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
                 with open(os.path.join(jobs, ".some-marker"), "w") as fh:
                     fh.write("x")
                 sess = self._session()
-                self.assertEqual(sess._live_jobs_of("s1"), [])
+                self.assertEqual(sess.conversations._live_jobs_of("s1"), [])
 
                 # And a real job directory with no exit code still counts.
                 os.makedirs(os.path.join(jobs, "j1"))
-                self.assertEqual(sess._live_jobs_of("s1"), ["j1"])
+                self.assertEqual(sess.conversations._live_jobs_of("s1"), ["j1"])
 
     async def test_the_first_delete_of_a_working_conversation_is_refused(self) -> None:
         sess = self._session()
         self.a._query_session_id = "s1"
         sess.store = type("S", (), {"delete_session": lambda self, sid: 1 / 0})()
-        sess._send_sessions_list = lambda: _noop()
-        await sess._handle_delete_session({"session_id": "s1"})
+        sess.screen.send_sessions_list = lambda: _noop()
+        await sess.conversations.on_delete_session({"session_id": "s1"})
         # On the rendered channel: the transcript drops status text as transient tool
         # chatter, so a refusal sent there is a click that does nothing visible.
         reply = sess.ws.sent[0]
@@ -299,7 +299,7 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("delete again", reply["note"])
         # And asking again goes through: the warning is to be read, not to make the
         # conversation undeletable.
-        self.assertIn("s1", sess._delete_refused)
+        self.assertIn("s1", sess.view.delete_refused)
 
 
 async def _noop() -> None:
@@ -311,13 +311,13 @@ class LeavingAConversationTests(unittest.IsolatedAsyncioTestCase):
         """Two conversations can each have a blocking run; a divert must reach its own."""
         pool = _ManyPool({"s1": _worker("s1"), "s2": _worker("s2")})
         sess = _session(pool, active="s1")
-        sess._rows_for("s1")["call-1"] = "bash_run"
-        sess._rows_for("s2")["call-2"] = "bash_run"
-        self.assertEqual(sess._rows_for("s1"), {"call-1": "bash_run"})
-        self.assertEqual(sess._rows_for("s2"), {"call-2": "bash_run"})
-        sess._forget_row("call-1", "s1")
-        self.assertEqual(sess._rows_for("s1"), {})
-        self.assertEqual(sess._rows_for("s2"), {"call-2": "bash_run"},
+        sess.view.rows_for("s1")["call-1"] = "bash_run"
+        sess.view.rows_for("s2")["call-2"] = "bash_run"
+        self.assertEqual(sess.view.rows_for("s1"), {"call-1": "bash_run"})
+        self.assertEqual(sess.view.rows_for("s2"), {"call-2": "bash_run"})
+        sess.view.forget_row("call-1", "s1")
+        self.assertEqual(sess.view.rows_for("s1"), {})
+        self.assertEqual(sess.view.rows_for("s2"), {"call-2": "bash_run"},
                          "clearing one conversation's rows cleared another's")
 
 

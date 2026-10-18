@@ -124,12 +124,12 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_card_a_turn_is_parked_on_comes_back(self):
         card = {"type": "user_question", "id": "q1", "questions": [{"header": "Plan approval"}]}
         sess = self._session(_parked_worker(card))
-        await sess._resend_parked_prompt()
+        await sess.cards.resend_parked_prompt()
         self.assertEqual([json.loads(p) for p in sess.ws.sent], [_attributed(card)])
 
     async def test_nothing_is_sent_when_no_turn_is_parked(self):
         sess = self._session(_parked_worker(None))
-        await sess._resend_parked_prompt()
+        await sess.cards.resend_parked_prompt()
         self.assertEqual(sess.ws.sent, [])
 
     async def test_a_socket_that_fails_on_the_resend_does_not_break_the_connection(self):
@@ -139,7 +139,7 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
             raise ConnectionResetError("gone")
 
         sess.ws.send = _boom
-        await sess._resend_parked_prompt()  # must not raise
+        await sess.cards.resend_parked_prompt()  # must not raise
 
     def test_a_reconnect_throws_nothing_away(self):
         # Nothing is swept on connect. The pump drains every worker whether or not a
@@ -257,15 +257,15 @@ class HandshakeIsNotBlockedTests(unittest.IsolatedAsyncioTestCase):
         w.get_temperature_state = lambda: {"supported": True, "value": None}
         w._agent = object()
         sess = SessionFencingTests._session(self, w)
-        sess._purge_empty_sessions = lambda: None
-        sess._send_toggles = _noop_async
-        sess._send_sessions_list = _noop_async
-        sess._create_new_session = _noop_async
-        sess._resend_parked_prompt = _noop_async
-        sess._send_served_models = _noop_async
-        sess._send_replay = _noop_async
+        sess.conversations.purge_empty_sessions = lambda: None
+        sess.panel.send_toggles = _noop_async
+        sess.screen.send_sessions_list = _noop_async
+        sess.conversations.create_new_session = _noop_async
+        sess.cards.resend_parked_prompt = _noop_async
+        sess.panel.send_served_models = _noop_async
+        sess.send_replay = _noop_async
         sess._drain_loop = _noop_async
-        sess._summary_task = None
+        sess.conversations.summary_task = None
         sess.store = _NoSessions()
 
         started = asyncio.Event()
@@ -274,15 +274,15 @@ class HandshakeIsNotBlockedTests(unittest.IsolatedAsyncioTestCase):
             started.set()
             await asyncio.Event().wait()
 
-        sess._report_ended_jobs = _never_finishes
+        sess.detach.report_ended_jobs = _never_finishes
 
         handled: list[str] = []
 
         async def _handle(raw):
             handled.append(raw)
 
-        sess._handle = _handle
-        sess.ws = _OneMessageWS('{"type": "query", "text": "hello"}')
+        sess.handle = _handle
+        sess.out.ws = _OneMessageWS('{"type": "query", "text": "hello"}')
 
         await asyncio.wait_for(sess.run(), 5)
         self.assertTrue(started.is_set(), "the scan never ran at all")
@@ -321,20 +321,20 @@ class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
 
     def _session(self, worker):
         sess = SessionFencingTests._session(self, worker)
-        sess.ws = _ClosedWS()
+        sess.out.ws = _ClosedWS()
         # The session init between the greeting and the listen loop is not what is
         # under test; what matters is that the readiness question is asked after it.
-        sess._purge_empty_sessions = lambda: None
+        sess.conversations.purge_empty_sessions = lambda: None
 
         async def _noop(*_a, **_kw):
             return None
 
-        sess._send_sessions_list = _noop
-        sess._send_toggles = _noop
-        sess._create_new_session = _noop
-        sess._resend_parked_prompt = _noop
+        sess.screen.send_sessions_list = _noop
+        sess.panel.send_toggles = _noop
+        sess.conversations.create_new_session = _noop
+        sess.cards.resend_parked_prompt = _noop
         sess._drain_loop = _noop
-        sess._summary_task = None
+        sess.conversations.summary_task = None
         sess.store = _NoSessions()
         return sess
 
@@ -358,13 +358,13 @@ class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
         # nothing re-emits it, so the chat would sit on "starting the agent" for the
         # life of the connection with a working agent behind it. Asking the worker
         # directly, after the handshake, is what closes it.
-        original = sess._purge_empty_sessions
+        original = sess.conversations.purge_empty_sessions
 
         def _ready_then_setup():
             w._agent = object()
             original()
 
-        sess._purge_empty_sessions = _ready_then_setup
+        sess.conversations.purge_empty_sessions = _ready_then_setup
 
         await sess.run()
 

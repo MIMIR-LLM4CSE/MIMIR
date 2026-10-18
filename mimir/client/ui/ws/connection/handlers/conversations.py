@@ -1,8 +1,7 @@
 """The conversations of this connection: listing, opening, creating, deleting, saving.
 
-A part of ``Connection``: a mixin over the connection's own state, so a
-handler reads and writes the session it serves. ``MESSAGES`` names the inbound message
-types it answers.
+A handler group of ``Connection``, built with its view state, its socket, the pool
+and the shared ``Screen``. ``MESSAGES`` names the inbound message types it answers.
 """
 from __future__ import annotations
 
@@ -17,23 +16,30 @@ from .....session.jobs_on_disk import is_settled
 from .....session.summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
 from ......servers._shared.state_paths import session_dir
 from .....config import paths
+from ...pool.pool import AgentPool
+from ..screen import Screen
+from ..view import Sender, ViewState
+from .base import Handlers
 
 logger = logging.getLogger(__name__)
 
 
-class ConversationHandlers:
-    _summary_task: asyncio.Task[None] | None
-    _last_context_usage: int | None
-
+class ConversationHandlers(Handlers):
     MESSAGES: dict[str, str] = {
-        "clear_todos": "_handle_clear_todos",
-        "create_session": "_handle_create_session",
-        "switch_session": "_handle_switch_session",
-        "delete_session": "_handle_delete_session",
-        "rename_session": "_handle_rename_session",
+        "clear_todos": "on_clear_todos",
+        "create_session": "on_create_session",
+        "switch_session": "on_switch_session",
+        "delete_session": "on_delete_session",
+        "rename_session": "on_rename_session",
     }
 
-    def _purge_empty_sessions(self) -> None:
+    def __init__(self, view: ViewState, out: Sender, pool: AgentPool, screen: Screen) -> None:
+        super().__init__(view, out, pool, screen)
+        self.store = pool.conversations.store
+        # The session-summary refresh in flight, at most one per connection.
+        self.summary_task: asyncio.Task[None] | None = None
+
+    def purge_empty_sessions(self) -> None:
         """Delete sessions that have no title and no messages (stale from old reconnects)."""
         try:
             for meta in self.store.list_sessions():
@@ -48,59 +54,11 @@ class ConversationHandlers:
         except Exception:
             logger.debug("_purge_empty_sessions: a best-effort step failed and was skipped", exc_info=True)
 
-    async def _send_sessions_list(self) -> None:
-        sessions = self.store.list_sessions()
-        # The conversation on screen before it is saved, so the panel shows it at once.
-        if self.conv is not None and not self.conv.saved:
-            if self.conv.id not in {s.id for s in sessions}:
-                sessions = [self.conv.meta()] + sessions
-        try:
-            await self.ws.send(json.dumps({
-                "type": "sessions_list",
-                "sessions": [{**s.to_dict(), **self._session_activity(s.id)}
-                             for s in sessions],
-            }))
-        except Exception:
-            logger.debug("_send_sessions_list: the client went away mid-send", exc_info=True)
-
-    def _session_activity(self, session_id: str) -> dict:
-        """What a conversation is doing right now, for its row in the panel.
-
-        The part of concurrency the user cannot do without. A turn running in a
-        conversation nobody is reading is invisible otherwise, and one *parked on a card* is
-        worse than invisible: it waits on a person, with no timeout, by design — so a
-        conversation can sit stopped for ever with nothing on screen to explain it.
-
-        ``runs`` is the count of background runs it still has going, and it is not the
-        same question as ``running``: a conversation that launched a two-hour build and
-        answered has no turn in flight at all. That is the case detaching exists for,
-        and it was the one case nothing reported — the panel asked whether to keep the
-        work going only when a *turn* was live, so a job submitted and left behind was
-        abandoned with no question asked. Read off the live worker, which is where the
-        watchers are: a run cannot be live without one, since ``releasable`` refuses to
-        close a worker that holds a watcher.
-        """
-        # Guarded: this is read for every row of every listing, and the send around it
-        # swallows exceptions — so a hiccup here would blank the whole panel rather than
-        # lose one dot.
-        try:
-            worker = self.pool.get(session_id)
-            runs = len(worker.watched_job_keys()) if worker is not None else 0
-            return {
-                "running": self.pool.is_busy(session_id),
-                "parked": self.pool.is_parked(session_id),
-                "queued": self.pool.queued_position(session_id) is not None,
-                "runs": runs,
-            }
-        except Exception:
-            logger.debug("_session_activity: a best-effort step failed and was skipped", exc_info=True)
-            return {}
-
-    async def _create_new_session(self) -> None:
+    async def create_new_session(self) -> None:
         # Not saved yet — only once it has something in it, or every reconnect would
         # leave an empty "New session" behind.
-        self.conv = session = self.pool.conversations.new()
-        self._active_session_id = session.id
+        self.view.conv = session = self.pool.conversations.new()
+        self.view.active_session_id = session.id
         self.pool.set_active(session.id)
         write_active_session(session.id)
         # A new conversation has rendered nothing. Carried over, the previous one's
@@ -109,26 +67,26 @@ class ConversationHandlers:
         # replay gate drops the lot — while `token` and `thinking`, which are never
         # journaled and so never stamped, keep arriving. That is a chat that streams
         # text and reasoning for ever and shows no tool call, no diff and no answer.
-        self._rendered_seq = 0
+        self.view.rendered_seq = 0
         # No agent state to load and no grants to drop: a new conversation has no agent
         # yet, and the one built for it on its first query starts empty by construction.
         # Clearing anything here would reach into another conversation's agent, and
         # truncating an approved-paths file would revoke grants its turn is writing under.
         try:
-            await self.ws.send(json.dumps({
+            await self.out.send({
                 "type": "session_loaded",
                 "session_id": session.id,
                 "title": session.title,
                 "display_messages": [],
                 "todos": [],
                 "agent_ready": self.pool.ui_state(session.id)["agent_ready"],
-            }))
+            })
         except Exception:
             logger.debug("_create_new_session: the client went away mid-send", exc_info=True)
-        self._last_context_usage = None  # client cleared its bar on session_loaded
-        await self._emit_context_usage()
+        self.view.last_context_usage = None  # client cleared its bar on session_loaded
+        await self.screen.emit_context_usage()
 
-    async def _load_session(self, session_id: str) -> None:
+    async def load_session(self, session_id: str) -> None:
         conv = self.pool.conversations.get(session_id)
         if conv is None:
             raise FileNotFoundError(f"no conversation {session_id}")
@@ -138,20 +96,20 @@ class ConversationHandlers:
         # the saved snapshot over it throws away everything it learned since. Read before
         # the pointer moves, while `worker` still resolves the one being left.
         resuming_live_agent = self.pool.get(session.id) is not None
-        self.conv = conv
-        self._active_session_id = session.id
+        self.view.conv = conv
+        self.view.active_session_id = session.id
         self.pool.set_active(session.id)
         # Nothing is reset on a switch. Each conversation's approved paths are its own
         # file, so there is nothing of another conversation's to drop — and dropping
         # this one's would revoke grants its own turn may still be writing under.
         write_active_session(session.id)
-        self._rendered_seq = session.rendered_seq
-        self._publish_title(session.id, session.title)
+        self.view.rendered_seq = session.rendered_seq
+        self.screen.publish_title(session.id, session.title)
         if not resuming_live_agent:
             # Only when this conversation has no agent yet — the snapshot is how a
             # rebuilt agent picks up where the last one left off. An agent that is
             # already live has moved past it.
-            self.worker.load_agent_state({"carry_context": session.carry_context})
+            self.screen.worker.load_agent_state({"carry_context": session.carry_context})
 
         # If session had todos, restore them to disk so agent picks them up —
         # unless what is already on disk is newer than this snapshot (see below).
@@ -165,15 +123,15 @@ class ConversationHandlers:
                 snapshot_at=session.updated_at,
             ):
                 try:
-                    await self.ws.send(json.dumps({
+                    await self.out.send({
                         "type": "status",
                         "text": ("  ⓘ Kept the checklist already on disk — it is newer "
                                  "than this session's saved copy."),
-                    }))
+                    })
                 except Exception:
                     logger.debug("_load_session: the client went away mid-send", exc_info=True)
         try:
-            await self.ws.send(json.dumps({
+            await self.out.send({
                 "type": "session_loaded",
                 "session_id": session.id,
                 "title": session.title,
@@ -184,15 +142,15 @@ class ConversationHandlers:
                 # client shows the run as live, and — the part that is not
                 # cosmetic — knows a turn is open, so the answer that ends it is
                 # what hands the finished transcript back for saving.
-                "turn_running": self._running_turn_is_ours(),
+                "turn_running": self.screen.running_turn_is_ours(),
                 "agent_ready": self.pool.ui_state(session.id)["agent_ready"],
-            }))
+            })
         except Exception:
             logger.debug("_load_session: the client went away mid-send", exc_info=True)
-        await self._resend_deferred_prompt()
+        await self.screen.resend_deferred_prompt()
         await self._remind_untracked_jobs(session.id)
-        self._last_context_usage = None  # client cleared its bar on session_loaded
-        await self._emit_context_usage()
+        self.view.last_context_usage = None  # client cleared its bar on session_loaded
+        await self.screen.emit_context_usage()
 
     async def _remind_untracked_jobs(self, session_id: str) -> None:
         """Say when this conversation has runs going that nothing is watching.
@@ -216,7 +174,7 @@ class ConversationHandlers:
         if not live:
             return
         what = "run is" if len(live) == 1 else "runs are"
-        await self._notify(f"⏳ {len(live)} {what} still going in this conversation, "
+        await self.out.notify(f"⏳ {len(live)} {what} still going in this conversation, "
                            f"untracked since the agent last restarted — ask for their "
                            f"state to pick the tracking back up: {'; '.join(live[:3])}")
 
@@ -245,7 +203,7 @@ class ConversationHandlers:
         one without the other yields dependencies pointing at steps that are not there.
         """
         try:
-            todo_file = todo_file_for_session(self._active_session_id)
+            todo_file = todo_file_for_session(self.view.active_session_id)
             if not self._snapshot_is_current(todo_file, snapshot_at):
                 return False
             os.makedirs(os.path.dirname(todo_file), exist_ok=True)
@@ -292,17 +250,7 @@ class ConversationHandlers:
         except OSError:
             return True  # nothing on disk to lose
 
-    def _save(self) -> None:
-        """Write the conversation on screen down, with how far this client has rendered
-        it — never backwards: a replay is sized from it, and lowering it would resend
-        what the client already has."""
-        if self.conv is None:
-            return
-        record = self.conv.record
-        record.rendered_seq = max(record.rendered_seq, self._rendered_seq)
-        self.pool.writer.save_conversation(self.conv)
-
-    def _schedule_summary_refresh(self) -> None:
+    def schedule_summary_refresh(self) -> None:
         """Kick off a background regeneration of the session's description.
 
         Called once each turn has answered, so the description covers the work and
@@ -310,13 +258,13 @@ class ConversationHandlers:
         the WS event loop stays responsive, and the refreshed sessions list is pushed
         when it lands. At most one refresh is in flight per connection.
         """
-        if self._active_session_id is None:
+        if self.view.active_session_id is None:
             return
-        if self._summary_task is not None and not self._summary_task.done():
+        if self.summary_task is not None and not self.summary_task.done():
             return
         try:
-            self._summary_task = asyncio.get_event_loop().create_task(
-                self._refresh_session_summary(self._active_session_id)
+            self.summary_task = asyncio.get_event_loop().create_task(
+                self._refresh_session_summary(self.view.active_session_id)
             )
         except Exception:
             logger.debug("_schedule_summary_refresh: a best-effort step failed and was skipped", exc_info=True)
@@ -333,7 +281,7 @@ class ConversationHandlers:
             # The description is built from prose only, so its freshness has to be
             # measured in prose too: counting every message would re-summarize on each
             # block of tool rows, which changes nothing the summary can see.
-            text_msgs = self._text_count(messages)
+            text_msgs = self.screen.text_count(messages)
             # Refresh unless the stored description already covers exactly this
             # transcript and came from the current generator. A provisional one
             # (the query fallback) never counts as fresh, so it keeps retrying.
@@ -345,7 +293,7 @@ class ConversationHandlers:
             if fresh_enough:
                 return
             summary, generated = await asyncio.get_event_loop().run_in_executor(
-                None, generate_summary, self.worker.model, messages
+                None, generate_summary, self.screen.worker.model, messages
             )
             if not summary:
                 return
@@ -354,46 +302,31 @@ class ConversationHandlers:
             session.summary_msgs = text_msgs
             session.summary_version = SUMMARY_VERSION if generated else PROVISIONAL_VERSION
             self.pool.conversations.save(conv)
-            await self._send_sessions_list()
+            await self.screen.send_sessions_list()
         except Exception:
             logger.debug("_refresh_session_summary: a best-effort step failed and was skipped", exc_info=True)
             pass  # Descriptions are cosmetic — never disturb the session.
 
-    def _session_title(self, session_id: str) -> str:
-        """A conversation's name, or "" if it has none (or none saved yet)."""
-        conv = self.pool.conversations.get(session_id)
-        return conv.title if conv is not None else ""
+    async def on_clear_todos(self, msg: dict) -> None:
+        self.screen.worker.review.clear_todos()
+        await self.out.send({"type": "todo", "items": []})
 
-    def _publish_title(self, session_id: str | None, title: str) -> None:
-        """Tell a conversation's agent what that conversation is called.
-
-        Only so a card it raises while the user is reading elsewhere can say who is
-        asking. The agent has no other use for it, and never sees it in its own prompt.
-        """
-        worker = self.pool.get(session_id)
-        if worker is not None:
-            worker.session_title = title or ""
-
-    async def _handle_clear_todos(self, msg: dict) -> None:
-        self.worker.review.clear_todos()
-        await self.ws.send(json.dumps({"type": "todo", "items": []}))
-
-    async def _handle_create_session(self, msg: dict) -> None:
+    async def on_create_session(self, msg: dict) -> None:
         # The turn running in the conversation left keeps running: its answer goes to
         # that conversation, which is the pool's to write, not this view's.
-        self._save()
-        await self._create_new_session()
-        await self._send_sessions_list()
+        self.screen.save()
+        await self.create_new_session()
+        await self.screen.send_sessions_list()
 
-    async def _handle_switch_session(self, msg: dict) -> None:
+    async def on_switch_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()
         if not target_id or self.pool.conversations.get(target_id) is None:
             return
-        if target_id == self._active_session_id:
+        if target_id == self.view.active_session_id:
             return
-        self._save()
-        await self._load_session(target_id)
-        await self._send_sessions_list()
+        self.screen.save()
+        await self.load_session(target_id)
+        await self.screen.send_sessions_list()
 
     def _live_work_of(self, session_id: str) -> list[str]:
         """Everything of *session_id*'s that deleting it would cut short.
@@ -454,13 +387,13 @@ class ConversationHandlers:
                 live.append(label)
         return live
 
-    async def _handle_delete_session(self, msg: dict) -> None:
+    async def on_delete_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()
         if not target_id:
             return
         running = self._live_work_of(target_id)
-        if running and not msg.get("force") and target_id not in self._delete_refused:
-            self._delete_refused.add(target_id)
+        if running and not msg.get("force") and target_id not in self.view.delete_refused:
+            self.view.delete_refused.add(target_id)
             # Said rather than done: the user may well want it gone anyway, and the
             # answer is theirs. Nothing is deleted in the meantime.
             #
@@ -468,7 +401,7 @@ class ConversationHandlers:
             # as transient tool chatter, so a refusal sent there is a click that does
             # nothing visible followed by one that deletes — the warning this exists to
             # give, not given.
-            await self._command_reply(
+            await self.screen.command_reply(
                 "delete",
                 "Not deleted — that conversation still has work running",
                 items=[{"label": label} for label in running[:5]],
@@ -476,28 +409,22 @@ class ConversationHandlers:
                      + "Stop it first, or delete again to discard it.",
                 tone="warn",
             )
-            await self._send_sessions_list()
+            await self.screen.send_sessions_list()
             return
-        self._delete_refused.discard(target_id)
-        was_active = (target_id == self._active_session_id)
-        self._forget_session_state(target_id)
+        self.view.delete_refused.discard(target_id)
+        was_active = (target_id == self.view.active_session_id)
+        self.view.forget_session(target_id)
         # Its agent goes with it, freeing a slot — and whatever it was queued to run,
         # which would otherwise be admitted into a conversation that is gone.
         await self.pool.close(target_id)
         # The store removes its sidecar directory too (todo_list.md, plan.md, …).
         self.pool.conversations.delete(target_id)
         if was_active:
-            await self._create_new_session()
+            await self.create_new_session()
         await self.pool.pump()   # a freed slot may admit a conversation that was waiting
-        await self._send_sessions_list()
+        await self.screen.send_sessions_list()
 
-    def _forget_session_state(self, session_id: str) -> None:
-        """Drop everything this connection keeps per conversation, for one that is gone."""
-        for per_session in (self._live_rows, self._sent_progress, self._foreign_withheld,
-                            getattr(self, "_transcript_sync", None) or {}):
-            per_session.pop(session_id, None)
-
-    async def _handle_rename_session(self, msg: dict) -> None:
+    async def on_rename_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()
         new_title = (msg.get("title") or "").strip()
         conv = self.pool.conversations.get(target_id)
@@ -506,5 +433,5 @@ class ConversationHandlers:
         conv.record.title = new_title
         conv.record.title_custom = True  # a hand-picked title outranks the generated description
         self.pool.writer.save_conversation(conv)
-        self._publish_title(target_id, new_title)
-        await self._send_sessions_list()
+        self.screen.publish_title(target_id, new_title)
+        await self.screen.send_sessions_list()

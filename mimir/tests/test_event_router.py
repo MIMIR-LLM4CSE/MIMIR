@@ -41,7 +41,7 @@ class _RouterCase(unittest.IsolatedAsyncioTestCase):
         self.worker = _Worker()
         self.pool = FakePool(self.worker, active="s1")
         self.sess = bare_session(self.pool)
-        self.sess._sub = self.pool.bus.subscribe()
+        self.sess.view.sub = self.pool.bus.subscribe()
         self.router = EventRouter(self.sess)
 
     def _sent(self, kind: str) -> list[dict]:
@@ -52,17 +52,17 @@ class WaitingTests(_RouterCase):
     async def test_an_idle_connection_waits_without_a_timeout(self) -> None:
         # Nothing live on screen: the next look is the next event, however long.
         with self.assertRaises(asyncio.TimeoutError):
-            await asyncio.wait_for(self.router._next(self.sess._sub.queue), 0.2)
+            await asyncio.wait_for(self.router._next(self.sess.view.sub.queue), 0.2)
 
     async def test_a_live_turn_wakes_it_once_a_tick_for_its_refreshes(self) -> None:
         self.worker._query_session_id = "s1"
         with mock.patch.object(event_router, "_TICK", 0.05):
             self.assertIsNone(await asyncio.wait_for(
-                self.router._next(self.sess._sub.queue), 1.0))
+                self.router._next(self.sess.view.sub.queue), 1.0))
 
     async def test_an_event_is_returned_as_soon_as_it_is_there(self) -> None:
-        self.sess._sub.offer({"type": "status", "text": "x", "session_id": "s1"})
-        ev, _extras = await asyncio.wait_for(self.router._next(self.sess._sub.queue), 1.0)
+        self.sess.view.sub.offer({"type": "status", "text": "x", "session_id": "s1"})
+        ev, _extras = await asyncio.wait_for(self.router._next(self.sess.view.sub.queue), 1.0)
         self.assertEqual(ev["type"], "status")
 
 
@@ -70,9 +70,9 @@ class PerEventTests(_RouterCase):
     async def test_a_divertible_row_is_remembered_until_its_result(self) -> None:
         await self.router.route({"type": "tool_call", "id": "c1", "name": "bash",
                                  "divertible": True, "session_id": "s1"}, {})
-        self.assertEqual(self.sess._rows_for("s1"), {"c1": "bash"})
+        self.assertEqual(self.sess.view.rows_for("s1"), {"c1": "bash"})
         await self.router.route({"type": "tool_result", "id": "c1", "session_id": "s1"}, {})
-        self.assertEqual(self.sess._rows_for("s1"), {})
+        self.assertEqual(self.sess.view.rows_for("s1"), {})
 
     async def test_a_diff_pushes_the_review_bar_only_when_there_is_one(self) -> None:
         await self.router.route({"type": "diff", "session_id": "s1"}, {})
@@ -84,10 +84,10 @@ class PerEventTests(_RouterCase):
     async def test_another_conversations_event_is_withheld_and_counted(self) -> None:
         await self.router.route({"type": "tool_call", "id": "c1", "session_id": "s2"}, {})
         self.assertEqual(self._sent("tool_call"), [])
-        self.assertEqual(self.sess._foreign_withheld, {"s2": 1})
+        self.assertEqual(self.sess.view.foreign_withheld, {"s2": 1})
 
     async def test_a_wake_says_whether_it_started_a_turn_here(self) -> None:
-        self.sess._send_sessions_list = mock.AsyncMock()
+        self.sess.screen.send_sessions_list = mock.AsyncMock()
         await self.router.route({"type": "job_complete", "job_key": "j1",
                                  "session_id": "s1"}, {"_started": True})
         await self.router.route({"type": "job_complete", "job_key": "j2",

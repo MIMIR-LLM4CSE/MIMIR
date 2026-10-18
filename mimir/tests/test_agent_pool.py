@@ -460,7 +460,7 @@ class AdmissionLatencyTests(_PoolCase):
         pool.enqueue("s2", lambda w: None)
         sess = bare_session(pool, active="s1")
         held.busy = False
-        await sess._admit_waiting()
+        await sess.screen.admit_waiting()
         notices = [m for m in sess.ws.sent if m.get("session_id") == "s2"]
         self.assertEqual(len(notices), 1)
         self.assertIn("starting", notices[0]["text"])
@@ -470,13 +470,15 @@ class AdmissionLatencyTests(_PoolCase):
         from unittest import mock
         from mimir.client.ui.ws.connection.router import EventRouter
         session = types.SimpleNamespace(
-            _rows_for=lambda owner: {}, _sent_progress={},
-            _emit_context_usage=mock.AsyncMock(), _admit_waiting=mock.AsyncMock(),
-            _announce_detached_answer=mock.AsyncMock(), _foreign_withheld={})
+            view=types.SimpleNamespace(rows_for=lambda owner: {}, sent_progress={},
+                                       foreign_withheld={}),
+            screen=types.SimpleNamespace(emit_context_usage=mock.AsyncMock(),
+                                         admit_waiting=mock.AsyncMock()),
+            turns=types.SimpleNamespace(announce_detached_answer=mock.AsyncMock()))
         router = EventRouter(session)
         await router._after_error({"type": "error"}, {}, "s1")
         await router._foreign({"type": "error"}, {}, "s2")
-        self.assertEqual(session._admit_waiting.await_count, 2)
+        self.assertEqual(session.screen.admit_waiting.await_count, 2)
 
 
 class AnEventWakesThePumpTests(_PoolCase):
@@ -578,11 +580,11 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         from mimir.tests.support.connections import bare_session
         pool = self._pool(cap=2)
         sess = bare_session(pool, active="s1")
-        sess._request_panel = lambda **_kw: None   # the report itself is not under test
-        await sess._handle_list_panel({"type": "list_panel"})        # a timer asking
+        sess.panel._request_panel = lambda **_kw: None   # the report itself is not under test
+        await sess.panel.on_list_panel({"type": "list_panel"})        # a timer asking
         await asyncio.sleep(0.05)
         self.assertEqual(_StubWorker.built, 0)
-        await sess._handle_list_panel({"type": "list_panel", "build": True})
+        await sess.panel.on_list_panel({"type": "list_panel", "build": True})
         for _ in range(20):
             if _StubWorker.built:
                 break

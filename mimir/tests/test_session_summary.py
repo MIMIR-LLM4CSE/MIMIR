@@ -214,9 +214,9 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         pool = FakePool(type("W", (), {"model": "m"})(), conversations=Conversations(store))
         sess = Connection(_FakeWS(), pool)
         sess.store = store
-        sess.conv = None
-        sess._active_session_id = "s1"
-        sess._summary_task = None
+        sess.view.conv = None
+        sess.view.active_session_id = "s1"
+        sess.conversations.summary_task = None
         return sess
 
     async def test_provisional_and_generated_summaries_are_both_sent(self):
@@ -227,7 +227,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
                           summary_version=ss.SUMMARY_VERSION),
         ])
         sess = self._session(store)
-        await sess._send_sessions_list()
+        await sess.screen.send_sessions_list()
         rows = {r["id"]: r["summary"] for r in sess.ws.sent[0]["sessions"]}
         self.assertEqual(rows["s1"], "the raw query")   # shown while it retries
         self.assertEqual(rows["s2"], "Built the panel.")
@@ -236,7 +236,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         store = _FakeStore([_session_with(id="s1")])
         sess = self._session(store)
         with patch.object(ss, "get_backend", return_value=_StubBackend("Built the panel.")):
-            await sess._refresh_session_summary("s1")
+            await sess.conversations._refresh_session_summary("s1")
         saved = store.sessions["s1"]
         self.assertEqual(saved.summary, "Built the panel.")
         self.assertEqual(saved.summary_msgs, 2)
@@ -249,7 +249,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         )])
         sess = self._session(store)
         with patch.object(ss, "get_backend", return_value=_StubBackend(RuntimeError("down"))):
-            await sess._refresh_session_summary("s1")
+            await sess.conversations._refresh_session_summary("s1")
         saved = store.sessions["s1"]
         self.assertEqual(saved.summary, "fix the parser")
         self.assertEqual(saved.summary_version, ss.PROVISIONAL_VERSION)
@@ -257,7 +257,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         # …and the next query retries the real generation rather than keeping it.
         saved.display_messages.append({"role": "agent", "kind": "text", "text": "done"})
         with patch.object(ss, "get_backend", return_value=_StubBackend("Fixed the parser.")):
-            await sess._refresh_session_summary("s1")
+            await sess.conversations._refresh_session_summary("s1")
         self.assertEqual(store.sessions["s1"].summary, "Fixed the parser.")
         self.assertEqual(store.sessions["s1"].summary_version, ss.SUMMARY_VERSION)
 
@@ -269,7 +269,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         sess = self._session(store)
         stub = _StubBackend("should not be called")
         with patch.object(ss, "get_backend", return_value=stub):
-            await sess._refresh_session_summary("s1")
+            await sess.conversations._refresh_session_summary("s1")
         self.assertEqual(stub.calls, [])
         self.assertEqual(store.saved, [])
 
@@ -281,7 +281,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         )])
         sess = self._session(store)
         with patch.object(ss, "get_backend", return_value=_StubBackend("Built the panel, then fixed X.")):
-            await sess._refresh_session_summary("s1")
+            await sess.conversations._refresh_session_summary("s1")
         self.assertEqual(store.sessions["s1"].summary, "Built the panel, then fixed X.")
         self.assertEqual(store.sessions["s1"].summary_msgs, 4)
 
@@ -293,7 +293,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         sess = self._session(store)
         stub = _StubBackend("Added a mode switcher to the webview.")
         with patch.object(ss, "get_backend", return_value=stub):
-            await sess._refresh_session_summary("s1")
+            await sess.conversations._refresh_session_summary("s1")
         prompt = stub.calls[0][1][-1]["content"]
         self.assertIn("Assistant: Added ModeSwitcher.tsx", prompt)
         self.assertEqual(store.sessions["s1"].summary, "Added a mode switcher to the webview.")
@@ -304,7 +304,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         )])
         sess = self._session(store)
         with patch.object(ss, "get_backend", return_value=_StubBackend("Built the panel.")):
-            await sess._refresh_session_summary("s1")
+            await sess.conversations._refresh_session_summary("s1")
         self.assertEqual(store.sessions["s1"].summary, "Built the panel.")
 
 

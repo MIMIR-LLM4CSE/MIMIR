@@ -203,16 +203,16 @@ class WsCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_set_reports_the_held_value(self):
         sess = self._session(self._worker())
-        await sess._handle_command("/temperature 0.7")
+        await sess.panel.run_command("/temperature 0.7")
         self.assertEqual(json.loads(sess.ws.sent[-1]),
                          {"type": "temperature", "supported": True, "value": 0.7})
-        await sess._handle_command("/temperature default")
+        await sess.panel.run_command("/temperature default")
         self.assertIsNone(json.loads(sess.ws.sent[-1])["value"])
 
     async def test_invalid_value_is_an_error_and_changes_nothing(self):
         w = self._worker()
         sess = self._session(w)
-        await sess._handle_command("/temperature 9")
+        await sess.panel.run_command("/temperature 9")
         self.assertEqual(json.loads(sess.ws.sent[-1])["type"], "error")
         self.assertIsNone(w.state["value"])
 
