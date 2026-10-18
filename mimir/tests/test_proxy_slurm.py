@@ -231,9 +231,9 @@ class SubmitEvalTests(_FakeSbatchTest):
         self._session(metadata={"build_cmd": "make all", "build_partition": "compile"})
         res = server_proxy.proxy_slurm(op="eval", partition="gpu_simu", confirm=True)
         run_dir = res["run_dir"]
-        # squeue is not on PATH here, so the job reads as 'unknown'; force the state
-        # the guard is about and assert the build report alone settles it.
-        with mock.patch.object(procs, "_squeue_state", return_value="pending"):
+        # squeue is not on PATH here; force the state the guard is about and assert
+        # the build report alone settles it.
+        with mock.patch.object(procs, "_slurm_job_state", return_value=("pending", "", [])):
             self.assertEqual(procs.run_state(run_dir)["state"], "pending")
             build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                           "error": "build exited 2", "duration_s": 1.0}])
@@ -323,6 +323,16 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
         self.assertEqual(watcher["server"], "proxy")
         self.assertEqual(watcher["job_key"], "run-0001")
         self.assertEqual(watcher["status_op"]["tool"], "proxy_eval_status")
+
+    def test_a_finished_run_is_settled_in_the_workspace_job_dir(self) -> None:
+        """Otherwise the workspace scan reads it as live, and the server never idles."""
+        run_dir, _ = self._submitted()
+        with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
+            fh.write("{}")
+        with mock.patch.object(procs, "_slurm_job_state", return_value=("done", "", [])):
+            self.assertEqual(procs.run_state(run_dir)["state"], "done")
+        self.assertEqual(
+            shared_jobs.recorded_terminal_state(procs._workspace_job_dir(run_dir)), "done")
 
     def test_only_the_run_job_carries_the_watcher(self) -> None:
         """Both jobs are accounted for; only the run's end is the run's end.

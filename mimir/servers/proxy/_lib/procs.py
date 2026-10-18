@@ -12,6 +12,7 @@ import json
 import os
 import re
 import signal
+import shlex
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -146,26 +147,39 @@ def _workspace_job_dir(run_dir: str) -> str:
         return ""
 
 
-def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, str]:
-    """``(host, state)`` for *job_id*: what the run dir says, else whoever knows it.
+def _locate_slurm_job(run_dir: str, job_id: int) -> str:
+    """The state of *job_id* on whichever scheduler knows it, its recorded one first.
 
-    The sweep is what keeps a run trackable without being owned by a scheduler, and
-    the host it finds is written down so the next poll — and these are polls, on a
-    timer, for the life of the run — is one call again.
+    ``forgotten`` when every scheduler answered and none knows the job; ``unknown`` when
+    none could be asked. The host found is written down, so the next poll is one call.
     """
+    unreachable: list[str] = []
+
+    def state_on(host: str) -> tuple[str, str, list[str]]:
+        try:
+            return _slurm_job_state(job_id, host)
+        except (subprocess.TimeoutExpired, OSError):
+            unreachable.append(host)
+            return "unknown", "", []
+
     hint = _read_slurm_host(run_dir)
-    if hint is not None:
-        state = _squeue_state(job_id, host=hint)
-        if state != "unknown":
-            return hint, state
-    for host in _slurm_hosts():
-        if host == hint:
-            continue
-        state = _squeue_state(job_id, host=host)
-        if state != "unknown":
+    hosts = _slurm_hosts()
+    host, (state, _raw, _nodes) = jobs.locate_slurm_job(hint, hosts, state_on)
+    if host is not None:
+        if host != hint:
             _write_slurm_host(run_dir, host)
-            return host, state
-    return hint or _SLURM_LOCAL, "unknown"
+        return state
+    asked = ([hint] if hint is not None else []) + [h for h in hosts if h != hint]
+    return "unknown" if len(unreachable) == len(asked) else "forgotten"
+
+
+def _slurm_job_state(job_id: int, host: str) -> tuple[str, str, list[str]]:
+    """``_shared.jobs.slurm_state`` of *job_id* on *host*; raises when the scheduler
+    cannot be asked."""
+    def run_lines(script: str) -> list[str]:
+        res = _slurm_run(shlex.split(script), 10, host=host)
+        return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+    return jobs.slurm_state(str(job_id), run_lines)
 
 
 def _read_build_slurm_id(run_dir: str) -> int | None:
@@ -199,25 +213,6 @@ def _slurm_run(argv: list[str], timeout: int, stdin: str | None = None, *,
         stdin=None if stdin is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
     )
-
-
-def _squeue_state(job_id: int, *, host: str = _SLURM_LOCAL) -> str:
-    """Query squeue on *host*; return 'running'|'pending'|'done'|'crashed'|'unknown'."""
-    try:
-        res = _slurm_run(["squeue", "-j", str(job_id), "-h", "-o", "%T"], 10,
-                         host=host)
-        state = res.stdout.strip().upper()
-        if state in ("RUNNING", "COMPLETING"):
-            return "running"
-        if state in ("PENDING", "CONFIGURING", "REQUEUED"):
-            return "pending"
-        if state in ("COMPLETED",):
-            return "done"
-        if state:
-            return "crashed"
-        return "done"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return "unknown"
 
 
 def _build_percent(run_dir: str,
@@ -274,7 +269,10 @@ def run_state(run_dir: str) -> dict:
         # Wherever it is: a run's scheduler is read from its own directory, so the
         # ~15 callers of this keep asking the same question and get the right answer
         # for a job on any of them.
-        _, slurm_state = _locate_slurm_job(run_dir, job_id)
+        slurm_state = _locate_slurm_job(run_dir, job_id)
+        if slurm_state == "forgotten":
+            # Left the queue with no accounting to say how: its own files decide.
+            slurm_state = "done" if os.path.isfile(metrics_path) else "crashed"
         if slurm_state == "done" and not os.path.isfile(metrics_path):
             slurm_state = "crashed"
         # A split submission holds the run job PENDING behind the build. When the
@@ -285,6 +283,10 @@ def run_state(run_dir: str) -> dict:
                 and _build_job_failed(run_dir)):
             slurm_state = "crashed"
         state = slurm_state
+        if state in ("done", "crashed"):
+            # Settled where the workspace's job scan reads it, so the run stops
+            # counting as live once it is over.
+            jobs.record_terminal_state(_workspace_job_dir(run_dir), state)
     else:
         pid = _read_pid(run_dir)
         if pid:

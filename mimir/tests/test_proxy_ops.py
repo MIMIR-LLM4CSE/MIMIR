@@ -244,6 +244,9 @@ class EvalLoopTests(_TmpStorageTest):
         self.assertEqual(res["state"], "no_runs")
         self.assertIn("proxy_eval(op='run'", res["next_step"])
 
+        # Asked by name, as a watcher asks, the absence of a run ends the poll.
+        self.assertEqual(server_proxy.proxy_eval_status(proxy_name="tiny")["state"], "unknown")
+
         res = server_proxy.proxy_eval_status(op="config")
         self.assertEqual(res["config"]["benchmark_name"], "bench")
 

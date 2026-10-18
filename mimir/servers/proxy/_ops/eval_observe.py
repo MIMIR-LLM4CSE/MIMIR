@@ -192,6 +192,13 @@ def status(proxy_name: str = "") -> dict:
             {"state": "no_session", "note": "No proxy name or active session."},
             "proxy_eval(op='init', ...)"))
     run_dir = opt_active_run_dir(resolved)
+    if not run_dir and proxy_name:
+        # Asked about a named proxy, which is how a watcher asks: the run it followed is
+        # gone (cleaned, or the store moved), and only a terminal word ends its poll.
+        return ok(with_next(
+            {"state": "unknown",
+             "note": f"No optimization run of '{proxy_name}' is on record any more."},
+            NEXT_RUN))
     if not run_dir:
         return ok(with_next(
             {"state": "no_runs", "note": "No optimization runs found."}, NEXT_RUN))
