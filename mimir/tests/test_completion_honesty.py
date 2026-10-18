@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 from mimir.client.config.limits import EXERCISE_BUDGET
-from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
+from mimir.client.tools.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import (
     raise_validation_tier,
     record_run,

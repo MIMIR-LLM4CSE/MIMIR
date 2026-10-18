@@ -10,17 +10,17 @@ import time
 
 from ... import human_pause
 from ...config.limits import AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS
-from ...context.capabilities import timeout_for
+from ...tools.capabilities import timeout_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...event_sink import emit
 from ....servers._shared.jobs import job_key_of
 from ...protocol.tool_result import json_error_payload
-from ...tool_execution.exec_preview import extract_exec_preview
+from ...tools.exec_preview import extract_exec_preview
 from ...tool_execution.executor import run_post_tool_annotations
-from ...tool_execution.file_target import file_target
-from ...tool_execution.math_preview import extract_math_preview
-from ...context.tool_display import error_detail, summarize_tool_result
+from ...tools.file_target import file_target
+from ...tools.math_preview import extract_math_preview
+from ...tools.display import error_detail, summarize_tool_result
 from ..jobs.background import (
     await_background_job,
     detect_background_job,

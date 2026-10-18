@@ -754,7 +754,7 @@ export const KIND_ICONS: Record<string, ReactNode> = {
 ```
 Then declare the family on the tools that belong to it, server-side, and add it to
 `TOOL_KINDS` in `servers/_shared/capabilities.py` (mirrored in
-`client/context/capabilities.py`):
+`client/tools/capabilities.py`):
 ```python
 @mcp.tool(**tool_caps(kind="benchmark", caps=[CODE_EXEC], label="Benchmarking {target}"))
 ```

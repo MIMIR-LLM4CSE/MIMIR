@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .... import human_pause
-from ....context.capabilities import (
+from ....tools.capabilities import (
     IRREVERSIBLE,
     kind_for,
     label_for,
@@ -26,7 +26,7 @@ from ....context.capabilities import (
     reversibility_of,
 )
 from ....query_engine.deferral import CURRENT_CALL_ID
-from ....context.tool_display import shorten_display_args
+from ....tools.display import shorten_display_args
 from .file_preview import build_preview_diffs
 
 if TYPE_CHECKING:

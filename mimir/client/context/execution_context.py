@@ -9,7 +9,7 @@ from ..config.limits import (
     DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
     PLAN_EVIDENCE_MIN_FILES_READ,
 )
-from .bash_classify import Kind, classify_bash_command
+from ..tools.bash_classify import Kind, classify_bash_command
 from ..config import paths
 
 

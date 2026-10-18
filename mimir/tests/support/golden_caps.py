@@ -11,7 +11,7 @@ import inspect
 import pathlib
 import types
 
-from mimir.client.context.capabilities import infer_tool_caps
+from mimir.client.tools.capabilities import infer_tool_caps
 from mimir.servers._shared import capabilities as srv
 
 SERVERS_DIR = pathlib.Path(__file__).resolve().parents[2] / "servers"

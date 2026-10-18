@@ -23,8 +23,11 @@ import mimir.client.query_engine.finalize as finalize_module
 import mimir.client.query_engine.dispatch as dispatch_module
 import mimir.client.query_engine.plan_loop as plan_loop_module
 import mimir.client.event_sink as event_sink_module
-from mimir.client.context.capabilities import (
-    PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, ToolCaps,
+from mimir.client.tools.capabilities import (
+    PLAN_BLOCKED,
+    PLAN_READONLY,
+    TASK_PLANNING,
+    ToolCaps,
 )
 from mimir.client.config.limits import (
     AGENT_EMPTY_TURN_RETRIES, HARD_REPEAT_LIMIT, PLAN_EXPLORE_MAX_TURNS,

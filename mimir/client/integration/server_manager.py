@@ -17,7 +17,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from .. import human_pause
-from ..context.capabilities import infer_tool_caps
+from ..tools.capabilities import infer_tool_caps
 from ..protocol.tool_call import DOING_ARG
 from ..config import paths
 from ..config.paths import GLOBAL_STATE_DIR, SERVER_BASE
@@ -342,7 +342,7 @@ async def _register_session(*, agent: AgentPort, name: str, session: Any, listin
         registered.append(tool.name)
         agent.tool_owner[tool.name] = name
         # The tool's semantics (capabilities, arg roles, fallbacks, label), from what
-        # the server declares (meta/annotations); see context/capabilities.py.
+        # the server declares (meta/annotations); see tools/capabilities.py.
         agent.tool_caps[tool.name] = infer_tool_caps(tool)
         # Convert MCP tool -> Ollama function-calling format.
         # Parameter descriptions lifted out of the docstring's `Args:` block: a

@@ -3,12 +3,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import re as _re
-from ...context.capabilities import (
-    CODE_EXEC,
-    ENV_DISCOVERY,
-    ENV_MUTATE,
-    has_cap,
-)
+from ...tools.capabilities import CODE_EXEC, ENV_DISCOVERY, ENV_MUTATE, has_cap
 from .call import Call
 
 

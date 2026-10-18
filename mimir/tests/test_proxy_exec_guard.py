@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from mimir.client.guardrails.policy import gates
-from mimir.client.context.capabilities import ToolCaps, CODE_EXEC, READ
+from mimir.client.tools.capabilities import ToolCaps, CODE_EXEC, READ
 # Same module object the guard imports via `from ...servers.proxy._lib import store`.
 from mimir.servers.proxy._lib import store
 from mimir.servers._shared.atomic import write_json  # noqa: E402

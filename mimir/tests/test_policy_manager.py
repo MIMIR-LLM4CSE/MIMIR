@@ -7,7 +7,7 @@ from unittest import mock
 from unittest.mock import patch
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
-from mimir.client.context.bash_classify import bash_command_is_readonly
+from mimir.client.tools.bash_classify import bash_command_is_readonly
 from mimir.client.guardrails import toollist
 from mimir.tests.support.golden_caps import build_declared_registry
 from mimir.client.core.turn_state import TurnState

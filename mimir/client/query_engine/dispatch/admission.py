@@ -15,15 +15,15 @@ from typing import Any
 
 from ...config.limits import HARD_REPEAT_LIMIT
 from ....servers._shared.jobs import job_key_of
-from ...context.bash_classify import segment_program, shell_segments
-from ...context.capabilities import EDIT, has_cap, shell_command_args
+from ...tools.bash_classify import segment_program, shell_segments
+from ...tools.capabilities import EDIT, has_cap, shell_command_args
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...event_sink import emit
 from ...protocol.tool_call import DOING_ARG, UNPARSED_ARGUMENTS, as_dict, normalize_arguments
 from ...protocol.tool_result import json_error_payload
 from ...tool_execution.normalizer import make_hashable
-from ...context.tool_display import clip_doing
+from ...tools.display import clip_doing
 
 logger = logging.getLogger(__name__)
 

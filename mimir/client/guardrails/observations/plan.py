@@ -6,11 +6,7 @@ import re as _re
 from ...context import (
     SOURCE_FILE_EXTENSIONS,
 )
-from ...context.capabilities import (
-    TASK_PLANNING,
-    arg_role,
-    names_with_cap,
-)
+from ...tools.capabilities import TASK_PLANNING, arg_role, names_with_cap
 from .call import Call
 
 

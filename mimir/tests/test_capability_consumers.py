@@ -9,7 +9,7 @@ import ast
 import pathlib
 import unittest
 
-from mimir.client.context import capabilities as caps
+from mimir.client.tools import capabilities as caps
 
 CLIENT_DIR = pathlib.Path(caps.__file__).resolve().parents[1]
 CAP_DEF_FILE = pathlib.Path(caps.__file__).resolve()

@@ -9,8 +9,8 @@ import unittest
 import mimir.client.query_engine.dispatch.execution as dispatch_execution
 from mimir.client.event_sink import event_sink as capture_events
 from mimir.tests.support.context import build_execution_context
-from mimir.client.context.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
-from mimir.client.context.tool_display import (
+from mimir.client.tools.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
+from mimir.client.tools.display import (
     clip_doing,
     summarize_tool_result,
     dedup_row_detail,
@@ -366,7 +366,7 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         return {"t": ToolCaps(name="t", arg_roles={"path": ("path",)}, label=label)}
 
     def test_label_template_renders_the_file_name(self):
-        from mimir.client.context.capabilities import label_for
+        from mimir.client.tools.capabilities import label_for
         reg = self._reg(label="Reading file: {path}")
         short = shorten_display_args("t", {"path": self.ABS}, reg)
         self.assertEqual(label_for("t", short, reg), "Reading file: observations.py")

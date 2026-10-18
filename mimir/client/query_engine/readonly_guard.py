@@ -7,8 +7,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..event_sink import emit
-from ..context.capabilities import (
-    PLAN_BLOCKED, PLAN_READONLY, has_cap, readonly_invocation_spec, shell_command_of,
+from ..tools.capabilities import (
+    PLAN_BLOCKED,
+    PLAN_READONLY,
+    has_cap,
+    readonly_invocation_spec,
+    shell_command_of,
 )
 from ..guardrails.policy.readonly_exempt import is_readonly_invocation
 from ..protocol.tool_call import as_dict

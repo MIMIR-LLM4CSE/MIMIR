@@ -1,4 +1,4 @@
-"""Unit tests for the tool-capability registry (context/capabilities.py).
+"""Unit tests for the tool-capability registry (tools/capabilities.py).
 
 The *expected classification* now lives in ``support/golden_caps.py`` and is verified
 against the live server declarations by ``test_phase_b_servers.py``. This file
@@ -10,7 +10,7 @@ from mimir.tests.support.context import build_execution_context
 import types
 import unittest
 
-from mimir.client.context import capabilities as caps
+from mimir.client.tools import capabilities as caps
 
 
 class InferencePrecedenceTest(unittest.TestCase):

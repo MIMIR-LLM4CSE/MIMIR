@@ -42,7 +42,8 @@ graph TD
         core["core/<br/><small>ports · settings · human<br/>turn_state · extension_set</small>"]
     end
     subgraph FND["🧱 Foundations"]
-        ctx["context/<br/><small>execution_context · capabilities · carry<br/>paths · tool_display · signals</small>"]
+        ctx["context/<br/><small>execution_context · carry<br/>paths · signals · todo</small>"]
+        tools["tools/<br/><small>capabilities · bash_classify<br/>display · previews</small>"]
         llm["llm/<br/><small>backends · token calibration</small>"]
         cfg["config/ · protocol/<br/><small>paths · limits · settings · toggles<br/>models · events · messages</small>"]
     end
@@ -66,6 +67,8 @@ graph TD
     integ --> core
     core --> ctx
     core --> llm
+    ctx --> tools
+    tools --> cfg
     ctx --> cfg
     llm --> cfg
 
@@ -87,22 +90,23 @@ graph TD
     class te exe;
     class guard gov;
     class core con;
-    class ctx,llm,cfg fnd;
+    class ctx,tools,llm,cfg fnd;
 ```
 
 | Rank | Units | What they are |
 |---|---|---|
 | 0 | `config`, `protocol`, `event_sink`, `human_pause` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam |
-| 1 | `context`, `llm` | the `ExecutionContext` blackboard, the capability vocabulary, the carry context, the path rules, how a call reads on screen; the model backends and their token accounting |
-| 2 | `core` | the contracts the layers above agree on: `AgentPort`, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
-| 3 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the repair `ladder` |
-| 4 | `tool_execution` | a call run through the guardrails: policy before, observations after |
-| 5 | `extensions`, `integration` | the user's `.mimir/` extensions; connecting MCP servers |
-| 6 | `prompt` | the system prompt |
-| 7 | `query_engine` | a turn: the loops, the dispatcher, detached jobs, the context budget |
-| 8 | `agent_core` | `MimirAgent`, which every front-end, the runner and the sub-agent server instantiate; it satisfies `AgentPort` |
-| 9 | `session` | a conversation, independent of the front-end showing it, and what it keeps on disk |
-| 10 | `ui` | the front-ends: the CLI drives an agent in-process; the WebSocket server runs one worker per conversation in a pool |
+| 1 | `tools`, `llm` | what each tool is (its capabilities, what a bash command does) and how a call reads on screen; the model backends and their token accounting |
+| 2 | `context` | the `ExecutionContext` blackboard, the carry context, the path rules |
+| 3 | `core` | the contracts the layers above agree on: `AgentPort`, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
+| 4 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the repair `ladder` |
+| 5 | `tool_execution` | a call run through the guardrails: policy before, observations after |
+| 6 | `extensions`, `integration` | the user's `.mimir/` extensions; connecting MCP servers |
+| 7 | `prompt` | the system prompt |
+| 8 | `query_engine` | a turn: the loops, the dispatcher, detached jobs, the context budget |
+| 9 | `agent_core` | `MimirAgent`, which every front-end, the runner and the sub-agent server instantiate; it satisfies `AgentPort` |
+| 10 | `session` | a conversation, independent of the front-end showing it, and what it keeps on disk |
+| 11 | `ui` | the front-ends: the CLI drives an agent in-process; the WebSocket server runs one worker per conversation in a pool |
 
 No unit imports upwards. The WebSocket entry (`ui/ws/server/main.py`) imports
 `serving` only after applying `--cwd`, because `config.paths` resolves the workspace

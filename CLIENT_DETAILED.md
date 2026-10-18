@@ -17,7 +17,8 @@ about structure and flow. The VS Code frontend has its own file,
 |---|---|
 | `config/` | the vocabulary: `paths`, `limits`, `settings` (the closed sets of each user setting), `servers`, `models` and the model catalogue, the `preferences` store |
 | `protocol/` | the shapes that cross a boundary: `events` (event types, the private answer extras), `messages` (chat-message invariants, `reconcile_tool_pairs`), `tool_call`, `tool_result` |
-| `context/` | the `ExecutionContext` dataclass, tool capabilities, query signals, `@`-mention attach, the checklist file |
+| `tools/` | what the client knows about tools: `capabilities` (the registry each server declares into), `bash_classify` (what a shell command does), `display` and the previews (how a call and its result read on screen) |
+| `context/` | the `ExecutionContext` dataclass, query signals, `@`-mention attach, the checklist file |
 | `core/` | the contracts: `ports` (`AgentPort`, `HumanIO`), `settings` (`apply_setting` / `read_setting`), `human` (`TerminalHuman`, `Unattended`) |
 | `prompt/` | system-prompt construction |
 | `extensions/` | everything the user drops in the workspace `.mimir/` — servers, skills, plugin packs |
@@ -680,7 +681,7 @@ once — on the revision it will ship at.
 | `write.py` | `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` |
 | `state_machine.py` | `check_state_machine_guard()` and the retry budget |
 | `approval.py` | `ApprovalManager`: prompts, `always` grants, batch queue, snapshots, revert |
-| `bash_classify.py` | `classify_bash_command()` / `bash_command_is_readonly()` |
+| `tools/bash_classify.py` (read here) | `classify_bash_command()` / `bash_command_is_readonly()` |
 | `readonly_exempt.py` | the read-only dual-use waiver, in any mode |
 | `plugins.py` | `PolicyCheck` descriptor + `register_policy_check()`; the checks run are the agent's `extensions.policy_checks()` |
 
@@ -706,7 +707,7 @@ tools). Four filters, in this order: the user's server toggles, already applied 
 `agent.advertised_tools()`; the orchestrator's own mode, so a read-only mode has no write
 surface to give away and delegation cannot be the way around plan mode; the **sub-agent
 rung** the user set (`agent.subagent_level`, persisted in `preferences.json`), which at
-`explore` leaves nothing that writes; and `context.capabilities.reserved_for_main`, the
+`explore` leaves nothing that writes; and `tools.capabilities.reserved_for_main`, the
 tools a child is never granted — `MAIN_ONLY` (the plan the user approved, writing the
 shared memory), `DELEGATE` (no recursion), `CLUSTER_SUBMIT` (allocation hours).
 `grantable_writers()` says which of the granted tools would change the tree, because the
@@ -728,7 +729,7 @@ not in another project.
 
 ### The scientific-computing panel
 
-`context.capabilities.panel_sections()` lists the tools that declared `PANEL_REPORT` with
+`tools.capabilities.panel_sections()` lists the tools that declared `PANEL_REPORT` with
 a `panel` spec (`{section, order, args}`), and `AgentWorker.panel_sections()` calls each one
 straight on its owning session — read-only, no observations, like the background watcher's
 probes. Each server answers with render-ready content (`{title, lines, groups?, detail}`):
@@ -1016,7 +1017,7 @@ never a parse of the command, which is the guess the module exists to avoid. See
   *completeness* checks with no bash equivalent: the replacement-completeness grep for leftover text after a replace,
   and the cross-file reference check for stale callers after a rename.
 
-### `normalizer.py`, `protocol/tool_result.py`, `context/tool_display.py`
+### `normalizer.py`, `protocol/tool_result.py`, `tools/display.py`
 
 - `normalizer.py` — `normalize_tool_arguments()` and
   `rewrite_tool_for_context()`, which heals the `read_file` alias to `read_file_lines` and
@@ -1024,7 +1025,7 @@ never a parse of the command, which is the guess the module exists to avoid. See
 - `protocol/tool_result.py` — `normalize_tool_content()`, `truncate_text()`,
   `json_error_payload()`, `parse_tool_payload()`. The path rules
   (`normalize_workspace_path()` and its kin) are `context/paths.py`.
-- `context/tool_display.py` — `tool_status_message()` derives a human-readable status from
+- `tools/display.py` — `tool_status_message()` derives a human-readable status from
   the tool *name*, with no per-tool table: a verb is located in a reusable lexicon, rendered
   as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces declared
   path arguments to their **file name** for display, capability-driven off the `path`

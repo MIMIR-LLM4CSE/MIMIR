@@ -4,7 +4,7 @@ AST reproduces the golden classification (``support/golden_caps.py``).
 
 import unittest
 
-from mimir.client.context import capabilities as caps
+from mimir.client.tools import capabilities as caps
 from mimir.tests.support import golden_caps as golden
 
 

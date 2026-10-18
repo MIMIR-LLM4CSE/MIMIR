@@ -11,10 +11,7 @@ import unittest
 
 from mimir.servers.utilities.latex_display import number_latex, numeric_latex
 
-from mimir.client.tool_execution.math_preview import (
-    _MAX_LATEX_CHARS,
-    extract_math_preview,
-)
+from mimir.client.tools.math_preview import _MAX_LATEX_CHARS, extract_math_preview
 
 
 class NumericLatexTests(unittest.TestCase):

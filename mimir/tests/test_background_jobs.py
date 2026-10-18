@@ -15,7 +15,7 @@ from unittest import mock
 
 from mimir.tests.support.pools import FakePool
 
-from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
+from mimir.client.tools.capabilities import BACKGROUNDABLE, ToolCaps
 from mimir.client.query_engine.jobs import poll as job_poll
 from mimir.client.query_engine.jobs.background import (
     maybe_register_background_job,
@@ -241,7 +241,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
 
     def _live_registry(self, tool_name: str) -> dict:
         """The capabilities the client would resolve for *tool_name*, over the wire."""
-        from mimir.client.context.capabilities import infer_tool_caps
+        from mimir.client.tools.capabilities import infer_tool_caps
         tools = asyncio.run(self.server_bash.mcp.list_tools())
         tool = (tools[tool_name] if isinstance(tools, dict)
                 else next(t for t in tools if t.name == tool_name))
@@ -863,7 +863,7 @@ class _GuardAgent:
 
     def __init__(self, watched: list[dict] | None = None, *, with_hook: bool = True,
                  shell_tool: str = "bash_run") -> None:
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         self.tool_caps = {
             shell_tool: ToolCaps(name=shell_tool, capabilities=frozenset(),
                                  scope={"args": ["command"], "kind": "command_prefix"}),
@@ -2284,7 +2284,7 @@ class RewatchDetectionTests(unittest.TestCase):
 
     def test_it_needs_no_capability_only_the_shape(self) -> None:
         """A reader is a reader: BACKGROUNDABLE says a tool *launches* a run."""
-        from mimir.client.context.capabilities import has_cap, BACKGROUNDABLE
+        from mimir.client.tools.capabilities import has_cap, BACKGROUNDABLE
         self.assertFalse(has_cap("bash_job", BACKGROUNDABLE, self.agent.tool_caps))
         self.background.maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("j1")), self.agent)

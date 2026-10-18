@@ -12,13 +12,7 @@ from ...context import (
     is_known_to_exist,
     was_read,
 )
-from ...context.capabilities import (
-    EDIT,
-    OVERWRITE,
-    REMOVE,
-    has_cap,
-    target_path_arg,
-)
+from ...tools.capabilities import EDIT, OVERWRITE, REMOVE, has_cap, target_path_arg
 from ...config.limits import REPEATED_EDIT_FAILURE_LIMIT
 from ...protocol.tool_result import json_error_payload
 from ...context.execution_context import ExecutionContext

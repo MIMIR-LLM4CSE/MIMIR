@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-# --- capability vocabulary (mirror of context/capabilities.py) -------------
+# --- capability vocabulary (mirror of tools/capabilities.py) -------------
 # Grouped by behavioral family; values and membership must stay identical to the
 # client module (guarded by test_capabilities.test_vocab_in_sync).
 
@@ -26,7 +26,7 @@ CANDIDATE_SEARCH = "candidate_search"
 
 # Mutation (delete and whole-file overwrite are distinct policy categories;
 # finer details are arg-roles, not flags). is_write / clears_edit_loop are
-# *derived* client-side, not declared — see context/capabilities.py.
+# *derived* client-side, not declared — see tools/capabilities.py.
 EDIT = "edit"
 CONTENT_WRITE = "content_write"
 OVERWRITE = "overwrite"                  # replaces an existing file's entire content (subset of content_write)

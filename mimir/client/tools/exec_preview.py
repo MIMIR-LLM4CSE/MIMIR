@@ -11,7 +11,7 @@ from typing import Any
 
 from ..protocol.tool_result import parse_tool_payload
 from ...servers._shared.jobs import launched
-from ..context.tool_display import COMMAND_KEYS
+from .display import COMMAND_KEYS
 
 # CSI / OSC escape sequences (colors, cursor movement) — noise in an HTML panel.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
@@ -46,7 +46,7 @@ def _clip_stream(text: str, keep: str) -> tuple[str, bool]:
     return text, clipped
 
 
-def _command_from_args(arguments: dict | None) -> str | None:
+def _command_from_args(arguments: dict[str, Any] | None) -> str | None:
     """The command body, from whichever argument carries it.
 
     Same key priority as the ``tool_call`` ``detail`` preview, but the full text:
@@ -64,7 +64,7 @@ def _command_from_args(arguments: dict | None) -> str | None:
     return None
 
 
-def exec_input_preview(arguments: dict | None) -> dict[str, Any] | None:
+def exec_input_preview(arguments: dict[str, Any] | None) -> dict[str, Any] | None:
     """The IN half of the panel, sent on ``tool_call`` so it shows while the run is going.
 
     Same ``exec`` shape with empty streams; ``None`` when there is no command to show.
@@ -75,7 +75,7 @@ def exec_input_preview(arguments: dict | None) -> dict[str, Any] | None:
     return {"command": command, "stdout": "", "stderr": ""}
 
 
-def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, Any] | None:
+def extract_exec_preview(result_text: str, arguments: dict[str, Any] | None) -> dict[str, Any] | None:
     """The ``exec`` display object for a finished run, or for a run moved to the background.
 
     ``None`` for anything else, which keeps the row a plain summary.

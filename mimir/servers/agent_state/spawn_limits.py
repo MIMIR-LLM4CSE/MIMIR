@@ -15,7 +15,7 @@ SUBAGENT_MIN_BUDGET_SECS = 60
 
 # The longest a BLOCKING sub-agent call can last. The client caps any timeout a tool
 # declares at config.limits.TOOL_CALL_TIMEOUT_MAX_SECS (1200s, see
-# context.capabilities), so a call cannot hold a child for longer whatever this server
+# tools.capabilities), so a call cannot hold a child for longer whatever this server
 # declares — a longer budget is detached instead (see spawn_agent). The margin below
 # that ceiling is what lets this server's own cap fire first and hand back what the
 # child had, rather than the dispatcher killing the call with nothing to show.

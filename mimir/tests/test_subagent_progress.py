@@ -168,7 +168,7 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
         """The table is for the one tool that hands tools on. On every other call it
         would be payload nobody reads."""
         from mimir.client.config.models import CALLER_MODE_META, GRANTABLE_TOOLS_META
-        from mimir.client.context.capabilities import DELEGATE, ToolCaps
+        from mimir.client.tools.capabilities import DELEGATE, ToolCaps
         captured = await self._call("call_7")
         self.assertNotIn(GRANTABLE_TOOLS_META, captured["meta"])
 

@@ -11,7 +11,7 @@ from ..ladder import (
 )
 from ..proxy_state import active_proxy_source
 from ....servers._shared.jobs import handed_over, launched
-from ...context.capabilities import (
+from ...tools.capabilities import (
     CODE_EXEC,
     PLAN_BLOCKED,
     VALIDATE,

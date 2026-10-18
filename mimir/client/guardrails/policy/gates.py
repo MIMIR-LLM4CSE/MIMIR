@@ -23,8 +23,8 @@ from ....servers._shared.trusted_read_roots import trusted_read_roots
 from ...config import paths
 from ...config.limits import SKILL_PULL_MAX
 from ...config.servers import SKILL_LOAD_TOOL
-from ...context.bash_classify import segment_program, shell_segments
-from ...context.capabilities import (
+from ...tools.bash_classify import segment_program, shell_segments
+from ...tools.capabilities import (
     CLUSTER_SUBMIT,
     EDIT,
     PLAN_BLOCKED,
@@ -39,11 +39,7 @@ from ...context.execution_context import ExecutionContext
 from ...context.paths import absolute_workspace_path, scratch_roots
 from ...core.ports import AgentPort
 from ...protocol.tool_result import json_error_payload
-from ...context.tool_display import (
-    shorten_display_args,
-    tool_arg_preview,
-    tool_status_message,
-)
+from ...tools.display import shorten_display_args, tool_arg_preview, tool_status_message
 from ..proxy_state import active_proxy_source
 
 logger = logging.getLogger(__name__)

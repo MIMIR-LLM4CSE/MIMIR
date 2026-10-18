@@ -1619,7 +1619,7 @@ class BashServerTests(unittest.TestCase):
         and refused.
         """
         from mimir.client.guardrails import observations as obs
-        from mimir.client.context.bash_classify import READONLY_KINDS, classify_bash_command
+        from mimir.client.tools.bash_classify import READONLY_KINDS, classify_bash_command
         from mimir.servers._shared.shell_paths import (
             DENIED_COMMANDS, ENV_MANAGER_COMMANDS, EXEC_COMMANDS, INSPECT_COMMANDS,
             NEUTRAL_COMMANDS, READ_COMMANDS, SEARCH_COMMANDS,
@@ -1733,7 +1733,7 @@ class BashServerTests(unittest.TestCase):
 
     def test_every_refused_path_is_one_the_user_can_be_asked_about(self) -> None:
         """Every path the guard refuses is one the gate would surface, so the user can grant it."""
-        from mimir.client.context.bash_classify import shell_segments
+        from mimir.client.tools.bash_classify import shell_segments
         from mimir.servers._shared.shell_paths import (
             cd_destination, normalize_path_arg, segment_path_operands,
         )

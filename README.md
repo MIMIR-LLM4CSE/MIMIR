@@ -464,7 +464,7 @@ servers, policies, nudges, base prompt) is [`PLUGINS_DETAILED.md`](PLUGINS_DETAI
 
 ```python
 from mimir.client.extensions import PolicyCheck, register_policy_check
-from mimir.client.context.capabilities import EXTERNAL_FETCH, has_cap
+from mimir.client.tools.capabilities import EXTERNAL_FETCH, has_cap
 
 def _no_secret_exfil(agent, tool, args, ec):
     if has_cap(tool, EXTERNAL_FETCH, agent.tool_caps) and _looks_secret(args):

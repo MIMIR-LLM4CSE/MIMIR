@@ -36,7 +36,7 @@ import mimir.client.context.execution_context as execution_context_module
 import mimir.client.ui.cli.chat_session as chat_session_module
 from mimir.client.agent_core import MimirAgent
 from mimir.client.tool_execution.validation import auto_validate_written_file
-from mimir.client.context.capabilities import path_args
+from mimir.client.tools.capabilities import path_args
 from mimir.tests.support.golden_caps import build_declared_registry
 import mimir.client.query_engine.loop_base as loop_base_module
 import mimir.client.query_engine.turn as turn_module
@@ -281,7 +281,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_deleting_a_file_purges_it_from_every_path_field(self) -> None:
         """The purge runs, in both the query context and the carry context."""
         from mimir.client.guardrails import observations
-        from mimir.client.context.capabilities import REMOVE, ToolCaps
+        from mimir.client.tools.capabilities import REMOVE, ToolCaps
 
         m = execution_context_module
         ec = build_execution_context()

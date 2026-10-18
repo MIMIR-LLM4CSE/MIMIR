@@ -29,7 +29,7 @@ MIMIR writing there by itself. `mimir_api(topic="index")` is also the quickest a
 | **Base prompt** | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces the doctrine half** of the built-in default |
 
 > **Golden rule for policies & nudges:** key off **capabilities**
-> (from `mimir.client.context.capabilities`), never literal tool names. This keeps a plugin
+> (from `mimir.client.tools.capabilities`), never literal tool names. This keeps a plugin
 > robust across tool renames and makes it apply to any server that declares the capability.
 
 ---
@@ -150,7 +150,7 @@ def read_note(path: str) -> str:
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
 
 The vocabulary is mirrored between `mimir/servers/_shared/capabilities.py` and
-`mimir/client/context/capabilities.py` (parity guarded by
+`mimir/client/tools/capabilities.py` (parity guarded by
 `test_capabilities.test_vocab_in_sync`), and the other docs point here rather than
 re-listing it. This table is the **prose reference**; the **live list** is
 `mimir_api(topic="capabilities")`, which parses it out of the installed build with the
@@ -243,7 +243,7 @@ A policy check returns a JSON error string to block, or `None` to abstain. Examp
 ```python
 import json, re
 from mimir.client.extensions import PolicyCheck, register_policy_check
-from mimir.client.context.capabilities import EXTERNAL_FETCH, has_cap
+from mimir.client.tools.capabilities import EXTERNAL_FETCH, has_cap
 
 _SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|secret|token|password|bearer)\b")
 
@@ -277,7 +277,7 @@ mechanism of its own. Example:
 
 ```python
 from mimir.client.extensions import PostToolRule, register_post_tool
-from mimir.client.context.capabilities import EDIT, has_cap
+from mimir.client.tools.capabilities import EDIT, has_cap
 
 async def _project_checks(agent, tool_name, arguments, result, execution_context):
     if not has_cap(tool_name, EDIT, getattr(agent, "tool_caps", {})):
@@ -307,7 +307,7 @@ A nudge fires at most once per step (subject to per-query caps and the enforceme
 
 ```python
 from mimir.client.extensions import NudgeRule, register_nudge
-from mimir.client.context.capabilities import SENSITIVE, names_with_cap
+from mimir.client.tools.capabilities import SENSITIVE, names_with_cap
 
 def _authz_predicate(agent, query, active_mode, execution_context):
     return bool(names_with_cap(SENSITIVE, getattr(agent, "tool_caps", {})))

@@ -8,7 +8,7 @@ operands are dropped rather than guessed.
 import unittest
 
 from mimir.client.guardrails.observations.shell import PROJECT_VALIDATORS, VALIDATOR_TIER
-from mimir.client.context.bash_classify import (
+from mimir.client.tools.bash_classify import (
     Kind,
     bash_command_is_readonly,
     classify_bash_command,

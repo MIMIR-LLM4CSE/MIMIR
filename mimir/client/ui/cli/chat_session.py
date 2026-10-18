@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .chat_commands import CliHost, run_cli_command
-from ...context.capabilities import name_with_arg_role
+from ...tools.capabilities import name_with_arg_role
 from ...context.resource_context import augment_query_with_resources
 from ...context.todo import load_todo_items
 from ...llm.factory import get_backend

@@ -408,7 +408,7 @@ from the version it was trained on is wrong in the same way, silently. So each a
 derived from the installed package at call time:
 
 - the capability flags, their groups and what each one drives are **parsed out of
-  `client/context/capabilities.py`**, comments included — that file carries the note that
+  `client/tools/capabilities.py`**, comments included — that file carries the note that
   says what a flag is *for*, which is what someone choosing between flags needs;
 - the templates are the shipped `mimir/examples/` files, **read verbatim**;
 - the drop-in paths come from the same
@@ -1417,7 +1417,7 @@ Capabilities and gating:
   the caller's own mode and has nothing writing in it there. So it stays plainly visible in
   plan and ask — that is where a sweep is the whole of the work.
 - What a child is never granted is declared by the tools themselves, and read by
-  `context.capabilities.reserved_for_main`: `MAIN_ONLY` (the plan the user approved, the
+  `tools.capabilities.reserved_for_main`: `MAIN_ONLY` (the plan the user approved, the
   questions asked of them, writing the shared memory), `DELEGATE` (no recursion) and
   `CLUSTER_SUBMIT` (allocation hours are spent where the user can see it). `TASK_PLANNING`
   is deliberately *not* reserved — it covers the working checklist too, which a child keeps
@@ -1744,7 +1744,7 @@ Pure tools, which declare no capabilities at all, still declare a `kind`: the ro
 drawn for every call, not only for the classified ones.
 
 The capability vocabulary is defined once in `_shared/capabilities.py` and mirrored
-exactly in `client/context/capabilities.py` (parity guarded by
+exactly in `client/tools/capabilities.py` (parity guarded by
 `test_capabilities.test_vocab_in_sync`); the per-flag reference table lives in
 [`PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md#tool-capabilities) — this file does not
 re-list it. Declare only the kinds

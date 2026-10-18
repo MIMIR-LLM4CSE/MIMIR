@@ -1,4 +1,4 @@
-"""Hermetic tests for the file target of a tool row (tool_execution/file_target.py).
+"""Hermetic tests for the file target of a tool row (tools/file_target.py).
 
 The target is what makes the file name in a row clickable: the absolute path the
 call touched and the lines it covered. Found by argument name and result keys, never
@@ -10,7 +10,7 @@ import os
 import tempfile
 import unittest
 
-from mimir.client.tool_execution.file_target import file_target, result_span
+from mimir.client.tools.file_target import file_target, result_span
 
 
 class FileTargetTests(unittest.TestCase):

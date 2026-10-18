@@ -17,7 +17,7 @@ from ..config.models import (
     SUBAGENT_LEVEL_META,
 )
 from ..config.settings import DEFAULT_SUBAGENT_LEVEL
-from ..context.capabilities import (
+from ..tools.capabilities import (
     CACHEABLE,
     CODE_NAV,
     DELEGATE,

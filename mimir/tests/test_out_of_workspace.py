@@ -8,7 +8,7 @@ import os
 import tempfile
 import unittest
 
-from mimir.client.context.capabilities import ToolCaps, CODE_EXEC, READ, EDIT
+from mimir.client.tools.capabilities import ToolCaps, CODE_EXEC, READ, EDIT
 from mimir.client.guardrails.policy import approval as approval_mod
 from mimir.client.guardrails.policy import engine, gates
 import mimir.client.config.paths as paths

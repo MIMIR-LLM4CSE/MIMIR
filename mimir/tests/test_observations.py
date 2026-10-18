@@ -104,7 +104,7 @@ class ActionOpCountTests(unittest.TestCase):
     """
 
     def _agent(self):
-        from mimir.client.context.capabilities import PLAN_BLOCKED, ToolCaps
+        from mimir.client.tools.capabilities import PLAN_BLOCKED, ToolCaps
         return types.SimpleNamespace(
             normalize_workspace_path=lambda p: p or "",
             is_code_filepath=lambda p: False,
@@ -132,7 +132,7 @@ class DelegatedExplorationTests(unittest.TestCase):
     """A sub-agent's reading is the caller's evidence — but not its pre-edit warrant."""
 
     def _agent(self):
-        from mimir.client.context.capabilities import DELEGATE, ToolCaps
+        from mimir.client.tools.capabilities import DELEGATE, ToolCaps
         return types.SimpleNamespace(
             normalize_workspace_path=lambda p: p or "",
             is_code_filepath=lambda p: False,
@@ -187,7 +187,7 @@ class EditFailureStreakTests(unittest.TestCase):
     """
 
     def _agent(self, extra_caps=None):
-        from mimir.client.context.capabilities import EDIT, ToolCaps
+        from mimir.client.tools.capabilities import EDIT, ToolCaps
         caps = {
             "replace_in_file": ToolCaps(
                 name="replace_in_file",
@@ -252,7 +252,7 @@ class EditFailureStreakTests(unittest.TestCase):
         self.assertEqual(ec.edits.edit_failures["mod.py"].streak, 3)
 
     def test_reread_resets_streak(self) -> None:
-        from mimir.client.context.capabilities import READ, ToolCaps
+        from mimir.client.tools.capabilities import READ, ToolCaps
         agent = self._agent(extra_caps={
             "read_file": ToolCaps(name="read_file", capabilities=frozenset({READ})),
         })
@@ -300,7 +300,7 @@ class BashCommandObservationTests(unittest.TestCase):
     """A shell command credits the same context fields as the dedicated file and search tools."""
 
     def _agent(self):
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         return types.SimpleNamespace(
             normalize_workspace_path=lambda p: p or "",
             is_code_filepath=lambda p: str(p).endswith(".py"),
@@ -383,7 +383,7 @@ class BashValidationObservationTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _agent(self):
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         reg = {"bash_run": ToolCaps(
             name="bash_run", scope={"kind": "command_prefix", "args": ["command"]},
         )}
@@ -668,7 +668,7 @@ class RedTestRunObservationTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _agent(self):
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         reg = {"bash_run": ToolCaps(
             name="bash_run", scope={"kind": "command_prefix", "args": ["command"]},
         )}
@@ -843,7 +843,7 @@ class ExitAttributionTests(unittest.TestCase):
     """Whether the status handed back is the one the run produced."""
 
     def _agent(self):
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         return types.SimpleNamespace(
             tool_caps={"bash_run": ToolCaps(
                 name="bash_run",
@@ -927,7 +927,7 @@ class RunLedgerKeyTests(unittest.TestCase):
 
     def test_the_security_default_is_untouched(self):
         # Only run_ledger_key opts in; the gate keeps refusing what it always refused.
-        from mimir.client.context.bash_classify import classify_bash_command
+        from mimir.client.tools.bash_classify import classify_bash_command
         cmd = 'python3 t.py; echo "x=$?"'
         self.assertIsNone(classify_bash_command(cmd))
         self.assertIsNotNone(classify_bash_command(cmd, allow_expansion=True))
@@ -951,7 +951,7 @@ class PluginValidatorObservationTests(unittest.TestCase):
     """
 
     def _agent(self):
-        from mimir.client.context.capabilities import ToolCaps, VALIDATE
+        from mimir.client.tools.capabilities import ToolCaps, VALIDATE
         reg = {"pack_validate": ToolCaps(
             name="pack_validate",
             capabilities=frozenset({VALIDATE}),
@@ -989,7 +989,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
     """
 
     def _agent(self, caps, **kwargs):
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         reg = {"runner": ToolCaps(name="runner", capabilities=frozenset(caps), **kwargs)}
         return types.SimpleNamespace(
             tool_caps=reg,
@@ -1008,7 +1008,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
         )
 
     def test_a_code_exec_tool_leaves_its_run_awaiting_a_verdict(self):
-        from mimir.client.context.capabilities import CODE_EXEC
+        from mimir.client.tools.capabilities import CODE_EXEC
         agent, ec = self._agent({CODE_EXEC}), self._ctx({"solver.py"})
         self._call(agent, ec)
         self.assertTrue(ec.execution.runs["runner"]["completed"])
@@ -1017,7 +1017,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
 
     def test_a_declared_path_arg_validates_nothing(self):
         # Naming the file it ran does not make the call a check of that file.
-        from mimir.client.context.capabilities import CODE_EXEC
+        from mimir.client.tools.capabilities import CODE_EXEC
         agent = self._agent({CODE_EXEC}, arg_roles={"path": ("target",)})
         ec = self._ctx({"a.py", "b.py"})
         self._call(agent, ec, target="b.py")
@@ -1027,20 +1027,20 @@ class ExecutionToolObservationTests(unittest.TestCase):
     def test_with_nothing_written_the_run_is_recorded_all_the_same(self):
         # An analysis-only session: no file was touched, but the answer rests entirely
         # on that output.
-        from mimir.client.context.capabilities import CODE_EXEC
+        from mimir.client.tools.capabilities import CODE_EXEC
         agent, ec = self._agent({CODE_EXEC}), self._ctx()
         self._call(agent, ec)
         self.assertIn("runner", ec.execution.runs)
 
     def test_a_writer_owes_nothing(self):
-        from mimir.client.context.capabilities import EDIT
+        from mimir.client.tools.capabilities import EDIT
         agent, ec = self._agent({EDIT}), self._ctx({"solver.py"})
         self._call(agent, ec, path="solver.py")
         self.assertFalse(ec.execution.runs)
 
     def test_a_shell_tool_is_left_to_the_bash_observer(self):
         # Mutual exclusion: otherwise the same run is registered twice, once per handler.
-        from mimir.client.context.capabilities import CODE_EXEC
+        from mimir.client.tools.capabilities import CODE_EXEC
         agent = self._agent(
             {CODE_EXEC}, scope={"args": ["command"], "kind": "command_prefix"},
         )
@@ -1049,7 +1049,7 @@ class ExecutionToolObservationTests(unittest.TestCase):
         self.assertEqual(list(ec.execution.runs), ["python solver.py"])
 
     def test_a_failed_call_owes_nothing(self):
-        from mimir.client.context.capabilities import CODE_EXEC
+        from mimir.client.tools.capabilities import CODE_EXEC
         agent, ec = self._agent({CODE_EXEC}), self._ctx({"solver.py"})
         runtime.record_tool_observation(
             agent, "runner", {}, '{"status": "error"}', ec,
@@ -1254,7 +1254,7 @@ class MissingCommandImputationTests(unittest.TestCase):
     """
 
     def _agent(self):
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         reg = {"bash_run": ToolCaps(
             name="bash_run", scope={"kind": "command_prefix", "args": ["command"]},
         )}
@@ -1329,7 +1329,7 @@ class DeclaredEditSetTests(unittest.TestCase):
     """
 
     def _agent(self):
-        from mimir.client.context.capabilities import TASK_PLANNING, ToolCaps
+        from mimir.client.tools.capabilities import TASK_PLANNING, ToolCaps
         return types.SimpleNamespace(
             normalize_workspace_path=lambda p: p or "",
             tool_caps={

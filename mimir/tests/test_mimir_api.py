@@ -18,7 +18,7 @@ SERVERS_DIR = pathlib.Path(__file__).resolve().parents[1] / "servers"
 
 from mimir.client.config import paths as k                        
 from mimir.client.config.servers import SERVERS                   
-from mimir.client.context import capabilities as caps             
+from mimir.client.tools import capabilities as caps             
 from mimir.client.extensions import resolve_skills_dir            
 from mimir.servers._shared import extension_paths                 
 from mimir.tests.support.modules import spec_for

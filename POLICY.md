@@ -288,7 +288,7 @@ target **already exists** — a file that does not exist yet has no callers to b
 | `guardrails/policy/write.py` | read-before-overwrite, delete evidence, anti-thrashing |
 | `guardrails/policy/state_machine.py` | the workflow-state guard and the retry budget |
 | `guardrails/policy/approval.py` | `ApprovalManager`: prompts, `always` grants, batch mode, snapshots, revert |
-| `context/bash_classify.py` | classifies a shell command into kinds (read/search/inspect/write/exec/env) |
+| `tools/bash_classify.py` | classifies a shell command into kinds (read/search/inspect/write/exec/env) |
 | `guardrails/policy/readonly_exempt.py` | waives the prompt for a read-only dual-use shell command, in any mode |
 | `guardrails/observations/` | the blackboard writer: `record_tool_observation` and the observers in `ORDER` |
 | `guardrails/workflow/` | `state`, `denials` (the denial ladder), `commitments`, `completion` (the report) |

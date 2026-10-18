@@ -998,8 +998,11 @@ async def _drive_sub_agent(
 ) -> dict:
     """Configure the child agent, run it, and report what it did."""
     from mimir.client.extensions import all_servers
-    from mimir.client.context.capabilities import (
-        PLAN_BLOCKED, PLAN_READONLY, explorer_servers, has_cap,
+    from mimir.client.tools.capabilities import (
+        PLAN_BLOCKED,
+        PLAN_READONLY,
+        explorer_servers,
+        has_cap,
     )
 
     # Sub-agents don't reason out loud: set the rung, not just the run() flag, since

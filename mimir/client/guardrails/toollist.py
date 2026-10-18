@@ -12,9 +12,14 @@ from typing import Any
 
 from ..config.settings import DEFAULT_SUBAGENT_LEVEL, subagent_level_allows
 from ..config.models import READONLY_MODES
-from ..context.capabilities import (
-    PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, has_cap, names_with_arg_role,
-    names_with_cap, reserved_for_main,
+from ..tools.capabilities import (
+    PLAN_BLOCKED,
+    PLAN_READONLY,
+    TASK_PLANNING,
+    has_cap,
+    names_with_arg_role,
+    names_with_cap,
+    reserved_for_main,
 )
 from ..context.execution_context import ExecutionContext
 from ..core.ports import AgentPort

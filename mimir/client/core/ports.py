@@ -11,7 +11,7 @@ from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from ..config.toggles import Toggles
-from ..context.capabilities import ToolCaps
+from ..tools.capabilities import ToolCaps
 from ..context.carry import CarryContext
 from ..context.execution_context import ExecutionContext
 from .extension_set import ExtensionSet

@@ -5,7 +5,7 @@ within 60 s.
 """
 
 from mimir.client.extensions import PostToolRule, register_post_tool
-from mimir.client.context.capabilities import EDIT, has_cap
+from mimir.client.tools.capabilities import EDIT, has_cap
 
 
 async def _project_checks(agent, tool_name, arguments, result, execution_context):

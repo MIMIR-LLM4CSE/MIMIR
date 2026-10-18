@@ -39,7 +39,7 @@ _BUNDLED_SERVERS = os.path.join(_PKG, "servers")
 # servers/_shared/capabilities.py, which is what a server imports — and a parity test
 # keeps them level. The client copy is the one read here: it carries the section
 # headers and the per-flag note that say what each flag is *for*.
-_CAP_SOURCE = os.path.join(_PKG, "client", "context", "capabilities.py")
+_CAP_SOURCE = os.path.join(_PKG, "client", "tools", "capabilities.py")
 
 # A template is a file the user is meant to copy; none of the shipped ones is anywhere
 # near this, so the cap only bounds a pathological workspace, never a real answer.
@@ -413,7 +413,7 @@ def mimir_api(topic: str = "index", name: str = "") -> dict:
         return ok({
             "declare_with": "from mimir.servers._shared.capabilities import tool_caps, "
                             "READ, CACHEABLE   # server side",
-            "read_with": "from mimir.client.context.capabilities import has_cap, "
+            "read_with": "from mimir.client.tools.capabilities import has_cap, "
                          "names_with_cap   # policy / nudge side",
             "flags": vocab["flags"],
             "count": len(vocab["flags"]),

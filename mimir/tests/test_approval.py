@@ -5,8 +5,12 @@ from mimir.tests.support.context import build_execution_context
 from mimir.client.guardrails.policy import approval
 from mimir.client.guardrails.policy.approval import ApprovalManager as _ApprovalManager
 from mimir.client.guardrails.workflow import approval_is_settled
-from mimir.client.context.capabilities import (
-    NON_BATCH, SENSITIVE, ToolCaps, fallbacks, names_with_cap,
+from mimir.client.tools.capabilities import (
+    NON_BATCH,
+    SENSITIVE,
+    ToolCaps,
+    fallbacks,
+    names_with_cap,
 )
 from mimir.tests.support import golden_caps as golden
 
@@ -230,7 +234,7 @@ class ReseedClassificationTests(unittest.TestCase):
 
     def _registry(self):
         # A small live-style registry: bash_run is sensitive+non_batch with a fallback.
-        from mimir.client.context.capabilities import PLAN_BLOCKED
+        from mimir.client.tools.capabilities import PLAN_BLOCKED
         return {
             "bash_run": ToolCaps(
                 name="bash_run",

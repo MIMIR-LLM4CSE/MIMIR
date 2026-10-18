@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 
 import mimir.client.guardrails.observations as runtime
-from mimir.client.context import capabilities as caps
+from mimir.client.tools import capabilities as caps
 from mimir.tests.support.context import build_execution_context
 from mimir.client.guardrails.nudges import maybe_append_nudge, maybe_inject_env_resolution
 from mimir.tests.support.golden_caps import build_declared_registry

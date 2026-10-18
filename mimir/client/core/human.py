@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 from .. import human_pause
-from ..context.capabilities import label_for
-from ..context.tool_display import shorten_display_args
+from ..tools.capabilities import label_for
+from ..tools.display import shorten_display_args
 
 
 class TerminalHuman:

@@ -34,7 +34,7 @@ def _report(hpc, **kwargs) -> dict:
 
 from mimir.servers._shared import slurm_site
 
-from mimir.client.context.capabilities import PANEL_REPORT, ToolCaps, panel_sections
+from mimir.client.tools.capabilities import PANEL_REPORT, ToolCaps, panel_sections
 from mimir.client.core.turn_state import TurnState
 
 

@@ -11,7 +11,7 @@ SKILL_LOAD_TOOL: str = "load_skill"
 
 # Tool classification (sensitive / plan-blocked / path args / …) is not listed here:
 # each server declares its tools' capabilities and the client reads them from the
-# per-agent live registry (agent.tool_caps). See context/capabilities.py and POLICY.md.
+# per-agent live registry (agent.tool_caps). See tools/capabilities.py and POLICY.md.
 
 SERVERS: dict[str, str] = {
     "math": SERVER_BASE + "utilities/server_math.py",

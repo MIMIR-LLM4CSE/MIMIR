@@ -14,7 +14,7 @@ from ...context.execution_context import (
     nudge_count,
 )
 from ....servers._shared.shell_paths import any_command_on_path
-from ...context.capabilities import CODE_EXEC, names_with_cap
+from ...tools.capabilities import CODE_EXEC, names_with_cap
 from ...config.limits import (
     EXERCISE_BUDGET,
     NUDGE_MAX_EXERCISE,

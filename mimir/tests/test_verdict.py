@@ -13,7 +13,7 @@ import unittest
 import mimir.client.guardrails.observations as observations
 import mimir.client.tool_execution.executor as executor
 from mimir.client.config.limits import EXERCISE_BUDGET, VALIDATION_RETRY_BUDGET
-from mimir.client.context.capabilities import JUDGE, ToolCaps
+from mimir.client.tools.capabilities import JUDGE, ToolCaps
 from mimir.client.context.execution_context import record_run
 from mimir.tests.support.context import build_execution_context
 from mimir.client.event_sink import event_sink

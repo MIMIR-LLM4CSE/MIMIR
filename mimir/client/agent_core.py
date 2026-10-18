@@ -34,18 +34,18 @@ from .context import (
         SOURCE_FILE_EXTENSIONS,
         validate_execution_context,
 )
-from .context.capabilities import (
-        DELEGATE,
-        NON_BATCH,
-        SENSITIVE,
-        TASK_PLANNING,
-        ToolCaps,
-        fallbacks,
-        is_write,
-        names_with_cap,
-        path_args,
-        target_path_arg,
-        unannotated_live_tools,
+from .tools.capabilities import (
+    DELEGATE,
+    NON_BATCH,
+    SENSITIVE,
+    TASK_PLANNING,
+    ToolCaps,
+    fallbacks,
+    is_write,
+    names_with_cap,
+    path_args,
+    target_path_arg,
+    unannotated_live_tools,
 )
 from .context.execution_context import ExecutionContext
 from .core.human import TerminalHuman
@@ -156,7 +156,7 @@ class MimirAgent:
         # See context/resource_context.py and read_resource().
         self.resources: dict[str, dict] = {}
         # name -> ToolCaps: tool semantics derived from each server's declarations
-        # at connect time (see context/capabilities.py). The authoritative source
+        # at connect time (see tools/capabilities.py). The authoritative source
         # for classification that the policy/approval/execution layers consult.
         self.tool_caps: dict[str, ToolCaps] = {}
         # Use default non_batch_tools for immediate approval of execution/compilation tools

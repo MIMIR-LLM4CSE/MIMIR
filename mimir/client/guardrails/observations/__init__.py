@@ -6,7 +6,7 @@ of ``ORDER`` in turn. The policy gates and the nudges read what they write.
 from __future__ import annotations
 
 from ...context import ensure_execution_context
-from ...context.capabilities import target_path_arg
+from ...tools.capabilities import target_path_arg
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...protocol.tool_result import parse_tool_payload

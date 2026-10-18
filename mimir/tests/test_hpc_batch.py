@@ -894,8 +894,11 @@ class SlurmCancelTests(unittest.TestCase):
         # Irreversible, so the client raises a card; not CLUSTER_SUBMIT, so the
         # local-validation hold on submissions does not apply to stopping a job.
         import asyncio
-        from mimir.client.context.capabilities import (
-            CLUSTER_SUBMIT, PLAN_BLOCKED, SENSITIVE, infer_tool_caps,
+        from mimir.client.tools.capabilities import (
+            CLUSTER_SUBMIT,
+            PLAN_BLOCKED,
+            SENSITIVE,
+            infer_tool_caps,
         )
         tools = asyncio.run(server_hpc.mcp.list_tools())
         caps = infer_tool_caps(next(t for t in tools if t.name == "slurm_cancel")).capabilities

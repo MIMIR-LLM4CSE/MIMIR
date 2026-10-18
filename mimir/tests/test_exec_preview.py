@@ -1,4 +1,4 @@
-"""Hermetic tests for the exec-output preview (tool_execution/exec_preview.py).
+"""Hermetic tests for the exec-output preview (tools/exec_preview.py).
 
 The extractor turns an exec-shaped tool result (returncode + stdout/stderr —
 the command-runner envelope) into the clipped ``exec`` display object attached
@@ -10,7 +10,7 @@ Shape-driven: no tool names anywhere.
 import json
 import unittest
 
-from mimir.client.tool_execution.exec_preview import (
+from mimir.client.tools.exec_preview import (
     _MAX_COMMAND_CHARS,
     _MAX_STREAM_CHARS,
     _MAX_STREAM_LINES,

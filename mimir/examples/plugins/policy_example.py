@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from mimir.client.extensions import PolicyCheck, register_policy_check
-from mimir.client.context.capabilities import EXTERNAL_FETCH, has_cap
+from mimir.client.tools.capabilities import EXTERNAL_FETCH, has_cap
 
 # Heuristic: an argument name or value that looks like a credential being sent outbound.
 _SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd|authorization|bearer)\b")

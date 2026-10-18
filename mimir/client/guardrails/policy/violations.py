@@ -8,7 +8,7 @@ import sys
 from ... import human_pause
 from ...context import known_existing_files
 from ...config.limits import DISCOVERY_EVIDENCE_MIN_DISTINCT
-from ...context.capabilities import EDIT, REMOVE, has_cap
+from ...tools.capabilities import EDIT, REMOVE, has_cap
 from ...context.execution_context import (
     has_discovery_evidence,
     unwritten_declared_files,

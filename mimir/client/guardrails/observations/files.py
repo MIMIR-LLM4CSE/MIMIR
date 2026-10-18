@@ -14,7 +14,7 @@ from ..workflow import (
     has_pending_validation,
     set_workflow_state,
 )
-from ...context.capabilities import (
+from ...tools.capabilities import (
     DELEGATE,
     EDIT,
     READ,

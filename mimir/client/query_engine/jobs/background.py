@@ -11,7 +11,7 @@ import logging
 
 from ...event_sink import emit
 from ....servers._shared import jobs
-from ...context.capabilities import BACKGROUNDABLE, has_cap
+from ...tools.capabilities import BACKGROUNDABLE, has_cap
 from ...protocol.tool_result import parse_tool_payload
 from . import poll
 from ...core.ports import AgentPort

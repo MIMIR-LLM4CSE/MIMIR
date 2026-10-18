@@ -116,7 +116,7 @@ class _FakeAgent:
     def seed_classification_from_caps(self): pass
 
     async def connect_servers(self, registry, on_error=None):
-        from mimir.client.context.capabilities import ToolCaps
+        from mimir.client.tools.capabilities import ToolCaps
         self.connected.extend(registry)
         for name in registry:
             for tool, caps in _SERVER_TOOLS.get(name, []):
@@ -1816,7 +1816,7 @@ class DeclaredBudgetTests(unittest.TestCase):
         self.assertGreater(self._descriptor().timeout_secs, spawn_limits.SUBAGENT_HARD_CAP_SECS)
 
     def test_the_dispatcher_reads_that_wall_and_not_the_global_default(self):
-        from mimir.client.context.capabilities import timeout_for
+        from mimir.client.tools.capabilities import timeout_for
         from mimir.client.config.limits import TOOL_CALL_TIMEOUT_SECS
         registry = {"spawn_agent": self._descriptor()}
         self.assertGreater(timeout_for("spawn_agent", registry), TOOL_CALL_TIMEOUT_SECS)

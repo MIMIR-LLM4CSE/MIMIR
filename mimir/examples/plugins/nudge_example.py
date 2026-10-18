@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from mimir.client.extensions import NudgeRule, register_nudge
-from mimir.client.context.capabilities import SENSITIVE, names_with_cap
+from mimir.client.tools.capabilities import SENSITIVE, names_with_cap
 
 
 def _authz_predicate(agent: Any, query: str, active_mode: str, execution_context: dict) -> bool:

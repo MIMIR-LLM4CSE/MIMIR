@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..workflow import (
     set_workflow_state,
 )
-from ...context.capabilities import (
+from ...tools.capabilities import (
     CANDIDATE_SEARCH,
     CHECK_EXISTENCE,
     INSPECT_DIR,

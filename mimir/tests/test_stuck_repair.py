@@ -12,7 +12,7 @@ from mimir.client.config.limits import (
     STUCK_REPAIR_CONSTRAIN_AFTER,
     VALIDATION_RETRY_BUDGET,
 )
-from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
+from mimir.client.tools.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import record_run
 from mimir.tests.support.context import build_execution_context
 from mimir.client.event_sink import reset_event_sink, set_event_sink

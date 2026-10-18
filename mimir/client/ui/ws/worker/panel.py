@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any, Callable
 
-from ....context.capabilities import panel_sections
+from ....tools.capabilities import panel_sections
 from ....protocol.tool_result import normalize_tool_content
 from ..runtime import (
     augment_query_with_resources,

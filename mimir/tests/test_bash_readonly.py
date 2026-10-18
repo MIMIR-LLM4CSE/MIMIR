@@ -8,11 +8,11 @@ like ``sed -i`` are not read-only and keep the approval prompt. See
 """
 import unittest
 
-from mimir.client.context.bash_classify import bash_command_is_readonly
+from mimir.client.tools.bash_classify import bash_command_is_readonly
 from mimir.client.guardrails.policy.readonly_exempt import readonly_bash_exempt
 from mimir.client.guardrails.toollist import tools_for_plan_mode, tools_for_readonly_mode
 from mimir.client.query_engine.readonly_guard import filter_readonly_tool_calls
-from mimir.client.context.capabilities import (
+from mimir.client.tools.capabilities import (
     ToolCaps,
     PLAN_BLOCKED,
     PLAN_READONLY,
@@ -357,7 +357,7 @@ class ReadonlyInvocationTests(unittest.TestCase):
     """One answer to "does this call change anything", for every mode that asks."""
 
     def _caps(self):
-        from mimir.client.context.capabilities import PLAN_READONLY, ToolCaps
+        from mimir.client.tools.capabilities import PLAN_READONLY, ToolCaps
 
         return {"jobs": ToolCaps(name="jobs", capabilities=frozenset({PLAN_READONLY}),
                                  readonly_when={"arg": "op", "values": ["list", "status"]})}

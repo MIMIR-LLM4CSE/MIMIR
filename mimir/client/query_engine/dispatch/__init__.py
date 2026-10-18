@@ -15,12 +15,12 @@ from typing import Any
 
 from ...config.limits import IDENTICAL_REPEAT_THRESHOLD, SOFT_REPEAT_THRESHOLD
 from ...config.servers import SKILL_LOAD_TOOL
-from ...context.capabilities import CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
+from ...tools.capabilities import CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...event_sink import emit
-from ...tool_execution.exec_preview import exec_input_preview
-from ...context.tool_display import (
+from ...tools.exec_preview import exec_input_preview
+from ...tools.display import (
     dedup_row_detail,
     shorten_display_args,
     summarize_tool_result,

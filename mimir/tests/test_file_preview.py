@@ -12,7 +12,7 @@ import tempfile
 import types
 import unittest
 
-from mimir.client.context import capabilities as caps
+from mimir.client.tools import capabilities as caps
 from mimir.client.ui.ws.worker import file_preview
 from mimir.servers._shared import capabilities as srv
 from mimir.tests.support import golden_caps as golden

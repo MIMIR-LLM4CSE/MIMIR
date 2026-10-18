@@ -5,7 +5,7 @@ The ``validate`` state blocks nothing (POLICY.md, "Workflow state machine").
 from __future__ import annotations
 
 
-from ...context.capabilities import EDIT, has_cap, target_path_arg
+from ...tools.capabilities import EDIT, has_cap, target_path_arg
 from ...config.limits import VALIDATION_RETRY_BUDGET
 from ...context.execution_context import ExecutionContext
 from ...protocol.tool_result import json_error_payload

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from ... import human_pause
 from ...config.settings import APPROVAL_MODES
-from ...context.capabilities import (
+from ...tools.capabilities import (
     IRREVERSIBLE,
     RECOVERABLE,
     ToolCaps,

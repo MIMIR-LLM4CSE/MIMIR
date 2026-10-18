@@ -9,7 +9,14 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from .capabilities import CONVENTIONAL_PATH_ARGS, READ, SEARCH_WITH_PATH, ToolCaps, arg_role, has_cap
+from .capabilities import (
+    CONVENTIONAL_PATH_ARGS,
+    READ,
+    SEARCH_WITH_PATH,
+    ToolCaps,
+    arg_role,
+    has_cap,
+)
 
 logger = logging.getLogger(__name__)
 

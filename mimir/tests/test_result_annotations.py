@@ -17,7 +17,7 @@ import tempfile
 import types
 import unittest
 
-from mimir.client.context.capabilities import CODE_NAV, EDIT, READ, CACHEABLE, ToolCaps
+from mimir.client.tools.capabilities import CODE_NAV, EDIT, READ, CACHEABLE, ToolCaps
 from mimir.tests.support.context import build_execution_context
 from mimir.client.tool_execution import bash_effect as be
 from mimir.client.tool_execution import executor as ex

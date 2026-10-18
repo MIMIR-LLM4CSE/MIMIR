@@ -10,8 +10,13 @@ import types
 import unittest
 
 
-from mimir.client.context.capabilities import (
-    CODE_EXEC, PLAN_BLOCKED, PLAN_READONLY, ToolCaps, infer_tool_caps, run_outcome_spec,
+from mimir.client.tools.capabilities import (
+    CODE_EXEC,
+    PLAN_BLOCKED,
+    PLAN_READONLY,
+    ToolCaps,
+    infer_tool_caps,
+    run_outcome_spec,
 )
 from mimir.client.context.execution_context import (
     validation_tier,
@@ -20,7 +25,7 @@ from mimir.tests.support.context import build_execution_context
 from mimir.client.context import failed_runs, unsettled_runs
 from mimir.client.guardrails import observations as O
 from mimir.client.guardrails import workflow
-from mimir.client.context.bash_classify import opaque_command_executes
+from mimir.client.tools.bash_classify import opaque_command_executes
 from mimir.client.guardrails.verdict import apply_verdict
 from mimir.servers._shared.capabilities import build_descriptor
 from mimir.servers.proxy._lib import store

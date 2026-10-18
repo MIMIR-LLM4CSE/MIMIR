@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...context.capabilities import (
-    PLAN_READONLY, has_cap, readonly_invocation_spec, shell_command_of,
+from ...tools.capabilities import (
+    PLAN_READONLY,
+    has_cap,
+    readonly_invocation_spec,
+    shell_command_of,
 )
-from ...context.bash_classify import bash_command_is_readonly
+from ...tools.bash_classify import bash_command_is_readonly
 from ...core.ports import AgentPort
 
 

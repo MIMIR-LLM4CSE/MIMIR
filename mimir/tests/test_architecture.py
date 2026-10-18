@@ -23,16 +23,17 @@ SERVERS = PACKAGE / "servers"
 # lower rank; only type annotations (``TYPE_CHECKING``) look upwards.
 RANKS = {
     "config": 0, "protocol": 0, "event_sink": 0, "human_pause": 0,
-    "context": 1, "llm": 1,
-    "core": 2,
-    "guardrails": 3,
-    "tool_execution": 4,
-    "extensions": 5, "integration": 5,
-    "prompt": 6,
-    "query_engine": 7,
-    "agent_core": 8,
-    "session": 9,
-    "ui": 10,
+    "tools": 1, "llm": 1,
+    "context": 2,
+    "core": 3,
+    "guardrails": 4,
+    "tool_execution": 5,
+    "extensions": 6, "integration": 6,
+    "prompt": 7,
+    "query_engine": 8,
+    "agent_core": 9,
+    "session": 10,
+    "ui": 11,
 }
 
 # Servers that may import the client: the sub-agent server builds a MimirAgent, and

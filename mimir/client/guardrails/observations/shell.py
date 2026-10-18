@@ -22,9 +22,7 @@ from ..workflow import (
     pending_validation_paths,
     set_workflow_state,
 )
-from ...context.capabilities import (
-    shell_command_args,
-)
+from ...tools.capabilities import shell_command_args
 from ...context.paths import is_python_test_filepath
 from ....servers._shared.jobs import launched
 from ....servers._shared.shell_paths import (
@@ -34,7 +32,7 @@ from ....servers._shared.shell_paths import (
     any_command_on_path,
     is_path_like_command,
 )
-from ...context.bash_classify import (
+from ...tools.bash_classify import (
     Kind,
     classify_bash_command,
     opaque_command_executes,

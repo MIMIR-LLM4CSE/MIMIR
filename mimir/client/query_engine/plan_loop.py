@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config.limits import PLAN_EXPLORE_MAX_TURNS
 from ..config.models import resolve_enforcement
-from ..context.capabilities import DELEGATE, arg_role, names_with_cap
+from ..tools.capabilities import DELEGATE, arg_role, names_with_cap
 from ..context.execution_context import ExecutionContext, plan_evidence_ready
 from ..context.signals import query_requires_repo_discovery
 from ..core.ports import AgentPort
