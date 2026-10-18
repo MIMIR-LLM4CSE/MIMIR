@@ -24,20 +24,10 @@ def _block_marker(name: str) -> str:
 
 
 def _render_payload(payload: Any) -> str:
-    """Pretty-print *payload*, with any block of program text moved out of the JSON.
+    """Pretty-print *payload*, with program text moved out of the JSON into blocks.
 
-    Text inside a JSON string is escaped text: every newline becomes a literal ``\\n``,
-    every quote and backslash doubles, and two hundred lines arrive on one. The model is
-    asked to copy anchors *verbatim* from what it read, so the escaping is not merely
-    unreadable — an anchor copied from it cannot match the file, and the edit fails for
-    a reason nothing in the reply explains. A traceback or a compiler error reaches it
-    the same way, folded onto a single line.
-
-    The envelope keeps a manifest of ``{name: length}`` so :func:`parse_tool_payload`
-    can put the blocks back exactly, by length rather than by scanning for the marker.
-    That is what lets every consumer go on reading ``payload["stdout"]`` while the model
-    reads real text, and it is immune both to output that happens to contain a marker
-    and to the annotations the executor appends after everything.
+    Escaped text cannot be copied as an anchor. A manifest of ``{name: length}`` lets
+    :func:`parse_tool_payload` put the blocks back exactly.
     """
     if not isinstance(payload, dict):
         return json.dumps(payload, indent=2, ensure_ascii=False)

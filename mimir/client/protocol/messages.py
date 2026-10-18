@@ -17,28 +17,10 @@ _WIRE_KEYS = ("role", "content", "name", "tool_call_id", "tool_calls", "thinking
 
 
 def message_wire_form(message: dict) -> str:
-    """*message* as the provider is sent it: the JSON, envelope included.
+    """*message* as the provider receives it: its JSON, envelope included.
 
-    Content alone is not the message: in full-context mode history keeps the
-    structured transcript, where an assistant turn carries its ``tool_calls`` and
-    usually has empty content. Counting content only scored those turns at ~0 —
-    including calls whose arguments hold a whole file — so the context bar
-    under-reported and the pre-query trim under-trimmed.
-
-    Serialising content and arguments as bare *text* closed that gap and left a
-    second one of the same kind. What a window is measured against is
-    ``json.dumps(messages)`` — see the guard in ``VLLMBackend.chat`` — so every
-    ``\n`` that serialisation escapes, every quote it doubles and every ``role`` /
-    ``tool_call_id`` key it adds is prompt that a text-shaped count never saw. On
-    an ordinary tool-heavy history that envelope is ~18% of the total; on
-    escape-dense content — HTML, LaTeX, JSON inside JSON, the shapes a web fetch
-    returns — it reaches 30%. Measured in the wrong units, a budget cannot be
-    conservative by accident: it is optimistic by construction, and it was an
-    optimism of exactly this size that let a backstop announce a fit on a prompt
-    the provider then rejected.
-
-    Falls back to the joined-text approximation on anything unserialisable, which
-    can only under-count.
+    A window is measured against ``json.dumps(messages)``; counting content alone misses
+    the tool calls and the escaping, up to a third of a tool-heavy history.
     """
     # Keyed on presence, not on truth: a message that carries ``content: None``
     # is serialised with ``"content": null`` and paid for, so dropping the falsy
@@ -81,20 +63,10 @@ def _declared_call_ids(assistant: dict) -> list[str | None]:
 
 
 def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
-    """Repair assistant.tool_calls ↔ tool-message pairing.
+    """Repair the pairing of assistant ``tool_calls`` and tool messages.
 
-    Two upstream mechanisms legitimately break the pairing: ``_trim_tool_history``
-    evicts a tool result while preserving its assistant turn, and
-    ``_maybe_compact_intra_query`` can slice between an assistant turn and its results.
-    (The dispatcher answers every call it declines to run under that call's own id, so
-    it leaves no gaps of its own.)
-
-    The invariant belongs to the history, not to one provider: strict backends reject a
-    dangling pair outright (the Claude API 400s on a ``tool_use`` with no ``tool_result``)
-    and lenient ones render an incoherent prompt. For each assistant turn declaring
-    calls, the following run of tool messages is matched by ``tool_call_id`` first, then
-    positionally for any lacking a usable id; each declared call is emitted with its
-    response or a stub. Tool messages belonging to no preceding call are dropped.
+    Trimming and compaction can break it, and strict backends reject a dangling call.
+    Results match by id, then by position; a call with none gets a stub; orphans are dropped.
     """
     out: list[dict] = []
     i = 0
@@ -153,18 +125,10 @@ def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
 
 
 def merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
-    """Collapse adjacent plain ``user`` messages into one.
+    """Join adjacent plain ``user`` messages with a blank line.
 
-    Lives here, beside :func:`reconcile_tool_pairs`, because every backend needs it
-    (``LLMBackend.chat`` applies both): the Anthropic path requires strict alternation.
-
-    A strict tokenizer (vLLM's ``--tokenizer-mode mistral`` is one) enforces
-    strict role alternation and degenerates into token salad when it sees two
-    consecutive ``user`` turns. Upstream can legitimately produce them (plan-mode
-    nudges, a caller that already appended the current turn). Joining their text
-    with a blank line preserves the content while keeping the sequence legal; only
-    string-content user messages with no tool fields are merged, so tool pairing is
-    untouched.
+    Strict tokenizers and the Anthropic API require alternating roles; tool messages are
+    left alone.
     """
     out: list[dict] = []
     for m in prepared:

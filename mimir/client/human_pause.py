@@ -1,15 +1,7 @@
-"""Wall-clock time spent blocked on a human, excluded from tool timeout budgets.
+"""Time spent waiting on a person, excluded from tool timeout budgets.
 
-A tool call's timeout budgets the *tool's own work*. An approval card, however, can
-sit unanswered for as long as the user likes, and that wait happens inside the tool
-call: the prompt is raised by the policy gate before the tool ever reaches its
-server. Counting it against the budget reported commands as "timed out after 120s"
-when they had not started running — the user simply took two minutes to click Allow.
-
-Prompts block the agent's own thread (the WS worker thread, or the CLI main thread),
-so the accounting is thread-local: concurrent sessions in one process never see each
-other's pauses. Reentrant, so a prompt raised inside another prompt's wait is
-counted once.
+An approval card waits inside the tool call; counting it reported calls as timed out
+before they ran. Thread-local, so sessions never see each other's pauses; reentrant.
 """
 
 from __future__ import annotations

@@ -17,13 +17,8 @@ CONCLUSIVE_EVENTS = frozenset({"answer", "error"})
 # turn whether or not anyone is attached, so both consumers key off this one set.
 DURABLE_EVENTS = frozenset({"job_complete", "job_checkin"})
 
-# Recorded, never delivered live. ``assistant_text`` is the aggregate of a streamed
-# prose block, and a client that is attached has already had every one of its deltas:
-# sending the aggregate as well would print the paragraph twice. It exists for the
-# replay, where the deltas are gone — the journal keeps hundreds of `token` events out
-# of itself, and without this aggregate a turn read back after an absence would have
-# only its tool rows and its final answer, having lost everything the agent said in
-# between.
+# Recorded, never delivered live: ``assistant_text`` aggregates a streamed prose block a
+# live client already has as deltas. It is what a replay shows of the prose.
 REPLAY_ONLY_EVENTS = frozenset({"assistant_text"})
 
 # What a finished turn carries on its ``answer`` event for the session layer, and only

@@ -1,12 +1,7 @@
-"""Injectable event sink for the agent engine.
+"""The sink the engine's UI events go to, bound per run in a ``ContextVar``.
 
-The engine emits structured UI events (status, thinking, tool_call, tool_result,
-diff). Emit sites call :func:`emit`, which routes the event to a sink bound for the
-current run, so the engine runs headless and embedded alike. The sink is held in a
-``contextvars.ContextVar`` so it is copied into ``asyncio.gather`` tasks — binding
-it once at the top of a run reaches every nested helper and parallel tool task
-without threading a parameter through each function. When no sink is bound (e.g.
-the CLI front-end), :func:`emit` prints a JSON line.
+Binding it once reaches every nested helper and ``asyncio.gather`` task; with none
+bound, :func:`emit` prints a JSON line.
 """
 
 from __future__ import annotations
@@ -42,17 +37,7 @@ def emit(event: dict) -> None:
 
 
 def captured_emitter() -> Callable[[dict], None] | None:
-    """The currently bound sink, captured for emitting from another task later.
-
-    :func:`emit` reads the ContextVar at call time, which is right for the agent loop
-    and wrong for a callback that fires elsewhere: a task started before the sink was
-    bound — an MCP session's receive loop, say — carries a snapshot of the context from
-    back then, so emitting there would find no sink and print instead. Capture the sink
-    where it IS bound, call the result where the event happens.
-
-    Returns None when nothing is bound, which is also the answer to "is there a
-    frontend to feed at all" — with no sink, a stream of events is noise, not a view.
-    """
+    """The bound sink, captured here for a callback that fires in another task; None if unbound."""
     sink = _current_sink.get()
     if sink is None:
         return None
