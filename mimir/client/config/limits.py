@@ -21,22 +21,10 @@ TOOL_CALL_TIMEOUT_SECS: int = 120
 # rather than a bare "timed out".
 TOOL_CALL_TIMEOUT_MAX_SECS: int = 1200
 
-# How long a clarification question (``ask_user_question``) waits for the user before
-# it gives up: the card is closed and the tool reports that nobody answered, so the
-# model carries on with the option it would have recommended. Human waits are excluded
-# from the tool-call budget (see ``human_pause``), so this is the only wall on them —
-# without it a question raised while nobody is at the keyboard parks the conversation
-# for ever, and an unanswered question read as a refused one is the wrong answer to an
-# empty room.
-#
-# Deliberately NOT applied to the other two cards that travel the same channel:
-#   * an APPROVAL that expired into "go ahead" would authorise, after a coffee break, a
-#     command nobody ever saw;
-#   * a PLAN approval left unanswered already resolves to "deliver the plan, execute
-#     nothing" — a deadline that executed would invert what the card is for, and reading
-#     a plan legitimately takes longer than picking an option.
-# So the wall is declared by whoever asks (see the interaction server), never imposed
-# here on every card alike.
+# How long a clarification question waits before the model goes on with its own
+# recommendation. Human waits are outside the tool budget, so this is their only wall.
+# Not applied to approvals (expiring into "yes" would authorise unseen commands) nor to
+# plan approvals (already resolved to "execute nothing").
 USER_QUESTION_TIMEOUT_SECS: int = 300
 
 # Separate budget for the post-write auto-validation ladder (syntax/imports/lint/
@@ -126,34 +114,22 @@ NUDGE_MAX_BLAST_RADIUS: int = 1
 CUSTOM_NUDGE_MAX_PER_QUERY: int = 3
 
 # ── Stuck-repair escalation ladder ─────────────────────────────────────────────
-# Counted per run command (``runs[cmd]["failures"]``, carried across re-runs by
-# ``record_run``), so repeated attempts at the same failing command escalate while an
-# unrelated command starts fresh. The rungs are advice, then a constraint; the third
-# rung already exists and is not repeated here — at VALIDATION_RETRY_BUDGET failures
-# ``_register_run_failure`` releases the workflow to ``conclude`` rather than looping.
-# The ordering ADVISE < CONSTRAIN < VALIDATION_RETRY_BUDGET is what keeps the two rungs
-# inside the window where repair is still being attempted.
+# Counted per run command (``runs[cmd]["failures"]``, carried by ``record_run``):
+# advice, then a constraint, then at VALIDATION_RETRY_BUDGET the workflow concludes.
+# ADVISE < CONSTRAIN < VALIDATION_RETRY_BUDGET.
 STUCK_REPAIR_ADVISE_AFTER: int = 2     # nth failure of one command that earns "look wider"
 STUCK_REPAIR_CONSTRAIN_AFTER: int = 4  # nth failure that forbids re-editing the same target
 
 # ── Denial escalation ladder ───────────────────────────────────────────────────
-# A refusal is read three ways, in priority order: the means is wrong (find another
-# route) → the step is unnecessary (drop it, keep going) → stop and hand back. The
-# model picks; these thresholds are the floor that stops it picking "find another
-# route" forever. Counted per query, per approval scope (the same normalised token
-# the "always" grants use), so refusing `pip install X` also escalates `pip install Y`
-# while an unrelated command family starts fresh.
+# A refusal means, in order: find another route, drop the step, stop and hand back.
+# Counted per query and per approval scope, so refusing `pip install X` also escalates
+# `pip install Y`.
 DENIAL_SCOPE_DROP_AFTER: int = 2      # nth refusal of one scope that rules out "another route"
 DENIAL_SCOPE_HANDBACK_AFTER: int = 3  # nth refusal of one scope that forces the hand back
 DENIAL_QUERY_HANDBACK_TOTAL: int = 4  # total refusals in a query that force the hand back
 
-# Consecutive no-op ("I'm done") turns that may still be nudged. The model
-# produces a bare final-answer turn (no tool call); the first one earns a useful
-# reminder (e.g. "validate your changes"). But once the model answers that nudge
-# with ANOTHER no-op turn — without acting on it (no intervening tool call) — it is
-# ignoring the reminder, and re-nudging just echoes the same summary. Any tool
-# dispatch resets the counter, so a model that keeps *acting* between reminders is
-# still nudged normally; only stalled prose-only re-affirmations are cut off.
+# Consecutive no-op ("I'm done") turns that may still be nudged. A second bare turn in a
+# row is ignoring the reminder; any tool call resets the count.
 NUDGE_MAX_CONSECUTIVE_NOOP: int = 1
 
 # How many skills the model may load into one conversation (load_skill). A methodology

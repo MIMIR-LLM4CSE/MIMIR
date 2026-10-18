@@ -17,16 +17,9 @@ APPROVAL_MODE_ALIASES: dict[str, str] = {"all": "auto_all", "auto-all": "auto_al
 
 BACKENDS: tuple[str, ...] = ("ollama", "vllm", "ray")
 
-# Thinking-depth scale — the single source of truth for the reasoning-depth ladder
-# exposed by the CLI (/think) and the WS command (/thinking-depth), and mirrored by
-# the webview slider. Index = depth level.
-#
-# ``auto`` is the default: thinking is on with no imposed budget, and the system
-# prompt carries a calibration directive telling the model to close the reasoning
-# block immediately on trivial turns and spend a long chain only where the task is
-# genuinely uncertain. The fixed rungs (quick/medium/deep) impose a token budget
-# instead, which the per-phase scaling in the agent loop then modulates; ``max``
-# is thinking-on, unbudgeted, without the calibration directive.
+# The thinking-depth ladder (CLI /think, WS /thinking-depth, the webview slider).
+# ``auto``: on, unbudgeted, with a calibration directive in the system prompt; the fixed
+# rungs impose a token budget; ``max`` is on and unbudgeted without the directive.
 THINKING_DEPTH_LABELS: tuple[str, ...] = ("off", "auto", "quick", "medium", "deep", "max")
 THINKING_DEPTH_BUDGETS: tuple[int, ...] = (-1, -1, 512, 4096, 16384, -1)
 THINKING_DEPTH_AUTO: int = 1
@@ -55,17 +48,9 @@ def thinking_depth_from_label(label: str) -> int | None:
 
 
 # ── How much a sub-agent may do ───────────────────────────────────────────────
-# A ladder, weakest first, each rung adding to the one before it. It is the user's
-# call, not the model's: a child that writes, and more so one that opens a branch,
-# commits something on their behalf.
-#
-#   explore   read, search, navigate; also what an unknown rung falls back to.
-#   build     + editing and running commands — always in a git worktree of its own,
-#             on its own branch. There is deliberately no rung in between: sub-agents
-#             editing one shared tree overwrite each other in silence (one reads a
-#             file, another rewrites it, the first writes back what it read), and no
-#             arbitration the model can be trusted with fixes that. A sub-agent that
-#             writes gets a copy, or it does not write.
+# The user's call, weakest first. ``explore``: read, search, navigate (also the fallback).
+# ``build``: + editing and running commands, always in a git worktree of its own — two
+# sub-agents writing one tree overwrite each other silently.
 SUBAGENT_LEVELS: tuple[str, ...] = ("explore", "build")
 DEFAULT_SUBAGENT_LEVEL: str = SUBAGENT_LEVELS[0]
 

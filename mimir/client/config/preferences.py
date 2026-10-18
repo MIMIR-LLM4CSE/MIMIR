@@ -1,37 +1,8 @@
-"""Operator preferences persisted per-workspace in the central state dir at
-``<STATE_DIR>/preferences.json`` (see config.paths.STATE_DIR).
+"""Operator preferences of this workspace, in ``<STATE_DIR>/preferences.json``.
 
-This is *operator config* — which MCP servers and skills the user has switched off
-from the toggle panel — part of the agent STATE (alongside the agent's own
-per-workspace memory under ``<STATE_DIR>/memory/``; the memory shared by every
-workspace sits one tier up, under ``<GLOBAL_STATE_DIR>/memory/``), kept out of the
-workspace. The client reads it at
-startup to decide which servers' tools
-to advertise to the LLM and which skills it lists as loadable; a switched-off skill is
-hidden from both `/<name>` and the model's own `load_skill`. The LLM never reads this
-file.
-
-Schema::
-
-    {
-      "disabled_servers": ["strings", "datetime"],
-      "disabled_skills":  ["proxy-optimize"],
-      "disabled_nudges":  ["authz_reminder"],
-      "temperatures":     {"qwen3-32b": 0.6},
-      "subagent_level":   "build"
-    }
-
-Only *disabled* names are stored (an absent name is enabled), so newly added servers,
-skills, and application nudges default to on without needing a migration.
-
-``subagent_level`` is how far a sub-agent may go (constants.SUBAGENT_LEVELS). Absent
-means the weakest rung: a sub-agent that only reads. Unlike the ``disabled_*`` lists,
-which take something away, this one hands something over — so its absence must be the
-cautious answer, not the permissive one.
-
-``temperatures`` holds the sampling temperature the user chose, per served model name.
-A model absent from it uses its own default: no temperature is sent at all, and the
-server applies the model's generation_config.
+Only switched-off servers, skills and nudges are stored, so anything new starts on;
+plus ``temperatures`` per model and ``subagent_level`` (absent: the weakest rung). The
+model never reads this file.
 """
 
 from __future__ import annotations

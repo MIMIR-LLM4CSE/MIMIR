@@ -69,14 +69,7 @@ VLLM_MODEL_PROFILES: dict[str, dict[str, Any]] = _load_vllm_model_profiles()
 
 
 def _normalize_model_key(name: str) -> str:
-    """Fold a model name to the form profile keys are matched in.
-
-    Version separators are not stable across publishers: the same family ships with an
-    underscore between version parts on one repo and a dot on another. Matching the raw
-    spelling means a family key silently covers one and misses the other — and
-    a missed profile costs that model its reasoning, which is precisely the failure the
-    profile exists to prevent. So ``_`` and ``.`` are treated as the same separator.
-    """
+    """Fold a model name to the form profile keys are matched in (``_`` and ``.`` alike)."""
     return (name or "").lower().replace("\\", "/").replace("_", ".").strip()
 
 
@@ -127,25 +120,11 @@ DEFAULT_EFFORT_PARAM = "reasoning_effort"
 
 
 def thinking_profile(model: str) -> dict[str, Any]:
-    """Everything needed to switch *model*'s reasoning, resolved from its family.
+    """How to switch *model*'s reasoning, resolved from its family.
 
-    One descriptor feeds both sides — the request builder and the panel's depth
-    control — so the rungs a user sees are the rungs actually sent. Keys:
-
-    - ``mechanism``    — ``"kwarg"`` (send ``chat_template_kwargs.enable_thinking``,
-      the default), ``"directive"`` (a trained-on line at the head of the system
-      message) or ``"effort"`` (a request param naming a rung).
-    - ``effort_param`` / ``levels`` — the param carrying the rung, and the family's
-      own ladder weakest-first. Ladders differ between families, so they are data.
-    - ``toggle_param`` / ``toggle_values`` — an explicit on/off param, where the
-      family has one. Without it an "effort" family cannot stop reasoning, and the
-      control drops its "off" rung rather than offering a switch that does nothing.
-    - ``directive``    — the ``{on, off}`` strings for the directive mechanism.
-
-    Defaulting to ``"kwarg"`` rather than to "no thinking" is deliberate: the served
-    model name is whatever ``--served-model-name`` says, so a name that matches no
-    family is the normal case, not an error, and it must not silently cost the user
-    their reasoning.
+    Keys: ``mechanism`` (kwarg, directive or effort), ``effort_param``/``levels``,
+    ``toggle_param``/``toggle_values``, ``directive``. An unknown family gets ``kwarg``,
+    which keeps reasoning available.
     """
     profile = profile_for_model(model)
     declared = profile.get("thinking")
@@ -190,45 +169,17 @@ def thinking_can_disable(model: str) -> bool:
 
 
 def enforcement_level(model: str) -> str:
-    """How much reasoning babysitting to apply, from the model's vLLM profile.
+    """How much guidance *model* gets: "strict", "light" (the default) or "off".
 
-    Governs ONLY the **guidance** nudge layer (env resolution/cleanup, discovery, doc,
-    state, blast-radius, creation, todo) plus the plan-mode explore phase — never
-    safety, approval, write-policy or verification guards, which run at every level.
-    Which categories survive per level and mode is the single table
-    ``GUIDANCE_BY_LEVEL_MODE`` in ``guardrails/nudges/tiers.py``:
-      - "strict": every guidance category.
-      - "light":  only the ones guarding a costly, hard-to-detect, non-self-correcting
-                  mistake — blast-radius and env cleanup.
-      - "off":    no guidance at all.
-
-    ``validation`` is not in that list: checking a file one just modified is a reality
-    check, not a reasoning shim, so it is a verification nudge and runs at every level.
-
-    **Default "light"**, with "strict" available as an explicit opt-in. The `light` set
-    is already defined by the right criterion — a mistake that is expensive, hard to
-    notice and does not self-correct — and everything it drops is procedural
-    hand-holding a capable model does unprompted, paid for in tokens and in
-    interruptions to its own plan on every step. Having that as the opt-down rather
-    than the default meant the burden of proof sat on the wrong side.
-
-    Weak local models opt *up* by declaring ``"enforcement": "strict"`` in their
-    profile. Unknown values fall back to "light".
+    Only the guidance nudges and the plan-mode explore phase depend on it (see
+    ``nudges.tiers``); safety and verification run at every level.
     """
     level = profile_for_model(model).get("enforcement", "light")
     return level if level in ("strict", "light", "off") else "light"
 
 
 def resolve_enforcement(agent: object) -> str:
-    """Read an agent's resolved enforcement level.
-
-    Prefers the cached ``agent.enforcement`` attribute — set once at ``MimirAgent``
-    construction from the model profile (``enforcement_level``) and overridable at
-    runtime via ``apply_setting(agent, "enforcement", …)`` / the ``/enforcement`` command. The
-    model is immutable for an agent's lifetime, so there is nothing to re-resolve
-    per turn. Falls back to resolving from ``agent.model`` for agent-like objects
-    that predate the attribute (e.g. lightweight test fakes).
-    """
+    """An agent's enforcement level: its ``enforcement`` attribute, else its model's default."""
     level = getattr(agent, "enforcement", None)
     if isinstance(level, str) and level in ("strict", "light", "off"):
         return level

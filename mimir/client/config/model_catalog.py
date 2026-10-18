@@ -96,12 +96,9 @@ def _legend() -> str:
 
 
 def describe_served_models(served: list[dict[str, Any]]) -> str:
-    """The description of a sub-agent's ``model`` argument, for these served models.
+    """The description of a sub-agent's ``model`` argument for the served models.
 
-    *served* is what the endpoint's /v1/models lists: dicts with ``id`` and, where the
-    server reports them, ``root`` and ``max_model_len``. Rendered once per session, so
-    it must not depend on anything that changes mid-session (the caller's own model
-    included).
+    Rendered once per session, so it depends on nothing that changes during one.
     """
     head = "Which model the sub-agent runs on. Leave it empty to use your own model."
     rows = []

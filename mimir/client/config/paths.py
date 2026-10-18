@@ -47,14 +47,9 @@ WORKSPACE_ROOT = _workspace_root()
 # resolve it, so the extension path stays in agreement.
 MIMIR_DIR = _mimir_dir(WORKSPACE_ROOT)
 
-# Central per-workspace STATE directory, kept OUT of the workspace so the agent's
-# runtime state never pollutes the repo. Layout: <STATE_HOME>/<workspace-id>/,
-# where the id is a readable basename plus a short hash of the absolute workspace
-# path (so two different checkouts that share a basename don't collide). Overrides:
-#   MIMIR_STATE_DIR  — full path, wins over everything (tests / headless runs)
-#   MIMIR_STATE_HOME — the root under which per-workspace dirs are created (~/.mimir)
-# The same STATE_DIR is handed to the server subprocesses via MIMIR_STATE_DIR
-# (server_manager), so client and servers resolve state to the same place.
+# Per-workspace state, outside the workspace: <STATE_HOME>/<basename-hash>/.
+# MIMIR_STATE_DIR overrides it whole, MIMIR_STATE_HOME its root (~/.mimir). Servers get
+# the same directory through MIMIR_STATE_DIR.
 STATE_HOME = os.path.abspath(
     os.environ.get("MIMIR_STATE_HOME")
     or os.path.join(os.path.expanduser("~"), ".mimir")
@@ -73,18 +68,10 @@ STATE_DIR = os.path.abspath(
 # so both ends agree without either re-deriving it. Holds the global memory store.
 GLOBAL_STATE_DIR = global_state_dir(STATE_HOME)
 
-# The four extension locations re-exported at the top of this module (their env vars
-# and default names live in servers/_shared/extension_paths.py). Resolution is always
-# "env var if set, else MIMIR_DIR/<name>", through resolve_extension_dir below:
-#   SYSTEM_PROMPT_ENV / SYSTEM_PROMPT_FILENAME — the base prompt, a single file whose
-#     env form needs no .mimir/ dir at all (discovery/context_builder.py). Nothing is
-#     auto-created in the workspace; a template lives in mimir/examples/system_prompt.md.
-#   PLUGINS_DIR_ENV / PLUGINS_DIRNAME — policy, post-tool and nudge packs; each *.py in
-#     the dir is imported once at agent init and registers on import (extensions/plugins.py).
-#   SKILLS_DIR_ENV / SKILLS_DIRNAME — user skills, merged over the bundled set, same name
-#     overriding (agent_core.load_skills).
-#   SERVERS_DIR_ENV / SERVERS_DIRNAME — user MCP servers; a name colliding with a bundled
-#     one is skipped, so the core cannot be shadowed (extensions/servers.py).
+# The four extension locations (env var if set, else MIMIR_DIR/<name>; see
+# servers/_shared/extension_paths.py): the base system prompt, plugins (policy, post-tool
+# and nudge packs), skills (merged over the bundled ones) and servers (a name clashing
+# with a bundled one is skipped).
 
 
 def resolve_extension_dir(env_var: str, dirname: str) -> str:
