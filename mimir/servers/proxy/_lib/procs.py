@@ -22,6 +22,8 @@ from ..._shared.responses import err
 from ..._shared import jobs
 from ..._shared.jobs import WATCHER_FILE as _WATCHER_FILE
 from ..._shared.slurm_site import (
+    locate_slurm_job as _locate_on_schedulers,
+    slurm_state as _read_slurm_state,
     record_job_dir as _record_job_dir,
     HOST_FILE as _SLURM_HOST_FILE,
     LOCAL as _SLURM_LOCAL,
@@ -164,7 +166,7 @@ def _locate_slurm_job(run_dir: str, job_id: int) -> str:
 
     hint = _read_slurm_host(run_dir)
     hosts = _slurm_hosts()
-    host, (state, _raw, _nodes) = jobs.locate_slurm_job(hint, hosts, state_on)
+    host, (state, _raw, _nodes) = _locate_on_schedulers(hint, hosts, state_on)
     if host is not None:
         if host != hint:
             _write_slurm_host(run_dir, host)
@@ -174,12 +176,12 @@ def _locate_slurm_job(run_dir: str, job_id: int) -> str:
 
 
 def _slurm_job_state(job_id: int, host: str) -> tuple[str, str, list[str]]:
-    """``_shared.jobs.slurm_state`` of *job_id* on *host*; raises when the scheduler
+    """``_shared.slurm_site.slurm_state`` of *job_id* on *host*; raises when the scheduler
     cannot be asked."""
     def run_lines(script: str) -> list[str]:
         res = _slurm_run(shlex.split(script), 10, host=host)
         return [line.strip() for line in res.stdout.splitlines() if line.strip()]
-    return jobs.slurm_state(str(job_id), run_lines)
+    return _read_slurm_state(str(job_id), run_lines)
 
 
 def _read_build_slurm_id(run_dir: str) -> int | None:

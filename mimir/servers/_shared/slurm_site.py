@@ -7,11 +7,14 @@ Several hosts at once, filed per workspace; job directories are per session.
 
 from __future__ import annotations
 
+from typing import Callable
+
 import os
 import shlex
 import subprocess
 import time
 
+from . import cpu_facts
 from .jobs import SLURM_JOB_ID
 from .state_paths import SUBAGENTS_DIRNAME, session_state_dir, sessions_root, state_dir
 
@@ -481,3 +484,69 @@ def unwatched_hint(by_host: dict[str, list[str]]) -> str:
     named = "; ".join(f"{name_of(host)}: {', '.join(ids)}" for host, ids in live.items())
     return (_UNWATCHED_HINT + " These are on more than one scheduler — " + named
             + " — so name it: slurm_watch(job_id, scheduler=...).")
+
+
+# ── A job's state, read into the run words ────────────────────────────────────────────────────────────────────
+_ACTIVE = ("RUNNING", "COMPLETING")
+_WAITING = ("PENDING", "CONFIGURING", "REQUEUED")
+# Prefixes, because Slurm qualifies some words ("CANCELLED by 1234").
+_CRASH_PREFIXES = ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
+                   "BOOT_FAIL", "DEADLINE", "PREEMPTED")
+_DONE_PREFIXES = ("COMPLETED",)
+
+
+def _crashed(word: str) -> bool:
+    return word.startswith(_CRASH_PREFIXES)
+
+
+def _done(word: str) -> bool:
+    return word.startswith(_DONE_PREFIXES)
+
+
+def slurm_state(job_id: str, run_lines: Callable[[str], list[str]]
+                ) -> tuple[str, str, list[str]]:
+    """``(state, raw, nodes)`` of a Slurm job; *run_lines* runs a command on its scheduler.
+
+    ``squeue``, then ``sacct``; nodes only while running. For an array, any live element
+    keeps it live and the verdict is the worst element's. An ended word in squeue settles
+    the job without sacct, all a site without accounting has.
+    """
+    queued, where = [], []
+    for row in run_lines(f"squeue -j {shlex.quote(job_id)} -h -o '%T|%R'"):
+        word, _, reason_or_node = row.partition("|")
+        queued.append(word.strip())
+        where.append(reason_or_node.strip())
+    raw = ",".join(sorted(set(queued)))
+    if any(word in _ACTIVE for word in queued):
+        nodes = sorted({node for word, expr in zip(queued, where) if word in _ACTIVE
+                        for node in cpu_facts.expand_hostlist(expr) if node})
+        return "running", raw, nodes
+    if queued and all(word in _WAITING for word in queued):
+        return "pending", raw, []
+    if queued and all(_done(w) or _crashed(w) for w in queued):
+        return ("crashed" if any(_crashed(w) for w in queued) else "done"), raw, []
+
+    accounted = run_lines(f"sacct -j {shlex.quote(job_id)} -n -X -o State")
+    sraw = ",".join(sorted(set(accounted)))
+    if any(_crashed(word) for word in accounted):
+        return "crashed", sraw, []
+    if accounted and all(_done(word) for word in accounted):
+        return "done", sraw, []
+    if queued:                    # in the queue under a non-standard active word
+        return "running", raw, []
+    if accounted:                 # some other terminal word
+        return "crashed", sraw, []
+    return "unknown", "", []
+
+
+def locate_slurm_job(hint: str | None, hosts: list[str],
+                     state_on: Callable[[str], tuple[str, str, list[str]]]
+                     ) -> tuple[str | None, tuple[str, str, list[str]]]:
+    """``(host, state_on(host))`` for the first scheduler that knows the job, its recorded
+    *hint* first; ``(None, unknown)`` when none does."""
+    order = ([hint] if hint is not None else []) + [h for h in hosts if h != hint]
+    for host in order:
+        found = state_on(host)
+        if found[0] != "unknown":
+            return host, found
+    return None, ("unknown", "", [])
