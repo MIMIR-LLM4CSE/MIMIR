@@ -575,11 +575,6 @@ class DigestTests(CatalogueTestCase):
             return "compute|up|1-00:00:00|64|64|256000\n"
         return None
 
-    def _rebuilt(self):
-        """A digest built again from scratch — the memo is the subject of its own tests."""
-        slurm_digest.forget_cluster_digest()
-        return self.mod._build_digest()
-
     def test_digest_records_node_types_and_partitions(self):
         digest = self.mod._build_digest()
         self.assertEqual(len(digest["node_types"]), 2)

@@ -44,7 +44,7 @@ cd mimir/vscode-extension
 npm install
 npm run deploy       # build + install into VS Code (or update it in place)
 npm run dev          # rebuild on every save
-npm test             # vitest
+npm test             # tsc --noEmit (host and webview, tests included), then vitest
 npm run package      # build a .vsix without installing it
 ```
 

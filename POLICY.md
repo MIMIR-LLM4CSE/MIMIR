@@ -43,9 +43,7 @@ babysit reasoning and are tuned by the dial.
 | `blast_radius` | guidance | about to change an **existing** target, callers never searched | ✅ | ✅ | ❌ |
 | `env_cleanup` | guidance | the environment was mutated, the run is concluding | ✅ | ✅ | ❌ |
 | `unwatched_run` | guidance | a scheduler listed work of the user's that no descriptor covers, and the run is concluding | ✅ | ✅ | ❌ |
-| `env_resolution` | guidance | a run failed on a missing module, envs never listed | ✅ | ❌ | ❌ |
 | `doc` | guidance | a non-`.md` file changed, nothing pending, workflow at validate/conclude | ✅ | ❌ | ❌ |
-| `state` | guidance | editing paused after validation, not concluded | ✅ | ❌ | ❌ |
 | `creation` | guidance | a target declared that does **not** exist yet, nothing written | ✅ | ❌ | ❌ |
 | `todo` | guidance | multi-step work underway, no checklist written | ✅ | ❌ | ❌ |
 
@@ -65,7 +63,7 @@ then applies its own mode condition on top:
 
 | | `agent` | `plan` | `ask` |
 |---|---|---|---|
-| `strict` | every guidance row | `env_resolution`, `env_cleanup`, `state` | none |
+| `strict` | every guidance row | `env_cleanup` | none |
 | `light` | `blast_radius`, `env_cleanup`, `unwatched_run` | none | none |
 | `off` | none | none | none |
 
@@ -79,10 +77,17 @@ show this works?", and separate budgets turned one conclusion into several re-pr
 
 Some reminders are delivered **mid-loop** instead, because their subject is recovery
 rather than completion — see [Loop-control correctives](#loop-control-correctives).
-`env_resolution` is the one table row among them: fired right after the call that failed,
-where the steps it would save are still ahead, under the **same** enforcement gate, toggle
-and budget as its row, so whichever fires first spends the budget. The others are not table
-rows and carry **no enforcement gate at all** — they fire at every level, `off` included.
+`env_resolution` is one: fired right after the call that failed, where the steps it would
+save are still ahead, `strict` only, with its own toggle and a budget of one. The others carry
+**no enforcement gate at all** — they fire at every level, `off` included.
+
+**What fires, measured.** `/diag nudges` counts the reminders that reached the model in this
+conversation (`/diag nudges all`: every conversation of the workspace), read from the
+journals. The next change to this table is decided on those counts.
+
+**At the end of a turn**, three escalations follow one another, never together: a nudge if
+one fires; otherwise, once per query, the completion ledger handed back for the model to
+rewrite its summary; then the incomplete-answer report.
 
 ### Policy gates by approval mode
 
@@ -363,11 +368,10 @@ calling tools.
 | `repeat_call` | an identical *failed* non-write call — corrected once, then hard-blocked | once |
 | `moving_test` | a test file whose *failing set* keeps changing between runs | once |
 | handback stop | refusals reached the end of the denial ladder | once |
-| `env_resolution` | a call just failed on a missing module | shares its table row's budget |
+| `env_resolution` | a call just failed on a missing module, envs never listed (`strict`) | once |
 
-Only `env_resolution` is also a nudge-table row, and it alone carries the enforcement gate
-and toggle. **The other four have none** — they fire at every enforcement level, `off`
-included. That is deliberate for the correctives, which are reality checks, and is worth
+Only `env_resolution` carries an enforcement gate and a toggle. **The other four have none**
+— they fire at every enforcement level, `off` included. That is deliberate for the correctives, which are reality checks, and is worth
 knowing for `todo_tick`, which is the one piece of checklist hygiene the dial cannot turn
 down.
 
@@ -407,8 +411,9 @@ plan states its own gaps.
 
 ## Execution context
 
-Every run builds a validated context (`build_execution_context()` /
-`validate_execution_context()`). It tracks:
+Every run builds a validated context (`ExecutionContext`, checked by
+`validate_execution_context()`), in records by concern (`discovery`, `edits`, `checks`,
+`execution`, `env`, `denials`, `plan`, `nudges`, `bookkeeping`). It tracks:
 
 - discovery evidence: what was searched, inspected, read, checked;
 - known existing files, and files read explicitly;
@@ -418,7 +423,8 @@ Every run builds a validated context (`build_execution_context()` /
   printed;
 - denied sensitive actions, and the denial history the ladder counts;
 - workflow progress and `steps_since_last_edit`;
-- `edit_loop_state`: per-file signature and count of repeated identical **failed** edits;
+- `edits.edit_failures`: per file, the last failing patch, how often it failed identically,
+  and the streak of failures whatever the patch;
 - `declared_edit_set`: the files the model committed to editing via the checklist tool;
 - `similar_candidates_by_dir`: nearby peer files, for placement and duplication.
 
@@ -1281,10 +1287,8 @@ both ways to hand one over — `slurm_watch(job_id)` for a scheduler job, `bash_
 for a process on this host — and leaves the exit for work that is genuinely somebody
 else's, so a reminder is never silenced by adopting another user's run.
 
-### `state`, `doc`, `todo`, `env_cleanup`, `env_resolution`
-Soft, low-frequency, and all dropped at `light`. `state` is a catch-all for editing that
-paused after validation without concluding, delayed until the model has been idle long
-enough and suppressed while a check is pending. `doc` reminds the model to update catalogs
+### `doc`, `todo`, `env_cleanup`, `env_resolution`
+Soft, low-frequency, and all dropped at `light` except `env_cleanup`. `doc` reminds the model to update catalogs
 or READMEs after a code change, and can be ignored when no relevant documentation exists.
 `todo` asks for a checklist once work is visibly multi-step — either several files touched
 or many substantive operations — and is suppressed once concluding, since a plan written
@@ -1375,10 +1379,9 @@ the same route is certainly one. Being shown the same card a third time after sa
 twice is precisely the friction this removes. Past four refusals in the query, nothing
 sensitive is worth another prompt whatever scope it belongs to.
 
-The stage reaches the model through three carriers saying the same thing: the tool result
-it gets mid-loop, the denial nudge once it stops calling tools, and — at `handback` only —
-a one-time mid-loop stop, since a model told to hand back and still calling tools is out of
-reach of a nudge. The ladder is stated once in the system prompt's **Non-negotiables**, the
+The stage reaches the model through the tool result it gets mid-loop and the denial nudge
+once it stops calling tools; `handback` is said once, by a mid-loop stop, and a final answer
+at that stage is not sent back — it is the stop that was asked for. The ladder is stated once in the system prompt's **Non-negotiables**, the
 only carrier that survives every enforcement level.
 
 Two ledgers are kept, deliberately. `denied_tool_calls` is the *open* set that feeds the

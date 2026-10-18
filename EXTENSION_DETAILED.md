@@ -138,6 +138,14 @@ webview/src/
 ├── types.ts                  ← ALL shared TypeScript types (ServerMessage, ChatMessage, …)
 ├── hooks/
 │   ├── useWebSocket.ts       ← postMessage bridge; send(), connect(), createSession(), …
+│   ├── useEndpoint.ts        ← the connection: socket state, endpoint, models, connect,
+│   │                           rejoin, cancel
+│   ├── useAgentSettings.ts   ← mode, reasoning depth, streaming, context, enforcement,
+│   │                           temperature, approvals: each change sent as its command
+│   ├── usePanels.ts          ← the drawers (sub-agents, scientific computing) and their
+│   │                           polling
+│   ├── useComposer.ts        ← the message box: draft, "@" and "/" dropdowns, history,
+│   │                           keys, what Enter sends
 │   ├── useElapsed.ts         ← ticking elapsed-time counter for a running turn
 │   ├── useStickToBottom.ts   ← follow a pane's bottom while it streams, and let go when
 │   │                           the reader scrolls up. Used by the transcript and by the
@@ -145,11 +153,15 @@ webview/src/
 │   └── useOffscreenRows.ts   ← which tool rows have scrolled out of the thread, found by
 │                               `data-tool-id`; what decides when the progress dock shows
 ├── state/
-│   └── chatReducer.ts        ← the chat state machine: every message, tool row and
-│                               thinking block the transcript holds. The reducer never
-│                               mutates, which is what makes identity a valid change test
-├── App.tsx                   ← root component: state wiring and handleServerMessage()
+│   ├── chatReducer.ts        ← the chat state machine: every message, tool row and
+│   │                           thinking block the transcript holds. The reducer never
+│   │                           mutates, which is what makes identity a valid change test
+│   └── serverMessages.ts     ← routing a server message to the handler tables of the
+│                               hooks that hold its state
+├── App.tsx                   ← root component: wires the hooks, the reducer and the layout
 └── components/
+    ├── StatusBar.tsx          ← the bar above the chat: drawer toggles, connection, model
+    ├── Composer.tsx           ← the message box and the controls beside it
     ├── ChatThread.tsx         ← the scrolling transcript
     ├── ChatMessage.tsx        ← one message (text / thinking / approval / tools / error)
     ├── MarkdownContent.tsx    ← markdown renderer used inside a message
@@ -160,8 +172,7 @@ webview/src/
     ├── CommandResult.tsx      ← terminal-style in/out panel for an exec-shaped result
     ├── FileDiff.tsx           ← unified-diff renderer
     ├── diffUtils.ts           ← diff parsing helpers
-    ├── VerificationLedger.tsx ← an evidence panel that nothing mounts
-    ├── ledgerUtils.ts         ← ledger split/parse helpers (unit-tested)
+    ├── ledgerUtils.ts         ← lifts the ledger block off an answer (unit-tested)
     ├── CompletionReport.tsx   ← the collapsed completion report
     ├── completionUtils.ts     ← its split/parse helpers — mirrors guardrails/workflow/completion.py
     ├── GlobalApprovalBar.tsx  ← approval banner (allow / always / deny), for sensitive
@@ -174,7 +185,6 @@ webview/src/
     ├── ModeSwitcher.tsx       ← mode button and picker; the active mode colours the chat
     ├── UserQuestion.tsx       ← a structured question the agent asked (elicitation)
     ├── PlanBar.tsx            ← plan-mode progress bar above the input
-    ├── TodoSidebar.tsx        ← todo / plan items panel
     ├── SessionsPanel.tsx      ← session list (switch / rename / delete); each row shows a
     │                            model-generated one-sentence description, and a hand-picked
     │                            rename wins over it
@@ -276,7 +286,20 @@ a path.
 
 ---
 
-## Key React state in App.tsx
+## Where the panel's state lives
+
+`App.tsx` wires four hooks and the reducer. Each hook owns its state and answers the server
+messages about it through a handler table (`state/serverMessages.ts`); what no table answers
+goes to the chat reducer.
+
+| Hook | Holds |
+|---|---|
+| `useEndpoint` | `connection`, `agentReady`, `model`, the endpoint addresses, `endpointModels`, `remembered`, `runningServer` |
+| `useAgentSettings` | `agentMode`, `thinkingLevel`, `thinkingProfile`, `streaming`, `contextMode`, `enforcement`, `temperature`, `approvalMode` |
+| `usePanels` | the sub-agents, `panelSections`, `panelPending`, `panelAgentReady`, which drawer is open |
+| `useComposer` | the draft, the `@` and `/` dropdowns, the sent-message history, the active editor chip |
+
+What stays in `App.tsx`:
 
 | State variable | Type | Purpose |
 |----------------|------|---------|
@@ -285,14 +308,9 @@ a path.
 | `batchFiles` | `DiffEntry[]` | Files accumulated in the BatchReviewBar since last accept/revert |
 | `liveThinkingBlocks` | `ThinkingBlock[]` | Currently-streaming "Working…" blocks |
 | `busy` | `boolean` | True while the agent is running (input disabled) |
-| `connection` | `ConnectionState` | `disconnected \| connecting \| connected \| error` |
 | `todos` | `TodoItem[]` | Current todo/plan items |
 | `sessions` | `SessionMeta[]` | Session list from the server |
 | `activeSessionId` | `string \| null` | Currently active session |
-| `endpointModels` | `string[]` | Models the endpoint reports it serves; fills the connect dropdown. Local `App.tsx` state, not a shared type |
-| `thinkingProfile` | `ThinkingProfile \| undefined` | How the served model switches reasoning, from `ready`; decides which rungs the depth control offers |
-| `panelPending` | `boolean` | A `list_panel` the reader asked for is in flight; turns the `⟳` glyph while it is |
-| `panelAgentReady` | `boolean` | Whether the last `panel_report` came from a conversation that has an agent. A report from one that does not carries no sections, which is not the same answer as "this workspace reaches no clusters" — so the sections on screen are kept rather than blanked |
 
 ---
 
@@ -352,12 +370,13 @@ below it.
      | MyCustomMessage;   // ← add here
    ```
 
-3. **Handle it in `App.tsx`** inside `handleServerMessage`:
+3. **Handle it** in the handler table of the hook that holds the state it changes
+   (`on` in `hooks/use*.ts`), typed by its `type`; a message no table answers goes to the
+   chat reducer:
    ```typescript
-   case "my_custom":
-     // msg is typed as MyCustomMessage here
-     setMyState(msg.value);
-     break;
+   const on: ServerHandlers = useMemo(() => ({
+     my_custom: (msg) => setMyState(msg.value),   // msg is MyCustomMessage here
+   }), []);
    ```
 
 4. **Emit it from Python**: a handler group sends it through its `Sender`, and the
@@ -386,13 +405,13 @@ below it.
      | MyActionMessage;
    ```
 
-3. **Send it from a React component**:
+3. **Send it from a React component** with the typed `send()` from `useWebSocket`:
    ```typescript
-   // using the send() helper from useWebSocket (already available as prop or via context)
    send({ type: "my_action", param: "foo" });
-   // or for one-off calls from deep components:
-   vscodePostMessage({ type: "ws_send", payload: JSON.stringify({ type: "my_action", param: "foo" }) });
    ```
+   A message for the extension host itself (open a file, connect) is a `HostMessage`
+   (`src/shared/hostMessages.ts`, shared by both sides), posted with `vscodePostMessage`
+   and answered from the host's handler table.
 
 4. **Handle it in Python** (`mimir/client/ui/ws/connection/handlers/`): each handler
    group maps message types to its `on_<type>` methods in `MESSAGES`, and
@@ -771,7 +790,7 @@ Add the CSS class in `webview/src/styles/` (or in the existing inline style bloc
 
 In any component that receives `send` as a prop:
 ```tsx
-<button onClick={() => (send as any)({ type: "clear_todos" })}>
+<button onClick={() => send({ type: "clear_todos" })}>
   Clear plan
 </button>
 ```
@@ -779,7 +798,7 @@ In any component that receives `send` as a prop:
 ### Example 6 — Persist a new piece of UI state across sessions
 
 1. Add the field to the `session_loaded` payload in `connection/handlers/conversations.py`.
-2. Read it in the `"session_loaded"` case in `App.tsx` and call the appropriate `setState`.
+2. Read it in a `session_loaded` handler of the hook that holds that state.
 3. Save it back through `Screen.save()` in `connection/screen.py`.
 
 ---
@@ -788,5 +807,6 @@ In any component that receives `send` as a prop:
 
 ```bash
 cd mimir/vscode-extension
+npm test               # tsc --noEmit on the host and the webview (tests included), then vitest
 npm run deploy         # one-shot production build + install/update in VS Code
 ```

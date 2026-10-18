@@ -15,6 +15,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`/diag nudges`** counts the reminders that reached the model, in this conversation or
+  (`/diag nudges all`) in every conversation of the workspace.
+
 ### Changed
 - **One set of slash commands for the terminal and the panel.** `/think`, `/thinking`
   and `/thinking-depth` are one command, as are `/stream` and `/streaming`, and both
@@ -30,12 +34,28 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Bundled servers start through `servers/_launch.py`**, as modules of the
   `mimir.servers` package (`python servers/_launch.py mimir.servers.<domain>.<server>`
   to run one by hand). A server of `.mimir/servers/` still starts by its path.
+- **Fewer reminders that cannot help.** The `state` reminder is gone (it could only fire
+  in a narrow case after a validation reminder), the missing-module reminder speaks only
+  right after the failing call, and the end of the refusal ladder is said once instead of
+  sending a finished answer back.
 - **Extension packs belong to their workspace.** The policies, nudges and post-tool
   hooks of `.mimir/plugins/` apply to the agents of that workspace only, instead of to
   every agent of the process. A pack registered from code (an embedding application)
   still applies to all of them.
 
 ### Fixed
+- **A `find -exec … > file` redirection is confined.** An operator inside the `-exec`
+  payload was read as part of the nested command, so a redirection there could write outside
+  the workspace without approval; any other operator there is refused.
+- **Background runs come back whole after a reload.** A shell run re-armed from disk wakes
+  with its output summary, a Slurm run keeps its kind, a run killed by a signal reads as
+  `unknown` everywhere, and a sub-agent's run handed to its parent is polled in the right
+  session and marked reported where later scans look.
+- **Proxy runs on Slurm end.** They are read with the scheduler's accounting (and job
+  arrays) like any Slurm job and recorded as finished, so a finished run no longer keeps the
+  server from stopping; a watch on a proxy whose runs are gone ends instead of polling.
+- **Deleting a conversation is no longer held up** by a killed or scratch shell job.
+- **A sub-agent that fails to start gives its slot back.**
 - **`mimir-server --cwd` takes effect.** The workspace root was resolved before the
   flag was applied, so `.mimir/` and the state directory followed the directory the
   server was launched from.

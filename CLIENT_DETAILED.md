@@ -282,25 +282,31 @@ The per-query state schema, the tool vocabulary, and the `@`-mention attach.
 
 ### `execution_context.py`
 
-The `ExecutionContext` schema and its lifecycle. One source of truth: the
-`ExecutionContext` dataclass, whose fields carry their `traits` in their metadata,
-generates both the template and the validator. A contract test
-asserts the two key sets match. **47 fields** today.
+The `ExecutionContext` schema and its lifecycle. The context is nine records, one per
+concern, plus two fields read across all of them (`workflow_state`, `action_op_count`):
 
-- `execution_context_template()` / `build_execution_context()` / `validate_execution_context()`
-  / `ensure_execution_context()` — create and validate.
-- `backfill_execution_context()` — the single spec-derived seeder. It replaced four
-  `bootstrap_*` helpers that each seeded their own module's subset, one of which defaulted
-  `steps_since_last_edit` to `99` where everything else used `0`, so an absent field meant
-  "maximally idle" to one reader and "just edited" to another.
-- `loop_control(ctx)` — lazily attaches a `LoopControlState` dataclass under a private key,
-  holding the five dispatch dedup/spin fields. Kept out of the schema so the contract stays
-  about *semantic* state, not loop plumbing.
+| Record | Holds |
+|---|---|
+| `discovery` (`Discovery`) | what was searched, inspected, read and found to exist |
+| `edits` (`Edits`) | planned and written files, the replace tracking, `edit_failures` (one `EditFailures` per file: the identical-patch count and the streak) |
+| `checks` (`Checks`) | validated files, their tiers, failed checks, the built-in floor's findings |
+| `execution` (`Execution`) | the run ledger, tests run, the exercise advice, scheduler ids nothing watches |
+| `env` (`Environment`) | unresolved imports, the env probe, installs |
+| `denials` (`Denials`) | refused calls and the escalation log |
+| `plan` (`PlanState`) | the checklist and its file |
+| `nudges` (`NudgeState`) | fire counts, transient reminders, one-shot correctives |
+| `bookkeeping` (`Bookkeeping`) | the loop's own state: message↔file map, pins, skills, mode, workspace root, dispatch guards |
 
-**Field traits.** The `traits` frozenset on each row declares what a field *is* — `CARRY`,
+Each field declares its default, its types and its `traits`; `leaf_fields()` walks them
+all, `ctx.get(name)` and `ctx.home(name)` reach a field by name, and `ctx.take(name)` reads
+and resets a one-shot one. `validate_execution_context()` checks every declared type;
+`ensure_execution_context()` refuses anything that is not a context.
+
+**Field traits.** The `traits` frozenset on each field declares what it *is* — `CARRY`,
 `FILE_PATH`, `KNOWN_FILE`, `DISCOVERY` — and `fields_with(*traits)` derives every list built
-from them: the carry merge, session serialisation, the delete purge, the discovery signals,
-`known_existing_files`. None is hand-maintained, so none can drift from the schema.
+from them: the carry merge (sets unioned, dicts merged, flags kept once raised; `skills_loaded`
+drops a "pending" reservation), session serialisation, the delete purge, the discovery signals,
+`known_existing_files`. None is hand-maintained.
 
 **Named predicates, not bare set membership.** `was_read()` / `is_known_to_exist()` /
 `was_checked_for()` name the distinctions [POLICY.md](POLICY.md#what-each-field-means)
@@ -340,22 +346,25 @@ find scores two while grounding nothing.
 every step). `declared_edit_set` (paths scraped from the checklist's own step text;
 **replaced** by each new checklist, never accumulated, so a revised plan retracts what it
 dropped). `action_op_count` (successful `PLAN_BLOCKED` calls — the op-count trigger that
-lets a many-operations/few-files task still read as multi-step). `edit_fail_streak_by_file`
-(per-path consecutive edit failures *regardless of patch*, which drives the
-`error_recovery` reminder; it deliberately does not evict the file from the read sets — a
-wrong anchor is not missing content).
+lets a many-operations/few-files task still read as multi-step). `edits.edit_failures`
+(per file, consecutive failures *regardless of patch* drive the `error_recovery` reminder,
+identical ones the hard block; the file stays in the read sets — a wrong anchor is not
+missing content).
 
-**Who writes what.** Each field group has one writer and many readers; a second writer is
-how the layers come to disagree about what the context says.
+**Who writes what.** Most records have one writer; where there are several, they are named.
 
-| Writer | Fields | Read by |
+| Record | Written by | Read by |
 |---|---|---|
-| `guardrails.observations.record_tool_observation` (after every tool call) | `searched`, `read_files`, `inspected_dirs`, `checked_paths`, `existing_paths`, `search_tool_calls`, `similar_candidates_by_dir`, `dirty_written_files`, `declared_edit_set`, `edit_loop_state`, `edit_fail_streak_by_file`, `last_replace_*`, `code_mutation_started`, `validated_files`, `validation_tier_by_file`, `validation_fail_count_by_file`, `tests_run`, `runs`, `action_op_count`, `todo_written`, `plan_written` | the policy engine, the state guards, every nudge, the loop's correctives |
-| `guardrails.verdict.apply_verdict` (the judging tool's call) | `runs[cmd].verdict/reason/failures`, `attempts` | the verification ledger, the completion report |
-| `guardrails.workflow.set_workflow_state` | `workflow_state` | every state gate |
-| `guardrails.nudges.cascade` | `nudge_counts[<category>]` | the per-category caps |
-| `query_engine.agent_loop` | `steps_since_last_edit`, `LoopControlState` (`write_calls`, `call_fails`, `repeat_warned`), `evidence_handback_used` | the idle gates, the dispatch dedup, the repeated-failure guard |
-| the policy engine and the agent's approvals | `denied_tool_calls`, `denial_history` | the blocking denials, the denial nudge, the escalation ladder |
+| `discovery` | `guardrails.observations` (discovery, files, shell), the carry merge | the policy engine, the nudges, the history budget |
+| `edits` | `guardrails.observations.files`; `steps_since_last_edit` also by `agent_loop` | the write policy, the nudges, the ledger |
+| `checks` | `guardrails.ladder`, `observations.files`, `builtin_check` | the state guards, the nudges, the ledger, the completion report |
+| `execution` | `guardrails.ladder` (`record_run`), `guardrails.verdict`, `observations.shell`, `observations.runs` | the ledger, the completion report, the exercise and stuck-repair nudges |
+| `env` | `observations.env`, `observations.shell` | the env nudges |
+| `denials` | the agent's approvals, `observations.evidence` | the denial ladder, the completion report |
+| `plan` | `observations.plan`, `query_engine.turn`, `plan_loop`, `dispatch.inject` | the commitments check, the checklist reminders |
+| `nudges` | `nudges.cascade`, `dispatch.inject`, `nudges.reminders`, `ladder` (resets), `agent_loop` | the per-category caps, the injections |
+| `bookkeeping` | `query_engine.dispatch`, `turn`, `loop_base`, the skill gate | the history budget, the dispatch guards |
+| `workflow_state` | `guardrails.workflow.set_workflow_state` | every state gate |
 
 ### `capabilities.py`
 
@@ -1511,9 +1520,17 @@ watcher's report goes through, so a run reported late is indistinguishable from 
 on time. A conversation with no agent yet keeps the wake pending rather than losing it.
 
 Two places look for the ended pile — a connection arriving (`report_ended_jobs`) and a
-worker being built (`rearm_detached_jobs`) — so a marker file in the run's own directory
-records what has been settled, outliving whichever process settled it: a run delivered twice
-is a conversation woken twice for one build.
+worker being built (`rearm_detached_jobs`) — through one scan (`needing_attention`, which
+gives a first-scanned session its baseline) and one event (`ended_event`), the same
+`job_complete` a live watcher builds (`query_engine.jobs.wakes.job_complete`). A marker file
+in the run's own directory records what has been settled, outliving whichever process
+settled it: a run delivered twice is a conversation woken twice for one build. Whether a run
+on disk is still going is one rule too (`DetachedJob.live`), which also decides whether
+deleting a conversation has to ask.
+
+The files and words are the servers' own (`servers/_shared/jobs.py`, see
+SERVERS_DETAILED.md): a run killed by a signal reads `unknown` on disk as the bash server
+says, and a re-armed run keeps its kind and its summary op.
 
 **A sub-agent's runs are in here too.** A child's session is stored under its parent's
 (`<parent>/subagents/<child>`), so the scan walks that one named level as well — never
@@ -1524,8 +1541,8 @@ the conversation to wake, since nothing can load a sub-session as one — `Detac
 owner_session` is the parent, and that is what the wake is routed to. Whose run it is and
 who gets woken are two different answers.
 
-The descriptor carries the run's directory for the same reason: a job key alone resolves
-against the *reading* session, and a child's run does not live there. Resolved against the
+The descriptor carries the run's directory, in its ops' arguments too, for the same reason: a
+job key alone resolves against the *reading* session, and a child's run does not live there. Resolved against the
 wrong session it reads as "no such job", which the job layer spells `unknown` — a terminal
 state — so a parent would announce a healthy build as lost on its first poll. `bash_job`
 takes that directory and admits it when it is inside the reading session's own state

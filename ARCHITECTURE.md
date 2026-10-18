@@ -123,6 +123,39 @@ class there reads a `self.x` it does not define.
 `Connection.handle(message)` dispatches on the message type to the group whose
 `MESSAGES` table names it.
 
+## The execution context
+
+What one query has established is an `ExecutionContext` of nine records, one per concern:
+`discovery`, `edits`, `checks`, `execution`, `env`, `denials`, `plan`, `nudges` and
+`bookkeeping`, with `workflow_state` and `action_op_count` on top. Every field declares its
+default, its types and its traits; the derived lists (what is carried to the next query, what
+a deleted file is purged from, what counts as discovery) are computed from the traits. The
+writers of each record are listed in CLIENT_DETAILED.md, "Who writes what".
+
+## The guardrails
+
+`guardrails/` reads the context and never runs a tool. `policy/` blocks a call before it runs;
+`nudges/` reminds the model when it stops calling tools, verification rows first, then
+guidance rows gated by the enforcement level; mid-loop correctives speak after a dispatch
+step. Which rows exist and at which level is POLICY.md's table; `/diag nudges` counts what
+actually fires.
+
+## Detached runs
+
+A run that outlives its tool call is described the same way everywhere, by
+`servers/_shared/jobs.py`: the descriptor a watcher polls, the payload keys that carry it
+(`background_job` launched, `background_jobs` handed over), the terminal words, Slurm's states
+read into them, and the files a run's directory holds. The servers produce descriptors
+through it; the client's watcher, its disk scan and the dispatch guards read them through it.
+
+## The VS Code extension
+
+The extension host (`src/`) and the webview (`webview/src/`) share `src/shared/` (the
+endpoint defaults and the `HostMessage` union of what the webview asks of the host). The
+webview's state lives in hooks by concern (`useEndpoint`, `useAgentSettings`, `usePanels`,
+`useComposer`) and the chat reducer; each hook answers the server messages about its state
+through a handler table. Both halves are type-checked by `npm test`.
+
 ## The servers
 
 `mimir/servers/` is a package: each domain (`workspace`, `agent_state`, `hpc`, `proxy`,
@@ -146,10 +179,11 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
 - **Docstrings are short.** A function's says what it does in a line, plus at most a
   few lines of why (6 in all); a module's says what it holds (8 in all). The longer
   reasoning lives in the `*_DETAILED.md` docs. An MCP tool's docstring is exempt: it is
-  what the model reads.
+  what the model reads. The same holds for tests and for the extension's comments.
 - **Types are checked.** `mypy` covers `mimir/client` and `mimir/servers`; `core`,
   `context` and `config` are held to fully typed definitions. `MimirAgent` is checked
   against `AgentPort` statically.
 - **Tests go through public construction and behaviour.** No test reads the source or
   builds an object around its constructor; shared fixtures live in `mimir/tests/support/`.
-  The number of private accesses in the tests is frozen and may only go down.
+  The architecture leads and the tests follow it: a test that pins an old internal is
+  rewritten on the behaviour, not kept by bending the code.
