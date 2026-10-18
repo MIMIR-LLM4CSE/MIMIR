@@ -44,17 +44,9 @@ _QUERY_DISCOVERY_ONLY: tuple[str, ...] = (
     "server", "serveur",
 )
 
-# Composed so each term lives in exactly one source set; dedup preserves order.
-#
-# Read this as an EXIT filter, not a detector: the union is broad enough to be true for
-# almost any repo-touching request, and that is intended. Its job is to exclude pure
-# theory, bibliography and chit-chat, not to discriminate among coding tasks — its one
-# consumer (the plan-mode explore phase) must not read a positive as more than "this
-# query plausibly touches the workspace".
-#
-# Pure-theory terms (derive, prove, cite, theorem) are absent by construction: a
-# derivation or a literature question needs no *repository* discovery. Performance terms
-# (optimize, benchmark, parallelize) do touch code, so QUERY_HPC_SIGNALS is in.
+# An exit filter, not a detector: broad enough to fit almost any repository request,
+# it only excludes pure theory, bibliography and chit-chat. Its one consumer is the
+# plan-mode explore phase.
 QUERY_DISCOVERY_SIGNALS: tuple[str, ...] = tuple(
     dict.fromkeys(
         QUERY_EDIT_SIGNALS
@@ -103,11 +95,8 @@ SOURCE_FILE_EXTENSIONS: tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# Query-signal matching. Intent detection matches a *word*, not a raw substring — a
-# naive ``token in text`` fires on "create" inside "creative", "add" inside "address".
-# Everything goes through ``query_matches_any``, which anchors tokens at ``\b``.
-# Multi-word phrases ("speed up") work; ``\w`` is Unicode-aware, so accented French
-# tokens ("améliore") get correct boundaries too.
+# Query-signal matching anchors each token at ``\b`` (``query_matches_any``), so "add"
+# does not match "address"; ``\w`` is Unicode-aware.
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=256)
@@ -138,12 +127,7 @@ def query_matches_any(query: str, tokens: tuple[str, ...]) -> bool:
 
 
 # ── query-signal reading ───────────────────────────────────────────────────────
-# One predicate, one consumer. The nudges do not read the user's wording for intent;
-# they read what happened: a file was edited, a target was declared, a run failed.
-#
-# This one survives for the plan-mode explore phase (``query_engine/plan_loop``), where
-# it is used as the coarse exit filter the union above describes — "does this request
-# plausibly touch the workspace at all" — and never to discriminate between tasks.
+# Used only by the plan-mode explore phase, as the coarse exit filter above.
 
 def query_requires_repo_discovery(query: str) -> bool:
     return query_matches_any(query, QUERY_DISCOVERY_SIGNALS)

@@ -27,17 +27,9 @@ class LoopControlState:
 
 
 # ── Recency-preserving sets ────────────────────────────────────────────────────
-#
-# Several path fields can only ever be shown as a bounded slice — a summary, a nudge,
-# a hand-back. A plain ``set`` carries no order, so the only deterministic slice is an
-# alphabetical one, and the alphabetically-last ten paths are not the ten that matter.
-# ``RecencySet`` keeps insertion order alongside the set so a slice can be the paths
-# the model just touched.
-#
-# It IS a ``set``: every existing membership test, ``|``, ``-`` and ``isinstance``
-# check keeps working unchanged. Operators that build a new set return a plain one and
-# simply lose the order, which ``recent_first`` degrades to sorted order for — the
-# previous behaviour, never a crash.
+# A path field shown as a bounded slice should show the paths just touched. A
+# ``RecencySet`` is a ``set`` that also keeps insertion order; operators that build a new
+# set return a plain one, which ``recent_first`` sorts.
 class RecencySet(set[Any]):
     """A ``set`` that also remembers the order elements were first added."""
 
@@ -88,13 +80,7 @@ class RecencySet(set[Any]):
 
 
 def recent_first(value: Any) -> list[Any]:
-    """Elements of *value* most-recent-first, falling back to sorted order.
-
-    The pin shows a bounded slice, so which elements it picks is a real decision. A
-    :class:`RecencySet` answers it with recency; anything else (a plain set rebuilt by
-    ``|``, a list restored from JSON) has no such answer and gets deterministic
-    alphabetical order rather than an arbitrary one.
-    """
+    """Elements of *value* most-recent-first for a :class:`RecencySet`, else sorted."""
     if isinstance(value, RecencySet):
         return list(reversed(value.insertion_order()))
     if isinstance(value, (set, frozenset)):
@@ -103,12 +89,7 @@ def recent_first(value: Any) -> list[Any]:
 
 
 # ── Field traits ───────────────────────────────────────────────────────────────
-#
-# What a field *is*, declared next to the field itself, so the question is asked once,
-# where the field is defined. Every derived list below is computed from this table —
-# hand-maintained name lists in agent_core, observations, the policy engine and the nudge
-# engine have nothing keeping them correct when a field is added, and go stale silently or
-# compute the same thing twice.
+# What a field is, declared beside it; every derived list below is computed from them.
 CARRY = "carry"              # merged into the next query's context (session memory)
 FILE_PATH = "file_path"      # holds workspace FILE paths -> a deleted file must be purged
 KNOWN_FILE = "known_file"    # holds a file path the model has encountered this session
@@ -132,11 +113,8 @@ _NoneType = type(None)
 class ExecutionContext:
     """Everything one query has established, read by every guard, nudge and report.
 
-    One object per query, built by the agent (``new_execution_context``) and handed to
-    every layer. Each field declares its default, the types it may hold and its traits
-    — what the field *is* — and every derived list (the carried fields, the path fields
-    a deletion purges, the discovery signals) is computed from those declarations, so a
-    new field is declared once, here.
+    Each field declares its default, types and traits; the derived lists (carried fields,
+    path fields, discovery signals) are computed from those declarations.
     """
 
     # ── Discovery: what the agent has searched, inspected, and read ────────────
@@ -236,11 +214,6 @@ class ExecutionContext:
     # test file -> distinct failing-node-id sets seen this query (oracle nudge)
     test_failure_signatures: dict[str, list[str]] = _spec(dict, (dict,))
     # ── Environment ────────────────────────────────────────────────────────────
-    # These three were live for a long time without being declared here at all: seeded
-    # by a bootstrap helper, written by the observers, read by the nudges — and so
-    # invisible to the template, to validate_execution_context, and to the TypedDict
-    # parity test. Declaring them is what lets a backfill be derived from this table
-    # instead of hand-listed per module.
     # imports a run failed to resolve (env-resolution nudge)
     unresolved_modules: set[str] = _spec(set, (set,))
     # ids a scheduler listed that no descriptor covers — nothing watches them, no wake is owed (unwatched-run nudge)
@@ -267,13 +240,8 @@ class ExecutionContext:
     # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
     history_truncated: bool = _spec(lambda: False, (bool,))
     # ── Skills loaded on demand ────────────────────────────────────────────────
-    # skill name -> the tool_call_id of the result carrying its instructions; "" for
-    # one the user's /<name> folded into messages[0], "pending" while a pull is in
-    # flight (the gate reserves the slot so two parallel pulls cannot both pass the
-    # cap). Insertion order is the load order. No body is copied in: it lives in the
-    # message list and in agent.skills.
-    # Mirrored into carry_context by hand, like ``searched``: the trait-driven mirror
-    # only handles sets, and the instructions outlive the query that pulled them.
+    # Insertion order is the load order; the instructions live in the messages and in
+    # agent.skills. Mirrored into carry_context by hand, like ``searched``.
     # skill name -> tool_call_id carrying its instructions ("" = folded into messages[0] by /<name>, "pending" = pull in flight)
     skills_loaded: dict[str, str] = _spec(dict, (dict,))
     # tool_call_ids whose results the history budget may not evict or summarise away
@@ -315,11 +283,8 @@ class ExecutionContext:
 
 
 # ── The carry-context schema ───────────────────────────────────────────────────
-#
-# The carry context (``context.carry``) is the session-level dict that survives between
-# queries. Most of it mirrors the CARRY-trait fields above; the keys that exist only
-# there are declared here, so the JSON conversion (sets become lists and back) and the
-# deleted-path purge are derived rather than hand-listed.
+# Keys that exist only in the carry context (``context.carry``), declared so the JSON
+# conversion and the deleted-path purge are derived.
 #   (name, default_factory, json_kind, holds_paths)
 _CarryExtraSpec = tuple[str, Callable[[], Any], str, bool]
 
@@ -407,13 +372,7 @@ def is_known_to_exist(execution_context: ExecutionContext, path: str) -> bool:
 
 
 def was_checked_for(execution_context: ExecutionContext, path: str) -> bool:
-    """Whether a pre-check was *attempted* for *path*.
-
-    Explicitly **not** proof that it exists: a check that came back negative lands here
-    too. Kept separate from :func:`is_known_to_exist` because the destructive guards
-    need the stronger fact, and a name is the only thing that keeps the two apart at
-    the call site.
-    """
+    """Whether a pre-check was attempted for *path* — not proof that it exists."""
     return path in (execution_context.checked_paths or set())
 
 
@@ -433,54 +392,13 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 
 
 # ── State producer → consumer map ──────────────────────────────────────────────
-# ExecutionContext is a large, mutable, shared blackboard. The single biggest source
-# of cognitive load in the policy layer is that reasoning about one nudge or guard
-# requires knowing *who writes* the fields it reads. This map is the authoritative
-# answer. It is grouped by writer; every reader is a consumer of the corresponding
-# field group. Keep it in sync when a field's writer/reader set changes.
-#
-#   WRITER                                   FIELDS WRITTEN                              READ BY
-#   guardrails.observations.record_tool_observation   searched, read_files, inspected_dirs,      engine (tools_for_context,
-#     (the observers of ORDER,                 checked_paths, existing_paths,             missing_evidence, guards),
-#      run after every tool call)              search_tool_calls,                          runtime (check_write_policy),
-#                                              similar_candidates_by_dir,                 state_machine (guards),
-#                                              dirty_written_files, declared_edit_set,    nudges (all nudges),
-#                                              edit_loop_state, edit_fail_streak_by_file,  agent_loop (correctives)
-#                                              last_replace_*,
-#                                              code_mutation_started, validated_files,
-#                                              validation_tier_by_file,
-#                                              validation_fail_count_by_file, tests_run,
-#                                              runs,
-#                                              action_op_count,
-#                                              todo_written, plan_written
-#   guardrails.verdict.apply_verdict           runs[cmd].verdict/reason/failures,        verification (ledger rows),
-#     (runs on the judging tool's call,        attempts                                   workflow (completion report)
-#      via evidence.verdict_tool)
-#   context/workflow.set_workflow_state       workflow_state                             every layer's state gates
-#   guardrails/nudges/cascade           nudge_counts[<category>]                    nudges (per-category caps)
-#   query_engine/agent_loop                   steps_since_last_edit (increment),          nudges (idle gates),
-#     (loop body + loop-control correctives)    LoopControlState (the private             agent_loop (dedup +
-#                                              _loop_control object: write_calls,          repeated-failure guard)
-#                                              call_fails, repeat_warned),
-#                                              evidence_handback_used                      agent_loop (once per query)
-#   policy/engine + agent_core (approval)  denied_tool_calls, denial_history          state_machine (blocking denials),
-#                                                                                         nudges (denial nudge),
-#                                                                                         workflow (escalation ladder)
-#
-# Rule of thumb: fields are WRITTEN in exactly one place (the observation pass or the
-# loop) and READ in many. Never mutate context outside its declared writer above: a second
-# writer is how the layers come to disagree about what the context says.
+# Each field group has one writer: see CLIENT_DETAILED.md, "Who writes what". Never
+# mutate the context outside its declared writer.
 
 
-# ── Discovery-evidence semantics: the single definition of "what counts as the
-# model's own exploration this query." Every consumer (the agent-mode discovery
-# nudge, the plan-mode explore phase, violations.missing_evidence) reads these helpers
-# instead of hand-picking its own subset of fields — that duplicated subset-picking
-# was the source of cross-layer coherence bugs.
-#
-# Every signal below is only ever set by the model's own tool calls this query (see
-# guardrails.observations), so presence is the whole test. Nothing seeds them: a gate
-# must not be satisfied before the model has done anything.
+# ── Discovery evidence: what counts as the model's own exploration this query ──
+# Every consumer reads these helpers. Only the model's own tool calls set the signals,
+# so presence is the whole test.
 
 # Derived from the ``DISCOVERY`` trait rather than hand-listed, so a new discovery
 # field cannot be added to the schema and forgotten here. Membership:
@@ -524,14 +442,7 @@ def plan_evidence_ready(
     min_files: int = PLAN_EVIDENCE_MIN_FILES_READ,
     min_distinct: int = DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
 ) -> bool:
-    """True once the model has actually read code, not merely located it.
-
-    The bar plan mode holds the plan-document tool behind. Distinct signal *kinds*
-    alone do not express it: listing a directory and running a find scores two while
-    grounding nothing, which is how a plan could be written over file names. Reading
-    file contents is what a plan's "WHERE" rests on, so the read count carries the
-    gate and the kind count stays as the breadth term beside it.
-    """
+    """True once the model has read code, not merely located it: the bar for the plan tool."""
     read = set(execution_context.read_files or ())
     # A file a sub-agent read and reported on counts here: the plan's "WHERE" rests on
     # code that was read and whose finding is in the model's context. It does NOT count
@@ -544,16 +455,10 @@ def plan_evidence_ready(
 
 
 def _declared_target_written(declared: str, written: set[str], root: str) -> bool:
-    """True when one declared edit target was honoured by one of the *written* paths.
+    """True when the declared edit target *declared* is one of the *written* paths.
 
-    The two sides are spelled differently by construction. A write records the path
-    the file tools were given — absolute outside the workspace, root-relative inside
-    — while the declared set is scraped from the checklist's own prose, where the
-    model names the file however it reads best: bare (``write wave_solver_2d.py in
-    ../other/``, the directory living in the surrounding words) or relative to the
-    workspace. So the comparison resolves both sides against the workspace root, and
-    a declared entry carrying no directory at all matches on basename — a bare
-    mention never carried a location to contradict.
+    Both sides are resolved against the workspace root; a declared entry with no
+    directory matches on basename.
     """
     if declared in written:
         return True
@@ -568,15 +473,9 @@ def _declared_target_written(declared: str, written: set[str], root: str) -> boo
 
 
 def unwritten_declared_files(execution_context: ExecutionContext) -> list[str]:
-    """Declared edit targets that no write this query honoured, sorted.
+    """Declared edit targets no write of this query honoured, sorted.
 
-    Read while the work is still going (the edit→validate transition, the empty-turn
-    corrective, the missing-evidence text), never at completion: the set is scraped from
-    checklist prose, so "named earlier, not written yet" is guidance mid-run, and at the
-    end a revised plan would read as a skipped step.
-
-    Matching is by resolved path (:func:`_declared_target_written`): a plan may spell a
-    file differently from the write.
+    Guidance mid-run only: the set is scraped from checklist prose.
     """
     declared = execution_context.declared_edit_set or set()
     if not declared:
@@ -589,46 +488,15 @@ def unwritten_declared_files(execution_context: ExecutionContext) -> list[str]:
 
 
 def declared_edit_set_complete(execution_context: ExecutionContext) -> bool:
-    """True when every file the model declared it would edit has been dirtied.
-
-    The single definition of "the planned multi-file refactor is finished writing"
-    — read by the edit→validate transition (runtime), the validation state guard
-    (state_machine), and the validation/state nudges (nudges). An empty
-    declared set (no explicit plan) is vacuously complete.
-    """
+    """True when every file the model declared it would edit has been written (vacuous if none)."""
     return not unwritten_declared_files(execution_context)
 
 
-# ── Validation strength: how much a green check actually proved ───────────────
-#
-# ``validated_files`` answers "was this file checked?"; this ladder answers "with
-# what?". Both are about **checkers** only — a parse, an import resolution, a lint,
-# a compile: tools whose output *is* a list of problems, so an empty one is the
-# finding and nobody has to read anything. Running the code is not on this ladder at
-# all; an execution is judged as a run (see ``runs`` and ``guardrails/verdict.py``),
-# because "it reached the end" and "it gave the right answer" are different claims
-# and only the second one is what the user asked for.
-#
-# Ordered weakest→strongest. Report-only: nothing gates, blocks, or nudges on the
-# tier — it is read by the completion ledger so the *answer* can say what was
-# actually established.
-#
-# ``structural`` sits at the bottom: the built-in floor established that the file parses
-# (or, for a language with no stdlib parser, that it is not truncated) without any tool
-# being installed. It is the tier every checked file starts at, and any external checker
-# the model happens to run raises it from there.
-#
-# ``compiled`` needs a toolchain the environment may not have, so a build is
-# recommended when it is available, never required. It still credits the file, a
-# fortiori — a translation unit that linked also parsed.
-#
-# ``measured`` sits at the top and is reached by exactly one route: a server that ran
-# the file itself and knows which file it ran. Attribution is what normally keeps a run
-# off this axis — ``python main.py`` exercises ``mesh.py`` without naming it — and an
-# optimisation session is the one place where it is not a guess, because the session
-# config names a single source. It is demanded nowhere either: a cluster, a queue or a
-# dataset may be missing. It says the file was exercised and measured, never that the
-# measurement was good; that claim is a verdict on the *run*.
+# ── Validation strength: what a green check proved ─────────────────────────────
+# The checker ladder, weakest to strongest, for a file (a run is judged as a run, see
+# ``runs``). Report-only: the completion ledger reads it. ``structural`` is the built-in
+# floor every checked file starts at; ``measured`` only comes from a server that ran the
+# file and knows which. See CLIENT_DETAILED.md, "Two axes, never mixed".
 VALIDATION_TIERS: tuple[str, ...] = ("structural", "syntax", "static", "compiled", "measured")
 _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 
@@ -641,10 +509,7 @@ def validation_tier(execution_context: ExecutionContext, path: str) -> str | Non
 def raise_validation_tier(execution_context: ExecutionContext, path: str, tier: str) -> None:
     """Record *tier* for *path*, keeping the strongest evidence seen.
 
-    Monotone by design: a file validated by a reference comparison and then
-    re-checked with a bare syntax pass has still been compared. The tier is
-    cleared (not lowered) when the file is re-edited or fails validation —
-    wherever ``validated_files`` is discarded, this is popped alongside it.
+    Cleared, never lowered, wherever ``validated_files`` drops the path.
     """
     if tier not in _TIER_RANK:
         return
@@ -683,71 +548,19 @@ def files_below_tier(execution_context: ExecutionContext, tier: str) -> list[str
     return sorted(p for p, t in tiers.items() if _TIER_RANK.get(t, 0) < threshold)
 
 
-# ── Output verdicts: what the MODEL said a run's output showed ────────────────
-#
-# The tier ladder above grades machine-observed evidence about a *file*; this grades
-# nothing — it records a claim about a *run*. Exit 0 only ever means the program
-# reached its end, and no parser generalises across plots, tables, logs and physical
-# units, so the only thing that can read arbitrary output is the model. Mimir
-# therefore never parses the *program's* output for a pass/fail; it parses the model's
-# own statement about it, which is a format the model controls. Kept on the run rather
-# than on a file, and rendered under its own heading in the ledger, so a claim is never
-# mistaken for an observation and "the file lints" is never read as "the answer is right".
-# ``blocked`` grades nothing either, and settles nothing: it re-imputes a red exit from
-# the change to the environment, leaving the run as red as the machine saw it.
-#
-# ``rejected`` is the fifth because four were not enough to describe an experiment. In a
-# search loop most runs lose, and losing is not failing: the program ran, the number was
-# read, the candidate was simply not better. With no word for that the model reached for
-# ``fail`` — recorded doing exactly this: `fail`, "OMP_NUM_THREADS=64 rejected:
-# time_s=0.064247 > best 0.055586" — and `fail` charges the repair budget and addresses
-# every outstanding run at once, so one honest sentence about a thread count marked
-# thirteen unrelated runs as defects and asked whose fault a healthy run was. The
-# machine side already knew better: `observations.runs._settle_from_machine` declines to
-# charge a run that measured correctly without improving, "the ordinary outcome of an
-# experiment, and charging it would punish most of them". This is the same judgement,
-# made available to the only party that can actually recognise it.
+# ── Output verdicts: what the model said a run's output showed ─────────────────
+# A claim about a run, kept apart from the file evidence above. ``blocked`` re-imputes a
+# failure to the environment; ``rejected`` is a run that measured correctly without
+# improving, which must not charge the repair budget the way ``fail`` does.
 VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown", "blocked", "rejected")
 
 
 def run_ledger_key(command: str) -> str:
-    """The identity a run is remembered by: WHAT it ran, not how it was typed.
+    """The identity a run is remembered by: the executing head plus the files it named.
 
-    The repair budget counts attempts at the same command, so what counts as "the same"
-    decides whether it ever accumulates. A model narrowing down a failure rewrites the
-    tail of its command every time; keyed on the raw string,
-
-        pytest tests/test_x.py -q 2>&1 | tail -15
-        pytest tests/test_x.py -q 2>&1 | tail -8
-        pytest tests/test_x.py -v  2>&1 | tail -12
-
-    would be three ledger entries of one failure apiece — never the three strikes that
-    arm the ladder.
-
-    The key is the executing segment's head plus the files it named, taken from the same
-    classifier the policy layer parses with, so ``timeout 280 python3 -m pytest a.py``
-    and ``pytest a.py`` agree. Flags are dropped — they change how a run reports, not
-    what it exercises — and so is everything downstream of a pipe.
-
-    Parsed with ``allow_expansion=True``, unlike every other caller. A bare ``$VAR``
-    makes a command opaque to *classification* — its kind depends on what the value
-    turns out to be — but this function wants an identity, not a verdict, and it gates
-    nothing: the policy layer calls the classifier itself, with the strict default.
-    Without it, ``pytest a.py; echo "exit=$?"`` fell back to its raw text while the same
-    command without the echo keyed on ``pytest a.py``, so a model adding a status line
-    to a command it was already retrying opened a fresh ledger entry every time and the
-    repair budget never accumulated. Command *substitution* stays opaque either way: it
-    runs code.
-
-    A command the classifier still cannot read keys on its raw text: nothing about it is
-    known well enough to call two of them the same.
-
-    A segment that named no file keeps its whole argv instead of collapsing to its head.
-    Otherwise every ``python3 -c "…"`` probe in a session — the idiom the base prompt
-    actively steers one-off checks towards — would share one ledger entry, and three
-    unrelated one-liners would read as three attempts at a single failing thing.
-
-    Idempotent, so a caller holding a key may pass it back in place of a command.
+    Flags and everything after a pipe are dropped, so retries of one failure share a key
+    and the repair budget accumulates. A segment that named no file keeps its argv; an
+    unreadable command keys on its text. Idempotent.
     """
     try:
         segments = classify_bash_command(command, allow_expansion=True) or []
@@ -771,19 +584,10 @@ def record_run(
     execution_context: ExecutionContext, command: str, *, completed: bool, call_id: str = "",
     effect: str = "run",
 ) -> dict[str, Any]:
-    """Register an execution, or re-register one being run again.
+    """Register an execution, or re-register one run again, last and with its failure history.
 
-    Re-registered last, not in place: an unscoped ``pass`` credits the most recent run,
-    and a re-run is newer than the record it replaces. Its failure history is carried
-    over — the repair budget counts attempts at the same command, and a re-run is the
-    next attempt, not a fresh start.
-
-    Identity comes from :func:`run_ledger_key`, not from the command text; the text is
-    kept on the record as ``command`` because that is what a report must show. Readers
-    render ``run["command"]``, never the dict key.
-
-    ``effect`` distinguishes a build from a run of the project's code, so the completion
-    report can name what actually hit a wall.
+    Keyed by :func:`run_ledger_key`; ``command`` keeps the text a report shows. ``effect``
+    tells a build from a run.
     """
     runs = execution_context.runs
     key = run_ledger_key(command)

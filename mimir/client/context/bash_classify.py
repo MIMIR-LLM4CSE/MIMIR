@@ -1,26 +1,8 @@
-"""Classify a ``bash_run`` command line into capability *kinds* + operands.
+"""Classify a ``bash_run`` command into capability kinds and the operands they act on.
 
-The dual-use bash tool hides its real effect inside a ``command`` string, so the
-observation layer (which populates the policy/nudge blackboard by capability) and
-the plan-mode/approval gate cannot see whether a call reads, searches, inspects,
-writes, or executes. ``classify_bash_command`` closes that gap: it splits the command
-into the commands the shell would run (via ``shell_paths.parse_segments``, shared with
-the server's validator) and maps each segment's leading command, its options and its
-redirections to a :data:`Kind` and the operands it acts on (files read, patterns
-searched, dirs inspected, files written…).
-
-Consumers:
-- ``bash_command_is_readonly`` (below) — a command is read-only/side-effect-free
-  iff every segment is a read-only/discovery kind (see :data:`READONLY_KINDS`); used
-  by plan mode and by the all-mode approval exemption.
-- ``observations.shell.command`` — credits the blackboard per segment kind.
-
-Conservative by design: any parse ambiguity, a substitution, or an unrecognised
-leading command yields ``None`` (opaque → not classifiable), and an ambiguous operand
-is dropped rather than guessed. A redirection is not ambiguous, so it is classified
-rather than refused: ``> file`` makes the segment a write, an fd redirection changes
-nothing. This is NOT a security boundary — the bash server independently validates and
-blocks every call; this only observes/derives intent.
+Segments come from ``shell_paths.parse_segments``, the parser the server validates with.
+Anything ambiguous yields ``None`` (opaque). This observes intent; the bash server is the
+security boundary.
 """
 
 from __future__ import annotations
@@ -93,16 +75,9 @@ class Segment(NamedTuple):
     effect: str = ""
 
 
-# What makes a command opaque to *classification* beyond what the shared parser already
-# refuses: an expansion whose value only the running shell knows, so the command's kind
-# would be a guess. The sigil alone — a subshell, backgrounding, a substitution and a
-# stray redirection are all refused by ``parse_segments``, which reads the quoting itself.
-#
-# Read off the raw command through ``unquoted_shell_char``, never off tokens: shlex strips
-# the quotes, so a token scan cannot tell an expansion from the literal text of a search
-# pattern (``grep '$HOME' f.py``), and it sees operator characters only in the one case
-# where they are text — which is why this set holds no operator character. Unquoted ones
-# never survive into a token at all; the parser has lifted or refused them.
+# Expansions whose value only the running shell knows, making a command's kind a guess.
+# Read off the raw command (``unquoted_shell_char``), never off tokens: shlex strips the
+# quotes that tell ``grep '$HOME'`` from an expansion.
 _EXPANSION_SIGILS = frozenset("$")
 
 # Leading command → kind comes from the shell_paths command *groups*, the same module
@@ -187,11 +162,7 @@ def _write_operand(argv: list[str]) -> list[str]:
 def _destination_operands(argv: list[str]) -> list[str]:
     """The path an `mv`/`cp`/`mkdir` segment writes to.
 
-    Only the destination is credited — for `mv a.py b.py` the source no longer
-    exists, so crediting it would leave the observation layer tracking a file that
-    is gone. `mv`/`cp` put the destination last; `mkdir` creates every positional.
-    Best-effort like the rest of this module: a miss (e.g. `cp -t DIR src`) only
-    mislabels which file is pending validation, never grants access.
+    Only the destination is credited: after `mv a b` the source no longer exists.
     """
     positionals = [a for a in argv[1:] if _looks_like_path(a)]
     if not positionals:
@@ -208,13 +179,10 @@ _STDIN_ONLY_READ = frozenset({"tr"})
 
 
 def _file_operands(argv: list[str]) -> list[str]:
-    """The path-position arguments of *argv*, as raw tokens.
+    """The path-position arguments of *argv*, from ``shell_paths.path_operand_tokens``.
 
-    Delegates to ``shell_paths.path_operand_tokens`` — the extraction the server
-    *confines* — so a file credited here is a file the server judged, and the
-    command-family rules (a ``grep`` pattern and a ``sed`` script are data, not
-    files) live in one place. Only the extra filter is local: a token that cannot be
-    a path (an option, a numeric flag value) is dropped rather than credited.
+    The server confines that same extraction; only tokens that cannot be paths (options,
+    numeric flag values) are dropped here.
     """
     return [t for t in path_operand_tokens(argv) if _looks_like_path(t)]
 
@@ -227,14 +195,7 @@ def _read_operands(argv: list[str]) -> list[str]:
 
 
 def _search_patterns(argv: list[str]) -> list[str]:
-    """The pattern(s) a grep/rg segment searches for.
-
-    The pattern is the load-bearing signal of a SEARCH segment (the files it reads
-    are incidental and often absent), so it is what the segment carries. Given via
-    ``-e``, else the first positional — which is exactly the token
-    ``path_operand_tokens`` drops for these commands, the two rules being two sides
-    of "the first bare argument of a search is text, not a file".
-    """
+    """The pattern(s) a grep/rg segment searches for: ``-e`` values, else the first positional."""
     for i, arg in enumerate(argv[1:], start=1):
         if arg == "-e" and i + 1 < len(argv):
             return [argv[i + 1]]
@@ -260,13 +221,7 @@ FILE_LIKE_RE = re.compile(r"\.[A-Za-z0-9]+$")
 
 
 def _exec_head(argv: list[str]) -> str:
-    """The validator-identifying leading token of an exec command.
-
-    ``python -m pytest`` / ``python -m ruff`` report the *module* (``pytest``/``ruff``)
-    rather than ``python`` so the observation layer can recognise a validator invoked
-    either way; ``python foo.py`` (a script, not ``-m``) and every other command report
-    their bare leading command.
-    """
+    """The leading command of an exec segment; for ``python -m X``, the module ``X``."""
     head = argv[0]
     if head in ("python", "python3"):
         i = 1
@@ -281,13 +236,10 @@ def _exec_head(argv: list[str]) -> str:
 
 
 def _exec_operands(argv: list[str]) -> list[str]:
-    """File positionals an exec/validation command acts on (best-effort).
+    """File positionals an exec or validation command acts on (best-effort).
 
-    Only tokens that clearly name a file (``/`` or a dotted extension) are credited.
-    Lets the observation layer mark a written file *validated* when the model runs a
-    validation command on it via bash — ``python -m py_compile foo.py``,
-    ``pytest test_foo.py``, ``ruff check foo.py``, ``mypy foo.py`` all credit their
-    file operand, while the module/sub-command tokens are ignored.
+    Only tokens that clearly name a file (a ``/`` or an extension) are credited, so
+    ``pytest test_foo.py`` marks ``test_foo.py`` validated.
     """
     return [
         a for a in argv[1:]
@@ -393,15 +345,8 @@ def _git_subcommand(argv: list[str]) -> str:
 def _git_segment(argv: list[str]) -> Segment:
     """Place a ``git`` invocation by what its subcommand does to the repository.
 
-    Read-only subcommands are INSPECT, which is what lets plan mode run them: a mode
-    that exists to find out what the code is was refusing ``git status`` and
-    ``git log`` — observed three times in one planning phase, which then went looking
-    for the same information by walking the filesystem instead.
-
-    Everything else keeps the UNKNOWN/run classification it has always had. A
-    multiplexer is only as safe as its narrowest reading, and this is a policy
-    predicate rather than a security boundary — the bash server validates every
-    accepted call on its own.
+    Read-only subcommands are INSPECT, so plan mode may run ``git status`` and ``git log``;
+    everything else stays UNKNOWN (a run).
     """
     sub = _git_subcommand(argv)
     if sub in GIT_READ_SUBCOMMANDS:
@@ -412,33 +357,11 @@ def _git_segment(argv: list[str]) -> Segment:
 def shell_segments(
     command: str, *, allow_expansion: bool = False
 ) -> list[ParsedSegment] | None:
-    """Segment *command* into the commands the shell would run, or None if opaque.
+    """The commands the shell would run, each with its argv and redirection targets, or None.
 
-    A thin policy layer over :func:`shell_paths.parse_segments`, which does the
-    tokenization the *server's* validator also runs on — so what is one command
-    here is one command there, and a redirection target seen here is the file the
-    server will confine. Each returned segment carries its argv plus the files its
-    redirections touch (``> out.txt``, ``< in.txt``); fd dups and ``/dev/null``
-    named no file and are already gone, so the capability probe
-    ``which pdflatex 2>/dev/null`` keeps the kind of ``which``.
-
-    Exposed separately from :func:`classify_bash_command` because the
-    out-of-workspace gate needs the raw arguments (to resolve the paths they name)
-    rather than a kind.
-
-    Returns None on anything the shared parser refuses (substitution, subshell,
-    backgrounding, heredoc, quoting error, dangling separator) plus — the part that
-    is this side's own conservatism — any character the shell *would act on* whose
-    effect only the running shell knows. Quoting is part of that test: ``echo "(done)"``
-    and ``grep '$HOME' f.py`` name a literal, and classify like any other command.
-
-    *allow_expansion* keeps going through a plain ``$VAR``. A bare variable makes a
-    command opaque to **classification** (its kind depends on what the value turns
-    out to be), but not to **path extraction**: in flag position it is irrelevant
-    (``gcc -I$CUDA_HOME/include a.c``) and in path position it is refused outright
-    by the sandbox guard. Command *substitution* (``$(...)``, ``${...}``, backticks)
-    stays opaque either way where the shell acts on it — it runs code — and
-    ``parse_segments`` has already refused it by then.
+    None on anything ``shell_paths.parse_segments`` refuses, or a character whose effect
+    only the running shell knows. *allow_expansion* lets a plain ``$VAR`` through, for path
+    extraction; command substitution stays opaque.
     """
     try:
         segments = parse_segments(command)
@@ -455,23 +378,8 @@ def classify_bash_command(
 ) -> list[Segment] | None:
     """Classify *command* into per-segment (kind, operands), or None if opaque.
 
-    Opaque for everything :func:`shell_segments` rejects — a substitution, a subshell,
-    a heredoc, a token whose value only the running shell knows. An *unrecognised*
-    leading command is not opaque: it classifies as UNKNOWN, which is a run. A returned
-    list always has at least one segment.
-
-    A redirection to a file is a write the leading command's own kind does not
-    show: ``ls > out.txt`` creates a file, so the segment cannot stay INSPECT and be
-    auto-approved as read-only. A segment whose command is already a write or an
-    execution keeps its kind and operands — that command's operands are what the
-    observation layer credits (a validator run must still credit the file it
-    checked, not the log it was piped into).
-
-    *allow_expansion* is forwarded to :func:`shell_segments`: a bare ``$VAR`` stops
-    making the command opaque, while command *substitution* stays opaque either way.
-    The default is False, so the security path is unchanged — the one caller that
-    passes True is ``run_ledger_key``, which needs an identity rather than a verdict
-    and is not a gate (see its docstring).
+    An unrecognised command is UNKNOWN (a run), not opaque. A redirection to a file makes a
+    read-only segment a write. *allow_expansion* is for ``run_ledger_key`` only.
     """
     parsed = shell_segments(command, allow_expansion=allow_expansion)
     if parsed is None:
@@ -493,26 +401,10 @@ _OPAQUE_SEGMENT_SPLIT_RE = re.compile(r"[;&|]+")
 
 
 def opaque_command_executes(command: str) -> bool:
-    """Whether a command :func:`classify_bash_command` gave up on still *ran* something.
+    """Whether a command the classifier gave up on still ran a program.
 
-    Classification is all-or-nothing: a heredoc, a substitution or an expansion the
-    shell resolves (``python -c "print(f($n))"``) makes the whole command unreadable.
-    That is the right answer for *crediting* anything — nothing can be attributed to a
-    command nobody can parse — but the wrong one for noticing that a program ran. The
-    head stays legible when the rest does not, and the base prompt actively steers
-    one-off checks inline (``## Running code``), which is the idiom most exposed to this.
-
-    Only command-position tokens are read (start of the command, or after ``; && || |``),
-    against the same ``EXEC_COMMANDS`` vocabulary the classifier itself uses, so an
-    unparseable ``cat`` or ``grep`` still reports nothing. Deliberately used *only* to
-    demand a verdict, never to grant credit.
-
-    The path-like test is the one that has to be read defensively here. Everywhere else
-    :func:`is_path_like_command` is handed an ``argv[0]`` the tokenizer already produced;
-    this function is handed *whatever text the command contains*, heredoc bodies
-    included, so a token has to name a program before being taken for one. ``//`` — the
-    start of a C++ comment — is path-like by that test and has an empty basename, which
-    is how a comment inside a refused heredoc came to be recorded as a run.
+    Reads command-position tokens only, against ``EXEC_COMMANDS``. Used to demand a verdict,
+    never to grant credit.
     """
     for piece in _OPAQUE_SEGMENT_SPLIT_RE.split(command):
         for tok in piece.split():
@@ -526,20 +418,10 @@ def opaque_command_executes(command: str) -> bool:
 
 
 def bash_command_is_readonly(command: str) -> bool:
-    """True iff *command* is a read-only / side-effect-free shell invocation.
+    """True iff every segment of *command* classifies as a read-only kind.
 
-    A command qualifies when it classifies cleanly and *every* segment is a
-    read-only/discovery kind (see :data:`READONLY_KINDS`) — so build/execution
-    (``gcc``/``python``/``make``/``./a.out``, ``module load``) and in-place writes
-    (``sed -i``) do not. Two mode-agnostic consumers rely on it:
-    - plan mode, to keep a drafted plan side-effect-free (exec is rejected); and
-    - the approval layer, to waive the prompt for read-only bash in **any** mode.
-
-    Conservative by design — on any parse ambiguity the classifier returns None and
-    this returns ``False``, and an unrecognised command classifies UNKNOWN, which is
-    not a read-only kind, so it too returns ``False`` (the safe default). The
-    bash server still fully validates every accepted call, so this is a policy
-    predicate, not the security boundary.
+    Plan mode and the approval exemption rely on it. Anything opaque or unrecognised is not
+    read-only; the bash server still validates every call.
     """
     # `srun lscpu` reads nothing it could not read here, but outside an allocation it
     # queues for and spends node hours first: never read-only, never exempt.
@@ -566,13 +448,9 @@ _MAX_PEEL = 8
 
 
 def segment_program(argv: list[str]) -> str | None:
-    """The program a single shell segment executes, or ``None``.
+    """The program one segment executes, past assignments and wrappers, or ``None``.
 
-    Peels leading ``VAR=val`` assignments, ``time`` and the shared wrappers
-    (``env``/``timeout``/``srun``/``mpirun``… with their flags and values), then
-    returns the head — or, if the head is an interpreter, its first non-flag argument
-    (``python proxy.py`` runs proxy.py). A wrapper with nothing inside it runs no
-    program of interest, and yields ``None``.
+    For an interpreter, its script (``python proxy.py`` runs ``proxy.py``).
     """
     current = list(argv)
     for _ in range(_MAX_PEEL):

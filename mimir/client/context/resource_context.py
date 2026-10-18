@@ -1,22 +1,7 @@
-"""User-attached context via ``@``-mention (Claude/Copilot-style).
+"""Context the user attaches to a turn with ``@``: MCP resources and workspace files.
 
-Two kinds of things can be attached to a single turn, both by the *user* (never the
-model — these are context, not model-invokable tools):
-
-1. **MCP resources** — read-only, URI-addressed data a server exposes alongside its
-   tools. Referenced as ``@<uri>`` (e.g. ``@memory://all``) or ``@<name>`` shorthand.
-   The registry lives on the agent (``agent.resources``, populated at connect time by
-   ``integration/server_manager``); reads dispatch via ``agent.read_resource``.
-2. **Workspace files** — a path in the workspace, optionally with a line range:
-   ``@src/foo.py`` (whole file) or ``@src/foo.py:10-20`` / ``@src/foo.py:10`` (a slice).
-   Read locally against the workspace root (cwd), mirroring Copilot's ``#file`` / Claude's
-   file attach. This needs no server and no registry.
-
-This module is frontend-agnostic. Both the CLI and the WebSocket server call
-:func:`augment_query_with_resources` to turn a raw user message into an effective query
-with the referenced content prepended. Unknown ``@x`` tokens (not a known resource, not an
-existing file) are left untouched so ordinary uses of ``@`` in prose (emails, handles) are
-never swallowed.
+``@<uri>`` or ``@<name>`` reads a resource; ``@path[:start[-end]]`` attaches a file or a
+slice. Shared by every front-end; an ``@x`` that names nothing is left as written.
 """
 
 from __future__ import annotations
@@ -140,12 +125,9 @@ class _FileSpec:
 
 
 def _resolve_file_token(token: str, cwd: str | None) -> _FileSpec | None:
-    """Resolve a mention token to an existing workspace file (with optional range).
+    """The workspace file a mention names, with its optional line range, or ``None``.
 
-    Returns a :class:`_FileSpec` if the token names a real file, else ``None`` (so the
-    caller leaves the ``@token`` text untouched). A ``:start[-end]`` suffix is treated as
-    a line range; otherwise the whole file is attached. Trailing prose punctuation on a
-    bare path is peeled progressively (the full path — extension included — is tried first).
+    Trailing prose punctuation is peeled only after the full token has been tried.
     """
     range_match = _RANGE_RE.match(token)
     if range_match:
@@ -232,16 +214,10 @@ def read_file_slice(spec: _FileSpec) -> str:
 async def augment_query_with_resources(
     agent: Any, text: str, *, cwd: str | None = None
 ) -> tuple[str, list[str]]:
-    """Resolve ``@``-mentions in ``text`` and prepend the referenced content.
+    """Resolve ``@``-mentions in *text*: ``(effective_query, attached_labels)``.
 
-    Handles both MCP resources (``@<uri|name>``) and workspace files
-    (``@<path>[:start[-end]]``). Returns ``(effective_query, attached_labels)``; when
-    nothing is referenced, returns ``text`` unchanged and an empty list — so callers can
-    keep passing the raw text with zero behavioural change. Frontends use the returned
-    labels to print an attach confirmation while storing the *raw* text in history.
-
-    ``cwd`` defaults to the process working directory (the workspace root), which is where
-    both the CLI and the WS worker run — so callers need not pass it.
+    Unchanged text and no labels when nothing is referenced. The front-end stores the raw
+    text and shows the labels.
     """
     if "@" not in text:
         return text, []

@@ -1,23 +1,8 @@
-"""Tool capability registry — the single source of truth for tool *semantics*.
+"""The tool capability registry: what each tool is, as its server declares it.
 
-What a tool *is* (sensitive, plan-blocked, a write, an edit, a search, a
-validation, a read, cacheable; which arguments carry paths, what fallbacks it has)
-is declared by its server and read here. A tool is described by a :class:`ToolCaps`
-descriptor — an orthogonal set of capability flags plus structured metadata
-(argument roles, approval fallbacks, validation ordering, status label).  Every
-client consumer derives its behaviour from the registry instead of re-listing tool
-names, so a new MCP server "just works".
-
-There are **no hardcoded classification lists** here: each server declares its
-tools' capabilities via ``@mcp.tool(**tool_caps(...))`` and the client builds a
-**per-agent** live registry (``agent.tool_caps``) in ``connect_server`` from
-:func:`infer_tool_caps`.  Consumers read that registry (passed explicitly); with no
-registry the helpers resolve to an *empty* one — there is no static fallback table.
-``infer_tool_caps`` uses 3-layer precedence: ``tool.meta["mimir"]`` (our
-descriptor) › standard ``tool.annotations`` (foreign servers) › conservative default.
-
-The module is a pure-stdlib leaf (no client imports) so every consumer can import it
-without circular-import risk.
+A :class:`ToolCaps` per tool, read by every consumer instead of a list of tool names.
+``infer_tool_caps`` resolves it from ``tool.meta["mimir"]``, else the MCP annotations,
+else a conservative default. A pure-stdlib leaf.
 """
 
 from __future__ import annotations
@@ -28,12 +13,9 @@ from typing import Any, Iterable
 from ..config.limits import TOOL_CALL_TIMEOUT_MAX_SECS, TOOL_CALL_TIMEOUT_SECS
 
 # ---------------------------------------------------------------------------
-# Capability vocabulary — orthogonal semantic flags a server declares per tool,
-# mirrored server-side in servers/_shared/capabilities.py (test_capabilities
-# .test_vocab_in_sync keeps them level). A flag is a reusable behavioral contract,
-# never a tool's identity. Organised by the *policy or nudge that consumes it* —
-# that is what justifies a flag existing. Exactly one declared flag per real policy
-# distinction; anything derivable is a helper (``is_write``, ``clears_edit_loop``).
+# Capability vocabulary: flags a server declares per tool, each a behavioural contract
+# consumed by a policy or nudge, never a tool's identity. Mirrored in
+# servers/_shared/capabilities.py (kept level by test_capabilities).
 # ---------------------------------------------------------------------------
 
 # --- Discovery: reads, searches, inspections the policy tracks as evidence -
@@ -90,17 +72,9 @@ IRREVERSIBLE = "irreversible"          # leaves the machine or spends something 
 REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
 
 # --- Work families --------------------------------------------------------
-# The one word a tool-activity row shows, and the icon the UI draws with it. A family
-# of work, never a tool's identity: several tools share one kind, and one declared fact
-# drives both halves of the row — so the glyph and the word cannot drift apart, which
-# is exactly what a separate icon table keyed on tool names did.
-#
-# The kind says what the call *is*; what it is *doing* is the model's own per-call
-# sentence. Declared rather than derived because the distinctions that matter are
-# invisible in the capabilities: nothing separates `symbolic` from `evaluate`, and
-# nothing marks `proxy_eval` as the one proxy tool that launches a run. `kind_for`
-# still derives a family for a tool that declares none, so a third-party server works.
-# Mirrored in servers/_shared/capabilities.py (test_capabilities.test_kind_vocab_in_sync).
+# The word a tool-activity row shows, and its icon: a family of work, declared by the
+# tool and derived by ``kind_for`` for one that declares none. Mirrored in
+# servers/_shared/capabilities.py.
 TOOL_KINDS = (
     "read", "search", "list", "outline",            # discovery
     "write", "edit", "delete",                      # file mutation
@@ -222,25 +196,11 @@ def _meta_descriptor(tool: Any) -> dict[str, Any] | None:
 
 
 def _derive_reversibility(caps: set[str]) -> str:
-    """How much of this tool's effect can be taken back, from its capabilities.
+    """How much of a tool's effect can be taken back, for one that declares none.
 
-    The fallback for a tool that declares no ``reversibility`` — a third-party server,
-    or one written before the field existed. Since SENSITIVE is derived from the
-    result, this doubles as the approval-gating default, so it has to distinguish
-    *unclassified* from *without effect*: defaulting everything to ``recoverable``
-    would gate every read tool in the catalog behind an approval prompt.
-
-    ``reversible`` is therefore the base case, matching the pre-existing rule that a
-    tool is gated only when it says so. An in-workspace file mutation lands there too,
-    because the client *itself* holds the undo: the approval manager snapshots the file
-    before the write and ``revert_last`` restores it. That is a fact about MIMIR rather
-    than about file writes in general, which is why it is derived here and assumed
-    nowhere else.
-
-    ``EXTERNAL_FETCH`` is deliberately absent: it means "reaches outside the
-    workspace", which a read-only GitHub query does as much as a POST. What makes an
-    outbound call irreversible is that it *sends*, and no capability expresses that —
-    such tools declare ``IRREVERSIBLE`` themselves.
+    ``reversible`` is the base case, so read tools are not gated; an in-workspace write is
+    too, since the approval manager snapshots the file before it. A tool that sends declares
+    ``IRREVERSIBLE`` itself.
     """
     if caps & {CLUSTER_SUBMIT}:
         return IRREVERSIBLE
@@ -267,13 +227,7 @@ def _readonly_when(value: Any) -> dict[str, Any] | None:
 
 
 def _kind(value: Any) -> str | None:
-    """Normalise a declared work family; drop anything that is not a usable word.
-
-    Not checked against :data:`TOOL_KINDS`: a server that names a family of its own
-    gets its word on the row with the default icon, which says more than the capability
-    derivation it would otherwise fall back to. First-party tools are held to the
-    vocabulary by the catalog test, not here.
-    """
+    """Normalise a declared work family, keeping any usable word (not only ``TOOL_KINDS``)."""
     if not isinstance(value, str) or not value.strip():
         return None
     return " ".join(value.lower().split())[:16]
@@ -366,13 +320,10 @@ def _arg_roles_from_schema(tool: Any) -> dict[str, tuple[str, ...]]:
 
 
 def infer_tool_caps(tool: Any) -> ToolCaps:
-    """Resolve ``ToolCaps`` for a live MCP ``Tool`` with 3-layer precedence.
+    """Resolve ``ToolCaps`` for a live MCP ``Tool``.
 
-    1. ``tool.meta["mimir"]``     — our authoritative descriptor (first-party
-       servers declare every classified tool this way).
-    2. ``tool.annotations``          — standard readOnly/destructive hints (the
-       coarse path for foreign servers that don't carry our descriptor).
-    3. conservative default         — empty caps + schema-inferred path args.
+    Our ``tool.meta["mimir"]`` descriptor first, then the standard annotations, then empty
+    caps with path arguments inferred from the schema.
     """
     name = getattr(tool, "name", None) or ""
 
@@ -427,19 +378,10 @@ def panel_sections(registry: dict[str, ToolCaps] | None = None) -> list[tuple[st
 
 
 def reserved_for_main(registry: dict[str, ToolCaps] | None = None) -> set[str]:
-    """Tools a sub-agent is never granted, by capability rather than by name.
+    """Tools a sub-agent is never granted: ``MAIN_ONLY``, ``DELEGATE``, ``CLUSTER_SUBMIT``.
 
-    Three reasons, each declared by the tool itself:
-
-    - ``MAIN_ONLY`` — it belongs to the run the user is watching: the plan agreed
-      with them, the questions asked of them, the memory shared by every session.
-    - ``DELEGATE``  — a child that can delegate spawns a tree nobody budgeted.
-    - ``CLUSTER_SUBMIT`` — allocation hours are spent once and never given back;
-      that decision stays where the user can see it being made.
-
-    ``TASK_PLANNING`` is deliberately *not* here. It covers the working checklist
-    too, and a sub-agent working an axis of its own keeps one — in its own session,
-    so the orchestrator's list is untouched. The plan tools carry ``MAIN_ONLY``.
+    The user's plan, questions and memory; a delegation tree nobody budgeted; allocation
+    hours. ``TASK_PLANNING`` is not here: a sub-agent keeps its own checklist.
     """
     reg = _registry(registry)
     return {
@@ -475,14 +417,9 @@ def clears_edit_loop(name: str, registry: dict[str, ToolCaps] | None = None) -> 
 
 
 def name_for_cap(cap: str, registry: dict[str, ToolCaps] | None = None) -> str | None:
-    """The single connected tool name carrying ``cap``, or ``None`` if absent.
+    """The connected tool carrying *cap* (the first by name), or ``None``.
 
-    For the rare site that must *invoke* a capability's tool (e.g. resetting the task
-    checklist at session start) without hardcoding its name: the concrete name is
-    resolved from the live registry, so a renamed or replaced server tool keeps working.
-    Used only for invocation — classification/control-flow uses :func:`has_cap` /
-    :func:`names_with_cap`, and prompts describe the capability generically. When several
-    tools match, the lexicographically first is returned for stability.
+    Only for invoking a capability's tool; classification goes through :func:`has_cap`.
     """
     names = names_with_cap(cap, registry)
     return min(names) if names else None
@@ -569,13 +506,7 @@ def timeout_for(name: str, registry: dict[str, ToolCaps] | None = None) -> int:
 
 
 def label_for(name: str, args: dict[str, Any] | None = None, registry: dict[str, ToolCaps] | None = None) -> str | None:
-    """Render a tool's status label template, or ``None`` to fall back to the table.
-
-    Returns ``None`` (rather than the raw template) when a referenced argument is
-    absent, so a template that interpolates an *optional* arg — e.g.
-    ``"Reading lines {start_line}-{end_line}: {path}"`` — degrades gracefully to
-    the generic name-derived label instead of leaking ``{braces}`` to the UI.
-    """
+    """Render a tool's status label template, or ``None`` when an argument it names is absent."""
     c = _registry(registry).get(name)
     if not c or not c.label:
         return None
@@ -586,16 +517,10 @@ def label_for(name: str, args: dict[str, Any] | None = None, registry: dict[str,
 
 
 def kind_for(name: str, registry: dict[str, ToolCaps] | None = None) -> str:
-    """The work family of *name* — the word its activity row shows (see TOOL_KINDS).
+    """The work family of *name*: declared, else derived from its capabilities, else default.
 
-    Three layers, the same precedence :func:`infer_tool_caps` uses for everything else:
-    the declared kind, else one derived from the capabilities, else the default. So a
-    third-party server that declares nothing still gets a family that fits what its
-    tool does, and the UI never has to know a tool's name to draw its icon.
-
-    The derivation is ordered by effect, not by alphabet: a tool that both reads a file
-    and rewrites it is an ``edit``, and one that both searches and executes is a
-    ``shell``. Reading is the last thing checked because almost everything reads.
+    Derived by effect: a tool that reads and rewrites is an ``edit``; reading is checked
+    last because almost everything reads.
     """
     c = _registry(registry).get(name)
     if c and c.kind:
@@ -711,13 +636,9 @@ def explorer_servers() -> frozenset[str]:
 
 
 def unannotated_live_tools(registry: dict[str, ToolCaps]) -> list[str]:
-    """Connected tools whose resolved descriptor carries no capabilities.
+    """Connected tools whose descriptor carries no capabilities, sorted.
 
-    With classification owned by the servers, a connected tool that resolves to
-    an empty ``ToolCaps`` is either genuinely pure (math, string ops, read-only
-    queries) or a first-party tool that *forgot to declare* its caps via
-    ``@mcp.tool(**tool_caps(...))``.  Surfacing it is the silent-drift signal the
-    registry exists to catch.  Returned sorted for stable reporting.
+    Either genuinely pure, or a first-party tool that forgot its ``tool_caps``.
     """
     return sorted(
         name for name, caps in registry.items()

@@ -14,19 +14,9 @@ from .capabilities import CONVENTIONAL_PATH_ARGS, READ, SEARCH_WITH_PATH, ToolCa
 logger = logging.getLogger(__name__)
 
 def _relpath(path: str) -> str:
-    """The file name alone — what a tool-activity row should show.
+    """The file name alone, for an activity row.
 
-    Tools now take and report absolute paths (see ``server_files._require_abs``),
-    which is right for the model and unreadable for a person: a row reading
-    ``Reading file: /long/absolute/path/.../mimir/client/foo.py`` buries the one
-    token that matters. The row answers "what is it touching right now", and the
-    file name answers that.
-
-    Deliberately NOT used for approval prompts. When the user is being asked to
-    authorise access *outside* the workspace, the exact location is the decision —
-    those carry the absolute path (``oow_path`` on the card, an explicit line in
-    the CLI prompt). Readability wins in the activity log; precision wins in a
-    consent prompt.
+    Never for an approval prompt, where the full location is the decision.
     """
     if not path:
         return path
@@ -34,41 +24,20 @@ def _relpath(path: str) -> str:
 
 
 def shorten_display_args(name: str, args: dict[str, Any], tool_caps: dict[str, ToolCaps] | None = None) -> dict[str, Any]:
-    """*args* with path arguments reduced to their file name, for display.
+    """*args* with absolute path arguments reduced to their file name, for display.
 
-    Capability-driven first: the ``path`` arg-role names which arguments are paths,
-    so this needs no tool-name list and covers new tools automatically.
-
-    File tools do not all declare that role, though — the read tool does and every
-    write, edit and delete tool does not — so a declared role alone left exactly the
-    rows the user reads most showing an absolute path: "Editing file:" carried the
-    whole thing while "Reading file:" carried the name. The generic argument-name
-    fallback is the same convention ``file_preview.build_preview_diffs`` and
-    ``guardrails.observations`` already apply for the same reason, and these are
-    argument names, never tool identities.
-
-    Only values that are absolute are shortened, since that is the whole of the problem:
-    a tool that names a workspace file is given an absolute path (``_require_abs``), so
-    every path this exists for is one. An argument named ``path`` that holds a path
-    relative to somewhere else — a repository path on a remote-fetch tool — is already
-    short, and is the one the row means: reduced to its basename, the GitHub row said
-    ``ci.yml`` where the call was for ``.github/workflows/ci.yml``. That holds whether or
-    not the tool declared the role, which is why the rule is one rule.
+    Paths are the ``path`` arg-role, or the conventional argument names for tools that do
+    not declare it. Only absolute values are shortened: a relative one is already the
+    path the row means.
     """
     if not isinstance(args, dict):
         return args
     declared = arg_role(name, "path", tool_caps) or ()
     keys = declared or CONVENTIONAL_PATH_ARGS
     shortened = dict(args)
-    # A url's `user:password@` never belongs on screen. It is not part of any decision
-    # — a consent prompt asks about the host and the path — and the label it lands in
-    # is the row's tooltip, the approval card's header and a line of the stored
-    # transcript. This removes it from all four at once, which is the whole reason the
-    # display copy of the arguments exists.
-    #
-    # It does NOT make the credential confidential: the model wrote it into the call,
-    # and the call is in the conversation history either way. What it stops is the
-    # incidental copy — on screen, and in the transcript the user shares.
+    # A url's ``user:password@`` never belongs on screen: removed from the display copy,
+    # it leaves the row, the approval card and the stored transcript. The call itself still
+    # carries it.
     url = shortened.get("url")
     if isinstance(url, str) and "@" in url:
         shortened["url"] = _without_userinfo(url)
@@ -83,11 +52,8 @@ def shorten_display_args(name: str, args: dict[str, Any], tool_caps: dict[str, T
 
 
 # ---------------------------------------------------------------------------
-# Generic name → status label, with NO hardcoded tool-name lists. A label is derived
-# from the tool's *name* alone: an action verb becomes its gerund ("Reading…") and the
-# remaining tokens become the object. The salient argument is surfaced separately by
-# ``tool_arg_preview``. Servers wanting exact wording declare a ``tool_caps(label=…)``
-# template, which ``label_for`` renders ahead of this fallback.
+# Status labels from the tool's name alone: the verb becomes a gerund ("Reading…"), the
+# rest the object. A ``tool_caps(label=…)`` template takes precedence.
 # ---------------------------------------------------------------------------
 
 # A vocabulary of verbs, not a registry of tools: a new tool needs no entry here, and
@@ -196,18 +162,10 @@ _SEARCH_RESULT_KEYS = {
 
 
 def tool_arg_preview(name: str, args: dict[str, Any]) -> str:
-    """The salient argument of a call, as the row shows it beside the description.
+    """The salient argument of a call, shown beside its description, or "".
 
-    What the call is *on*, where the description says what it is *for*. Keyed on
-    argument names in priority order — a command or code body, a search pattern, a url,
-    a file, then the object keys and finally ``op`` (see :data:`_OBJECT_KEYS`) — so any
-    tool is covered and a new one needs no entry. Returns "" when the call names nothing
-    worth showing (``{"max_depth": 2, "use_cache": True}``).
-
-    A command keeps its first line up to 80 characters, since on a collapsed failed row
-    it is the only trace of what ran; everything else is held to
-    :data:`_PREVIEW_LIMIT`, which is what fits beside a description without competing
-    with it. The stylesheet truncates whatever is still too wide for the pane.
+    Picked by argument name in priority order (command, pattern, url, file, object keys,
+    ``op``). A command keeps its first line up to 80 characters.
     """
     if not isinstance(args, dict):
         return ""
@@ -302,15 +260,9 @@ def _without_userinfo(url: str) -> str:
 
 
 def _bare_authority(url: str) -> str:
-    """*url* with any ``user:password@`` and any ``?query`` removed, for the fallback.
+    """*url* without ``user:password@`` or ``?query``, for the fallback that echoes it.
 
-    The parsed path above never carries either — ``hostname`` drops the userinfo and
-    ``path`` stops before the query. The fallback echoes the value as written, though,
-    and a url the parser cannot read is exactly where a credential survives: a
-    schemeless ``user:secret@host/x`` parses to no host at all, and the secret went
-    onto the row and into the stored transcript with it. A query is dropped on the
-    same grounds — an api key is usually in one — and it is not what identifies the
-    call either.
+    An unparseable url is where a credential would survive onto the row.
     """
     text = url.split("?", 1)[0].split("#", 1)[0]
     head = text.split("/", 1)[0]
@@ -367,22 +319,9 @@ def clip_doing(doing: Any) -> str:
 
 
 def dedup_row_detail(shown: str, detail: str) -> str:
-    """Drop a row *detail* that just repeats what the row already says.
+    """*detail*, unless the row's own text *shown* already says it (on word boundaries).
 
-    *shown* is the text the row puts beside it — the model's own description of the
-    call. A description that already names the file or the url makes the preview pure
-    duplication; it stays whenever it adds something, which is most of the time, since
-    a description says what the call is for and this says what it is for *on*.
-
-    Empty *shown* (no description was written) keeps the detail unconditionally: it is
-    then the only thing on the row besides its family.
-
-    Matched on word boundaries, not as a substring: previews are short words ("pass",
-    "now", "info") that a substring test would find inside any ordinary sentence.
-
-    Fails towards keeping: a detail whose edges are not word characters (a trailing
-    slash, a closing bracket) simply does not match, and a repeated preview reads better
-    than a lost one.
+    Kept when *shown* is empty or the match is uncertain.
     """
     if not detail or not shown:
         return detail
@@ -409,17 +348,10 @@ _ERROR_DETAIL_LIMIT = 4000
 
 
 def error_detail(result: str) -> str:
-    """Return the FULL error text of a failed tool result, for the expandable panel.
+    """The full error text of a failed result (with any policy reason), or "".
 
-    ``summarize_tool_result`` deliberately clips its summary to a single 100-char
-    line so the activity row stays compact; that clipped line is useless on its own
-    for diagnosing a failure. This returns the untruncated message (plus any policy
-    reason, when the payload carries one) so the UI can show it in a full-width
-    panel under the row. The payload's ``hint`` is guidance aimed at the model, not
-    at the user, and is deliberately left out.
-
-    Returns "" when no error text can be extracted (the caller then falls back to
-    the summary).
+    For the expandable panel under the row; the ``hint`` is meant for the model and is
+    left out.
     """
     if not isinstance(result, str) or not result.strip():
         return ""

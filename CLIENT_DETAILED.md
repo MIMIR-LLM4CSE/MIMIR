@@ -328,8 +328,17 @@ lets a many-operations/few-files task still read as multi-step). `edit_fail_stre
 `error_recovery` reminder; it deliberately does not evict the file from the read sets — a
 wrong anchor is not missing content).
 
-A module-level **producer → consumer map** documents each field group's single writer and
-its readers.
+**Who writes what.** Each field group has one writer and many readers; a second writer is
+how the layers come to disagree about what the context says.
+
+| Writer | Fields | Read by |
+|---|---|---|
+| `guardrails.observations.record_tool_observation` (after every tool call) | `searched`, `read_files`, `inspected_dirs`, `checked_paths`, `existing_paths`, `search_tool_calls`, `similar_candidates_by_dir`, `dirty_written_files`, `declared_edit_set`, `edit_loop_state`, `edit_fail_streak_by_file`, `last_replace_*`, `code_mutation_started`, `validated_files`, `validation_tier_by_file`, `validation_fail_count_by_file`, `tests_run`, `runs`, `action_op_count`, `todo_written`, `plan_written` | the policy engine, the state guards, every nudge, the loop's correctives |
+| `guardrails.verdict.apply_verdict` (the judging tool's call) | `runs[cmd].verdict/reason/failures`, `attempts` | the verification ledger, the completion report |
+| `guardrails.workflow.set_workflow_state` | `workflow_state` | every state gate |
+| `guardrails.nudges.cascade` | `nudge_counts[<category>]` | the per-category caps |
+| `query_engine.agent_loop` | `steps_since_last_edit`, `LoopControlState` (`write_calls`, `call_fails`, `repeat_warned`), `evidence_handback_used` | the idle gates, the dispatch dedup, the repeated-failure guard |
+| the policy engine and the agent's approvals | `denied_tool_calls`, `denial_history` | the blocking denials, the denial nudge, the escalation ladder |
 
 ### `capabilities.py`
 
