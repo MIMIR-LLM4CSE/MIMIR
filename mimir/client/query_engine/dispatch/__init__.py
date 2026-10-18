@@ -57,23 +57,13 @@ class ToolDispatcher:
     def announce(self, call: Call) -> None:
         """Put the call's row on screen before it runs."""
         display_name, display_args = self.agent.rewrite_tool_for_context(call.name, call.args)
-        # Label precedence: the capability-declared template (server-side
-        # `label="Reading file: {path}"`) wins; the client status map is the
-        # fallback for tools that declare none.
-        # Paths are shortened to their file name for the row: tools carry absolute
-        # paths now, and a row reading "Reading file: /shared/.../mimir/client/foo.py"
-        # buries the only token the user is scanning for. Approval prompts keep the
-        # absolute path — see tool_display._relpath.
+        # Label: the declared template first, the status map as fallback. Paths shortened to
+        # their file name (approval prompts keep them whole).
         row_args = shorten_display_args(display_name, display_args, self.agent.tool_caps)
         row_label = (label_for(display_name, row_args, self.agent.tool_caps)
                      or tool_status_message(display_name, row_args))
-        # The salient argument of the call — the url, the file, the job id, the verdict.
-        # Deduplicated against whichever text the row will actually put beside it: the
-        # model's description when it wrote one, the label when it did not. Against the
-        # label alone it dropped previews the row needed (the basename under "Reading
-        # file: x.py", with nothing else left to name the file); against the description
-        # alone it kept ones the row then said twice — "Recording the plan: refonte des
-        # lignes" followed by "refonte des lignes".
+        # The salient argument, deduplicated against the text the row will show beside it: the
+        # model's description if it wrote one, else the label.
         row_detail = dedup_row_detail(
             call.doing or row_label,
             tool_arg_preview(display_name, row_args))
@@ -89,22 +79,12 @@ class ToolDispatcher:
             # but it is no longer what the row says.
             "kind": kind_for(display_name, self.agent.tool_caps),
             "doing": call.doing,
-            # Whether the front-end may offer to detach this row while it runs. Read
-            # off the registry, like every other row property: the UI must not learn
-            # which tool happens to be a shell. DIVERTIBLE, not BACKGROUNDABLE: the
-            # question is whether this call publishes a channel while it blocks, not
-            # whether the tool can launch something detached. Read the second way, the
-            # button also appeared on tools that return the instant they have
-            # submitted — where the click had nothing to reach, and said so wrongly.
+            # Whether the row may offer to detach the run: DIVERTIBLE (it publishes a channel while
+            # it blocks), read off the registry.
             "divertible": has_cap(display_name, DIVERTIBLE, self.agent.tool_caps),
         }
-        # A run's input is known now; its output only exists when it ends. Sending the
-        # IN half here puts the command on screen for the whole run instead of landing
-        # the finished IN/OUT panel at the end, after a spinner that said nothing about
-        # what was running. Gated on the registry's CODE_EXEC capability — the result
-        # preview can detect an exec by the shape of its payload, but at call time
-        # there is no payload yet, and a non-exec tool with a `command`-ish argument
-        # would otherwise grow a terminal panel.
+        # The IN half of the terminal panel, sent now so the command shows while it runs. Gated
+        # on CODE_EXEC: there is no payload yet to recognise an exec by.
         if has_cap(display_name, CODE_EXEC, self.agent.tool_caps):
             pending = exec_input_preview(call.args)
             if pending is not None:
@@ -112,13 +92,7 @@ class ToolDispatcher:
         emit(call_event)
 
     async def execute(self, calls: list[Call]) -> list[str]:
-        """Every call's result, in call order.
-
-        Reads run concurrently. Writes must NOT: each does a snapshot → execute → diff
-        sequence, so two writes to one file — or a write racing a read of it — would
-        interleave and corrupt the captured diff, or the file. All reads in parallel,
-        then the writes strictly in order. A refused call's payload is its result.
-        """
+        """Every call's result, in call order: reads concurrently, then writes one at a time."""
         results = [call.refused or "" for call in calls]
         runnable = [i for i, call in enumerate(calls) if call.refused is None]
         reads = [i for i in runnable if not is_write(self.agent, calls[i].name)]
@@ -168,13 +142,7 @@ class ToolDispatcher:
                 self.ec.repeat_alert = (call.name, lc.call_fails[key])
 
     def append_results(self, admission: Any, results: list[str]) -> None:
-        """One tool message per call, in call order, then the calls not run.
-
-        Which files each message concerns is recorded by call id, so the history trim
-        can match messages to files structurally instead of by substring scanning. An
-        empty list is meaningful: a grep result touches no tracked file, so evicting it
-        must not invalidate a read just because a path appears in its text.
-        """
+        """One tool message per call, in order, then the calls not run; records each message's files by id."""
         tool_msg_files: dict = self.ec.tool_msg_files
         # Bounded BEFORE it is appended: the trim pass exempts the current step, so
         # afterwards only the force-fit backstop could touch it, once already over.
@@ -206,17 +174,10 @@ def _pin_loaded_skill(
     result: str,
     execution_context: ExecutionContext,
 ) -> None:
-    """Promote a successful skill pull from reservation to pinned tail message.
+    """Pin a successful skill pull's result in the tail, or release the reserved slot.
 
-    The body stays where it landed — a tool result in the tail — and is protected
-    there instead of being folded into ``messages[0]``: the system prompt is the one
-    thing a query may not rewrite mid-run without costing the prefix cache for every
-    remaining step. What makes the tail safe is the pin, honoured by the three history
-    passes (see ``pinned_call_ids`` in history.py).
-
-    A refused pull releases the slot the gate reserved. Otherwise a mistyped name, or
-    a skill the file itself declares user-invoked only, would spend one of the three
-    the model is allowed — a refusal charging the budget of the thing it refused.
+    The tail rather than messages[0], which a query may not rewrite without losing the
+    prefix cache; history passes honour the pin (``pinned_call_ids``).
     """
     if name != SKILL_LOAD_TOOL:
         return

@@ -1,26 +1,8 @@
 """Token-accounting calibration that survives a restart.
 
-Two figures make the context bar exact rather than merely close, and both are
-measured against what the server reported for a real prompt: the fixed per-call
-overhead (system prompt + tools schema) and the history's chars-per-token. Kept on
-disk, they let a session reopened against a fresh server be counted exactly from its
-first draw; an endpoint that serves no ``/tokenize`` has no other way to an exact
-number, since ``usage.prompt_tokens`` is the only one anyone here gets.
-
-What may be remembered is bounded by what stays true across a restart:
-
-* **chars-per-token** is a property of the model's tokenizer and the kind of text a
-  coding session holds, so it is keyed by model alone.
-* **prompt overhead** is a property of the *whole fixed part* — model, context mode,
-  the system prompt as the mode builds it, and the advertised tools — so it is keyed
-  by a fingerprint of all four. Enable a server, switch mode or edit the system
-  prompt and the key no longer matches: the entry is simply not found and the caller
-  falls back to its estimate. That is the point of keying it this way rather than by
-  model: a remembered overhead is either exactly the one that was measured, or absent.
-  A stale figure presented as measured would be worse than the honest estimate.
-
-Best-effort throughout: a cache that cannot be read or written costs the session its
-head start, nothing more.
+Chars-per-token is keyed by model. The prompt overhead is keyed by a fingerprint of
+model, context mode, system prompt and tools, so any change finds nothing and the
+estimate answers. Best-effort.
 """
 
 from __future__ import annotations

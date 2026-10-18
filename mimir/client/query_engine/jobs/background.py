@@ -20,19 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 def maybe_emit_open_editor(result_text: str) -> None:
-    """Emit an ``open_editor`` UI event when a tool result asks for a file to be
-    opened in the editor.
-
-    Shape-driven (like the exec preview): a result payload carrying
-    ``open_in_editor: true`` plus an absolute ``path`` opts in — the loop does not
-    hard-code any tool name. Used so a written plan (.md) pops open in VS Code for
-    the user to read. Best-effort: any parse failure is silently ignored.
-
-    Read through ``parse_tool_payload``, like the exec preview, because a result is an
-    envelope followed by its text blocks and then whatever the executor appended. A
-    bare ``json.loads`` sees all of that as one broken document and returns nothing —
-    so the editor would stop opening the moment a post-tool annotation appeared.
-    """
+    """Emit ``open_editor`` for a result carrying ``open_in_editor: true`` and an absolute ``path``."""
     payload = parse_tool_payload(result_text) if isinstance(result_text, str) else None
     if not isinstance(payload, dict) or not payload.get("open_in_editor"):
         return
@@ -58,34 +46,10 @@ def detect_background_job(name: str, result_text: str, agent: AgentPort) -> dict
 
 
 def _detect_rewatchable_jobs(name: str, result_text: str, agent: AgentPort) -> list[dict]:
-    """Descriptors of runs a tool result says are still in flight.
+    """Descriptors of runs a result reports as still going (``background_jobs``, plural).
 
-    Shape-driven, and with no capability gate at all — like
-    ``maybe_emit_open_editor`` and unlike ``detect_background_job``. The tools that
-    answer this way are readers: ``BACKGROUNDABLE`` says a tool *launches* a detached
-    run, and hanging it on a status op to make a key readable would say something about
-    those tools that is not true. What is actually being recognised is the payload, so
-    the payload is what is checked.
-
-    The plural key, and the distinction from ``background_job`` is the point rather
-    than a convenience. Singular means *this call launched it*: the row it belongs to
-    is a run, not a read, and a client with no watcher has to wait it out in-turn.
-    Plural means *these are still going* — what a status op answers about work some
-    earlier call started, and what an adopter (``slurm_watch``, ``bash_watch``) hands
-    over: a watcher is not a launch, and the run it names was going before the call.
-    Nothing about the row changes, and nothing is awaited; the only thing to do with
-    them is put a watcher on them.
-
-    That is what makes "where is the job at?" the gesture that restores tracking after
-    an agent restart took the watchers with it. The runs are untouched on disk the whole
-    time; it is only the promise to report them that has to be re-made, and asking is
-    the one moment a person has said they still care.
-
-    Each entry must name the op a watcher would poll and the job it speaks for. That is
-    the whole trust boundary, and it is enough of one: what registration buys is a
-    read-only poll of a named tool, which a descriptor missing either of those cannot
-    even start — ``_watch_job`` drops a watch with no ``status_op`` tool, and five
-    unreadable replies retire one whose op answers nothing it understands.
+    Plural means "still going", not "this call launched it": asking about a run is how
+    tracking resumes after a restart. Each needs a job and a status op to poll.
     """
     payload = parse_tool_payload(result_text) if isinstance(result_text, str) else None
     if not isinstance(payload, dict):
@@ -153,24 +117,10 @@ def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort)
 def maybe_register_background_job(
     name: str, result_text: str, agent: AgentPort, descriptor: dict | None = None,
 ) -> tuple[str, bool]:
-    """Register a completion watcher for a detached run and tell the model to yield.
+    """Register a watcher for a detached run; ``(result, registered)``.
 
-    Registration is delegated to the optional front-end hook
-    ``agent.register_background_job`` (the WebSocket worker sets it; CLI does not),
-    mirroring the ``poll_steer``/``turn.cancel_flag`` optional-hook pattern.
-
-    Returns ``(result, registered)``. The result carries the "you were backgrounded,
-    end your turn" note **only when a watcher is actually holding the run**, and
-    ``registered`` says so, because that is the one thing the caller cannot infer from
-    the text: it decides whether the turn may end on the promise of a resume or must
-    fall back to ``await_background_job``. Returning only the text is what let a
-    declined registration read exactly like a successful one — see the caller.
-
-    *descriptor* lets a caller that already detected one pass it in rather than have
-    the result parsed a second time; omitted, it is detected here as before.
-
-    Best-effort: every failure path returns the result unchanged, and says so in the
-    log, so a run that finishes unwatched leaves a trace explaining why.
+    Through the optional ``agent.register_background_job`` hook; the "end your turn" note is
+    added only when a watcher holds the run. Best-effort, and logged.
     """
     if descriptor is None:
         descriptor = detect_background_job(name, result_text, agent)
@@ -208,21 +158,10 @@ def maybe_register_background_job(
 
 
 async def await_background_job(descriptor: dict, agent: AgentPort, result_text: str) -> str:
-    """Efficiently wait out a detached run in-turn, then append its results.
+    """Wait out a detached run in-turn without model calls, then append its summary.
 
-    The CLI has no persistent worker loop to host a watcher, so instead of the agent
-    burning a model call per status poll, we poll the descriptor's read-only status op
-    here with ``asyncio.sleep`` (zero model calls) until the run is terminal, fetch the
-    summary, and fold it into the tool result. The launch tool already returned, so
-    this runs outside the per-tool timeout. Best-effort: failures return what we have.
-
-    The loop is :func:`poll.poll_until_terminal`, shared with the WebSocket
-    worker's watcher; what differs is the schedule — a turn waiting on a run asks more
-    often than a watcher holding one across turns — and that the user's Stop ends it,
-    since here the caller *is* the turn.
-
-    The polls carry ``record_observations=False``: a watcher tick is the client asking
-    a question on its own account, not a step the model took.
+    For the CLI, which has no watcher; the same :func:`poll.poll_until_terminal` with a
+    tighter schedule, stopped by the user's Stop.
     """
     status_op  = descriptor.get("status_op") or {}
     summary_op = descriptor.get("summary_op") or {}

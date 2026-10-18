@@ -23,14 +23,7 @@ from ..config.limits import (
 
 
 def _ensure_unique_call_ids(msg: dict, messages: list[dict]) -> None:
-    """Give every tool call of *msg* an id no earlier call of the conversation has.
-
-    Ollama returns calls with no id at all, and a streamed vLLM call whose id never
-    arrived fell back to its position — so every step's first call was ``call_0``.
-    Everything keyed by call id then mixed steps up: a result paired with the wrong
-    call, one pinned skill result pinning every later ``call_0``. Fixed here, before
-    the message enters history, so the history and the dispatch see the same ids.
-    """
+    """Give every tool call of *msg* an id no earlier call of the conversation has."""
     calls = msg.get("tool_calls")
     if not calls:
         return
@@ -81,14 +74,7 @@ def process_response(msg: dict, messages: list[dict], thinking: bool, streamed_t
 
 
 def note_truncated_turn(msg: dict, step: int | None = None) -> None:
-    """Announce a turn the provider cut short because it hit its output cap.
-
-    Purely observational — the loop's behaviour is unchanged. Without it a turn
-    truncated at ``max_tokens`` is indistinguishable in the transcript from a
-    model that had nothing to say, and both surface as the same "empty turn"
-    retry; the status lands in ``transcript.jsonl``, so a session can be told
-    apart after the fact instead of guessed at.
-    """
+    """Announce a turn the provider cut at its output cap (a status in the transcript)."""
     if msg.get("finish_reason") != "length":
         return
     where = f" at step {step}" if step is not None else ""
@@ -99,17 +85,10 @@ def note_truncated_turn(msg: dict, step: int | None = None) -> None:
 
 
 class DraftHold:
-    """Buffer for streamed answer prose the loop might still refuse.
+    """Buffer for streamed prose the loop might still refuse.
 
-    A nudge — or the evidence handback — sends the model back to work, and the
-    front-end then drops the draft it was rendering: prose appeared as the answer
-    and vanished, which is what the user actually watches. Holding is the only fix
-    that does not show it in the first place. A held turn streams nothing; the
-    buffer is flushed verbatim the moment the turn proves itself (it called a
-    tool), and dropped silently when the loop refuses it. On the accepted-answer
-    path nothing is flushed: the final ``answer`` carries the text, post-processed
-    (verification report, incomplete-run finalization), so flushing the raw draft
-    first would only swap one visible text for another.
+    Flushed when the turn calls a tool, dropped when refused; an accepted answer arrives
+    in the final ``answer`` instead.
     """
 
     def __init__(self, sink: Any) -> None:
@@ -146,17 +125,7 @@ _DETERMINISTIC_ERROR_MARKERS = (
 
 
 def _is_retryable(exc: Exception) -> bool:
-    """Whether re-sending the identical request could plausibly succeed.
-
-    A retry loop that cannot tell "the connection dropped" from "this prompt is
-    too long" treats both as bad luck. The second is not bad luck: the prompt is
-    byte-identical on every attempt, so the backoff only delays an outcome that
-    was already decided.
-
-    Errs toward retrying. A transient failure wrongly called permanent loses a
-    whole query; a permanent one wrongly called transient loses a few seconds, and
-    that is the trade the default has to respect.
-    """
+    """Whether re-sending the identical request could succeed; errs toward yes."""
     if isinstance(exc, PromptTooLongError):
         return False
     text = f"{exc}".lower()
@@ -165,16 +134,9 @@ def _is_retryable(exc: Exception) -> bool:
 
 def _calibrate_overhead(backend: Any, model: str, messages: list[dict], msg: Any,
                         tools: list[dict] | None = None) -> None:
-    """Hand the server's reported prompt size to the context bar's calibration.
+    """Hand the server's reported prompt size to the context bar's calibration (loop calls only).
 
-    Only the agent and plan loops come through here, and that is the point: the
-    session summary and history compaction share the backend and the model but send a
-    prompt of their own, a few hundred tokens of instruction and no tools. Calibrated from those, the overhead dropped to almost nothing after every
-    side call and climbed back on the next step, and the bar swung by the size of
-    the system prompt each time. The key is popped so it never reaches history.
-
-    The tools go along because they are most of the fixed part: the chars-per-token
-    calibration takes them out of the reported size to find what the history cost.
+    Side calls (summaries, compaction) send prompts of their own and would skew it.
     """
     if not isinstance(msg, dict):
         return
@@ -196,21 +158,10 @@ def stream_chat(model: str,
                  think_start_callback: Any = None,
                  think_end_callback: Any = None,
                  on_retry: Any = None) -> dict:
-    """Run one model round-trip, retrying transient backend failures.
+    """One model round-trip, retrying transient failures with backoff and jitter.
 
-    A single step of a long loop should not discard the
-    whole query because of one flaky connection / 5xx / rate-limit. We retry the
-    call with exponential backoff + jitter. User cancellation raises
-    asyncio.CancelledError, which subclasses BaseException (not Exception) and so
-    is never swallowed here. The cancel_flag is also checked before each retry so
-    a mid-backoff cancel bails immediately.
-
-    Caveat: when streaming, a failure can occur after some tokens were already
-    emitted via token_callback; the retry re-streams from the start, so the UI
-    may briefly show duplicated partial output on the (rare) retry path. We trade
-    that cosmetic glitch for not losing the entire query. ``on_retry`` is called
-    before each new attempt, so a caller holding the partial output (``DraftHold``)
-    can drop it rather than flush the failed attempt's text ahead of the retry's.
+    Cancellation propagates, also mid-backoff. ``on_retry`` runs before each new attempt so
+    a held draft can drop the failed attempt's text.
     """
     backend = get_backend()
     last_exc: Exception | None = None

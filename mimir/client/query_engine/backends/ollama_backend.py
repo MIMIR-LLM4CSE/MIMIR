@@ -44,13 +44,7 @@ class OllamaBackend(LLMBackend):
             pass
 
     def _fetch_context_window(self, model: str) -> int | None:
-        """Ollama context window = the model's trained context length.
-
-        ``MIMIR_OLLAMA_NUM_CTX`` overrides it (cap KV-cache VRAM, or pin a
-        value). Otherwise we read ``<arch>.context_length`` from ``ollama.show``.
-        The returned value is also what :meth:`chat` passes as ``num_ctx`` so the
-        budget and what Ollama actually allocates stay in agreement.
-        """
+        """The model's trained context length (``MIMIR_OLLAMA_NUM_CTX`` overrides), also sent as ``num_ctx``."""
         pinned = env_positive_int("MIMIR_OLLAMA_NUM_CTX")
         if pinned:
             return pinned

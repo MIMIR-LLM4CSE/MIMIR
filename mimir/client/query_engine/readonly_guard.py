@@ -1,11 +1,6 @@
-"""Call-time guard for the read-only modes (plan, ask).
+"""Call-time guard of the read-only modes (plan, ask): drop the calls they may not make.
 
-``tools_for_readonly_mode`` already hides the PLAN_BLOCKED tools and the plan-writing
-tools the mode has no use for, but some models still hallucinate calls to tools that
-were never advertised, and the dual-use PLAN_READONLY exec tool stays visible on
-purpose (discovery commands). This module is the defence in depth: it drops those
-classes of call and feeds the model a tool-role error explaining why, so it can
-correct course. Plan mode and ask mode share it.
+Each rejection becomes a tool-role error the model can correct from.
 """
 from __future__ import annotations
 
@@ -55,15 +50,10 @@ def filter_readonly_tool_calls(
     messages: list[dict],
     mode_label: str,
 ) -> list[Any]:
-    """Return the subset of *tool_calls* that may run in a read-only mode.
+    """The calls of *tool_calls* that may run in a read-only mode.
 
-    A PLAN_BLOCKED call (write / execution / mutation) is always dropped, as is a
-    plan-writing call the mode does not expose (see
-    :func:`toollist.hidden_planning_tools`). A PLAN_READONLY call is dual-use: it is
-    kept when its command is read-only (search, list, read) and dropped when it would
-    run or mutate anything. Every rejection appends a ``role="tool"`` error to
-    *messages* and emits a status line. ``mode_label`` ("plan" / "ask") selects the
-    hidden planning set and shapes those texts.
+    Drops ``PLAN_BLOCKED`` calls, hidden planning tools, and ``PLAN_READONLY`` calls that are
+    not read-only; each refusal appends a tool error and a status line.
     """
     no_planning = hidden_planning_tools(mode_label, agent.tool_caps)
     safe: list[Any] = []

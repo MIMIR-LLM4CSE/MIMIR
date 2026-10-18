@@ -1,11 +1,7 @@
-"""What a finished or still-running background job says to the model.
+"""What a finished or running background job says to the model: pure functions of an event.
 
-Pure functions of one event. The connection and the pool both turn wakes into turns,
-and they must word them identically: the model cannot tell which one woke it.
-
-Nothing here interprets a job. The text states the fact and passes the recorded
-payload through under the server's own field names; the only tool names it utters are
-the descriptor's ``status_op`` and ``summary_op``.
+The text states the fact and passes the payload through; the only tool names it uses
+are the descriptor's ``status_op`` and ``summary_op``.
 """
 
 from __future__ import annotations
@@ -62,17 +58,7 @@ def _render_field(key: str, value: object) -> tuple[str, bool]:
 
 
 def compact_summary(payload: dict) -> tuple[str, bool]:
-    """A job's recorded result, as one field per line, cut to a budget.
-
-    Passed through rather than interpreted: the client does not know what kind of job
-    ran, so it hands the model what the server recorded, under the server's own field
-    names. What it chooses is the shape — lines instead of a single JSON string, each
-    value clipped on its own — because a wake is read by a person as well as a model,
-    and one 800-character command should not be the whole of what either sees.
-
-    Returns the text and whether it had to be cut — the caller says where the whole of
-    it can be read, which is only honest once something is missing.
-    """
+    """A job's recorded result, one field per line, cut to a budget; and whether it was cut."""
     lines: list[str] = []
     budget = _WAKE_SUMMARY_LIMIT
     dropped = 0
@@ -101,18 +87,9 @@ def compact_summary(payload: dict) -> tuple[str, bool]:
 
 
 def wake_text(ev: dict) -> str:
-    """Build the auto-resume instruction from a ``job_complete`` event.
+    """The resume instruction of a ``job_complete`` event, from the job's own recorded result.
 
-    The wake states the fact and passes the payload through: what the model should do
-    next comes from the job's own recorded result, never from an instruction invented
-    here. Naming another server's ops in this function is how a build once got told to
-    review proxy results and continue an optimization loop that did not exist.
-
-    The only tool names it may use are ``status_op``'s and ``summary_op``'s, and only
-    because those are registry data travelling on the descriptor — the same reason the
-    watcher can poll generically. The first is the last resort, for a job that recorded
-    no summary; the second is named only when the summary had to be cut, so that what
-    was left out is still reachable.
+    Names ``summary_op`` only when the summary was cut, ``status_op`` only without one.
     """
     job_key = ev.get("job_key", "?")
     state   = ev.get("state", "done")
@@ -164,17 +141,7 @@ def wake_text(ev: dict) -> str:
 
 
 def checkin_text(ev: dict) -> str:
-    """Build the check-in instruction from a ``job_checkin`` event.
-
-    Under the same rule as :func:`wake_text` — it names no tool of any server and
-    interprets nothing, passing on whatever the status op chose to report. What it
-    adds is a ceiling on the answer: a check-in exists so a run that went wrong early
-    is not discovered at its end, not to restate the plan or go and look at something.
-
-    Reading the run is still open to it where the status says something is off: the
-    dispatch guard refuses the *status* op of a watched job (this event already
-    carries that answer) and leaves the summary op alone.
-    """
+    """The check-in instruction of a ``job_checkin`` event: report briefly, investigate only if off."""
     lines = []
     for job in (ev.get("jobs") or []):
         if not isinstance(job, dict):

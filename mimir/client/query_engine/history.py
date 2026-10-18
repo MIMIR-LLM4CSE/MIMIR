@@ -37,15 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 class ContextOverflowError(RuntimeError):
-    """The prompt cannot be made to fit the model's window.
-
-    Raised by :func:`enforce_context_budget` when eviction, compaction and the
-    force-fit backstop have all run and the irreducible core — the system message
-    plus the current query, neither of which may be reduced — still exceeds the
-    usable window. Without it the oversized prompt goes to the backend anyway and comes
-    back as an opaque provider 400 (vLLM: ``max_tokens must be at least 1, got -N``),
-    behind a status line claiming the history was trimmed to fit.
-    """
+    """The prompt cannot fit: the system message and the current query alone exceed the window."""
 
 
 # Opening of the one message a compaction leaves behind. Both producers build it
@@ -63,13 +55,7 @@ _MARKER_EXCHANGES = re.compile(r"(\d+)\s+prior\s+exchange", re.IGNORECASE)
 
 
 def _marker_exchanges(m: dict) -> int | None:
-    """Exchanges *m* already stands in for, or None when it is not a summary at all.
-
-    Matched case-insensitively: the CLI spelled the marker with a capital S until the
-    two producers were merged, and those windows are still on disk. A summary whose
-    count cannot be read is still a summary — 0, never None — so it is not miscounted
-    as one raw message of conversation.
-    """
+    """Exchanges a summary *m* stands in for (0 if unreadable), or None if it is not one."""
     content = m.get("content")
     if not isinstance(content, str):
         return None
@@ -80,15 +66,7 @@ def _marker_exchanges(m: dict) -> int | None:
 
 
 def compacted_exchanges(messages: list[dict]) -> int:
-    """How many exchanges a summary over *messages* would stand in for.
-
-    Not ``len(messages) // 2``: a slice being compacted for the second time opens on
-    the previous summary, and that one message stands for everything the first pass
-    swallowed. Counting it as a single exchange is what made each pass announce less
-    than the one before — a window holding hundreds of collapsed exchanges eventually
-    told the model it was missing four. That number is what the model reads to judge
-    how much of its own past it can no longer see.
-    """
+    """How many exchanges a summary over *messages* stands in for, counting earlier summaries' share."""
     absorbed = raw = 0
     for m in messages:
         already = _marker_exchanges(m)
@@ -116,19 +94,10 @@ def compaction_summary_message(n_exchanges: int, summary: str) -> dict:
 
 
 def carries_compaction_summary(messages: list[dict]) -> bool:
-    """True when *messages* opens on a compaction summary.
+    """True when *messages* opens on a compaction summary (among its first few messages).
 
-    The question a resume asks: is this window the *product of a compaction* — a
-    handoff note that already stands in for what was cut — or merely the tail a
-    front-trim left behind? Only the first is worth reloading in place of the
-    untrimmed record; dropping the prefix of the second would lose context that was
-    never summarized anywhere.
-
-    Scans the head rather than only index 0: the first user message is kept ahead of
-    the summary (it is the task, and the loop protects it), so the marker lands second
-    in practice. Bounded to the first few messages so a summary buried mid-history —
-    the residue of an older compaction that a later front-trim reduced to a tail
-    again — does not read as this window's own.
+    Only such a window is worth reloading in place of the untrimmed record; a front-trimmed
+    tail summarizes nothing.
     """
     return any(m.get("role") == "assistant" and _marker_exchanges(m) is not None
                for m in messages[:_COMPACTION_MARKER_SCAN])
@@ -166,30 +135,10 @@ def _trim_tool_history(
     token_counter: Any | None = None,
     token_budget: int = _TOOL_HISTORY_TOKEN_BUDGET,
 ) -> None:
-    """Evict oldest tool-result messages when total tool content exceeds the budget.
+    """Evict the oldest tool results while their total exceeds the budget (tokens, else chars).
 
-    Only removes ``{"role": "tool"}`` entries; system, user, and assistant
-    messages are always preserved so history coherence is maintained.
-
-    Size is measured in tokens via *token_counter* (``text -> int``) against
-    *token_budget* when a counter is supplied; otherwise it falls back to raw
-    characters against *char_budget*. The eviction-selection logic (file
-    protection, read invalidation) is identical in both modes — only the size
-    metric changes.
-
-    The tool results answering the most recent assistant tool-call turn are never
-    evicted: they are the current turn's payload, and stubbing them out costs more
-    than the space it frees. Only the force-fit backstop may shrink them.
-
-    Results whose ``tool_call_id`` is in ``execution_context.pinned_call_ids`` are
-    exempt for as long as anything else is reducible: a skill's instructions, which the
-    model was told are in its context and will act on for the rest of the task.
-
-    Tool messages whose content references a file currently being written
-    (dirty_written_files or declared_edit_set) are protected from eviction.
-    When a file has been read but then evicted from history, its path is also
-    removed from execution_context.read_files so the policy cannot falsely
-    allow an edit without a fresh re-read.
+    Never evicted: the results of the last call turn, pinned results, results about files
+    being written. An evicted read also leaves ``read_files``, so a re-read is required.
     """
     _size = token_counter if token_counter is not None else len
     budget = token_budget if token_counter is not None else char_budget
@@ -219,35 +168,19 @@ def _trim_tool_history(
     )
 
     def _structural_paths(m: dict) -> tuple[list[str], bool]:
-        """Return (paths, is_structural) for a tool message.
-
-        When the message's tool_call_id was recorded at dispatch we know exactly
-        which files it concerns (possibly none) — authoritative. Messages with no
-        record (e.g. history carried over from a prior query) return
-        is_structural=False so the caller falls back to the substring scan.
-        """
+        """``(paths, is_structural)``: the files recorded for this message at dispatch, if any."""
         cid = m.get("tool_call_id")
         if cid is not None and cid in tool_msg_files:
             return tool_msg_files[cid], True
         return [], False
 
-    # The newest results — those answering the last assistant turn that made calls —
-    # are this turn's payload: a sub-agent's entire answer comes back as one of them.
-    # Evicting oldest-first hit them anyway whenever they were the only tool messages
-    # in the window, replacing the freshest evidence with EVICTED_TOOL_RESULT while
-    # nothing older remained to drop. They are exempt here; the force-fit pass can
-    # still shrink them, and its truncation keeps a head and a tail rather than
-    # nothing at all.
+    # The results answering the last call turn are this turn's payload: exempt here (the
+    # force-fit pass may still shrink them).
     last_call_turn = _last_call_turn(messages)
     newest_results = {i for i in tool_indices if i > last_call_turn} if last_call_turn >= 0 else set()
 
-    # Pinned results: a skill's instructions, loaded on demand and left where they
-    # landed. Protected by tool_call_id, the same structural key as tool_msg_files, so
-    # a body that merely mentions a path neither protects nor invalidates anything.
-    # The alternative to pinning was to fold the text into messages[0], which no pass
-    # touches — and that costs the prompt prefix for every remaining step of the query.
-    # So the tail is where it stays, and this is what makes the tail safe to promise:
-    # the model has been told the method is in its context.
+    # Pinned results (a skill's instructions) are protected by tool_call_id; they stay in the
+    # tail, since folding them into messages[0] would cost the prefix cache.
     pinned_call_ids: set[str] = (
         execution_context.pinned_call_ids if execution_context else set()
     )
@@ -276,13 +209,7 @@ def _trim_tool_history(
                 continue
 
         to_remove.append(idx)
-        # Credited in the same units the budget is spent in. `total_size` is the
-        # wire form of each message; crediting only `content` back made every
-        # eviction look smaller than it was, so the loop kept going and evicted
-        # the whole tool history to reach a budget it had already met. Invisible
-        # while the two happened to coincide — a tool result carries no
-        # tool_call arguments — and a systematic over-eviction the moment the
-        # measure grew an envelope.
+        # Credited in the units the budget is spent in (the wire form), or eviction overshoots.
         removed_size += _message_tokens(msg, _size)
         # Keep execution_context in sync: evicting a file read invalidates its
         # read_files entry, so policy demands a fresh re-read before the next edit.
@@ -305,18 +232,9 @@ def _trim_tool_history(
 def _carve_out_pinned(
     middle: list[dict], pinned_call_ids: set[str],
 ) -> tuple[list[dict], list[dict]]:
-    """Split *middle* into (summarizable, kept).
+    """Split *middle* into ``(summarizable, kept)``, each pinned result kept with its assistant turn.
 
-    *kept* holds each pinned tool message **together with the assistant turn that
-    declared it**, in their original order. The pairing is not optional:
-    :func:`reconcile_tool_pairs` drops any tool message that is not immediately
-    preceded by the assistant turn declaring its id, so a body that survived the
-    summary alone would be deleted by the very next repair pass — protection that
-    looks like it works and does nothing.
-
-    An assistant turn that declared a pinned call plus three ordinary ones is kept
-    whole; its unpinned results go into the summary, and the repair fills their slots
-    with EVICTED_TOOL_RESULT stubs. That is exactly what those stubs are for.
+    Alone, ``reconcile_tool_pairs`` would drop it; the turn's unpinned results are stubbed.
     """
     kept_idx: set[int] = set()
     for i, m in enumerate(middle):
@@ -344,20 +262,10 @@ def _maybe_compact_intra_query(
     token_counter: Any | None = None,
     token_budget: int | None = None,
 ) -> None:
-    """Compact the middle of the message list when total size exceeds the budget.
+    """Replace the middle of the messages with a summary when they exceed the budget.
 
-    Keeps: system message, first user message, last 4 messages (2 exchanges).
-    Replaces everything in between with a single assistant summary produced by
-    *compact_fn* (same signature as chat_session.compact_history).
-    The task checklist lives in messages[0], which is kept, so compaction never
-    disturbs it.
-
-    Total size is measured in tokens via *token_counter* against the token
-    budget when supplied, else in characters against the char budget.
-
-    Pinned results (``execution_context.pinned_call_ids``) are carved out of the
-    middle with their assistant turn and re-appended after the summary — see
-    :func:`_carve_out_pinned`.
+    Keeps the system message, the first user message and the last four; pinned results are
+    carved out and put back after the summary.
     """
     if compact_fn is None:
         return
@@ -403,14 +311,7 @@ def _maybe_compact_intra_query(
 
 
 def _truncate_text_to_tokens(text: str, max_tokens: int, token_counter: Any) -> str:
-    """Shrink *text* to at most *max_tokens*, keeping a head and tail with a marker.
-
-    Used as a last resort by force_fit_to_window when whole-message eviction
-    isn't enough (e.g. a single huge tool result or pasted blob). Keeps the start
-    and end — usually the most informative parts — and drops the middle. The
-    result is GUARANTEED to be <= max_tokens (verified, then shrunk if the
-    marker/rounding overshot), so the caller's fitting loop always converges.
-    """
+    """*text* cut to at most *max_tokens*, head and tail kept around a marker (guaranteed)."""
     if max_tokens <= 0 or not text:
         return ""
     if token_counter(text) <= max_tokens:
@@ -432,29 +333,9 @@ def _truncate_text_to_tokens(text: str, max_tokens: int, token_counter: Any) -> 
     return marker if token_counter(marker) <= max_tokens else ""
 
 
-# What one tool result, and one whole step, may add to the context.
-#
-# Both are fractions of the usable window rather than fixed numbers: a 20k-token
-# ceiling is generous on a 200k window and catastrophic on a 32k one, and the served
-# window is not known until the backend reports it.
-#
-# These are a BACKSTOP, deliberately loose. The server-side ceilings are the real
-# mechanism — they cut knowing the shape of their own payload, where a head-and-tail
-# cut here leaves a JSON document unparseable. What this catches is what no server
-# ceiling covers: a third-party MCP server, or one of ours with a path that forgot to
-# bound itself.
-#
-# The shares are set so that a tool returning its OWN documented maximum is never the
-# thing this cuts. Measured against every ceiling MIMIR ships, the largest legitimate
-# single result is `github_get_file` at 256 KB — about 65k tokens — so a half share of
-# a 160k usable window (80k) clears it, where the quarter share this started at (40k)
-# would have cut a file fetch doing exactly what it is designed to do. A backstop that
-# fires in normal operation is not a backstop; it is a second, worse ceiling that
-# degrades results silently.
-#
-# On a window too small to hold those ceilings at all — a served 32k, where one 128 KB
-# page cannot fit whatever anyone does — something has to give, and these shares only
-# decide it earlier and more fairly than the force-fit pass would have.
+# What one tool result, and one step, may add: fractions of the usable window. A loose
+# backstop behind the servers' own ceilings, set so a tool returning its documented
+# maximum (``github_get_file``, 256 KB, ~65k tokens) is never cut on a 160k window.
 _RESULT_WINDOW_SHARE = 2       # one result may take up to usable // 2
 _STEP_NUM, _STEP_DEN = 3, 4    # one step's results, together, up to usable * 3/4
 
@@ -466,14 +347,7 @@ _TRUNCATION_NOTE = (
 
 
 def _water_fill(sizes: list[int], budget: int) -> list[int]:
-    """Per-item allowances summing to at most *budget*.
-
-    Smallest first, each taking either its whole size or an equal share of what is
-    left. A small result is therefore never cut to pay for a large one, and the
-    budget released by the small ones raises the ceiling for the rest — which is the
-    fair reading of "several calls in one step share a budget". Deterministic, so the
-    same step always yields the same history.
-    """
+    """Per-item allowances summing to at most *budget*, smallest first (deterministic)."""
     allow = [0] * len(sizes)
     left = budget
     for rank, i in enumerate(sorted(range(len(sizes)), key=lambda j: sizes[j])):
@@ -491,18 +365,9 @@ def bound_step_results(
     token_counter: Any,
     context_ceiling: int | None = None,
 ) -> tuple[list[str], list[tuple[int, int]]]:
-    """Clamp one step's tool results before they enter the history.
+    """Clamp one step's tool results before they enter the history; report each cut.
 
-    Returns the bounded results and, for each one that was cut, its (before, after)
-    token count so the caller can tell the user.
-
-    Called from ``dispatch`` BEFORE the append, which is the only moment that works.
-    ``enforce_context_budget`` runs after, and by then it is powerless here:
-    ``_trim_tool_history`` deliberately exempts the current step from eviction (a
-    sub-agent's whole answer is one of these results), so the only pass that could
-    touch them is ``force_fit_to_window`` — and that one engages only once the window
-    is already over. Which is how four parallel fetches took a 200k window to 215k in
-    a single step, with nothing given the chance to object.
+    Before the append, because afterwards the current step is exempt from eviction.
     """
     if not results:
         return results, []
@@ -550,31 +415,10 @@ WIRE_LIST_TOKENS_PER_MESSAGE = 4
 
 
 def _message_tokens(m: dict, token_counter: Any) -> int:
-    """Tokens for one message, measured on the form the provider is sent.
+    """Tokens of one message in the form the provider is sent (``message_wire_form``).
 
-    The single size measure every budgeting pass uses, and it has to be in the
-    same units as the wall it is protecting against. Counting only ``content``
-    is what let a history whose weight lived in ``tool_calls[].function.arguments``
-    — file bodies handed to write_file — read as barely half its real size.
-    Counting content *and* arguments as bare text left a second gap of the same
-    kind, quieter and never closed: the backend refuses on
-    ``json.dumps(prepared_messages)`` (see the window guard in vllm_backend.chat),
-    so every ``\n`` it escapes, every quote it doubles and every ``role`` /
-    ``tool_call_id`` key it adds is prompt the budget never saw. On an ordinary
-    tool-heavy history that envelope is ~18% of the total, and on escape-dense
-    content — HTML, LaTeX, JSON inside JSON, the shapes a web fetch returns — it
-    reaches 30%.
-
-    That gap is what let ``force_fit_to_window`` report a fit and the provider
-    reject the very same prompt: 272,386 tokens against a 262,144 window, after a
-    backstop that had just announced it had made it fit. The two were never
-    reading the same string, and no tokenizer — heuristic or exact — closes a
-    difference in *what is measured* rather than in how.
-
-    Serialised in ONE call per message: ``count_text_tokens`` may make a blocking
-    /tokenize round-trip, cached per model/length/hash, so one call per message
-    beats one per part — and the wire form of a message is as stable across steps
-    as its content, so the cache still hits.
+    The budget must measure what the window is checked against; one count per message
+    keeps the tokenize cache warm.
     """
     text = message_wire_form(m)
     return token_counter(text) if text else 0
@@ -600,18 +444,7 @@ def _elision_note(text: str) -> str:
 
 
 def _digest_call_args(args: Any, max_chars: int = _ARG_DIGEST_MAX_CHARS) -> Any:
-    """Replace a tool call's bulky string arguments with a short digest.
-
-    Returns a NEW dict, never mutating *args*, so digesting cannot reach through
-    into the untrimmed record that shares these message objects. Returns *args*
-    itself — identity-comparable by the caller — when there was nothing to elide.
-
-    The result stays a dict: ``anthropic_backend._prepare`` substitutes ``{}`` for
-    arguments that are not one, and the vLLM path re-encodes dicts to a string on
-    the way out, so a dict is the shape both expect internally. Small scalar
-    arguments (path, overwrite, …) are kept verbatim so the call still reads as
-    what it was; only long string values are replaced.
-    """
+    """A new dict of *args* with long strings digested, or *args* itself when nothing changed."""
     if isinstance(args, str):
         try:
             parsed = json.loads(args)
@@ -667,19 +500,9 @@ def _tool_result_failed(m: dict) -> bool:
 
 
 def _digest_failed_call_args(messages: list[dict]) -> int:
-    """Digest the arguments of tool calls whose result came back an error.
+    """Digest the arguments of failed tool calls (lossless: they never took effect); return how many.
 
-    Lossless by construction: the call did not take effect — the write was
-    refused, the path already existed, the content did not parse — so its
-    arguments describe something that never happened, while the error message
-    saying why stays in history verbatim. One rejected ``write_file`` of a
-    250-line file costs ~2.7k tokens, and a single session carried three of them
-    at full weight from the moment they failed to the end of the run.
-
-    The most recent tool-call turn is exempt: a model repairing the syntax error
-    it was just told about needs to see what it wrote. Only older failures go.
-
-    Returns the number of calls digested.
+    The latest call turn is exempt: a model repairing it needs what it wrote.
     """
     results = {m.get("tool_call_id"): m
                for m in messages if m.get("role") == "tool" and m.get("tool_call_id")}
@@ -714,23 +537,10 @@ def force_fit_to_window(
     token_counter: Any,
     pinned_call_ids: set[str] | None = None,
 ) -> bool:
-    """Guarantee the message list fits *target_tokens*, truncating as a last resort.
+    """Shrink the largest reducible messages until the list fits *target_tokens*.
 
-    The trim/compact helpers above only handle whole tool messages (and need a
-    compaction callback). This is the deterministic backstop that runs on every
-    call: it shrinks the largest reducible messages — oldest first among equals —
-    until the total content fits. The system message (index 0) and the most recent
-    user message (the active query) are never reduced, so the model always sees
-    its instructions and the question. Returns True when the list fits afterwards,
-    False when the irreducible core alone still exceeds the target (the caller /
-    backend then surfaces a clear context-overflow error).
-
-    *pinned_call_ids* names results that go LAST in the reduction order rather than
-    into ``protected``. A skill's instructions are the largest single message in the
-    list, so largest-first would otherwise truncate the one thing the model was
-    promised it could rely on, before anything else. But protecting them outright here
-    could only turn an over-window prompt into a hard overflow — so they are reduced
-    only once everything else has been, and the guarantee above still holds.
+    The system message and the current query are never reduced; *pinned_call_ids* go
+    last. False when that core alone does not fit.
     """
     if target_tokens < 1:
         return False
@@ -819,28 +629,10 @@ def enforce_context_budget(
     token_counter: Any,
     context_ceiling: int | None = None,
 ) -> None:
-    """Trim/compact history so the *next* LLM prompt fits the model's window.
+    """Make the next prompt fit the window, tools schema included.
 
-    Sizes the trim/compaction budgets to the model's real context window
-    (vLLM ``max_model_len`` when available) and — crucially — subtracts the
-    tools-schema token cost. The tools schema is sent on every call but is NOT
-    part of ``messages``, so without this the message history alone can fill the
-    window and the actual prompt (messages + tools) overflows, which vLLM rejects
-    with the confusing ``max_tokens must be at least 1, got -N`` 400. On large
-    windows the overhead is negligible; on a small window (e.g. a served 16K
-    model) it is the difference between fitting and overflowing.
-
-    Order: (1) evict oldest tool results, (2) compact the middle when a
-    compaction callback is available, then (3) a deterministic hard-fit pass that
-    truncates oversized content as a last resort. Step 3 is what actually
-    *guarantees* the prompt fits regardless of message types or whether
-    compaction is wired up. (4) repairs the assistant↔tool pairing that steps 1
-    and 2 legitimately break, so every backend receives a coherent history.
-
-    Raises :class:`ContextOverflowError` when step 3 cannot make the prompt fit —
-    the irreducible core (system message + current query) alone exceeds the usable
-    window. The repair in step 4 still runs first, so the history left behind is
-    coherent for whatever the caller does with it.
+    Evict old tool results, compact the middle, force-fit, then repair the pairing. Raises
+    :class:`ContextOverflowError` (after the repair) when the core alone does not fit.
     """
     overflow: ContextOverflowError | None = None
     # First, and regardless of any budget: the arguments of calls that came back an

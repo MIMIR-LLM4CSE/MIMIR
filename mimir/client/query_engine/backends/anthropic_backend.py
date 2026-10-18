@@ -1,29 +1,8 @@
-"""Anthropic (Claude API) LLM backend.
+"""The Anthropic (Claude API) backend, selected by ``LLM_BACKEND=anthropic`` (or ``claude``).
 
-Lets MIMIR run against Anthropic's hosted Claude models (Opus/Sonnet/Haiku/Fable)
-for evaluation and comparison against the local vLLM/Ollama backends. Selected via
-``LLM_BACKEND=anthropic`` (alias ``claude``); the model is the usual
-``MIMIR_DEFAULT_MODEL`` (e.g. ``claude-opus-4-8``).
-
-The backend translates MIMIR's internal Ollama-style history (see the module
-docstrings in ``ollama_backend`` / ``vllm_backend``) to the Claude Messages API
-and back:
-
-  internal message                     Anthropic Messages API
-  ─────────────────────────────────    ──────────────────────────────────────
-  {"role": "system", ...}              -> top-level ``system`` (concatenated)
-  {"role": "user", "content": str}     -> {"role": "user", content: [text]}
-  {"role": "assistant", tool_calls}    -> {"role": "assistant", content: [text, tool_use…]}
-  {"role": "tool", tool_call_id, ...}  -> {"role": "user", content: [tool_result]}
-
-Thinking-block replay: when adaptive thinking is on, Claude requires the *signed*
-thinking blocks be echoed back on the assistant turn that carried a ``tool_use``
-(same model only). MIMIR flattens each turn to a plain dict (``thinking`` becomes a
-string, losing the signature), so we cache the raw response ``content`` blocks keyed
-by their tool-call ids and splice them back in during history conversion. Every
-tool-use turn we replay was produced by this backend earlier in the session, so it
-is always a cache hit — history stays valid without plumbing signed blocks through
-the rest of the engine.
+Translates the internal history: system messages to ``system``, tool calls to
+``tool_use``, tool messages to ``tool_result`` blocks in a user turn. Signed thinking
+blocks are cached by tool-call id and spliced back into the turns that carried them.
 """
 from __future__ import annotations
 
@@ -53,14 +32,7 @@ _FALLBACK_WINDOWS: tuple[tuple[str, int], ...] = (
 
 
 def _get_config() -> dict:
-    """Return client kwargs from the environment.
-
-    Credentials resolve the SDK's normal way (``ANTHROPIC_API_KEY``, then
-    ``ANTHROPIC_AUTH_TOKEN``, then an ``ant auth login`` profile); a base-URL
-    override is honoured via ``ANTHROPIC_BASE_URL``. Unlike the vLLM backend we do
-    **not** disable ``trust_env`` — the Claude API is reached over the internet, so
-    the corporate ``HTTP(S)_PROXY`` must be respected, not bypassed.
-    """
+    """Client kwargs from the environment (``ANTHROPIC_*``); the HTTP proxy is respected."""
     kwargs: dict = {}
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if key:
@@ -138,13 +110,9 @@ def _mark_last_block_cacheable(conv: list[dict]) -> None:
 
 
 def _log_cache_usage(final: Any) -> None:
-    """Log prompt-cache effectiveness from a response's ``usage`` block.
+    """Log prompt-cache hits from a response's ``usage`` (best-effort).
 
-    ``input_tokens`` is the *uncached* remainder; total prompt =
-    input + cache_creation + cache_read. A hit_rate near 1.0 across a query's
-    steps means the multi-turn breakpoints are biting. Zero reads across repeated
-    steps points to a silent prefix invalidator (a varying system prompt, a
-    reordered tool list). Best-effort — never let telemetry break a chat turn.
+    Zero reads across repeated steps means something invalidates the prefix.
     """
     if not logger.isEnabledFor(logging.INFO):
         return
@@ -226,18 +194,11 @@ class AnthropicBackend(LLMBackend):
         return tuple(ids)
 
     def _prepare(self, messages: list[dict]) -> tuple[str, list[dict]]:
-        """Split internal history into (system_prompt, anthropic_messages).
+        """Split internal history into ``(system_prompt, anthropic_messages)``.
 
-        Consecutive ``tool`` messages are merged into a single ``user`` turn of
-        ``tool_result`` blocks (Claude pairs each result to its ``tool_use`` by id).
-        Assistant tool-use turns are replayed from the raw-block cache when available
-        so signed thinking blocks survive; otherwise they are reconstructed from the
-        flattened text + tool_calls (valid whenever thinking was not used).
-
-        Reached through ``LLMBackend.chat``, which has already reconciled the
-        tool-call pairing (the API rejects a ``tool_use`` with no matching
-        ``tool_result`` outright) and merged adjacent user turns (it requires strict
-        alternation).
+        Consecutive tool messages merge into one user turn of results; tool-use turns are
+        replayed from the raw-block cache when possible. ``LLMBackend.chat`` has already
+        repaired the pairing and merged adjacent user turns.
         """
 
         system_parts: list[str] = []

@@ -1,18 +1,8 @@
 """A turn parked on the user, set aside when the user leaves its conversation.
 
-A turn parks on a person: a tool approval, a clarification, a plan awaiting a
-decision. Cancelling it would throw the card away with the work that led to it.
-
-Deferral is the way out. The front-end asks the worker to set the wait aside;
-each parked prompt then returns at once and is recorded here, the turn finishes the
-step it was on and ends. What it was waiting on is stored with the conversation, and
-the card comes back when the user does. Their answer starts a resume turn that runs
-the deferred calls with that answer and carries on exactly where the turn stopped —
-no model call in between, so nothing about the resumption is left to chance.
-
-The record is plain data: ``kind`` is ``"calls"`` (tool calls, identified by their
-``tool_call_id``) or ``"plan_decision"`` (the plan loop's approval question, which is
-asked between model calls rather than inside one).
+Each parked prompt returns at once and is recorded; the turn ends its step. The card
+comes back with the user, and the answer starts a resume turn that runs the deferred
+calls with no model call between. ``kind``: ``"calls"`` or ``"plan_decision"``.
 """
 from __future__ import annotations
 

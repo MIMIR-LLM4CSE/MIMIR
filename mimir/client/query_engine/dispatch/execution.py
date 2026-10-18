@@ -34,14 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _await_tool(coro, timeout: float):
-    """``asyncio.wait_for``, except time spent waiting on the user doesn't count.
-
-    The approval prompt is raised from inside the tool call, so a plain ``wait_for``
-    charged the user's thinking time to the tool's budget: a command approved after
-    two minutes came back "timed out after 120s" without ever having run. Here the
-    budget is re-extended by however long the thread sat in ``human_pause`` — the
-    prompt blocks the loop thread, so the extension is applied when it resumes.
-    """
+    """``asyncio.wait_for``, extended by the time the thread spent in ``human_pause``."""
     task = asyncio.ensure_future(coro)
     baseline = human_pause.elapsed()
     remaining = timeout
@@ -69,13 +62,7 @@ _DEAD_TRANSPORT = ("ClosedResourceError", "BrokenResourceError", "EndOfStream")
 
 
 def _dead_transport_hint(name: str, exc: BaseException, agent: AgentPort) -> str | None:
-    """The hint for a tool whose server is gone, or None when it is a different failure.
-
-    Worth telling apart from every other tool error because the advice is the opposite:
-    a dead transport never recovers. Nothing reconnects an MCP server, so every later
-    call to any tool of that server fails identically — "retry once" spends the turn on
-    calls that cannot work, and the model deserves to be told to stop and say so instead.
-    """
+    """The hint for a tool whose server is gone (it never recovers), or None."""
     if type(exc).__name__ not in _DEAD_TRANSPORT:
         return None
     owner = (getattr(agent, "tool_owner", None) or {}).get(name) or "its"
@@ -163,12 +150,8 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
                 before_by_path[path] = None
 
         # ── ACTUAL TOOL EXECUTION ──
-        # The timeout guards the WRITE only. Post-write auto-validation is run
-        # separately below under its own budget: it happens after the file is
-        # already on disk, so a slow/hung validator must never be able to trip
-        # this timeout and mark a successful edit as failed.
-        # Stamped on the call's own task (the future copies the context when it is
-        # created), so an approval or question raised inside it names this call.
+        # The timeout guards the call only; post-write validation has its own budget below. The
+        # call id is stamped on the call's task, so a card raised inside it names this call.
         call_token = CURRENT_CALL_ID.set(call_id)
         try:
             result = await _await_tool(
@@ -186,12 +169,7 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
         ok, summary = summarize_tool_result(name, result, agent.tool_caps)
 
         # ── POST-TOOL ANNOTATIONS (ADVISORY, SEPARATELY BUDGETED) ──
-        # The built-in post-write ladder plus any registered post-tool hook. Its
-        # own timeout drops the annotation rather than failing the call; an error
-        # or timeout is deliberately swallowed here so it can never reach the
-        # broad exception handler below (which WOULD mark the tool row failed).
-        # CancelledError (query cancel) is not an Exception, so it still
-        # propagates.
+        # A timeout or error drops the annotation, never fails the call; cancellation propagates.
         if ok:
             try:
                 result += await asyncio.wait_for(
@@ -274,18 +252,9 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
                 # efficiently in-turn. Costs zero model calls either way.
                 result = await await_background_job(descriptor, agent, result)
         if isinstance(result, str):
-            # A result reporting runs that are still going: what a status op answers
-            # about work an earlier call started, and what a sub-agent out of time
-            # hands back. Re-arms whatever is no longer watched, which after an
-            # agent restart is all of it, and is a no-op the rest of the time.
-            #
-            # Neither an `elif` nor conditional on the call having succeeded. One
-            # payload may both launch a run and report others still going; and the
-            # payload that most needs its live runs adopted is the one that failed,
-            # because a child abandoned mid-flight reports where it got to through
-            # an error. Adopting a watch trusts no state either way — a descriptor
-            # must name a job and an op to poll it with (`_is_rewatchable`), and a
-            # run that is not there is retired as unknown a few ticks later.
+            # Runs a result reports as still going: re-armed if no longer watched (after a restart,
+            # all of them). Also for a failed call, which is how an abandoned child reports where it
+            # got to.
             result = maybe_rewatch_background_jobs(name, result, agent)
         return result
 
@@ -307,15 +276,8 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
         )
 
     except Exception as exc:
-        # Any other exception here — most often a dead server subprocess whose
-        # MCP session broke (session.call_tool raises), or a response that fails
-        # to decode — would otherwise bubble out of the entire query and surface
-        # as a single opaque error line, killing the turn. Convert it into a
-        # normal tool failure instead: the model gets actionable feedback, the UI
-        # shows a proper failed tool row, and the error payload is persisted in
-        # history like any other tool result (so it survives in the session log).
-        # CancelledError is a BaseException and is deliberately NOT caught here,
-        # so query cancellation still propagates.
+        # Any other exception (a dead server, an undecodable response) becomes an ordinary tool
+        # failure the model and the UI can see. Cancellation is not caught.
         detail = f"{type(exc).__name__}: {exc}".strip().rstrip(":").strip()
         hint = _dead_transport_hint(name, exc, agent) or (
             "The tool's server process may have crashed or become "

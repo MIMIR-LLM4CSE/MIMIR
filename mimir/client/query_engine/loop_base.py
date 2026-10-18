@@ -1,16 +1,8 @@
-"""What every step loop shares: the turn's state, and one model call per step.
+"""What every step loop shares: the turn's state and one model call per step.
 
-A query runs as a sequence of loops — the agent loop (agent and ask modes) and the
-plan loop — and the user can move it from one to the other mid-run. Each loop is a
-:class:`StepLoop`: the base owns everything a step does whatever the mode (picking up
-steering, re-reading the live settings, budgeting the context, calling the model with
-its prose held when the loop may still refuse it, handling an empty turn, dispatching
-the calls), and a subclass decides only what its mode does with the answer.
-
-A loop never calls another. When the mode changes it returns a :class:`ModeSwitch`,
-and the driver (``turn.run_loops``) starts the loop for the new mode on the same turn —
-so a run that goes back and forth does not grow the stack, and neither loop imports
-the other.
+A :class:`StepLoop` owns what a step does whatever the mode; a subclass decides what its
+mode does with the answer. A mode change returns a :class:`ModeSwitch` to the driver
+(``turn.run_loops``), so loops never call one another.
 """
 from __future__ import annotations
 
@@ -99,14 +91,9 @@ def _live_temperature(agent: AgentPort) -> float | None:
 
 
 def _live_mode(agent: AgentPort, active_mode: str, execution_context: ExecutionContext) -> str:
-    """The mode to run the *next* step in, re-read from the agent.
+    """The mode for the next step: *active_mode*, unless ``agent.mode`` changed since last seen.
 
-    What counts is a *change* to ``agent.mode``, not its value — a caller may run one
-    query in an explicit mode without touching the agent's own (sub-agents and the
-    runner do), and that must not read as the user switching. So the last observed
-    value is kept in the execution context, seeded at query start, and the change is
-    consumed here. Returns *active_mode* unchanged when nothing moved; a context
-    never seeded takes the agent's mode as it stands.
+    A context never seeded takes the agent's mode as its baseline.
     """
     val = agent.mode.strip().lower()
     if execution_context.observed_agent_mode is None:
@@ -123,15 +110,9 @@ def _live_mode(agent: AgentPort, active_mode: str, execution_context: ExecutionC
 async def rebuild_system_content(
     agent: AgentPort, active_mode: str, execution_context: ExecutionContext,
 ) -> str:
-    """The system message as it must be after ANY rebuild: prompt + skill block.
+    """The system message after any rebuild: the prompt plus the loaded skill's block.
 
-    The skill block is folded into messages[0] rather than appended as a second
-    ``system`` message (appending made it accumulate across queries — one session
-    carried nine copies). The cost of that choice is that every rebuild has to put it
-    back, and four sites rebuilt messages[0] with three different answers to that
-    question: a mode switch, a thinking-rung change, the plan→agent handoff and the
-    checklist refresh. The three that forgot dropped the skill silently, mid-run, on a
-    user action. One function, so the rule cannot be half-applied.
+    Every rebuild site goes through here, so none drops the skill.
     """
     content = await agent.build_system_content(active_mode=active_mode)
     return content + (execution_context.skill_suffix or "")
@@ -147,12 +128,7 @@ async def _sync_thinking_directive(
 ) -> tuple[bool, str]:
     """Rewrite the system message when the run enters or leaves the "auto" rung.
 
-    Everything else about the depth travels in the backend payload and is picked up
-    per step for free, but the "auto" rung also carries a calibration directive in
-    the system prompt — invisible to the model until messages[0] is rebuilt. Only a
-    change of rung pays for it (one prefix-cache miss, on an explicit user action);
-    steady state is a single comparison. Returns the new auto-ness and the system
-    content to keep budgeting against.
+    That rung's calibration directive lives in the prompt; returns ``(auto, system_content)``.
     """
     depth = getattr(agent, "thinking_depth", None)
     if depth is None:
@@ -172,14 +148,7 @@ async def _sync_thinking_directive(
 async def _apply_mode_switch(
     agent: AgentPort, messages: list[dict], *, new_mode: str, execution_context: ExecutionContext,
 ) -> str:
-    """Rebuild the mode-dependent system prompt after a mid-run mode change.
-
-    The mode decides whole sections of the prompt (the task checklist, the PLAN
-    directive, the ASK directive), so messages[0] has to be rewritten for the
-    model to act on the new mode at all. That costs the prefix cache for the rest
-    of the query — a deliberate, user-triggered break, so it is reported rather
-    than hidden, like the domain re-arm. Returns the new system content.
-    """
+    """Rebuild the mode-dependent system prompt after a mid-run mode change; return it."""
     emit({"type": "status", "text": f"  ↻ Switched to {new_mode} mode mid-run"})
     emit({"type": "mode", "mode": new_mode})
     system_content = await rebuild_system_content(agent, new_mode, execution_context)
@@ -199,23 +168,10 @@ def step_tools(agent: AgentPort) -> list[dict]:
 # ── Steering and diagnostics ────────────────────────────────────────────────────
 
 def drain_steer(agent: AgentPort, messages: list[dict]) -> None:
-    """Inject any user "steer" messages queued mid-run as user turns at a step boundary.
+    """Append the messages the user typed mid-run as user turns, at a step boundary.
 
-    Front-ends that support chatting-while-busy (the WebSocket server) give the agent
-    a ``poll_steer`` callback that returns and clears any messages the user typed
-    while the agent was working. Called at the top of each loop step — after the
-    previous step's tool results are already in ``messages`` and before the next model
-    call — so the steer reads as the next user turn and the model can adjust course
-    without discarding in-flight work.
-
-    Optional by design: callers that never set ``poll_steer`` (CLI, sub-agents, tests)
-    are unaffected. The injected messages persist in history. Adjacent user turns are
-    merged downstream by ``LLMBackend.chat``, so no folding is needed here.
-
-    Nothing may be appended after a steer before the call: it is a real user turn, and
-    the last position is what the model answers. Appending the checklist there merges a
-    mid-run instruction into one user turn ending in a status block, and the model
-    answers the block — the defect ``agent_loop._sync_checklist`` documents.
+    Through the optional ``poll_steer`` hook. Nothing may follow a steer before the call:
+    the last position is what the model answers.
     """
     poll = getattr(agent, "poll_steer", None)
     if not poll:
@@ -230,15 +186,7 @@ def drain_steer(agent: AgentPort, messages: list[dict]) -> None:
 
 def _note_empty_turn(msg: dict, messages: list[dict], execution_context: ExecutionContext,
                      step: int) -> None:
-    """Record the shape of the prompt that produced an empty turn.
-
-    An empty turn is the one failure the loop cannot explain from what it keeps: the
-    message itself is empty by definition, and the transient pin and reminders are
-    gone from history by the time anyone reads the session back. So the shape is
-    recorded at the moment it happens rather than reconstructed later — including the
-    reminder categories injected for THIS call, so "a reminder — or one category of
-    reminder — is what empties the turn" can be tested against a real run.
-    """
+    """Record the shape of the prompt that produced an empty turn, reminder categories included."""
     tail = " → ".join(str(m.get("role")) for m in messages[-6:])
     # Read after the fact: the reminders that were in this prompt have already been
     # taken back out by the time the turn is judged empty.
@@ -368,13 +316,9 @@ class StepLoop:
 
     async def call_model(self, tools: list[dict], *, may_refuse: bool
                          ) -> tuple[dict, DraftHold | None]:
-        """One model call. Returns the message and the hold its prose sits in, if any.
+        """One model call, within the budget; returns the message and the hold its prose sits in.
 
-        The context budget is enforced first, so the call can never overflow the
-        window. When the loop *may_refuse* a bare answer, its prose is held off the
-        screen (see DraftHold): rendering a turn a nudge then discards is what makes
-        an answer appear and vanish. A turn that acted has its prose released at once,
-        above its tool cards.
+        When the loop *may_refuse* a bare answer, its prose is held off the screen.
         """
         self.enforce_budget(tools)
         callbacks = self.turn.callbacks
@@ -408,13 +352,9 @@ class StepLoop:
         return msg, hold
 
     async def on_empty_turn(self, msg: dict, hold: DraftHold | None) -> str | None:
-        """A turn with neither prose nor a call: retry, or give up with an answer.
+        """A turn with neither prose nor a call: drop it, then retry differently or end the run.
 
-        A generation failure, not a conclusion — accepting it ends the run on an empty
-        answer. The empty message is dropped from history unconditionally, before any
-        decision, so the retry does not build on it and no path leaves it behind to
-        teach the model that an empty message answers a reminder. Each retry asks
-        differently; past the budget the run ends with :attr:`EMPTY_TURNS_ANSWER`.
+        Past the budget the run ends with :attr:`EMPTY_TURNS_ANSWER`.
         """
         self.empty_turns += 1
         if hold:

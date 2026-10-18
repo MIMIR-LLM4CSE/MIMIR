@@ -1,14 +1,7 @@
-"""Shared <think>...</think> tag state machine.
+"""The ``<think>…</think>`` state machine that routes streamed tokens to content or thinking.
 
-Both the Ollama and vLLM backends use this parser to route streaming tokens
-to either the content or the thinking output stream.
-
-Usage:
-    parser = ThinkTagParser()
-    # For each streaming chunk:
-    content_out, think_out = parser.feed(chunk, is_thinking_field=False)
-    # content_out and think_out are lists of str tokens to emit.
-    parser.finish()  # at the end of the stream
+``feed(chunk, is_thinking_field)`` returns ``(content_out, think_out)``; call ``finish()``
+at the end of the stream.
 """
 
 from __future__ import annotations
@@ -69,13 +62,7 @@ class ThinkTagParser:
         self._emit_thinking(text)
 
     def finish(self) -> None:
-        """End of the stream: release what is held back and close the thinking block.
-
-        A tag prefix held at the end of the buffer (``<``, ``</thi``) was waiting for
-        the rest of a tag that is never coming, so it is text after all. And a block
-        that was never closed by a tag (native reasoning fields have none) still ends,
-        exactly once.
-        """
+        """End of the stream: release a held partial tag as text, and close an open thinking block once."""
         if self._buf:
             held, self._buf = self._buf, ""
             if self._in_think:

@@ -63,15 +63,9 @@ class Endpoint:
 
 
 def probe_models(config: tuple[str, str]) -> tuple[list[dict], str]:
-    """Ask GET <base_url>/v1/models, returning (model objects, failure reason).
+    """``(model objects, failure reason)`` from GET <base_url>/v1/models; reason "" on success.
 
-    The reason is "" when the request succeeded — an endpoint that answers while
-    serving nothing yields ([], ""). Callers that only want the list use
-    ``_fetch_models``; the reason exists so a caller can tell "the endpoint is not
-    answering" apart from "the endpoint serves no model", which are the same empty
-    list but very different things to report to the user.
-
-    *config* is the (base_url, api_key) pair to ask (``Endpoint.config``).
+    Tells "not answering" from "serving nothing". *config* is ``(base_url, api_key)``.
     """
     import httpx
 
@@ -138,17 +132,10 @@ def served_model_len(model: str, config: tuple[str, str]) -> int | None:
 
 
 def _answer_max_tokens(mml: int, prompt_tokens: int) -> int:
-    """max_tokens to request given the served window and our prompt estimate.
+    """The ``max_tokens`` to request, from the served window and our prompt estimate.
 
-    Our estimate counts raw JSON; vLLM counts the rendered chat template + tool
-    schemas, which is larger by an amount that grows with prompt/schema size — a
-    fixed margin eventually loses (a 513-token undercount at ~17K prompt tokens). Scale
-    the margin with the estimate, and cap the request at the answer reserve
-    instead of claiming the whole remaining window: the loop's context budgeting
-    sizes prompts so the answer never legitimately needs more than the reserve.
-
-    May return <= 0 when the prompt estimate is near the window; the call site
-    clamps to >= 1 (vLLM rejects non-positive max_tokens outright).
+    The margin scales with the estimate (the rendered template is larger than raw JSON)
+    and the request is capped at the answer reserve. May be <= 0; the caller clamps.
     """
     margin = max(512, prompt_tokens // 8)
     remaining = mml - prompt_tokens - margin
@@ -189,22 +176,10 @@ def _drop_thinking_kwargs(create_kwargs: dict) -> bool:
 
 
 def _log_cache_usage(usage: Any) -> None:
-    """Log prefix-cache effectiveness from an OpenAI-compatible ``usage`` block.
+    """Log prefix-cache hits from ``usage.prompt_tokens_details.cached_tokens`` (best-effort).
 
-    vLLM reports how much of the prompt it served from its prefix cache in
-    ``usage.prompt_tokens_details.cached_tokens``. That number is the only direct
-    evidence the cache is working, and it matters here: the whole advertised tool list
-    is sent on every call, so it is the largest constant block in the prompt and the
-    thing prefix caching is expected to pay for.
-
-    What to read into it. A hit rate climbing toward 1.0 across the steps of one query
-    is the expected shape — each step re-sends everything before it. A rate that stays
-    near zero across repeated steps means something is invalidating the prefix on every
-    call: a system prompt that varies, a reordered tool list, or prefix caching simply
-    not enabled on the server (``--enable-prefix-caching``). The counterpart of
-    ``anthropic_backend._log_cache_usage``, which reads the same fact under other names.
-
-    Best-effort: telemetry never breaks a chat turn.
+    A rate near zero across steps means a varying prefix or prefix caching not enabled
+    (``--enable-prefix-caching``).
     """
     if usage is None or not logger.isEnabledFor(logging.INFO):
         return
@@ -231,15 +206,8 @@ _NO_STREAM_OPTIONS: set[str] = set()
 def _create(client, create_kwargs: dict):
     """POST the chat request, retrying once without a kwarg the server rejected.
 
-    Sending `enable_thinking` to every model is what makes reasoning work on a model
-    we have no profile for, and a template that doesn't know the kwarg ignores it.
-    A rare template errors instead — so absorb that one 400, remember the model, and
-    never pay it again. Structural kwargs (`continue_final_message`) are kept: they
-    are what makes the request valid in the first place.
-
-    `stream_options` gets the same treatment for the same reason: it is asked for only
-    to measure prefix-cache hits, so an OpenAI-compatible server that does not accept it
-    must cost a turn nothing. Any other failure propagates untouched.
+    ``enable_thinking`` and ``stream_options`` are dropped for a model that refuses them,
+    and remembered; structural kwargs are kept. Other failures propagate.
     """
     model = create_kwargs.get("model", "")
     if model in _NO_TEMPLATE_KWARGS:
@@ -264,13 +232,7 @@ def _create(client, create_kwargs: dict):
 
 
 def _effort_level(levels: list[str], budget: int | None) -> str:
-    """Pick a rung from *levels* (weakest first) for a thinking-depth budget.
-
-    The depth ladder is expressed in tokens and an effort ladder is not, so the map
-    is by position: the cheapest rung for a small budget, the dearest for a large one,
-    the middle for "model-chosen"/unlimited (-1), which is the only reading an effort
-    scale can give a budget it cannot express.
-    """
+    """The rung of *levels* (weakest first) for a thinking budget, by position; unlimited takes the middle."""
     if not levels:
         return ""
     if budget is None or budget < 0:
@@ -324,31 +286,17 @@ def _thinking_extra_body(model: str, thinking: bool, options: dict) -> dict:
 
 
 def _thinking_directives(model: str) -> dict:
-    """Return *model*'s ``thinking_directive`` mapping (``{"on": ..., "off": ...}``).
-
-    Most thinking-capable templates take an ``enable_thinking`` kwarg (the default
-    ``"kwarg"`` mechanism). A few take nothing at all and are steered purely by a
-    literal string in the system message; those declare ``"thinking": "directive"``
-    plus the pair of strings, so the kwarg they would ignore is not sent instead.
-    Empty when the model uses another mechanism, in which case no message is touched.
-    """
+    """*model*'s ``thinking_directive`` mapping (``{"on", "off"}``), empty unless it uses the directive mechanism."""
     return thinking_profile(model)["directive"]
 
 
 def _apply_thinking_directive(
     messages: list[dict], directives: dict, thinking: bool
 ) -> list[dict]:
-    """Put the on/off directive at the head of the system message.
+    """Put the on/off directive first in the system message, replacing any earlier one.
 
-    For the ``directive`` mechanism: a chat template that takes no thinking kwarg and
-    reads a trained-on line from the system message instead. Such templates typically
-    apply their own default only when there is *no* system message at all — and MIMIR
-    always sends one — so the line has to go inside the message we send, first, which
-    is the position it was trained on.
-
-    Both strings come from the model's profile; this function names no model and has
-    no default. Any directive left from an earlier turn is stripped first, so toggling
-    thinking across a conversation cannot stack contradictory lines.
+    For templates steered by a trained-on line rather than a kwarg; both strings come from
+    the model's profile.
     """
     wanted = str(directives.get("on" if thinking else "off") or "")
     if not wanted:
@@ -370,14 +318,7 @@ def _apply_thinking_directive(
 
 
 def _normalize_tool_calls(raw_tool_calls: list) -> list[dict]:
-    """Convert OpenAI tool_call objects to Ollama-style dicts.
-
-    The OpenAI tool-call ``id`` is **preserved** when present: the dispatcher keys the
-    tool-result message by this id, and on replay `_prepare_messages_for_openai` echoes
-    it back. Without it the dispatcher and the replay normalizer would invent two
-    *different* positional ids, the assistant `tool_calls` and the `tool` message would
-    not pair up, and vLLM would reject the history.
-    """
+    """OpenAI tool_call objects as internal dicts, keeping the provider's ``id`` so replies pair up."""
     result = []
     for tc in raw_tool_calls:
         # tc may be an object (openai SDK) or a dict (if already normalized)
@@ -399,13 +340,7 @@ def _normalize_tool_calls(raw_tool_calls: list) -> list[dict]:
 
 
 def _extract_reasoning(obj: Any) -> str | None:
-    """Return the reasoning/thinking text from a streaming delta or message object.
-
-    vLLM exposes the reasoning parser's output under different field names across
-    versions: older builds use ``reasoning_content`` while 0.22+ (matching the newer
-    OpenAI schema) uses ``reasoning``. We check both so the thinking block renders
-    regardless of the server version. Returns the first non-empty value, else None.
-    """
+    """The reasoning text of a delta or message (``reasoning`` or ``reasoning_content``), or None."""
     for attr in ("reasoning_content", "reasoning"):
         val = getattr(obj, attr, None)
         if val:
@@ -414,14 +349,7 @@ def _extract_reasoning(obj: Any) -> str | None:
 
 
 def _prepare_messages_for_openai(messages: list[dict]) -> list[dict]:
-    """Convert internal/Ollama-style history to strict OpenAI chat schema.
-
-    vLLM validates chat history strictly: assistant tool calls need
-    id/type/function.arguments(string), tool messages must carry a tool_call_id that
-    matches a call in the immediately preceding assistant message, and every assistant
-    tool call must be answered. This does the per-message shape normalization, then
-    `reconcile_tool_pairs` repairs any pairing broken by upstream trimming/compaction.
-    """
+    """Internal history in the strict OpenAI chat schema, pairing repaired (``reconcile_tool_pairs``)."""
     prepared: list[dict] = []
 
     for msg in messages:
@@ -545,46 +473,19 @@ class OpenAICompatBackend(LLMBackend):
             return client
 
     def _fetch_context_window(self, model: str) -> int | None:
-        """vLLM context window = the server's reported max_model_len.
+        """The served window: the endpoint's published ``max_model_len``, else its ``window_env``.
 
-        Detection comes first and wins whenever it answers: what the deployment
-        publishes is true of *this* endpoint, today, and needs no maintenance — it
-        is the generic answer, and it keeps working when the endpoint is upgraded,
-        replaced or pointed elsewhere.
-
-        The endpoint's ``window_env`` is the fallback for the case detection cannot
-        cover: an endpoint that publishes nothing, typically an OpenAI-compatible
-        router in front of vLLM that does not republish max_model_len. Without it
-        every budget here — the context bar, the eviction, the compaction, the
-        answer allocation — sizes itself to a static assumption instead of to the
-        model. It is deliberately not an override: a value left behind from one
-        endpoint must not silently displace the next one's published window.
+        The fallback is for routers that publish none; it never overrides a published value.
         """
         return served_model_len(model, self._config()) or env_positive_int(
             self.endpoint.window_env)
 
     def _tokenize_text(self, model: str, text: str) -> int:
-        """Exact token count via vLLM's /tokenize endpoint.
+        """Exact token count through ``/tokenize`` at the API root.
 
-        /tokenize is served at the API root (sibling of /v1), so we strip the
-        /v1 suffix that _config appends for the chat client. Any failure
-        propagates to LLMBackend.count_text_tokens, which falls back to the
-        chars-per-token heuristic — so a missing endpoint or network blip never
-        breaks a budget check.
-
-        That fallback is not cached, and the history is recounted several times per
-        turn, so an endpoint that never serves /tokenize (an OpenAI-compatible router
-        in front of vLLM answered 500 "no valid backends") paid one round-trip per
-        message per pass: tens of seconds a turn, growing with the conversation. A
-        definitive HTTP refusal is therefore remembered per root and later calls raise
-        off the network. Timeouts, dropped connections and the "busy, retry" statuses
-        stay retried: a local vLLM still loading its weights must regain exact counts.
-
-        That retry is also what a router that times out instead of refusing costs:
-        up to five seconds per count, and every new process — each sub-agent — pays
-        the first refusal again. ``MIMIR_VLLM_TOKENIZE=0`` takes the endpoint out of
-        the picture for good; the heuristic it falls back to is calibrated against
-        the server's own prompt_tokens, so it stays close without it.
+        A failure falls back to the heuristic in ``count_text_tokens``. A definitive refusal is
+        remembered per root so later counts skip the network; timeouts are retried.
+        ``MIMIR_VLLM_TOKENIZE=0`` turns the endpoint off.
         """
         import httpx
 
@@ -680,13 +581,8 @@ class OpenAICompatBackend(LLMBackend):
         # 400s anyway, so raise a clear error instead. Last-resort net; the agent loop's
         # context budgeting should prevent reaching here.
         max_tokens = options.get("max_tokens") or options.get("num_predict")
-        # The window every other budget here is sized against, not the raw /v1/models
-        # reading: `context_window` consults detection first and the configured window
-        # second, so an endpoint that publishes no max_model_len is still measured by
-        # what the user declared. Reading the publication alone made a declared window
-        # invisible at the one place that bounds generation — the context bar, the
-        # eviction and the compaction all sized themselves to 512K while the answer
-        # fell through to the unknown-window reserve.
+        # The window the other budgets use (detection, then the configured window), not the raw
+        # /v1/models reading.
         mml = self.context_window(model)
         if mml:
             prompt_text = json.dumps(prepared_messages)
@@ -707,14 +603,8 @@ class OpenAICompatBackend(LLMBackend):
             sized = _answer_max_tokens(mml, prompt_tokens)
             max_tokens = sized if max_tokens is None else min(int(max_tokens), sized)
         elif max_tokens is None:
-            # No served window to size the answer against, and none requested: vLLM
-            # then defaults max_tokens to (max_model_len - prompt_tokens), which on a
-            # large window is an all-but-unbounded generation. Observed against an
-            # OpenAI-compatible router that reports no max_model_len and serves a
-            # >600K window: a report-writing step ran until the router gave up and
-            # answered 500, three identical retries deep, ~90s each. Fall back to the
-            # same answer reserve the budget assumes when the window is unknown, so an
-            # unmeasurable endpoint bounds the answer instead of not bounding it.
+            # No window known and none requested: vLLM would default max_tokens to the rest of a
+            # possibly huge window. Bound the answer by the unknown-window reserve instead.
             max_tokens = _unknown_window_answer_tokens()
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max(1, int(max_tokens))

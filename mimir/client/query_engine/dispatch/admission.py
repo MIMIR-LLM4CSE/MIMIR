@@ -136,13 +136,9 @@ def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContex
 
 
 # ── Guards for a run something else is already watching ───────────────────────
-#
-# Both read one deterministic fact — the set of watchers currently alive — through the
-# optional ``agent.watched_background_jobs`` hook (the WS worker sets it; the CLI does
-# not, and then both guards abstain). They live in the dispatch rather than in a policy
-# gate on purpose: the dispatch is the *model's* path, while the watcher's own probes
-# and the CLI's in-turn await call ``agent.run_tool`` directly. A gate would see both
-# and, refusing the watcher's probe, would break the very mechanism these protect.
+# Both read the live watchers through the optional ``agent.watched_background_jobs``
+# hook. In the dispatch, the model's path, not in a policy gate: the watcher's own probes
+# call ``agent.run_tool`` directly and must not be refused.
 
 
 def _watched_jobs(agent: AgentPort) -> list[dict]:
@@ -161,21 +157,10 @@ def _watched_jobs(agent: AgentPort) -> list[dict]:
 def _asks_whether_a_watched_run_is_done(
     agent: AgentPort, name: str, args: dict,
 ) -> str | None:
-    """The job_key this call is asking the state of, when a watcher already answers it.
+    """The job_key this call asks the state of, when a watcher already answers it; else None.
 
-    Shape-driven: the comparison is against the descriptor's own ``status_op`` and
-    ``summary_op``, which is registry data the server put there — no tool name is
-    spelled out here, for the same reason the watcher can poll generically.
-
-    The summary op is checked first and always allowed. Reading a run's output while it
-    goes is progress ("which target is this build on"), which the watcher does not
-    report until the end; the state op is the question "is it finished yet", which the
-    wake answers on its own. Only the second one is refused.
-
-    Matching is containment, not equality: the descriptor's args are the ones that
-    identify the job, and a caller that adds an explicit default (an ``op="status"``
-    the descriptor left implicit) is asking the same question. Equality would have let
-    exactly that spelling through.
+    Compared with the descriptor's ``status_op`` by containment; its ``summary_op`` (a
+    progress read) is always allowed.
     """
     for descriptor in _watched_jobs(agent):
         if _op_matches(descriptor.get("summary_op"), name, args):
@@ -198,11 +183,7 @@ def _op_matches(op: Any, name: str, args: dict) -> bool:
 def reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) -> str | None:
     """The job_key whose output this call reads while a watcher holds it, else None.
 
-    The progress read stays allowed (see above), but it is the one door a poll loop
-    can still take: one session read a watched build's output 22 times in 40 seconds,
-    its reasoning concluding each time "explain and keep waiting" while the turn
-    copied the previous call. The launch note that says to end the turn was a query
-    behind by then. The read itself now carries that fact, at the moment of deciding.
+    Allowed, but the result reminds the model to end its turn rather than poll.
     """
     for descriptor in _watched_jobs(agent):
         if _op_matches(descriptor.get("summary_op"), name, args):
@@ -222,18 +203,7 @@ def watched_progress_note(job_key: str) -> str:
 
 
 def _waits_by_blocking_the_turn(agent: AgentPort, name: str, args: dict) -> bool:
-    """True when this call's command opens by doing nothing but passing time.
-
-    Registry-driven on both halves: the tool that carries a raw command line is the one
-    declaring a shell scope (``capabilities.shell_command_args``), and the program of the
-    leading segment comes from the shared segmenter, which skips ``VAR=val`` assignments
-    and wrappers of its own. ``sleep`` is named as a POSIX program, the way this
-    codebase already names interpreters and wrappers — never as a tool.
-
-    Only the *leading* segment counts. ``./run.sh --sleep 60`` runs a script, and
-    ``make; sleep 1`` has already done the work; neither is a turn spent waiting.
-    Fail-open on a command the shared parser refuses, as every other shell guard does.
-    """
+    """True when this call's command opens with ``sleep`` (leading segment only; fail-open)."""
     command_args = shell_command_args(name, agent.tool_caps)
     if command_args is None:
         return False

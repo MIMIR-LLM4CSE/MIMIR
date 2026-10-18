@@ -1,11 +1,6 @@
-"""End-of-query bookkeeping: annotate the answer, finalize.
+"""End-of-query bookkeeping: ``finalize_answer`` is the exit funnel of both loops.
 
-``finalize_answer`` is the single exit funnel for both loops (annotate written
-files → save carry context → return).
-
-Nothing is written to persistent memory here: what is worth remembering is the
-model's call, made during the run (see ``_SECTION_MEMORY``). A note stored on its
-behalf at every exit doubled what it had already written.
+Nothing goes to persistent memory here: that is the model's call (``_SECTION_MEMORY``).
 """
 from __future__ import annotations
 
@@ -19,16 +14,7 @@ from ..core.ports import AgentPort
 
 
 def _annotate_answer_with_changes(answer: str, execution_context: ExecutionContext) -> str:
-    """Append the machine-recorded verification ledger to the answer text.
-
-    Saved into conversation history so the next query — and the user — sees what was
-    actually established, independent of whatever prose the model chose to close with.
-    That independence is the point: a run could otherwise assert "verified" directly
-    above files that had only ever been executed, never checked against anything.
-
-    See :mod:`.verification` for the ledger's shape and its marker contract with the
-    front-ends. A run with nothing to record leaves the answer untouched.
-    """
+    """Append the verification ledger to the answer (see :mod:`.verification`), if there is one."""
     ledger = build_ledger(execution_context)
     if ledger is None:
         return answer
@@ -43,13 +29,7 @@ async def finalize_answer(
     messages: list[dict],
     logger: Any,
 ) -> str:
-    """Common end-of-query bookkeeping shared by every exit path.
-
-    Annotates the answer with the file-change record, saves the carry context for the
-    next query, and stashes the full message list (minus the system prompt) for
-    full-context history. Returns the annotated answer. ``query`` and ``logger`` are
-    kept so every exit path calls it the same way.
-    """
+    """Annotate the answer, save the carry context, record the turn; return the answer."""
     record_exercise_obstacle(agent, execution_context)
     answer = _annotate_answer_with_changes(answer, execution_context)
     agent.carry.update(execution_context)
@@ -60,13 +40,8 @@ async def finalize_answer(
 def record_turn(agent: AgentPort, messages: list[dict], *, repair: bool = True) -> None:
     """Stash this turn's transcript (minus the system prompt) for full-context history.
 
-    Called on every exit, not only on a finished answer. The front-end reads it back
-    once the turn is over, whatever the outcome, and replaces its history with it: a
-    cancelled or failed turn keeps its own work rather than leaving the previous turn's
-    transcript in place.
-
-    *repair* is off when a turn claims the slot on entry: a resumed turn has just taken
-    out the results it is about to produce, and a repair would stub them in first.
+    On every exit, so a cancelled or failed turn keeps its own work. *repair* is off for a
+    resumed turn that has just taken out the results it will produce.
     """
     if repair:
         messages[:] = reconcile_tool_pairs(messages)
@@ -91,21 +66,10 @@ def _drop_earlier_reasoning(messages: list[dict], turn_start: int | None) -> Non
 
 
 def _turn_start_index(agent: AgentPort, messages: list[dict]) -> int | None:
-    """Where this turn's own messages begin in ``turn.last_full_messages``, or None.
+    """Where this turn's messages begin in ``messages[1:]`` (one past the opening), or None.
 
-    Resolved by identity against the message the loop recorded as this turn's opening
-    (see ``AgentLoop.run``), because that is the only thing about the list that the
-    in-turn budget rewrites cannot invalidate: they evict, summarize and truncate
-    messages, but the object a surviving entry *is* does not change.
-
-    Returned as an index into ``messages[1:]`` — the system message is not exposed —
-    and pointing one past the opening message, since a caller that appended the query
-    to its own record before submitting has already stored everything up to it.
-
-    ``None`` says the opening message is gone: a long turn can have its own start
-    summarized away by the compaction pass, and there is then no honest boundary to
-    give. A caller must fall back rather than guess, which is the whole point of
-    saying so instead of returning a number that looks usable.
+    Found by identity of the opening message, which survives eviction and compaction;
+    None when the compaction summarized it away, and the caller must fall back.
     """
     opening = agent.turn.opening_message
     if opening is None:

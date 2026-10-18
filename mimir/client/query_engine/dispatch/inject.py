@@ -23,18 +23,10 @@ async def post_dispatch_inject(
     *,
     active_mode: str = "agent",
 ) -> None:
-    """After every tool dispatch step, inject post-dispatch reminders.
+    """After a dispatch step, inject the mid-loop reminders the nudge table cannot reach.
 
-    Five independent reminders: (1) mark a completed todo step done after a successful
-    edit, (2) a one-time corrective when a non-write call keeps failing identically
-    (staged as ``_repeat_alert`` during dispatch), (3) a one-time corrective when a test
-    file's failing set keeps changing between runs (staged as ``_moving_test_alert`` by
-    the observation layer), (4) a one-time stop when refusals have run the denial ladder
-    to its end, and (5) the environment-resolution cascade when a call just failed on a
-    missing module. This is the mid-tool-loop channel the regular nudges can't reach,
-    since they only fire when the model stops calling tools — and a model that has been
-    told to hand back, that is retrying against the wrong interpreter, or that is
-    chasing a moving test, is by definition still calling tools.
+    A completed todo step, a repeated identical failure, a moving test, the end of the
+    denial ladder, a missing module: the model is still calling tools when they apply.
     """
     # remind agent to mark completed step done in todo list
     success_path = execution_context.last_edit_success_path

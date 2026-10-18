@@ -1,13 +1,7 @@
-"""The verification ledger: what a run actually established, machine-recorded.
+"""The verification ledger: what a run established, machine-recorded and appended to the answer.
 
-Built from the execution context on every exit path and appended to the answer, so
-history — and the model's next turn — carries the evidence independently of whatever
-prose the model chose. The block opens with a marker line carrying its status and a
-one-line summary: front-ends split on it (:func:`split_answer_ledger`) and render a
-collapsed panel instead of trailing prose, and nothing is lost if they don't.
-
-Report-only, emitted after the model has stopped acting: it cannot loop, cannot be
-argued with, and blocks nothing.
+It opens with a marker line (status, summary) that front-ends fold
+(:func:`split_answer_ledger`). Report-only: built after the model stopped acting.
 """
 from __future__ import annotations
 
@@ -121,21 +115,10 @@ def _plural(n: int, word: str) -> str:
 
 
 def build_ledger(execution_context: ExecutionContext) -> dict | None:
-    """The ledger for this run, or None when nothing happened worth recording.
+    """``{"status", "files", "summary", "rows"}`` for this run, or None if nothing happened.
 
-    Returns ``{"status": ok|note|warn, "files": int, "summary": str, "rows": [markdown]}``.
-    ``status`` separates a clean run from soft caveats and from hard gaps (unvalidated
-    files, unjudged runs, open checklist steps) — it is what a front-end colours the
-    panel by.
-
-    Every row reports what a check, a run or a file on disk established. A file the plan
-    named and never wrote has no row: at completion a revised plan and a skipped step
-    look the same. What the model owes at the end is what it changed and never checked.
-
-    Two kinds of row, kept apart on purpose. A **file** row says what a checker
-    established: it parses, it lints, nothing more. A **run** row says what happened when
-    the code was executed and what the model read in the output. Merging them is what let
-    "validated" be reported as "correct".
+    ``status`` is ok, note or warn. File rows say what a checker established; run rows what
+    an execution showed and what the model read.
     """
     written = sorted(execution_context.dirty_written_files)
     validated = execution_context.validated_files

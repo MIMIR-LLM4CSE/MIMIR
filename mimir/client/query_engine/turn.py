@@ -91,15 +91,10 @@ async def run_agent_query(
     think_end_callback: Any = None,
     resume: dict | None = None,
 ) -> str:
-    """Run one user query through plan/agent modes with policy guardrails.
+    """Run one user query through the mode loops; return the final answer.
 
-    *resume* picks up a turn that was set aside while waiting on the user (see
-    ``deferral``): no new user message, the deferred calls run first with the answer
-    the front-end already holds, and the loop carries on from there.
-
-    Builds the per-query execution context and system prompt, then dispatches to the
-    plan-mode or agent-mode loop. The two loops (and every exit path) share
-    ``finalize_answer`` for end-of-query bookkeeping.
+    *resume* picks up a deferred turn (see ``deferral``): no new user message, the deferred
+    calls first.
     """
     agent.turn.tool_cache = {}
     execution_context = agent.new_execution_context()
@@ -119,13 +114,8 @@ async def run_agent_query(
     # Store the active todo file path so _sync_checklist can watch it for changes.
     execution_context.todo_file_path = agent.todo_file()
 
-    # The caller may or may not have already appended the current user turn to
-    # ``history``: the WS server does (it owns the chat history and appends the
-    # message before dispatching), the CLI does not. Only add the query ourselves
-    # when history doesn't already end with this exact user message — otherwise the
-    # prompt carries two consecutive identical ``user`` turns. Tolerant templates
-    # ignore that, but a strict tokenizer treats the illegal role sequence as garbage
-    # and degenerates into token salad.
+    # Append the query unless history already ends with it (the WS server appends it, the CLI
+    # does not): two identical user turns break strict tokenizers.
     hist = list(history or [])
     messages: list[dict] = [
         {
@@ -147,16 +137,9 @@ async def run_agent_query(
     # is covered too, and no backend ever has to cope with a dangling pair.
     messages[:] = reconcile_tool_pairs(messages)
 
-    # The message this turn opens on — the caller's own last archived message, or the
-    # query just appended above. Handed over as the *object*, never as an index:
-    # ``enforce_context_budget`` rewrites this list in place while the turn runs
-    # (evicting old tool results, replacing the middle with a summary, then repairing
-    # the assistant↔tool pairing those break), so a position computed before the turn
-    # stops meaning what it meant. ``finalize_answer`` resolves it back to an index at
-    # the one moment both are true together. A caller that slices on its own arithmetic
-    # instead re-archives or drops whatever the rewrite shifted — and, because the
-    # repair leaves no orphan behind, cuts straight through an assistant↔tool pair.
-    # Taken before the opening is fixed: the placeholders are not part of the record.
+    # The opening message of this turn, handed over as the object, never as an index: the
+    # budget rewrites this list in place, and ``finalize_answer`` resolves it at the end.
+    # Taken before the placeholders of a resume are fixed.
     resume_calls = (
         take_deferred_calls(messages, list(resume.get("call_ids") or []))
         if resume is not None and resume.get("kind") == KIND_CALLS else []
@@ -173,13 +156,8 @@ async def run_agent_query(
     # -------------------------------------------------------
     # Skill invoked by the user: /skill-name
     # -------------------------------------------------------
-    # The only skill this function resolves. A skill the MODEL decides it needs is
-    # loaded mid-run through the ``load_skill`` tool, whose result stays in the tail
-    # and is pinned there — the index of what is loadable is in the system prompt, so
-    # the choice is made by whoever has read the code, at the step where that becomes
-    # clear. An explicit slash command is different in kind: the user has already
-    # decided, before the first step, so it is folded into messages[0] where it costs
-    # the prefix nothing and binds every step of the query.
+    # The user decided before the first step, so it is folded into messages[0]; a skill the
+    # model needs is pulled mid-run with ``load_skill`` instead.
     skill_name = None
     if query.strip().startswith("/"):
         candidate = query.strip()[1:].split()[0]
@@ -189,14 +167,8 @@ async def run_agent_query(
     if skill_name:
         skill = agent.skills[skill_name]
         _base_system_content = system_content
-        # Folded into messages[0] rather than appended as a second `system` message.
-        # Appending made it accumulate: it is written back into session history, so the
-        # next query appended another copy — one session reached nine, ~4.3k tokens of
-        # the same text. It also meant the same history had two different meanings
-        # depending on the backend, since the Anthropic path hoists every `system`
-        # message into the top-level prompt while the vLLM path leaves it inline.
-        # messages[0] is already rewritten in place on a mode switch and on thinking
-        # sync, so the prefix-cache break this costs is one the query already takes.
+        # Folded into messages[0], never a second ``system`` message (which accumulated in history
+        # and meant different things per backend).
         system_content = (
             system_content
             + "\n\nSKILL CONTEXT (SUBORDINATE). "
@@ -241,16 +213,8 @@ async def run_agent_query(
             resume_decision=(resume is not None and resume.get("kind") == KIND_PLAN_DECISION),
         )
     except Exception:
-        # A query that dies mid-flight leaves the workspace wherever it stood, and
-        # the one thing nobody could reconstruct afterwards is *where* that was.
-        # Observed at the end of session ``7d322a3b``: the provider error was
-        # rendered as the whole answer, while a source file edited ninety seconds
-        # earlier had never been measured and an optimisation session sat open on
-        # a baseline nobody would remember. Same ledger the normal exit funnel
-        # renders — this path simply never reached it.
-        #
-        # Emitted, never swallowed: the exception is the outcome and it keeps
-        # propagating. This only means the outcome arrives with its state.
+        # A query that dies mid-flight still emits the ledger of where it left the workspace;
+        # the exception keeps propagating.
         _emit_interrupted_state(execution_context)
         raise
     finally:

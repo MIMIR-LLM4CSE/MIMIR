@@ -1,15 +1,7 @@
-"""Polling a detached run to a terminal state; the one loop every watcher uses.
+"""Polling a detached run to a terminal state: the one loop every watcher uses.
 
-Its callers are the WebSocket worker's watcher, the in-turn wait in :mod:`.background`
-and a sub-agent's own watcher. Each picks its own schedule; what they share is what a
-poll means:
-
-* four words end a run (:data:`TERMINAL`), every other answer is "still going";
-* a status answer is read with ``parse_tool_payload``, never a bare ``json.loads``;
-* what a tick learned is handed to the caller, which decides whether to say it;
-* a status op that stays unreadable is given up as lost rather than polled for ever.
-
-Nothing here names a tool: the op to call travels in the descriptor.
+Four words end a run (:data:`TERMINAL`); answers are read with ``parse_tool_payload``;
+a status op that stays unreadable ends as lost. The op travels in the descriptor.
 """
 from __future__ import annotations
 
@@ -37,21 +29,9 @@ TERMINAL = frozenset({"done", "crashed", "unknown"})
 UNREADABLE_POLL_LIMIT = 5
 
 
-# How long one status probe may take before it is given up on.
-#
-# There is no deadline anywhere beneath this: ``session.call_tool`` takes none, and the
-# MCP sessions are built without a read timeout, so a status op that stops answering —
-# a wedged server, a scheduler that hangs, a queue command that never returns — blocks
-# the watcher for ever. That is the one failure that genuinely loses a run: the task
-# stays in ``_bg_jobs``, so the agent is never released and never woken, the bulletins
-# keep repeating a status frozen at the moment it stopped, and nothing anywhere says
-# the run is no longer being watched. A watcher that dies at least says so.
-#
-# Generous on purpose: a status op is a cheap read, and this is the line between "slow"
-# and "never", not a budget to work inside. A tick that crosses it is counted as
-# unreadable, which is a case this loop already has — ``UNREADABLE_POLL_LIMIT`` of
-# them in a row and the run is reported as unknown, with the reason — so a stuck status
-# op ends as an honest "I lost track of it" instead of silence.
+# How long one status probe may take. Nothing beneath has a deadline, so without this a
+# wedged status op blocks the watcher for ever; a tick past it counts as unreadable, and
+# ``UNREADABLE_POLL_LIMIT`` of those report the run as unknown.
 STATUS_CALL_TIMEOUT = 60.0
 
 # What a poll keeps out of a status answer, for whoever reports the run to somebody: a
@@ -101,15 +81,7 @@ def kept_fields(payload: dict | None) -> dict:
 
 @dataclass(frozen=True)
 class Tick:
-    """What one poll learned, for a caller to do something with.
-
-    ``answered`` separates "the op said nothing useful" from "the op said nothing at
-    all": a raise or a timeout is not an answer, and a caller that reports progress to
-    somebody usually wants to stay quiet about a tick it never got.
-
-    ``fields`` is whatever of :data:`STATUS_FIELDS` this answer carried, so a caller that
-    has to say where a run is does not re-read the payload to find out.
-    """
+    """What one poll learned: whether the op answered, and the :data:`STATUS_FIELDS` it carried."""
 
     state: str
     phase: str
@@ -132,35 +104,11 @@ async def poll_until_terminal(
     label: str = "",
     cancel_flag: Any = None,
 ) -> tuple[str, str]:
-    """Poll *status_op* until the run it names reaches a terminal state.
+    """Poll *status_op* until its run is terminal; ``(state, reason)``, *reason* for "unknown".
 
-    Returns ``(state, reason)``; *reason* is a single line on why there is no state, and
-    is meaningful only for ``"unknown"`` — a run that finished has nothing to explain.
-
-    The probes are made with observations off by every caller, because a watcher tick is
-    the client asking a question on its own account, not a step the model took; recording
-    one as a step would credit the agent with work it did not do.
-
-    Args:
-        run_tool: The agent's tool runner, called ``(tool, args, record_observations=False)``.
-        status_op: ``{"tool": ..., "args": {...}}`` off the descriptor. A missing tool
-            name returns at once — there is nothing to poll, and a caller must not be
-            left holding a promise it cannot keep.
-        interval, max_interval: The first wait and the ceiling; each wait is 1.5× the
-            last. The first poll happens after *interval*, never immediately: the run was
-            launched moments ago and has nothing to say yet.
-        call_timeout: Deadline on each probe. ``None`` waits as long as the tool takes,
-            which is right only where the caller is itself inside a turn.
-        unreadable_limit: How many consecutive unusable answers end the run as
-            ``"unknown"``. ``None`` keeps polling, for a caller whose run cannot outlive
-            it anyway.
-        max_polls: A safety bound for a caller nothing will ever cancel. ``None`` for a
-            task somebody can cancel.
-        on_tick: Called with a :class:`Tick` per non-terminal poll.
-        label: Names the run in this module's logs.
-        cancel_flag: A ``threading.Event`` the user's Stop sets. Checked after every
-            wait, so a caller polling inside a turn stops with the turn instead of
-            outliving it; raises ``asyncio.CancelledError``.
+    Waits *interval* first, then 1.5× up to *max_interval*. *call_timeout*,
+    *unreadable_limit* and *max_polls* bound it; *on_tick* sees each :class:`Tick`;
+    *cancel_flag* (the user's Stop) raises ``CancelledError``.
     """
     status_tool = (status_op or {}).get("tool")
     if not status_tool:
@@ -232,18 +180,7 @@ async def read_summary(
     call_timeout: float | None = None,
     label: str = "",
 ) -> dict:
-    """What the run recorded, for the wake that announces it. ``{}`` when there is none.
-
-    Under the same deadline as a status probe, and here it matters more: the run is
-    already over, so a summary op that never answers holds back the wake itself. Better
-    a wake with nothing in it than no wake — which is why every failure here is a ``{}``
-    and not a raise.
-
-    Shared by the watchers, which want the payload as a mapping to put on an event. The
-    in-turn wait keeps its own read: it folds the summary into a tool result as the text
-    it arrived as, and parsing it to a dict only to render it back would lose whatever
-    the server wrote around it.
-    """
+    """What the run recorded, as a mapping for the wake; ``{}`` on any failure."""
     tool = (summary_op or {}).get("tool")
     if not tool:
         return {}

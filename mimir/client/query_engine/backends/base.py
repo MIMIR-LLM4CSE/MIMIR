@@ -84,18 +84,11 @@ def env_positive_int(name: str) -> int | None:
 
 
 class ChatTurn:
-    """What one model call has produced so far, whichever backend is making it.
+    """What one model call has produced so far, whichever backend makes it.
 
-    A backend reads its provider's response and hands each piece here — prose,
-    reasoning, a tool call, the stop reason, the reported prompt size — and the turn
-    routes it: prose and reasoning through the shared ``<think>`` parser to the
-    front-end's callbacks, the rest into the message :meth:`result` assembles. One
-    place, so a call cut off, cancelled or answered without streaming reads the same
-    whichever backend made it.
-
-    Without streaming, reasoning never reaches the callbacks: the whole block is
-    emitted once by ``streaming.process_response``, and firing the callbacks too
-    showed it twice. Prose still does — it is the answer, once.
+    Prose and reasoning go through the ``<think>`` parser to the callbacks; the rest into
+    :meth:`result`. Without streaming, reasoning skips the callbacks
+    (``streaming.process_response`` emits it once).
     """
 
     def __init__(
@@ -198,19 +191,8 @@ class LLMBackend(ABC):
     ) -> None:
         """Measure the history's chars-per-token against what the server charged.
 
-        Without a tokenizer every count is the chars-per-token heuristic, and history
-        is where a fixed 4 goes wrong: on a DeepSeek session it counted 106,902 for
-        118,880 charged, and the ratio drifts from 3.3 to 4.2 from one stretch of a
-        conversation to the next. The overhead absorbed that error, so the bar showed
-        ~48k of system prompt and tools where the server charged 36k. A /tokenize
-        round-trip would fix it, but an OpenAI-compatible router need not serve one.
-
-        The fixed part is where the heuristic holds: a tools schema is JSON of steady
-        density (35,024 estimated, 34,888 charged), so system prompt and tools are
-        estimated at the default ratio and the rest of the reported size is the
-        history. Its ratio is then the whole history's average, not one stretch's.
-        Pairing two calls to measure the difference between them was tried and
-        dropped: it measures only the last stretch, off by a fifth on real sessions.
+        System prompt and tools are estimated at the default ratio (JSON holds it well); the
+        rest of the reported size is the history, whose average ratio this records.
         """
         default = float(CHARS_PER_TOKEN)
         fixed_chars = len(message_wire_form(system)) if system else 0
@@ -226,42 +208,18 @@ class LLMBackend(ABC):
             token_calibration.remember_chars_per_token(model, ratio)
 
     def calibrated_chars_per_token(self, model: str) -> float | None:
-        """The history's measured chars-per-token for *model*, or None before any.
-
-        This process's own measurement. A ratio measured in an earlier run is kept in
-        the calibration cache and used by :meth:`_heuristic_tokens`, but it is not
-        reported here: the two answer different questions, and whether *this* backend
-        has calibrated itself yet is the one this method is asked.
-        """
+        """This process's measured chars-per-token for *model*, or None before any measurement."""
         return self._calibrated_cpt.get(model)
 
     def note_prompt_usage(
         self, model: str, messages: list[dict], prompt_tokens: int,
         tools: list[dict] | None = None,
     ) -> None:
-        """Record what the server said the prompt cost, as an overhead per model.
+        """Record the server's prompt size as an overhead per model (total minus our history count).
 
-        ``prompt_tokens`` from the response's usage block is the only exact figure
-        anyone here has: it is what the server counted, chat template and all. Stored
-        as *overhead* — the reported total minus this backend's own count of the
-        history that went with it — rather than as the total, because the total is a
-        fact about one call and goes stale the moment the answer lands, while the
-        overhead (system prompt, tools schema, template scaffolding) is the same on
-        the next call and is exactly the part estimated worst.
-
-        Counting the history with the same tokenizer that the bar uses is deliberate:
-        whatever that count gets wrong is absorbed into the overhead, so bar and
-        server agree exactly at the moment of the call instead of agreeing in
-        principle and differing in the number shown. The history's chars-per-token is
-        re-measured first (:meth:`_calibrate_chars_per_token`), so what is absorbed
-        is the fixed part's estimation error, a few percent, not the history's.
-
-        Called by the agent loop alone (``streaming._calibrate_overhead``), never
-        from inside :meth:`chat`: a side call with its own short prompt would
-        otherwise overwrite the overhead the bar reads. Backends report the figure
-        as ``prompt_tokens`` in the returned message instead.
-
-        Best-effort and never raises — usage is telemetry, not part of the turn.
+        The overhead is what stays true on the next call; counting the history the bar's way
+        makes bar and server agree at the call. Called only by the loop
+        (``streaming._calibrate_overhead``), never by side calls. Never raises.
         """
         try:
             if prompt_tokens <= 0:
@@ -285,13 +243,7 @@ class LLMBackend(ABC):
     # ── Context window ──────────────────────────────────────────────────────────
 
     def context_window(self, model: str) -> int | None:
-        """Return the model's effective context window (tokens), or None.
-
-        Used so the token-usage bar and history trim/compaction track the real
-        window instead of a static assumption. Result is cached per model. The
-        default returns None (window unknown); each backend overrides
-        :meth:`_fetch_context_window` to report the actual size.
-        """
+        """The model's context window in tokens, cached, or None (see :meth:`_fetch_context_window`)."""
         if model in self._ctx_window_cache:
             return self._ctx_window_cache[model]
         try:
@@ -345,18 +297,9 @@ class LLMBackend(ABC):
     ) -> dict:
         """Run a chat completion and return the assistant message (see :class:`ChatTurn`).
 
-        ``finish_reason`` is why the provider stopped generating, normalized by
-        :func:`normalize_finish_reason` — every provider spells it differently
-        (OpenAI/vLLM ``finish_reason``, Ollama ``done_reason``, Anthropic
-        ``stop_reason``); without it a turn cut off at ``max_tokens`` reads like a
-        model that had nothing to say. It describes the *call*, not the message: strip it before the
-        message is appended to history (``streaming.process_response`` does),
-        or it goes back to the provider on the next turn.
-
-        The history is repaired here, for every provider: the tool-call pairing
-        (a strict API rejects a dangling pair outright) and adjacent user turns
-        merged (several templates require strict alternation). The loop does the same
-        before every call; this is the last-mile guard for any caller that doesn't.
+        ``finish_reason`` is normalized (:func:`normalize_finish_reason`) and must be stripped
+        before the message enters history. The pairing and adjacent user turns are repaired
+        here for every provider.
         """
         turn = ChatTurn(
             streaming=streaming, cancel_flag=cancel_flag,
@@ -379,13 +322,9 @@ class LLMBackend(ABC):
     # ── Token counting ──────────────────────────────────────────────────────────
 
     def count_text_tokens(self, model: str, text: str, allow_network: bool = True) -> int:
-        """Token count for *text*, cached.
+        """Token count for *text*, cached: exact with a tokenizer, else the heuristic.
 
-        Exact when the backend has a tokenizer (vLLM /tokenize); otherwise the
-        chars-per-token heuristic. ``allow_network=False`` forbids any blocking
-        tokenizer round-trip — used from async event loops that must not block:
-        a cached value is returned if present, else the heuristic (not cached, so
-        it never masks a later exact count).
+        ``allow_network=False`` never blocks: cached value or heuristic (the latter not cached).
         """
         if not text:
             return 0

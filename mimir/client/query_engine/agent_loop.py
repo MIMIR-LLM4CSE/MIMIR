@@ -71,39 +71,11 @@ async def _sync_checklist(
     system_content: str,
     execution_context: ExecutionContext,
 ) -> str:
-    """Rewrite the system message when the on-disk task checklist has changed.
+    """Rewrite messages[0] when the on-disk checklist has changed; return the system content.
 
-    THE INVARIANT: a block of STATE never occupies the last position of the prompt.
-
-    Every chat template appends its generation prompt after the last message, so
-    whatever sits there is what the model is being asked to respond to or continue. A
-    checklist has nothing to ask and nothing to answer — putting it last hands the model
-    a status report where its turn should be. What that produces is template-dependent
-    and the failure is not: one template continued the block's own text until the step
-    budget ran out, another emitted a short reasoning block and EOS. Two symptoms, one
-    cause. Measured on one backend (37 empty turns / 108 draws with the block in the
-    tail, 0 / 84 without, 0/40 with the same text in messages[0]); the numbers say where
-    it was quantified, not where it applies.
-
-    The corollary is the sorting rule this loop follows everywhere: PILOTAGE — nudges,
-    reminders, the empty-turn retry — belongs in the last position, because asking for
-    the next turn IS its function, and it measured harmless there. STATE goes in
-    messages[0]. Nothing here tests the model or the template: the placement is
-    unconditional, which is the point: a per-model workaround here — a tail ``user`` turn
-    rather than a tail ``system`` one, because a tail ``system`` turn breaks one template's
-    generation prompt — is a distinction that measures irrelevant to the real failure
-    (7/40 vs 8/40) and has to be maintained for ever.
-
-    Two gates, cheapest first. The trigger is the file's mtime rather than the
-    ``todo_update`` tool because the tool is not its only writer (``todo_write``, a
-    plain write to the path, a sub-agent), and one stat() per step costs less than a
-    stale checklist. The content comparison after the rebuild is not a
-    micro-optimisation: the todo server re-saves the file even when the text does not
-    change (ticking an item already ticked), and without it every such touch would cost
-    the whole prefix rather than nothing.
-
-    Returns the system content to keep budgeting against, like
-    :func:`loop_base._sync_thinking_directive`.
+    STATE goes in messages[0], never in the last position (CLIENT_DETAILED.md, "The pin").
+    Triggered by the file's mtime (it has several writers), then by a content comparison
+    (the todo server re-saves unchanged text).
     """
     todo_fp = execution_context.todo_file_path
     if not todo_fp:

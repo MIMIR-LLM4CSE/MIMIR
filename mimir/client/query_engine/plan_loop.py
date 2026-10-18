@@ -83,14 +83,7 @@ def _plan_document_title(tool_calls: list[Any], agent: AgentPort) -> str:
 
 
 def _pin_plan_title(tool_calls: list[Any], agent: AgentPort, title: str) -> list[Any]:
-    """Force *title* onto every plan-document write in *tool_calls*.
-
-    The plan store derives a document's identity from its title, so a revision the
-    model re-titles lands in a *second* document: the user keeps reading the draft
-    they sent back and two plans compete to be "the" plan. Which document is under
-    review is this loop's to decide, not the model's, so the title it settled on is
-    reimposed and the revision overwrites the plan in place.
-    """
+    """Force *title* on every plan-document write, so a revision overwrites the plan under review."""
     pinned: list[Any] = []
     for tc in tool_calls:
         tc_d = dict(as_dict(tc))
@@ -132,15 +125,9 @@ def _clear_recorded_plan(execution_context: ExecutionContext) -> None:
 
 
 async def _request_plan_decision(agent: AgentPort) -> tuple[str, str]:
-    """Ask the user to accept, reject, or rework the proposed plan.
+    """Ask the user to accept, reject, rework or revise the plan: ``(decision, feedback)``.
 
-    Reuses the interactive ``request_user_question`` prompt (wired to the CLI and
-    the VS Code webview), which always offers a free-text "Other" entry on top of the
-    listed choices. Returns ``(decision, feedback)`` where ``decision`` is one of
-    ``"accept"``, ``"reject"``, ``"rework"``, ``"revise"`` (free-text = fold these
-    changes in), or ``"none"``. ``"none"`` is returned when there is no interactive
-    front-end (default shim / sub-agents / tests) or the user dismisses the prompt,
-    so plan mode falls back to simply delivering the plan.
+    ``"none"`` without an interactive front-end or when dismissed: the plan is delivered.
     """
     ask = getattr(agent, "request_user_question", None)
     if not callable(ask):
@@ -203,15 +190,9 @@ class PlanLoop(StepLoop):
         # Both reset whenever the plan goes back to the drawing board.
         self.post_record_tool_turns = 0
         self.deliver_nudged = False
-        # Explore phase: while armed, the plan-document tool is withheld until the
-        # model has actually read the code. Offering it from the first turn — under a
-        # nudge calling the plan mandatory — is what made a plan *to explore* the
-        # cheapest way out; withholding it removes the move instead of policing the
-        # plan's wording. Armed by a deliberately broad query signal (see
-        # context.signals): it fires just as readily for a task that creates something
-        # new outside the repo, where no exploration could satisfy it, hence the turn
-        # budget. Skipped at enforcement "off" — this is discovery babysitting, not a
-        # safety guard.
+        # Explore phase: the plan-document tool is withheld until the model has read the code.
+        # Armed by a broad query signal (context.signals), hence the turn budget; skipped at
+        # enforcement "off".
         self.exploring = (query_requires_repo_discovery(turn.query)
                           and resolve_enforcement(self.agent) != "off")
         self.explore_turns = 0
@@ -348,13 +329,9 @@ class PlanLoop(StepLoop):
             self.tools = self._plan_tools()
 
     def nudge_toward_plan(self, *, forced: bool) -> None:
-        """Push toward whatever the current phase owes: evidence, then the document.
+        """Push toward what the phase owes (evidence, then the document), throttled after a tool turn.
 
-        Throttled after a turn that acted: fired from every tool turn, the identical
-        text landed nine times in one observed run — and a user turn arriving between
-        every single tool result is itself what teaches one-call-per-turn. *forced* is
-        the turn that only talked: that prose is discarded, so the reminder is the sole
-        thing telling the model why, and skipping it would loop the same refusal.
+        *forced* is a turn that only talked: its prose is discarded, so the reminder must speak.
         """
         category = "plan_explore" if self.exploring else "plan_todo"
         if not forced:
