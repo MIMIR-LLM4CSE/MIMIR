@@ -37,13 +37,8 @@ from .eval_common import (
 )
 
 
-# A ledger is a column of numbers; what a later run needs is the account of which
-# ideas produced them and which have already been ruled out. These read that back.
-#
-# The edge is `best_run_id`: the incumbent a run was measured against, recorded at
-# settle. NOT `launch_tree` — two runs sharing one launch tree measured the SAME code,
-# which is a repeat, not a pair of independent ideas. `launch_tree` is each node's own
-# identity: the state that actually ran, and the one a restore can return to.
+# The edge of the attempt graph is `best_run_id` (the incumbent a run was measured
+# against), not `launch_tree` (a node's own identity, the state a restore returns to).
 
 
 def _read_ledger(proxy_name: str) -> list[dict]:
@@ -70,15 +65,9 @@ def _read_ledger(proxy_name: str) -> list[dict]:
 
 
 def graph(proxy_name: str = "") -> dict:
-    """Every axis tried, what it measured, and which attempts started from one point.
+    """Every axis tried in every proxy's session, with the incumbent each was measured against.
 
-    Read-only. Covers every registered proxy by default — a fan-out of sub-agents is
-    several sessions, one per axis, and the picture is only useful whole.
-
-    What it reports is STRUCTURE, never causality. Two attempts measured against the
-    same incumbent are independent of each other, which makes them candidates for being
-    combined; whether they actually compose is a question only a run that combines them
-    can answer, and this says so in ``note`` rather than scoring it.
+    Structure, never causality: attempts on one incumbent are only candidates to combine.
     """
     names = [proxy_name] if proxy_name else sorted(load_registry().keys())
     axes, nodes, edges = [], [], []
@@ -151,16 +140,7 @@ _AXES_SHOWN = 8
 
 
 def axes_tried(proxy_name: str = "") -> dict:
-    """The account of this session's attempts, compact enough to travel with a result.
-
-    Built and attached automatically, never asked for: the agent that most needs to
-    know what has already been ruled out is the one about to choose the next edit, and
-    a call it has to remember to make is one it will not make. The full picture —
-    every node, every edge, every session — is ``graph()``.
-
-    Best effort: a session whose ledger cannot be read reports nothing, which costs
-    context and breaks no run.
-    """
+    """A compact account of this session's attempts, attached to results; {} on any failure."""
     try:
         rows = _read_ledger(resolve_proxy_name(proxy_name) or "")
     except Exception:
@@ -248,13 +228,7 @@ def status(proxy_name: str = "") -> dict:
 
 
 def _recommend(r: dict, summary: dict, proxy_source: str) -> tuple[str, str]:
-    """What the ratchet's verdict means for the caller, and what to do next.
-
-    A pure function of the settled outcome: five verdicts, five answers. It sits
-    apart from ``results`` because it is the loop's script — the sentences that
-    decide whether the next call is an edit, a revert, or a summary — and burying
-    it in a payload builder made it look like formatting.
-    """
+    """``(meaning, next_step)`` for the settled verdict: the loop's script."""
     verdict  = r["verdict"]
     best     = r.get("best")
     best_id  = best.get("run_id") if best else None

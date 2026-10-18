@@ -73,13 +73,7 @@ _OWNER_FILE = "owner_session"
 
 
 def _run_owner(run_dir: str) -> str | None:
-    """The session that started *run_dir*, or None when the run recorded none.
-
-    None is "the run recorded nothing", not "nobody": it was started before MIMIR
-    recorded owners, or by something that is not MIMIR, and neither is a claim this
-    session can make. An *empty* record is a claim — it is what a run started with no
-    conversation at all (the CLI) writes, and :func:`session_owns` matches it.
-    """
+    """The session that started *run_dir* ("" for no session), or None when unrecorded."""
     try:
         with open(os.path.join(run_dir, _OWNER_FILE)) as fh:
             return fh.read().strip()
@@ -109,13 +103,7 @@ def _slurm_host_path(run_dir: str) -> str:
 
 
 def _read_slurm_host(run_dir: str) -> str | None:
-    """Which scheduler this run was submitted to, or None when it did not say.
-
-    None is not "local": a run directory from before the host was written beside the
-    id cannot answer, and reading the silence as this machine would poll the wrong
-    scheduler and call a running job finished. :func:`_locate_slurm_job` asks every
-    reachable one instead.
-    """
+    """The scheduler this run was submitted to, or None when unrecorded (which is not "local")."""
     try:
         with open(_slurm_host_path(run_dir)) as fh:
             return fh.read().strip()
@@ -140,14 +128,7 @@ _WORKSPACE_JOB_DIR = "workspace_job_dir"
 
 
 def _record_workspace_job(run_dir: str, job_id: int, host: str) -> None:
-    """File this run's Slurm job where the workspace accounts for its jobs.
-
-    Without it the run is a job nothing is watching to every reader of ``slurm_site``:
-    the queue listing calls it unwatched, the conclude-phase reminder names its id, and
-    the remedy offered — adopt it — puts a second watcher on a run this server is
-    already polling, so one run ends and wakes its conversation twice. Best effort: a
-    run that could not be filed is still a run, and the submission has already happened.
-    """
+    """File this run's Slurm job with the workspace's jobs, so nothing reads it as unwatched."""
     try:
         job_dir = _record_job_dir(str(job_id), **{_SLURM_HOST_FILE: host})
         with open(os.path.join(run_dir, _WORKSPACE_JOB_DIR), "w") as fh:
@@ -210,19 +191,7 @@ def read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
 
 def _slurm_run(argv: list[str], timeout: int, stdin: str | None = None, *,
                host: str = _SLURM_LOCAL):
-    """Run one Slurm command on *host*'s scheduler, and hand back the completed call.
-
-    Through the shared seam (``_shared/slurm_site``) rather than straight to
-    ``subprocess``, because the scheduler is not always on the host MIMIR runs on: on a
-    login node whose schedulers live elsewhere, a bare ``sbatch`` is "not found" and
-    these submissions simply could not be made. One owner for the question, so the three
-    servers that submit cannot disagree about which hosts are reachable — and locally
-    the argv is still exec'd as it stands, with no shell, which is what these commands
-    are built as arguments for.
-
-    *stdin* feeds the command its own input, which is how a batch script reaches
-    ``sbatch`` without any file having to exist on the host that runs it.
-    """
+    """Run one Slurm command on *host* through ``_shared/slurm_site`` (argv; *stdin* for ``sbatch``)."""
     return subprocess.run(
         _slurm_exec_argv(argv, host=host, piped=stdin is not None),
         input=stdin,
@@ -252,33 +221,14 @@ def _squeue_state(job_id: int, *, host: str = _SLURM_LOCAL) -> str:
 
 def _build_percent(run_dir: str,
                    max_bytes: int = build_progress.TAIL_BYTES) -> float | None:
-    """The build's own most recent percentage, or None if it does not print one.
-
-    Parsed rather than tracked, because the only process that could track it — the
-    runner — is blocked inside the build for its whole duration. None is a real
-    answer, not a failure: plenty of build commands say nothing about how far along
-    they are, and showing 0% for one of those would invent a fact.
-
-    A trailing 100% is kept: the runner's phase already says the build is the current
-    step, so it cannot be a finished build standing over later work.
-    """
+    """The build's own latest percentage from its log, or None (a trailing 100% is kept)."""
     text = build_progress.read_tail(build_log_path(run_dir), max_bytes)
     found = build_progress.parse(text, drop_finished=False)
     return found[0] if found else None
 
 
 def _run_progress(run_dir: str) -> dict:
-    """What the run is doing right now: its phase, and a percentage when one exists.
-
-    The phase comes from the sidecar the runner writes at each of its own boundaries
-    — it alone knows how many builds and how many cases there are. The percentage is
-    read from the build log, and only while building: a measurement phase has no
-    percentage to report, and carrying the build's last one into it would leave a bar
-    frozen at 98% for the rest of the run.
-
-    Best-effort, like every other read here: an absent or corrupt sidecar means the
-    run simply does not say what it is doing.
-    """
+    """The run's phase (from the runner's sidecar) and, while building, a percentage."""
     try:
         with open(_phase_path(run_dir), encoding="utf-8") as fh:
             phase = json.load(fh)
@@ -378,13 +328,7 @@ def run_state(run_dir: str) -> dict:
 
 def background_descriptor(run_dir: str, *, kind: str,
                           status_op: dict, summary_op: dict) -> dict:
-    """Data-only handle a client watcher polls to completion.
-
-    The client loop holds no tool names of its own: they arrive here, in the ops the
-    watcher is to call. Without such a handle a detached run is a job nothing is
-    watching — the model is told to monitor it by hand, ends its turn because there is
-    nothing left to do, and is never woken when the job lands.
-    """
+    """The data-only handle a client watcher polls: kind, ``status_op``, ``summary_op``."""
     descriptor = {
         "server":     "proxy",
         "run_dir":    run_dir,
@@ -477,18 +421,10 @@ def submit_sbatch(
     script_name: str = "batch_script.sh", id_file: str = "slurm_job_id",
     host: str = _SLURM_LOCAL,
 ) -> tuple[int | None, dict | None]:
-    """Write the batch script, submit it, record the job id.
+    """Write the batch script, submit it to *host* and record the id: ``(job_id, None)`` or ``(None, err)``.
 
-    Returns ``(job_id, None)`` on success or ``(None, err_response)`` where
-    *err_response* is a ready-to-return ``err()`` dict.  *local_alternative*
-    names the local-run call suggested when sbatch is unavailable.
-
-    *script_name* and *id_file* exist because a split build/run submission puts two
-    jobs in one run directory and neither may overwrite the other's script or id.
-    Their defaults are the single-job names, so every existing caller is unchanged.
-
-    *host* is the scheduler to submit to, written beside the id so every later poll of
-    this run goes straight to it.
+    *script_name*/*id_file* keep two jobs of a split run apart; *local_alternative* is the
+    call suggested when sbatch is missing.
     """
     batch_path = os.path.join(run_dir, script_name)
     with open(batch_path, "w") as fh:
@@ -536,13 +472,7 @@ def submit_sbatch(
 
 def cancel_slurm_job(job_id: int, *, host: str = _SLURM_LOCAL,
              owned: dict[str, set[str]] | None = None) -> str | None:
-    """Cancel one Slurm job on *host*; returns an error message, or None when it worked.
-
-    Refused unless this session or one of its sub-agents submitted it there. *owned* is
-    the ownership map when the caller has already walked for one (see
-    :func:`slurm_site.owned_jobs`); the check is made here either way, because this is
-    the only thing every cancellation goes through.
-    """
+    """Cancel one job this session (or a sub-agent) submitted on *host*; an error message or None."""
     if not _owns_slurm_job(str(job_id), host, owned):
         return (f"Slurm job {job_id} was not submitted by this conversation or its "
                 "sub-agents; it is not this conversation's to cancel.")

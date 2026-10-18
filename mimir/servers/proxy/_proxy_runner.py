@@ -1,59 +1,8 @@
-"""Standalone proxy optimization runner.
+"""The standalone optimization runner (not an MCP server), launched by the eval ops.
 
-Invoked as a subprocess by the ``proxy_eval``/``proxy_slurm`` eval ops of
-server_proxy.py; not an MCP server.
-
-Usage (through the launcher, ``_shared/launcher.launch_argv``):
-    python servers/_launch.py mimir.servers.proxy._proxy_runner --run-dir <path> [--phase all|build|run]
-
-Reads  <run-dir>/config.json, executes the full benchmark suite for the
-configured proxy, evaluates requirements, and writes
-<run-dir>/metrics.json on completion.
-All output goes to stdout (captured as stdout.log by the server).
-
-``--phase`` splits that in two. A compute node dedicated to GPU simulation is not
-a machine to compile on, and a node built for compiling does not have the hardware
-under test, so ``proxy_slurm(op='eval', build_partition=...)`` submits one job with
-``--phase build`` and a second, chained behind it, with ``--phase run``. Both are
-given the same run directory — build.json, tree_at_launch.json and the built
-executable are how the halves reach each other, which assumes the build node and the
-run node see the same filesystem. Without ``build_partition`` there is one job and
-one ``--phase all``, exactly as before.
-
-config.json schema
-------------------
-{
-  "proxy_name":         str,          # registered proxy to run
-  "benchmark_name":     str,          # defined benchmark suite name
-  "requirements":       list[dict],   # [{metric, operator, threshold}, ...]
-  "python_executable":  str,          # (optional) python used to rebuild cmd
-  "deadline_s":         float,        # (optional) total budget, default 24 h
-  "per_case_timeout_s": float,        # (optional) per-case cap, 0/absent = none
-  "convergence":        dict,         # (optional) {h_param, error_metric} for
-                                      #   the order-of-accuracy fit
-  "partition":          str,          # (optional) set by proxy_slurm(op='eval')
-  "placement":          dict           # (optional) where each phase was sent:
-                                       #   {"run": {...}, "build": {...}}, each with
-                                       #   partition/constraint/cpus_per_task/mem/...
-}
-
-Structured log lines emitted for agent observation
----------------------------------------------------
-Every structured line starts with "[proxy_runner]" and uses key=value format
-so it is parseable by proxy_eval_status(op='results'):
-
-  [proxy_runner] case=<case_id> sweep=<idx> time_s=<n> passed=<T/F> [<metric>=<v> ...]
-  [proxy_runner] summary cases_passed=<n> cases_total=<m> all_passed=<T/F> \
-      best_case=<case_id> best_time_s=<n>
-
-The agent can therefore:
-  1. proxy_eval(op='run'), which waits and returns the parsed results + verdict
-     (proxy_eval_status(op='results') / (op='log') re-read them afterwards)
-  2. Read the proxy source file (proxy_source_path from opt_config.json)
-  3. Modify the proxy source with the file-edit tools
-  4. proxy_eval(op='run') again to measure the effect
-  5. Repeat until requirements are satisfied
-  6. proxy_eval(op='reset_to_best') if a change makes things worse
+``--run-dir <dir> [--phase all|build|run]``: reads ``config.json``, runs the suite,
+evaluates requirements, writes ``metrics.json``; a split submission runs the two phases
+as two jobs. Its config and log lines: SERVERS_DETAILED.md, "proxy".
 """
 
 from __future__ import annotations
@@ -72,17 +21,7 @@ def _log(msg: str) -> None:
 
 
 def _write_phase(run_dir: str, kind: str, text: str, **fields) -> None:
-    """Record what this run is doing, for whoever is waiting on it.
-
-    The client watching a run — a blocking call or a detached watcher — can see the
-    process is alive and nothing more. This is the run saying so itself, at the
-    boundaries it already knows: it is the only process that knows how many builds
-    and how many cases there are.
-
-    Written atomically because it is read concurrently, and imported lazily because
-    ``main`` is what puts ``_lib`` on the path. Best-effort to the point of silence:
-    a run must never die because it could not describe itself.
-    """
+    """Record what this run is doing, atomically, for whoever waits on it (never fatal)."""
     try:
         from .._shared.atomic import write_json
         write_json(os.path.join(run_dir, "phase.json"),
@@ -92,17 +31,9 @@ def _write_phase(run_dir: str, kind: str, text: str, **fields) -> None:
 
 
 def _aggregate_replicates(replicates: list[dict]) -> dict:
-    """One set of metrics from several measurements of the same code.
+    """One set of metrics from replicates: numeric values by median, others from the first.
 
-    Numeric metrics collapse to their **median**, which is the whole point: the
-    minimum is what a ratchet reaches for on its own, and the minimum of N draws
-    is a biased estimate that improves with N whatever the code does. Non-numeric
-    values are taken from the first replicate — a dtype or a reference name does
-    not vary between runs of the same tree, and if it did, averaging it would be
-    meaningless anyway.
-
-    A single replicate returns exactly what it measured, so the one-run path is
-    unchanged.
+    The minimum of N draws improves with N whatever the code does.
     """
     if not replicates:
         return {}
@@ -121,16 +52,7 @@ def _aggregate_replicates(replicates: list[dict]) -> dict:
 
 
 def _relative_spread(replicates: list[dict], metric: str) -> float | None:
-    """How far apart repeated measurements of the SAME code landed, as a fraction.
-
-    The number the accept threshold needs and did not have: a margin chosen before
-    any noise was measured cannot tell an improvement from what the node does on its
-    own.
-
-    Reported as a full range rather than a standard deviation: with three or five
-    replicates the range is what a threshold actually has to clear, and a
-    dispersion estimate from n=3 is not worth the sophistication.
-    """
+    """The full range of *metric* across replicates of the same code, as a fraction."""
     values = [r.get(metric) for r in replicates]
     numeric = [float(v) for v in values
                if isinstance(v, (int, float)) and not isinstance(v, bool)]

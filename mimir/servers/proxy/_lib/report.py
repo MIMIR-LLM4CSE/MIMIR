@@ -127,13 +127,7 @@ def _diff_run_dirs(dir_a: str, dir_b: str) -> dict:
 
 
 def parse_runner_log(content: str) -> tuple[list[dict], dict]:
-    """The per-case rows and the summary a run printed about itself.
-
-    The runner's structured lines are its only channel out of a detached process —
-    ``[proxy_runner] case=... k=v ...`` per measurement, one
-    ``[proxy_runner] summary ...`` at the end. Parsing them is not an op's job, and
-    doing it inside one hid the fact that the log IS the interface.
-    """
+    """The per-case rows and the summary from the runner's ``[proxy_runner]`` log lines."""
     from .metrics import coerce
 
     def _pairs(tokens: list[str]) -> dict:

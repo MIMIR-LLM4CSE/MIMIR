@@ -1,32 +1,8 @@
-"""Where each phase of a Slurm eval run is sent.
+"""Where each phase of a Slurm eval run goes: the build's placement, resolved once.
 
-One ``sbatch`` carrying both the build and the measurement gives both the same
-partition and the same node, which is wrong in both directions: a node dedicated to
-GPU simulation has few cores and no business running ``make``, and the node that
-compiles fastest is not the hardware anyone wants a number from.
-
-So an eval run has two placements, and this is the one place that decides the
-build's — resolved from three sources, the order between them being the whole rule:
-
-    the call's own build_* argument  >  the registration's build_* metadata
-                                     >  what the run phase was given
-
-The registration is the term that matters most in practice: the ratchet submits the
-same run hundreds of times, and a placement the model must restate every iteration
-is one that comes out wrong on some iteration.
-
-``comment`` is the exception that goes the other way: it labels the submission as a
-whole, so the build job carries the run's verbatim.
-
-``constraint``, ``nodelist`` and ``gpus`` deliberately do NOT fall through from the
-run phase. The first two would pin the build to the exact hardware the split exists
-to keep it off; the third charges simulation hours to a compiler that is no faster
-for holding a GPU. Nor do ``ntasks`` and ``exclusive``: those describe a measurement
-— an MPI rank count, and a node to itself so the timing is not measuring a neighbour
-— and a compile wants neither.
-
-``resolve_build`` returns None when no build partition is resolved anywhere, and
-then the run is one job, one ``--phase all``.
+Call argument > registration metadata > the run phase's value. ``constraint``,
+``nodelist``, ``gpus``, ``ntasks`` and ``exclusive`` never fall through to the build;
+``comment`` does. ``resolve_build`` is None without a build partition (one job).
 """
 
 from __future__ import annotations

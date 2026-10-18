@@ -1,47 +1,9 @@
-"""Building a registered proxy before it is measured.
+"""Building a registered proxy before it is measured, once per evaluation run.
 
-A Python proxy needs no build step: the file the ratchet edits is the file that
-runs. A compiled one breaks that identity — the edited ``solver.cpp`` is in
-``optimize_paths``, but the measured program is ``./solver``, an artifact some
-earlier compiler produced. The ratchet fingerprints sources only
-(``tree_snapshot.fingerprint``), so nothing in it can notice the two disagreeing:
-a forgotten rebuild measures the previous binary and the verdict lands on code
-that never ran, and a ``reset_to_best`` restores sources while leaving the
-artifact from the attempt it just rejected.
-
-So the server builds, rather than asking anyone to remember to. ``build_cmd`` on
-the registration is executed here, once per evaluation run (never once per
-replicate) and before any case is measured; a build that fails ends the run with
-no verdict and no ledger entry.
-
-INCREMENTALITY IS THE PROJECT'S BUILD SYSTEM'S JOB. The build is a command the
-project already owns, so ``make``/``ninja``/``cmake`` decide what to recompile —
-from mtimes, which is why ``tree_snapshot`` stamps restored files as new, and
-only the ones whose content actually changed. Three things here can defeat that,
-so all three are settled deliberately:
-
-* The command is argv, never a shell line: split with ``shlex`` and executed
-  directly. ``make -C <dir> <target>`` covers most of it; anything needing
-  several commands, a ``module load`` or a redirect belongs in a wrapper script
-  named here.
-* The *spelling* of the build directory. ``build_cwd`` is kept as declared,
-  symlinks unresolved, and exported as ``PWD`` — the only channel that carries
-  it, since the child's ``getcwd()`` comes back resolved whichever spelling
-  ``Popen`` was handed. Scratch space is normally presented through a link, and
-  CMake compares against the absolute path it was configured with.
-* The *environment*, which is inherited — and what is inherited is the
-  environment the MCP server started with, not the shell the user builds in by
-  hand. When the two disagree on the compiler or on ccache, each build
-  invalidates the other's artifacts. ``build_env`` pins what decides this, and
-  the log records the effective toolchain and whether ccache was reachable.
-
-"Before any case is measured" does not have to mean "on the node that measures".
-On a cluster the build can be a Slurm job of its own — see ``_lib/placement.py``
-and ``_ops/slurm.submit_eval`` — because a node dedicated to GPU simulation is not
-a node to compile on. What this module does is unchanged either way; what changes
-is which machine it runs on. The two halves meet through the run directory
-(``build.json``, ``build.log``, the launch snapshot, the executable), which is why
-the split assumes the build node and the run node see the same filesystem.
+A compiled proxy's edited sources are not the program that runs, so the server runs
+``build_cmd`` (argv, never a shell line) before any case; a failed build ends the run
+without a verdict. Incrementality is the project's own build system's: see
+SERVERS_DETAILED.md, "proxy".
 """
 
 from __future__ import annotations
@@ -106,15 +68,7 @@ def spec(entry: dict) -> dict | None:
 
 
 def _declared_env(entry: dict) -> dict[str, str]:
-    """The environment variables this registration pins for its build.
-
-    Everything else is inherited. What is inherited, though, is the environment the
-    MCP *server* was started with — not the one the user builds in by hand. When the
-    two disagree on the compiler, on CCACHE_DIR, or on a module-provided toolchain,
-    the two builds invalidate each other's artifacts and the project recompiles from
-    scratch every time it changes hands. Pinning the few variables that decide this,
-    once, at registration, is what stops that alternation.
-    """
+    """The variables this registration pins for its build (the rest is the server's environment)."""
     raw = entry.get("build_env") or {}
     if not isinstance(raw, dict):
         return {}
@@ -163,17 +117,9 @@ def _declared_root() -> str:
 
 
 def _resolve_cwd(raw: str) -> tuple[str, str | None]:
-    """Where the build runs, in the spelling the build system was configured with.
+    """``(cwd, error)``: the build directory as declared, normalised but not symlink-resolved.
 
-    Not ``realpath``: a project reached through a symlink (``/home/me/proj`` ->
-    ``/gpfs/.../proj``, as scratch space is usually presented) is configured by CMake
-    with the logical path, baked into its cache, rules and depfiles. The resolved path
-    would compare unequal to all of them and rebuild the world on every run.
-
-    Normalised but not resolved, therefore. ``isdir`` still follows the link, so a
-    symlinked build directory is accepted; what changes is only which spelling the
-    compiler is handed. Nothing here was a containment check — there is none on this
-    path — so nothing is weakened by keeping the declared form.
+    CMake compares against the logical path it was configured with.
     """
     root = _declared_root()
     if not raw:
@@ -186,14 +132,7 @@ def _resolve_cwd(raw: str) -> tuple[str, str | None]:
 
 
 def _toolchain_facts(env) -> dict:
-    """What the build is about to compile with, as far as it can be established.
-
-    ``ccache`` is resolved against the build's own PATH rather than reported from a
-    variable: "CCACHE_DIR is set" and "ccache is reachable" are different claims, and
-    only the second one makes a rebuild cheap. A null here is the answer to a whole
-    class of "why does it recompile everything", and a log recording the command and the
-    directory and nothing else cannot show it.
-    """
+    """The effective toolchain variables and whether ``ccache`` resolves on the build's PATH."""
     facts = {k: env[k] for k in _ENV_OF_INTEREST if env.get(k)}
     facts["ccache"] = shutil.which("ccache", path=env.get("PATH"))
     return facts
@@ -245,13 +184,8 @@ def run_build(entry: dict, run_dir: str, proxy: str = "") -> dict:
     argv = shlex.split(sp["cmd"])
     log_path = procs.build_log_path(run_dir)
     started = time.monotonic()
-    # PWD, because the spelling is the whole point of keeping build_cwd unresolved and
-    # it is the only channel that carries it. Popen chdir()s, and the child's getcwd()
-    # comes back symlink-resolved whichever spelling we passed — so a build launched in
-    # /home/me/proj/build saw /gpfs/.../build, disagreeing with the logical path CMake
-    # was configured with. Worse, PWD was simply inherited: it named the MCP server's
-    # directory, not the one the build was running in, which is a false statement to
-    # every wrapper script that reads it.
+    # PWD carries the declared spelling of the build directory (the child's getcwd() comes
+    # back resolved); otherwise it would name the server's directory.
     env = {**os.environ, "PWD": cwd, **sp["env"]}
     toolchain = _toolchain_facts(env)
     base = _record(proxy, "ok", cmd=sp["cmd"], argv=argv, cwd=cwd, log=log_path,

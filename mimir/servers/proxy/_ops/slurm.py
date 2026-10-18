@@ -40,27 +40,13 @@ _OPT_RUNNER = "mimir.servers.proxy._proxy_runner"
 
 
 def _resolve_scheduler(scheduler: str) -> tuple[str, dict | None]:
-    """The scheduler a submission goes to, or the refusal that names the choice.
-
-    The same question the hpc server's submissions ask, through the same shared seam,
-    so the two submitters cannot disagree about where a job may go — or about which
-    hosts are even reachable. See ``_shared/slurm_site.resolve_host``: with one
-    scheduler there is nothing to choose and it is used; with several the choice
-    belongs to the work, and this refuses rather than deciding it quietly.
-    """
+    """``(host, None)`` for a submission, or ``("", refusal)`` (``slurm_site.resolve_host``)."""
     host, refusal = _slurm_resolve_host(scheduler)
     return host, (err(refusal) if refusal else None)
 
 
 def _run_background_descriptor(run_dir: str) -> dict:
-    """The watcher handle for a plain submitted run.
-
-    Never optional here, the way it is for a local run that can also be awaited
-    in-turn: sbatch returns while the job is still queued, so no variant of this call
-    carries a result. ``status_op`` is the single-run state op, whose ``state`` reaches
-    'done'/'crashed' through squeue; ``summary_op`` reads the log, which is all a plain
-    run records of itself.
-    """
+    """The watcher handle of a plain submitted run (always attached: sbatch returns at once)."""
     return background_descriptor(
         run_dir, kind="proxy-slurm-run",
         status_op={"tool": "proxy_runs", "args": {"op": "status", "run_id": run_dir}},
@@ -311,18 +297,9 @@ def submit_eval(
     build_gpus: int = 0,
     scheduler: str = "",
 ) -> dict:
-    """Submit an optimization-session run as Slurm batch job(s) (non-blocking).
+    """Submit an optimization run as one Slurm job, or two (build, then run) with a build partition.
 
-    One job by default: it builds and measures, as it always has. When a build
-    partition is resolved — from ``build_partition`` here, or from the proxy's
-    ``build_partition`` metadata — the run is split into two jobs sharing this run
-    directory, the second chained behind the first with ``--dependency=afterok``.
-    That is what lets a compile land on a machine made for compiling while the
-    measurement lands on the hardware under test.
-
-    *background* is accepted for call compatibility with the local run and has no
-    effect: a submission is detached by definition, so the response always carries a
-    ``background_job`` handle.
+    *background* is accepted and ignored: a submission is always detached.
     """
     host, refusal = _resolve_scheduler(scheduler)
     if refusal:

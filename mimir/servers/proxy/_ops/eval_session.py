@@ -74,25 +74,13 @@ _RUN_POLL_S = 2.0
 _DIVERT_CHANNEL = "proxy_eval"
 
 
-# How long op='run' waits before handing the job to the client watcher instead.
-# Sits under the tool-call budget proxy_eval declares, leaving room for the ratchet
-# to settle and the results to be read in the same call. That budget is capped
-# client-side at TOOL_CALL_TIMEOUT_MAX_SECS (1200 s) whatever the tool declares, so
-# a larger value here means the client always cuts the call before the server detaches,
-# and the orderly hand-off to the watcher never happens. With a build ahead of the
-# measurement, that is the common case rather than a corner.
+# How long op='run' waits before handing the run to the watcher: under the client's cap
+# on tool calls (TOOL_CALL_TIMEOUT_MAX_SECS, 1200 s), with room to settle and read results.
 RUN_WAIT_BUDGET_S = 1100.0
 
 
 def _workspace_branch() -> str:
-    """The git branch the workspace is on, or "" when there is none to read.
-
-    Recorded with an optimisation session so an axis can be traced back to the work
-    that produced it. A sub-agent given a writing tool runs in a COPY of the repository
-    on a branch of its own and registers a proxy pointing at that copy, so this is what
-    says which of several parallel axes a ledger belongs to — otherwise the runs of a
-    fan-out are anonymous and only their numbers distinguish them.
-    """
+    """The workspace's git branch, or "": what tells parallel axes' ledgers apart."""
     try:
         done = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=workspace_root(),
@@ -211,14 +199,8 @@ def init(
     if python_executable and not os.path.isfile(python_executable):
         return err(f"python_executable not found: {python_executable}")
 
-    # The baseline snapshots the whole tracked TREE, not one file: the state an accepted
-    # run is restored to has to be a state that was measured as a whole.
-    #
-    # A re-init NEVER moves an existing baseline. Re-initialising mid-optimisation is
-    # how requirements get widened or a benchmark swapped, and re-snapshotting there
-    # would quietly promote the current, already-optimised tree to "the original" —
-    # after which every comparison is against work already done, and the honest question
-    # "is this faster than what we started with?" can no longer be asked.
+    # The baseline snapshots the whole tracked tree, and a re-init never moves it: comparisons
+    # stay against the original.
     os.makedirs(cache_dir(), exist_ok=True)
     prior = load_opt_config(proxy_name) or {}
     baseline_existed = bool(prior.get("baseline_id"))
@@ -323,26 +305,9 @@ def configure(
 
 
 def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
-    """Say when a run is resuming a session whose code moved on without it.
+    """A notice when a resumed session's tree differs from its last run's launch tree, or "".
 
-    ``prepare_run`` refuses a first run on an already-edited tree, but only while no
-    baseline run is on record; once one is, nothing checks again. That leaves a gap in
-    the middle: coming back to a finished optimisation later measures against a best
-    taken on code that is no longer there, and says nothing about it.
-
-    The hard part is not noticing that the tree changed: during an optimisation it changes
-    on every iteration, which is the loop working. What distinguishes the two cases is
-    whether this is a **resumption** — a run on a session that is not the current one,
-    because it was ended and is being picked up again. Inside a live session the active
-    pointer names this proxy and nothing fires.
-
-    Compared against the last run's launch tree, not against the baseline: the baseline
-    differs from every candidate by construction, while "different from what we last
-    measured, and we are only now coming back" is precisely "something changed that this
-    loop did not do".
-
-    A notice, never a refusal. Continuing can be exactly right — the change may be the very
-    thing being measured — and the caller is the one who knows.
+    Inside a live session the tree changes every iteration and nothing fires. Never a refusal.
     """
     if not paths or not cfg.get("baseline_run_id"):
         return ""
@@ -368,15 +333,10 @@ def prepare_run(
     proxy_name: str,
     axis: str = "",
 ) -> tuple[dict, dict | None, str, str]:
-    """Shared preamble for local/Slurm eval runs.
+    """The shared preamble of local and Slurm eval runs: ``(cfg, err, run_dir, notice)``.
 
-    Returns ``(cfg, err_response, run_dir, notice)``: on failure *err_response* is set
-    and the others are empty;
-    on success *cfg* holds the session config and *run_dir* the fresh run dir
-    (config.json + start_time already written). *notice* is a caller-facing warning about
-    the run being launched (see :func:`_resume_notice`), empty when there is nothing to
-    say. Returned rather than hung on *cfg*, which is persisted elsewhere by
-    ``save_opt_config`` — a warning about one run has no business on disk.
+    On failure only *err* is set. *notice* comes back separately from *cfg*, which is
+    persisted.
     """
     cfg = load_opt_config(proxy_name)
     if not cfg:
@@ -455,16 +415,9 @@ def prepare_run(
 
 
 def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
-    """Launch a background optimization run (non-blocking).
+    """Launch an optimization run without waiting; *axis* names the idea it tries (ledger).
 
-    ``background=True`` attaches a ``background_job`` descriptor so a client watcher
-    monitors completion off the agent's critical path and auto-resumes the agent with
-    the results — the agent should end its turn instead of polling.
-
-    ``axis`` names what this run is trying, in a few words ("tiling", "vectorise the
-    inner loop", "memory layout"). It is recorded in the session ledger beside the
-    number the run produced, which is what later lets the attempts be read as a set of
-    ideas with outcomes rather than a column of timings.
+    ``background=True`` attaches a ``background_job`` descriptor.
     """
     cfg, error, run_dir, resume_notice = prepare_run(proxy_name, axis)
     if error:
@@ -500,23 +453,10 @@ async def await_terminal_state(
     run_dir: str, wait_s: float, channel: str = "", job_key: str = "",
     pid: int = 0, state_fn=None, label: str = "optimization run",
 ) -> tuple[str | None, str]:
-    """Poll *run_dir* until the run finishes, reporting what it is doing as it goes.
+    """Poll *run_dir* until it ends: ``(state, "")``, or ``(None, "budget" | "diverted")``.
 
-    Returns ``(state, reason)``. A terminal state comes back with an empty reason;
-    ``None`` comes with the reason the wait ended anyway — ``"budget"`` when *wait_s*
-    ran out, ``"diverted"`` when the user asked for the run to be backgrounded. The
-    two look identical to the run, which carries on either way, but they read very
-    differently to the person who caused one of them.
-
-    Async on purpose. FastMCP calls a synchronous tool directly on the server's
-    event loop, so a blocking sleep here would stop this process answering
-    anything for the whole wait — including the ``proxy_eval_status`` a watcher
-    polls, which is exactly what the caller falls back to when the budget runs out.
-
-    While it waits it owns the run channel (see ``_shared/run_channel``): the phase
-    goes out on every tick, and a divert request left by the user is consumed on the
-    same one. This is the only place either can happen — the tool call itself cannot
-    answer until the run is over, which is precisely the problem.
+    Async, so the server keeps answering; it owns the run channel meanwhile (phase out,
+    divert requests in).
     """
     deadline = time.monotonic() + max(0.0, wait_s)
     if channel:
@@ -556,18 +496,9 @@ async def run_awaited(
     proxy_name: str = "", background: bool = False,
     wait_s: float = RUN_WAIT_BUDGET_S, axis: str = "",
 ) -> dict:
-    """Launch an optimization run and wait for its verdict (the default for op='run').
+    """Launch a run and wait for its verdict (op='run'): the results inline.
 
-    One call, one answer: the run is launched, awaited, settled by the ratchet, and
-    the ``results`` payload comes back inline. Repeatedly asking
-    ``proxy_eval_status`` for a run whose only interesting moment is its end spends
-    turns to learn "still running", and the ratchet verdict is the thing worth
-    reading anyway.
-
-    Two ways out of the wait, both of which detach rather than fail: ``background=True``
-    asks for it up front, and a run still going after *wait_s* is handed to the client
-    watcher on its own. Either way the response carries a ``background_job``
-    descriptor and tells the agent to end its turn — it is resumed with the results.
+    ``background=True``, or a run outlasting *wait_s*, detaches it to the client watcher.
     """
     launched = run(proxy_name, background=background, axis=axis)
     if background or launched.get("status") != "ok":
@@ -620,13 +551,7 @@ def stop(proxy_name: str = "") -> dict:
 
 
 def _restored_payload(paths: list[str], rewritten: list[str]) -> dict:
-    """What a restore actually did, rather than what it was asked to cover.
-
-    Listing every tracked file whatever happened is untrue the moment most of them were
-    byte-identical and never touched. Naming only the rewritten ones makes the answer
-    match the tree, and makes the next build's size predictable from it: those are
-    exactly the files the build system now sees as new.
-    """
+    """What a restore rewrote (the files the next build sees as new), not what it covered."""
     names = [os.path.basename(p) for p in rewritten]
     return {"restored": names, "unchanged": max(0, len(paths) - len(names))}
 
@@ -714,28 +639,7 @@ def reset_to_best(proxy_name: str = "") -> dict:
 
 
 def rebaseline(proxy_name: str = "") -> dict:
-    """Re-measure from the current tree, keeping the history that led here.
-
-    ``init`` refuses to move an existing baseline, and it is right to: re-snapshotting
-    mid-optimisation quietly promotes already-optimised code to "the original", after
-    which "is this faster than what we started with?" can no longer be asked. But that
-    invariant answered only half the question. The other half — *the instrument was
-    wrong, measure again from here* — had no supported answer at all, and a harness is
-    sealed before anyone has seen it produce a number.
-
-    So it got an unsupported one::
-
-        end -> proxy_manage(op='clean') -> init -> run
-
-    the only sequence that moves a baseline, and it moves it by destroying the ledger to
-    get there — accepted runs and their numbers gone from the record while their code
-    stays on disk, uncredited.
-
-    This op is that sequence made honest. The ledger and the best-so-far are *archived*
-    under a timestamp rather than deleted, the new baseline is taken from the tree as it
-    stands, and the reply says plainly that comparisons now run against this point and
-    not against the original.
-    """
+    """Take a new baseline from the current tree, archiving the ledger and best (never deleting)."""
     cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
@@ -809,14 +713,7 @@ def _archive_session_history(proxy_name: str, stamp: str) -> list[str]:
 
 
 def end(proxy_name: str = "") -> dict:
-    """End the optimization session: drop the active-session pointer.
-
-    A clean close for the session. The proxy source, snapshots, ledger and best
-    stay on disk for history — only the "current session" marker is cleared, so
-    subsequent nameless ops no longer resolve to it and the client's direct-exec
-    guard lifts (the proxy may be run by hand again). Refuses while a run is still
-    in flight so a live job is never orphaned. Re-``init`` to optimize again.
-    """
+    """End the session: clear the active pointer (files stay); refused while a run is in flight."""
     cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",

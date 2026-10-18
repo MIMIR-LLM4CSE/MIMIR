@@ -1589,6 +1589,30 @@ Proxy output protocol:
 - Optional roofline keys: `flops` (total FP operations), `bytes_moved` (bytes transferred), `time_s` (wall time). Roofline peaks come from the registration `metadata` (`peak_gflops_per_s`, `peak_bandwidth_gbytes_per_s`) only; unset means no roofline row rather than a guessed ceiling.
 - If no block markers are found, the server falls back to scanning the last stdout lines for `KEY=VALUE` (single-token RHS only).
 
+Storage: everything lives under `<workspace>/proxy_bench/` (`MIMIR_PROXY_BENCH_DIR`
+overrides it): `registry.json`, `references/`, `runs/<proxy>/<timestamp>/`,
+`suites/<name>/`, `opt_runs/<proxy>/`, `scaffolds/`, `harnesses/` (where a hand-written
+`proxy_source_path` belongs) and the `opt.git` snapshot repository. With the project, so
+deleting the project resets the experiment.
+
+The optimization runner (`_proxy_runner.py`, launched through `_launch.py` with
+`--run-dir <dir> [--phase all|build|run]`) reads `<run-dir>/config.json`:
+
+```
+{"proxy_name": str, "benchmark_name": str,
+ "requirements": [{"metric", "operator", "threshold"}],
+ "python_executable": str?, "deadline_s": float? (24 h), "per_case_timeout_s": float?,
+ "convergence": {"h_param", "error_metric"}?, "partition": str?,
+ "placement": {"run": {...}, "build": {...}}?}
+```
+
+and reports on stdout in lines the results op parses:
+
+```
+[proxy_runner] case=<case_id> sweep=<idx> time_s=<n> passed=<T/F> [<metric>=<v> ...]
+[proxy_runner] summary cases_passed=<n> cases_total=<m> all_passed=<T/F> best_case=<id> best_time_s=<n>
+```
+
 Suite case schema (for `proxy_manage(op='suite_define')`):
 ```json
 {"case_id": "baseline_32", "description": "baseline at size 32",

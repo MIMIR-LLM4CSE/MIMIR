@@ -19,22 +19,9 @@ _REFERENCE_METRICS = ("conservation_residual", "l2_abs", "l2_rel",
 
 
 def check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | None:
-    """The proxy is a HARNESS; the code under optimisation is somewhere else.
+    """Why *paths* are not a sound ``optimize_paths`` (not a file, outside, the harness itself), or None.
 
-    Nothing here is language-specific: an entry is checked for being a file, inside
-    the workspace, and not the harness itself. A compiled project lists its sources
-    and declares a build_cmd; the harness then exercises the binary the build
-    produces. What must not be listed is a generated file, which a build would
-    rewrite underneath the snapshot.
-
-    The shape that must be refused rather than discouraged is a harness that
-    reproduces the code it is supposed to measure. The ratchet's guarantee (l2_rel
-    against a sealed reference) would then hold for the duplicate and for nothing that
-    ships — and a standalone script has neither the imports, nor the module-level
-    initialisation, nor the memory layout of the package it mirrors, so what gets
-    measured is not the thing. Prose does not prevent that; a refusal does.
-
-    Returns an error string, or None when the declared shape is sound.
+    The harness measures the code; it must not be, or reproduce, the code optimized.
     """
     root = workspace_root()
     if not paths:
@@ -75,13 +62,7 @@ def check_requirements(requirements: list[dict]) -> str | None:
 def check_reference_requirements(
     requirements: list[dict], suite: dict, entry: dict,
 ) -> str | None:
-    """Reject requirements that can never be satisfied with this setup.
-
-    Reference-dependent metrics (see ``_REFERENCE_METRICS``) are computed
-    server-side against a sealed reference; ``conservation_residual``
-    additionally needs the registration to name the conserved scalar. Failing
-    fast here turns a dead-end session into an actionable setup error.
-    """
+    """Why a reference metric requirement can never be met here (no reference, no conserved scalar), or None."""
     needed = sorted(set(_REFERENCE_METRICS).intersection(
         r.get("metric") for r in requirements))
     if not needed:

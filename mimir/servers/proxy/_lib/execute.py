@@ -1,18 +1,6 @@
-"""Proxy execution: synchronous case runs, reference sealing, detached finalize.
-
-The three entry points every launch path funnels through:
-
-* ``run_benchmark_case`` — one synchronous case run (suite runs + the
-  optimization runner), applying the reserved-metrics purge, the ``time_s``
-  plausibility guard, and the non-zero-exit gate.
-* ``seal_reference``    — blocking run whose output becomes an immutable
-  reference dataset.
-* ``_post_run_finalize`` — settles a *detached* run (local wrapper or Slurm
-  postrun.py) into metrics.json.
-
-All three share ``_settle_metrics`` (purge + timing guard) and
-``_apply_invariants`` (reference comparison, finiteness, conservation), so a
-detached run carries exactly the metrics a synchronous one does.
+"""Proxy execution: ``run_benchmark_case`` (one synchronous case), ``seal_reference`` (a
+blocking run kept as an immutable reference), ``_post_run_finalize`` (a detached run's
+metrics.json). All share the reserved-metrics purge, the timing guard and the invariants.
 """
 
 from __future__ import annotations
@@ -54,13 +42,7 @@ def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None) -
 
 
 def _binary_fingerprint(path: str) -> dict:
-    """Identify the executable a reference was sealed from.
-
-    A reference is immutable, so one sealed from a stale binary is wrong for
-    good, and every l2_rel in the session inherits it. The server cannot rebuild
-    here — sealing runs inside the MCP process, under the client's call budget —
-    so it records what it ran and names the drift later instead.
-    """
+    """Identify the executable a reference was sealed from, so a stale one can be named later."""
     try:
         st = os.stat(path)
         h = hashlib.sha256()
@@ -151,12 +133,9 @@ def run_benchmark_case(
     tag_suffix: str = "",
     per_case_timeout_s: float | None = None,
 ) -> tuple[str, dict]:
-    """Run one proxy case synchronously and return (run_dir, row_dict).
+    """Run one case synchronously: ``(run_dir, row)``; the row has ``"error"`` on timeout or failure.
 
-    ``deadline`` is a monotonic timestamp; the run is capped at the remaining
-    budget (deadline - now).  ``per_case_timeout_s`` further caps a single case
-    when set (None = no per-case cap beyond the remaining budget).  On timeout
-    or error the row contains an ``"error"`` key instead of metrics.
+    Capped by *deadline* (monotonic) and *per_case_timeout_s*.
     """
     srd = store.proxy_runs_dir(proxy_name)
     os.makedirs(srd, exist_ok=True)
@@ -244,17 +223,10 @@ def seal_reference(
     max_output_mb: int = DEFAULT_MAX_OUTPUT_MB,
     timeout_s: int = REF_RUN_TIMEOUT,
 ) -> tuple[dict, dict | None]:
-    """Run a proxy synchronously and store its output as an immutable reference.
+    """Run a proxy and store its output as an immutable reference.
 
-    Blocking.  Returns ``(result, None)`` on success or ``({}, err_response)``
-    on failure, where ``err_response`` is a ready-to-return ``err()`` dict
-    (preserving hints and log tails).  ``result`` contains::
-
-        {reference_name, ref_dir, metrics, output_stored, elapsed_s}
-
-    The proxy ``entry`` is the registry record (must include name, executable,
-    run_cmd_template, output_format).  This is the single source of truth used by
-    ``proxy_exec(op='reference')`` and ``proxy_exec(op='benchmark_create')``.
+    ``(result, None)`` with ``{reference_name, ref_dir, metrics, output_stored, elapsed_s}``,
+    or ``({}, err_response)``. Used by ``reference`` and ``benchmark_create``.
     """
     proxy_name = entry.get("name", "")
     timeout_s = max(10, min(timeout_s, REF_RUN_TIMEOUT))
@@ -364,14 +336,7 @@ def _post_run_finalize(
     wall_s: float | None = None,
     returncode: int | None = None,
 ) -> None:
-    """Parse stdout.log and write metrics.json for a detached run.
-
-    Called by the local-run wrapper (which passes ``wall_s``/``returncode``
-    directly) and by Slurm postrun.py (which leaves them to be read from the
-    ``wall_time_ms``/``returncode`` files the batch script wrote).  A non-zero
-    exit skips metrics.json so the run reads as 'crashed', matching the
-    synchronous paths.
-    """
+    """Parse stdout.log into metrics.json for a detached run; a non-zero exit writes none (crashed)."""
     if returncode is None:
         returncode = procs.read_int_file(os.path.join(run_dir, "returncode"))
     if returncode is not None and returncode != 0:

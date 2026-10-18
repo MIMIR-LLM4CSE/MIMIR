@@ -1,13 +1,6 @@
-"""Settling the ratchet: one run's verdict, written down once.
+"""Settling the ratchet: one run's verdict, written once (flock, frozen ``ratchet.json``).
 
-Called from two places that never share a process — the ops layer when the caller
-asks for results, and the detached runner at completion — so it must be idempotent
-and serialized, which is what the flock and the frozen ``ratchet.json`` are for.
-The ledger and best-so-far are the source of truth even if nobody ever asks.
-
-The reusable decision pieces underneath (``ratchet_verdict``, best-so-far, ledger,
-measurement policy) live in ``_lib/ratchet.py``; this module owns the session-level
-settle on top of them.
+Called by the results op and by the detached runner; the decisions are in ``_lib/ratchet.py``.
 """
 
 from __future__ import annotations

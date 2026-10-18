@@ -136,19 +136,7 @@ def sbatch_header_lines(
     dependency: str = "",
     kill_on_invalid_dep: bool = False,
 ) -> list[str]:
-    """Return the ``#!/bin/bash`` + ``#SBATCH`` directive lines (no command body).
-
-    One node always: a proxy run is one process tree. The directives themselves come
-    from ``_shared/slurm_script`` so the proxy and the HPC server request resources
-    the same way — a flag one of them learns is a flag both need.
-
-    ``constraint`` and ``nodelist`` are what make a partition insufficient on a
-    heterogeneous cluster: a partition says which queue, a feature expression says
-    which hardware inside it. ``dependency`` chains one job behind another, which is
-    how a build job and the run that measures its output stay in order. ``comment`` is
-    free text Slurm stores with the job and ``sacct -o Comment`` reads back — it is how
-    a submission says, to whoever looks at the queue later, what it was for.
-    """
+    """The ``#SBATCH`` lines of a proxy job: one node, directives from ``_shared/slurm_script``."""
     return sbatch_header(
         job_name=job_name, partition=partition, nodes=1, ntasks=ntasks,
         cpus_per_task=cpus_per_task, wall_time=wall_time, mem=mem, log_file=log_file,

@@ -1,12 +1,5 @@
-"""proxy_exec's blocking ops (reference, suite, benchmark_create) run as detached jobs.
-
-Each of them runs the proxy to completion — up to an hour for a reference, two for a
-suite. Run inside the tool call, that hit the client's tool wall long before the work
-was done, and a synchronous tool also held the server's event loop the whole time. The
-op now runs in a worker process of its own (``_proxy_job.py``) that writes its reply to
-``result.json``; the call waits for it as ``proxy_eval(op='run')`` does, and hands it to
-the background watcher when asked to up front, when the user diverts it, or when the
-wait budget runs out.
+"""proxy_exec's long ops (reference, suite, benchmark_create) as detached worker processes
+(``_proxy_job.py``), awaited like ``proxy_eval(op='run')`` and handed to the watcher.
 """
 
 from __future__ import annotations

@@ -1,11 +1,7 @@
-"""Storage layout and persistence for the proxy server.
+"""Where proxy state lives (under ``<workspace>/proxy_bench/``) and its persistence.
 
-Single source of truth for where proxy state lives on disk.  Every path is
-derived from the one module attribute ``_CACHE_DIR`` (env-overridable via
-``MIMIR_PROXY_BENCH_DIR``), so tests repoint exactly one variable to get a
-hermetic store.  It defaults under the *workspace*, so the state of an experiment
-lives with the project it belongs to.  Also owns the generic atomic-IO helpers and the registry /
-suite / reference / optimization-session persistence built on them.
+Every path derives from ``_CACHE_DIR`` (``MIMIR_PROXY_BENCH_DIR``); also the atomic IO and
+the registry, suite, reference and optimization-session stores.
 """
 
 from __future__ import annotations
@@ -22,17 +18,9 @@ from ..._shared.responses import err
 
 # ── storage root ──────────────────────────────────────────────────────────────
 
-# Under the WORKSPACE, not ~/.cache, like everything else MIMIR persists: it is visible,
-# and it goes when the project goes, rather than leaving a registry and an "in progress"
-# optimisation for a project that no longer exists.
-#
-# Not `<workspace>/.mimir/`: that name is the workspace's *extensions* directory. Not the
-# per-workspace state dir either: sealed reference fields are npz of several megabytes
-# each, and ~/.mimir has no business growing without bound.
-#
-# MCP_FILES_ROOT is how every server here learns the workspace root (see server_bash);
-# cwd is its fallback. MIMIR_PROXY_BENCH_DIR still wins, which is what lets a test
-# repoint the whole store by setting one variable.
+# Under the workspace, so the experiment goes with the project; not `.mimir/` (the
+# extensions directory) nor the state dir (references are megabytes). Workspace from
+# MCP_FILES_ROOT, else cwd; MIMIR_PROXY_BENCH_DIR wins (tests).
 _WORKSPACE_ROOT = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd())
 
 _CACHE_DIR = (os.environ.get("MIMIR_PROXY_BENCH_DIR")
@@ -44,13 +32,7 @@ def cache_dir() -> str:
 
 
 def workspace_root() -> str:
-    """The workspace the servers were started against, resolved, read at call time.
-
-    ``_WORKSPACE_ROOT`` above is frozen at import, which is what the store's own layout
-    wants; this is the live answer, which is what anything comparing paths against the
-    tree wants. Two spellings of one file must not read as two files, hence realpath —
-    ``build._declared_root`` deliberately does not resolve, for the opposite reason.
-    """
+    """The live workspace root, realpath-resolved (``build`` keeps its spelling instead)."""
     return os.path.realpath(os.path.abspath(
         os.environ.get("MCP_FILES_ROOT") or os.getcwd()))
 
@@ -84,17 +66,7 @@ def opt_runs_dir() -> str:
 
 
 def active_session_file(session_id: str | None = None) -> str:
-    """The pointer naming the proxy a nameless ``proxy_eval`` op acts on.
-
-    One file per MIMIR session. The store itself is shared — references, scaffolds and
-    sealed fields are build artefacts of the project, and locking them is what
-    ``registry_lock`` is for — but *which optimisation a conversation is currently
-    driving* is the conversation's own: under a single pointer a ``proxy_eval(op='init')``
-    in one session retargets every nameless op in all the others, and a run meant for
-    ``foo`` is measured against ``bar``.
-
-    Unsuffixed when there is no session: the CLI, standalone runs, tests.
-    """
+    """The pointer to the proxy a nameless ``proxy_eval`` op acts on: one per MIMIR session."""
     sid = session_id if session_id is not None else _mimir_session_id()
     name = f"active_session.{sid}" if sid else "active_session"
     return os.path.join(opt_runs_dir(), name)
@@ -156,20 +128,10 @@ _REGISTRY_LOCK_LOCAL = threading.local()
 
 @contextlib.contextmanager
 def registry_lock(create: bool = False):
-    """Exclusive, re-entrant flock around registry read-modify-write operations.
+    """A re-entrant (thread-local depth) flock around registry read-modify-write.
 
-    Re-entrant because mutation paths hold the lock while calling
-    ``load_registry``, which locks for its own read; the depth is thread-local
-    so concurrent tool dispatch on worker threads still serializes.
-
-    ``create`` says whether taking the lock may bring the store into existence.
-    It defaults to False because the lock is on the read path too, and a plain
-    ``proxy_get`` on a project that has never registered a proxy must not leave a
-    ``proxy_bench/`` directory and a lock file behind in the user's tree — that is a
-    read tool writing, including in plan mode where nothing should be written at
-    all. With no store on disk there is no registry to race over, so the lock is skipped
-    entirely and the read returns empty. Only :func:`registry.register` passes
-    ``create=True``: registering a proxy is the act that creates the store.
+    Without a store on disk and without *create*, it does nothing: a read must not create
+    ``proxy_bench/``. Only ``register`` passes ``create=True``.
     """
     depth = getattr(_REGISTRY_LOCK_LOCAL, "depth", 0)
     if depth > 0:

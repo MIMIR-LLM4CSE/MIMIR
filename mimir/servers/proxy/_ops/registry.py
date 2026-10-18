@@ -37,19 +37,9 @@ _METADATA_DEFAULTS: dict = {
     # (default: 30 min). See _lib/build.py for why the server runs the build itself.
     "build_cwd": "",
     "build_timeout_s": 0.0,
-    # Where the build is *submitted*, on a cluster. Naming a build_partition here is
-    # what splits proxy_slurm(op='eval') into a build job and a run job: the compile
-    # goes to a machine made for compiling, the measurement to the one being
-    # measured. It belongs on the registration rather than on each call because it is
-    # a property of the proxy — the ratchet submits the same run hundreds of times,
-    # and re-deciding this every iteration is how it comes out wrong once.
-    # Left empty, nothing changes: one job, both phases, as before.
-    # The zero/empty values below mean "whatever the run phase was given".
-    # Variables pinned for the build, merged over the inherited environment. What is
-    # inherited is the MCP server's environment, not the shell the user builds in by
-    # hand; when the two disagree on the compiler or on CCACHE_DIR, each build
-    # invalidates the other's artifacts and the project recompiles in full every time
-    # it changes hands. Empty means inherit everything, as before.
+    # Where the build is submitted on a cluster: a build_partition splits
+    # proxy_slurm(op='eval') into a build job and a run job. Zero/empty values mean "as the
+    # run phase". build_env: variables pinned for the build over the server's environment.
     "build_env": {},
     "build_partition": "",
     "build_constraint": "",
@@ -399,14 +389,7 @@ def unregister(name: str) -> dict:
 
 
 def _other_proxies_with_state(name: str) -> list[str]:
-    """Proxies other than *name* that still have runs or an optimisation session.
-
-    Read from the store rather than from the registry: an unregistered proxy can still
-    own a best-so-far worth restoring, and it is the state on disk, not the registration,
-    that a shared snapshot store is keeping alive. Called AFTER this proxy's own
-    directories are gone, so it never counts itself. A missing directory reads as "none",
-    which is the same answer it would give if it were empty.
-    """
+    """Other proxies that still have runs or a session on disk (after this one's removal)."""
     found: set[str] = set()
     for directory in (store.runs_dir(), store.opt_runs_dir()):
         try:
@@ -420,19 +403,9 @@ def _other_proxies_with_state(name: str) -> list[str]:
 
 
 def clean(name: str) -> dict:
-    """Delete a proxy's runs, optimisation state and snapshots. Returns what survived.
+    """Delete a proxy's runs, optimization state and snapshots; return what survived.
 
-    ``unregister`` drops the registry entry and keeps everything else, which is correct
-    and is not enough on its own: without this, a proxy's state cannot be removed at
-    all, and starting again is silently resumed into the old optimisation —
-    ``active_session`` still names the proxy, the registry still holds a run command
-    pointing at a file that is gone.
-
-    It deliberately does NOT cascade into references and suites: a sealed reference costs
-    real compute and can be shared by a suite this proxy has nothing to do with. Instead
-    the response NAMES what it left behind and how to remove it — the property whose
-    absence made "I deleted everything and it still remembers" possible to live through
-    without ever seeing why.
+    References and suites are shared, so they stay, and the reply names them.
     """
     removed: list[str] = []
     kept_refs: list[str] = []
@@ -449,16 +422,7 @@ def clean(name: str) -> dict:
             except OSError as exc:
                 return err(f"Could not remove {label}: {exc}")
 
-    # The shadow snapshot repository and its fallback copies live beside the store root —
-    # ONE of them, written by every proxy, with no per-proxy identity inside it to remove
-    # (a single branch, a shared index, and each commit carrying the union of every path
-    # ever tracked). So the choice is all or nothing: removing it for one proxy takes
-    # every other proxy's history with it — their `best.json` keeps a snapshot id
-    # pointing into a repository that no longer exists, and `reset_to_best` fails with
-    # "Could not restore the best tree", a rollback lost by tidying up something else.
-    #
-    # The rule is the one this function already states for references and suites: what is
-    # shared is not removed on behalf of one proxy. Applied here, it was simply missing.
+    # The snapshot repository is shared by every proxy, so it is never removed for one.
     snapshot_paths = [os.path.join(store.cache_dir(), "opt.git"),
                       os.path.join(store.cache_dir(), "tree_snapshots")]
     others = _other_proxies_with_state(name)

@@ -82,13 +82,7 @@ def list_runs(proxy_name: str = "") -> dict:
 
 
 def run_status(run_id: str) -> dict:
-    """State of one run: 'pending'|'running'|'done'|'crashed'|'unknown', plus progress.
-
-    The single-run counterpart to ``list_runs``, which answers for every run at once
-    and so names no ``state`` of its own at the top level. A background watcher polls
-    exactly this shape — a top-level ``state`` it can test for a terminal value — so a
-    detached run has something to be tracked by; see ``slurm.eval_background_descriptor``.
-    """
+    """One run's state (pending, running, done, crashed, unknown) and progress: what a watcher polls."""
     run_dir = _resolve_run_dir(run_id)
     if not os.path.isdir(run_dir):
         return err(f"Run directory not found: {run_dir}")

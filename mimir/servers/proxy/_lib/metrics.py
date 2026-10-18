@@ -1,11 +1,5 @@
-"""Metrics parsing, numerical invariants, and requirement evaluation.
-
-Everything that turns solver output into trusted numbers lives here: the
-``PROXY_METRICS_BEGIN…END`` block parser, the reserved server-side invariants
-(the code under optimization must not be able to satisfy its own acceptance
-constraints), the ``time_s`` plausibility guard, field I/O and error norms,
-and the pass/fail requirements engine.  No dependencies on the rest of
-``_lib`` — numpy is imported lazily.
+"""Turning solver output into trusted numbers: the metrics block parser, the reserved
+invariants, the ``time_s`` guard, field I/O and error norms, the requirements engine.
 """
 
 from __future__ import annotations
@@ -20,15 +14,7 @@ from ..._shared.numerics import RESERVED_METRICS
 
 _METRICS_BEGIN = "PROXY_METRICS_BEGIN"
 _METRICS_END   = "PROXY_METRICS_END"
-# WORDS ONLY. With "1" and "0" in these sets — tested before the int branch — every
-# metric that happened to equal one or zero became a boolean. This is a numerics tool:
-# 0 and 1 are values, not flags. ``cases_passed=0 cases_total=1`` reached the model as
-# ``false``/``true``, the counts gone; and a proxy reporting ``time_s=1`` became True,
-# which the plausibility guard below (bools excluded by design) then discarded in favour
-# of wall time — silently rewriting the ratchet's own objective.
-# Genuine booleans are unaffected: the runner prints Python bools, so ``all_passed=True``
-# and ``converged=false`` still arrive as words. And a requirement like ``finite == 1``
-# still passes with the int, since the engine compares through float().
+# Words only: 0 and 1 are values in a numerics tool, never booleans.
 _TRUE_VALS     = {"true", "yes"}
 _FALSE_VALS    = {"false", "no"}
 
@@ -99,13 +85,9 @@ def strip_reserved_metrics(metrics: dict) -> list[str]:
 
 
 def normalize_time_metrics(metrics: dict, wall_s: float) -> None:
-    """Record the server-measured wall time and guard the self-reported time_s.
+    """Record the measured wall time; an impossible ``time_s`` moves to ``time_s_ignored``.
 
-    ``time_s`` stays proxy-reported (a kernel may legitimately exclude startup),
-    but a non-positive claim or one exceeding the measured wall time is
-    impossible: it moves to ``time_s_ignored`` and the wall time replaces it.
-    ``time_s`` is the ratchet's default objective, so this is what stops a
-    forged timer from ratcheting the best-so-far.
+    ``time_s`` is the ratchet's default objective, so a forged timer must not count.
     """
     metrics["wall_time_s"] = wall_s
     reported = metrics.get("time_s")
@@ -218,13 +200,7 @@ def conservation_discrepancy(run_metrics: dict, ref_metrics: dict, key: str) -> 
 
 
 def observed_convergence_order(pairs: list[tuple[float, float]]) -> float | None:
-    """Observed order of accuracy from ``(h, error)`` pairs via a log-log fit.
-
-    Fits ``log(error) = p·log(h) + c`` by least squares and returns the slope
-    ``p``.  Needs at least two pairs with strictly positive, finite ``h`` and
-    ``error``; returns ``None`` otherwise (e.g. a single resolution, or an
-    error that hit exact zero and cannot be log-scaled).
-    """
+    """The slope of a log-log fit of ``(h, error)`` pairs, or None with fewer than two usable pairs."""
     try:
         import numpy as np
     except ImportError:
@@ -246,16 +222,9 @@ VALID_OPT_OPERATORS = {"lt", "gt", "lte", "gte", "eq"}
 
 
 def evaluate_requirements(metrics: dict, requirements: list[dict]) -> dict:
-    """Evaluate a list of requirements against a metrics dict.
+    """``{"passed", "results": [{"metric", "operator", "threshold", "actual", "met"}]}``.
 
-    Each requirement must have keys: metric (str), operator (str), threshold (float).
-    Valid operators: lt (<), gt (>), lte (<=), gte (>=), eq (==).
-
-    Returns:
-        {
-            "passed": bool,
-            "results": [{"metric", "operator", "threshold", "actual", "met"}, ...]
-        }
+    Operators: lt, gt, lte, gte, eq.
     """
     results = []
     all_met = True

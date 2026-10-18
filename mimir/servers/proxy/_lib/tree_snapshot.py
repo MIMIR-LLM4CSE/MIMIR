@@ -1,37 +1,8 @@
-"""Atomic snapshots of the file set under optimization.
+"""Atomic snapshots of the file set under optimization, taken and restored as one.
 
-WHY A SET AND NOT A FILE. A best *per file* would be wrong in a way that does not
-announce itself: restoring "the best version of each" can assemble a combination never
-measured together (file A from run 7 beside file B from run 12, after a signature
-changed in run 9), which may even run and produce a number that means nothing. The unit of acceptance has to be the tree
-state that was measured, taken and restored as one.
-
-WHY GIT. "Snapshot a set of paths, label it, restore it atomically, diff two of them" is
-version control. Writing a bespoke one means maintaining a format that can be corrupted
-in ways git's cannot. So this drives a *shadow* repository: the git dir lives in the proxy
-store, the work tree is the workspace, and only the declared paths are ever added. The
-user's own ``.git`` is never opened, no branch or index of theirs is touched, and the
-workspace does not need to be a repository at all.
-
-Every invocation carries its own identity and disables signing: a machine with no
-``user.email`` configured, or with a global signing hook, must not turn "record the state
-I just measured" into a failed run. ``add -f`` for the same reason — a global
-``core.excludesFile`` matching ``*.py`` is somebody's real configuration, and it is not
-this store's business to honour it.
-
-FALLBACK. Where git is unavailable the same API copies the tracked paths into a directory
-per snapshot. Same semantics including atomicity, more disk, no diff. A fallback, not a
-design: it exists so an unusual machine degrades instead of failing.
-
-WHAT A RESTORE WRITES. Only the files whose content actually differs from the snapshot.
-That is not an optimisation of disk writes — a restored file is deliberately stamped with
-the current time, because a build system decides what to recompile by comparing mtimes,
-and a file dated before the artifact built from it would be skipped. A fresh mtime is
-therefore an *instruction to recompile*, and giving it to a file whose bytes never
-changed is a false one, which would make every reset_to_best after a one-file edit cost
-a full rebuild. Both backends decide by content, never by stat: git by blob sha via ls-tree/hash-object, the fallback by
-reading both files. Not ``filecmp`` — its cache is keyed on (size, mtime), so an edit
-landing in the same filesystem tick as a restore would come back "identical".
+A shadow git repository in the store (never the user's ``.git``), signing off and
+``add -f``; a copy-per-snapshot fallback without git. A restore writes only the files
+whose content differs: a fresh mtime tells the build system to recompile.
 """
 
 from __future__ import annotations
@@ -144,23 +115,9 @@ def _worktree_blobs(git_dir: str, work_tree: str,
 
 def _git_restore(git_dir: str, work_tree: str, paths: list[str],
                  snapshot_id: str) -> list[str] | None:
-    """Check out only the tracked paths whose content actually differs.
+    """Check out only the tracked paths whose content differs from the snapshot (or is missing).
 
-    ``git checkout <commit> -- <pathspec>`` rewrites every path it is handed, whether
-    or not the content changed, and a rewritten file carries the current time. Handing
-    it the whole tracked set — which is what this did — told the build system that
-    every one of those files was new, so a reset_to_best undoing a one-file edit cost a
-    rebuild of all of them, and of everything downstream of a header among them.
-
-    So the set is narrowed first, by content. A path that is byte-identical to the
-    snapshot needs no write at all: whatever artifact exists was built from exactly
-    those bytes, and leaving its mtime alone is the correct answer rather than a
-    shortcut. Anything missing from disk is restored, since "identical" is meaningless
-    there.
-
-    Either probe failing falls back to the unconditional checkout: degrading towards
-    "rebuilt more than necessary" is acceptable, degrading towards "did not restore"
-    is not.
+    A failed probe falls back to checking out everything.
     """
     rels = _rel(work_tree, paths)
     snapshot = _snapshot_blobs(git_dir, work_tree, snapshot_id, rels)
@@ -254,20 +211,8 @@ def _copy_restore(git_dir: str, work_tree: str, paths: list[str],
             staged.append((tmp, final, rel))
         for tmp, final, _rel_name in staged:
             os.replace(tmp, final)
-            # copy2 carried the snapshot's mtime across, which would date a
-            # restored file to before the artifact built from it. `make` reads
-            # exactly that comparison and would skip the rebuild, so the next
-            # run would measure the binary of the attempt this restore is
-            # undoing. Stamping the file as new is what lets the build system
-            # decide correctly.
-            #
-            # Which is precisely why only the files above reach this loop. A
-            # fresh mtime is an instruction to recompile, and handing it to a
-            # file whose bytes never changed is a false one: the artifact beside
-            # it was built from exactly these bytes. Stamping the whole tracked
-            # set — which is what this did — turned every reset_to_best after a
-            # one-file edit into a full rebuild, and into a rebuild of
-            # everything downstream when a header was among them.
+            # Stamped as new, so the build system recompiles it; only files whose content differed
+            # reach this loop.
             os.utime(final, None)
     except OSError:
         for tmp, _final, _rel_name in staged:
@@ -294,18 +239,7 @@ def snapshot(git_dir: str, work_tree: str, paths: list[str], message: str) -> st
 
 def restore(git_dir: str, work_tree: str, paths: list[str],
             snapshot_id: str) -> list[str] | None:
-    """Put *paths* back to *snapshot_id*, all of them or none.
-
-    Returns the work-tree-relative paths it actually had to write, or None on failure.
-    **An empty list is a success**, not a failure: it means the tree was already in that
-    state and nothing needed touching — so ``if not restore(...)`` is the one way to
-    read this wrong, and callers test ``is None``.
-
-    Only files whose content differs are written, because writing one is how this tells
-    the build system to recompile it (see ``_git_restore`` and ``_copy_restore``). The
-    end state is the snapshot either way; what changes is how much of the project has to
-    be rebuilt to measure it.
-    """
+    """Put *paths* back to *snapshot_id*: the paths rewritten ([] is success), or None on failure."""
     if not snapshot_id or not paths:
         return None
     # A copy-backed id is a short hex tag with a directory to match; anything else is a
