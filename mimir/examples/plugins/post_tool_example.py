@@ -1,12 +1,7 @@
 """Example post-tool hook: run the project's own checks after the agent edits code.
 
-Drop into ``.mimir/plugins/``. This is the seam for evidence the *machine* observes,
-next to the verdict the model states about itself — a red suite recorded here makes the
-turn-end gates refuse the conclusion, with no blocking mechanism of its own.
-
-Keep a hook cheap: it runs after every matching tool call, inside a 60 s budget, and its
-cost is paid on every edit. Filter hard, and prefer the narrowest command that answers
-the question.
+Copy into ``.mimir/plugins/``. Keep a hook cheap: it runs after every matching call,
+within 60 s.
 """
 
 from mimir.client.extensions import PostToolRule, register_post_tool

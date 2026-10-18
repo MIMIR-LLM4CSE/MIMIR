@@ -1,16 +1,5 @@
-"""Core types for the run engine — the contract an integration implements.
-
-A :class:`BenchTask` is one unit of work for the agent. An adapter (see
-:class:`BenchmarkAdapter`) turns a benchmark into a stream of these tasks and
-grades the agent's answer for each. The two seams that let *any* benchmark plug in:
-
-- ``BenchTask.setup`` — materialise the task's workspace (seed files for a
-  synthetic suite, or a repo checkout for SWE-bench-style benchmarks). It runs
-  *before* the MCP file/search servers are spawned, so they root at the
-  populated workspace.
-- ``BenchmarkAdapter.score`` — grade the run by inspecting the workspace; an
-  external benchmark calls its own evaluator (e.g. compiles/runs the solution or
-  runs the instance's test suite) inside ``ctx.workspace``.
+"""The run engine's contract: :class:`BenchTask` (one task, with ``setup`` for its
+workspace) and :class:`BenchmarkAdapter` (the tasks and ``score``, run in ``ctx.workspace``).
 """
 from __future__ import annotations
 

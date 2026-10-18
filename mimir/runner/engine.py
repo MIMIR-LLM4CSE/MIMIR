@@ -1,27 +1,8 @@
-"""Headless run engine — drives the agent over a list of tasks, adapter-agnostic.
+"""The headless run engine: ``run_benchmark`` drives the agent over an adapter's tasks.
 
-This is the agent's "batch mode": given an adapter (a list of tasks + a scorer),
-``run_benchmark`` runs the agent over every task and returns a JSON-serialisable
-summary. It does **no scoring of its own** — scoring is the adapter/benchmark's job.
-
-For each task (``run_one``): materialise its workspace (``task.setup``), point the
-MCP file/search servers at that workspace (they read ``os.getcwd()`` at spawn — see
-``integration/server_manager.connect_server``), drive the agent
-with a fixed ``max_steps`` (the only place a run is bounded),
-then hand the answer to the adapter's scorer.
-
-Two things make a run unattended:
-- A **fresh ``MimirAgent`` per task** so no state (``_carry_context``,
-  ``_tool_cache``, history) leaks between tasks.
-- An **auto-approve hook** that replaces the interactive approval gate. Batch
-  mode already auto-approves write/edit tools, but ``non_batch_tools`` (code
-  execution / shell) would otherwise block on ``input()``; the hook approves
-  every tool. WARNING: this runs every tool without confirmation — only point it
-  at trusted benchmark workloads in a sandbox.
-
-A single task failing (timeout, crashed server, scorer error) records a failed
-result instead of aborting the whole suite; a task whose ``requires`` toolchain is
-absent is recorded *skipped* without spending an agent run.
+Per task: set up its workspace, start the servers there, run a fresh agent with every
+tool approved (trusted workloads only), hand the answer to the adapter's scorer. A
+failing task is recorded, not fatal; a task missing its toolchain is skipped.
 """
 from __future__ import annotations
 
@@ -145,14 +126,10 @@ async def run_benchmark(
     get_backend_override: Any | None = None,
     enforcement: str | None = None,
 ) -> dict:
-    """Run *adapter*'s tasks through the agent; return a summary dict (optionally written).
+    """Run *adapter*'s tasks; return a summary dict, written to *report_path* if given.
 
-    ``backend`` selects the live backend (``vllm``/``ollama``) via the ``LLM_BACKEND``
-    env var the factory reads. ``get_backend_override`` injects a backend factory (e.g.
-    a ``ScriptedBackend`` for CI), bypassing the live model. ``enforcement`` overrides
-    the model-profile nudge level (``strict``/``light``/``off``) for every task, so a
-    run is graded at one fixed level; ``None`` keeps each model's profile default.
-    Pass-rate is computed over tasks that actually ran (skips excluded).
+    *get_backend_override* injects a backend (CI); *enforcement* fixes the nudge level for
+    every task. The pass rate excludes skipped tasks.
     """
     if get_backend_override is None:
         os.environ["LLM_BACKEND"] = backend

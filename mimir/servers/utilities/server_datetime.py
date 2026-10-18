@@ -1,15 +1,4 @@
-"""
-MCP DateTime Server
-===================
-Date and time utilities.  All tools return structured dicts.
-
-Workflow examples:
-  - "What time is it in Tokyo?" → current_datetime(tz="Asia/Tokyo")
-  - "How many days until 2027-01-01?" → days_between("2026-03-23", "2027-01-01")
-  - "What day of the week is my birthday?" → day_of_week("1990-07-14")
-  - "Add 30 days to today" → add_days("2026-03-23", 30)
-  - "Reformat '14/07/1990' to 'July 14, 1990'" → format_date("14/07/1990", "%d/%m/%Y", "%B %d, %Y")
-"""
+"""MCP DateTime Server: date and time utilities returning structured dicts."""
 
 from datetime import date, datetime, timedelta
 

@@ -1,17 +1,4 @@
-"""MCP Symbolic Math Server
-
-Symbolic mathematics (also called symbolic computation or symbolic algebra) server.
-This server provides tools for symbolic mathematics using SymPy, allowing users to
-perform algebraic manipulations, calculus, equation solving, and more.
-
-Features:
-- Symbolic expression creation and manipulation
-- Algebraic simplification and expansion
-- Calculus operations (derivatives, integrals, limits)
-- Equation solving (algebraic, differential)
-- Matrix operations with symbolic elements
-- Sequence and series operations
-"""
+"""MCP Symbolic Math Server: SymPy simplification, calculus, equation solving, matrices, series."""
 
 
 

@@ -39,35 +39,14 @@ _BLOCKED_NETS = [
 
 _TIMEOUT = 10   # seconds
 
-# Two different ceilings, because they defend against two different things.
-#
-# _MAX_BYTES bounds the socket read: it stops a hostile or runaway endpoint from
-# streaming forever, and 512 KB has always been the right order for that.
-#
-# _MAX_TEXT_CHARS bounds what comes back to the *model*, which is a separate
-# question nobody was asking. A 512 KB body is ~170k tokens on escape-dense
-# markup — around 80% of a 256k window, so two fetches could and did put a
-# session over it with no single call doing anything unusual. A ceiling
-# expressed only in socket bytes cannot see that; this one is sized against the
-# window it has to share.
-# Generous because the two ceilings below are separate: what is read off the wire and what
-# is handed to the model are bounded independently — prose, no-prose and error bodies each
-# on their own — so the read costs time and memory, not context. A single ceiling for both
-# makes a bigger read mean a bigger prompt, and the read has to be big: metadata lives in
-# <head> and a page can put a great deal in front of it. On one thesis record page
-# <meta name="description"> sits at byte 700 336, behind ~700 KB of inline CSS, so at
-# 512 KB the abstract is not slow to reach but unreachable.
+# Two ceilings: what is read off the wire (large, since metadata can sit behind hundreds
+# of KB of inline CSS) and what reaches the model (sized against the window, per body
+# kind, below). Reading more costs time, not context.
 _MAX_BYTES = 2 * 1024 * 1024   # 2 MB — what we will read off the wire
 _MAX_TEXT_CHARS = 128 * 1024   # 128 KB — what we will hand back to the model
 
-# What a document the parser found NO prose in may spend. Far below the ceiling above,
-# because "markup beats nothing" measures backwards. A thesis record page: 754 KB, 92% of
-# it one inline <style>. The socket read stops at 512 KB, entirely inside that block, so
-# the body never arrives and the parser correctly reports no text — at which point the
-# fallback would spend 131 072 chars, ~34k tokens, on CSS. Empty extraction is the
-# strongest evidence there is that the markup holds no prose; the only thing it is still
-# good for is showing the caller
-# what kind of page this is, which costs a sample and not a window.
+# What a page with no prose may spend: a small sample of its markup, to show what kind
+# of page it is.
 _MARKUP_FALLBACK_CHARS = 8 * 1024
 
 # What a FAILED request may spend. An error body is a diagnosis, never content: what is
@@ -145,18 +124,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class _TextExtractor(HTMLParser):
-    """Visible text from an HTML document, script and style discarded.
-
-    Stdlib only, and deliberately crude: the aim is to stop shipping markup to a
-    model that wanted prose, not to render the page. Markup is most of a modern
-    page's bytes — the tags, the class attributes, the inline JSON — and every one
-    of those bytes is escaped again when the message is serialised, so it is paid
-    for twice before anyone reads it.
-
-    Headings survive as headings, in the one notation a model reads without being told
-    (Markdown's), so a document comes back as named regions a reader can ask for by
-    name rather than one wall of prose.
-    """
+    """Visible text of an HTML document (no script or style), headings kept as Markdown ``#``."""
 
     _SKIP = {"script", "style", "noscript", "svg", "head"}
     _BREAK = {"p", "br", "div", "li", "tr"}
@@ -194,15 +162,7 @@ class _TextExtractor(HTMLParser):
 
 
 class _EmbeddedData(HTMLParser):
-    """The JSON a script-shell page carries its own content in.
-
-    The pages prose extraction fails on are largely the ones that ship their record
-    as data rather than as text: `application/ld+json` for a citation or a product,
-    `__NEXT_DATA__` and its equivalents for a whole rendered view. Dropping those and
-    keeping only `<head>` metadata would answer a 34k-token page by throwing away the
-    one part of it that held the answer — so they are harvested before the markup
-    sample, under the same budget.
-    """
+    """The JSON a script-shell page carries its content in (``ld+json``, ``__NEXT_DATA__``…)."""
 
     _TYPES = ("application/json", "application/ld+json")
 
@@ -254,14 +214,7 @@ def _embedded_data(body: str, budget: int) -> str:
 
 
 class _HeadSummary(HTMLParser):
-    """The page's own summary of itself: its title and its descriptive metadata.
-
-    Worth having because the pages prose extraction fails on are largely the ones
-    that describe themselves best. A record page built as a script shell, or one
-    whose body never arrived, still carries `og:title`, `description` and the
-    `citation_*` set in its `<head>` — which is the first thing off the wire, so it
-    survives a read that was cut long before the body.
-    """
+    """The page's title and descriptive ``<head>`` metadata (``og:*``, ``description``, ``citation_*``)."""
 
     _WANTED = ("description", "og:title", "og:description", "citation_title",
                "citation_author", "citation_publication_date", "citation_doi")
@@ -333,17 +286,9 @@ _TEXTUAL_APPLICATION_SUBTYPES = frozenset({
 
 
 def _looks_binary(body: str, content_type: str) -> bool:
-    """True when *body* is bytes that were never text, whatever the ceiling allows.
+    """True when *body* is decoded binary (a PDF, an image…), whatever its declared type.
 
-    A PDF, an image or an archive decoded with ``errors="replace"`` is not shorter
-    than a page — it is the same size in mojibake, and it JSON-escapes to more than
-    twice that on the way into the model's context (measured 2026-09-20: a 131072-char
-    PDF prefix went in as 502529 characters, ~125K tokens of catalog objects and
-    stream bytes, in a window budgeted for 160K). None of it can be read, so the
-    ceiling is the wrong instrument: the answer is not a smaller slice of binary.
-
-    Judged on the decoded text rather than on the declared type alone, since a server
-    that mislabels a PDF as octet-stream — or as nothing at all — must not get a pass.
+    Unreadable, and it JSON-escapes to more than twice its size in the model's context.
     """
     main = content_type.split(";")[0].strip().lower()
     if main and "/" in main:
@@ -432,14 +377,7 @@ def _readable_body(body: str, content_type: str, raw: bool) -> tuple[str, dict]:
 
 
 def _fit_body(body: str, note: dict, offset: int = 0) -> str:
-    """Apply the text ceiling, and say where to resume.
-
-    Deliberately the LAST step, after any targeting. Applied at the end of
-    `_readable_body` instead, it cuts the document to 128 KB before `offset` reaches it —
-    so page two of a long read comes back empty and the resume this ceiling exists to
-    enable can never be taken. `next_offset` is absolute for the same reason: it is handed
-    straight back as the next call's `offset`.
-    """
+    """Apply the text ceiling last, after targeting, and give an absolute ``next_offset``."""
     if len(body) <= _MAX_TEXT_CHARS:
         return body
     note["truncated"] = True
@@ -476,15 +414,9 @@ def _sections(text: str) -> list[tuple[str, int, int]]:
 
 
 def _find_matches(text: str, query: str) -> list[dict]:
-    """Regions and windows of *text* that answer *query*, best first.
+    """Regions and windows of *text* answering *query*, best first (``lexical_rank``).
 
-    Two passes, because a document names its own parts. A query matching a heading
-    wants that whole region — asking a thesis page for "résumé" should return the
-    abstract, not six sentences containing the word. Only when no heading matches do
-    we fall back to windows around the occurrences themselves.
-
-    Ranking reuses ``lexical_rank`` (servers/_shared/embed.py), the deterministic
-    token-overlap scorer already shared by the memory and platform searches.
+    A matching heading returns its whole region; otherwise windows around occurrences.
     """
     if not query.strip():
         return []
@@ -532,14 +464,7 @@ def _find_matches(text: str, query: str) -> list[dict]:
 
 
 def _targeted(body: str, contains: str, offset: int) -> tuple[str, dict]:
-    """Apply ``contains`` / ``offset`` to a body that is already readable text.
-
-    ``contains`` wins when both are given: naming what you want is more specific than
-    naming where it starts. Resume keys follow ``read_file_lines`` — ``truncated``,
-    ``total_chars``, ``next_offset`` — because the client already reads that contract
-    (tool_execution/executor.py `_build_continuation_hint`) and turns it into a
-    MORE_CONTENT hint on its own.
-    """
+    """Apply ``contains`` (which wins) or ``offset`` to readable text, with ``read_file_lines``'s resume keys."""
     note: dict = {}
     if contains.strip():
         matches = _find_matches(body, contains)
@@ -605,13 +530,7 @@ def _read_body(decoded: str, content_type: str, raw: bool,
 
 
 def _error_body(exc: urllib.error.HTTPError) -> tuple[str, dict]:
-    """The readable part of a failed response, and what was done to it.
-
-    Same treatment as a successful body — markup becomes text, because a block page
-    is mostly markup and its one useful sentence is buried in it — then a far tighter
-    ceiling, because nothing downstream is going to *use* this text. It only has to
-    say why the request failed.
-    """
+    """The readable part of a failed response, under a much tighter ceiling."""
     try:
         body = exc.read(_ERROR_BODY_READ).decode("utf-8", errors="replace")
     except Exception:

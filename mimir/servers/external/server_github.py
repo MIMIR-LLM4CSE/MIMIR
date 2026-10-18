@@ -1,13 +1,6 @@
-"""
-MCP GitHub Server
-=================
-Read-only GitHub access via the public GitHub REST API.
+"""MCP GitHub Server: read-only access through the GitHub REST API.
 
-Authentication
---------------
-If GITHUB_TOKEN is set in the environment, requests use it to raise rate limits
-and access private repositories available to that token. Without a token, only
-public data is available and rate limits are lower.
+``GITHUB_TOKEN``, when set, raises the rate limits and reaches private repositories.
 """
 
 import base64
@@ -216,13 +209,7 @@ def _raw_text(url: str) -> str:
 
 
 def _line_window(text: str, start_line: int, end_line: int) -> dict:
-    """A line range of *text*, with the keys ``read_file_lines`` established.
-
-    The same names on purpose: `truncated`, `total_lines`, `next_start_line` and
-    `line_cap` are what the client's `_build_continuation_hint` already reads to tell
-    the model its read stopped short, so a paged GitHub read inherits that for free
-    rather than inventing a second vocabulary for the same idea.
-    """
+    """A line range of *text*, with ``read_file_lines``'s keys so the client's continuation hint applies."""
     lines = text.splitlines(keepends=True)
     start = max(1, int(start_line or 1))
     requested_end = len(lines) if not end_line or end_line <= 0 else int(end_line)

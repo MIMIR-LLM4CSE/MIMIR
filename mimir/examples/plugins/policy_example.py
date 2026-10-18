@@ -1,16 +1,7 @@
-"""Example MIMIR policy plugin — a locked outbound-secret guard.
+"""Example policy plugin: a locked guard against secrets in outbound calls (``EXTERNAL_FETCH``).
 
-Copy this into your plugins directory to activate it — `$MIMIR_PLUGINS_DIR` or
-`<workspace>/.mimir/plugins/` — and drop the `.example` suffix. It is NOT auto-loaded
-from `mimir/examples/`.
-
-A *policy* BLOCKS a tool call before it runs. This one keys off a **capability**
-(`EXTERNAL_FETCH`) and generic argument inspection — never a literal tool name — so it
-stays robust across tool renames and applies to any server that declares that capability.
-Policies are **locked**: the user cannot toggle them off. A check can only ADD a
-constraint; returning `None` (abstain) never relaxes a core gate.
-
-See PLUGINS_DETAILED.md for the full authoring guide.
+Copy into ``.mimir/plugins/`` (or ``$MIMIR_PLUGINS_DIR``) without the ``.example`` suffix.
+See PLUGINS_DETAILED.md.
 """
 from __future__ import annotations
 

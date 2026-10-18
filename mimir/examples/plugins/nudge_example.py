@@ -1,15 +1,7 @@
-"""Example MIMIR nudge plugin — a toggleable authorization reminder.
+"""Example nudge plugin: a toggleable reminder when a sensitive tool is connected.
 
-Copy this into your plugins directory to activate it — `$MIMIR_PLUGINS_DIR` or
-`<workspace>/.mimir/plugins/` — and drop the `.example` suffix. It is NOT auto-loaded
-from `mimir/examples/`.
-
-A *nudge* injects an advisory reminder into the conversation (it never blocks). This one
-keys off the `SENSITIVE` capability and fires only when the connected toolset actually
-exposes a sensitive tool. Nudges are **toggleable** (via `/nudges` + `.mimir/preferences.json`)
-and tier-gated by enforcement level via their `tiers` field.
-
-See PLUGINS_DETAILED.md for the full authoring guide.
+Copy into ``.mimir/plugins/`` (or ``$MIMIR_PLUGINS_DIR``) without the ``.example`` suffix.
+See PLUGINS_DETAILED.md.
 """
 from __future__ import annotations
 

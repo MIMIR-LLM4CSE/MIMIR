@@ -1,17 +1,8 @@
 """Example custom MCP server.
 
-Copy this into your servers directory to activate it — `$MIMIR_SERVERS_DIR` or
-`<workspace>/.mimir/servers/` — and rename it to `server_<name>.py` (drop the `.example`
-suffix). The tool namespace is the filename stem with any `server_` prefix stripped
-(`server_weather.py` -> `weather`). A name that collides with a bundled core server is
-ignored. It is NOT auto-loaded from `mimir/examples/`.
-
-Declaring **capabilities** with `tool_caps(...)` is OPTIONAL — MIMIR runs undeclared tools
-fine — but RECOMMENDED: capabilities are what let MIMIR's safety policies, result caching,
-and nudges treat your tool correctly, and they are essential if you write policies/nudges
-that key off a capability. See the capability table in PLUGINS_DETAILED.md.
-
-See PLUGINS_DETAILED.md for the full authoring guide.
+Copy into ``.mimir/servers/`` (or ``$MIMIR_SERVERS_DIR``) as ``server_<name>.py``; the
+namespace is ``<name>``, and a bundled name is ignored. Declaring ``tool_caps(...)`` is
+optional but recommended. See PLUGINS_DETAILED.md.
 """
 
 from mcp.server.fastmcp import FastMCP

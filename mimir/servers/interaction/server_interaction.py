@@ -1,27 +1,8 @@
-"""Interaction MCP server — lets the agent ask the user structured questions.
+"""MCP Interaction Server: ``ask_user_question``, structured questions to the user over MCP elicitation.
 
-Exposes a single tool, ``ask_user_question``, which pauses the run and surfaces one
-or more clickable/selectable prompts to the human via MCP **elicitation**
-(``elicitation/create``). The client supplies an ``elicitation_callback`` (see
-``mimir/client/integration/server_manager.py``) that renders the questions in
-whatever frontend is active — the terminal CLI or the VSCode webview — and returns
-the user's selections.
-
-The frontend gives the user a bounded window to answer (five minutes — see
-``USER_QUESTION_TIMEOUT_SECS``); when it passes the card is closed and the tool says
-so, which the agent reads as "go ahead with what you recommend". Without that wall a
-question raised while nobody is at the keyboard parks the conversation for ever.
-
-Multiple questions are asked **sequentially** in a single elicitation: the frontend
-shows one question at a time and, when the user submits an answer, advances to the
-next (Claude-style), returning all answers in one shot — so the agent spends a
-single turn regardless of how many questions it bundles.
-
-Because this rides the standard elicitation channel, no bespoke protocol is needed
-and any future server can elicit the same way. The rich answer shape (per-question
-header, per-option descriptions, single/multi-select, free-text "Other") is carried
-in an ``x_mimir`` extension on the requested JSON schema; the user's reply comes
-back as ``{"answers": [{"selected": [...], "other_text": ...}, ...]}``.
+The client's elicitation callback renders them (one at a time, all answers in one
+reply) and closes the card after ``USER_QUESTION_TIMEOUT_SECS``. The rich shape travels
+in an ``x_mimir`` schema extension; answers come back as ``{"answers": [...]}``.
 """
 
 from __future__ import annotations
@@ -65,13 +46,7 @@ _REDUNDANT_OPTION_LABELS = frozenset({
 
 
 def _is_redundant_option(label: str) -> bool:
-    """True when a label merely restates the always-available free-text entry.
-
-    Compared on the whole (normalized) label only — a parenthetical aside is dropped
-    ("Other (type your own)") and trailing punctuation/ellipsis ignored — so genuine
-    choices that happen to contain one of these words ("Revise the migration script")
-    are never filtered.
-    """
+    """True when a whole label (asides and punctuation aside) only restates the free-text entry."""
     text = label.split("(")[0]
     text = text.strip().strip(".…!?:;-–— ").lower()
     return text in _REDUNDANT_OPTION_LABELS
