@@ -1,19 +1,7 @@
-"""
-MCP Environment-Management Server
-=================================
-Mutating counterpart to the read-only environment *discovery* in the platform
-server. These tools install packages into, and create/destroy, Python runtime
-environments so the agent can satisfy a missing-module dependency when no existing
-environment already has it (Tiers 2 & 3 of the environment-resolution cascade).
+"""MCP Environment-Management Server: install packages, create and destroy Python environments.
 
-Every tool here mutates persistent state, so each is gated:
-  - PLAN_BLOCKED  — never runs in plan mode.
-  - sensitive + non_batch — always prompts for explicit approval, never batched.
-  - ENV_MUTATE (install / create only) — records a cleanup obligation the client
-    surfaces at the conclude phase ("offer to uninstall / delete").
-
-Inputs are validated and shell-free (argv lists, no shell=True), and destructive
-operations are restricted to things that actually look like Python environments.
+Every tool is ``PLAN_BLOCKED``, approval-gated and never batched; installs and creations
+are ``ENV_MUTATE`` (a cleanup the client offers later). Shell-free argv only.
 """
 
 import json

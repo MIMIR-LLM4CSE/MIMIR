@@ -1,28 +1,9 @@
-"""
-MCP HPC Server
-==============
-HPC helpers for Slurm scheduling and batch job submission.
+"""MCP HPC Server: Slurm queries, batch submission, cancellation, node profiles.
 
-This server is designed for cluster usage where:
-- Slurm tools are available (`sinfo`, `squeue`, `scontrol`, `salloc`, `sbatch`)
-
-Environment Modules / Lmod are handled directly through the bash server's
-`module` command, not here.
-
-Safety model:
-- Query tools are read-only.
-- Both submitters take resources as *arguments* and build the command themselves —
-  the model never hands over a command string — and launch it as argv. They are
-  approval-gated client-side (``CLUSTER_SUBMIT``). The read-only queries do use a
-  shell, for ``$USER`` expansion; their filters are quoted. For a scheduler behind
-  ``ssh`` one shell is unavoidable, since it takes a command line and not an argv: each
-  element is quoted on the way out, so what the far side splits is exactly the argv
-  built here (``_shared/slurm_site.exec_argv``).
-- ``sbatch_submit`` returns a ``background_job`` descriptor that the client watcher
-  polls to completion via ``slurm_job_status``.
-- ``slurm_cancel`` takes one job ID, refuses a job the user does not own, and is
-  approval-gated (irreversible) but not ``CLUSTER_SUBMIT``: stopping a job spends no
-  allocation, so the local-validation hold has nothing to protect there.
+Submitters build the command from arguments and run it as argv (``CLUSTER_SUBMIT``);
+``sbatch_submit`` returns a ``background_job`` the client polls through
+``slurm_job_status``; ``slurm_cancel`` takes one job the user owns. Modules go through
+the bash server.
 """
 
 import asyncio
@@ -135,21 +116,10 @@ mcp = FastMCP(
 
 
 # ── Which scheduler a call goes to ────────────────────────────────────────────
-#
-# An inventory, not a setting: ``_shared/slurm_site`` holds the schedulers this
-# workspace reaches — this machine's own when it has one, plus every host a successful
-# ``ssh host "squeue …"`` has proved — and a caller names which. See that module for why
-# a variable nobody sets before the first lost night is the wrong mechanism, and for how
-# a command is run over there.
-#
-# Two regimes here, and they are different questions. A tool that *acts* resolves a
-# host from what it was given (``_resolve_host``), and refuses rather than defaulting
-# when the inventory leaves a real choice open. A tool that acts on an *existing job*
-# does not choose at all: it finds where that job already is (``locate_job``), because
-# a job is not something a scheduler owns — it is something one of them is running.
-#
-# One seam either way: every Slurm command this server runs goes through ``slurm_argv``
-# or ``slurm_exec_argv`` with that host. Nothing else in this file knows about ssh.
+# The inventory is ``_shared/slurm_site``. A tool that acts resolves a host from its
+# arguments (``_resolve_host``) and refuses when the choice is open; one acting on an
+# existing job finds where it is (``locate_job``). Every Slurm command goes through
+# ``slurm_argv``/``slurm_exec_argv``.
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
@@ -362,21 +332,8 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
         result.get("stdout", ""),
         ["job_id", "user", "state", "elapsed", "time_limit", "nodes", "reason_or_node", "name"],
     )
-    # Which of these this workspace is actually watching, which is not a thing the
-    # scheduler knows: a job is tracked by the descriptor its submission wrote, and a
-    # job submitted any other way — a site launcher, a script, a shell on another host
-    # — wrote none. Answered per row rather than left to be worked out, because the
-    # consequence is invisible from both ends: nothing polls that job, no wake is owed
-    # when it ends, and the process stops on its idle TTL with the run still going.
-    #
-    # Two facts, no guessing: the id the scheduler printed, and whether a directory
-    # under any session holds it. That is also what makes it fit to be *recorded* —
-    # the unwatched set is handed to the client, where a nudge reads it at the end of
-    # the turn, and a nudge may only ever rest on something checkable.
-    #
-    # Asked of *this* scheduler, which is why the descriptors are keyed by host: the
-    # same number is a watched production run here and somebody else's sweep there, and
-    # an id alone would report the second as covered by the first's descriptor.
+    # Which rows this workspace watches: a job is tracked by its descriptor, keyed by host
+    # (ids are per cluster). The unwatched set goes to the client for its end-of-turn nudge.
     recorded = _recorded_jobs()
     ids = [str(row.get("job_id") or "") for row in rows]
     for row, job_id in zip(rows, ids):
@@ -554,14 +511,8 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
                     "node it ran on, so that directory was not one that node could "
                     "write — pass work_dir to sbatch_submit and the log lands beside "
                     "the work, where it is certain to be reachable.")
-    # A handle for a job of *this* conversation that is still in flight, so asking
-    # where it is at puts a watcher back on it — the watchers do not survive the agent
-    # that made them, and a window reload is enough to lose every one of them.
-    #
-    # Never for another session's job, and this is the whole reason the descriptor is
-    # withheld rather than always attached: a wake is routed to the conversation whose
-    # agent registered it, so re-arming here would deliver another conversation's
-    # result into this one. Reading a sibling's job stays allowed; adopting it does not.
+    # A handle for a job of this conversation still in flight, so asking re-arms its watcher;
+    # never for another session's job (its wake would land here).
     if state in ("running", "pending") and not from_session:
         payload["background_jobs"] = [slurm_background_job(job_id)]
     return ok(payload)
@@ -616,14 +567,8 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
         }
         if settled:
             payload["state"] = settled
-        # Recorded is not watched. A watcher is held by the agent that registered it and
-        # by nothing else, so a window reload leaves this directory saying "there is a
-        # job" with nobody polling it. Handing the descriptor over makes "watched" true:
-        # the client dedups on the job id, so a watcher that is still there costs
-        # nothing, and one that is gone is put back. Withheld for a sibling's job for
-        # the reason slurm_job_status withholds it — a wake is routed to the
-        # conversation whose agent registered it, and adopting another's delivers its
-        # result into this one.
+        # Recorded is not watched: hand the descriptor over so a lost watcher is put back (the
+        # client dedups). Withheld for a sibling's job, as in slurm_job_status.
         if not settled and not from_session:
             payload["background_jobs"] = [slurm_background_job(job_id)]
         return ok(payload)
@@ -955,13 +900,8 @@ def sbatch_submit(
 
 
 # ── compute-node profiles ─────────────────────────────────────────────────────
-#
-# Slurm knows a node's core count, memory, GRES and site features, but not its CPU
-# model, its vector ISA, what `-march=native` means there, its caches or its OS. Those
-# decide how code should be built and tuned for it, and they are only readable ON the
-# node. So a short job reads them there, with the very collectors that describe the
-# login node (server_platform --profile-json), and the answer is kept per node until
-# Slurm's own description of that node changes. No TTL: hardware does not age.
+# What only the node can say (CPU model, ISA, ``-march=native``, caches, OS), read there by
+# a short job with server_platform's collectors and kept until Slurm's description changes.
 
 
 @mcp.tool(**tool_caps(kind="slurm",
@@ -1365,13 +1305,7 @@ def _gpu_mem_label(raw: str) -> str:
 
 
 def _kind_id(host: str, kind: dict) -> str:
-    """A stable id for one node kind of one scheduler.
-
-    Stable across refreshes because the panel's open/closed state is keyed on it: a
-    tree that re-identified its rows every poll would collapse under the reader. From
-    the hardware fields themselves, so the same machines get the same id whatever
-    order the scheduler listed them in.
-    """
+    """A stable id for one node kind of one scheduler, from its hardware (the panel keys on it)."""
     payload = json.dumps([kind.get(f) for f in _HARDWARE_FIELDS], sort_keys=True,
                          default=str)
     digest = hashlib.sha1(payload.encode()).hexdigest()[:8]
@@ -1379,13 +1313,7 @@ def _kind_id(host: str, kind: dict) -> str:
 
 
 def _profiled_kind_lines(kind: dict, host: str) -> tuple[list[dict], str]:
-    """What a profiled node of this kind actually is, and where that was read.
-
-    Slurm reports a node's core count and memory but never its CPU model, vector ISA
-    or the name ``-march=native`` resolves to — only the node can say those, which is
-    what a probe is for. Read off the profile cache: nothing here runs a command, the
-    same discipline the rest of this panel keeps.
-    """
+    """What a profiled node of this kind is (CPU, ISA, ``-march=native``), from the profile cache."""
     for node in kind.get("example_nodes") or []:
         record = read_node_profile(node, host)
         if not record or not record.get("profile"):
@@ -1424,17 +1352,9 @@ def _profiled_kind_lines(kind: dict, host: str) -> tuple[list[dict], str]:
 
 
 def _host_tree() -> list[dict]:
-    """Every scheduler this workspace reaches, and what each is made of.
+    """Every reachable scheduler and its node kinds, from the memoised digest.
 
-    One group per host, one subgroup per kind of node. Built from the per-host digest,
-    which is occupancy-free and memoised for the life of the server — so opening the
-    drawer does not reach across ``ssh`` to every cluster on every refresh, and what
-    is *free right now* stays ``slurm_nodes``'s answer rather than a number that was
-    true once.
-
-    A host that did not answer is listed with that said, never as a host with no
-    machines: an unreachable cluster and an empty one are not the same thing, and only
-    one of them is worth waiting for.
+    A host that did not answer is listed as such, never as empty.
     """
     hosts = slurm_hosts()
     # Fill the memo for every host at once. Each miss is an ssh away and waits on a
@@ -1487,13 +1407,8 @@ def _host_tree() -> list[dict]:
             if detail:
                 entry["detail"] = detail
             if not profiled:
-                # No badge for it. A kind nothing has been probed on is the ordinary
-                # case — most workspaces never probe any — so "not profiled" on every
-                # row was a warning colour carrying no warning, and it sat next to the
-                # one thing on the row worth reading. What is offered instead is the
-                # request that would get the answer, inside the row once it is opened.
-                # The server writes the words because it is the end that knows the
-                # scheduler and the partition.
+                # No "not profiled" badge (the ordinary case): the row offers the request that would
+                # profile it, worded here by the end that knows the scheduler and partition.
                 part = partitions[0] if partitions else ""
                 for candidate in partitions:
                     if candidate in (kind.get("partitions") or []):
@@ -1516,13 +1431,7 @@ def _host_tree() -> list[dict]:
 
 
 def _host_tree_cached() -> list[dict]:
-    """The host tree, rebuilt the moment what it is drawn from changes.
-
-    A plain TTL held a node profiled during a turn, or a scheduler recorded by one,
-    off the panel for five minutes — only ⟳ showed it. The key is the registry and the
-    mtime of each host's profile directory (a profile lands by rename), both a stat
-    away; the per-host digest behind the tree stays memoised, so a rebuild is cheap.
-    """
+    """The host tree, rebuilt when the registry or a profile directory changes."""
     hosts = slurm_hosts()
     stamps = []
     for host in hosts:

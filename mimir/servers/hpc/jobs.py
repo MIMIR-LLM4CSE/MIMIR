@@ -32,20 +32,10 @@ from .cli import (
 )
 
 def add_unwatched(payload: dict) -> None:
-    """Name the user's running jobs that no descriptor covers, if any.
+    """Attach the user's running jobs that no descriptor covers, on every reachable scheduler.
 
-    Attached to the answers of the two tools that *record* a job — a submission and an
-    adoption — because those are the moments the model is holding job ids and can act
-    on it in the same turn. Deliberately not to ``slurm_job_status``: that one is the
-    watcher's poll target, called on a timer for the life of every watched run, and a
-    per-user queue read on it would be paid for ever.
-
-    Asked of every scheduler this workspace reaches, because work nobody is watching
-    is not more acceptable for being on the other cluster — and because the model
-    holding these ids has just chosen between those schedulers and can act on either.
-
-    Best effort: a scheduler that will not answer leaves the payload alone rather than
-    turning a successful submission into an error.
+    Only on submission and adoption, where the model holds ids; never on the watcher's
+    poll. Best-effort.
     """
     by_host = slurm_unwatched_by_host(slurm_queued_by_host(TIMEOUT_READ))
     if not by_host:
@@ -57,13 +47,7 @@ def add_unwatched(payload: dict) -> None:
 
 
 def find_job_dir(job_id: str) -> tuple[str, str]:
-    """Where *job_id* was recorded, and which session recorded it ("" for this one).
-
-    Looks in this session's directory first, then — read-only — in the sibling sessions'.
-    A Slurm job can outlive the conversation that submitted it and still need checking from
-    another one, so filing it per session must not make it unfindable. Returns ``("", "")``
-    when no session recorded it.
-    """
+    """``(job_dir, session)`` where *job_id* was recorded: this session ("") first, then siblings read-only."""
     def _match(base: str) -> str:
         try:
             names = os.listdir(base)
@@ -152,18 +136,9 @@ def recorded_log(job_dir: str) -> str:
 
 
 def record_terminal_state(job_dir: str, state: str) -> None:
-    """Settle *job_dir* at the first poll that finds Slurm has let the job go.
+    """Write the terminal state of *job_dir* once, at the first poll that sees it; best-effort.
 
-    Write-once, and that is the point: the first observation of a terminal state is the
-    truest one available. A later poll of the same job reads ``unknown`` once sacct's
-    retention window has passed, and letting that overwrite a recorded ``crashed`` would
-    turn every outcome into "the scheduler has forgotten it" given enough time.
-
-    Best-effort, like the markers in ``session.jobs_on_disk``: a status answer is worth more than the
-    record of it, so a directory that cannot be written costs a settled descriptor, never
-    the reply. Written for another conversation's job too — the record belongs to the job,
-    not to whoever happened to look, and the reader that needs it most is scanning
-    sessions that may have no agent at all.
+    Write-once: a later poll may read ``unknown`` past sacct's retention.
     """
     try:
         with open(os.path.join(job_dir, _STATE_FILE), "x") as fh:
@@ -175,13 +150,7 @@ def record_terminal_state(job_dir: str, state: str) -> None:
 
 
 def recorded_terminal_state(job_dir: str) -> str:
-    """The terminal state a poll wrote in *job_dir*, or "" while it has none.
-
-    The counterpart of :func:`record_terminal_state`, and the same question the client
-    scan asks of the same file (``jobs_on_disk.is_settled``). What it buys here is an answer
-    about a recorded job without asking Slurm: over ssh a sweep is two round trips per
-    scheduler, and "has this one already ended?" is on disk.
-    """
+    """The terminal state a poll wrote in *job_dir*, or "" (no need to ask Slurm)."""
     try:
         with open(os.path.join(job_dir, _STATE_FILE)) as fh:
             word = fh.read().strip()
@@ -191,13 +160,7 @@ def recorded_terminal_state(job_dir: str) -> str:
 
 
 def record_job_host(job_dir: str, host: str) -> None:
-    """Write down which scheduler a job is on, so the next poll asks only it.
-
-    A cache and not a binding: it is written when a job is submitted and whenever a
-    sweep has just found one, and :func:`locate_job` sweeps again whenever it is
-    absent or wrong. Best effort — a directory that cannot be written costs one extra
-    ssh per poll, never the answer.
-    """
+    """Cache which scheduler a job is on, so the next poll asks only it; best-effort."""
     if not job_dir:
         return
     try:
@@ -209,19 +172,10 @@ def record_job_host(job_dir: str, host: str) -> None:
 
 def locate_job(job_id: str, requested: str = "",
                 job_dir: str = "") -> tuple[str, str, str, list[str]]:
-    """Find *job_id*: ``(host, state, raw, nodes)``, among the schedulers reached.
+    """``(host, state, raw, nodes)`` of *job_id*: its recorded host first, then every scheduler.
 
-    The hint first — the descriptor's own record, which makes the common case one call
-    — then every other reachable scheduler until one knows the id. That fallback is
-    what keeps a job trackable without being owned: an adoption of somebody's job, a
-    descriptor from before the host was written down, a watcher re-armed from disk
-    after a window reload (which polls by id alone, having no host to pass), all land
-    here and are answered.
-
-    *requested* skips the search when a caller already knows — a sweep refused for one
-    job is not worth paying twice. *job_dir* is for the caller that has already found
-    the descriptor, so the sessions tree is walked once per call rather than twice.
-    ``("", "unknown", "", [])`` when nothing has heard of it.
+    *requested* skips the search; *job_dir* avoids a second walk. ``("", "unknown", "", [])``
+    when nothing knows it.
     """
     if requested:
         state, raw, nodes = normalized_job_state(job_id, host=requested)
@@ -271,31 +225,10 @@ def _is_done_state(state: str) -> bool:
 
 def normalized_job_state(job_id: str, *,
                           host: str = _LOCAL_HOST) -> tuple[str, str, list[str]]:
-    """Map a Slurm job's state to the shared vocab: running|pending|done|crashed|unknown.
+    """``(state, raw, nodes)`` of a job: running, pending, done, crashed or unknown.
 
-    Active jobs come from ``squeue``; finished jobs have left the queue, so their
-    terminal state is read from ``sacct``. Returns ``(state, raw, nodes)``. Missing
-    tools or an unknown job yield ``("unknown", "", [])`` — a terminal signal for the
-    watcher.
-
-    A job the queue already reports as finished — COMPLETED, FAILED, CANCELLED — is
-    settled from that answer alone. Nothing is gained by following it further, and a
-    site without accounting has no second answer to settle it with.
-
-    *nodes* is where the job is actually running, read from the same ``squeue`` call
-    rather than a second one. Slurm's ``%R`` column is the nodelist for a running job
-    and the *reason it is waiting* for a pending one, so it is only read as nodes when
-    the job is running — a pending job has no node yet, which is the honest answer and
-    not an empty one to be filled in later.
-
-    **One id can be many jobs.** An array submits as ``15306621`` and runs as
-    ``15306621_1 … _8``, and both commands answer for every element: ``squeue`` prints
-    a line each, ``sacct`` likewise. Read as one line that is a job whose first element
-    has finished while seven still run — which is reported as finished, waking its
-    conversation on a run that has barely started. So the answer is taken over the
-    whole set: anything still going keeps the job live, and a terminal verdict is the
-    worst outcome among the elements, since an array where one task failed is not an
-    array that completed.
+    ``squeue`` for live jobs, ``sacct`` for finished ones; nodes only while running. For an
+    array, any live element keeps it live, and the verdict is the worst element's.
     """
     rows = lines_of(cli.run_bash(f"squeue -j {shlex.quote(job_id)} -h -o '%T|%R'",
                             TIMEOUT_READ, host=host))

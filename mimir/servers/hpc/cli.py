@@ -33,26 +33,11 @@ TIMEOUT_SUBMIT = 30
 MAX_OUTPUT = 128 * 1024
 
 
-# Where a batch submission's own bookkeeping lives — the script, the id, the state a
-# poll settled it at — under the submitting session's state dir, like every other
-# artefact belonging to a conversation (env-overridable for tests).
-#
-# Not the job's output: that goes where the job runs, which is the only directory it is
-# certain to be able to write. See _shared/slurm_script.sbatch_header.
-#
-# Per session, resolved per call. A Slurm job outlives its session, sometimes by days,
-# which is the one way these differ from detached shell jobs — so a job is never
-# *unreachable* from another conversation: _find_job_dir below looks in the sibling
-# sessions read-only and says where it came from. Per session buys two things: two
-# conversations submitting at the same moment cannot land on each other's directory, and a
-# conversation's submissions go with it when it is deleted.
+# A submission's own bookkeeping (script, id, settled state), per session and resolved
+# per call (env-overridable for tests); the job's output goes where it runs. Other
+# sessions find it read-only through jobs.find_job_dir.
 def no_scheduler_hint(host: str = _LOCAL_HOST) -> str:
-    """What to do when a Slurm command did not answer. Self-documenting on purpose.
-
-    Two different failures, and the cure is only ever offered for the one it fits. A
-    scheduler that was *named* and did not answer is a host to check — the inventory is
-    not the problem. Nothing reachable at all is the case this learning exists for, and
-    there the answer has to be a thing the user is about to do anyway: reach a
+    """What to do when a Slurm command did not answer: check the named host, or reach a
     scheduler over ``ssh`` once, which adds it.
     """
     known = slurm_hosts()
@@ -82,13 +67,9 @@ def chosen_host(scheduler: str) -> tuple[str, dict | None]:
 
 def run_bash(script: str, timeout: int, stdin: str | None = None, *,
               host: str = _LOCAL_HOST) -> dict:
-    """Run *script* on *host*'s scheduler, optionally feeding it *stdin*.
+    """Run *script* on *host*'s scheduler, with *stdin* on a pipe of ours or no stdin at all.
 
-    Without *stdin* the command gets none at all: the server's own is its MCP protocol
-    pipe, and a command that reads it (``cat``, an ``ssh`` without ``-n``) eats the
-    client's traffic. With it, the text is handed over on a pipe we opened — which is
-    how a batch script reaches ``sbatch`` without any file having to exist on the host
-    that runs it.
+    The server's own stdin is its MCP pipe; ``sbatch`` gets its script through *stdin*.
     """
     try:
         res = subprocess.run(
@@ -120,13 +101,7 @@ def command_result(res: subprocess.CompletedProcess) -> dict:
 
 
 def run_argv(argv: list[str], timeout: int, *, host: str = _LOCAL_HOST) -> dict:
-    """Run a command as argv on *host* — no shell, so no argument can inject a second one.
-
-    With a remote controller one shell is unavoidable: ``ssh`` has no argv to hand over,
-    only a command line for the far side to parse. So each element is quoted on the way
-    out and the property survives in the form that matters — what the remote shell
-    splits is exactly the argv built here, and an argument cannot become a command.
-    """
+    """Run *argv* on *host* without a shell (over ``ssh``, each element quoted)."""
     try:
         res = subprocess.run(
             slurm_exec_argv(argv, host=host), stdin=subprocess.DEVNULL,
@@ -161,13 +136,7 @@ COMMENT_MAX = 512
 
 
 def validate_comment(value: str) -> str | None:
-    """Return why *value* cannot be a Slurm --comment, or None when it can.
-
-    Free text, so the only hard rules are a length Slurm will store and a single
-    line: a newline in a value that lands in a ``#SBATCH`` directive turns the rest
-    of it into directives of the caller's choosing, and sacct renders the field on
-    one line regardless.
-    """
+    """Why *value* cannot be a Slurm ``--comment`` (too long, or several lines), else None."""
     if not value:
         return None
     if len(value) > COMMENT_MAX:

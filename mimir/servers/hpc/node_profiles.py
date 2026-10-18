@@ -42,18 +42,7 @@ PROBE_MARKER = "probe.json"
 
 
 def profile_host_dir(host: str) -> str:
-    """Where this scheduler's node profiles are filed.
-
-    Per host, because Slurm's own node names are per cluster: two schedulers each with
-    a ``node01`` are two different machines, and a single flat directory had the second
-    one overwrite the first. The segment is the scheduler's own name — ``local``, or the
-    hostname — reduced to what a directory name can hold.
-
-    Profiles already sitting at the root of the profiles directory are not read for any
-    host. A root file records no scheduler, and reading it as the local one would be a
-    guess of exactly the kind the per-host keying exists to stop; there is no TTL and a
-    probe is a five-minute job, so a node re-profiles on demand instead.
-    """
+    """Where a scheduler's node profiles are filed: one directory per host (node names are per cluster)."""
     name = _host_name(host) or _LOCAL_NAME
     return os.path.join(NODE_PROFILES_DIR, re.sub(r"[^A-Za-z0-9._-]", "_", name))
 
@@ -80,13 +69,7 @@ _FALLBACK_SECTIONS = (
 
 
 def probe_script(work_dir: str, header: list[str], *, make_dir: bool = False) -> str:
-    """The probe, as a script. *work_dir* is where it writes, on the node that runs it.
-
-    For a local scheduler that is the submission's own directory, which already exists.
-    For one reached over ssh it is a path on the far side that nothing here can create,
-    so the script makes it itself — the first thing on the node, before anything it
-    would write there.
-    """
+    """The probe as a script writing into *work_dir* (created first when *make_dir*, for remote nodes)."""
     q = shlex.quote
     fallback = [f'  echo "=={name}"; {cmd}' for name, cmd in _FALLBACK_SECTIONS]
     return "\n".join(header + [
@@ -198,16 +181,9 @@ def write_node_profile(node: str, record: dict, host: str = _LOCAL_HOST) -> None
 
 def harvest_probes(nodes_by_name: dict[str, dict],
                     host: str = _LOCAL_HOST) -> list[dict]:
-    """Turn finished probe jobs into node profiles; report the ones not finished.
+    """Turn finished probes into node profiles (filed under their own host); return those pending.
 
-    A probe is finished when its script wrote ``mode`` — its own last act, so the
-    answer never depends on squeue/sacct having caught up. Only a probe without it
-    asks the scheduler where it stands.
-
-    *host* is the scheduler whose nodes are being harvested, and it decides where each
-    profile is filed. A probe's own directory records the host it was submitted to, so
-    one left by an earlier call is harvested for that scheduler rather than for
-    whichever one this call is asking about.
+    A probe is finished when it wrote ``mode``.
     """
     pending: list[dict] = []
     try:

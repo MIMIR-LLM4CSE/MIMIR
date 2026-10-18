@@ -1,26 +1,9 @@
-"""
-MCP Platform Server
-===================
-Reports what this host actually is — CPU/SIMD, memory, GPU, Slurm, modules,
-toolchains, Python environments. Facts only: architecture-aware *advice* belongs
-nowhere near here, being a frozen lookup table the model already knows better and one
-that costs a full hardware probe per call to serve.
+"""MCP Platform Server: what this host is (CPU, memory, GPU, Slurm, modules, toolchains,
+Python environments). Facts only, probed on demand.
 
-Every *live* fact is probed on demand and never cached to disk, so it cannot go
-stale; the collectors whose answer cannot change mid-process are memoized. The one
-persisted artefact is the **module catalogue**. A site's module tree runs to hundreds
-or thousands of entries — far more than fits in a context window — so it is indexed
-once under ``<STATE_DIR>/platform/modules/`` and queried with ``platform_search``
-instead of being dumped in truncated slices. Beside it, and independent of it, is a small **digest** of
-the stable, high-impact facts that *do* fit: host architecture, the kinds of compute
-node the cluster has, its partitions, and the toolchains present. Its cluster half is
-``_shared/slurm_digest``, the same builder every scheduler the workspace reaches is
-described by — so this host is described the way the others are, and a site that
-restricts ``scontrol`` degrades here exactly as it does there.
-
-The catalogue is rebuilt when — and only when — a deterministic fingerprint of the
-tree changes (hostname, effective MODULEPATH, a stat-hash of the modulefile trees and
-of Lmod's own spider cache). No TTL is ever consulted.
+The module tree is indexed once under ``<STATE_DIR>/platform/modules/`` and searched with
+``platform_search``, rebuilt when its fingerprint changes; a small digest carries the
+stable facts (the cluster half from ``_shared/slurm_digest``).
 """
 
 import asyncio
@@ -190,17 +173,7 @@ def _collect_gpu() -> dict:
 
 @lru_cache(maxsize=1)
 def _collect_slurm() -> dict:
-    """Whether Slurm's tools are on *this* host, and where else they are known to be.
-
-    This probe describes the machine it runs on and nothing else — it does not go
-    looking for other hosts, and the absence of ``sinfo`` here is a fact about here.
-    What it must not do is turn that fact into a verdict about the site: on a login
-    node whose schedulers live elsewhere, "no scheduler" read as "this skill does not
-    apply", and the work went somewhere nothing could track it. So the ones this
-    workspace reaches — from the user's own successful ``ssh host "squeue …"``, see
-    ``_shared/slurm_site`` — are reported, as the recorded facts they are. Nothing is
-    probed over there.
-    """
+    """Whether Slurm's tools are on this host, plus the schedulers this workspace is known to reach."""
     if not _cmd_exists("sinfo"):
         elsewhere = [_host_name(host) for host in slurm_hosts() if host]
         if elsewhere:
@@ -247,14 +220,7 @@ def _collect_sinfo() -> dict:
 
 @lru_cache(maxsize=1)
 def _collect_modules() -> dict:
-    """What is loaded now, plus a pointer to the searchable catalogue.
-
-    No slice of the module tree: an alphabetical sample with no cuda in it reads as
-    "CUDA is unavailable". The full tree is searched with platform_search; what
-    belongs here is the volatile part, the modules actually loaded.
-
-    Never triggers a build — platform_probe must not inherit the catalogue's cost.
-    """
+    """The modules loaded now and a pointer to the searchable catalogue (never builds it)."""
     flavour = _module_flavour()
     if flavour == "none":
         return {"available": False, "module_system": "none",
@@ -392,13 +358,7 @@ def _lmod_cache_files() -> list[str]:
 
 
 def _tree_fingerprint(modulepath: str) -> dict:
-    """A deterministic hash of the module tree's identity — never a timestamp.
-
-    Depth two (family, then version) catches every real mutation: installing
-    cuda/12.4 changes .../cuda's mtime, adding a family changes the root's. The
-    residual blind spot is a modulefile edited in place without touching any
-    directory mtime; the Lmod cache below closes it wherever Lmod is in use.
-    """
+    """A deterministic hash of the module tree (directory mtimes two levels deep), never a timestamp."""
     parts: list[str] = []
     seen = 0
     truncated = False
@@ -497,22 +457,9 @@ def _collect_tier_b(flavour: str, names: list[str], timeout: int) -> dict:
 # ── the digest ────────────────────────────────────────────────────────────────
 
 def _build_digest() -> dict:
-    """The stable, high-impact facts that *fit* in a context window.
+    """The stable facts that fit in a context: this host, and the cluster from ``slurm_digest``.
 
-    Not searched — returned whole by the catalogue status and the host profile, so one
-    call shows that the compute nodes are a different architecture from the login node
-    the agent runs on, which is the difference between a binary that runs and one that
-    dies on an illegal instruction. Nothing puts it in the system prompt: the model
-    reads it through those tools. Occupancy is deliberately absent: it is volatile,
-    ``slurm_nodes`` owns it, and carrying it would make the signature change every few
-    seconds.
-
-    Two halves with two scopes. The host block is this machine and nothing else, since
-    a remote scheduler's login node is not where anything here is compiled. The cluster
-    block comes from ``_shared/slurm_digest``, which describes every scheduler the
-    workspace reaches: one builder means this host's degraded path is the same one the
-    others take, and that a Slurm arriving from a modulefile is found here too, since
-    that builder asks through a login shell.
+    No occupancy, which is volatile and ``slurm_nodes``'s.
     """
     cpu = _collect_cpu()
     cluster = cached_cluster_digest()

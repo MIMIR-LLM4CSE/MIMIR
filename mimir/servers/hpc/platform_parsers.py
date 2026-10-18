@@ -140,13 +140,7 @@ def _spider_versions(package: dict) -> list[dict]:
 
 
 def parse_spider_json(stdout: str) -> dict:
-    """Parse either spider output shape into {load: {description, category, ...}}.
-
-    `-o jsonSoftwarePage` yields a list of packages; `-o spider-json` a mapping of
-    name to modulefile records. The shapes differ across Lmod majors and sites run
-    everything from 6 to 8.x, so anything unrecognized returns {} and the caller
-    falls to the next tier — never an exception.
-    """
+    """Either Lmod spider JSON shape as ``{load: {description, category, ...}}``; {} if unrecognized."""
     try:
         data = json.loads(stdout)
     except (TypeError, ValueError):
