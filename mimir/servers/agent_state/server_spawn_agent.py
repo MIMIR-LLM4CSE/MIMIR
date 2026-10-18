@@ -627,23 +627,26 @@ async def spawn_agent(
             # directly, because the loop its call ran on may be long gone by now.
             _release_slot()
 
-    if job_key:
-        # Registered before the thread starts: the caller is handed the key on the next
-        # line, and a watcher that polled a key this process did not yet know would read
-        # it as a job that never existed.
-        spawn_jobs.register_job(job_key, {
-            "state": "running", "started": time.time(), "budget": budget,
-            "task": task, "session": session, "model": model, "tools": requested,
-            "phase": "", "result": None, "child": child,
-        })
+    # Until the thread runs, nothing else gives the slot back.
+    try:
+        if job_key:
+            # Registered before the thread starts: a watcher polling a key this process
+            # does not know yet would read it as a job that never existed.
+            spawn_jobs.register_job(job_key, {
+                "state": "running", "started": time.time(), "budget": budget,
+                "task": task, "session": session, "model": model, "tools": requested,
+                "phase": "", "result": None, "child": child,
+            })
 
-    loop = asyncio.get_running_loop()
-    # Named so a straggler is identifiable: the slot is released from this thread
-    # after the caller's future has resolved, so a child can still be finishing when
-    # its call has already returned.
-    t = threading.Thread(target=_thread_main, daemon=True,
-                         name=spawn_jobs.THREAD_NAME_PREFIX + child_key)
-    t.start()
+        loop = asyncio.get_running_loop()
+        # Named so a straggler is identifiable: the thread releases the slot, possibly
+        # after the call has returned.
+        t = threading.Thread(target=_thread_main, daemon=True,
+                             name=spawn_jobs.THREAD_NAME_PREFIX + child_key)
+        t.start()
+    except BaseException:
+        _release_slot()
+        raise
 
     if job_key:
         return ok({

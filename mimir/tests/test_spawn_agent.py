@@ -1920,6 +1920,15 @@ class ConcurrencyBoundTests(unittest.TestCase):
                 self.assertEqual(out["status"], "error")
         self.assertEqual(spawn_jobs.SLOT_HOLDERS, {})
 
+    def test_a_slot_is_given_back_when_the_child_cannot_start(self):
+        with _patched_agent(_FakeAgent()), \
+                mock.patch.object(spawn_jobs, "register_job",
+                                  side_effect=RuntimeError("registry unavailable")):
+            for _ in range(3):        # more attempts than slots
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx(), background=True))
+        self.assertEqual(spawn_jobs.SLOT_HOLDERS, {})
+
     def test_a_full_house_is_refused_rather_than_queued_for_ever(self):
         """Working children run for hours, so a full house can stay full for hours; a
         caller that simply queued would freeze its turn with nothing to explain it."""
