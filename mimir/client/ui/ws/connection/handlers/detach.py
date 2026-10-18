@@ -173,141 +173,123 @@ class DetachHandlers(Handlers):
         The level is required and applied to the named conversations (none: all of them, and
         recorded pool-wide). ``enabled: false`` takes the claim back.
         """
-        # Giving the decision back. The process-level work cannot be undone — fds that
-        # point at a log file have no pipe to return to — but none of it needs undoing:
-        # what makes a server survive a window closing is that nobody kills it, and that
-        # is a decision, not a state of the process. So this clears the claim and leaves
-        # the redirect in place.
         if msg.get("enabled") is False:
-            # Per conversation, like the claim it undoes: naming some takes back only
-            # those, naming none takes back every one. The process goes on surviving
-            # for as long as any claim stands — it is one process, and the redirect
-            # that makes it survivable belongs to it rather than to a conversation.
-            named = msg.get("session_ids")
-            held = server_registry.unclaim(
-                [str(s) for s in named] if isinstance(named, list) and named else None)
-            # Read before the send, not inside it: a getter that raises would otherwise
-            # swallow the whole reply, and a client left believing the server is still
-            # detached stops guarding something nothing is guarding.
-            try:
-                level = self.pool.worker_or_detached(
-                    self.view.active_session_id).setting("approval_mode")
-            except Exception:
-                level = "manual"
-            try:
-                await self.out.send({
-                    "type": "detached", "detached": bool(held), "log": None,
-                    "autonomy": level, "sessions": sorted(held), "pid": os.getpid(),
-                    "setsid": False,
-                })
-                # The switch itself, in the same quiet rule the attachment notice
-                # uses. The button is one glyph and both of its positions look like a
-                # chain: a line in the thread is what tells the user which way it just
-                # went, and it says the consequence rather than only the word, since
-                # "attached" on its own does not warn anybody that closing the window
-                # now ends the run.
-                await self.screen.command_reply(
-                    "detach",
-                    ("attached — this window owns the server again, and closing it "
-                     "stops the run" if not held else
-                     f"attached — this window owns the server again; {len(held)} "
-                     f"other conversation(s) still keep it alive"),
-                    tone="quiet", transient=True)
-            except Exception:
-                logger.debug("on_detach: the client went away mid-send", exc_info=True)
-                return
-            logger.info("detach: taken back for %s; %d claim(s) left",
-                        ", ".join(str(s) for s in named) if isinstance(named, list)
-                        and named else "every conversation", len(held))
+            await self._take_back(msg.get("session_ids"))
             return
-
         autonomy = str(msg.get("autonomy") or "manual")
         if autonomy not in ("manual", "auto", "auto_all"):
-            try:
-                await self.out.send({
-                    "type": "error",
-                    "text": (f"Unknown autonomy level: {autonomy}. "
-                             "Use manual, auto, or auto_all."),
-                })
-            except Exception:
-                logger.debug("on_detach: the client went away mid-send", exc_info=True)
+            await self._send_quietly({
+                "type": "error",
+                "text": f"Unknown autonomy level: {autonomy}. Use manual, auto, or auto_all."})
             return
 
-        # A claim belongs to the conversations named, never to the live agents: one whose agent
-        # is asleep is exactly the case detaching exists for. Its level comes back from the claim
-        # on reattach, or from the pool-wide record on a rebuild.
-        session_ids = msg.get("session_ids")
-        targeted: list[str] = []
-        if isinstance(session_ids, list) and session_ids:
-            known = {meta.id for meta in self._safe_list_sessions()}
-            for sid in session_ids:
-                worker = self.pool.get(sid)
-                if worker is None and str(sid) not in known:
-                    # Not asleep — not a conversation at all. Claiming an id nothing
-                    # knows about would hold this process open for something that
-                    # cannot come back to take the claim off it.
-                    logger.info("detach: ignoring %s, which names no conversation", sid)
-                    continue
-                targeted.append(str(sid))
-                if worker is None:
-                    continue
-                try:
-                    worker.apply_setting("approval_mode", autonomy)
-                except Exception:
-                    logger.warning("detach: session %s refused the autonomy level %s",
-                                   sid, autonomy, exc_info=True)
-        else:
-            self.screen.apply_setting("approval_mode", autonomy)
-            # Naming none means all of them, and "all" includes the conversation on
-            # screen even before it has asked anything: a window detached the moment it
-            # opened claimed nothing at all, because no agent had been built yet.
-            targeted = [sid for sid, _w in self.pool.items()]
-            if self.view.active_session_id and self.view.active_session_id not in targeted:
-                targeted.append(self.view.active_session_id)
-
-        # No terminal behind any agent from now on, recorded in the pool so agents built later
-        # know it too.
+        targeted = self._claim_targets(msg.get("session_ids"), autonomy)
+        # No terminal behind any agent from now on, agents built later included.
         self.pool.set_non_interactive()
-
         info = detach_process(paths.STATE_DIR)
-        # Record which conversations were left running and under which level; the process lives
-        # while any claim stands.
+        # The process lives while any claim stands.
         server_registry.claim(targeted, autonomy, log=info.get("log"))
-
         try:
             await self.out.send({
-                "type": "detached",
-                "detached": True,
-                "log": info.get("log"),
-                "autonomy": autonomy,
-                "sessions": targeted,
-                "pid": info.get("pid"),
+                "type": "detached", "detached": True, "log": info.get("log"),
+                "autonomy": autonomy, "sessions": targeted, "pid": info.get("pid"),
                 "setsid": info.get("setsid"),
             })
-            # Checked against what the process would still have to do without this window: work
-            # MIMIR never started is invisible, and the server would stop on the idle TTL.
-            idle = self.pool.lifecycle.idle_report(excluding=self.view.sub)
-            if idle["idle"]:
-                # Conditional on purpose: the state at the click, and what follows only if nothing starts.
-                title = f"detached under “{autonomy}” — nothing is being watched yet"
-                items = [{"label": "autonomy", "detail": autonomy}]
-                note = ("No turn in flight and no run MIMIR is watching at this "
-                        "moment. "
-                        + idle_stop_reason(self.pool.lifecycle.server_idle_ttl, past=False)
-                        + " Work it did not start itself is not watched: ask it to "
-                        "watch the job or the process before you go.")
-            else:
-                title = (f"detached — this run keeps working with this window closed, "
-                         f"under “{autonomy}”" if autonomy != "manual" else
-                         "detached — this run keeps working with this window closed, "
-                         "and parks at the first call that needs you")
-                items = [{"label": "keeping it going", "detail": reason}
-                         for reason in idle["reasons"]]
-                note = ""
-            await self.screen.command_reply("detach", title, items=items, note=note,
-                                      tone="quiet", transient=True)
+            await self._say_what_keeps_it_going(autonomy)
         except Exception:
             logger.debug("on_detach: the client went away mid-send", exc_info=True)
             return
         logger.info("detach: this server is now survivable (autonomy %s over %d "
                     "conversation(s))", autonomy, len(targeted))
+
+    async def _send_quietly(self, payload: dict) -> None:
+        try:
+            await self.out.send(payload)
+        except Exception:
+            logger.debug("detach: the client went away mid-send", exc_info=True)
+
+    async def _take_back(self, named: object) -> None:
+        """Clear the claims of the named conversations (none named: every one).
+
+        The redirect of the process's output stays: what keeps a server alive is that
+        nobody kills it, which is a decision, not a state of the process.
+        """
+        names = [str(s) for s in named] if isinstance(named, list) and named else None
+        held = server_registry.unclaim(names)
+        # Read before the send: a getter that raises would swallow the whole reply.
+        try:
+            level = self.pool.worker_or_detached(
+                self.view.active_session_id).setting("approval_mode")
+        except Exception:
+            level = "manual"
+        try:
+            await self.out.send({
+                "type": "detached", "detached": bool(held), "log": None,
+                "autonomy": level, "sessions": sorted(held), "pid": os.getpid(),
+                "setsid": False,
+            })
+            # The switch's glyph looks the same both ways: the line says which way it went,
+            # and the consequence.
+            await self.screen.command_reply(
+                "detach",
+                ("attached — this window owns the server again, and closing it "
+                 "stops the run" if not held else
+                 f"attached — this window owns the server again; {len(held)} "
+                 f"other conversation(s) still keep it alive"),
+                tone="quiet", transient=True)
+        except Exception:
+            logger.debug("on_detach: the client went away mid-send", exc_info=True)
+            return
+        logger.info("detach: taken back for %s; %d claim(s) left",
+                    ", ".join(names) if names else "every conversation", len(held))
+
+    def _claim_targets(self, session_ids: object, autonomy: str) -> list[str]:
+        """The conversations the claim names, each live agent set to *autonomy*.
+
+        A conversation whose agent is asleep is claimed too; an id naming no conversation
+        is skipped. None named: every agent, plus the conversation on screen.
+        """
+        if not (isinstance(session_ids, list) and session_ids):
+            self.screen.apply_setting("approval_mode", autonomy)
+            targeted = [sid for sid, _w in self.pool.items()]
+            if self.view.active_session_id and self.view.active_session_id not in targeted:
+                targeted.append(self.view.active_session_id)
+            return targeted
+        known = {meta.id for meta in self._safe_list_sessions()}
+        targeted = []
+        for sid in session_ids:
+            worker = self.pool.get(sid)
+            if worker is None and str(sid) not in known:
+                logger.info("detach: ignoring %s, which names no conversation", sid)
+                continue
+            targeted.append(str(sid))
+            if worker is None:
+                continue
+            try:
+                worker.apply_setting("approval_mode", autonomy)
+            except Exception:
+                logger.warning("detach: session %s refused the autonomy level %s",
+                               sid, autonomy, exc_info=True)
+        return targeted
+
+    async def _say_what_keeps_it_going(self, autonomy: str) -> None:
+        """What the process still owes without this window; work MIMIR did not start is
+        invisible to it, and the server would stop on the idle TTL."""
+        idle = self.pool.lifecycle.idle_report(excluding=self.view.sub)
+        if idle["idle"]:
+            title = f"detached under “{autonomy}” — nothing is being watched yet"
+            items = [{"label": "autonomy", "detail": autonomy}]
+            note = ("No turn in flight and no run MIMIR is watching at this moment. "
+                    + idle_stop_reason(self.pool.lifecycle.server_idle_ttl, past=False)
+                    + " Work it did not start itself is not watched: ask it to "
+                    "watch the job or the process before you go.")
+        else:
+            title = (f"detached — this run keeps working with this window closed, "
+                     f"under “{autonomy}”" if autonomy != "manual" else
+                     "detached — this run keeps working with this window closed, "
+                     "and parks at the first call that needs you")
+            items = [{"label": "keeping it going", "detail": reason}
+                     for reason in idle["reasons"]]
+            note = ""
+        await self.screen.command_reply("detach", title, items=items, note=note,
+                                        tone="quiet", transient=True)

@@ -681,34 +681,19 @@ def _render_checklist(items: list[dict]) -> list[str]:
     return [f"[{'x' if it.get('done') else ' '}] {it['text']}" for it in items]
 
 
-def build_system_content(
-    *,
-    active_mode: str,
-    tool_owner: dict[str, str],
-    sensitive_tools: set[str],
-    memory_context_file: str = "",
-    # Defaults to "" like its sibling: existing callers pass only the workspace index.
-    global_memory_context_file: str = "",
-    todo_file: str = "",
-    plan_todos: list[str] | None = None,
-    context_file: str = "",
-    thinking_depth: int = 0,
-    delegation_available: bool = False,
-    tool_descriptions: dict[str, str] | None = None,
-    session_id: str | None = None,
-    subagent_level: str = DEFAULT_SUBAGENT_LEVEL,
-    workspace_root: str = "",
-    skills_index: list[tuple[str, str]] | None = None,
-    model_name: str = "",
-) -> str:
-    system_content = build_base_system_content(context_file)
-
+def _capability_sections(*, active_mode: str, tool_owner: dict[str, str],
+                         thinking_depth: int, delegation_available: bool,
+                         subagent_level: str, skills_index: list[tuple[str, str]] | None,
+                         model_name: str) -> str:
+    """The sections that depend on what is connected and granted. Fixed once the servers
+    are up, so they sit in the cached prefix."""
+    content = ""
     # Depth-gated section: only the "auto" rung leaves the reasoning length to the
     # model, so only it needs the calibration directive. Placed right after the base,
     # ahead of the dynamic blocks — the rung only moves on an explicit user action, so
     # the prefix stays stable across a run of queries.
     if thinking_depth == THINKING_DEPTH_AUTO:
-        system_content += _section("\n" + _THINKING_DIRECTIVE_AUTO)
+        content += _section("\n" + _THINKING_DIRECTIVE_AUTO)
 
     # Capability-gated section: describing the sub-agent contract when no sub-agent
     # tool is connected is a phantom instruction the model tries to act on. Placed
@@ -722,31 +707,33 @@ def build_system_content(
         # phantom instruction the gate above exists to prevent.
         section = _SECTION_SUBAGENTS
         if subagent_level_allows(subagent_level, "build"):
-            section += _SECTION_SUBAGENTS_LEAD
-        if subagent_level_allows(subagent_level, "build"):
-            section += _SECTION_SUBAGENTS_AXES
-        system_content += _section("\n" + section)
+            section += _SECTION_SUBAGENTS_LEAD + _SECTION_SUBAGENTS_AXES
+        content += _section("\n" + section)
 
     # Same gating shape, on the tool rather than on a capability: the question channel
     # has exactly one consumer, so a declared capability would buy nothing the name does
     # not already give (memory_context_file is keyed off tool_owner the same way).
     # ASK is excluded: it answers and changes nothing, so a fork has no work to divide.
     if "ask_user_question" in (tool_owner or {}) and active_mode in ("agent", "plan"):
-        system_content += _section("\n" + _SECTION_CLARIFY)
+        content += _section("\n" + _SECTION_CLARIFY)
 
     # Only when ``load_skill`` is connected; the caller already dropped disabled and
     # user-only skills. Before every dynamic block, so it stays in the cached prefix.
     if skills_index and "load_skill" in (tool_owner or {}):
-        system_content += _section("\n" + _skills_section(skills_index))
+        content += _section("\n" + _skills_section(skills_index))
 
     # Only the mode that writes can commit; the model is fixed per query, so the prefix
     # stays stable until the user switches it.
     if active_mode == "agent":
-        system_content += _section("\n" + _authorship_section(model_name))
+        content += _section("\n" + _authorship_section(model_name))
 
-    # The workspace root and the scratchpad, both absolute and resolved without touching the
-    # disk, so the prefix is byte-stable. Nothing about the repository or the machine.
-    system_content += _section(
+    return content
+
+
+def _workspace_section(workspace_root: str, session_id: str | None) -> str:
+    """The workspace root and the scratchpad, absolute and resolved without touching the
+    disk, so the prefix is byte-stable; and where a check goes."""
+    return _section(
         f"Workspace root (absolute): {_workspace_root_for_prompt(workspace_root)}\n"
         f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt(session_id)}\n"
         "Nothing there counts as produced work or is reported to the user. Where a check goes "
@@ -767,115 +754,166 @@ def build_system_content(
         "is to patch another file. Deliverables go in the workspace, or wherever the user asked."
     )
 
-    if memory_context_file or global_memory_context_file:
-        # Global first, then workspace: inside the section, the blocks are ordered by how
-        # often they change, the most stable one earliest. That is free on the Anthropic
-        # backend, where the whole system prompt is one cached block and any byte
-        # invalidates it, and it is what the local backends (ollama, vLLM) reuse, since
-        # their KV cache hits on the longest common token prefix.
-        blocks = []
-        for label, path in (
-            ("Global memory index — shared by every workspace on this machine",
-             global_memory_context_file),
-            ("Workspace memory index — this project", memory_context_file),
-        ):
-            entries = _load_recent_memories(path) if path else []
-            if entries:
-                blocks.append(_render_memory_block(label, path, entries))
-        if blocks:
-            blocks.insert(0, _MEMORY_INDEX_CAVEAT)
+
+
+def _memory_section(memory_context_file: str, global_memory_context_file: str) -> str:
+    if not (memory_context_file or global_memory_context_file):
+        return ""
+    # Global first, then workspace: inside the section, the blocks are ordered by how
+    # often they change, the most stable one earliest. That is free on the Anthropic
+    # backend, where the whole system prompt is one cached block and any byte
+    # invalidates it, and it is what the local backends (ollama, vLLM) reuse, since
+    # their KV cache hits on the longest common token prefix.
+    blocks = []
+    for label, path in (
+        ("Global memory index — shared by every workspace on this machine",
+         global_memory_context_file),
+        ("Workspace memory index — this project", memory_context_file),
+    ):
+        entries = _load_recent_memories(path) if path else []
+        if entries:
+            blocks.append(_render_memory_block(label, path, entries))
+    if blocks:
+        blocks.insert(0, _MEMORY_INDEX_CAVEAT)
+    else:
+        # One line, not one per scope: a fresh global store would otherwise print a
+        # near-identical paragraph on the first run of every workspace. No caveat
+        # either — there is nothing yet for it to warn about.
+        dirs = " and ".join(
+            os.path.dirname(p) for p in (global_memory_context_file, memory_context_file) if p
+        )
+        blocks = ["No memory stored yet. Memories are stored under: " + dirs]
+    # Leading blank line, as for the other headed sections: _section only prepends one.
+    return _section("\n" + _SECTION_MEMORY + "\n\n" + "\n\n".join(blocks))
+
+
+
+def _checklist_section(todo_file: str, plan_todos: list[str] | None) -> str:
+    """The live checklist in agent mode; the plan's static list when no todo server runs."""
+    if todo_file:
+        # Live state from the todo server — takes priority over the static plan_todos.
+        items = load_todo_items(todo_file)
+        if items:
+            pending = sum(1 for it in items if not it.get("done"))
+            return _section(
+                f"Task checklist ({pending} pending — the current plan of record for this task. "
+                "Keep it in sync with what you actually do: rewrite it when the approach changes, "
+                "and do not consider a step already done because memory suggests it was):\n"
+                + "\n".join(_render_checklist(items))
+            )
         else:
-            # One line, not one per scope: a fresh global store would otherwise print a
-            # near-identical paragraph on the first run of every workspace. No caveat
-            # either — there is nothing yet for it to warn about.
-            dirs = " and ".join(
-                os.path.dirname(p) for p in (global_memory_context_file, memory_context_file) if p
+            return _section(
+                "No task checklist yet. For multi-step tasks, recording the steps before starting "
+                "work is recommended, then marking each one complete as you go."
             )
-            blocks = ["No memory stored yet. Memories are stored under: " + dirs]
-        # Leading blank line, as for the other headed sections: _section only prepends one.
-        system_content += _section("\n" + _SECTION_MEMORY + "\n\n" + "\n\n".join(blocks))
-
-    if active_mode == "agent":
-        if todo_file:
-            # Live state from the todo server — takes priority over the static plan_todos.
-            items = load_todo_items(todo_file)
-            if items:
-                pending = sum(1 for it in items if not it.get("done"))
-                system_content += _section(
-                    f"Task checklist ({pending} pending — the current plan of record for this task. "
-                    "Keep it in sync with what you actually do: rewrite it when the approach changes, "
-                    "and do not consider a step already done because memory suggests it was):\n"
-                    + "\n".join(_render_checklist(items))
-                )
-            else:
-                system_content += _section(
-                    "No task checklist yet. For multi-step tasks, recording the steps before starting "
-                    "work is recommended, then marking each one complete as you go."
-                )
-        elif plan_todos:
-            # Fallback: static list from plan output (todo server not registered).
-            system_content += _section(
-                "Task checklist (cross off each item as you complete it):\n"
-                + "\n".join(f"[ ] {step}" for step in plan_todos)
-            )
-
-    if active_mode == "plan":
-        tool_catalog = build_tool_catalog_for_planning(
-            tool_owner, sensitive_tools, tool_descriptions)
-
-        system_content += _section(
-            "Current mode: PLAN. Write, execution, and mutation tools are blocked — only the plan document tool is available. "
-            "This mode runs in two phases, and the exploration is the work of the first one, not an item in the plan.\n"
-            "\n"
-            "PHASE 1 — explore. Nothing in your context tells you what has to change. Call the "
-            "read-only exploration tools (search, read, inspect, platform/memory "
-            "queries) and READ the code this task touches — opening the files and following the symbols, not merely "
-            "listing directories and matching file names. The plan document tool is withheld until you have done so. "
-            "Continue until you could name the concrete files and symbols the change touches and say what happens to each.\n"
-            + (" " + _DELEGATION_CLAUSE + "\n" if delegation_available else "")
-            +
-            "\n"
-            "PHASE 2 — write the plan, once, over what you found. Exploring, surveying, examining, reviewing and "
-            "identifying gaps are what you have just finished doing: they are never steps or axes of the plan. Each "
-            "axis is a change to make.\n"
-            "\n"
-            "Record ONE thing with the plan tool: a written plan document (free-form markdown prose) — "
-            "this is the deliverable the user reads and approves. Do NOT reduce it to a bare list of "
-            "steps. Structure it like a short design note, using Markdown headings and a few sentences "
-            "of prose under each:\n"
-            "       • an Overview stating the goal and the outcome the change produces;\n"
-            "       • an Approach broken into the main axes of the work (e.g. one subsection per component, "
-            "layer, or concern), each explaining WHAT will change, WHERE (concrete files/symbols found "
-            "during exploration), and WHY that approach over the alternatives;\n"
-            "       • key design decisions, trade-offs, assumptions, and risks or edge cases;\n"
-            "       • how the result will be validated (tests, checks, manual verification).\n"
-            "\n"
-            "Write for a reader who wants to understand the reasoning, not just a task list: explain the "
-            "rationale, reference the specific evidence you gathered, and keep it focused. Scale the depth "
-            "to the task — a trivial change may need only a couple of paragraphs, a larger "
-            "one warrants several axes with explanation. This document is the whole deliverable of the mode and "
-            "has to stand on its own: nothing you leave out of it gets explored again later. "
-            "\nAvailable tools by server:\n"
-            + tool_catalog
+    elif plan_todos:
+        # Fallback: static list from plan output (todo server not registered).
+        return _section(
+            "Task checklist (cross off each item as you complete it):\n"
+            + "\n".join(f"[ ] {step}" for step in plan_todos)
         )
 
-    if active_mode == "ask":
-        system_content += _section(
-            "Current mode: ASK. This is a read-only question-answering turn. Write, execution, "
-            "mutation, and plan/checklist tools are unavailable, and the dual-use execution tool is "
-            "restricted to read-only discovery commands (search, list, read). "
-            "Call the read-only exploration tools (search, read, inspect, platform/memory "
-            "queries) to find the actual files, symbols, and behaviour the question is about "
-            "before answering. Never answer "
-            "a question about this codebase from assumption when you could have read the code.\n"
-            + (_DELEGATION_CLAUSE + "\n" if delegation_available else "")
-            +
-            "\n"
-            "Answer the question directly, in prose, grounded in what you actually read: cite the "
-            "concrete file paths (with line numbers where it helps) that back each claim. Scale the "
-            "length to the question — a one-line question deserves a one-line answer, a design question "
-            "warrants a few paragraphs. Do not offer to make changes unless the user asked for them. "
-            "If the question cannot be settled from the code, say what you found and what remains unknown."
-        )
+    return ""
 
-    return system_content
+
+def _plan_mode_section(tool_owner: dict[str, str], sensitive_tools: set[str],
+                       tool_descriptions: dict[str, str] | None,
+                       delegation_available: bool) -> str:
+    tool_catalog = build_tool_catalog_for_planning(
+        tool_owner, sensitive_tools, tool_descriptions)
+
+    return _section(
+        "Current mode: PLAN. Write, execution, and mutation tools are blocked — only the plan document tool is available. "
+        "This mode runs in two phases, and the exploration is the work of the first one, not an item in the plan.\n"
+        "\n"
+        "PHASE 1 — explore. Nothing in your context tells you what has to change. Call the "
+        "read-only exploration tools (search, read, inspect, platform/memory "
+        "queries) and READ the code this task touches — opening the files and following the symbols, not merely "
+        "listing directories and matching file names. The plan document tool is withheld until you have done so. "
+        "Continue until you could name the concrete files and symbols the change touches and say what happens to each.\n"
+        + (" " + _DELEGATION_CLAUSE + "\n" if delegation_available else "")
+        +
+        "\n"
+        "PHASE 2 — write the plan, once, over what you found. Exploring, surveying, examining, reviewing and "
+        "identifying gaps are what you have just finished doing: they are never steps or axes of the plan. Each "
+        "axis is a change to make.\n"
+        "\n"
+        "Record ONE thing with the plan tool: a written plan document (free-form markdown prose) — "
+        "this is the deliverable the user reads and approves. Do NOT reduce it to a bare list of "
+        "steps. Structure it like a short design note, using Markdown headings and a few sentences "
+        "of prose under each:\n"
+        "       • an Overview stating the goal and the outcome the change produces;\n"
+        "       • an Approach broken into the main axes of the work (e.g. one subsection per component, "
+        "layer, or concern), each explaining WHAT will change, WHERE (concrete files/symbols found "
+        "during exploration), and WHY that approach over the alternatives;\n"
+        "       • key design decisions, trade-offs, assumptions, and risks or edge cases;\n"
+        "       • how the result will be validated (tests, checks, manual verification).\n"
+        "\n"
+        "Write for a reader who wants to understand the reasoning, not just a task list: explain the "
+        "rationale, reference the specific evidence you gathered, and keep it focused. Scale the depth "
+        "to the task — a trivial change may need only a couple of paragraphs, a larger "
+        "one warrants several axes with explanation. This document is the whole deliverable of the mode and "
+        "has to stand on its own: nothing you leave out of it gets explored again later. "
+        "\nAvailable tools by server:\n"
+        + tool_catalog
+    )
+
+
+
+def _ask_mode_section(delegation_available: bool) -> str:
+    return _section(
+        "Current mode: ASK. This is a read-only question-answering turn. Write, execution, "
+        "mutation, and plan/checklist tools are unavailable, and the dual-use execution tool is "
+        "restricted to read-only discovery commands (search, list, read). "
+        "Call the read-only exploration tools (search, read, inspect, platform/memory "
+        "queries) to find the actual files, symbols, and behaviour the question is about "
+        "before answering. Never answer "
+        "a question about this codebase from assumption when you could have read the code.\n"
+        + (_DELEGATION_CLAUSE + "\n" if delegation_available else "")
+        +
+        "\n"
+        "Answer the question directly, in prose, grounded in what you actually read: cite the "
+        "concrete file paths (with line numbers where it helps) that back each claim. Scale the "
+        "length to the question — a one-line question deserves a one-line answer, a design question "
+        "warrants a few paragraphs. Do not offer to make changes unless the user asked for them. "
+        "If the question cannot be settled from the code, say what you found and what remains unknown."
+    )
+
+
+
+def build_system_content(
+    *,
+    active_mode: str,
+    tool_owner: dict[str, str],
+    sensitive_tools: set[str],
+    memory_context_file: str = "",
+    # Defaults to "" like its sibling: existing callers pass only the workspace index.
+    global_memory_context_file: str = "",
+    todo_file: str = "",
+    plan_todos: list[str] | None = None,
+    context_file: str = "",
+    thinking_depth: int = 0,
+    delegation_available: bool = False,
+    tool_descriptions: dict[str, str] | None = None,
+    session_id: str | None = None,
+    subagent_level: str = DEFAULT_SUBAGENT_LEVEL,
+    workspace_root: str = "",
+    skills_index: list[tuple[str, str]] | None = None,
+    model_name: str = "",
+) -> str:
+    mode_section = {
+        "plan": lambda: _plan_mode_section(tool_owner, sensitive_tools, tool_descriptions,
+                                           delegation_available),
+        "ask": lambda: _ask_mode_section(delegation_available),
+        "agent": lambda: _checklist_section(todo_file, plan_todos),
+    }.get(active_mode, lambda: "")
+    return (
+        build_base_system_content(context_file)
+        + _capability_sections(
+            active_mode=active_mode, tool_owner=tool_owner, thinking_depth=thinking_depth,
+            delegation_available=delegation_available, subagent_level=subagent_level,
+            skills_index=skills_index, model_name=model_name)
+        + _workspace_section(workspace_root, session_id)
+        + _memory_section(memory_context_file, global_memory_context_file)
+        + mode_section()
+    )
