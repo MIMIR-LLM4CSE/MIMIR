@@ -10,7 +10,7 @@ from pathlib import Path
 _SHARED = Path(__file__).resolve().parents[1] / "servers" / "_shared"
 _WORKSPACE = Path(__file__).resolve().parents[1] / "servers" / "workspace"
 
-from mimir.servers._shared import root_paths
+from mimir.servers.workspace import root_paths
 
 
 class ResolveExtraRootsTests(unittest.TestCase):

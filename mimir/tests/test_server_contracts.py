@@ -27,7 +27,7 @@ from mimir.tests.support.modules import spec_for
 # Mapping from logical module name to (subdirectory, filename).
 _MODULE_PATHS: dict[str, tuple[str, str]] = {
     "responses":              ("_shared",      "responses.py"),
-    "text_tools":             ("_shared",      "text_tools.py"),
+    "text_tools":             ("agent_state",  "text_tools.py"),
     "server_bash":            ("workspace",    "server_bash.py"),
     "server_datetime":        ("utilities",    "server_datetime.py"),
     "server_files":           ("workspace",    "server_files.py"),

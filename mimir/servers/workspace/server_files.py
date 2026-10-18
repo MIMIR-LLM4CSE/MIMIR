@@ -9,7 +9,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from .._shared.atomic import write_text
 from .._shared.responses import err, ok
-from .._shared.root_paths import require_absolute, resolve_path_in_root
+from .root_paths import require_absolute, resolve_path_in_root
 from .._shared.approved_roots import approved_roots
 from .._shared.state_paths import standing_roots
 from .._shared.capabilities import (

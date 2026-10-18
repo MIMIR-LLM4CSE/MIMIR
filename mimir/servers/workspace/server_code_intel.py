@@ -22,10 +22,10 @@ from .._shared.capabilities import (
     SEARCH_WITH_PATH,
 )
 from .._shared.responses import err, ok
-from .._shared.root_paths import require_absolute, resolve_path_in_root
+from .root_paths import require_absolute, resolve_path_in_root
 from .._shared.approved_roots import approved_roots
 from .._shared.state_paths import standing_roots
-from .._shared.lsp_client import LSPPool, path_for
+from .lsp_client import LSPPool, path_for
 
 SEARCH_ROOT = os.environ.get(
     "SEARCH_ROOT",

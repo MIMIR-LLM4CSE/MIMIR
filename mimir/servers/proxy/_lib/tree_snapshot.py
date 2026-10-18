@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import uuid
 
-from ..._shared import proc_run  # noqa: E402  (kills the whole process group on timeout)
+from . import proc_run  # noqa: E402  (kills the whole process group on timeout)
 
 # Long enough for a large tree on a slow filesystem, short enough that a hung git can
 # never become a hung optimisation run.

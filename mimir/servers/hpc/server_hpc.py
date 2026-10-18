@@ -55,11 +55,11 @@ from .._shared.slurm_site import (
     unwatched as slurm_unwatched,
     unwatched_hint as slurm_unwatched_hint,
 )
-from .._shared.slurm_digest import (
+from .slurm_digest import (
     cached_cluster_digest as _cluster_digest,
     forget_cluster_digest as _forget_cluster_digest,
 )
-from .._shared.slurm_nodes import (
+from .slurm_nodes import (
     HARDWARE_FIELDS as _HARDWARE_FIELDS,
     SCONTROL_NODES_ARGV as _SCONTROL_NODES_ARGV,
     aggregate_node_types as _aggregate_node_types,

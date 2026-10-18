@@ -16,7 +16,7 @@ from .._shared.slurm_site import (
     argv_for as slurm_argv,
     exec_argv as slurm_exec_argv,
 )
-from .._shared.slurm_nodes import (
+from .slurm_nodes import (
     SINFO_NODES_FORMAT as _SINFO_NODES_FORMAT,
     parse_sinfo_nodes as _parse_sinfo_nodes,
 )

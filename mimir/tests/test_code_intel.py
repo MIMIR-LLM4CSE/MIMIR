@@ -25,7 +25,7 @@ def _load(name: str, rel: str):
     return mod
 
 
-lsp_client = _load("lsp_client_t", "servers/_shared/lsp_client.py")
+lsp_client = _load("lsp_client_t", "servers/workspace/lsp_client.py")
 code_intel = _load("server_code_intel_t", "servers/workspace/server_code_intel.py")
 
 

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-from mimir.servers._shared import proc_run
+from mimir.servers.proxy._lib import proc_run
 from mimir.servers.workspace import server_bash
 
 
@@ -51,7 +51,7 @@ class ProcRunTests(unittest.TestCase):
 
     def test_a_child_cannot_read_the_parents_stdin(self) -> None:
         left = _probe(
-            "from mimir.servers._shared import proc_run\n"
+            "from mimir.servers.proxy._lib import proc_run\n"
             "r = proc_run.run(['cat'], timeout=20, stdout=-1)\n"
             "print('CHILD-SAW:' + r.stdout.decode().strip())\n"
         )

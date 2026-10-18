@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from ..._shared.responses import err
-from ..._shared import proc_run
+from . import proc_run
 
 from . import command, metrics as metrics_mod, procs, report, store
 

@@ -8,7 +8,7 @@ import math
 import os
 import re
 
-from ..._shared.numerics import RESERVED_METRICS
+from .numerics import RESERVED_METRICS
 
 # ── metrics-block parsing ─────────────────────────────────────────────────────
 

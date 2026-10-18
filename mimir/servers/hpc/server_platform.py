@@ -41,11 +41,11 @@ from .._shared.cpu_facts import (
     parse_nvidia_csv,
 )
 from .._shared.responses import ok
-from .._shared.slurm_digest import cached_cluster_digest
+from .slurm_digest import cached_cluster_digest
 from .._shared.slurm_site import hosts as slurm_hosts, name_of as _host_name
 from .._shared.state_paths import state_dir
 from .._shared import embed as _embed
-from .._shared import vector_cache
+from . import vector_cache
 from .platform_parsers import (
     parse_avail_terse,
     parse_spider_json,

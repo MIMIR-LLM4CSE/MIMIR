@@ -143,7 +143,7 @@ class AtomicWriteTests(unittest.TestCase):
 
     def test_the_vector_cache_writes_through_a_rename(self) -> None:
         import json as _json
-        from mimir.servers._shared import vector_cache
+        from mimir.servers.hpc import vector_cache
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "vectors.json")
             vector_cache.save_vectors(path, {"a": [1.0, 2.0]})

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import time
 
-from ..._shared import proc_run
+from . import proc_run
 
 from . import procs, store
 

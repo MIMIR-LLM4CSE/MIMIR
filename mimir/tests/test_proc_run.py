@@ -11,7 +11,7 @@ import tempfile
 import time
 import unittest
 
-from mimir.servers._shared import proc_run
+from mimir.servers.proxy._lib import proc_run
 
 
 def _forking_script(marker: str) -> str:

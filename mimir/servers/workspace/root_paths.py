@@ -1,6 +1,6 @@
 import os
 
-from .responses import err
+from .._shared.responses import err
 
 
 def require_absolute(path: str, root_abs: str, arg: str = "path") -> "dict | None":

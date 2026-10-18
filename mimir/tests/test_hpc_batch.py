@@ -18,7 +18,7 @@ from mimir.tests.support.stubs import stub_attr
 from mimir.servers.hpc import node_profiles as hpc_node_profiles
 from mimir.servers.hpc import jobs as hpc_jobs
 from mimir.servers.hpc import cli as hpc_cli
-from mimir.servers._shared import slurm_digest
+from mimir.servers.hpc import slurm_digest
 from mimir.servers._shared import slurm_site
 
 from mimir.tests.support.scheduler import local_slurm

@@ -9,7 +9,7 @@ import json
 import unittest
 
 
-from mimir.servers._shared.latex_display import number_latex, numeric_latex
+from mimir.servers.utilities.latex_display import number_latex, numeric_latex
 
 from mimir.client.tool_execution.math_preview import (
     _MAX_LATEX_CHARS,

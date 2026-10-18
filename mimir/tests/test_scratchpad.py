@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mimir.servers._shared.root_paths import resolve_path_in_root
+from mimir.servers.workspace.root_paths import resolve_path_in_root
 from mimir.servers._shared.state_paths import (
     active_session_id,
     ensure_scratch_home,

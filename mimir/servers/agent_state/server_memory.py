@@ -17,7 +17,7 @@ from .._shared.atomic import write_text
 from .._shared.capabilities import tool_caps, MAIN_ONLY, PLAN_BLOCKED, RECOVERABLE
 from .._shared.responses import err, ok
 from .._shared.state_paths import global_state_dir, state_dir
-from .._shared.text_tools import yaml_scalar, yaml_unquote
+from .text_tools import yaml_scalar, yaml_unquote
 from .._shared import embed as _embed
 from .._shared.clock import utc_minute
 

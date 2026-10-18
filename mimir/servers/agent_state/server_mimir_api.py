@@ -26,7 +26,7 @@ from .._shared.extension_paths import (
 )
 from .._shared.responses import err, ok
 from .._shared.skill_file import model_invocable
-from .._shared.text_tools import yaml_unquote
+from .text_tools import yaml_unquote
 
 # The installed package root (``<...>/mimir/``): this file is mimir/servers/agent_state/.
 # Everything reported below is read from under it, so the answers describe the build

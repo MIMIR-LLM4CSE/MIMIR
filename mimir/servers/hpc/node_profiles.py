@@ -16,10 +16,10 @@ from .._shared.slurm_site import (
     name_of as _host_name,
     jobs_dir as _hpc_jobs_dir,
 )
-from .._shared.slurm_digest import (
+from .slurm_digest import (
     cached_cluster_digest as _cluster_digest,
 )
-from .._shared.slurm_nodes import (
+from .slurm_nodes import (
     HARDWARE_FIELDS as _HARDWARE_FIELDS,
     as_int as _as_int,
 )

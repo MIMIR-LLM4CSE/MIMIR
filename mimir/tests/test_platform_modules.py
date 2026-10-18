@@ -15,12 +15,13 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[2]
 _SHARED = _ROOT / "mimir" / "servers" / "_shared"
 
-from mimir.servers._shared import embed, slurm_nodes
+from mimir.servers._shared import embed
+from mimir.servers.hpc import slurm_nodes
 
 # Flat, the way the server under test imports them: reached through the package these
 # would be different module objects, and a stub on one would leave the other probing a
 # real scheduler.
-from mimir.servers._shared import slurm_digest
+from mimir.servers.hpc import slurm_digest
 
 from mimir.tests.support.scheduler import local_slurm
 from mimir.tests.support.modules import spec_for
