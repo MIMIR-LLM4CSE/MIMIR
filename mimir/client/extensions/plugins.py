@@ -1,12 +1,6 @@
-"""Loading the extension packs of a plugins directory into one ``ExtensionSet``.
+"""Load a plugins directory's packs into one ``ExtensionSet``, once per directory per process.
 
-Every ``*.py`` module of the directory is imported (``_``-prefixed ones are helpers and
-skipped); each registers its descriptors as it is imported, into the set being built.
-A pack that fails to import is logged and skipped: one bad pack never stops an agent.
-
-The directory is ``MIMIR_PLUGINS_DIR`` if set, else ``<workspace>/.mimir/plugins/``.
-Each directory is loaded once per process, and its set is shared by every agent of
-that workspace.
+Every ``*.py`` but ``_``-prefixed helpers; a pack that fails to import is logged and skipped.
 """
 
 from __future__ import annotations

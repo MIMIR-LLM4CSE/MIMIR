@@ -1,13 +1,7 @@
-"""Discovery of user-provided MCP servers under ``.mimir/servers/``.
+"""Discover the user's MCP servers (``.mimir/servers/server_<name>.py|.js``).
 
-A user server ``.mimir/servers/server_<name>.py|.js`` (override ``MIMIR_SERVERS_DIR``)
-is merged with the bundled ``SERVERS`` registry. A user server whose name collides
-with a bundled (core) server is skipped so the core — files/bash/approval/etc. —
-cannot be shadowed.
-
-Kept deliberately import-light (only ``os`` + config constants) so any layer,
-including the front-ends and the sub-agent server, can import it without pulling the
-client stack.
+Merged with the bundled ``SERVERS``; a name clashing with a bundled one is skipped.
+Import-light, so any layer can use it.
 """
 
 from __future__ import annotations

@@ -1,25 +1,8 @@
-"""User extensions under the workspace ``.mimir/`` — the single home for everything
-the user drops in: MCP **servers**, **skills**, and policy/nudge **plugin packs**.
+"""The user's extensions under ``.mimir/``: ``servers/``, ``skills/``, ``plugins/``.
 
-  ``.mimir/servers/server_<name>.py|.js``  (override ``MIMIR_SERVERS_DIR``)  → servers.py
-  ``.mimir/skills/<name>/SKILL.md``        (override ``MIMIR_SKILLS_DIR``)   → skills.py
-  ``.mimir/plugins/*.py``                  (override ``MIMIR_PLUGINS_DIR``)  → plugins.py
-
-Each is env-overridable and fail-open. The raw path primitives (``MIMIR_DIR``,
-``resolve_extension_dir``, the ``*_DIRNAME``/``*_DIR_ENV`` constants) live in
-``config.paths``; this package owns discovery + loading.
-
-Public authoring surface for a plugin pack (dropped into the plugins dir)::
-
-    from mimir.client.extensions import (
-        PolicyCheck, NudgeRule, PostToolRule,
-        register_policy_check, register_nudge, register_post_tool,
-    )
-
-Three seams, one per moment: a policy blocks a call *before* it runs, a post-tool hook
-reacts to what it produced, a nudge speaks at the *end of the turn*. Policies are locked
-(mandatory); nudges are toggleable. Reference *capabilities* from
-``mimir.client.context.capabilities``, never literal tool names.
+Each location is env-overridable (``MIMIR_*_DIR``) and fail-open. A plugin pack imports
+``PolicyCheck``, ``NudgeRule``, ``PostToolRule`` and their ``register_*`` from here: a
+policy blocks before a call, a hook reacts after it, a nudge speaks at the end of a turn.
 """
 
 from __future__ import annotations

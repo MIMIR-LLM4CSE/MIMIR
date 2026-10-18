@@ -45,12 +45,9 @@ _DOC_SECTION_RE = re.compile(
 
 
 def _parse_args_block(doc: str) -> tuple[list[tuple[list[str], str, int, int]], int, int] | None:
-    """The ``Args:`` block of *doc*, entry by entry, with its line bounds.
+    """``(entries, first, end)`` of the ``Args:`` block of *doc*, or None.
 
-    Returns ``(entries, first, end)``: each entry is ``(names, text, start, stop)``,
-    and every bound is a line index, ``first`` on the header and the ends excluded,
-    so extracting the entries and cutting them out agree on where each one lies.
-    None when there is no block.
+    Each entry is ``(names, text, start, stop)``; all bounds are line indices, ends excluded.
     """
     lines = (doc or "").splitlines()
     for i, line in enumerate(lines):
@@ -104,14 +101,8 @@ def _args_block_descriptions(doc: str) -> dict[str, str]:
 def _description_without_args_block(doc: str, parameters: dict) -> str:
     """*doc* minus the ``Args:`` entries the schema already carries word for word.
 
-    The block is lifted into the parameters (:func:`_schema_for_model`),
-    and it was also left in the description: every parameter was sent twice, on every
-    call. On one deployment that was a fifth of a ~31k-token tools schema.
-
-    Cut entry by entry, and only what is not lost: an entry goes when every parameter
-    it names has exactly its text in the schema. One whose parameter the schema lacks,
-    or whose hand-written ``Field`` description says something else, stays, and the
-    header with it. Never raises; on anything unexpected the doc is unchanged.
+    Otherwise every parameter is sent twice. An entry stays if any parameter it names has
+    a different or missing schema text; never raises.
     """
     try:
         parsed = _parse_args_block(doc)
@@ -144,15 +135,9 @@ def _description_without_args_block(doc: str, parameters: dict) -> str:
         return doc
 
 
-# The one argument every tool takes, added to each schema below rather than declared by
-# 60-odd servers. It is the model's own sentence about *this* call — what the user reads
-# beside the tool's family while it runs — and the only part of a row that knows why the
-# call is happening. The dispatcher strips it before the call is executed (see
-# ``query_engine.dispatch``): no server ever receives it.
-#
-# Deliberately never added to ``required``: a backend that validates the schema would
-# refuse a call that omits it, and a row without a description is a case the UI already
-# renders (its family and its target still say what it touched).
+# The ``doing`` argument every tool takes: the model's own sentence about this call, shown
+# on its row. The dispatcher strips it before execution. Never ``required``, so a
+# validating backend does not refuse a call without it.
 _DOING_PROPERTY = {
     "type": "string",
     "description": (
@@ -166,29 +151,11 @@ _DOING_PROPERTY = {
 
 
 def _schema_for_model(tool: Any) -> dict:
-    """The tool's input schema as the model sees it: ``doing`` added, ``Args:`` lifted.
+    """The input schema the model sees: ``doing`` added, ``Args:`` texts lifted into it.
 
-    Both changes are here for the same reason — the schema is the part that gets read.
-    ``doing`` is the universal per-call description (see :data:`DOING_ARG`), added to
-    every tool rather than declared sixty times.
-
-    As for the rest: the constraint a tool documents only in prose does not change what the model does.
-    Observed on a real run: the model dropped `report_verdict`'s required `verdict`
-    twice, called `proxy_get` with `op="help"` (not one of the six the docstring lists)
-    and with `op="report"` while the same docstring says "requires: name", and hit
-    `bash_run`'s 30s default four times against a docstring that says to raise it. The
-    prose reaches the model — the whole docstring, ``Args:`` block included, is the
-    tool's `description` — and was not followed. What the schema says is what gets
-    obeyed, and every parameter here was a bare ``{"type": "string"}``.
-
-    So the text is not rewritten, it is *moved to where it is read*: the ``Args:``
-    blocks are already written and maintained beside the code they describe, and this
-    lifts them into the schema. Descriptions already set — by an explicit
-    ``Field(description=...)`` on the server — always win: a hand-written one is a
-    deliberate act, and this is a fallback for the ones nobody got to.
-
-    Returns a deep copy. ``infer_tool_caps`` reads ``tool.inputSchema`` too, and it
-    must keep seeing exactly what the server declared.
+    A constraint stated only in prose is not followed; what the schema says is. An explicit
+    ``Field(description=...)`` always wins. Returns a deep copy: ``infer_tool_caps`` reads
+    the original.
     """
     schema = getattr(tool, "inputSchema", None)
     if not isinstance(schema, dict):
@@ -211,13 +178,7 @@ def _schema_for_model(tool: Any) -> dict:
 
 
 def _bind_question_handler(ask: Any):
-    """``ask`` as a three-argument callable: the questions, the asker, the deadline.
-
-    Frontends take all three. A handler that offers one of the extras and not the
-    other — the non-interactive default's replacements in tests, a third-party shim —
-    is called without what it does not declare: it stays callable, and a handler with
-    no deadline parameter simply waits indefinitely.
-    """
+    """*ask* as a three-argument callable (questions, asker, deadline), dropping what it does not take."""
     try:
         sig = inspect.signature(ask)
     except (TypeError, ValueError):   # a builtin or C callable: pass the questions only
@@ -240,27 +201,11 @@ def _bind_question_handler(ask: Any):
 
 
 def _make_elicitation_callback(agent: AgentPort):
-    """Bridge MCP elicitation requests to the active frontend.
+    """Bridge MCP elicitation requests (``ask_user_question``) to ``agent.request_user_question``.
 
-    A server tool (e.g. ``ask_user_question``) calls ``ctx.session.elicit_form``;
-    that arrives here as an ``elicitation/create`` request. We parse the rich
-    question spec carried in the schema's ``x_mimir`` extension and hand it to
-    ``agent.request_user_question`` — a per-frontend handler (CLI ``input``, a
-    WebSocket prompt card, or the default no-op) that asks the (possibly several)
-    questions sequentially and returns the user's answers.
-
-    The frontend handlers are blocking/queue-based, so we run them off the event
-    loop via ``run_in_executor`` to keep the agent loop responsive. The wait is
-    marked as human time *here*, on the loop thread, and not only inside the
-    handler: ``human_pause`` accounting is thread-local, so a pause recorded on a
-    pool thread is invisible to the ``_await_tool`` that is watching this tool call
-    from the loop thread, and ``ask_user_question`` died on the ordinary tool budget
-    after two minutes while the card on screen said five.
-
-    The handler is given ``USER_QUESTION_TIMEOUT_SECS`` as the wall to answer within.
-    The wall belongs to this path and not to the handler itself: plan approval calls
-    the same handler and waits indefinitely, which is why the timeout travels as an
-    argument instead of being read from the constant inside each frontend.
+    The blocking handler runs in an executor, with the wait marked as human time on the
+    loop thread (``human_pause`` is thread-local). It gets ``USER_QUESTION_TIMEOUT_SECS``;
+    plan approval calls the same handler without a deadline.
     """
 
     async def _callback(
@@ -325,14 +270,8 @@ def _make_elicitation_callback(agent: AgentPort):
                 },
             )
 
-        # ``ElicitResult.content`` is typed by the MCP SDK as
-        # ``dict[str, str | int | float | bool | list[str] | None]`` — a list of
-        # per-question answer objects does not fit it, and pydantic rejects the
-        # construction outright. So the batch travels as one JSON string and the
-        # interaction server decodes it. Sending the raw list made *answering*
-        # fail while declining succeeded: the validation error surfaced to the
-        # tool as "could not ask the user", and the run silently proceeded on the
-        # model's own judgment with the user's actual answer discarded.
+        # ``ElicitResult.content`` cannot hold a list of answer objects, so the batch travels as
+        # one JSON string the interaction server decodes.
         return types.ElicitResult(
             action="accept",
             content={"answers": json.dumps(answers)},
@@ -343,30 +282,10 @@ def _make_elicitation_callback(agent: AgentPort):
 
 def server_environment(agent: AgentPort) -> dict[str, str]:
     """The environment a server of *agent* is started with, frozen at spawn."""
-    # Propagate the client's cwd as the file-server root so paths are predictable,
-    # and the central per-workspace state dir so state-owning servers (memory, todo,
-    # platform profile) persist to the same place the client resolves. The state dir
-    # is deliberately distinct from the file/search sandbox — see config.paths.
-    # The scratchpad travels the same way: the client vetted that path at startup
-    # (ensure_scratch_home), so servers must use its answer, not re-derive one.
-    #
-    # MIMIR_SESSION_ID is what makes a server's state per-conversation. An agent serves
-    # one session for its whole life, so the session is fixed at spawn and the frozen
-    # environment is the right place for it: every state path the server resolves
-    # (todo list, plans, approved paths, run channels, job dirs) then names its own
-    # session, whatever other sessions are doing at the same moment. Empty for the ends
-    # that have no session — the CLI, standalone runs, tests — which fall back to the
-    # active-session pointer.
-    #
-    # MIMIR_DEFAULT_MODEL travels per server rather than through the client's own
-    # environment: server_spawn_agent reads it out of this frozen copy to build its
-    # child, and a second session on another model must not change what an
-    # already-spawned server would pass on.
-    #
-    # ``agent.server_env`` goes on last and wins: it is how an agent that is not the one
-    # the user is driving places itself — a sub-agent names its own session and, when it
-    # works in a copy of the repository, its own roots. Per agent rather than in
-    # os.environ, because several of them run concurrently in one process.
+    # What a server is told at spawn, frozen in its environment: the workspace root, the state
+    # dir, the scratchpad (vetted once by the client), MIMIR_SESSION_ID (an agent serves one
+    # session for life; empty for the CLI and tests) and MIMIR_DEFAULT_MODEL. ``agent.server_env``
+    # goes last and wins: a sub-agent's own session and roots.
     root = getattr(agent, "workspace_root", None) or os.getcwd()
     return {
         **os.environ,
@@ -383,15 +302,9 @@ def server_environment(agent: AgentPort) -> dict[str, str]:
 
 
 async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
-    """Start a server process and open its session, stopping short of ``initialize``.
+    """Start a server and open its session, short of ``initialize``, on the agent's exit stack.
 
-    Apart from the registration half so a whole registry can be started at once:
-    launching the process is immediate, while the handshake waits on the child's
-    interpreter importing the MCP SDK — two thirds of a second, the same two thirds
-    in every one of them. Serialized that is the startup; overlapped it is paid once.
-    Every session is entered on the agent's own exit stack from the caller's task,
-    so the stack stays single-task and ``stdio_client``'s cancel scope is unwound
-    where it was opened.
+    Separate so the handshakes of a whole registry overlap.
     """
     if not (script.endswith(".py") or script.endswith(".js")):
         raise ValueError("Server script must be a .py or .js file")
@@ -485,20 +398,10 @@ async def connect_servers(
     registry: dict[str, str],
     on_error: Callable[[str, BaseException], None] | None = None,
 ) -> None:
-    """Connect every server in *registry*, overlapping the handshakes.
+    """Connect every server in *registry*: processes started together, handshakes awaited at once.
 
-    Start to answering a first query, the registry is the wait: a score of child
-    interpreters each importing the same SDK, one after the next. The processes are
-    started together instead and the handshakes awaited at once, which puts the whole
-    registry at the cost of its slowest member rather than the sum of all of them.
-
-    Registration stays sequential and in *registry* order, so the tool schema the
-    model is sent does not depend on which child answered first.
-
-    *on_error* receives the name and the failure of a server that could not be
-    connected, and the rest still connect — that is how a sub-agent tolerates a
-    server it does not need. With no handler the first failure is raised, leaving
-    the caller to close the agent.
+    Registration stays in *registry* order, so the tool schema is stable. *on_error* gets
+    each failure and the rest still connect; without it the first failure raises.
     """
     spawned: list[tuple[str, Any]] = []
     for name, script in registry.items():
@@ -523,14 +426,7 @@ async def connect_servers(
 
 
 async def register_resources(*, agent: AgentPort, name: str, session: Any) -> int:
-    """Discover a server's MCP resources into ``agent.resources``; return the count.
-
-    Resources are user-attached context (Claude/Copilot-style ``@``-mention), not
-    model-invokable tools — so they go into a separate registry, never into
-    ``agent.tools``. Servers that don't implement the capability raise or return an
-    empty list; either is treated as "no resources" (fail-open). URIs are stringified
-    (they arrive as pydantic ``AnyUrl``).
-    """
+    """Discover a server's MCP resources into ``agent.resources``; return the count (fail-open)."""
     n_resources = 0
     try:
         res_listing = await session.list_resources()

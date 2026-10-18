@@ -1,12 +1,6 @@
-"""Resolution of the user system-prompt override under ``.mimir/system_prompt.md``.
+"""Which file overrides the doctrine half of the base prompt (``.mimir/system_prompt.md``).
 
-A user file ``.mimir/system_prompt.md`` (override ``MIMIR_SYSTEM_PROMPT_FILE``, or an
-explicit path) replaces the *doctrine* half of the agent's built-in base prompt —
-identity, style, scope, workflow, reasoning. The core half (non-negotiables, tool
-contracts, discovery/editing/validation/running/planning mechanics) is appended either way
-and cannot be overridden. This module only resolves *which* file to use, the same
-drop-in / env-overridable convention as the servers / skills / plugins resolvers; the
-reading + assembly lives in ``prompt/system_prompt.py`` (``build_base_system_content``).
+The core half is appended either way; assembly is in ``prompt/system_prompt.py``.
 """
 
 from __future__ import annotations
@@ -17,13 +11,7 @@ from ..config.paths import MIMIR_DIR, SYSTEM_PROMPT_ENV, SYSTEM_PROMPT_FILENAME
 
 
 def resolve_system_prompt_file(override: str = "") -> str:
-    """Return the path of the system-prompt override .md, or "" for the built-in doctrine.
-
-    Resolution order (first existing file wins):
-      1. an explicit ``override`` path (highest precedence),
-      2. the ``MIMIR_SYSTEM_PROMPT_FILE`` env var,
-      3. ``<workspace>/.mimir/system_prompt.md``.
-    """
+    """The override file: *override*, else ``MIMIR_SYSTEM_PROMPT_FILE``, else ``.mimir/system_prompt.md``; "" if none."""
     candidates = [
         override,
         os.environ.get(SYSTEM_PROMPT_ENV, "").strip(),
