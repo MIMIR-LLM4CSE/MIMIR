@@ -85,6 +85,7 @@ import {
   type HistoryState,
 } from "./components/historyUtils";
 import { caretOnFirstVisualLine, caretOnLastVisualLine } from "./components/caretLine";
+import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "../../src/shared/defaults";
 
 // VS Code webview API (optional — only present inside a webview).
 
@@ -138,10 +139,10 @@ export const App: React.FC = () => {
   const [agentReady, setAgentReady] = useState(false);
   const [model, setModel] = useState("");
   const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
-  const [backend, setBackend] = useState("vllm");
-  const [vllmBaseUrl, setVllmBaseUrl] = useState("http://127.0.0.1:8000");
-  const [rayBaseUrl, setRayBaseUrl] = useState("http://127.0.0.1:8000");
-  const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://127.0.0.1:11434");
+  const [backend, setBackend] = useState(DEFAULT_BACKEND);
+  const [vllmBaseUrl, setVllmBaseUrl] = useState(DEFAULT_OPENAI_URL);
+  const [rayBaseUrl, setRayBaseUrl] = useState(DEFAULT_OPENAI_URL);
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState(DEFAULT_OLLAMA_URL);
   // Endpoint the extension host remembers (checkbox in the connect form). It
   // seeds the form and is what the host reconnects to on its own at startup.
   const [remembered, setRemembered] = useState<RememberedEndpoint | null>(null);

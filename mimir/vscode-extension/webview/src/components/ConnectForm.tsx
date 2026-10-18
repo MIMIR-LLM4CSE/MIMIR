@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import type { RememberedEndpoint } from "../types";
+import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "../../../src/shared/defaults";
 
 interface Props {
   /** Backend selected in settings — the value the form starts on. */
@@ -35,10 +36,10 @@ function defaultUrl(backend: string, vllm: string, ray: string, ollama: string):
 }
 
 export const ConnectForm: React.FC<Props> = ({
-  backend: initBackend = "vllm",
-  vllmBaseUrl = "http://127.0.0.1:8000",
-  rayBaseUrl = "http://127.0.0.1:8000",
-  ollamaBaseUrl = "http://127.0.0.1:11434",
+  backend: initBackend = DEFAULT_BACKEND,
+  vllmBaseUrl = DEFAULT_OPENAI_URL,
+  rayBaseUrl = DEFAULT_OPENAI_URL,
+  ollamaBaseUrl = DEFAULT_OLLAMA_URL,
   anthropicModels = [],
   models = [],
   modelsError = null,

@@ -8,6 +8,8 @@ import WebSocket = require("ws");
 import { explainFetchError, fetchModels, type DiscoverableBackend } from "./modelList";
 import { loadSiteConfig, compareVersions, resolveReleaseRoot } from "./release";
 import { isNoisePath, rankFiles } from "./fileIndex";
+import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "./shared/defaults";
+import type { HostMessage, HostMessageOf } from "./shared/hostMessages";
 
 let serverProcess: cp.ChildProcess | undefined;
 
@@ -1027,10 +1029,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         ? { url: running.url, pid: running.pid, model: running.model ?? "",
             autonomy: running.autonomy ?? "", detached: running.detached === true }
         : null,
-      backend: cfg.get<string>("backend") ?? "vllm",
-      vllmBaseUrl: cfg.get<string>("vllmBaseUrl") ?? "http://127.0.0.1:8000",
-      rayBaseUrl: cfg.get<string>("rayBaseUrl") ?? "http://127.0.0.1:8000",
-      ollamaBaseUrl: cfg.get<string>("ollamaUrl") ?? "http://127.0.0.1:11434",
+      backend: cfg.get<string>("backend") ?? DEFAULT_BACKEND,
+      vllmBaseUrl: cfg.get<string>("vllmBaseUrl") ?? DEFAULT_OPENAI_URL,
+      rayBaseUrl: cfg.get<string>("rayBaseUrl") ?? DEFAULT_OPENAI_URL,
+      ollamaBaseUrl: cfg.get<string>("ollamaUrl") ?? DEFAULT_OLLAMA_URL,
       anthropicModels: cfg.get<string[]>("anthropicAvailableModels") ?? [],
       remembered: this._remembered() ?? null,
     });
@@ -1296,8 +1298,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    */
   private async _startServerAndConnect(
     model: string,
-    backend = "vllm",
-    baseUrl = "http://127.0.0.1:8000",
+    backend = DEFAULT_BACKEND,
+    baseUrl = DEFAULT_OPENAI_URL,
     anthropicApiKey = "",
     { silent = false }: { silent?: boolean } = {},
   ): Promise<void> {
@@ -1524,261 +1526,196 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** One handler per message the webview posts (`HostMessage`). */
+  private readonly _webviewHandlers: {
+    [T in HostMessage["type"]]: (m: HostMessageOf<T>) => void;
+  } = {
+    open_file: (m) => this._openFile(m),
+    open_preview: (m) => this._openPreview(m),
+    open_diff: (m) => this._openDiff(m),
+    open_patch: (m) => this._openPatch(m),
+    disconnect: () => this._disconnect(),
+    // The "@" dropdown, asking which workspace files match what has been typed.
+    file_search: (m) => void this._sendFileMatches(typeof m.query === "string" ? m.query : ""),
+    get_config: () => this._onWebviewMounted(),
+    fetch_models: (m) => void this._sendModels(m.backend ?? DEFAULT_BACKEND, m.baseUrl ?? ""),
+    connect: (m) => this._connect(m),
+    ws_send: (m) => this._forwardToServer(m.payload),
+  };
+
   private _handleFromWebview(msg: unknown): void {
-    const m = msg as Record<string, unknown>;
+    const m = msg as HostMessage;
+    const handler = this._webviewHandlers[m?.type] as ((m: HostMessage) => void) | undefined;
+    handler?.(m);
+  }
 
-    if (m.type === "open_file") {
-      const rel = m.file as string | undefined;
-      if (rel) {
-        const roots = vscode.workspace.workspaceFolders;
-        const base  = roots?.[0]?.uri.fsPath ?? process.cwd();
-        const abs   = require("path").isAbsolute(rel)
-          ? rel
-          : require("path").join(base, rel);
-        const uri = vscode.Uri.file(abs);
-        const line = typeof m.line === "number" ? m.line : undefined;
-        const endLine = typeof m.end_line === "number" ? m.end_line : line;
-        vscode.workspace.openTextDocument(uri).then(
-          (doc) => {
-            if (line === undefined) {
-              void vscode.window.showTextDocument(doc, { preview: true });
-              return;
-            }
-            // Clamped: the file may have changed since the tool touched it.
-            const last = doc.lineCount - 1;
-            const start = Math.min(Math.max(line - 1, 0), last);
-            const end = Math.min(Math.max((endLine ?? line) - 1, start), last);
-            const range = new vscode.Range(start, 0, end, doc.lineAt(end).text.length);
-            void vscode.window.showTextDocument(doc, {
-              preview: true,
-              viewColumn: vscode.ViewColumn.One,
-              selection: range,
-            }).then((editor) => {
-              editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-            });
-          },
-          () => vscode.window.showWarningMessage(`MIMIR: cannot open ${rel}`)
-        );
-      }
-      return;
-    }
-
-    if (m.type === "open_preview") {
-      // Open a file the agent wrote (e.g. a plan .md) for reading. Markdown
-      // files render in VS Code's Markdown preview; anything else falls back to
-      // a normal editor tab.
-      const rel = m.file as string | undefined;
-      if (rel) {
-        const roots = vscode.workspace.workspaceFolders;
-        const base  = roots?.[0]?.uri.fsPath ?? process.cwd();
-        const abs   = require("path").isAbsolute(rel)
-          ? rel
-          : require("path").join(base, rel);
-        if (/\.mdx?$/i.test(abs)) {
-          _showPlanPreview(abs);
-        } else {
-          const uri = vscode.Uri.file(abs);
-          vscode.workspace.openTextDocument(uri).then(
-            (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-            () => vscode.window.showWarningMessage(`MIMIR: cannot open ${rel}`)
-          );
+  private _openFile(m: HostMessageOf<"open_file">): void {
+    if (!m.file) return;
+    const uri = vscode.Uri.file(workspacePath(m.file));
+    const line = typeof m.line === "number" ? m.line : undefined;
+    const endLine = typeof m.end_line === "number" ? m.end_line : line;
+    vscode.workspace.openTextDocument(uri).then(
+      (doc) => {
+        if (line === undefined) {
+          void vscode.window.showTextDocument(doc, { preview: true });
+          return;
         }
-      }
-      return;
-    }
-
-    if (m.type === "open_diff") {
-      const rel        = m.file as string | undefined;
-      const newContent = m.new_content as string | undefined;
-      if (rel) {
-        const roots = vscode.workspace.workspaceFolders;
-        const base  = roots?.[0]?.uri.fsPath ?? process.cwd();
-        const abs   = require("path").isAbsolute(rel)
-          ? rel
-          : require("path").join(base, rel);
-        const basename = require("path").basename(rel);
-        const currentUri = vscode.Uri.file(abs);
-
-        if (newContent !== undefined) {
-          // Store proposed content under the absolute path as key, then open a
-          // diff editor: left = current file on disk (or empty if new), right = proposed content.
-          _diffProposedContent.set(abs, newContent);
-          const proposedUri = vscode.Uri.from({ scheme: "mimir-diff", path: abs });
-
-          // Check if the file already exists; if not, use an empty virtual doc
-          // as the left side so VS Code doesn't throw "nonexistent file".
-          const fs = require("fs") as typeof import("fs");
-          const fileExists = fs.existsSync(abs);
-          if (fileExists) {
-            vscode.commands.executeCommand(
-              "vscode.diff",
-              currentUri,
-              proposedUri,
-              `${basename}: Current ↔ Proposed`,
-              { preview: true }
-            );
-          } else {
-            // New file — open the proposed content directly (no empty-vs-new diff).
-            vscode.workspace.openTextDocument(proposedUri).then(
-              (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-              () => vscode.window.showWarningMessage(`MIMIR: cannot preview new file ${rel}`)
-            );
-          }
-        } else if (m.patch) {
-          // Post-write diff: reconstruct the "before" content by reverse-applying
-          // the unified patch, then open left=before right=current.
-          const patch = m.patch as string;
-          const fs = require("fs") as typeof import("fs");
-          let currentContent = "";
-          try { currentContent = fs.readFileSync(abs, "utf8"); } catch { /* new file */ }
-          const originalContent = _reversePatch(currentContent, patch);
-          _diffProposedContent.set(abs + "__original", originalContent);
-          const originalUri = vscode.Uri.from({ scheme: "mimir-diff", path: abs + "__original" });
-          vscode.commands.executeCommand(
-            "vscode.diff",
-            originalUri,
-            currentUri,
-            `${basename}: Before ↔ After`,
-            { preview: true }
-          );
-        } else {
-          // No patch or proposed content — fall back to opening the file directly.
-          vscode.workspace.openTextDocument(currentUri).then(
-            (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-            () => vscode.window.showWarningMessage(`MIMIR: cannot open ${rel}`)
-          );
-        }
-      }
-      return;
-    }
-
-    if (m.type === "open_patch") {
-      // Open a single syntax-highlighted .diff virtual document (review window style).
-      const rel  = m.file as string | undefined;
-      const patch = m.patch as string | undefined;
-      if (rel && patch) {
-        const roots = vscode.workspace.workspaceFolders;
-        const base  = roots?.[0]?.uri.fsPath ?? process.cwd();
-        const abs   = require("path").isAbsolute(rel) ? rel : require("path").join(base, rel);
-        const basename = require("path").basename(rel);
-        // Store patch under a .diff-suffixed key so the language server detects
-        // the diff language and applies green/red syntax highlighting.
-        const patchKey = abs + ".diff";
-        _diffProposedContent.set(patchKey, patch);
-        const patchUri = vscode.Uri.from({ scheme: "mimir-diff", path: patchKey });
-        vscode.workspace.openTextDocument(patchUri).then(
-          (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-          () => vscode.window.showWarningMessage(`MIMIR: cannot open patch for ${rel}`)
-        );
-      }
-      return;
-    }
-
-    if (m.type === "disconnect") {
-      this._ws?.close();
-      this._ws = undefined;
-      this._logTail?.dispose();
-      this._logTail = undefined;
-      // A detached server is not this window's to end. Disconnecting from one is
-      // leaving the room, not turning the lights off: the run was deliberately kept
-      // going, and the panel offered to keep it going on this very click. Any other
-      // server ends here, which is what the dialog says it does.
-      endServerUnlessKeptRunning();
-      this._view?.webview.postMessage({ type: "ws_closed" });
-      return;
-    }
-
-    if (m.type === "file_search") {
-      // The "@" dropdown, asking which workspace files match what has been typed.
-      void this._sendFileMatches(typeof m.query === "string" ? m.query : "");
-      return;
-    }
-
-    if (m.type === "get_config") {
-      // The webview's mount handshake: the one point where it is certainly
-      // listening, so it is also where a connect it missed is replayed.
-      void this._sendConfig();
-      this._announceModels();
-      this._resumeAutoConnect();
-      return;
-    }
-
-    if (m.type === "fetch_models") {
-      void this._sendModels(
-        (m.backend as string | undefined) ?? "vllm",
-        (m.baseUrl as string | undefined) ?? "",
-      );
-      return;
-    }
-
-    if (m.type === "connect") {
-      const model = (m.model as string | undefined) ?? "";
-      const backend = (m.backend as string | undefined) ?? "vllm";
-      const baseUrl = (m.baseUrl as string | undefined) ?? "http://127.0.0.1:8000";
-      // Claude API key from the webview. Kept in-process only: passed to the
-      // ws_server via the ANTHROPIC_API_KEY env var (never a CLI arg or setting),
-      // so it never reaches the process list, the output channel, or disk.
-      const anthropicApiKey = (m.anthropicApiKey as string | undefined) ?? "";
-      const remember = m.remember === true;
-
-      // The endpoints with an address resolve the served model themselves when none
-      // is picked, so only the hosted Claude API needs an explicit one.
-      if (!model && backend === "anthropic") {
-        vscode.window.showErrorMessage("MIMIR: select a model before connecting.");
-        return;
-      }
-
-      // "Remember this address" — store the endpoint (never the key) so the next
-      // window can reconnect on its own; unchecking it forgets the stored one.
-      if (remember && ADDRESSED_BACKENDS.includes(backend)) {
-        void this.memento.update(REMEMBERED_KEY, { backend, baseUrl, model });
-      } else {
-        void this.memento.update(REMEMBERED_KEY, undefined);
-      }
-
-      // A hand-typed connect supersedes any auto-connect still being replayed.
-      // The form ran its own probe, so the webview already holds that list.
-      this._pendingAutoConnect = undefined;
-      this._autoConnectModels = undefined;
-      this._autoConnectStarted = true;
-      void this._startServerAndConnect(model, backend, baseUrl, anthropicApiKey)
-        .catch((err) => {
-          vscode.window.createOutputChannel("MIMIR Server").appendLine(
-            `Starting the server failed: ${err instanceof Error ? err.message : String(err)}`);
-          this._view?.webview.postMessage({ type: "ws_closed" });
+        // Clamped: the file may have changed since the tool touched it.
+        const last = doc.lineCount - 1;
+        const start = Math.min(Math.max(line - 1, 0), last);
+        const end = Math.min(Math.max((endLine ?? line) - 1, start), last);
+        const range = new vscode.Range(start, 0, end, doc.lineAt(end).text.length);
+        void vscode.window.showTextDocument(doc, {
+          preview: true,
+          viewColumn: vscode.ViewColumn.One,
+          selection: range,
+        }).then((editor) => {
+          editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
         });
+      },
+      () => vscode.window.showWarningMessage(`MIMIR: cannot open ${m.file}`)
+    );
+  }
+
+  /** A file the agent wrote (a plan .md) opened for reading: Markdown in its preview. */
+  private _openPreview(m: HostMessageOf<"open_preview">): void {
+    if (!m.file) return;
+    const abs = workspacePath(m.file);
+    if (/\.mdx?$/i.test(abs)) {
+      _showPlanPreview(abs);
       return;
     }
+    vscode.workspace.openTextDocument(vscode.Uri.file(abs)).then(
+      (doc) => vscode.window.showTextDocument(doc, { preview: true }),
+      () => vscode.window.showWarningMessage(`MIMIR: cannot open ${m.file}`)
+    );
+  }
 
-    if (m.type === "ws_send") {
-      // React wants to send a message to the Python server
-      const payload = m.payload as string;
-      // Asking to detach is enough to stop killing, before any reply comes back.
-      // Otherwise there is a window — the round trip — in which the user has clicked
-      // "keep it going", the badge has not changed yet, and closing the editor still
-      // ends the run. The two outcomes are not symmetric: a server left running that
-      // failed to detach is findable through the registry and endable with the stop
-      // command, while a server killed after the user asked to keep it is work gone.
-      if (payload.includes('"detach"')) {
-        try {
-          const parsed = JSON.parse(payload) as { type?: string; enabled?: boolean };
-          // `enabled: false` is the user taking the decision back, and that one waits
-          // for the server's answer: acting on the request would stop guarding a
-          // server still believed detached on the other side.
-          if (parsed.type === "detach" && parsed.enabled !== false) {
-            serverDetached = true;
-          }
-        } catch {
-          // Not ours to parse; leave the flag alone.
-        }
-      }
-      if (this._ws?.readyState === WebSocket.OPEN) {
-        this._ws.send(payload);
+  /** A pending edit (current ↔ proposed), a written one (before ↔ after), else the file. */
+  private _openDiff(m: HostMessageOf<"open_diff">): void {
+    const rel = m.file;
+    if (!rel) return;
+    const abs = workspacePath(rel);
+    const basename = path.basename(rel);
+    const currentUri = vscode.Uri.file(abs);
+    if (m.new_content !== undefined) {
+      _diffProposedContent.set(abs, m.new_content);
+      const proposedUri = vscode.Uri.from({ scheme: "mimir-diff", path: abs });
+      if (fs.existsSync(abs)) {
+        vscode.commands.executeCommand("vscode.diff", currentUri, proposedUri,
+          `${basename}: Current ↔ Proposed`, { preview: true });
       } else {
-        this._pendingMessages.push(payload);
+        // A new file: the proposed content alone, not an empty-vs-new diff.
+        vscode.workspace.openTextDocument(proposedUri).then(
+          (doc) => vscode.window.showTextDocument(doc, { preview: true }),
+          () => vscode.window.showWarningMessage(`MIMIR: cannot preview new file ${rel}`)
+        );
       }
+      return;
+    }
+    if (m.patch) {
+      // The "before" content is the current file with the patch reversed.
+      let currentContent = "";
+      try { currentContent = fs.readFileSync(abs, "utf8"); } catch { /* new file */ }
+      _diffProposedContent.set(abs + "__original", _reversePatch(currentContent, m.patch));
+      const originalUri = vscode.Uri.from({ scheme: "mimir-diff", path: abs + "__original" });
+      vscode.commands.executeCommand("vscode.diff", originalUri, currentUri,
+        `${basename}: Before ↔ After`, { preview: true });
+      return;
+    }
+    vscode.workspace.openTextDocument(currentUri).then(
+      (doc) => vscode.window.showTextDocument(doc, { preview: true }),
+      () => vscode.window.showWarningMessage(`MIMIR: cannot open ${rel}`)
+    );
+  }
+
+  /** A patch as one highlighted .diff document (the .diff key picks the language). */
+  private _openPatch(m: HostMessageOf<"open_patch">): void {
+    if (!m.file || !m.patch) return;
+    const patchKey = workspacePath(m.file) + ".diff";
+    _diffProposedContent.set(patchKey, m.patch);
+    const patchUri = vscode.Uri.from({ scheme: "mimir-diff", path: patchKey });
+    vscode.workspace.openTextDocument(patchUri).then(
+      (doc) => vscode.window.showTextDocument(doc, { preview: true }),
+      () => vscode.window.showWarningMessage(`MIMIR: cannot open patch for ${m.file}`)
+    );
+  }
+
+  private _disconnect(): void {
+    this._ws?.close();
+    this._ws = undefined;
+    this._logTail?.dispose();
+    this._logTail = undefined;
+    // A detached server is not this window's to end: disconnecting leaves it running.
+    endServerUnlessKeptRunning();
+    this._view?.webview.postMessage({ type: "ws_closed" });
+  }
+
+  /** The webview's mount handshake: the one point where it is certainly listening, so
+   *  it is also where a connect it missed is replayed. */
+  private _onWebviewMounted(): void {
+    void this._sendConfig();
+    this._announceModels();
+    this._resumeAutoConnect();
+  }
+
+  private _connect(m: HostMessageOf<"connect">): void {
+    const model = m.model ?? "";
+    const backend = m.backend ?? DEFAULT_BACKEND;
+    const baseUrl = m.baseUrl ?? DEFAULT_OPENAI_URL;
+    // The Claude API key stays in-process: it reaches the server through its
+    // environment, never a CLI arg, a setting or the disk.
+    const anthropicApiKey = m.anthropicApiKey ?? "";
+    // The addressed endpoints resolve the served model themselves.
+    if (!model && backend === "anthropic") {
+      vscode.window.showErrorMessage("MIMIR: select a model before connecting.");
+      return;
+    }
+    // "Remember this address": the endpoint (never the key), for the next window.
+    if (m.remember === true && ADDRESSED_BACKENDS.includes(backend)) {
+      void this.memento.update(REMEMBERED_KEY, { backend, baseUrl, model });
+    } else {
+      void this.memento.update(REMEMBERED_KEY, undefined);
+    }
+    // A hand-typed connect supersedes any auto-connect still being replayed.
+    this._pendingAutoConnect = undefined;
+    this._autoConnectModels = undefined;
+    this._autoConnectStarted = true;
+    void this._startServerAndConnect(model, backend, baseUrl, anthropicApiKey)
+      .catch((err) => {
+        vscode.window.createOutputChannel("MIMIR Server").appendLine(
+          `Starting the server failed: ${err instanceof Error ? err.message : String(err)}`);
+        this._view?.webview.postMessage({ type: "ws_closed" });
+      });
+  }
+
+  /** A message for the Python server, queued while the socket is not open. */
+  private _forwardToServer(payload: string): void {
+    // Asking to detach stops the kill at once: closing the editor during the round trip
+    // must not end a run the user asked to keep. Taking it back (`enabled: false`)
+    // waits for the server's answer.
+    if (payload.includes('"detach"')) {
+      try {
+        const parsed = JSON.parse(payload) as { type?: string; enabled?: boolean };
+        if (parsed.type === "detach" && parsed.enabled !== false) {
+          serverDetached = true;
+        }
+      } catch {
+        // Not ours to parse; leave the flag alone.
+      }
+    }
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      this._ws.send(payload);
+    } else {
+      this._pendingMessages.push(payload);
     }
   }
+}
+
+/** *rel* resolved against the first workspace folder (an absolute path is kept). */
+function workspacePath(rel: string): string {
+  const base = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  return path.isAbsolute(rel) ? rel : path.join(base, rel);
 }
 
 /**

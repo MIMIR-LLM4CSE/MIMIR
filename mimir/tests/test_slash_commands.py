@@ -79,7 +79,7 @@ class DetachOwnershipTests(unittest.TestCase):
 
     def test_the_outbound_request_sets_the_flag(self) -> None:
         src = self._extension()
-        send = src[src.index('if (m.type === "ws_send")'):]
+        send = src[src.index("private _forwardToServer(payload: string): void {"):]
         send = send[:send.index("this._pendingMessages.push(payload)")]
         self.assertIn("serverDetached = true", send,
                       "the kill is only called off once the server answers")
@@ -122,7 +122,7 @@ class DetachOwnershipTests(unittest.TestCase):
         src = self._extension()
         for site, opens in (("export function deactivate(): void {", "}"),
                             ("private _teardownServer(): void {", "}"),
-                            ('if (m.type === "disconnect") {', "}")):
+                            ("private _disconnect(): void {", "}")):
             body = src[src.index(site):]
             body = body[:body.index("\n  " + opens)]
             self.assertIn("endServerUnlessKeptRunning()", body,

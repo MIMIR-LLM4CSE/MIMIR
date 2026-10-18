@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import type { ServerMessage, ClientMessage } from "../types";
+import type { HostMessage } from "../../../src/shared/hostMessages";
 
 // Acquire the VS Code API once at module level — calling it twice throws.
 declare function acquireVsCodeApi(): { postMessage(msg: unknown): void };
@@ -8,7 +9,7 @@ const _vscode = (() => {
 })();
 
 /** Send any message to the extension host from anywhere in the webview. */
-export function vscodePostMessage(msg: unknown): void {
+export function vscodePostMessage(msg: HostMessage): void {
   _vscode?.postMessage(msg);
 }
 
