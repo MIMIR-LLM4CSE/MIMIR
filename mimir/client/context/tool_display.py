@@ -161,83 +161,89 @@ _SEARCH_RESULT_KEYS = {
 }
 
 
+def _text(args: dict[str, Any], key: str) -> str:
+    """``args[key]`` stripped when it is a non-blank string, else ""."""
+    val = args.get(key)
+    return val.strip() if isinstance(val, str) else ""
+
+
+def _first_path(args: dict[str, Any]) -> str:
+    return next((v for v in (_text(args, k) for k in CONVENTIONAL_PATH_ARGS) if v), "")
+
+
+def _preview_command(args: dict[str, Any]) -> str:
+    """A runnable command or code body: its first non-empty line, up to 80 characters."""
+    for key in COMMAND_KEYS:
+        val = _text(args, key)
+        if val:
+            return next(ln for ln in val.splitlines() if ln.strip()).strip()[:80]
+    return ""
+
+
+def _preview_url(args: dict[str, Any]) -> str:
+    """Host and path without the scheme: the host alone does not say what for."""
+    url = _text(args, "url")
+    return _url_preview(url) if url else ""
+
+
+def _preview_pair(args: dict[str, Any]) -> str:
+    """Two arguments naming one thing (owner/repo), with the path inside it, clipped
+    from the left: the end names the thing."""
+    for left, right in _OBJECT_PAIRS:
+        a, b = _text(args, left), _text(args, right)
+        if a and b:
+            whole = f"{a}/{b}"
+            path = _first_path(args)
+            if path:
+                whole += "/" + path.lstrip("/")
+            return whole if len(whole) <= _PREVIEW_LIMIT else "…" + whole[-(_PREVIEW_LIMIT - 1):]
+    return ""
+
+
+def _preview_path(args: dict[str, Any]) -> str:
+    """An absolute path as its file name (as in ``shorten_display_args``); a relative one,
+    already short on a remote-fetch tool, as written."""
+    path = _first_path(args)
+    if not path:
+        return ""
+    return _relpath(path) if os.path.isabs(path) else _clip(path, _PREVIEW_LIMIT)
+
+
+def _preview_value(key: str, val: Any) -> str:
+    """One object argument. A list is joined while it fits and counted once it does not,
+    the count named after the argument."""
+    if isinstance(val, str) and val.strip():
+        return _clip(" ".join(val.split()), _PREVIEW_LIMIT)
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return str(val)
+    if isinstance(val, (list, tuple)):
+        parts = [" ".join(str(v).split()) for v in val if str(v).strip()]
+        if not parts:
+            return ""
+        joined = " · ".join(parts)
+        if len(joined) <= _PREVIEW_LIMIT:
+            return joined
+        return f"{len(parts)} {key}" if len(parts) > 1 else _clip(parts[0], _PREVIEW_LIMIT)
+    return ""
+
+
+def _preview_object(args: dict[str, Any]) -> str:
+    """What the call acts on, else the action it selects (see _OBJECT_KEYS)."""
+    return next((v for v in (_preview_value(k, args.get(k)) for k in _OBJECT_KEYS) if v), "")
+
+
 def tool_arg_preview(name: str, args: dict[str, Any]) -> str:
     """The salient argument of a call, shown beside its description, or "".
 
-    Picked by argument name in priority order (command, pattern, url, file, object keys,
-    ``op``). A command keeps its first line up to 80 characters.
+    Tried in order: command, search pattern, url, owner/repo, file, object keys, ``op``.
     """
     if not isinstance(args, dict):
         return ""
-
-    # Runnable command / code body → first non-empty line, clipped.
-    for key in COMMAND_KEYS:
-        val = args.get(key)
-        if isinstance(val, str) and val.strip():
-            first = next((ln for ln in val.splitlines() if ln.strip()), "").strip()
-            return first[:80]
-
-    # Search pattern.
-    pattern = args.get("pattern")
-    if isinstance(pattern, str) and pattern.strip():
-        return pattern.strip()[:80]
-
-    # Web URL → host and path, without the scheme. The host alone answered "is it
-    # reaching the network" but not "for what", and a row whose whole point is the
-    # outbound call said `api.github.com` for every one of them.
-    url = args.get("url")
-    if isinstance(url, str) and url.strip():
-        return _url_preview(url.strip())
-
-    # Two arguments that name one thing between them — an owner and a repository (see
-    # _OBJECT_PAIRS). Before the path, and it takes the path with it: a remote file is
-    # identified by the repository it is in, and `ci.yml` alone does not say which one.
-    # That whole string is what a GitHub row is for.
-    for left, right in _OBJECT_PAIRS:
-        a, b = args.get(left), args.get(right)
-        if isinstance(a, str) and a.strip() and isinstance(b, str) and b.strip():
-            whole = f"{a.strip()}/{b.strip()}"
-            for key in CONVENTIONAL_PATH_ARGS:
-                val = args.get(key)
-                if isinstance(val, str) and val.strip():
-                    whole += "/" + val.strip().lstrip("/")
-                    break
-            # Clipped from the left of the tail, like a url: the end names the thing.
-            return whole if len(whole) <= _PREVIEW_LIMIT else "…" + whole[-(_PREVIEW_LIMIT - 1):]
-
-    # A file this call names. Absolute → its file name, the same rule and the same
-    # reason as `shorten_display_args`; relative → as written, because a repository
-    # path on a remote-fetch tool is already short and its leading segments are what
-    # identify it. Applied here and not only there because `policy.gates` previews the
-    # raw arguments.
-    for key in CONVENTIONAL_PATH_ARGS:
-        val = args.get(key)
-        if isinstance(val, str) and val.strip():
-            val = val.strip()
-            return _relpath(val) if os.path.isabs(val) else _clip(val, _PREVIEW_LIMIT)
-
-    # What the call is acting on, else the action it selects (see _OBJECT_KEYS).
-    for key in _OBJECT_KEYS:
-        val = args.get(key)
-        if isinstance(val, str) and val.strip():
-            return _clip(" ".join(val.split()), _PREVIEW_LIMIT)
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            return str(val)
-        # A list names several things at once — the packages of an install, the steps of
-        # a plan. Joined while they fit, because "numpy · scipy" is the row and "2
-        # packages" is a row that has to be expanded to say anything; counted once they
-        # do not, because seven steps of a plan clipped mid-sentence say less than their
-        # number does. The noun of the count is the argument's own name, so this needs
-        # no list of keys either.
-        if isinstance(val, (list, tuple)) and val:
-            parts = [" ".join(str(v).split()) for v in val if str(v).strip()]
-            if not parts:
-                continue
-            joined = " · ".join(parts)
-            if len(joined) <= _PREVIEW_LIMIT:
-                return joined
-            return f"{len(parts)} {key}" if len(parts) > 1 else _clip(parts[0], _PREVIEW_LIMIT)
-
+    for preview in (_preview_command, lambda a: _text(a, "pattern")[:80], _preview_url,
+                    _preview_pair, _preview_path, _preview_object):
+        found = preview(args)
+        if found:
+            return found
     return ""
 
 
