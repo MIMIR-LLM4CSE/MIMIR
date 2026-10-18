@@ -575,6 +575,8 @@ def parse_segments(command: str) -> list[ParsedSegment]:
     while i < n:
         tok = tokens[i]
 
+        is_operator = bool(tok) and all(ch in _OPERATOR_CHARS for ch in tok)
+
         if nested_argv is not None:
             if tok in _EXEC_TERMINATORS:
                 if nested_argv:
@@ -582,9 +584,17 @@ def parse_segments(command: str) -> list[ParsedSegment]:
                 nested_argv = None
                 i += 1
                 continue
-            nested_argv.append(tok)
-            i += 1
-            continue
+            if not is_operator:
+                nested_argv.append(tok)
+                i += 1
+                continue
+            # The shell reads an operator inside the payload as its own: a redirection
+            # applies to find (handled below), anything else ends find's command first.
+            if not ("<" in tok or ">" in tok):
+                raise ShellParseError(
+                    "separator",
+                    f"Shell operator '{tok}' inside -exec/-execdir ends the command"
+                    " before its ';' or '+'.")
 
         if tok in _NESTED_COMMAND_FLAGS and argv:
             # The flag is dropped from the outer argv: not an operand, and keeping it
@@ -603,7 +613,6 @@ def parse_segments(command: str) -> list[ParsedSegment]:
             i += 1
             continue
 
-        is_operator = bool(tok) and all(ch in _OPERATOR_CHARS for ch in tok)
         if is_operator and ("<" in tok or ">" in tok):
             if tok.startswith("<<"):
                 # Heredoc / herestring: its body is not an argv this can segment,
@@ -612,8 +621,9 @@ def parse_segments(command: str) -> list[ParsedSegment]:
                     "heredoc", f"Redirection operator '{tok}' is not supported.")
             # Quote-aware tokenization detaches the source fd (the '2' in
             # '2>/dev/null') into its own token; drop it so it never lands in argv.
-            if argv and len(argv[-1]) == 1 and argv[-1].isdigit():
-                argv.pop()
+            words = nested_argv if nested_argv is not None else argv
+            if words and len(words[-1]) == 1 and words[-1].isdigit():
+                words.pop()
             target = tokens[i + 1] if i + 1 < n else None
             if target is None or target in COMMAND_SEPARATORS or all(
                 ch in _OPERATOR_CHARS for ch in target
