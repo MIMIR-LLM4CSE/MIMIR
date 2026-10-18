@@ -425,8 +425,8 @@ Every run builds a validated context (`build_execution_context()` /
 ### Field traits
 
 Per-field questions — is it carried across queries? purged when a file is deleted? does it
-count as discovery? — are answered once, as a `traits` frozenset on the field's row in
-`_FIELD_SPECS`. Every list that answers one of them is derived with `fields_with(...)`.
+count as discovery? — are answered once, as a `traits` frozenset in the metadata of the
+`ExecutionContext` field. Every list that answers one of them is derived with `fields_with(...)`.
 
 | Trait | Meaning | Derived list |
 |---|---|---|
@@ -1053,7 +1053,7 @@ explicit approval — allow once, always for this path, or deny — before the t
 `gates.check_out_of_workspace_access` runs **before** the sensitive-tool gate, so a
 previewable write cannot slip past it.
 
-`_out_of_workspace_targets` reuses the file/edit-target extractor, any `cwd` arg-role, and
+`out_of_workspace_targets` reuses the file/edit-target extractor, any `cwd` arg-role, and
 **every path a shell command names**. It resolves each to a realpath and drops:
 
 - paths under the workspace root;
@@ -1569,5 +1569,5 @@ When changing policy behaviour, update:
   retry.
 - Success payload helpers drop reserved protocol keys. If a success payload needs `hint`,
   attach it after construction or change the helper contract explicitly.
-- After `_rewrite_tool_for_context(...)`, the rewritten tool name must still be validated
+- After `rewrite_tool_for_context(...)`, the rewritten tool name must still be validated
   against the registry.

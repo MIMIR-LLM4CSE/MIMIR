@@ -109,7 +109,7 @@ it replaces even an agent the caller passes). A corporate proxy has no route to 
 address: it accepts the CONNECT and holds it, so a proxied probe hangs until its own
 deadline and the form reports "did not answer in time" about a server that answers in
 under a second. `net`/`tls` are off that patch's path. It is the same posture the Python
-side takes at every cluster call (`httpx.Client(trust_env=False)`, `_direct_opener()`),
+side takes at every cluster call (`httpx.Client(trust_env=False)`, an opener with an empty `ProxyHandler`),
 and any future host-side request to an endpoint belongs on `directGet` for that reason.
 The deadline is 30 s: these endpoints are often slow to *answer*, not absent.
 
@@ -126,7 +126,7 @@ control's rungs. The rungs are the served family's own (a token ladder for
 sent back is always a `THINKING_DEPTH` index, so the rest of the protocol is
 unchanged.
 
-There are two emission paths into the WS layer. Messages originated by `server/main.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line. The `sys.stdout` router (`ui/ws/runtime.py`) is a catch-all for stray prints.
+There are two emission paths into the WS layer. Messages originated by the connection itself (session lifecycle, errors, todos, context-usage) are sent directly through its `Sender` or placed on the worker's `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the pool's `EventBus` drains and each connection's `EventRouter` forwards to its WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line. The `sys.stdout` router (`ui/ws/runtime.py`) is a catch-all for stray prints.
 
 ---
 
@@ -360,9 +360,10 @@ below it.
      break;
    ```
 
-4. **Emit it from Python** (`server/main.py` drain loop or `_handle()`):
+4. **Emit it from Python**: a handler group sends it through its `Sender`, and the
+   engine through `emit()`, which `EventRouter` (`connection/router.py`) forwards:
    ```python
-   await self.ws.send(json.dumps({"type": "my_custom", "value": 42, "label": "hello"}))
+   await self.out.send({"type": "my_custom", "value": 42, "label": "hello"})
    ```
 
 ---
@@ -393,16 +394,17 @@ below it.
    vscodePostMessage({ type: "ws_send", payload: JSON.stringify({ type: "my_action", param: "foo" }) });
    ```
 
-4. **Handle it in Python** (`server/main.py`): `Connection._handle()` is a dispatch table — add a handler
-   method and register it in the `_MSG_HANDLERS` map (no `if/elif` chain to edit):
+4. **Handle it in Python** (`mimir/client/ui/ws/connection/handlers/`): each handler
+   group maps message types to its `on_<type>` methods in `MESSAGES`, and
+   `Connection.handle()` dispatches on that table (no `if/elif` chain to edit):
    ```python
-   # in Connection._MSG_HANDLERS:
-   "my_action": "_handle_my_action",
+   # in the group's MESSAGES:
+   "my_action": "on_my_action",
 
-   async def _handle_my_action(self, msg: dict) -> None:
+   async def on_my_action(self, msg: dict) -> None:
        param = msg.get("param", "")
        # do something
-       await self.ws.send(json.dumps({"type": "output", "text": f"did: {param}\n"}))
+       await self.out.send({"type": "output", "text": f"did: {param}\n"})
    ```
 
 ---
@@ -617,7 +619,7 @@ is already a dense line.
 The click deliberately does **not** reach the model. The agent thread is parked
 awaiting that very tool call, and a steer is only drained at a step boundary, so an
 instruction routed that way would arrive after the run it meant to divert had ended.
-`_handle_divert_to_background` serves it on the WS loop: it resolves the id to the
+`TurnHandlers.on_divert_to_background` serves it on the WS loop: it resolves the id to the
 row's tool name, which is the run channel that tool's server publishes under, and
 writes a request there for the wait loop to consume on its next tick
 (`SERVERS_DETAILED.md` → *Detached runs*). The name is resolved on the client for the
@@ -776,9 +778,9 @@ In any component that receives `send` as a prop:
 
 ### Example 6 — Persist a new piece of UI state across sessions
 
-1. Add the field to the `session_loaded` Python payload in `server/main.py`.
+1. Add the field to the `session_loaded` payload in `connection/handlers/conversations.py`.
 2. Read it in the `"session_loaded"` case in `App.tsx` and call the appropriate `setState`.
-3. Save it back in `_autosave_session()` in `server/main.py`.
+3. Save it back through `Screen.save()` in `connection/screen.py`.
 
 ---
 

@@ -10,7 +10,7 @@ git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git
 cd MIMIR
 ./install.sh                        # creates .venv-<os>-<arch>, installs with the 'vllm' extra
 source .venv-linux-x86_64/bin/activate   # the name install.sh printed
-pip install -e ".[dev]"             # editable install + pytest and ruff
+pip install -e ".[dev]"             # editable install + pytest, ruff and mypy
 ```
 
 ## Running the checks
@@ -20,9 +20,12 @@ pytest                              # full suite (see pyproject [tool.pytest.ini
 pytest mimir/tests/test_signals.py  # a single file
 ruff check .                        # lint (see pyproject [tool.ruff.lint])
 ruff check . --fix                  # apply the safe fixes
+python -m mypy                      # types (see pyproject [tool.mypy])
 ```
 
-Both must be clean before opening a pull request — CI runs the same two commands.
+All three must be clean before opening a pull request. `mimir/tests/test_architecture.py`,
+part of the suite, also checks the layering, the length of docstrings and the private
+accesses in tests (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 
 The ruff rule set is deliberately narrow: `E4`/`E7`/`E9`/`F`, i.e. the checks that
 catch a defect (an undefined name, a dead import, a file that would fail at import),
@@ -84,7 +87,8 @@ Authoritative docs: `README.md`, `SETUP.md`, `ARCHITECTURE.md`, `POLICY.md`,
 - Keep changes focused; describe the motivation and the behavior change.
 - Add or update tests for new behavior.
 - Update the relevant docs when you change user-facing behavior or policy.
-- Run `pytest` and `ruff check .` (and `npm test` for extension changes) locally first.
+- Run `pytest`, `ruff check .` and `python -m mypy` (and `npm test` for extension
+  changes) locally first.
 
 ## Reporting issues
 

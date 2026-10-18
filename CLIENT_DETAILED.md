@@ -48,7 +48,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `jobs/background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
 | `jobs/poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
-| `finalize.py` | `finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
+| `finalize.py` | `finalize_answer` / `record_turn` |
 | `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
 | `backends/` | `LLMBackend.chat` is a template (`_complete` per backend); `OpenAICompatBackend` with `VllmBackend` and `RayBackend` as subclasses, `AnthropicBackend`, `OllamaBackend`, the `ThinkTagParser` |
 
@@ -282,9 +282,9 @@ The per-query state schema, the tool vocabulary, and the `@`-mention attach.
 
 ### `execution_context.py`
 
-The `ExecutionContext` schema and its lifecycle. One source of truth: the module-level
-`_FIELD_SPECS` registry of `(name, factory, types, traits)` rows generates both the
-template and the validator, and the TypedDict is the static-typing surface. A contract test
+The `ExecutionContext` schema and its lifecycle. One source of truth: the
+`ExecutionContext` dataclass, whose fields carry their `traits` in their metadata,
+generates both the template and the validator. A contract test
 asserts the two key sets match. **47 fields** today.
 
 - `execution_context_template()` / `build_execution_context()` / `validate_execution_context()`
@@ -1143,7 +1143,7 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 | `server/main.py` | the entry point: the command line, `--cwd`, then `serving` |
 | `server/serving.py` | `serve`: model resolution, bind, the shutdown path |
 | `server/registry.py`, `server/detach.py` | the registry of live servers other windows find this one by; detaching from the terminal |
-| `connection/connection.py` | `Connection`, one connection: the handshake, the dispatch, the replay. Its handlers are mixins in `connection/handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel` |
+| `connection/connection.py` | `Connection`, one connection: the handshake, the dispatch, the replay. Its handler groups in `connection/handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel` — share its `ViewState`, `Sender` and `Screen` |
 | `connection/router.py` | `EventRouter`: the connection's share of the stream, sent to its client, one handler per event type |
 | `connection/commands.py`, `connection/panel_runs.py` | the socket's side of the slash commands (`WsCommandHost`, `/cancel`, `/diag`); the runs the panel shows |
 | `pool/bus.py` | the pump: drains every worker, journals, hands answers and finished runs to the pool, fans out to subscriptions |
@@ -1174,7 +1174,7 @@ full before the user had typed.
 **A resume is budgeted as the session it was.** The window is sized from the context mode,
 which only the agent can answer for — and a resumed conversation has no agent until its
 first query. So the mode is saved with the session (`context_mode`) and is what
-`_ctx_budget` assumes until an agent answers for itself; the pre-query budget check runs
+`ctx_budget` assumes until an agent answers for itself; the pre-query budget check runs
 *after* `_ensure_worker`, never before. Read too early, it answered compact for a full-mode
 session, called a 60k window an overflow, and compacted and trimmed to fit 32k.
 
@@ -1187,7 +1187,7 @@ above: they describe a moment, and a watcher ticking for an hour would otherwise
 the record with "still building". How a run actually ended is `job_complete`'s job.
 
 **A divert names a row, not a tool.** `divert_to_background` carries the call id; the
-session resolves it through `_live_rows` (call id → tool name, kept only for rows the
+session resolves it through `live_rows` (call id → tool name, kept only for rows the
 registry marked divertible) and writes the request to that tool's channel. The webview
 therefore never learns a tool name, and one tool's request cannot reach another's run.
 
@@ -1206,7 +1206,7 @@ not any window is open.
 
 **A wake carries the record, not a paraphrase of it.** The client does not know what a job
 does, so it hands over what the server wrote rather than interpreting it. What it chooses is
-the shape: `_compact_summary` renders one field per line under the server's own names, clips
+the shape: `compact_summary` renders one field per line under the server's own names, clips
 each value on its own, and leaves out the fields the wake's head line already said
 (`job_key`, `kind`, `state`). Per-value clipping is what keeps a long echo from spending the
 budget — a sub-agent's record opens with the task the caller wrote itself, and as one line of
@@ -1276,7 +1276,7 @@ reader wants that where it happened. A bulletin is plumbing: the client is sent 
 session layer builds is the instruction asking the model for its one line. Stored as a
 display message it was replayed on every reload, one full block per wake the conversation
 had ever had, each above the answer it had produced. So only a wake writes one, and
-`_text_count` — the guard that keeps a freshly opened webview from blanking a stored
+`text_count` — the guard that keeps a freshly opened webview from blanking a stored
 history — ignores the notices this layer wrote itself. It counted them, and since the
 webview never received one, every transcript the client sent afterwards looked short by one
 and was refused: the stored chat froze at the first notice and came back without a tool row,
@@ -1288,7 +1288,7 @@ in its own session directory, indifferent. Nothing re-arms at load — that woul
 nobody is thinking about any more, in every conversation opened. Instead the status ops
 answer with the handle as well as the state (`background_jobs`, plural, *these are still
 going* — as against `background_job`, *this call launched it*, which makes the row a run and,
-with no watcher, something to wait out in-turn), and `_maybe_rewatch_background_jobs` picks
+with no watcher, something to wait out in-turn), and `maybe_rewatch_background_jobs` picks
 them up. It reads the payload's shape and no capability: `BACKGROUNDABLE` says a tool
 *launches* a detached run, and hanging it on a reader to make a key legible would say
 something untrue about the reader. What is checked instead is that each descriptor names an
@@ -1302,9 +1302,9 @@ a status op that stops answering — a wedged server, a scheduler that hangs, a 
 that never returns — blocks the watcher for ever. That is the one failure that genuinely loses
 a run, and the quietest: the job stays in `watches`, so the agent is never released and never
 woken, and the bulletins keep repeating a status frozen at the moment it stopped. A watcher
-that *dies* at least says so. `_TOOL_CALL_TIMEOUT` (60s) is the line between "slow" and
+that *dies* at least says so. `poll.STATUS_CALL_TIMEOUT` (60s) is the line between "slow" and
 "never", not a budget to work inside; a tick that crosses it counts as unreadable, which is a
-case the loop already had, so `_UNREADABLE_POLL_LIMIT` of them in a row end the run as
+case the loop already had, so `UNREADABLE_POLL_LIMIT` of them in a row end the run as
 `unknown` with the reason — an honest "I lost track of it" in minutes instead of silence. The
 summary call is under the same deadline, and there it matters more: the run is already over, so
 a summary op that never answers withholds the wake itself, and better a wake with nothing in
@@ -1506,11 +1506,11 @@ in which somebody asked where the job had got to.
 piles. A run still going needs a watcher, which is put back when that session's worker is
 built (on the loop, not in the constructor's executor: a task created off a running loop
 polls nothing). A run that *ended* while nothing was listening needs its wake, and that is
-handed to `_handle_job_complete` — deliberately the same routing, wake text and coalescing a
+handed to the pool's `WakeRouter` — deliberately the same routing, wake text and coalescing a
 watcher's report goes through, so a run reported late is indistinguishable from one reported
 on time. A conversation with no agent yet keeps the wake pending rather than losing it.
 
-Two places look for the ended pile — a connection arriving (`_report_ended_jobs`) and a
+Two places look for the ended pile — a connection arriving (`report_ended_jobs`) and a
 worker being built (`rearm_detached_jobs`) — so a marker file in the run's own directory
 records what has been settled, outliving whichever process settled it: a run delivered twice
 is a conversation woken twice for one build.
@@ -1571,7 +1571,7 @@ instead: a run whose marker is already on disk is dropped (`jobs_on_disk.wake_re
 job already pending for a conversation is not added twice. Checking pending wakes alone
 would miss a second announcement arriving after the first was delivered, and several
 emitters — the reconnect scan, the worker-build scan, the watcher — announce one run. A steered wake
-is settled when the loop confirms it was read (`steer_injected`): `_drop_injected_wakes`
+is settled when the loop confirms it was read (`steer_injected`): `WakeRouter.steered`
 marks what it drops, since with the run no longer held by a watcher that marker is the only
 guard against every later scan announcing it again. A sub-agent's run is marked and looked
 for under the session the run lives in (`run_session` on the event), not the parent it
@@ -1742,7 +1742,7 @@ system bubble in the stored session plus a `server_stopped` entry in its journal
 that seam rather than at each deciding branch, so "the process decided to stop" is one fact in
 one place and a stop added later cannot forget to say it — the user-requested stop passes
 nothing, and should, since the user is there with the reasons on screen. The writing itself
-goes through `_tell_session`, shared with `_record_wake`: the store is the half the user reads
+goes through `Conversation.note` and the bus's `record_client_event`: the store is the half the user reads
 on the way back in, the journal the half the mechanism is audited from, and the failure
 handling (a session that will not load, a save that will not write) is the fragile part, so it
 has one author.
@@ -1755,7 +1755,7 @@ workspace has a scheduler at all; that sentence belongs to the layer that knows 
 
 **And what a detachment promises is checked against that.** "This run keeps working with
 this window closed" is a claim about what the process would still owe once the window has
-gone, so `_handle_detach` now asks — `idle_report(excluding=self._sub)`, the window asking what it
+gone, so `DetachHandlers.on_detach` asks `idle_report` with its own subscription excluded — the window asking what it
 would leave behind being itself an attachment that would otherwise answer "yes, you" — and
 only its own, because a second window of the same workspace really is keeping the process
 alive. With nothing owed, the line says so instead: nothing is being watched yet, and unless

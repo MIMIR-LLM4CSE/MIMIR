@@ -108,6 +108,21 @@ when the backend is switched, because the engine reads the mode through
 `serving` only after applying `--cwd`, because `config.paths` resolves the workspace
 root as it is imported.
 
+## The WebSocket front-end
+
+`ui/ws/` is built from components. A component owns its state and is handed, at
+construction, what it reads of the others (a value, or a function returning it); no
+class there reads a `self.x` it does not define.
+
+| Object | Components | What they do |
+|---|---|---|
+| `AgentWorker` (one per conversation) | `human` (`HumanBridge`), `jobs` (`JobWatcher`), `review`, `panel`, `usage` | the cards a turn parks on; the watchers of detached runs; diff review and revert; the drawer's sections; token usage. `worker.agent` is read-only |
+| `AgentPool` | `bus` (`EventBus`), `writer` (`Writer`), `wakes` (`WakeRouter`), `lifecycle` (`Lifecycle`) | drains every worker and journals what it drained; commits a finished turn; hands a finished run's wake to its conversation; decides when the server may stop |
+| `Connection` (one per socket) | `view` (`ViewState`), `out` (`Sender`), `screen` (`Screen`), and the handler groups `conversations`, `turns`, `cards`, `detach`, `panel` | the display state; the socket; the conversation on screen; one `on_<type>` method per inbound message |
+
+`Connection.handle(message)` dispatches on the message type to the group whose
+`MESSAGES` table names it.
+
 ## The servers
 
 `mimir/servers/` is a package: each domain (`workspace`, `agent_state`, `hpc`, `proxy`,
@@ -128,5 +143,13 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
   module (`store.read_json`) is public, in the client and the servers alike.
 - **Comments say what the code does now.** History belongs in the commits and
   [CHANGELOG.md](CHANGELOG.md).
+- **Docstrings are short.** A function's says what it does in a line, plus at most a
+  few lines of why (6 in all); a module's says what it holds (8 in all). The longer
+  reasoning lives in the `*_DETAILED.md` docs. An MCP tool's docstring is exempt: it is
+  what the model reads.
+- **Types are checked.** `mypy` covers `mimir/client` and `mimir/servers`; `core`,
+  `context` and `config` are held to fully typed definitions. `MimirAgent` is checked
+  against `AgentPort` statically.
 - **Tests go through public construction and behaviour.** No test reads the source or
   builds an object around its constructor; shared fixtures live in `mimir/tests/support/`.
+  The number of private accesses in the tests is frozen and may only go down.
