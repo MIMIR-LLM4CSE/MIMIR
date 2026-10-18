@@ -54,7 +54,7 @@ export function pruneForStorage(messages: ChatMessage[]): ChatMessage[] {
 }
 
 /** Whether *m* belongs in a stored transcript at all. */
-export function keepForStorage(m: ChatMessage): boolean {
+function keepForStorage(m: ChatMessage): boolean {
   if (m.kind === "approval" && m.approval) return false;
   // Cards about the moment rather than about the conversation. Stored, they are
   // replayed on every load: a conversation reconnected to twenty times reopens on
@@ -66,7 +66,7 @@ export function keepForStorage(m: ChatMessage): boolean {
 }
 
 /** *m* as it should be stored: no in-flight state, no unbounded output. */
-export function pruneMessage(m: ChatMessage): ChatMessage {
+function pruneMessage(m: ChatMessage): ChatMessage {
   const { approval, streaming, live, queued, ...rest } = m;
   const tools = rest.tools?.map(pruneTool);
   return tools ? { ...rest, tools } : rest;

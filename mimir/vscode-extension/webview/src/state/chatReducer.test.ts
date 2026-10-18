@@ -5,6 +5,13 @@ import {
   initialChatState,
   type ChatState,
 } from "./chatReducer";
+import type { ToolCallMessage, ToolResultMessage } from "../types";
+
+// Whole wire messages, with only what a test cares about spelled out.
+const call = (id: string, name: string, extra: Partial<ToolCallMessage> = {}): ToolCallMessage =>
+  ({ type: "tool_call", id, name, label: "", detail: "", ...extra });
+const result = (id: string, extra: Partial<ToolResultMessage> = {}): ToolResultMessage =>
+  ({ type: "tool_result", id, name: "", ok: true, summary: "", duration_ms: 0, ...extra });
 
 // Deterministic id source so assertions are stable.
 function makeReducer() {
@@ -91,8 +98,8 @@ describe("chatReducer", () => {
   it("commits the draft above the cards of the step that follows it", () => {
     const state = run([
       { type: "token", text: "Let me look." },
-      { type: "tool_call", id: "t1", name: "bash_run" },
-      { type: "tool_result", id: "t1", ok: true, summary: "done" },
+      call("t1", "bash_run"),
+      result("t1", { ok: true, summary: "done" }),
       { type: "token", text: "Found it." },
     ]);
 
@@ -129,9 +136,9 @@ describe("chatReducer", () => {
   it("re-stamps the draft after a freeze, so the next step orders on its own", () => {
     const state = run([
       { type: "token", text: "First." },
-      { type: "tool_call", id: "t1", name: "bash_run" },
+      call("t1", "bash_run"),
       { type: "token", text: "Second." },
-      { type: "tool_call", id: "t2", name: "bash_run" },
+      call("t2", "bash_run"),
     ]);
 
     // "First." was committed above t1 when the second token opened a new step;
@@ -146,7 +153,7 @@ describe("chatReducer", () => {
     const state = run([
       { type: "submit_query", text: "go" },
       { type: "token", text: "Looking into it." },
-      { type: "tool_call", id: "t1", name: "bash_run" },
+      call("t1", "bash_run"),
       { type: "steer_query", text: "also check the tests" },
       { type: "error", text: "boom" },
     ]);
@@ -571,7 +578,7 @@ describe("chatReducer", () => {
     // its dock card with it.
     const state = run([
       { type: "tool_call", id: "c1", name: "geos_build", label: "Build", detail: "" },
-      { type: "tool_result", id: "c1", name: "geos_build", ok: true, summary: "launched" },
+      result("c1", { name: "geos_build", ok: true, summary: "launched" }),
       { type: "tool_backgrounded", id: "c1", job_key: "J1" },
       { type: "job_progress", job_key: "J1", phase: "compiling", percent: 40 },
       { type: "answer", text: "launched" },
@@ -596,12 +603,12 @@ describe("chatReducer", () => {
         exec: { command: "squeue", stdout: "", stderr: "", running: false, job_key: "J1" },
       },
       {
-        type: "tool_result", id: "c0", name: "geos_status", ok: true, summary: "queued",
+        type: "tool_result", id: "c0", name: "geos_status", ok: true, summary: "queued", duration_ms: 0,
         exec: { command: "squeue", stdout: "PENDING\n", stderr: "", job_key: "J1" },
       },
       { type: "answer", text: "queued" },
       { type: "tool_call", id: "c1", name: "geos_build", label: "Build", detail: "" },
-      { type: "tool_result", id: "c1", name: "geos_build", ok: true, summary: "launched" },
+      result("c1", { name: "geos_build", ok: true, summary: "launched" }),
       { type: "tool_backgrounded", id: "c1", job_key: "J1" },
       { type: "job_progress", job_key: "J1", phase: "compiling", percent: 40 },
       { type: "answer", text: "launched" },
@@ -771,7 +778,7 @@ describe("chatReducer", () => {
 
   it("shows a sub-agent's steps as rows under the call that spawned them", () => {
     const state = run([
-      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): find X" },
+      call("p1", "spawn_agent", { label: "Sub-agent (explore): find X" }),
       { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep", label: "Searching: X" },
     ]);
 
@@ -785,8 +792,8 @@ describe("chatReducer", () => {
 
   it("keeps concurrent sub-agents' rows grouped under their own parent", () => {
     const state = run([
-      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
-      { type: "tool_call", id: "p2", name: "spawn_agent", label: "Sub-agent (explore): B" },
+      call("p1", "spawn_agent", { label: "Sub-agent (explore): A" }),
+      call("p2", "spawn_agent", { label: "Sub-agent (explore): B" }),
       { type: "subagent_event", kind: "tool_call", parent_id: "p2", id: "p2:c1", name: "grep" },
       { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep" },
       { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c2", name: "read_file" },
@@ -799,7 +806,7 @@ describe("chatReducer", () => {
 
   it("settles a child row on its own result", () => {
     const state = run([
-      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      call("p1", "spawn_agent", { label: "Sub-agent (explore): A" }),
       { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep" },
       { type: "subagent_event", kind: "tool_result", parent_id: "p1", id: "p1:c1", ok: true, summary: "3 matches", duration_ms: 41 },
     ]);
@@ -814,9 +821,9 @@ describe("chatReducer", () => {
     // A child whose last event was shed (or whose run was cut short by the cap)
     // would otherwise tick up forever under a call that is already done.
     const state = run([
-      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      call("p1", "spawn_agent", { label: "Sub-agent (explore): A" }),
       { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep" },
-      { type: "tool_result", id: "p1", ok: true, summary: "answered" },
+      result("p1", { ok: true, summary: "answered" }),
     ]);
 
     expect(state.liveToolCalls.map((t) => t.status)).toEqual(["ok", "ok"]);
@@ -828,7 +835,7 @@ describe("chatReducer", () => {
     const reducer = makeReducer();
     let state = initialChatState;
     for (const a of [
-      { type: "tool_call" as const, id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      call("p1", "spawn_agent", { label: "Sub-agent (explore): A" }),
       { type: "subagent_event" as const, kind: "tool_call" as const, parent_id: "p1", id: "p1:c1", name: "grep" },
       { type: "token" as const, text: "next step" },   // commits the step, freezing the rows
     ]) state = reducer(state, a);
@@ -843,7 +850,7 @@ describe("chatReducer", () => {
   });
 
   it("ignores activity for a parent that is nowhere on screen", () => {
-    const before = run([{ type: "tool_call", id: "p1", name: "spawn_agent" }]);
+    const before = run([call("p1", "spawn_agent")]);
     const reducer = makeReducer();
     const after = reducer(before, {
       type: "subagent_event", kind: "tool_call", parent_id: "gone", id: "gone:c1", name: "grep",
@@ -853,7 +860,7 @@ describe("chatReducer", () => {
 
   it("records how much of a sub-agent's activity was shed", () => {
     const state = run([
-      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      call("p1", "spawn_agent", { label: "Sub-agent (explore): A" }),
       { type: "subagent_event", kind: "end", parent_id: "p1", dropped: 12 },
     ]);
     expect(state.liveToolCalls[0].childrenDropped).toBe(12);
@@ -1025,7 +1032,7 @@ describe("background-job check-in", () => {
     // The whole difference from a wake. A bulletin that marked the row done would
     // report an ending that has not happened, and drop the live progress with it.
     const state = run([
-      { type: "tool_call", id: "c1", name: "bash_run", args: {} },
+      call("c1", "bash_run"),
       { type: "tool_backgrounded", id: "c1", job_key: "j1" },
       bulletin(),
     ]);
@@ -1184,8 +1191,8 @@ describe("a turn parked on a question", () => {
   it("freezes the tool cards of the step it parked on", () => {
     const state = run([
       { type: "submit_query", text: "plan it" },
-      { type: "tool_call", id: "t1", name: "grep" },
-      { type: "tool_result", id: "t1", ok: true, summary: "4 hits" },
+      call("t1", "grep"),
+      result("t1", { ok: true, summary: "4 hits" }),
       plan,
     ]);
 

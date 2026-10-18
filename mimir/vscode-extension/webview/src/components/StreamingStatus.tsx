@@ -1,7 +1,7 @@
 import React from "react";
 
 /** Words cycled in the live "typing" indicator while the agent is working. */
-export const STREAMING_PHASES = [
+const STREAMING_PHASES = [
   "Mimiring",
   "Reasoning",
   "Analysing",
@@ -90,7 +90,7 @@ const RUNE_ANIM = (() => {
  * Small "work in progress" glyph: a rune stroked with the logo's colours that
  * reshapes itself into the next rune, over and over, while the gradient turns.
  */
-export const MimirSpinner: React.FC = () => {
+const MimirSpinner: React.FC = () => {
   const id = `rune-grad-${React.useId().replace(/:/g, "")}`;
   // SMIL ignores CSS, so the reduced-motion preference is honoured here.
   const still = React.useMemo(

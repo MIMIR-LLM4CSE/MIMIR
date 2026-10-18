@@ -12,7 +12,7 @@ interface Props {
 // description because the labels alone no longer say what the mode will do.
 // The colour is the mode's identity across the whole chat (see --mode-accent in
 // main.css): blue = agent, red = plan, green = ask.
-export const MODE_OPTIONS: {
+const MODE_OPTIONS: {
   value: AgentMode;
   icon: React.ReactNode;
   label: string;

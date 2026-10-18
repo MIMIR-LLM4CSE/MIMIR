@@ -12,7 +12,7 @@
 /** Narrow enough to park a drawer out of the way, wide enough to stay readable. */
 export const MIN_PANEL_WIDTH = 180;
 /** The chat must not be squeezed out of its own window by a drawer. */
-export const MAX_PANEL_FRACTION = 0.8;
+const MAX_PANEL_FRACTION = 0.8;
 
 export function clampPanelWidth(px: number, viewportWidth: number): number {
   const ceiling = Math.max(MIN_PANEL_WIDTH, Math.round(viewportWidth * MAX_PANEL_FRACTION));
