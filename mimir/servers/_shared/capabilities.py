@@ -150,6 +150,112 @@ def _norm_conditions(src: dict[str, Any], dest: dict[str, Any]) -> None:
             dest[key] = [str(f) for f in fields]
 
 
+def _as_list(value: Any) -> list:
+    """A string or a sequence as a list; anything falsy as an empty list."""
+    if isinstance(value, str):
+        return [value]
+    return list(value or [])
+
+
+def _norm_arg_roles(arg_roles: dict[str, Iterable[str]] | None,
+                    path_args: Iterable[str] | None) -> dict[str, list[str]] | None:
+    roles = {role: list(names) for role, names in (arg_roles or {}).items()}
+    if path_args:
+        roles["path"] = list(path_args)
+    return roles or None
+
+
+def _norm_approval(reversibility: str | None, non_batch: bool,
+                   fallbacks: Iterable[str] | None) -> dict[str, Any] | None:
+    # An unrecognised reversibility is dropped, so the client derives one.
+    approval: dict[str, Any] = {}
+    if reversibility in REVERSIBILITY_LEVELS:
+        approval["reversibility"] = reversibility
+    if non_batch:
+        approval["non_batch"] = True
+    if fallbacks:
+        approval["fallbacks"] = list(fallbacks)
+    return approval or None
+
+
+def _norm_kind(kind: str | None) -> str | None:
+    """The work family (see TOOL_KINDS), normalised but not restricted: a pack's own
+    family gets its word on the row with the default icon."""
+    if isinstance(kind, str) and kind.strip():
+        return " ".join(kind.lower().split())[:16]
+    return None
+
+
+def _norm_scope(scope: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Session-approval narrowing: the args carrying the scope, the client derivation
+    ``kind`` and the label ``noun``. Without both args and kind there is nothing to
+    narrow on."""
+    if not scope:
+        return None
+    norm: dict[str, Any] = {}
+    args = _as_list(scope.get("args"))
+    if args:
+        norm["args"] = args
+    for key in ("kind", "noun"):
+        if scope.get(key):
+            norm[key] = scope[key]
+    return norm if norm.get("kind") and norm.get("args") else None
+
+
+def _norm_panel(panel: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Which section of the client's panel this tool fills, its order and call args."""
+    if not panel or not panel.get("section"):
+        return None
+    norm = {"section": str(panel["section"]), "order": int(panel.get("order") or 100),
+            "args": dict(panel.get("args") or {})}
+    if panel.get("refresh_arg"):
+        norm["refresh_arg"] = str(panel["refresh_arg"])
+    return norm
+
+
+def _norm_readonly_when(readonly_when: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``{"arg", "values"}``: the argument values that make a dual-use tool read-only."""
+    if readonly_when and readonly_when.get("arg") and readonly_when.get("values"):
+        return {"arg": str(readonly_when["arg"]),
+                "values": [str(v) for v in readonly_when["values"]]}
+    return None
+
+
+def _norm_preview(preview: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The pre-write diff shape (``kind``) and the args it reads. Unlike a scope, an
+    argless preview is valid (a deletion); a kindless one is dropped."""
+    if not preview or not preview.get("kind"):
+        return None
+    norm: dict[str, Any] = {}
+    args = _as_list(preview.get("args"))
+    if args:
+        norm["args"] = args
+    norm["kind"] = preview["kind"]
+    return norm
+
+
+def _norm_run_outcome(run_outcome: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What the server saw of a run it performed: ``id`` names the payload field,
+    ``*_when`` map fields to red values, ``rows`` the same nested in a list field.
+    An id with nothing to judge on is dropped."""
+    if not run_outcome:
+        return None
+    norm: dict[str, Any] = {}
+    if run_outcome.get("id"):
+        norm["id"] = str(run_outcome["id"])
+    _norm_conditions(run_outcome, norm)
+    rows = run_outcome.get("rows")
+    if isinstance(rows, dict) and rows.get("field"):
+        norm_rows: dict[str, Any] = {"field": str(rows["field"])}
+        if rows.get("id"):
+            norm_rows["id"] = str(rows["id"])
+        _norm_conditions(rows, norm_rows)
+        norm["rows"] = norm_rows
+    if norm.get("id") and (norm.keys() & _OUTCOME_CONDITIONS or norm.get("rows")):
+        return norm
+    return None
+
+
 def build_descriptor(
     *,
     caps: Iterable[str] | None = None,
@@ -170,125 +276,25 @@ def build_descriptor(
 ) -> dict[str, Any]:
     """The ``meta["mimir"]`` descriptor dict (stdlib only, testable without ``mcp``).
 
-    An unrecognised *reversibility* is dropped, so the client derives one.
+    Each section is normalised on its own; an empty one is left out.
     """
-    descriptor: dict[str, Any] = {}
-
-    cap_list = list(caps or [])
-    if cap_list:
-        descriptor["capabilities"] = cap_list
-
-    roles: dict[str, list[str]] = {role: list(names) for role, names in (arg_roles or {}).items()}
-    if path_args:
-        roles["path"] = list(path_args)
-    if roles:
-        descriptor["arg_roles"] = roles
-
-    approval: dict[str, Any] = {}
-    if reversibility in REVERSIBILITY_LEVELS:
-        approval["reversibility"] = reversibility
-    if non_batch:
-        approval["non_batch"] = True
-    if fallbacks:
-        approval["fallbacks"] = list(fallbacks)
-    if approval:
-        descriptor["approval"] = approval
-
-    if label:
-        descriptor["label"] = label
-
-    # The work family (see TOOL_KINDS). Normalised but NOT restricted to the vocabulary:
-    # an extension-pack server naming a family of its own gets its word on the row with
-    # the default icon, which reads better than the derivation it would fall back to.
-    # First-party tools are held to the vocabulary by test_capabilities instead.
-    if isinstance(kind, str) and kind.strip():
-        descriptor["kind"] = " ".join(kind.lower().split())[:16]
-
-    # Session-approval scope narrowing: which arg(s) carry the scope, which generic
-    # client-side derivation `kind` to apply, and the human label noun. Normalised so
-    # `args` is always a list; an empty/argless spec is dropped.
-    if scope:
-        norm: dict[str, Any] = {}
-        args = scope.get("args")
-        if isinstance(args, str):
-            args = [args]
-        if args:
-            norm["args"] = list(args)
-        if scope.get("kind"):
-            norm["kind"] = scope["kind"]
-        if scope.get("noun"):
-            norm["noun"] = scope["noun"]
-        # Require both a derivation kind and the arg(s) it reads; an argless or
-        # kindless spec has nothing to narrow on and is dropped.
-        if norm.get("kind") and norm.get("args"):
-            descriptor["scope"] = norm
-
-    if risk_note:
-        descriptor["risk_note"] = risk_note
-
-    # Which section of the client's panel this tool fills, where it sits among the
-    # others, and the arguments to call it with. The client reads this off the
-    # descriptor, so it asks by capability and never by name.
-    if panel and panel.get("section"):
-        descriptor["panel"] = {
-            "section": str(panel["section"]),
-            "order": int(panel.get("order") or 100),
-            "args": dict(panel.get("args") or {}),
-        }
-        if panel.get("refresh_arg"):
-            descriptor["panel"]["refresh_arg"] = str(panel["refresh_arg"])
-
-    # A tool's own wall, for the few whose work the global per-call default cannot
-    # bound. Omitted when undeclared so the existing catalog's descriptors are
-    # untouched; the client clamps whatever is declared.
-    if isinstance(timeout_secs, int) and timeout_secs > 0:
-        descriptor["timeout_secs"] = timeout_secs
-
-    # Which invocations of a PLAN_READONLY (dual-use) tool are the read-only ones:
-    # {"arg": "<name>", "values": [...]}. Lets a dual-use tool whose read-only-ness is
-    # a plain argument value say so, instead of the client's guard knowing its shape.
-    if readonly_when and readonly_when.get("arg") and readonly_when.get("values"):
-        descriptor["readonly_when"] = {
-            "arg": str(readonly_when["arg"]),
-            "values": [str(v) for v in readonly_when["values"]],
-        }
-
-    # Pre-write diff preview: the generic edit shape (`kind`) plus the arg(s) the
-    # client builder reads to reconstruct the post-write content. Unlike `scope`, an
-    # argless spec is valid (a deletion has a shape but no content args); a kindless
-    # one has nothing to dispatch on and is dropped.
-    if preview:
-        norm_prev: dict[str, Any] = {}
-        prev_args = preview.get("args")
-        if isinstance(prev_args, str):
-            prev_args = [prev_args]
-        if prev_args:
-            norm_prev["args"] = list(prev_args)
-        if preview.get("kind"):
-            norm_prev["kind"] = preview["kind"]
-        if norm_prev.get("kind"):
-            descriptor["preview"] = norm_prev
-
-    # What the server saw of a run it performed: ``id`` names the run's payload field,
-    # ``crashed_when``/``failed_when`` map fields to red values (never a ``passed_when``: it can
-    # only withhold credit). ``rows`` declares the same nested in a list field.
-    if run_outcome:
-        norm_out: dict[str, Any] = {}
-        if run_outcome.get("id"):
-            norm_out["id"] = str(run_outcome["id"])
-        _norm_conditions(run_outcome, norm_out)
-        rows = run_outcome.get("rows")
-        if isinstance(rows, dict) and rows.get("field"):
-            norm_rows: dict[str, Any] = {"field": str(rows["field"])}
-            if rows.get("id"):
-                norm_rows["id"] = str(rows["id"])
-            _norm_conditions(rows, norm_rows)
-            norm_out["rows"] = norm_rows
-        # An identifier with nothing to judge on says nothing; drop it.
-        if norm_out.get("id") and (norm_out.keys() & _OUTCOME_CONDITIONS or norm_out.get("rows")):
-            descriptor["run_outcome"] = norm_out
-
-    return descriptor
+    sections: dict[str, Any] = {
+        "capabilities": list(caps or []) or None,
+        "arg_roles": _norm_arg_roles(arg_roles, path_args),
+        "approval": _norm_approval(reversibility, non_batch, fallbacks),
+        "label": label or None,
+        "kind": _norm_kind(kind),
+        "scope": _norm_scope(scope),
+        "risk_note": risk_note or None,
+        "panel": _norm_panel(panel),
+        # A tool's own wall, which the client clamps.
+        "timeout_secs": timeout_secs if isinstance(timeout_secs, int) and timeout_secs > 0
+        else None,
+        "readonly_when": _norm_readonly_when(readonly_when),
+        "preview": _norm_preview(preview),
+        "run_outcome": _norm_run_outcome(run_outcome),
+    }
+    return {key: value for key, value in sections.items() if value is not None}
 
 
 def tool_caps(
