@@ -13,7 +13,7 @@ from . import streaming as _streaming
 from ..config.limits import AGENT_EMPTY_TURN_RETRIES
 from ..config.models import READONLY_MODES, VALID_MODES
 from ..config.settings import THINKING_DEPTH_AUTO
-from ..event_sink import emit
+from ..protocol.event_sink import emit
 from ..guardrails.nudges import drop_transient_reminders, inject_reminder
 from ..guardrails.nudges.messages import empty_turn_retry_message
 from .deferral import end_deferred_calls, end_deferred_turn

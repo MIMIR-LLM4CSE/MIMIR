@@ -16,7 +16,7 @@ import mcp.types as types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from .. import human_pause
+from ..protocol import human_pause
 from ..tools.capabilities import infer_tool_caps
 from ..protocol.tool_call import DOING_ARG
 from ..config import paths

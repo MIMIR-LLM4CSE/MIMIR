@@ -51,7 +51,7 @@ from .context.execution_context import ExecutionContext
 from .core.human import TerminalHuman
 from .core.ports import HumanIO
 from .core.settings import apply_setting
-from .event_sink import reset_event_sink, set_event_sink
+from .protocol.event_sink import reset_event_sink, set_event_sink
 from .core.extension_set import AMBIENT, ExtensionSet
 from .core.turn_state import TurnState
 from ..servers._shared.skill_file import read_skills_dir

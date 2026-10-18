@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import human_pause
+from ..protocol import human_pause
 from ..tools.capabilities import label_for
 from ..tools.display import shorten_display_args
 

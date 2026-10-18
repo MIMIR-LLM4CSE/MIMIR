@@ -7,7 +7,7 @@ import shlex
 from typing import Callable
 from urllib.parse import urlparse
 
-from ... import human_pause
+from ...protocol import human_pause
 from ...config.settings import APPROVAL_MODES
 from ...tools.capabilities import (
     IRREVERSIBLE,

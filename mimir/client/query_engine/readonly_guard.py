@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..event_sink import emit
+from ..protocol.event_sink import emit
 from ..tools.capabilities import (
     PLAN_BLOCKED,
     PLAN_READONLY,

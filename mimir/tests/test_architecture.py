@@ -22,7 +22,7 @@ SERVERS = PACKAGE / "servers"
 # The client's units, bottom to top. A unit imports, at load time, only units of a
 # lower rank; only type annotations (``TYPE_CHECKING``) look upwards.
 RANKS = {
-    "config": 0, "protocol": 0, "event_sink": 0, "human_pause": 0,
+    "config": 0, "protocol": 0,
     "tools": 1, "llm": 1,
     "context": 2,
     "core": 3,

@@ -14,7 +14,7 @@ from ..context import validate_execution_context
 from ..context.execution_context import ExecutionContext
 from ..core.ports import AgentPort
 from ..core.settings import normalize_mode
-from ..event_sink import emit
+from ..protocol.event_sink import emit
 from ..protocol.messages import reconcile_tool_pairs
 from .agent_loop import AgentLoop
 from .deferral import KIND_CALLS, KIND_PLAN_DECISION, take_deferred_calls

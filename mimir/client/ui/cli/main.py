@@ -20,7 +20,7 @@ if __package__ in {None, ""}:
     from mimir.client.ui.cli.chat_session import run_chat_session
     from mimir.client.config import DEFAULT_MODEL
     from mimir.client.extensions import all_servers
-    from mimir.client import human_pause
+    from mimir.client.protocol import human_pause
     from mimir.client.core.human import TerminalHuman
 else:
     from .... import __version__
@@ -28,7 +28,7 @@ else:
     from .chat_session import run_chat_session
     from ...config import DEFAULT_MODEL
     from ...extensions import all_servers
-    from ... import human_pause
+    from ...protocol import human_pause
     from ...core.human import TerminalHuman
 
 

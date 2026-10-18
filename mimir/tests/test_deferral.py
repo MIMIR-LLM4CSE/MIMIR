@@ -10,7 +10,7 @@ import threading
 import types
 import unittest
 
-from mimir.client.event_sink import event_sink as capture_events
+from mimir.client.protocol.event_sink import event_sink as capture_events
 from mimir.tests.support.pools import FakePool
 from mimir.tests.support.connections import bare_session
 from unittest.mock import patch

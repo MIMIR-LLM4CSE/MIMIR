@@ -16,7 +16,7 @@ about structure and flow. The VS Code frontend has its own file,
 | Package | Owns |
 |---|---|
 | `config/` | the vocabulary: `paths`, `limits`, `settings` (the closed sets of each user setting), `servers`, `models` and the model catalogue, the `preferences` store |
-| `protocol/` | the shapes that cross a boundary: `events` (event types, the private answer extras), `messages` (chat-message invariants, `reconcile_tool_pairs`), `tool_call`, `tool_result` |
+| `protocol/` | the shapes that cross a boundary: `events` (event types, the private answer extras), `messages` (chat-message invariants, `reconcile_tool_pairs`), `tool_call`, `tool_result`; `event_sink` (`emit()`: structured events to a bound callback (WS) or JSON on stdout (CLI)); `human_pause` (time spent waiting on a person, not charged to a tool's timeout) |
 | `tools/` | what the client knows about tools: `capabilities` (the registry each server declares into), `bash_classify` (what a shell command does), `display` and the previews (how a call and its result read on screen) |
 | `context/` | the `ExecutionContext` dataclass, query signals, `@`-mention attach, the checklist file |
 | `core/` | the contracts: `ports` (`AgentPort`, `HumanIO`), `settings` (`apply_setting` / `read_setting`), `human` (`TerminalHuman`, `Unattended`) |
@@ -30,8 +30,6 @@ about structure and flow. The VS Code frontend has its own file,
 | `session/` | a conversation independent of its front-end: `conversation` (`Conversation`, `Conversations`), `store` (`SessionStore`), `commands/` (the slash commands both front-ends share) |
 | `ui/` | the front-ends — `ui/cli/` and `ui/ws/` |
 | `agent_core.py` | **`MimirAgent`**, the engine every front-end pilots; implements `AgentPort`. Not UI |
-| `human_pause.py` | marks time spent waiting on a person, so it is not charged to a tool's timeout |
-| `event_sink.py` | `emit()` — structured events to a bound callback (WS) or JSON on stdout (CLI) |
 | `mimir/runner/` | the headless batch engine. A sibling of `client/`, not under it |
 
 ### A turn
@@ -1093,7 +1091,7 @@ frontends pilot, not a frontend.
   compaction summary is printed into the middle of the session. Both degrade quietly when the
   endpoint is down, so an unreachable backend costs a summary, not the turn.
 
-### `human_pause.py`
+### `protocol/human_pause.py`
 
 The blocking-prompt seam every "ask the human and wait" path shares — approvals, plan
 approval, tool elicitation — so a frontend wires one hook instead of three, and a headless
@@ -2169,5 +2167,5 @@ installed.
 ## VS Code extension frontend
 
 Documented in its own reference: [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). On the
-Python side the emission paths are `emit()` / `event_sink.py` and the drain loop in
+Python side the emission paths are `emit()` / `protocol/event_sink.py` and the drain loop in
 `server/main.py`.

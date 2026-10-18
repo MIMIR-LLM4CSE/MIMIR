@@ -10,7 +10,7 @@ import types
 import unittest
 from unittest import mock
 
-from mimir.client.event_sink import event_sink
+from mimir.client.protocol.event_sink import event_sink
 from mimir.client.tool_execution import executor as ex
 from mimir.client.core.turn_state import TurnState
 from mimir.tests.support.agents import fake_agent

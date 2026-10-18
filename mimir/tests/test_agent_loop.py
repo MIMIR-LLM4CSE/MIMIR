@@ -15,14 +15,14 @@ import unittest
 from unittest.mock import patch
 
 import mimir.client.query_engine.dispatch.execution as dispatch_execution
-from mimir.client.event_sink import event_sink as capture_events
+from mimir.client.protocol.event_sink import event_sink as capture_events
 import mimir.client.query_engine.agent_loop as agent_loop_module
 import mimir.client.query_engine.streaming as streaming_module
 import mimir.client.query_engine.history as history_module
 import mimir.client.query_engine.finalize as finalize_module
 import mimir.client.query_engine.dispatch as dispatch_module
 import mimir.client.query_engine.plan_loop as plan_loop_module
-import mimir.client.event_sink as event_sink_module
+import mimir.client.protocol.event_sink as event_sink_module
 from mimir.client.tools.capabilities import (
     PLAN_BLOCKED,
     PLAN_READONLY,

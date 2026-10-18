@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from mimir.tests.support.context import build_execution_context
-from mimir.client.event_sink import event_sink as capture_events
+from mimir.client.protocol.event_sink import event_sink as capture_events
 from mimir.client.config.limits import AGENT_EMPTY_TURN_RETRIES
 from mimir.client.guardrails.nudges import drop_transient_reminders, inject_reminder
 from mimir.client.guardrails.nudges.messages import EMPTY_TURN_OPENING

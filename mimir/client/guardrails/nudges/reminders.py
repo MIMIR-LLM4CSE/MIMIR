@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
-from ...event_sink import emit
+from ...protocol.event_sink import emit
 from ...context.execution_context import ExecutionContext
 
 

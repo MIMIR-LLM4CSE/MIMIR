@@ -30,7 +30,7 @@ from ..tools.capabilities import (
 from ..context.execution_context import ExecutionContext, failed_runs, unsettled_runs
 from ..context.paths import absolute_workspace_path, is_scratch_path
 from ..core.ports import AgentPort
-from ..event_sink import captured_emitter
+from ..protocol.event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.approval import APPROVAL_MODE_META
 from ..guardrails.policy.engine import evaluate_tool_preconditions

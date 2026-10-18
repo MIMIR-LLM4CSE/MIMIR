@@ -13,8 +13,8 @@ import asyncio
 import dataclasses
 
 import mimir.client.query_engine.dispatch.execution as dispatch_execution
-from mimir.client.event_sink import event_sink as capture_events
-import mimir.client.event_sink as event_sink_module
+from mimir.client.protocol.event_sink import event_sink as capture_events
+import mimir.client.protocol.event_sink as event_sink_module
 from mimir.client.llm.base import PromptTooLongError
 from mimir.client.protocol.messages import message_wire_form
 from mimir.client.llm.vllm_backend import VllmBackend
@@ -30,7 +30,7 @@ from mimir.client.protocol.tool_result import json_error_payload
 import mimir.client.query_engine.streaming as streaming_module
 import mimir.client.query_engine.history as history_module
 import mimir.client.query_engine.dispatch as dispatch_module
-import mimir.client.human_pause as human_pause_module
+import mimir.client.protocol.human_pause as human_pause_module
 import mimir.client.prompt.system_prompt as context_builder_module
 import mimir.client.context.execution_context as execution_context_module
 import mimir.client.ui.cli.chat_session as chat_session_module

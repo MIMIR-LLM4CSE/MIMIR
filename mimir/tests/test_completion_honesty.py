@@ -19,7 +19,7 @@ from mimir.client.context.execution_context import (
     record_run,
 )
 from mimir.tests.support.context import build_execution_context
-from mimir.client.event_sink import reset_event_sink, set_event_sink
+from mimir.client.protocol.event_sink import reset_event_sink, set_event_sink
 from mimir.client.guardrails.nudges import needs_incomplete_finalization
 from mimir.client.guardrails.nudges import maybe_append_nudge
 from mimir.client.guardrails.nudges.messages import unexercised_code_nudge_message

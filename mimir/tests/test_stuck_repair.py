@@ -15,7 +15,7 @@ from mimir.client.config.limits import (
 from mimir.client.tools.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import record_run
 from mimir.tests.support.context import build_execution_context
-from mimir.client.event_sink import reset_event_sink, set_event_sink
+from mimir.client.protocol.event_sink import reset_event_sink, set_event_sink
 from mimir.client.guardrails.nudges import maybe_append_nudge, nudge_pending
 from mimir.client.guardrails.nudges.cascade import CORE_NUDGES
 from mimir.client.guardrails.nudges.predicates import (

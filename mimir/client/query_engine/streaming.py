@@ -14,7 +14,7 @@ from typing import Any
 from ..llm.base import PromptTooLongError
 from ..protocol.tool_call import as_dict
 from ..llm.factory import get_backend
-from ..event_sink import emit
+from ..protocol.event_sink import emit
 from ..config.limits import (
     LLM_RETRY_ATTEMPTS,
     LLM_RETRY_BASE_DELAY_SECS,

@@ -17,7 +17,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .... import human_pause
+from ....protocol import human_pause
 from ....tools.capabilities import (
     IRREVERSIBLE,
     kind_for,

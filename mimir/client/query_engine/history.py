@@ -26,7 +26,7 @@ from ..config.limits import (
     TOOL_HISTORY_TOKEN_BUDGET as _TOOL_HISTORY_TOKEN_BUDGET,
 )
 from ..context.execution_context import ExecutionContext
-from ..event_sink import emit
+from ..protocol.event_sink import emit
 from ..protocol.messages import (
     message_wire_form,
     reconcile_tool_pairs,

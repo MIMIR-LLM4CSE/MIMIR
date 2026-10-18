@@ -9,7 +9,7 @@ fails the suite.
 ## The client's layers
 
 Read bottom to top: a unit imports, at load time, only units below it. Every unit also
-imports the foundations (`config`, `protocol`, `event_sink`, `human_pause`) and
+imports the foundations (`config`, `protocol`) and
 `mimir/servers/_shared`; those edges are omitted.
 
 ```mermaid
@@ -95,7 +95,7 @@ graph TD
 
 | Rank | Units | What they are |
 |---|---|---|
-| 0 | `config`, `protocol`, `event_sink`, `human_pause` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam |
+| 0 | `config`, `protocol` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam, the time spent waiting on a person |
 | 1 | `tools`, `llm` | what each tool is (its capabilities, what a bash command does) and how a call reads on screen; the model backends and their token accounting |
 | 2 | `context` | the `ExecutionContext` blackboard, the carry context, the path rules |
 | 3 | `core` | the contracts the layers above agree on: `AgentPort`, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |

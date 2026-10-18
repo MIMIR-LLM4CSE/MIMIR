@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import sys
-from ... import human_pause
+from ...protocol import human_pause
 from ...context import known_existing_files
 from ...config.limits import DISCOVERY_EVIDENCE_MIN_DISTINCT
 from ...tools.capabilities import EDIT, REMOVE, has_cap

@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config.limits import NUDGE_MAX_CONSECUTIVE_NOOP
 from ..config.models import READONLY_MODES
-from ..event_sink import emit
+from ..protocol.event_sink import emit
 from ..guardrails.builtin_check import sweep_builtin_checks
 from ..guardrails.nudges import (
     inject_reminder,

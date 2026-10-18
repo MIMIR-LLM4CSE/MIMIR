@@ -8,7 +8,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from mimir.client.event_sink import event_sink
+from mimir.client.protocol.event_sink import event_sink
 from mimir.client.prompt.system_prompt import build_tool_catalog_for_planning
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine.history import (

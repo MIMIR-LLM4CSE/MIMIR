@@ -16,7 +16,7 @@ from ..tools.capabilities import DELEGATE, arg_role, names_with_cap
 from ..context.execution_context import ExecutionContext, plan_evidence_ready
 from ..context.signals import query_requires_repo_discovery
 from ..core.ports import AgentPort
-from ..event_sink import emit
+from ..protocol.event_sink import emit
 from ..guardrails.nudges import inject_reminder
 from ..guardrails.toollist import tools_for_plan_mode
 from ..guardrails.nudges.messages import (

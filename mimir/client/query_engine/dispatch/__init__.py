@@ -18,7 +18,7 @@ from ...config.servers import SKILL_LOAD_TOOL
 from ...tools.capabilities import CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
-from ...event_sink import emit
+from ...protocol.event_sink import emit
 from ...tools.exec_preview import exec_input_preview
 from ...tools.display import (
     dedup_row_detail,

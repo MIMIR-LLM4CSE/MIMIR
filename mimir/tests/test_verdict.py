@@ -16,7 +16,7 @@ from mimir.client.config.limits import EXERCISE_BUDGET, VALIDATION_RETRY_BUDGET
 from mimir.client.tools.capabilities import JUDGE, ToolCaps
 from mimir.client.context.execution_context import record_run
 from mimir.tests.support.context import build_execution_context
-from mimir.client.event_sink import event_sink
+from mimir.client.protocol.event_sink import event_sink
 from mimir.client.guardrails.verdict import apply_verdict
 from mimir.client.core.turn_state import TurnState
 

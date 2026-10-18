@@ -8,12 +8,12 @@ import logging
 import os
 import time
 
-from ... import human_pause
+from ...protocol import human_pause
 from ...config.limits import AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS
 from ...tools.capabilities import timeout_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
-from ...event_sink import emit
+from ...protocol.event_sink import emit
 from ....servers._shared.jobs import job_key_of
 from ...protocol.tool_result import json_error_payload
 from ...tools.exec_preview import extract_exec_preview
