@@ -8,7 +8,7 @@ from typing import Any
 
 from ..guardrails.nudges import record_exercise_obstacle
 from ..protocol.messages import reconcile_tool_pairs
-from .verification import build_ledger, render_ledger
+from ..guardrails.verification.ledger import build_ledger, render_ledger
 from ..context.execution_context import ExecutionContext
 from ..core.ports import AgentPort
 

@@ -19,7 +19,7 @@ from ...context.execution_context import (
     known_existing_files,
     nudge_count,
 )
-from ..builtin_check import builtin_check_failures
+from ..verification.builtin_check import builtin_check_failures
 from ...config.limits import (
     NUDGE_MAX_BLAST_RADIUS,
     NUDGE_MAX_CREATION,

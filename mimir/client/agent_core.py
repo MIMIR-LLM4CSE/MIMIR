@@ -59,7 +59,7 @@ from .config.toggles import Toggles
 from .context.carry import CarryContext
 from .extensions import all_server_descriptions, all_servers, load_plugins, resolve_skills_dir
 from .guardrails.policy.approval import ApprovalManager, denial_kind
-from .guardrails.toollist import tools_for_readonly_mode
+from .guardrails.policy.toollist import tools_for_readonly_mode
 from .guardrails.workflow import (
         STAGE_DROP_OR_STOP,
         STAGE_HANDBACK,

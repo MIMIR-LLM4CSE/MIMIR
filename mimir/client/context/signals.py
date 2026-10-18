@@ -59,7 +59,7 @@ QUERY_DISCOVERY_SIGNALS: tuple[str, ...] = tuple(
 
 # What counts as source: an edit to one of these is recorded as produced work and owes
 # a check. Every source language belongs here whatever this machine has installed: the
-# check itself is performed in-process (guardrails.builtin_check), so what a file owes
+# check itself is performed in-process (guardrails.verification.builtin_check), so what a file owes
 # does not depend on a binary being on PATH. Every spelling of a language belongs here
 # too (`.f`, `.f90`, `.f03`, …): a missing one is a file never recorded as modified.
 SOURCE_FILE_EXTENSIONS: tuple[str, ...] = (

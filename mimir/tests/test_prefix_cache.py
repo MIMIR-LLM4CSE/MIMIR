@@ -14,7 +14,7 @@ import unittest
 
 from mimir.client.prompt.system_prompt import build_system_content
 from mimir.client.query_engine import agent_loop as m
-from mimir.client.guardrails import toollist as pe
+from mimir.client.guardrails.policy import toollist as pe
 from mimir.tests.support.golden_caps import build_declared_registry
 import mimir.client.query_engine.loop_base as loop_base_module
 

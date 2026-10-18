@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..config.settings import DEFAULT_SUBAGENT_LEVEL, subagent_level_allows
-from ..config.models import READONLY_MODES
-from ..tools.capabilities import (
+from ...config.settings import DEFAULT_SUBAGENT_LEVEL, subagent_level_allows
+from ...config.models import READONLY_MODES
+from ...tools.capabilities import (
     PLAN_BLOCKED,
     PLAN_READONLY,
     TASK_PLANNING,
@@ -21,8 +21,8 @@ from ..tools.capabilities import (
     names_with_cap,
     reserved_for_main,
 )
-from ..context.execution_context import ExecutionContext
-from ..core.ports import AgentPort
+from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 

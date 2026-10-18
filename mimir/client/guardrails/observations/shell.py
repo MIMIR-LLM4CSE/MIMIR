@@ -7,13 +7,13 @@ from typing import Any
 from ...context import (
     VALIDATION_TIERS,
 )
-from ..runner_output import (
+from ..verification.runner_output import (
     TEST_RUNNER_FAILURE,
     exit_status_settles,
     judge_run,
     test_failure_signature,
 )
-from ..ladder import (
+from ..verification.ladder import (
     mark_file_validated,
     record_run_outcome,
     register_validation_failure,

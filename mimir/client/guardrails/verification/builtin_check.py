@@ -14,9 +14,9 @@ import re
 from dataclasses import dataclass
 from xml.etree import ElementTree
 
-from ..context.execution_context import ExecutionContext
+from ...context.execution_context import ExecutionContext
 from .ladder import mark_file_validated, register_validation_failure
-from .workflow import pending_validation_paths
+from ..workflow import pending_validation_paths
 
 # Anything larger is not read: the floor is a cheap check, and a multi-megabyte source
 # file is not what it was built for.

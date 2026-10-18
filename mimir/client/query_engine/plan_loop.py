@@ -18,7 +18,7 @@ from ..context.signals import query_requires_repo_discovery
 from ..core.ports import AgentPort
 from ..protocol.event_sink import emit
 from ..guardrails.nudges import inject_reminder
-from ..guardrails.toollist import tools_for_plan_mode
+from ..guardrails.policy.toollist import tools_for_plan_mode
 from ..guardrails.nudges.messages import (
     PLAN_ALREADY_RECORDED_ERROR,
     PLAN_APPROVED_EXECUTE,

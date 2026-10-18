@@ -381,7 +381,7 @@ criteria, prints them unmet and returns 0 anyway is otherwise indistinguishable 
 clean run. Read in that direction only: a passing verdict never rescues a red exit.
 
 This is an auxiliary carrier, not the mechanism. Judging a run's output is the model's job
-(`client/guardrails/verdict.py`), since no parser generalises across fields, plots, tables
+(`client/guardrails/verification/verdict.py`), since no parser generalises across fields, plots, tables
 and logs; a `check=fail` line only spares the model being asked about output that already
 states its own answer, by pre-filling the verdict.
 
@@ -1322,7 +1322,7 @@ Tools:
   - `tools` — the tools the child gets, named from the caller's own list. **The caller
     cannot grant what it does not have**: the client sends what it may hand over with the
     call, in the request `_meta` (`mimir/grantable`, a `{tool: owning server}` table built
-    by `query_engine.toollist.grantable_tools`), together with its mode
+    by `policy.toollist.grantable_tools`), together with its mode
     (`mimir/mode`). A name outside that table is refused with the list of what is in it;
     no table at all (an unknown caller) grants nothing.
   - **Empty `tools` is reconnaissance**: the servers in `capabilities.explorer_servers()`,

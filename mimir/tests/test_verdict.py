@@ -17,7 +17,7 @@ from mimir.client.tools.capabilities import JUDGE, ToolCaps
 from mimir.client.context.execution_context import record_run
 from mimir.tests.support.context import build_execution_context
 from mimir.client.protocol.event_sink import event_sink
-from mimir.client.guardrails.verdict import apply_verdict
+from mimir.client.guardrails.verification.verdict import apply_verdict
 from mimir.client.core.turn_state import TurnState
 
 

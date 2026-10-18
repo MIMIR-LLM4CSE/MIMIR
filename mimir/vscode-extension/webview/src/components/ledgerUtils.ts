@@ -1,5 +1,5 @@
 // The verification ledger the agent appends to an answer behind a marker comment
-// (client/query_engine/verification.py), so the model's history keeps it. The webview
+// (client/guardrails/verification/ledger.py), so the model's history keeps it. The webview
 // lifts it off the prose.
 
 const MARKER = "<!--mimir:ledger";

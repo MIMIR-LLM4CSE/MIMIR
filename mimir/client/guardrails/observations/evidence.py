@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 from ...protocol.event_sink import emit
-from ..verdict import apply_verdict
+from ..verification.verdict import apply_verdict
 from ...tools.capabilities import JUDGE, arg_role, has_cap
 from .call import Call
 

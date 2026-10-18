@@ -34,7 +34,7 @@ from ..protocol.event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.approval import APPROVAL_MODE_META
 from ..guardrails.policy.engine import evaluate_tool_preconditions
-from ..guardrails.toollist import grantable_tools, grantable_writers
+from ..guardrails.policy.toollist import grantable_tools, grantable_writers
 from ..protocol.tool_result import json_error_payload, normalize_tool_content, parse_tool_payload
 from . import bash_effect
 from .normalizer import make_hashable

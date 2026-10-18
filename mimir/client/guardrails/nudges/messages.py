@@ -6,7 +6,7 @@ When each one is sent is decided elsewhere; only the wording lives here.
 from __future__ import annotations
 
 
-from ..builtin_check import builtin_check_failures
+from ..verification.builtin_check import builtin_check_failures
 from ..workflow import (
     collect_completion_issues,
     pending_validation_paths,

@@ -17,7 +17,7 @@ from ..tools.capabilities import (
 from ..guardrails.policy.readonly_exempt import is_readonly_invocation
 from ..protocol.tool_call import as_dict
 from ..protocol.tool_result import json_error_payload
-from ..guardrails.toollist import hidden_planning_tools
+from ..guardrails.policy.toollist import hidden_planning_tools
 from ..protocol.tool_call import normalize_arguments
 from ..core.ports import AgentPort
 

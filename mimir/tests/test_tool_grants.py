@@ -11,7 +11,7 @@ import os
 import tempfile
 
 from mimir.client.tools.capabilities import ToolCaps, reserved_for_main
-from mimir.client.guardrails.toollist import grantable_tools
+from mimir.client.guardrails.policy.toollist import grantable_tools
 from mimir.servers._shared.state_paths import active_session_id
 from mimir.client.core.turn_state import TurnState
 from mimir.tests.support.agents import fake_agent

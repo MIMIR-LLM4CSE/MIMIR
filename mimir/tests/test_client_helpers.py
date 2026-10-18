@@ -2270,7 +2270,7 @@ class ClientHelperTests(unittest.TestCase):
 
     def _ledger_block(self) -> str:
         from mimir.client.query_engine.finalize import _annotate_answer_with_changes
-        from mimir.client.query_engine.verification import split_answer_ledger
+        from mimir.client.guardrails.verification.ledger import split_answer_ledger
 
         ec = client_module.MimirAgent.new_execution_context()
         ec.edits.dirty_written_files.add("solver.py")

@@ -11,7 +11,10 @@ import subprocess
 import tempfile
 import unittest
 
-from mimir.client.guardrails.builtin_check import check_file, sweep_builtin_checks
+from mimir.client.guardrails.verification.builtin_check import (
+    check_file,
+    sweep_builtin_checks,
+)
 
 
 def _write(directory: str, name: str, content) -> str:
@@ -87,7 +90,7 @@ class BuiltinCheckTests(unittest.TestCase):
     def test_every_extension_with_a_real_parser_is_tracked_as_produced_work(self) -> None:
         # A parser nothing routes a file to is dead code: the sweep only ever sees
         # extensions `SOURCE_FILE_EXTENSIONS` records as modified.
-        from mimir.client.guardrails.builtin_check import _PARSER_BY_EXTENSION
+        from mimir.client.guardrails.verification.builtin_check import _PARSER_BY_EXTENSION
         from mimir.client.context.signals import SOURCE_FILE_EXTENSIONS
         # `.svg` and the project-file dialects are assets, not produced work; the rest
         # must be reachable.

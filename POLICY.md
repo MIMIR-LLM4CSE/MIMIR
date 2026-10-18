@@ -294,7 +294,7 @@ target **already exists** — a file that does not exist yet has no callers to b
 | `guardrails/workflow/` | `state`, `denials` (the denial ladder), `commitments`, `completion` (the report) |
 | `guardrails/nudges/` | `cascade` (`maybe_append_nudge`, the `CORE_NUDGES` table), `predicates`, `tiers`, `exercise`, `reminders`, the pack registry |
 | `guardrails/nudges/messages.py` | every nudge's message text |
-| `guardrails/builtin_check.py` | the in-process check that every modified file owes |
+| `guardrails/verification/builtin_check.py` | the in-process check that every modified file owes |
 
 A few notes worth keeping:
 
@@ -604,7 +604,7 @@ recommended, never required.
 
 | Axis | What it is | Standing |
 |---|---|---|
-| **check** | does it parse, is it whole. No artifact, nothing executed, no binary. Performed in-process by `guardrails/builtin_check.py` | **required** for every modified file, at every level — and always possible, so never waived |
+| **check** | does it parse, is it whole. No artifact, nothing executed, no binary. Performed in-process by `guardrails/verification/builtin_check.py` | **required** for every modified file, at every level — and always possible, so never waived |
 | **build** | a compile that emits an object or binary: `gcc -c`, `nvcc`, `javac`, `make`, `cmake`, the TeX chain | recommended where one direct command reaches it. Owes **no** verdict: its exit code is the finding |
 | **run** | `pytest`, `python solver.py`, `./solver`, `python -c …`, `ctest` | recommended where one direct command reaches it, expected when tests already cover the change. A verdict on its output is recommended, never charged |
 
@@ -663,7 +663,7 @@ The mandatory axis is performed **here, not on the machine**, so the one blockin
 not depend on what is installed (a `.cu` with no `nvcc`) or on which languages external
 checkers cover.
 
-`guardrails/builtin_check.py` replaces that with two tiers:
+`guardrails/verification/builtin_check.py` replaces that with two tiers:
 
 - a **stdlib parser** where one exists — Python, JSON, TOML, XML and its dialects, INI →
   tier `syntax`. MIMIR *is* a Python process, so the standard library is there by
@@ -1433,7 +1433,7 @@ Rejecting the batch review reverts every file snapshot captured during the turn.
 
 ### Verification ledger
 
-`query_engine/verification.build_ledger` + `render_ledger`, called from
+`guardrails/verification/ledger.build_ledger` + `render_ledger`, called from
 `finalize._annotate_answer_with_changes`, append a machine-recorded block to **every** answer, on
 every exit path — not enforcement-gated, not conditional on a plan:
 

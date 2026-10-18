@@ -10,7 +10,7 @@ from ...llm.factory import get_backend
 from ...query_engine.history import (
     compacted_exchanges, compaction_summary_message,
 )
-from ...query_engine.verification import parse_ledger_block, split_answer_ledger
+from ...guardrails.verification.ledger import parse_ledger_block, split_answer_ledger
 from ...query_engine.context_budget import context_budget_for
 from ...session.conversation import Conversation, trim_front
 from ...session.store import FullSession

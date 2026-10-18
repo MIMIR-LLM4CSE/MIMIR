@@ -13,7 +13,7 @@ from typing import Any
 from ..config.limits import NUDGE_MAX_CONSECUTIVE_NOOP
 from ..config.models import READONLY_MODES
 from ..protocol.event_sink import emit
-from ..guardrails.builtin_check import sweep_builtin_checks
+from ..guardrails.verification.builtin_check import sweep_builtin_checks
 from ..guardrails.nudges import (
     inject_reminder,
     maybe_append_nudge,
@@ -26,7 +26,7 @@ from .loop_base import (
     ModeSwitch, StepLoop, TurnContext, step_tools, drain_steer,
     rebuild_system_content,
 )
-from ..guardrails.toollist import tools_for_context, tools_for_readonly_mode
+from ..guardrails.policy.toollist import tools_for_context, tools_for_readonly_mode
 from ..context.execution_context import ExecutionContext
 from ..core.ports import AgentPort
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from __future__ import annotations
 import os
 from typing import Any
-from ..ladder import (
+from ..verification.ladder import (
     mark_file_validated,
     record_run_outcome,
     register_run_failure,

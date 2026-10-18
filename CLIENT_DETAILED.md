@@ -49,7 +49,6 @@ about structure and flow. The VS Code frontend has its own file,
 | `jobs/poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
 | `finalize.py` | `finalize_answer` / `record_turn` |
-| `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
 
 ### Slash commands
 
@@ -329,8 +328,8 @@ missing content).
 |---|---|---|
 | `discovery` | `guardrails.observations` (discovery, files, shell), the carry merge | the policy engine, the nudges, the history budget |
 | `edits` | `guardrails.observations.files`; `steps_since_last_edit` also by `agent_loop` | the write policy, the nudges, the ledger |
-| `checks` | `guardrails.ladder`, `observations.files`, `builtin_check` | the state guards, the nudges, the ledger, the completion report |
-| `execution` | `guardrails.ladder` (`record_run`), `guardrails.verdict`, `observations.shell`, `observations.runs` | the ledger, the completion report, the exercise and stuck-repair nudges |
+| `checks` | `verification.ladder`, `observations.files`, `builtin_check` | the state guards, the nudges, the ledger, the completion report |
+| `execution` | `verification.ladder` (`record_run`), `verification.verdict`, `observations.shell`, `observations.runs` | the ledger, the completion report, the exercise and stuck-repair nudges |
 | `env` | `observations.env`, `observations.shell` | the env nudges |
 | `denials` | the agent's approvals, `observations.evidence` | the denial ladder, the completion report |
 | `plan` | `observations.plan`, `query_engine.turn`, `plan_loop`, `dispatch.inject` | the commitments check, the checklist reminders |
@@ -584,8 +583,9 @@ The pluggable LLM backends behind one interface, plus token counting.
 
 ## guardrails
 
-Behaviour governance. The root holds what both halves read; `policy/` blocks and `nudges/`
-advises. Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
+Behaviour governance. `policy/` blocks, `nudges/` advises, `observations/` writes the
+blackboard, `workflow/` holds the state, `verification/` establishes what is verified; the root
+holds `proxy_state`, which several of them read. Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
 Paths below are relative to `mimir/client/guardrails/`.
 
 ### `workflow/` (root)
@@ -656,13 +656,23 @@ fixed order pinned by `test_observations.py`. The observers live by domain: `fil
   steers back to `edit`, but only where code was actually mutated. Past the budget it
   releases to `conclude` rather than wedging.
 
-### `verdict.py` (root)
+### `verification/`
+
+| Module | Holds |
+|---|---|
+| `builtin_check.py` | the in-process check every modified file owes |
+| `ladder.py` | what a check or a run that passed or failed does to the workflow state |
+| `runner_output.py` | `judge_run`: did a run reach a good end |
+| `verdict.py` | the model's verdict on what a run's output showed |
+| `ledger.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
+
+### `verification/verdict.py`
 
 `apply_verdict()` — the model's stated reading of a run's output, applied to the runs it
 addresses. Five verdicts, two target sets, and a deliberate reach asymmetry; the full rules
 are in [POLICY.md → Verdicts](POLICY.md#verdicts).
 
-### `builtin_check.py` (root)
+### `verification/builtin_check.py`
 
 The in-process check every modified file owes: a stdlib parser where one exists, a
 structural scan otherwise. `sweep_builtin_checks()` runs it as **one sweep** where the loop
@@ -696,7 +706,7 @@ Two details worth stating here:
   attached only at the `write_policy` and `approval` stages, then dropped in the `discover`
   state, and dropped again once the denial nudge has fired twice.
 
-Per-query tool-list construction is **not** here — it lives in `query_engine/toollist.py`,
+Per-query tool-list construction is **not** here — it lives in `guardrails/policy/toollist.py`,
 and withholds nothing but what the mode forbids.
 
 `toollist.grantable_tools(agent)` answers a different question: what the orchestrator may
@@ -1011,7 +1021,7 @@ never a parse of the command, which is the guess the module exists to avoid. See
   Without the second exclusion the scratchpad would trade workspace clutter for ledger
   clutter and spurious validation obligations.
 - `auto_validate_written_file()` — the post-write hook. The mandatory check is not here
-  (it is `guardrails.builtin_check`, swept at the conclusion gate); what is here are the two
+  (it is `guardrails.verification.builtin_check`, swept at the conclusion gate); what is here are the two
   *completeness* checks with no bash equivalent: the replacement-completeness grep for leftover text after a replace,
   and the cross-file reference check for stale callers after a rename.
 

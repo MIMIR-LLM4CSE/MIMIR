@@ -10,7 +10,10 @@ import unittest
 
 from mimir.client.tools.bash_classify import bash_command_is_readonly
 from mimir.client.guardrails.policy.readonly_exempt import readonly_bash_exempt
-from mimir.client.guardrails.toollist import tools_for_plan_mode, tools_for_readonly_mode
+from mimir.client.guardrails.policy.toollist import (
+    tools_for_plan_mode,
+    tools_for_readonly_mode,
+)
 from mimir.client.query_engine.readonly_guard import filter_readonly_tool_calls
 from mimir.client.tools.capabilities import (
     ToolCaps,

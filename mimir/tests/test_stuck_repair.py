@@ -23,7 +23,7 @@ from mimir.client.guardrails.nudges.predicates import (
     worst_run_failure_streak,
 )
 from mimir.client.guardrails.nudges.messages import stuck_repair_nudge_message
-from mimir.client.guardrails.ladder import register_run_failure
+from mimir.client.guardrails.verification.ladder import register_run_failure
 from mimir.client.context.execution_context import run_ledger_key
 from mimir.client.core.turn_state import TurnState
 from mimir.tests.support.agents import fake_agent
@@ -257,7 +257,7 @@ class TheLadderIsReachableThroughAStatusLineTests(unittest.TestCase):
             record_run,
         )
         from mimir.tests.support.context import build_execution_context
-        from mimir.client.guardrails.ladder import register_run_failure
+        from mimir.client.guardrails.verification.ladder import register_run_failure
         base = "python3 tests/test_wave2d.py"
         forms = [base, base + '; echo "suite_exit=$?"', "cd sub && " + base]
         ec = build_execution_context()

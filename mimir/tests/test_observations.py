@@ -15,8 +15,8 @@ import unittest
 from unittest.mock import patch
 
 import mimir.client.guardrails.observations as runtime
-import mimir.client.guardrails.runner_output as runner_output
-from mimir.client.guardrails.runner_output import (
+import mimir.client.guardrails.verification.runner_output as runner_output
+from mimir.client.guardrails.verification.runner_output import (
     DECLARED_FAILURE,
     TEST_RUNNER_FAILURE,
     judge_run,
@@ -31,7 +31,7 @@ from mimir.client.context.execution_context import (
     unwritten_declared_files,
 )
 from mimir.tests.support.context import build_execution_context
-from mimir.client.guardrails.ladder import register_run_failure
+from mimir.client.guardrails.verification.ladder import register_run_failure
 from mimir.client.guardrails.observations import Call  # noqa: E402
 from mimir.client.core.turn_state import TurnState
 from mimir.tests.support.agents import fake_agent
@@ -406,7 +406,7 @@ class BashValidationObservationTests(unittest.TestCase):
 
     def _judge(self, ec, verdict="pass", reason="the printed residual is below tolerance"):
         """What the model says the run's output showed — exit 0 never speaks for it."""
-        from mimir.client.guardrails.verdict import apply_verdict
+        from mimir.client.guardrails.verification.verdict import apply_verdict
         return bool(apply_verdict(verdict, reason, "", ec))
 
     # ── executions: a run, never a validation ──────────────────────────────
@@ -1172,7 +1172,7 @@ class ValidationTierTests(unittest.TestCase):
 
     def test_extension_pack_validator_defaults_to_static(self):
         # A VALIDATE-capability tool checked something but tells us no more than that.
-        from mimir.client.guardrails.ladder import mark_file_validated
+        from mimir.client.guardrails.verification.ladder import mark_file_validated
         ec = self._ctx({"foo.py"})
         mark_file_validated(ec, "foo.py")
         self.assertEqual(self.tier(ec), "static")
@@ -1185,7 +1185,7 @@ class UncheckableFileTests(unittest.TestCase):
 
     def _sweep(self, name, content):
         from mimir.client.guardrails import observations
-        from mimir.client.guardrails.builtin_check import sweep_builtin_checks
+        from mimir.client.guardrails.verification.builtin_check import sweep_builtin_checks
         directory = tempfile.mkdtemp()
         path = os.path.join(directory, name)
         mode = "wb" if isinstance(content, bytes) else "w"
@@ -1224,8 +1224,8 @@ class UncheckableFileTests(unittest.TestCase):
         self.assertEqual(ec.checks.builtin_check_stamp, {})
 
     def test_the_sweep_reads_each_revision_once(self):
-        from mimir.client.guardrails.builtin_check import sweep_builtin_checks
-        from mimir.client.guardrails import builtin_check
+        from mimir.client.guardrails.verification.builtin_check import sweep_builtin_checks
+        from mimir.client.guardrails.verification import builtin_check
         ec, path = self._sweep("solver.py", "x = (\n")
         calls = []
         original = builtin_check.check_file
@@ -1240,7 +1240,7 @@ class UncheckableFileTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
 
     def test_the_ledger_says_why_it_was_not_checked(self):
-        from mimir.client.query_engine.verification import build_ledger
+        from mimir.client.guardrails.verification.ledger import build_ledger
         ec, _ = self._sweep("blob.py", b"\x00\x01\x02")
         rows = "\n".join(build_ledger(ec)["rows"])
         self.assertIn("not readable as text", rows)

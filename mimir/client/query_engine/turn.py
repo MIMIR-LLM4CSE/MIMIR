@@ -21,7 +21,7 @@ from .deferral import KIND_CALLS, KIND_PLAN_DECISION, take_deferred_calls
 from .finalize import record_turn
 from .loop_base import ModeSwitch, StepLoop, TurnContext
 from .plan_loop import PlanLoop
-from .verification import build_ledger
+from ..guardrails.verification.ledger import build_ledger
 
 logger = logging.getLogger(__name__)
 

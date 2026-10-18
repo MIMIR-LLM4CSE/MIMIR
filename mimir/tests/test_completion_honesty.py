@@ -23,7 +23,7 @@ from mimir.client.protocol.event_sink import reset_event_sink, set_event_sink
 from mimir.client.guardrails.nudges import needs_incomplete_finalization
 from mimir.client.guardrails.nudges import maybe_append_nudge
 from mimir.client.guardrails.nudges.messages import unexercised_code_nudge_message
-from mimir.client.guardrails.verdict import apply_verdict
+from mimir.client.guardrails.verification.verdict import apply_verdict
 from mimir.client.guardrails.workflow import (
     collect_completion_issues,
     COMPLETION_MARKER,
@@ -39,7 +39,7 @@ from mimir.client.guardrails.workflow import (
     unjudged_run_lines,
 )
 from mimir.client.query_engine.finalize import _annotate_answer_with_changes
-from mimir.client.query_engine.verification import (
+from mimir.client.guardrails.verification.ledger import (
     LEDGER_MARKER,
     build_ledger,
     parse_ledger_block,
@@ -529,7 +529,7 @@ class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
     """
 
     def test_a_failing_run_does_not_make_a_checked_change_incomplete(self):
-        from mimir.client.guardrails.ladder import register_run_failure
+        from mimir.client.guardrails.verification.ladder import register_run_failure
         ec = _written({"solver.py"}, tier="static")
         record_run(ec, "python solver.py", completed=False)
         register_run_failure(ec, "python solver.py", "segfault")

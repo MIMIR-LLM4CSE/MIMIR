@@ -36,7 +36,7 @@ graph TD
         te["tool_execution/<br/><small>executor · validation · direct</small>"]
     end
     subgraph GOV["🛡️ Governance"]
-        guard["guardrails/<br/><small>policy/ · nudges/ · workflow/<br/>observations/ · ladder · verdict</small>"]
+        guard["guardrails/<br/><small>policy/ · nudges/ · workflow/<br/>observations/ · verification/</small>"]
     end
     subgraph CON["📜 Contracts"]
         core["core/<br/><small>ports · settings · human<br/>turn_state · extension_set</small>"]
@@ -99,7 +99,7 @@ graph TD
 | 1 | `tools`, `llm` | what each tool is (its capabilities, what a bash command does) and how a call reads on screen; the model backends and their token accounting |
 | 2 | `context` | the `ExecutionContext` blackboard, the carry context, the path rules |
 | 3 | `core` | the contracts the layers above agree on: `AgentPort`, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
-| 4 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the repair `ladder` |
+| 4 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the `verification` that establishes what is checked (the mandatory check, the repair ladder, the ledger) |
 | 5 | `tool_execution` | a call run through the guardrails: policy before, observations after |
 | 6 | `extensions`, `integration` | the user's `.mimir/` extensions; connecting MCP servers |
 | 7 | `prompt` | the system prompt |

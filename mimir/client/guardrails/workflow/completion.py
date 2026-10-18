@@ -221,7 +221,7 @@ _INCOMPLETE_STATUSES: frozenset[str] = frozenset({"incomplete", "handback"})
 
 
 # Marker contract with the front-ends, shaped like the verification ledger's
-# (query_engine/verification.py): an HTML comment with the header fields, then markdown.
+# (guardrails/verification/ledger.py): an HTML comment with the header fields, then markdown.
 # The front-end folds the block into a collapsed disclosure.
 COMPLETION_MARKER: str = "<!--mimir:completion"
 

@@ -22,7 +22,7 @@ async def auto_validate_written_file(
 ) -> str:
     """The completeness checks of an edit: a leftover ``old_text``, stale cross-file references.
 
-    The mandatory check runs at the conclusion gate (``guardrails.builtin_check``), not here.
+    The mandatory check runs at the conclusion gate (``guardrails.verification.builtin_check``), not here.
     """
     if execution_context is None or not path or not is_code_filepath(path):
         return ""

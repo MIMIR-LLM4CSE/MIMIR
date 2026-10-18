@@ -26,7 +26,7 @@ from mimir.client.context import failed_runs, unsettled_runs
 from mimir.client.guardrails import observations as O
 from mimir.client.guardrails import workflow
 from mimir.client.tools.bash_classify import opaque_command_executes
-from mimir.client.guardrails.verdict import apply_verdict
+from mimir.client.guardrails.verification.verdict import apply_verdict
 from mimir.servers._shared.capabilities import build_descriptor
 from mimir.servers.proxy._lib import store
 from mimir.servers._shared.atomic import write_json

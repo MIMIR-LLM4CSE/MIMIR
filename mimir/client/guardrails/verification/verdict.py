@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..context import VERDICTS, failed_runs, unsettled_runs
-from ..protocol.event_sink import emit
+from ...context import VERDICTS, failed_runs, unsettled_runs
+from ...protocol.event_sink import emit
 from .ladder import register_run_failure
-from ..context.execution_context import ExecutionContext
+from ...context.execution_context import ExecutionContext
 
 
 # Verdicts that settle the one run they speak for and no other. ``pass`` because
