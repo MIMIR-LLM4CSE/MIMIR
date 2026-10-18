@@ -163,33 +163,6 @@ Resolved **once** at construction into `self.enforcement` — the model is immut
 agent's life — and read through `resolve_enforcement(agent)`. A profile opts up with
 `"enforcement": "strict"`; `/enforcement` overrides at runtime.
 
-### `model_catalog.py` / `model_catalog.json`
-
-What each served model is worth, for the orchestrator picking a sub-agent's model.
-
-| Field | Meaning |
-|---|---|
-| `arch`, `total_params_b`, `active_params_b` | dense or MoE, and its size |
-| `weights` | served precision; a key of `_weight_bytes` |
-| `scores` | one value per benchmark, grouped by the categories in `_scale` |
-| `delegable` | `false` keeps a model out of sub-agents (Qwen3-0.6B is too small for a tool loop) |
-| `sources` | where each number was read, with the date |
-
-**Scores come from one harness or not at all.** Every category uses the same
-independent source for every model (Artificial Analysis today). Vendor model cards each
-publish different benchmarks, so a column mixing them ranks the harnesses. A category no
-common source covers stays `null` and is shown as `n/a`: that is the case of
-`instructions` for now.
-
-**Speed is estimated.** Decoding is memory-bandwidth bound, so `decode_cost()` is
-active parameters × bytes per weight. The rank is relative to the served models, and it
-ignores the hardware.
-
-`catalog_entry(model, root)` matches on the served id, then on vLLM's `root`, with the
-same longest-prefix rule as the vLLM profiles (`models.longest_prefix_key`).
-`describe_served_models()` renders the table the spawn-agent server puts in its `model`
-argument; `subagent_model_refusal()` says why a model cannot run a sub-agent.
-
 ### `preferences.py`
 
 Load and save of the soft-hide toggles: the disabled server, skill and nudge names,

@@ -144,9 +144,10 @@ actually fires.
 
 A run that outlives its tool call is described the same way everywhere, by
 `servers/_shared/jobs.py`: the descriptor a watcher polls, the payload keys that carry it
-(`background_job` launched, `background_jobs` handed over), the terminal words, Slurm's states
-read into them, and the files a run's directory holds. The servers produce descriptors
-through it; the client's watcher, its disk scan and the dispatch guards read them through it.
+(`background_job` launched, `background_jobs` handed over), the terminal words and the files
+a run's directory holds. The servers produce descriptors through it; the client's watcher, its
+disk scan and the dispatch guards read them through it. Slurm's states are read into those
+words by `_shared/slurm_site`, which only the servers load.
 
 ## The VS Code extension
 
@@ -163,6 +164,8 @@ through a handler table. Both halves are type-checked by `npm test`.
 through `servers/_launch.py` (`_shared/launcher.launch_argv`), which keeps the user's
 workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path.
 
+- `_shared` holds what two domains or more use; a module one domain uses lives in its
+  package (`hpc/slurm_digest`, `workspace/lsp_client`, `agent_state/model_catalog`).
 - `_shared` never imports the client.
 - Only `agent_state` (the sub-agent server builds a `MimirAgent`) and `interaction`
   import the client, and only its public names.

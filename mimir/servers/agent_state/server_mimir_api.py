@@ -264,7 +264,7 @@ _TYPES: dict[str, dict] = {
             "Declare a `kind`: the tool's family of work (`tool_caps(kind=\"edit\")`), "
             "which is the word its activity row shows and the icon drawn beside it. Ask "
             "topic `capabilities` for the vocabulary.",
-            "A tool that names a file takes an absolute path (see _shared/root_paths).",
+            "A tool that names a file takes an absolute path (see workspace/root_paths).",
             "Answer with the `ok()` / `err()` payload shape from _shared/responses.",
             "Document each parameter in an `Args:` block — those lines are lifted into "
             "the JSON schema, which is the part a model actually obeys.",

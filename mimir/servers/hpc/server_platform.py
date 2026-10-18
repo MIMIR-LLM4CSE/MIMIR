@@ -3,7 +3,7 @@ Python environments). Facts only, probed on demand.
 
 The module tree is indexed once under ``<STATE_DIR>/platform/modules/`` and searched with
 ``platform_search``, rebuilt when its fingerprint changes; a small digest carries the
-stable facts (the cluster half from ``_shared/slurm_digest``).
+stable facts (the cluster half from ``slurm_digest``).
 """
 
 import asyncio

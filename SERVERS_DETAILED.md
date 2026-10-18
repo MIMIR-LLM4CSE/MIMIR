@@ -10,7 +10,7 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `vector_cache.py`, `slurm_nodes.py`, `slurm_script.py`, `slurm_digest.py`, `cpu_facts.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `numerics.py`, `proc_run.py`, `jobs.py`, `slurm_site.py`, `run_channel.py`, `build_progress.py`, `latex_display.py` |
+| `_shared/` | What two domains or more use | `responses.py`, `capabilities.py`, `approved_roots.py`, `trusted_read_roots.py`, `module_env.py`, `embed.py`, `cpu_facts.py`, `slurm_script.py`, `slurm_site.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `jobs.py`, `run_channel.py`, `build_progress.py`, `atomic.py`, `clock.py`, `processes.py`, `launcher.py`, `skill_file.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning, delegation & self-knowledge | `server_memory`, `server_todo`, `server_spawn_agent`, `server_mimir_api` |
@@ -65,7 +65,7 @@ Response contract:
 - success payload: `{"status": "ok", ...}`
 - error payload: `{"status": "error", "error": "...", "hint"?: "..."}`
 
-### Timeouts that stop the work (`_shared/proc_run.py`)
+### Timeouts that stop the work (`proxy/_lib/proc_run.py`)
 
 `subprocess.run(..., timeout=…)` kills the process it launched and nothing that process
 forked. The bash tool runs `bash -c "<preamble><command>"`, which is compound, so bash
@@ -117,9 +117,10 @@ module:
   honoured for a `BACKGROUNDABLE` tool), `handed_over(payload)` reads `background_jobs` (still
   going, from a status answer, an adoption or a sub-agent; no capability needed).
 - **the states**: `TERMINAL = {done, crashed, unknown}`; `exit_code_state` (0 done, a signal
-  or nothing unknown, else crashed); `slurm_state` (squeue, then sacct, arrays by their worst
-  element) and `locate_slurm_job`, used by the HPC server and the proxy alike;
-  `record_terminal_state` writes `slurm_state` once.
+  or nothing unknown, else crashed); `record_terminal_state` writes `slurm_state` once.
+  Slurm's own states are read into these words by `_shared/slurm_site` (`slurm_state`:
+  squeue, then sacct, arrays by their worst element; `locate_slurm_job`), for the HPC server
+  and the proxy alike; the client never loads it.
 - **the files** a run's directory holds: `EXIT_CODE`, `META`, `SLURM_JOB_ID`, `SLURM_STATE`,
   `WATCHER_FILE`, `REPORTED`, `WAKE_BASELINE`.
 
@@ -132,7 +133,7 @@ or Ollama (`ollama.embed`). Config via `MIMIR_EMBED_MODEL` / `MIMIR_EMBED_BASE_U
 `MIMIR_EMBED_TIMEOUT` (see [SETUP.md](SETUP.md)). Contract: `embed_texts()` returns
 `None` on **any** failure (backend down, no model, timeout) so every caller falls back to
 lexical scoring and the hermetic test suite stays green. Also exposes `embed_one`,
-`is_available` (memoized probe), `cosine_rank`, `lexical_rank`, and `embed_model_id`. `_shared/vector_cache.py` sits on top of it with the *persistence* half of
+`is_available` (memoized probe), `cosine_rank`, `lexical_rank`, and `embed_model_id`. `hpc/vector_cache.py` sits on top of it with the *persistence* half of
 the pattern — a `{key: {model, vec}}` JSON cache beside a corpus, vectors backfilled when
 missing or embedded under a different model, `semantic_rank()` returning `None` to signal
 the caller's fallback. The module catalogue uses it; `server_memory` still carries its own
@@ -359,7 +360,7 @@ are excluded from the change ledger, and how `ensure_scratch_home()` vets a worl
 not materialise state. `workspace_id()` also lives here, not in the client's constants:
 both the state dir and the scratchpad name are built from it.
 
-### Numerical invariants (`_shared/numerics.py`)
+### Numerical invariants (`proxy/_lib/numerics.py`)
 
 `NUMERICAL_INVARIANT_METRICS` (`l2_rel`, `linf_rel`, `l2_abs`, `linf_abs`,
 `convergence_order`, `conservation_residual`, `finite`) plus `wall_time_s` form
@@ -460,7 +461,7 @@ Purpose: workspace-scoped file CRUD and surgical edit helpers.
 
 ### Absolute paths only
 
-Every model-facing tool here requires an **absolute** `path`; a relative one is rejected by `_require_abs` at the tool boundary. The check itself is `require_absolute()` in `servers/_shared/root_paths.py`, shared with the read-only servers (see below); `_require_abs` is the file server's thin wrapper over it.
+Every model-facing tool here requires an **absolute** `path`; a relative one is rejected by `_require_abs` at the tool boundary. The check itself is `require_absolute()` in `servers/workspace/root_paths.py`, shared with the read-only servers (see below); `_require_abs` is the file server's thin wrapper over it.
 
 A relative path would be resolved against the server's start directory, which the model has no way to learn, so it would have to **infer** the root, and no prompt makes that inference reliable. Requiring an absolute path removes the inference: the destination is stated in the call itself.
 
@@ -680,7 +681,7 @@ because a load mutates one subprocess's environment.)
 Tools:
 - `slurm_schedulers(add="", forget="")` — **the schedulers this workspace can submit to**, which is what the model reads before choosing one: the local scheduler when this host has one, plus every host learned or declared. `add=` verifies `sbatch` answers there before recording it (nothing is recorded on a guess: an unreachable host in the inventory is a destination that swallows submissions); `forget=` drops one. Each entry carries **what its machines are** — node types, architectures, GPU models, partition count — because that is half of what the choice turns on, and a model that must spend a `slurm_nodes` call per candidate before it can choose will choose without looking. Live occupancy is deliberately not there: it changes between two reads and belongs to `slurm_nodes(scheduler=…)`. See *Which schedulers a workspace reaches* and *What a cluster is made of* below.
 - `slurm_partitions`
-- `slurm_nodes(partition="", states="", node="", detail=False)` — **compute-node inventory**: architecture, CPU topology, memory, GPU type/count, node features, and live occupancy (allocated/free CPUs, free memory, load), read from `scontrol show node` — Slurm's own database, which is what actually governs placement. Read-only and instant: it allocates nothing, so it can be consulted *before* choosing where to submit, unlike running a probe on the node (that needs `srun`, i.e. a queued allocation billed against your hours). Aggregates nodes onto their hardware signature by default with a count per state, since a per-node listing of a large cluster is mostly noise; `detail=True` or `node="<name>"` gives individual nodes. Falls back to `sinfo -N` where `scontrol` is restricted, flagging in `degraded` that architecture and CPU occupancy are then unknown. Both parsers, the pipe-table reader and the signature aggregation live in `_shared/slurm_nodes.py`, which runs no command at all: the digest needs the same view of the cluster's hardware for every scheduler the workspace reaches, and a second copy of either parser would drift.
+- `slurm_nodes(partition="", states="", node="", detail=False)` — **compute-node inventory**: architecture, CPU topology, memory, GPU type/count, node features, and live occupancy (allocated/free CPUs, free memory, load), read from `scontrol show node` — Slurm's own database, which is what actually governs placement. Read-only and instant: it allocates nothing, so it can be consulted *before* choosing where to submit, unlike running a probe on the node (that needs `srun`, i.e. a queued allocation billed against your hours). Aggregates nodes onto their hardware signature by default with a count per state, since a per-node listing of a large cluster is mostly noise; `detail=True` or `node="<name>"` gives individual nodes. Falls back to `sinfo -N` where `scontrol` is restricted, flagging in `degraded` that architecture and CPU occupancy are then unknown. Both parsers, the pipe-table reader and the signature aggregation live in `hpc/slurm_nodes.py`, which runs no command at all: the digest needs the same view of the cluster's hardware for every scheduler the workspace reaches, and a second copy of either parser would drift.
   > **Architecture is the field that earns the tool.** Where a cluster mixes architectures, a binary built where the agent runs will not run on a node of a different one. What Slurm cannot report — CPU model, SIMD, `-march`, caches, OS, toolchains — needs execution on the node: it is read there by `slurm_probe_node` and served by `slurm_node_profile`.
 - `slurm_queue` — the queue, with one field the scheduler cannot supply: `watched` per row, plus the `unwatched` ids as a set. Whether *this workspace* is watching a job is a fact about the descriptors on disk, and a job submitted any other way left none — so the listing answers it rather than leaving it to be worked out, and the client records the set for the conclude-phase nudge (see `CLIENT_DETAILED.md` → *A run nobody is watching*). An array is adopted or submitted under its base id and listed by task, so `_covered_by` tries the base too: read literally, every task of a watched array reads as unwatched — and the `unwatched` set is keyed by array rather than by task, because adoption is by array and eight task rows name one descriptor to write. The descriptors are read in **one** pass (`recorded_jobs`, keyed by `(host, id)`) rather than searched per row: a search answers one id and only returns early on a hit, so asking it per row had a queue of two hundred jobs re-walk every session's submissions two hundred times, with the rows that answer "no" — the interesting ones — paying the whole walk every time.
 - `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing; there is no free-form command, so the validation cannot be skipped
@@ -706,7 +707,7 @@ Tools:
 >
 > Read through one seam — `argv_for` for a script and `exec_argv` for an argv, both taking the host, which put `ssh` in front for anything but `LOCAL`; nothing else in any server knows whether a scheduler is local. `BatchMode=yes` is not optional (a poller that can be asked for a password hangs for its timeout every tick) and `-n` closes stdin for every call but a submission, whose stdin is the point. No ssh *options* of our own: an identity file, a port or a jump host are `~/.ssh/config`'s business, a configuration mechanism the user already has. The no-shell property of the argv path survives in the form that matters: `ssh` takes a command line rather than an argv, so each element is quoted on the way out and what the remote shell splits is exactly the argv built here. When nothing is reachable, the failure hint says the one thing that fixes it — read a queue over `ssh` once.
 >
-> **What a cluster is made of, learned once per process.** A submission is sized against the hardware — the architectures, the GPUs, the partitions — and for a scheduler behind `ssh` that cost two round trips every time it was asked, so it was asked rarely and chosen without; the usual shape of that is a binary built on the login node and submitted to nodes of another architecture, which dies on an illegal instruction after the queue wait rather than before it. `_shared/slurm_digest` builds it for any host through the same `argv_for` seam, and holds it in memory for the life of the server process. That is safe only because the projection is **occupancy-free** (`slurm_nodes.stable_types`): what the machines *are*, never what is running on them, plus per kind up to three `example_nodes` and `nodes_total`, so the panel can name a kind by its nodes and find a probed node's profile — so `slurm_nodes(scheduler=…)` stays a live read, and caching *it* would turn the sizing tool into a stale one. There is no fingerprint to consult and no TTL: asking whether a remote cluster changed costs exactly what rebuilding costs, a process is cheap to restart, and `slurm_schedulers(add=…)` is the explicit re-probe. Note the pairing — *which* clusters exist outlives any conversation, *what they are made of* is relearned per process. `scontrol show node` first, since it alone carries the architecture, and `sinfo -N` where a site restricts it, with the gaps named in `degraded` rather than defaulted; both parsers live in `_shared/slurm_nodes`, which stays pure so the degraded path can be tested on a string. A host that does not answer is listed without hardware and says so: unknown is not absent, and a listing must not become an error because one cluster is down. `server_platform`'s own digest is the same builder with the local host, so this machine is described the way the others are — and, asking through a login shell, a Slurm that arrives from a modulefile is found here too.
+> **What a cluster is made of, learned once per process.** A submission is sized against the hardware — the architectures, the GPUs, the partitions — and for a scheduler behind `ssh` that cost two round trips every time it was asked, so it was asked rarely and chosen without; the usual shape of that is a binary built on the login node and submitted to nodes of another architecture, which dies on an illegal instruction after the queue wait rather than before it. `hpc/slurm_digest` builds it for any host through the same `argv_for` seam, and holds it in memory for the life of the server process. That is safe only because the projection is **occupancy-free** (`slurm_nodes.stable_types`): what the machines *are*, never what is running on them, plus per kind up to three `example_nodes` and `nodes_total`, so the panel can name a kind by its nodes and find a probed node's profile — so `slurm_nodes(scheduler=…)` stays a live read, and caching *it* would turn the sizing tool into a stale one. There is no fingerprint to consult and no TTL: asking whether a remote cluster changed costs exactly what rebuilding costs, a process is cheap to restart, and `slurm_schedulers(add=…)` is the explicit re-probe. Note the pairing — *which* clusters exist outlives any conversation, *what they are made of* is relearned per process. `scontrol show node` first, since it alone carries the architecture, and `sinfo -N` where a site restricts it, with the gaps named in `degraded` rather than defaulted; both parsers live in `hpc/slurm_nodes`, which stays pure so the degraded path can be tested on a string. A host that does not answer is listed without hardware and says so: unknown is not absent, and a listing must not become an error because one cluster is down. `server_platform`'s own digest is the same builder with the local host, so this machine is described the way the others are — and, asking through a login shell, a Slurm that arrives from a modulefile is found here too.
 
 > **A job is not owned by a scheduler; it is run by one.** Which one is written beside the id in the descriptor (`slurm_host`, empty meaning local) by the submission and by `slurm_watch`, and that record is a **cache, not a binding**: `slurm_job_status(job_id)` applies it first — one call, which matters for something polled on a timer for the life of a run — and sweeps every reachable scheduler when it is absent or wrong, writing down whichever knew. That fallback is what keeps the wake working for all of them at once: the client watcher treats the descriptor as opaque and re-arms from disk with `{"job_id": id}` and no host (`client/ui/ws/jobs_on_disk.py`), so an id alone has to be enough. It also makes `slurm_watch` take an id from a launcher's output without the caller knowing which cluster printed it. The same shape in the proxy: the host is written into the run directory, so `run_state(run_dir)` and `cancel_run(run_dir)` keep their signatures and their ~15 callers are untouched.
 
@@ -744,7 +745,7 @@ Tools:
 >
 > **The digest.** Beside the catalogue, and independent of it, is the small set of stable, high-impact facts that *do* fit in a context window: host architecture and ISA, the cluster's compute-node *types* (architecture, CPU topology, memory, GPUs, aggregated by hardware signature), its partitions, and the toolchains present. This is what tells the agent that the compute nodes are a different architecture from the login node it is running on. It is returned by `platform_catalogue_status` and inside `platform_probe`; nothing puts it in the system prompt. Occupancy is deliberately excluded: it is volatile, `slurm_nodes` owns it, and including it would make the signature churn every few seconds.
 >
-> Two halves with two scopes. The host block is this machine and nothing else — a remote scheduler's login node is not where anything here is compiled. The cluster block is `_shared/slurm_digest` (see *What a cluster is made of* under `server_hpc`), the one builder every scheduler the workspace reaches is described by, so this host degrades to `sinfo` exactly as the others do and a Slurm arriving from a modulefile is found here too. Independent of the catalogue because the two have nothing to do with each other: built inside the module tree's enrichment, the digest reached nobody on a host with no module system, and nobody anywhere until the first `platform_search`.
+> Two halves with two scopes. The host block is this machine and nothing else — a remote scheduler's login node is not where anything here is compiled. The cluster block is `hpc/slurm_digest` (see *What a cluster is made of* under `server_hpc`), the one builder every scheduler the workspace reaches is described by, so this host degrades to `sinfo` exactly as the others do and a Slurm arriving from a modulefile is found here too. Independent of the catalogue because the two have nothing to do with each other: built inside the module tree's enrichment, the digest reached nobody on a host with no module system, and nobody anywhere until the first `platform_search`.
 
 ## hpc/server_env.py
 
@@ -1456,6 +1457,33 @@ Execution model:
   the UI. The capability registry is strictly per-agent, which is what makes concurrent
   sub-agents on different server subsets safe.
 
+### The model catalog (`model_catalog.py` `model_catalog.json`)
+
+What each served model is worth, for the orchestrator picking a sub-agent's model.
+
+| Field | Meaning |
+|---|---|
+| `arch`, `total_params_b`, `active_params_b` | dense or MoE, and its size |
+| `weights` | served precision; a key of `_weight_bytes` |
+| `scores` | one value per benchmark, grouped by the categories in `_scale` |
+| `delegable` | `false` keeps a model out of sub-agents (Qwen3-0.6B is too small for a tool loop) |
+| `sources` | where each number was read, with the date |
+
+**Scores come from one harness or not at all.** Every category uses the same
+independent source for every model (Artificial Analysis today). Vendor model cards each
+publish different benchmarks, so a column mixing them ranks the harnesses. A category no
+common source covers stays `null` and is shown as `n/a`: that is the case of
+`instructions` for now.
+
+**Speed is estimated.** Decoding is memory-bandwidth bound, so `decode_cost()` is
+active parameters × bytes per weight. The rank is relative to the served models, and it
+ignores the hardware.
+
+`catalog_entry(model, root)` matches on the served id, then on vLLM's `root`, with the
+same longest-prefix rule as the vLLM profiles (`client.config.models.longest_prefix_key`).
+`describe_served_models()` renders the table the spawn-agent server puts in its `model`
+argument; `subagent_model_refusal()` says why a model cannot run a sub-agent.
+
 ## interaction/server_interaction.py
 
 Purpose: let the agent pause mid-run and ask the **user** a clarifying question with
@@ -1530,8 +1558,8 @@ Helper package (not an MCP server) imported by `proxy/server_proxy.py`, the `pro
 | module | contents |
 |---|---|
 | `store.py` | Storage root `_CACHE_DIR` (env-overridable via `MIMIR_PROXY_BENCH_DIR`, default `<workspace>/proxy_bench`), the whole on-disk layout, atomic JSON/symlink IO, the re-entrant registry flock, and registry/suite/reference/opt-session persistence — including `workspace_root()` and `entry_or_err()`, which every op resolves a proxy through. |
-| `procs.py` | Process/run state: pid + `/proc` starttime bookkeeping (PID-recycling and zombie detection in `is_running`), `run_state` (a Slurm run read through `_shared/jobs.slurm_state` on whichever scheduler knows it, and settled into its workspace job directory once over); log access (`run_log_path`, `read_log` capped at `_MAX_LOG`); run lifecycle — `new_run_dir`, `write_run_config`, `launch_detached`, `submit_sbatch`, `cancel_run` (`scancel` else SIGTERM → SIGKILL), `validate_slurm_args`; active-run symlinks. |
-| `metrics.py` | `parse_metrics_block` (block-delimited; strict fallback scan), `strip_reserved_metrics` (against `RESERVED_METRICS` from `_shared/numerics.py`) (server-side invariants the proxy cannot forge), `normalize_time_metrics` (server-measured `wall_time_s` + `time_s` plausibility guard), field I/O + `field_norms`, invariants (`finite_check`, `conservation_discrepancy`, `observed_convergence_order`), `evaluate_requirements`. |
+| `procs.py` | Process/run state: pid + `/proc` starttime bookkeeping (PID-recycling and zombie detection in `is_running`), `run_state` (a Slurm run read through `_shared/slurm_site.slurm_state` on whichever scheduler knows it, and settled into its workspace job directory once over); log access (`run_log_path`, `read_log` capped at `_MAX_LOG`); run lifecycle — `new_run_dir`, `write_run_config`, `launch_detached`, `submit_sbatch`, `cancel_run` (`scancel` else SIGTERM → SIGKILL), `validate_slurm_args`; active-run symlinks. |
+| `metrics.py` | `parse_metrics_block` (block-delimited; strict fallback scan), `strip_reserved_metrics` (against `RESERVED_METRICS` from `numerics.py`) (server-side invariants the proxy cannot forge), `normalize_time_metrics` (server-measured `wall_time_s` + `time_s` plausibility guard), field I/O + `field_norms`, invariants (`finite_check`, `conservation_discrepancy`, `observed_convergence_order`), `evaluate_requirements`. |
 | `command.py` | `_render_param_file`, `_expand_cmd_template` (single template-expansion path for local + sbatch), `build_run_cmd`, `sbatch_header_lines`, `build_sbatch` (injection-safe `repr()` postrun; captures solver wall time + exit code for the post-run guard). |
 | `report.py` | Roofline (`_resolve_roofline` with platform-profile fallback, `_compute_roofline`), `row_with_extra`, `diff_run_pair`, `_diff_run_dirs`. |
 | `execute.py` | The three run paths every launch funnels through: `run_benchmark_case` (synchronous case), `seal_reference` (immutable reference store), `_post_run_finalize` (settles detached local/Slurm runs). All three share `_settle_metrics` (reserved-metrics purge, time_s guard, returncode) and `_apply_invariants` (reference comparison + lifted error norms, `finite`, `conservation_residual`), so a detached run carries exactly the metrics a synchronous one does. |
