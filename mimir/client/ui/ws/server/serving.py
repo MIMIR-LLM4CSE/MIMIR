@@ -14,7 +14,7 @@ import sys
 from typing import Any
 
 from ....config import DEFAULT_MODEL
-from ....query_engine.backends.openai_compat import OpenAICompatBackend
+from ....llm.openai_compat import OpenAICompatBackend
 from . import registry as server_registry
 from ..runtime import CTX_DEFAULT_FULL, ORIGINAL_STDOUT, ensure_router_installed, get_backend
 from ..pool.pool import AgentPool

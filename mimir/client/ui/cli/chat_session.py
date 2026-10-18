@@ -6,7 +6,7 @@ from .chat_commands import CliHost, run_cli_command
 from ...context.capabilities import name_with_arg_role
 from ...context.resource_context import augment_query_with_resources
 from ...context.todo import load_todo_items
-from ...query_engine.backends.factory import get_backend
+from ...llm.factory import get_backend
 from ...query_engine.history import (
     compacted_exchanges, compaction_summary_message,
 )

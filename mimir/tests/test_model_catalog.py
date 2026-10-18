@@ -113,7 +113,7 @@ class TestCatalogData:
 
 
 def test_the_vllm_backend_hands_over_whole_model_entries(monkeypatch):
-    from mimir.client.query_engine.backends.vllm_backend import VllmBackend
+    from mimir.client.llm.vllm_backend import VllmBackend
 
     monkeypatch.setenv("VLLM_BASE_URL", "https://endpoint.internal")
 

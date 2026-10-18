@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 from mimir.client.config import limits, paths
 from mimir.client.query_engine.context_budget import context_budget_for
-from mimir.client.query_engine import token_calibration
-from mimir.client.query_engine.backends.base import LLMBackend
+from mimir.client.llm import token_calibration
+from mimir.client.llm.base import LLMBackend
 from mimir.client.session.store import FullSession
 from mimir.client.ui.ws.connection.connection import Connection
 from mimir.tests.support.pools import FakePool
@@ -219,7 +219,7 @@ class MeasuredOverheadTests(unittest.TestCase):
         self._worker = bare_worker("m", None, agent=_StubAgent())
 
     def _overhead(self) -> int:
-        with patch("mimir.client.query_engine.backends.factory.get_backend",
+        with patch("mimir.client.llm.factory.get_backend",
                    return_value=_CountingBackend()):
             return self._worker.usage.overhead_tokens()
 

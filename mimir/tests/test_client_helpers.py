@@ -15,9 +15,9 @@ import dataclasses
 import mimir.client.query_engine.dispatch.execution as dispatch_execution
 from mimir.client.event_sink import event_sink as capture_events
 import mimir.client.event_sink as event_sink_module
-from mimir.client.query_engine.backends.base import PromptTooLongError
+from mimir.client.llm.base import PromptTooLongError
 from mimir.client.protocol.messages import message_wire_form
-from mimir.client.query_engine.backends.vllm_backend import VllmBackend
+from mimir.client.llm.vllm_backend import VllmBackend
 from mimir.tests.support.backend import ScriptedBackend
 
 import mimir.client.guardrails.policy.state_machine as policy_state_machine_module

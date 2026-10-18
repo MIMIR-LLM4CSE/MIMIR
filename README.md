@@ -202,8 +202,8 @@ which tools to call. The client is organized under `mimir/client/` into `config/
 config + tuning knobs), `context/` (execution-context schema + tool-capability registry),
 `prompt/` (system-prompt building), `extensions/` (the user's
 `.mimir/` servers / skills / plugins), `integration/` (MCP lifecycle), `guardrails/` (the
-precondition pipeline **plus** the soft nudges + shared workflow state), `query_engine/` (the
-agentic loop + backends), `tool_execution/` (arg normalization, caching, post-write
+precondition pipeline **plus** the soft nudges + shared workflow state), `llm/` (the LLM
+backends), `query_engine/` (the agentic loop), `tool_execution/` (arg normalization, caching, post-write
 validation), the `MimirAgent` core (`agent_core.py`, at the client root — the engine every
 frontend drives), and `ui/` (the CLI and WebSocket/VS Code frontends). See
 [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) for the full module breakdown.

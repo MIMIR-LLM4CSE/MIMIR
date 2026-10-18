@@ -23,7 +23,7 @@ from ....config.models import thinking_can_disable, thinking_profile
 from ....config.preferences import load_temperature
 from ....core.settings import read_setting
 from ....extensions import all_servers
-from ....query_engine.backends.factory import get_backend
+from ....llm.factory import get_backend
 from ....tool_execution.direct import NO_AGENT, call_tool_directly
 
 # Import the shared runtime FIRST so its cwd bootstrap runs before config.paths

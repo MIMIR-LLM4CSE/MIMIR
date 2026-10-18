@@ -133,7 +133,7 @@ async def run_benchmark(
     """
     if get_backend_override is None:
         os.environ["LLM_BACKEND"] = backend
-        from mimir.client.query_engine.backends.factory import clear_backend_cache
+        from mimir.client.llm.factory import clear_backend_cache
         clear_backend_cache()
 
     tasks = adapter.load_tasks(limit)

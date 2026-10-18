@@ -23,7 +23,8 @@ about structure and flow. The VS Code frontend has its own file,
 | `extensions/` | everything the user drops in the workspace `.mimir/` — servers, skills, plugin packs |
 | `integration/` | server lifecycle: spawn, tool discovery |
 | `guardrails/` | behaviour governance — `policy/` blocks (a pipeline of gates), `nudges/` advises (one cascade), the root holds what both read |
-| `query_engine/` | a turn: the loops, tool dispatch, history and budget, plus `backends/` for the LLM adapters |
+| `llm/` | the LLM backends behind one `LLMBackend` interface, and the token calibration they share |
+| `query_engine/` | a turn: the loops, tool dispatch, history and budget |
 | `tool_execution/` | argument normalization, path rewriting, post-write checks, result formatting, `direct` (a tool call the user made themselves) |
 | `session/` | a conversation independent of its front-end: `conversation` (`Conversation`, `Conversations`), `store` (`SessionStore`), `commands/` (the slash commands both front-ends share) |
 | `ui/` | the front-ends — `ui/cli/` and `ui/ws/` |
@@ -50,7 +51,6 @@ about structure and flow. The VS Code frontend has its own file,
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
 | `finalize.py` | `finalize_answer` / `record_turn` |
 | `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
-| `backends/` | `LLMBackend.chat` is a template (`_complete` per backend); `OpenAICompatBackend` with `VllmBackend` and `RayBackend` as subclasses, `AnthropicBackend`, `OllamaBackend`, the `ThinkTagParser` |
 
 ### Slash commands
 
@@ -536,7 +536,7 @@ caller closes the half-built agent (the CLI and the WS worker).
 
 ---
 
-## query_engine.backends
+## llm
 
 The pluggable LLM backends behind one interface, plus token counting.
 

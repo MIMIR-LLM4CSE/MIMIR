@@ -5,7 +5,7 @@ router may serve no ``/tokenize`` and no ``max_model_len``. Speaks HTTP only.
 """
 from __future__ import annotations
 
-from ...config.models import RAY_API_KEY, RAY_BASE_URL
+from ..config.models import RAY_API_KEY, RAY_BASE_URL
 from .openai_compat import Endpoint, OpenAICompatBackend
 
 RAY_ENDPOINT = Endpoint(

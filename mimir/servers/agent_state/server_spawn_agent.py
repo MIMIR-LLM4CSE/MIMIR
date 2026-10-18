@@ -83,7 +83,7 @@ def _probe_served_models() -> list[dict]:
     offered from the next session on.
     """
     try:
-        from mimir.client.query_engine.backends.factory import get_backend
+        from mimir.client.llm.factory import get_backend
         return get_backend().served_model_info()
     except Exception as exc:  # a dead endpoint must not keep the server from starting
         print(f"spawn_agent: could not list served models: {exc}", file=sys.stderr)

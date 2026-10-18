@@ -12,7 +12,7 @@ from ..config.limits import (
     INTRA_QUERY_COMPACT_TOKENS,
     TOOL_HISTORY_TOKEN_BUDGET,
 )
-from .backends.factory import get_backend
+from ..llm.factory import get_backend
 
 
 def context_budget_for(model: str | None, mode: str = "full",

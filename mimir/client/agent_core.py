@@ -76,7 +76,7 @@ from .protocol.tool_result import (
         json_error_payload,
 )
 from .query_engine import run_agent_query
-from .query_engine.backends.factory import get_backend
+from .llm.factory import get_backend
 from .query_engine.history import (
         force_fit_to_window,
         compacted_exchanges,

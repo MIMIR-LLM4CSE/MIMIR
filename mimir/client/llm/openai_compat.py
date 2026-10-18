@@ -13,19 +13,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from .base import ChatTurn, LLMBackend, PromptTooLongError, env_positive_int
-from ...protocol.tool_call import normalize_arguments
+from ..protocol.tool_call import normalize_arguments
 # The assistant↔tool pairing invariant belongs to the history, not to this provider:
 # LLMBackend.chat applies it before every call. Re-applied in
 # _prepare_messages_for_openai because that normalises ids first, which can turn a
 # positional match into an id match.
-from ...protocol.messages import merge_consecutive_user_messages, reconcile_tool_pairs
+from ..protocol.messages import merge_consecutive_user_messages, reconcile_tool_pairs
 
 
 # Single source of truth in _shared so the embedding helper (which runs in the
 # separate MCP server processes too) applies the exact same TLS policy.
-from ....servers._shared.embed import verify_ssl
-from ...config.limits import CTX_RESERVED_RATIO, CTX_TOTAL_FULL
-from ...config.models import thinking_profile
+from ...servers._shared.embed import verify_ssl
+from ..config.limits import CTX_RESERVED_RATIO, CTX_TOTAL_FULL
+from ..config.models import thinking_profile
 
 logger = logging.getLogger(__name__)
 

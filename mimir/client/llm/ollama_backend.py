@@ -12,7 +12,7 @@ except ImportError:  # the backend is optional: its SDK is needed only to call i
     ollama = None
 
 from .base import ChatTurn, LLMBackend, env_positive_int
-from ...protocol.tool_call import as_dict
+from ..protocol.tool_call import as_dict
 
 
 def _done_reason(obj: Any) -> Any:

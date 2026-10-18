@@ -16,7 +16,7 @@ from typing import Any, Callable
 from ...config.limits import CTX_TOTAL_FULL as CTX_DEFAULT_FULL
 from ...config import paths
 from ...context.resource_context import augment_query_with_resources
-from ...query_engine.backends.factory import get_backend
+from ...llm.factory import get_backend
 from ...query_engine.context_budget import context_budget_for
 from ....servers._shared.state_paths import TODO_FILENAME, session_file
 

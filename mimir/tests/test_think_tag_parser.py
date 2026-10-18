@@ -2,7 +2,7 @@
 
 import unittest
 
-from mimir.client.query_engine.backends.tag_parser import ThinkTagParser
+from mimir.client.llm.tag_parser import ThinkTagParser
 
 
 class _Recorder:

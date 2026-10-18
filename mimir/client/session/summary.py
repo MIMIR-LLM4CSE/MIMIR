@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from ..query_engine.backends.factory import get_backend
+from ..llm.factory import get_backend
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 from .....servers._shared.embed import verify_ssl
-from ....query_engine.backends.factory import get_backend
+from ....llm.factory import get_backend
 from ..runtime import (
     ORIGINAL_STDOUT,
 )

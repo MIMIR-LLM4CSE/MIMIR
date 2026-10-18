@@ -9,13 +9,13 @@ import sys
 from abc import ABC
 from typing import Any, Callable
 
-from ...config.limits import CHARS_PER_TOKEN
-from ...protocol.messages import (
+from ..config.limits import CHARS_PER_TOKEN
+from ..protocol.messages import (
     merge_consecutive_user_messages,
     message_wire_form,
     reconcile_tool_pairs,
 )
-from .. import token_calibration
+from . import token_calibration
 from .tag_parser import ThinkTagParser
 
 logger = logging.getLogger(__name__)

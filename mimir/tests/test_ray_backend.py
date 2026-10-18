@@ -8,8 +8,8 @@ and its behaviour when the router turns out not to serve vLLM's extra routes.
 import os
 import unittest
 
-from mimir.client.query_engine.backends import openai_compat
-from mimir.client.query_engine.backends.ray_backend import RAY_ENDPOINT, RayBackend
+from mimir.client.llm import openai_compat
+from mimir.client.llm.ray_backend import RAY_ENDPOINT, RayBackend
 
 
 class _EnvGuard(unittest.TestCase):
@@ -62,7 +62,7 @@ class RayContextWindowTests(_EnvGuard):
     """Priority: the router's reported window, then the override, then unknown."""
 
     def _patched(self, value):
-        import mimir.client.query_engine.backends.openai_compat as rb
+        import mimir.client.llm.openai_compat as rb
         original = rb.served_model_len
         rb.served_model_len = lambda *a, **k: value
         return rb, original
@@ -109,7 +109,7 @@ class RayContextWindowTests(_EnvGuard):
             seen.append((model, config))
             return 4096
 
-        import mimir.client.query_engine.backends.openai_compat as rb
+        import mimir.client.llm.openai_compat as rb
         original = rb.served_model_len
         rb.served_model_len = _fake
         try:
@@ -164,15 +164,13 @@ class ServedModelsTests(_EnvGuard):
         self.assertEqual(seen, [("http://head:8000/v1", "EMPTY")])
 
     def test_backends_without_a_listing_answer_empty(self) -> None:
-        from mimir.client.query_engine.backends.ollama_backend import OllamaBackend
+        from mimir.client.llm.ollama_backend import OllamaBackend
         self.assertEqual(OllamaBackend().served_models(), [])
 
 
 class FactoryTests(_EnvGuard):
     def test_llm_backend_ray_resolves_to_the_ray_backend(self) -> None:
-        from mimir.client.query_engine.backends.factory import (
-            clear_backend_cache, get_backend,
-        )
+        from mimir.client.llm.factory import clear_backend_cache, get_backend
         previous = os.environ.get("LLM_BACKEND")
         os.environ["LLM_BACKEND"] = "ray"
         clear_backend_cache()

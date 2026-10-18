@@ -9,8 +9,8 @@ import logging
 from typing import Any, Callable
 
 from ....agent_core import build_base_system_content
-from ....query_engine import token_calibration
-from ....query_engine.backends.factory import get_backend
+from ....llm import token_calibration
+from ....llm.factory import get_backend
 
 logger = logging.getLogger(__name__)
 

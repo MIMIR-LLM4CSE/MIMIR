@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..config.models import VALID_MODES, enforcement_level
+from ..llm.factory import switch_backend
 from ..config.preferences import load_temperature, save_subagent_level, save_temperature
 from ..config.settings import (
     APPROVAL_MODES,
@@ -99,9 +100,6 @@ def _store_subagent_level(agent: Any, level: str) -> None:
 
 
 def _store_backend(agent: Any, name: str) -> None:
-    # At call time: the query engine reads the mode through this module, so importing
-    # its backend factory here at load would be a cycle.
-    from ..query_engine.backends.factory import switch_backend
     switch_backend(name)
     agent.backend = name
 

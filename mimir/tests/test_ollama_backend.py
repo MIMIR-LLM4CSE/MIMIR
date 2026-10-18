@@ -9,8 +9,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import mimir.client.query_engine.backends.ollama_backend as ob
-from mimir.client.query_engine.backends.ollama_backend import OllamaBackend
+import mimir.client.llm.ollama_backend as ob
+from mimir.client.llm.ollama_backend import OllamaBackend
 
 
 def _chunk(content="", done_reason=None):

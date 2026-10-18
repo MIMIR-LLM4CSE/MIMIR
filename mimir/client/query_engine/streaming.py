@@ -11,9 +11,9 @@ import time
 import uuid
 from typing import Any
 
-from .backends.base import PromptTooLongError
+from ..llm.base import PromptTooLongError
 from ..protocol.tool_call import as_dict
-from .backends.factory import get_backend
+from ..llm.factory import get_backend
 from ..event_sink import emit
 from ..config.limits import (
     LLM_RETRY_ATTEMPTS,

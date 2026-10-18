@@ -4,7 +4,7 @@ user's ``vllm serve``, not MIMIR's concern.
 import unittest
 
 from mimir.client.config import models
-from mimir.client.query_engine.backends import openai_compat
+from mimir.client.llm import openai_compat
 
 
 class ThinkingMechanismTest(unittest.TestCase):

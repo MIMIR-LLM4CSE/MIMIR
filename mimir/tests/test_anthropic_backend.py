@@ -6,9 +6,9 @@ import logging
 import types
 from unittest.mock import patch
 
-import mimir.client.query_engine.backends.anthropic_backend as anthropic_backend
+import mimir.client.llm.anthropic_backend as anthropic_backend
 
-from mimir.client.query_engine.backends.anthropic_backend import (
+from mimir.client.llm.anthropic_backend import (
     AnthropicBackend,
     _log_cache_usage,
     _mark_last_block_cacheable,
@@ -140,7 +140,7 @@ class CacheUsageLogTests(unittest.TestCase):
         msg = self._msg(cache_read_input_tokens=90, cache_creation_input_tokens=0,
                         input_tokens=10, output_tokens=5)
         with self.assertLogs(
-            "mimir.client.query_engine.backends.anthropic_backend", level="INFO"
+            "mimir.client.llm.anthropic_backend", level="INFO"
         ) as cm:
             _log_cache_usage(msg)
         line = "\n".join(cm.output)
@@ -150,7 +150,7 @@ class CacheUsageLogTests(unittest.TestCase):
     def test_no_log_when_prompt_total_zero(self) -> None:
         # An empty usage block must not emit a divide-by-zero or a bogus line.
         logger = logging.getLogger(
-            "mimir.client.query_engine.backends.anthropic_backend")
+            "mimir.client.llm.anthropic_backend")
         with self.assertRaises(AssertionError):
             with self.assertLogs(logger, level="INFO"):
                 _log_cache_usage(self._msg(

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from mimir.client.query_engine.backends.base import LLMBackend
+from mimir.client.llm.base import LLMBackend
 
 
 class ScriptedBackend(LLMBackend):

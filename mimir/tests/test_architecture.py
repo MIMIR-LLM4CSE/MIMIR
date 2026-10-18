@@ -20,10 +20,10 @@ CLIENT = PACKAGE / "client"
 SERVERS = PACKAGE / "servers"
 
 # The client's units, bottom to top. A unit imports, at load time, only units of a
-# lower rank; a function may import upwards lazily (the back-edges ARCHITECTURE.md lists).
+# lower rank; only type annotations (``TYPE_CHECKING``) look upwards.
 RANKS = {
     "config": 0, "protocol": 0, "event_sink": 0, "human_pause": 0,
-    "context": 1,
+    "context": 1, "llm": 1,
     "core": 2,
     "guardrails": 3,
     "tool_execution": 4,

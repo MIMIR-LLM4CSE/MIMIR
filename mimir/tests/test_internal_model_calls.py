@@ -13,8 +13,8 @@ from typing import Any, Callable
 
 from mimir.client import agent_core
 from mimir.client.agent_core import MimirAgent
-from mimir.client.query_engine.backends.base import LLMBackend
-from mimir.client.query_engine.backends.tag_parser import ThinkTagParser
+from mimir.client.llm.base import LLMBackend
+from mimir.client.llm.tag_parser import ThinkTagParser
 
 from mimir.tests.support.backend import ScriptedBackend
 from mimir.tests.support.agents import fake_agent
@@ -55,7 +55,7 @@ class _BackendPatch:
 
     def __enter__(self) -> LLMBackend:
         from mimir.client import agent_core
-        from mimir.client.query_engine.backends import factory
+        from mimir.client.llm import factory
         # Where it is defined, and where the agent looks it up.
         for module in (factory, agent_core):
             self._originals.append((module, module.get_backend))

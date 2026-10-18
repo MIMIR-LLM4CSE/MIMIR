@@ -1,7 +1,7 @@
 """vLLM backend — the OpenAI-compatible API a vLLM server serves."""
 from __future__ import annotations
 
-from ...config.models import VLLM_API_KEY, VLLM_BASE_URL
+from ..config.models import VLLM_API_KEY, VLLM_BASE_URL
 from .openai_compat import Endpoint, OpenAICompatBackend
 
 VLLM_ENDPOINT = Endpoint(

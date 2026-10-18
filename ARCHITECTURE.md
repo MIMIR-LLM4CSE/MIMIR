@@ -8,8 +8,7 @@ fails the suite.
 
 ## The client's layers
 
-Read bottom to top: a unit imports, at load time, only units below it. Solid edges are
-import-time; the **dotted edge is lazy** (imported inside a function). Every unit also
+Read bottom to top: a unit imports, at load time, only units below it. Every unit also
 imports the foundations (`config`, `protocol`, `event_sink`, `human_pause`) and
 `mimir/servers/_shared`; those edges are omitted.
 
@@ -26,7 +25,7 @@ graph TD
         agent["agent_core.py<br/><small>MimirAgent</small>"]
     end
     subgraph ENG["⚙️ Engine"]
-        qe["query_engine/<br/><small>turn · loops · dispatch/ · jobs/<br/>history · streaming · backends/</small>"]
+        qe["query_engine/<br/><small>turn · loops · dispatch/ · jobs/<br/>history · streaming</small>"]
     end
     subgraph SVC["🧩 Services"]
         prompt["prompt/<br/><small>system_prompt</small>"]
@@ -44,6 +43,7 @@ graph TD
     end
     subgraph FND["🧱 Foundations"]
         ctx["context/<br/><small>execution_context · capabilities · carry<br/>paths · tool_display · signals</small>"]
+        llm["llm/<br/><small>backends · token calibration</small>"]
         cfg["config/ · protocol/<br/><small>paths · limits · settings · toggles<br/>models · events · messages</small>"]
     end
 
@@ -57,6 +57,7 @@ graph TD
     agent --> ext
     prompt --> ext
     qe --> te
+    qe --> llm
     qe --> guard
     ext --> te
     ext --> guard
@@ -64,8 +65,9 @@ graph TD
     guard --> core
     integ --> core
     core --> ctx
+    core --> llm
     ctx --> cfg
-    core -.->|lazy| qe
+    llm --> cfg
 
     classDef fnd fill:#e6faf1,stroke:#1f9d6a,color:#0f3d29;
     classDef con fill:#eef7ee,stroke:#4a9d5b,color:#1e3a24;
@@ -85,26 +87,24 @@ graph TD
     class te exe;
     class guard gov;
     class core con;
-    class ctx,cfg fnd;
+    class ctx,llm,cfg fnd;
 ```
 
 | Rank | Units | What they are |
 |---|---|---|
 | 0 | `config`, `protocol`, `event_sink`, `human_pause` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam |
-| 1 | `context` | the `ExecutionContext` blackboard, the capability vocabulary, the carry context, the path rules, how a call reads on screen |
+| 1 | `context`, `llm` | the `ExecutionContext` blackboard, the capability vocabulary, the carry context, the path rules, how a call reads on screen; the model backends and their token accounting |
 | 2 | `core` | the contracts the layers above agree on: `AgentPort`, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
 | 3 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the repair `ladder` |
 | 4 | `tool_execution` | a call run through the guardrails: policy before, observations after |
 | 5 | `extensions`, `integration` | the user's `.mimir/` extensions; connecting MCP servers |
 | 6 | `prompt` | the system prompt |
-| 7 | `query_engine` | a turn: the loops, the dispatcher, detached jobs, the context budget, the backends |
+| 7 | `query_engine` | a turn: the loops, the dispatcher, detached jobs, the context budget |
 | 8 | `agent_core` | `MimirAgent`, which every front-end, the runner and the sub-agent server instantiate; it satisfies `AgentPort` |
 | 9 | `session` | a conversation, independent of the front-end showing it, and what it keeps on disk |
 | 10 | `ui` | the front-ends: the CLI drives an agent in-process; the WebSocket server runs one worker per conversation in a pool |
 
-The one lazy back-edge: `core.settings` reaches the backend factory in `query_engine`
-when the backend is switched, because the engine reads the mode through
-`core.settings` at load. The WebSocket entry (`ui/ws/server/main.py`) imports
+No unit imports upwards. The WebSocket entry (`ui/ws/server/main.py`) imports
 `serving` only after applying `--cwd`, because `config.paths` resolves the workspace
 root as it is imported.
 

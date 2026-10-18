@@ -19,7 +19,7 @@ from ...config import (
     thinking_depth_from_label,
 )
 from ...config.preferences import save_subagent_level
-from ...query_engine.backends.factory import switch_backend
+from ...llm.factory import switch_backend
 from .base import Command, CommandHost, CommandResult, Item, apply_setting_or_error
 
 APPROVAL_LABELS: dict[str, str] = {

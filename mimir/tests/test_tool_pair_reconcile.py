@@ -190,16 +190,14 @@ class BackendPreparationTests(unittest.TestCase):
         ]
 
     def test_vllm_preparation_pairs_every_call(self) -> None:
-        from mimir.client.query_engine.backends.openai_compat import (
-            _prepare_messages_for_openai,
-        )
+        from mimir.client.llm.openai_compat import _prepare_messages_for_openai
         prepared = _prepare_messages_for_openai(self._broken())
         self.assertTrue(_pairs_are_valid(prepared))
         tool_ids = [m["tool_call_id"] for m in prepared if m["role"] == "tool"]
         self.assertEqual(tool_ids, ["c1", "c2"])
 
     def test_anthropic_preparation_pairs_every_tool_use(self) -> None:
-        from mimir.client.query_engine.backends.anthropic_backend import AnthropicBackend
+        from mimir.client.llm.anthropic_backend import AnthropicBackend
         # The repair is LLMBackend.chat's; what is checked here is that the
         # conversion keeps a repaired history paired.
         _, conv = AnthropicBackend()._prepare(reconcile_tool_pairs(self._broken()))
@@ -217,7 +215,7 @@ class BackendPreparationTests(unittest.TestCase):
         self.assertEqual(sorted(results), ["c1", "c2"])
 
     def test_anthropic_drops_a_result_with_no_tool_use(self) -> None:
-        from mimir.client.query_engine.backends.anthropic_backend import AnthropicBackend
+        from mimir.client.llm.anthropic_backend import AnthropicBackend
         _, conv = AnthropicBackend()._prepare(reconcile_tool_pairs([
             {"role": "user", "content": "q"},
             _tool("gone", "orphan"),

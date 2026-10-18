@@ -309,7 +309,7 @@ class SharedRoleNormalizationTests(unittest.TestCase):
 
     def test_every_backend_gets_it_from_the_shared_chat(self) -> None:
         # Once applied per backend, and forgotten by two of the three.
-        from mimir.client.query_engine.backends.base import LLMBackend
+        from mimir.client.llm.base import LLMBackend
 
         class _Recording(LLMBackend):
             def _complete(self, model, messages, tools, thinking, streaming, options, turn):

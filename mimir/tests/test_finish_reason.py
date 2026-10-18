@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from mimir.client.query_engine.backends.base import normalize_finish_reason
+from mimir.client.llm.base import normalize_finish_reason
 from mimir.client.query_engine.streaming import process_response, note_truncated_turn
 
 

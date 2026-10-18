@@ -4,7 +4,7 @@ import asyncio
 import threading
 import unittest
 
-from mimir.client.query_engine.backends.base import ChatTurn
+from mimir.client.llm.base import ChatTurn
 
 
 class _Events:
@@ -56,9 +56,9 @@ class ReadinessTests(unittest.TestCase):
         import os
         from unittest import mock
 
-        from mimir.client.query_engine.backends.anthropic_backend import AnthropicBackend
-        from mimir.client.query_engine.backends.ray_backend import RayBackend
-        from mimir.client.query_engine.backends.vllm_backend import VllmBackend
+        from mimir.client.llm.anthropic_backend import AnthropicBackend
+        from mimir.client.llm.ray_backend import RayBackend
+        from mimir.client.llm.vllm_backend import VllmBackend
 
         self.assertEqual(AnthropicBackend().readiness_urls(), [])
         with mock.patch.dict(os.environ, {"VLLM_BASE_URL": "http://n:8000",
