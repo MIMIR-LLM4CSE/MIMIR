@@ -313,42 +313,23 @@ class ShellPathApprovalTests(_TmpStateDir):
         self.assertIsNotNone(out)
         self.assertIn("outside the workspace", out)
 
-    def test_flags_are_not_mistaken_for_paths(self) -> None:
-        # `-I/usr/include`, `-lm`, `-m pytest` must not raise a prompt, or every
-        # ordinary compile would stop to ask about its include dirs.
+    def test_commands_that_raise_no_prompt(self) -> None:
+        # Flags (`-I/usr/include`), in-workspace paths and cds, search patterns, an
+        # expansion in path position (the guard refuses it) and `$(...)` (the server
+        # refuses it): none names a path the user could usefully grant.
         agent = self._agent(script=(False, False))
         for cmd in ("gcc -I/usr/include a.c -o a.out -lm", "python -m pytest",
-                    "ls *.py | head", "make -j4"):
-            out = gates.check_out_of_workspace_access(
-                agent, "run_shell", {"command": cmd}, {})
-            self.assertIsNone(out, cmd)
-        self.assertEqual(agent.prompts, [])
-
-    def test_in_workspace_paths_never_prompt(self) -> None:
-        agent = self._agent()
-        for cmd in ("cat notes.txt", "python mimir/x.py", "cp a.py b.py"):
-            out = gates.check_out_of_workspace_access(
-                agent, "run_shell", {"command": cmd}, {})
-            self.assertIsNone(out, cmd)
-        self.assertEqual(agent.prompts, [])
-
-    def test_cd_inside_workspace_never_prompts(self) -> None:
-        agent = self._agent()
-        for cmd in ("cd sub && ls", "cd sub/deeper && cat f.py", "ls"):
-            out = gates.check_out_of_workspace_access(
-                agent, "run_shell", {"command": cmd}, {})
-            self.assertIsNone(out, cmd)
-        self.assertEqual(agent.prompts, [])
-
-    def test_search_pattern_raises_no_prompt(self) -> None:
-        # `grep /etc/passwd notes.txt` opens nothing outside the workspace, so
-        # stopping to ask the user about /etc/passwd would be noise.
-        agent = self._agent(script=(False, False))
-        for cmd in ("grep /etc/passwd notes.txt", 'sed "s|/etc/passwd|x|" f.txt'):
-            out = gates.check_out_of_workspace_access(
-                agent, "run_shell", {"command": cmd}, {})
-            self.assertIsNone(out, cmd)
-        self.assertEqual(agent.prompts, [])
+                    "ls *.py | head", "make -j4",
+                    "cat notes.txt", "python mimir/x.py", "cp a.py b.py",
+                    "cd sub && ls", "cd sub/deeper && cat f.py", "ls",
+                    "grep /etc/passwd notes.txt", 'sed "s|/etc/passwd|x|" f.txt',
+                    "cat $CUDA_HOME/version.txt",
+                    "cat $(which python)", "cat `echo /etc/passwd`"):
+            with self.subTest(cmd):
+                out = gates.check_out_of_workspace_access(
+                    agent, "run_shell", {"command": cmd}, {})
+                self.assertIsNone(out)
+                self.assertEqual(agent.prompts, [])
 
     def test_path_beside_a_flag_expansion_still_reaches_the_user(self) -> None:
         # A bare $VAR makes a command opaque to *classification*. Letting that stop target
@@ -358,25 +339,6 @@ class ShellPathApprovalTests(_TmpStateDir):
         gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "gcc -I$CUDA_HOME/include /tmp/x.c -o a.out"}, {})
         self.assertIn(os.path.realpath("/tmp/x.c"), agent.prompts)
-
-    def test_expanded_path_operand_raises_no_prompt(self) -> None:
-        # In path position an expansion is refused outright by the guard (it cannot
-        # be checked), so there is nothing to ask about.
-        agent = self._agent(script=(False, False))
-        out = gates.check_out_of_workspace_access(
-            agent, "run_shell", {"command": "cat $CUDA_HOME/version.txt"}, {})
-        self.assertIsNone(out)
-        self.assertEqual(agent.prompts, [])
-
-    def test_command_substitution_stays_opaque(self) -> None:
-        # `$(...)` runs code: no path can be attributed to it, and the server
-        # rejects the command outright.
-        agent = self._agent(script=(False, False))
-        for cmd in ("cat $(which python)", "cat `echo /etc/passwd`"):
-            out = gates.check_out_of_workspace_access(
-                agent, "run_shell", {"command": cmd}, {})
-            self.assertIsNone(out, cmd)
-        self.assertEqual(agent.prompts, [])
 
     def test_quoted_metacharacter_does_not_hide_the_path(self) -> None:
         # A metacharacter inside quotes is text to bash, so the command parses and the

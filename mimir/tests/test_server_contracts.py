@@ -703,38 +703,19 @@ class MathServerTests(unittest.TestCase):
         self.assertEqual(payload["result"], 7.0)
         self.assertEqual(payload["latex"], "3 + 4 = 7")
 
-    def test_evaluate_subtraction(self) -> None:
-        self.assertEqual(server_math.evaluate("10 - 3")["result"], 7.0)
-
-    def test_evaluate_multiplication(self) -> None:
-        self.assertEqual(server_math.evaluate("6 * 7")["result"], 42.0)
-
-    def test_evaluate_division(self) -> None:
-        self.assertAlmostEqual(server_math.evaluate("10 / 4")["result"], 2.5)
+    def test_evaluate_computes_each_operation(self) -> None:
+        for expr, result in (("10 - 3", 7.0), ("6 * 7", 42.0), ("10 / 4", 2.5),
+                             ("10 % 3", 1.0), ("2 ** 10", 1024.0), ("sqrt(144)", 12.0),
+                             ("(3 + 4) * 2", 14.0), ("sqrt(64)", 8.0)):
+            with self.subTest(expr):
+                payload = server_math.evaluate(expr)
+                self.assertEqual(payload["status"], "ok")
+                self.assertAlmostEqual(payload["result"], result)
 
     def test_evaluate_division_by_zero_is_structured_error(self) -> None:
         payload = server_math.evaluate("5 / 0")
         self.assertEqual(payload["status"], "error")
         self.assertIn("zero", payload["error"].lower())
-
-    def test_evaluate_modulo(self) -> None:
-        self.assertEqual(server_math.evaluate("10 % 3")["result"], 1.0)
-
-    def test_evaluate_power(self) -> None:
-        self.assertEqual(server_math.evaluate("2 ** 10")["result"], 1024.0)
-
-    def test_evaluate_sqrt(self) -> None:
-        self.assertEqual(server_math.evaluate("sqrt(144)")["result"], 12.0)
-
-    def test_evaluate_expression_returns_result(self) -> None:
-        payload = server_math.evaluate("(3 + 4) * 2")
-        self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["result"], 14.0)
-
-    def test_evaluate_with_math_function(self) -> None:
-        payload = server_math.evaluate("sqrt(64)")
-        self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["result"], 8.0)
 
     def test_evaluate_invalid_expression_is_structured_error(self) -> None:
         payload = server_math.evaluate("__import__('os').system('id')")
@@ -748,27 +729,15 @@ class MathServerTests(unittest.TestCase):
 class StringsServerTests(unittest.TestCase):
     """All string ops are dispatched through the single `string_op(op, ...)` tool."""
 
-    def test_reverse_returns_reversed_string(self) -> None:
-        payload = server_strings.string_op("reverse", "hello")
-        self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["result"], "olleh")
-
-    def test_uppercase_converts_text(self) -> None:
-        payload = server_strings.string_op("uppercase", "hello")
-        self.assertEqual(payload["status"], "ok")
-        self.assertEqual(payload["result"], "HELLO")
-
-    def test_lowercase_converts_text(self) -> None:
-        payload = server_strings.string_op("lowercase", "HELLO")
-        self.assertEqual(payload["result"], "hello")
-
-    def test_length_returns_character_count(self) -> None:
-        payload = server_strings.string_op("length", "hello")
-        self.assertEqual(payload["result"], 5)
-
-    def test_strip_removes_whitespace(self) -> None:
-        payload = server_strings.string_op("strip", "  hello  ")
-        self.assertEqual(payload["result"], "hello")
+    def test_single_text_ops(self) -> None:
+        for op, text, result in (("reverse", "hello", "olleh"), ("uppercase", "hello", "HELLO"),
+                                 ("lowercase", "HELLO", "hello"), ("length", "hello", 5),
+                                 ("strip", "  hello  ", "hello"),
+                                 ("title_case", "hello world", "Hello World")):
+            with self.subTest(op):
+                payload = server_strings.string_op(op, text)
+                self.assertEqual(payload["status"], "ok")
+                self.assertEqual(payload["result"], result)
 
     def test_replace_substitutes_substring(self) -> None:
         payload = server_strings.string_op("replace", "foo bar foo", old="foo", new="baz")
@@ -803,21 +772,12 @@ class StringsServerTests(unittest.TestCase):
         payload = server_strings.string_op("count_occurrences", "banana", substring="an")
         self.assertEqual(payload["result"], 2)
 
-    def test_starts_with_true(self) -> None:
-        payload = server_strings.string_op("starts_with", "hello", prefix="hel")
-        self.assertTrue(payload["result"])
-
-    def test_starts_with_false(self) -> None:
-        payload = server_strings.string_op("starts_with", "hello", prefix="world")
-        self.assertFalse(payload["result"])
-
-    def test_ends_with_true(self) -> None:
-        payload = server_strings.string_op("ends_with", "hello", suffix="llo")
-        self.assertTrue(payload["result"])
-
-    def test_title_case_converts_text(self) -> None:
-        payload = server_strings.string_op("title_case", "hello world")
-        self.assertEqual(payload["result"], "Hello World")
+    def test_prefix_and_suffix_checks(self) -> None:
+        for op, kw, result in (("starts_with", {"prefix": "hel"}, True),
+                               ("starts_with", {"prefix": "world"}, False),
+                               ("ends_with", {"suffix": "llo"}, True)):
+            with self.subTest(op=op, **kw):
+                self.assertIs(server_strings.string_op(op, "hello", **kw)["result"], result)
 
     def test_unknown_op_is_structured_error(self) -> None:
         payload = server_strings.string_op("nope", "hello")
@@ -978,12 +938,38 @@ class BashServerTests(unittest.TestCase):
             self.assertEqual(
                 bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
 
-    def test_bash_run_chaining_is_validated_per_command(self) -> None:
-        # Chaining is allowed, but each command is validated on its own, so a
-        # denied command anywhere in the chain rejects the call.
-        payload = server_bash.bash_run("ls && sh script.sh")
-        self.assertEqual(payload["status"], "error")
-        self.assertIn("not available here", payload["error"])
+    def test_bash_run_refuses(self) -> None:
+        # Each command of a chain is validated on its own; '&' alone, substitution and
+        # heredocs are refused; a path argv0 outside the workspace needs approval; a
+        # grep that fails for real (exit 2), or a chain whose last command fails, errors.
+        for cmd, needle in (("ls && sh script.sh", "not available here"),
+                            ("pwd && eval ls", "not available here"),
+                            ("/bin/ls", "not approved"),
+                            ("ls & pwd", "not allowed"),
+                            ("rg root /etc/passwd", "outside workspace"),
+                            ("ls ../../..", ""),
+                            ("ls $(echo x)", ""), ("cat `whoami`", ""), ("pwd `whoami`", ""),
+                            ("cat > f.txt <<EOF\nhello\nEOF", ""),
+                            ("module load ../../etc/passwd", ""),
+                            ("grep foo no_such_file_here.txt", ""),
+                            ("which zzz-nope-zzz || cat no_such_file.txt", "")):
+            with self.subTest(cmd):
+                payload = server_bash.bash_run(cmd)
+                self.assertEqual(payload["status"], "error")
+                self.assertIn(needle, payload["error"])
+
+    def test_bash_run_runs(self) -> None:
+        # Globs, a pipe, '&&' chaining, cd then a relative path, python, and a quoted ';'.
+        for cmd, needles in ((f"cd {self.FIXTURE_DIR} && ls *.py | head", ("probe.py",)),
+                             (f"cd {self.FIXTURE_DIR}/inner && ls deeper.py", ("deeper.py",)),
+                             ('python3 -c "print(1)"', ("1",)),
+                             ('python3 -c "print(1)" && python3 -c "print(2)"', ("1", "2")),
+                             ('python3 -c "print(1);print(2)"', ("1", "2"))):
+            with self.subTest(cmd):
+                payload = server_bash.bash_run(cmd)
+                self.assertEqual(payload["status"], "ok", payload)
+                for needle in needles:
+                    self.assertIn(needle, payload["stdout"])
 
     def test_bash_multiline_command_is_validated_per_line(self) -> None:
         # An unquoted newline chains like ';': each line must be validated on its
@@ -1223,38 +1209,6 @@ class BashServerTests(unittest.TestCase):
                 os.environ[var] = prior
         _shutil.rmtree(self._state_dir, ignore_errors=True)
 
-    def test_bash_run_rejects_arbitrary_system_executable_by_path(self) -> None:
-        # A path-like argv0 that is NOT inside the workspace stays rejected. It is
-        # refused as an unapproved path rather than an unknown command — the user can
-        # grant that specific root, which is the point — but nothing runs without it.
-        payload = server_bash.bash_run("/bin/ls")
-        self.assertEqual(payload["status"], "error")
-        self.assertIn("not approved", payload["error"])
-
-    def test_bash_run_rejects_backgrounding(self) -> None:
-        # A single '&' (background) is still blocked, unlike '&&' chaining.
-        payload = server_bash.bash_run("ls & pwd")
-        self.assertEqual(payload["status"], "error")
-        self.assertIn("not allowed", payload["error"])
-
-    def test_bash_run_rejects_command_substitution(self) -> None:
-        for cmd in ("ls $(echo x)", "cat `whoami`"):
-            payload = server_bash.bash_run(cmd)
-            self.assertEqual(payload["status"], "error", cmd)
-
-    def test_bash_run_allows_glob_and_simple_pipe(self) -> None:
-        # Globbing and a single pipe must still work.
-        payload = server_bash.bash_run(
-            f"cd {self.FIXTURE_DIR} && ls *.py | head")
-        self.assertEqual(payload["status"], "ok", payload)
-        self.assertIn("probe.py", payload["stdout"])
-
-    def test_bash_run_confines_path_sensitive_command(self) -> None:
-        # rg reads files, so an out-of-workspace path must be rejected.
-        payload = server_bash.bash_run("rg root /etc/passwd")
-        self.assertEqual(payload["status"], "error")
-        self.assertIn("outside workspace", payload["error"])
-
     def test_bash_run_rejects_a_denied_command(self) -> None:
         payload = server_bash.bash_run("shred -u notes.txt")
         self.assertEqual(payload["status"], "error")
@@ -1305,12 +1259,6 @@ class BashServerTests(unittest.TestCase):
             if os.path.exists(log):
                 os.remove(log)
 
-    def test_bash_run_rejects_heredoc(self) -> None:
-        # A heredoc body is not an argv the validator can segment; its lines would
-        # each be read as a command.
-        payload = server_bash.bash_run("cat > f.txt <<EOF\nhello\nEOF")
-        self.assertEqual(payload["status"], "error")
-
     def test_bash_run_allows_fd_redirection(self) -> None:
         # fd redirection (silencing/merging streams) is now permitted; the '2'
         # source fd must not leak into argv and bash must accept the form.
@@ -1327,10 +1275,6 @@ class BashServerTests(unittest.TestCase):
                     "module load gcc/11.3.0 && gcc --version"):
             self.assertIsNone(
                 bash_validation.validate_module_args(cmd.split("&&")[0].split()), cmd)
-
-    def test_bash_run_rejects_unsafe_module_argument(self) -> None:
-        payload = server_bash.bash_run("module load ../../etc/passwd")
-        self.assertEqual(payload["status"], "error")
 
     def test_every_denied_command_names_the_route_that_replaces_it(self) -> None:
         # A refusal that names no route is one the agent retries variants of. The
@@ -1381,17 +1325,6 @@ class BashServerTests(unittest.TestCase):
             self.assertEqual(payload["status"], "ok", cmd)
             self.assertEqual(payload["returncode"], 1, cmd)
             self.assertEqual(payload["matches"], 0, cmd)
-
-    def test_real_grep_failure_stays_an_error(self) -> None:
-        # Exit 2 (unreadable file / bad usage) is a genuine failure, unlike exit 1.
-        payload = server_bash.bash_run("grep foo no_such_file_here.txt")
-        self.assertEqual(payload["status"], "error")
-
-    def test_no_match_rule_only_applies_to_the_last_segment(self) -> None:
-        # The chain's exit status comes from its last command; a non-matching
-        # grep upstream must not relabel a downstream failure as "no match".
-        payload = server_bash.bash_run("which zzz-nope-zzz || cat no_such_file.txt")
-        self.assertEqual(payload["status"], "error")
 
     def test_file_management_is_allowed_and_confined(self) -> None:
         # mv/cp/mkdir are available (approval-gated), but both ends of a move or
@@ -1450,11 +1383,6 @@ class BashServerTests(unittest.TestCase):
                     "cd mimir/servers && cat workspace/server_bash.py",
                     "cd -"):
             self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
-
-    def test_cd_then_relative_path_still_runs(self) -> None:
-        payload = server_bash.bash_run(f"cd {self.FIXTURE_DIR}/inner && ls deeper.py")
-        self.assertEqual(payload["status"], "ok", payload)
-        self.assertIn("deeper.py", payload["stdout"])
 
     def test_deletion_runs_but_only_inside_the_workspace(self) -> None:
         # 'rm' is destructive and reviewable, which is what the approval prompt is
@@ -1944,10 +1872,6 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(env["shell_escape"], "f")
         self.assertEqual(env["openout_any"], "p")
 
-    def test_bash_run_rejects_outside_workspace(self) -> None:
-        payload = server_bash.bash_run("ls ../../..")
-        self.assertEqual(payload["status"], "error")
-
     @unittest.skipUnless(shutil.which("git"), "git not available on this host")
     def test_bash_run_runs_git(self) -> None:
         # git ran through a dedicated server only because bash refused it; that
@@ -1968,20 +1892,6 @@ class BashServerTests(unittest.TestCase):
         self.assertNotIn("refused", payload)
         self.assertIn(payload.get("returncode"), (0, 128), payload)
 
-    def test_bash_run_allows_python_as_code_fallback(self) -> None:
-        # python is now an allowed build/exec tool so the code server can fall
-        # back to running commands directly with custom arguments.
-        payload = server_bash.bash_run('python3 -c "print(1)"')
-        self.assertEqual(payload["status"], "ok")
-        self.assertIn("1", payload["stdout"])
-
-    def test_bash_run_allows_command_chaining(self) -> None:
-        # Multiple commands joined by '&&' run in one call; each is validated.
-        payload = server_bash.bash_run('python3 -c "print(1)" && python3 -c "print(2)"')
-        self.assertEqual(payload["status"], "ok")
-        self.assertIn("1", payload["stdout"])
-        self.assertIn("2", payload["stdout"])
-
     def test_the_timeout_is_clamped_and_the_clamp_is_reported(self) -> None:
         # The ceiling is a real limit the model must be able to see it hit: a silently
         # shortened run reads as a hang. Below it, the call's own value is honoured.
@@ -1993,23 +1903,6 @@ class BashServerTests(unittest.TestCase):
         # And the default is sized for a build or a suite, not for a `ls`.
         self.assertGreaterEqual(server_bash._DEFAULT_TIMEOUT, 30)
         self.assertLessEqual(server_bash._DEFAULT_TIMEOUT, server_bash._MAX_TIMEOUT)
-
-    def test_bash_run_chaining_validates_each_command(self) -> None:
-        # A denied command anywhere in the chain rejects the call.
-        payload = server_bash.bash_run("pwd && eval ls")
-        self.assertEqual(payload["status"], "error")
-        self.assertIn("not available here", payload["error"])
-
-    def test_bash_run_quoted_semicolon_is_literal_not_chaining(self) -> None:
-        # A ';' inside a quoted argument is literal text, so python runs normally.
-        payload = server_bash.bash_run('python3 -c "print(1);print(2)"')
-        self.assertEqual(payload["status"], "ok")
-        self.assertIn("1", payload["stdout"])
-        self.assertIn("2", payload["stdout"])
-
-    def test_bash_run_still_blocks_command_substitution(self) -> None:
-        payload = server_bash.bash_run("pwd `whoami`")
-        self.assertEqual(payload["status"], "error")
 
 
 class ReportVerdictTests(unittest.TestCase):

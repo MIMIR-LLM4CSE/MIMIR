@@ -393,46 +393,16 @@ class ClientHelperTests(unittest.TestCase):
         normalized = normalize_tool_path_argument(f"{cwd_base}/mimir")
         self.assertEqual(normalized, "mimir")
 
-    def test_rewrite_read_file_to_read_file_lines_for_code(self) -> None:
+    def test_rewrite_read_file_to_a_read_file_lines_window(self) -> None:
+        # Code and docs get a leading window; other paths the whole file (end_line=0).
         agent = client_module.MimirAgent()
         agent.tool_owner = {"read_file_lines": "search"}
-
-        tool_name, rewritten = agent.rewrite_tool_for_context(
-            "read_file",
-            {"path": "src/module.py"},
-        )
-
-        self.assertEqual(tool_name, "read_file_lines")
-        self.assertEqual(rewritten["start_line"], 1)
-        self.assertEqual(rewritten["end_line"], 120)
-
-    def test_rewrite_read_file_to_read_file_lines_for_docs(self) -> None:
-        agent = client_module.MimirAgent()
-        agent.tool_owner = {"read_file_lines": "search"}
-
-        tool_name, rewritten = agent.rewrite_tool_for_context(
-            "read_file",
-            {"path": "docs/guide.md"},
-        )
-
-        self.assertEqual(tool_name, "read_file_lines")
-        self.assertEqual(rewritten["start_line"], 1)
-        self.assertEqual(rewritten["end_line"], 160)
-
-    def test_rewrite_read_file_reads_whole_file_for_non_targeted_paths(self) -> None:
-        # read_file is retired; non-targeted/binary-like paths rewrite to
-        # read_file_lines with end_line=0 (whole file) rather than a leading window.
-        agent = client_module.MimirAgent()
-        agent.tool_owner = {"read_file_lines": "search"}
-
-        tool_name, rewritten = agent.rewrite_tool_for_context(
-            "read_file",
-            {"path": "models/model.gguf"},
-        )
-
-        self.assertEqual(tool_name, "read_file_lines")
-        self.assertEqual(rewritten["start_line"], 1)
-        self.assertEqual(rewritten["end_line"], 0)
+        for path, end_line in (("src/module.py", 120), ("docs/guide.md", 160),
+                               ("models/model.gguf", 0)):
+            with self.subTest(path):
+                tool_name, rewritten = agent.rewrite_tool_for_context("read_file", {"path": path})
+                self.assertEqual(tool_name, "read_file_lines")
+                self.assertEqual((rewritten["start_line"], rewritten["end_line"]), (1, end_line))
 
     def test_carry_context_populates_existing_paths(self) -> None:
         agent = client_module.MimirAgent()
