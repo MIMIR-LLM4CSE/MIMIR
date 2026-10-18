@@ -1,28 +1,8 @@
-"""
-MCP Spawn-Agent Server
-======================
-Lets the orchestrator delegate a sub-task to a fresh MimirAgent instance that
-runs to completion and returns its answer as a string.  Multiple spawn_agent
-calls emitted in a single model step run **concurrently**: the parent gathers
-them, and this tool is async so a running child never blocks this server's loop
-(a sync tool is awaited inline by FastMCP, which would serialize the fan-out).
+"""MCP Spawn-Agent Server: delegate a sub-task to a fresh MimirAgent and return its answer.
 
-While a child runs, its own tool calls are streamed back to the caller as MCP
-progress notifications, so the UI can show what the child is doing instead of one
-row spinning for the whole cap.
-
-Tools:
-  1. spawn_agent(task, context?, tools?, max_steps?, time_budget_secs?, model?)
-        — spin up a child MimirAgent, run it, return its answer.
-
-The caller names the tools the child gets, out of what it may itself grant (sent with
-the call: its own visible tools, less the ones reserved to it). The child connects
-only the servers those tools live in, keeps only those tools, and runs read-only
-unless one of them writes or executes.
-
-The child runs on the caller's model unless the caller names another one the
-endpoint serves. What each served model is worth is read once, at start-up, from the
-client's model catalog and becomes the description of the ``model`` argument.
+Async, so several calls in one step run concurrently; the child's tool calls stream back
+as progress. It gets only the tools the caller grants (and their servers), on the
+caller's model unless another served one is named.
 """
 
 from __future__ import annotations
@@ -152,13 +132,7 @@ def _human_budget(secs: int) -> str:
 
 
 def _prune_tools(agent, granted: list[str]) -> None:
-    """Keep only *granted* on this child agent, whatever its servers advertised.
-
-    A server is a bundle: connecting the one that owns the granted tool brings its
-    siblings too. Dropping them here is what makes the grant exact — the model never
-    sees them, and the dispatcher answers "unknown tool" to a name that is not in
-    ``tool_owner``, so a hallucinated call fails closed rather than acting.
-    """
+    """Keep only *granted* on this child, whatever its servers advertised."""
     keep = set(granted)
     agent.tools = [t for t in agent.tools if t.get("function", {}).get("name") in keep]
     agent.tool_owner = {k: v for k, v in agent.tool_owner.items() if k in keep}
@@ -166,13 +140,7 @@ def _prune_tools(agent, granted: list[str]) -> None:
 
 
 def _write_record(session: str, record: dict) -> None:
-    """Leave a card for this sub-agent in its own session directory.
-
-    One small ``subagent.json`` per child: what it was asked, what it was given, how it
-    ended. The sub-agents panel reads these — a run that is over still has to be
-    answerable for, and its todo list next door says nothing about who wrote it. Best
-    effort: a child's work must not fail over its own bookkeeping.
-    """
+    """Write this child's ``subagent.json`` card (task, grant, outcome) for the panel; best-effort."""
     if not session:
         return
     try:
@@ -184,14 +152,7 @@ def _write_record(session: str, record: dict) -> None:
 
 
 def _repo_relative(paths: list[str], worktree: dict | None) -> list[str]:
-    """Paths as the *repository* names them, not as this child's copy does.
-
-    A child given a worktree reads and writes under /tmp, and reporting that path back
-    makes evidence the caller cannot quote and a link that dies with the copy. The git
-    side of the same report (``files_changed``) has always been repo-relative; this is
-    the rest of it agreeing. A path outside the copy — the caller's own tree, /tmp — is
-    left exactly as it is.
-    """
+    """*paths* inside the child's worktree, as the repository names them; others unchanged."""
     root = (worktree or {}).get("path") or ""
     if not root:
         return paths
@@ -204,20 +165,9 @@ def _repo_relative(paths: list[str], worktree: dict | None) -> list[str]:
 
 
 def _abandon_child(child: dict) -> None:
-    """Tell a child that overran its budget to stop, and mark its record abandoned.
+    """Ask a child that overran its budget to stop (its ``cancel_flag``) and mark it abandoned.
 
-    The child runs ``asyncio.run()`` on a thread of its own, so there is nothing here
-    to cancel — only the cooperative flag its loop already honours (``turn.cancel_flag``,
-    read by the backend mid-stream and at every step boundary). Setting it aborts the
-    turn in flight; the child's own ``finally`` then writes its record, and the mark
-    left here is how that write tells a run its caller dropped from one it waited for.
-
-    Without this the thread went on spending model calls and tool budget on an answer
-    nobody would read, and landed its card as a clean "finished" minutes after the
-    caller had given up on it — two sub-agents on one task, competing for one endpoint.
-
-    Best effort by design: the flag is read from another thread, so a child already
-    between steps stops one step later, and one mid-teardown may not stop at all.
+    Its thread cannot be cancelled from here; the flag stops it at its next read.
     """
     child["abandoned"] = True
     agent = child.get("agent")
@@ -260,13 +210,7 @@ def _final_state(child: dict | None, result: dict | None) -> str:
 
 
 def _partial_handoff(child: dict) -> dict:
-    """What can be read off a child still running past its budget.
-
-    Its answer is gone — it is mid-turn in another thread, and nothing can ask it to
-    conclude. What it touched is already recorded on the agent, and saying where it
-    got to is the difference between a caller that can carry the axis on and one that
-    must start it again.
-    """
+    """What can be read off a child still running past its budget: where it got to."""
     agent = child.get("agent")
     worktree = child.get("worktree")
     files_read = _repo_relative(agent.carry.files_read() if agent else [], worktree)
@@ -398,14 +342,7 @@ def _meta_value(ctx: Context | None, key: str):
 
 
 def _caller_grantable(ctx: Context | None) -> dict[str, str]:
-    """What the caller may hand to this child: ``{tool: owning server}``.
-
-    The caller computes it — it is the only end that knows which servers the user has
-    switched off, which mode it is in, and which tools are reserved to it. An absent
-    or malformed table is read as "nothing may be granted", which costs an
-    exploration nothing (its toolkit is named below by server, not by the caller) and
-    keeps a caller that cannot vouch for a tool from handing it over.
-    """
+    """``{tool: server}`` the caller may grant, from the call's metadata; missing means nothing."""
     raw = _meta_value(ctx, _GRANTABLE_TOOLS_META)
     if not isinstance(raw, dict):
         return {}
@@ -440,13 +377,7 @@ def _level_allows(level: str, required: str) -> bool:
 
 
 def _sub_session_id() -> str:
-    """A session id of this child's own, under the caller's session.
-
-    ``<parent>/subagents/sub-xxxxxxxx`` — the parentage is the path, so the child's
-    todo and scratchpad are its own, the front end never lists it (it enumerates the
-    ``<id>.json`` files at the root of sessions/, and this writes only directories),
-    and deleting the parent session takes its children with it.
-    """
+    """A session of this child's own: ``<parent>/subagents/sub-xxxxxxxx`` (directories only)."""
     child = f"sub-{uuid.uuid4().hex[:8]}"
     try:
         from .._shared.state_paths import active_session_id
@@ -464,14 +395,9 @@ def _sub_session_id() -> str:
 
 
 # ── Detached sub-agents ───────────────────────────────────────────────────────
-# A sub-agent the caller asked to run in the background outlives its own tool call.
-# The call returns a ``background_job`` descriptor, the client's watcher polls the
-# job tool below, and the caller is resumed with the answer when the child is done —
-# the same machinery a detached shell command uses, so nothing in the client knows
-# this kind of job from that one.
-#
-# The registry is this process's memory of those children. Written from the tool's
-# thread and read from the server loop, so every access takes the lock.
+# A background child outlives its call: the call returns a ``background_job`` descriptor
+# the client's watcher polls, like a detached shell command. This registry is the
+# process's memory of them, shared by the tool's thread and the loop (under the lock).
 
 
 # ── Tool ──────────────────────────────────────────────────────────────────────
@@ -942,13 +868,8 @@ async def _run_sub_agent(
     """
     from mimir.client.agent_core import MimirAgent
 
-    # The tool already settled the model: the caller's, or one it named that the
-    # endpoint serves. Its temperature, window and reasoning profile resolve per model.
-    # Its own session, so its todo list, its scratchpad and its approved paths are its
-    # own. Passed to the constructor rather than set afterwards: the approval manager is
-    # built there and captures the session it resolves approved_paths.json against, so an
-    # agent that is told later keeps an allowlist pointing at the active-session pointer
-    # — the conversation the user is looking at, which is routinely a different one.
+    # Its own session (todo, scratchpad, approved paths), passed to the constructor: the
+    # approval manager captures it there.
     agent = MimirAgent(model=model or _caller_model(None), session_id=session or None)
     # Read by every server it is about to start (server_manager merges this into their
     # environment), never by the servers already running for the caller.
@@ -1035,13 +956,8 @@ async def _run_sub_agent(
             "answer": (result or {}).get("answer") or "",
             "files_written": (result or {}).get("files_written", []),
         })
-        # Close the child's MCP stdio sessions HERE, in the very task that opened
-        # them. Left to asyncio.run's shutdown_asyncgens, each stdio_client would be
-        # closed from another task and blow up on anyio's cancel-scope check (and
-        # leak one server subprocess per connected server).
-        # Before cleanup, and on this loop: a watch still polling when asyncio.run
-        # returns is the one way this thread can be left hanging, and its probes go
-        # through servers the next line closes.
+        # Close the child's MCP sessions here, in the task that opened them (anyio's cancel
+        # scope), after stopping its watchers, which poll through those servers.
         try:
             await watcher.close()
         except Exception as exc:  # a dropped watch must not mask the child's answer

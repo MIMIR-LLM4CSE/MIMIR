@@ -41,13 +41,7 @@ stdout_silenced = False
 
 
 def silence_stdout_once() -> None:
-    """Point stdout at stderr, once, on first use — never at import time.
-
-    The stdio transport wraps ``sys.stdout.buffer`` once at startup; rebinding
-    before that would make it wrap *stderr* and the server would go mute. Doing it
-    afterwards is harmless (the transport holds its own reference), and it is never
-    restored: two concurrent children would restore each other's saved value.
-    """
+    """Point stdout at stderr, once, on first use (after the stdio transport has wrapped it)."""
     global stdout_silenced
     if stdout_silenced:
         return
@@ -61,20 +55,7 @@ def clip(value: Any, limit: int) -> str:
 
 
 def compact_event(ev: dict) -> dict | None:
-    """One child engine event in wire form, or None when it is not worth forwarding.
-
-    The child's tool activity travels, and its step-level status lines with it:
-    tokens, thinking and diffs would cost far more than they show, and the caller
-    renders the rest as ordinary tool rows. Keys are short because each event rides
-    in a progress notification.
-
-    Status matters because a step is not one model call. An empty turn is retried, a
-    nudge is answered, a checklist refresh re-asks — each up to the child's whole
-    per-step ceiling, none of them a tool call. Dropped, they left a gap in the log
-    with nothing in it, and a child spending four minutes that way was indistinguishable
-    from a child that had hung. The loop already says what it is doing; forwarding it
-    is the difference between reading that and guessing at it.
-    """
+    """One child event in wire form (tool activity and step status), or None."""
     kind = ev.get("type")
     if kind == "tool_call":
         return {
@@ -116,13 +97,7 @@ def activity_path(session: str) -> str:
 
 
 def append_activity(session: str, event: dict) -> None:
-    """Add one line to this child's activity log, trimming it when it grows.
-
-    The log is how anyone watches a sub-agent work. The progress channel only exists
-    while the call is open — a detached child would otherwise be invisible until it
-    lands — and a file is read the same way by both kinds of child, by the panel, and
-    after the fact. Best effort: a child's work must not fail over its own log.
-    """
+    """Append one line to this child's activity log, trimmed as it grows; best-effort."""
     if not session:
         return
     try:
@@ -141,15 +116,9 @@ def append_activity(session: str, event: dict) -> None:
 
 def make_child_sink(q: queue.Queue, counters: dict,
                      job_key: str = "", session: str = "") -> Callable[[dict], None]:
-    """The child's event_callback: enqueue, never block, never raise.
+    """The child's event_callback: never blocks or raises (a full queue drops and counts).
 
-    Raising here would put the child's engine back on emit()'s print fallback —
-    straight into the JSON-RPC pipe — so a full queue drops the event and counts it.
-
-    Three readers, one sink. The caller's progress channel gets every event while the
-    call is open; the child's activity log gets them all regardless, which is what lets
-    anyone watch a detached child; and a detached job records its last tool row as its
-    phase, the only sign of life the watcher can pass on once the call has returned.
+    Feeds the caller's progress channel, the activity log, and a detached job's phase.
     """
     def _sink(ev: dict) -> None:
         try:
@@ -197,13 +166,7 @@ async def forward_pending(ctx: Context | None, q: queue.Queue, state: dict) -> N
 
 
 async def maybe_heartbeat(ctx: Context | None, state: dict, started: float) -> None:
-    """Say the child is alive when it has been silent long enough to look hung.
-
-    Silence is the normal shape of a model turn — no tool call, nothing to forward —
-    and a delegated turn can be minutes of it. Heartbeats are exempt from the per-run
-    event ceiling: the one moment the caller most needs a sign of life is the run that
-    already spent its budget on child steps.
-    """
+    """Report the child alive after a long silence; heartbeats are exempt from the event ceiling."""
     now = time.monotonic()
     if now - state.get("last_activity", started) < HEARTBEAT_SECS:
         return

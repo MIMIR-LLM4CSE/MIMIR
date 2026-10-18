@@ -1,35 +1,9 @@
-"""
-MCP Memory Server
-=================
-Persistent, timestamped memory for the agent — Claude-style.
+"""MCP Memory Server: persistent, timestamped memories in two scopes.
 
-Two scopes, and which one a fact belongs to is the question every write answers:
-
-  workspace — <STATE_DIR>/memory/, shared by every session of THIS workspace. What is
-              true of this project: its decisions and their reason, its conventions
-              and constraints.
-  global    — <GLOBAL_STATE_DIR>/memory/ (``~/.mimir/global/memory/``), shared by every
-              workspace on the machine. What is true of the user whichever repository
-              they are in: their preferences, their corrections about how to work.
-
-Storage layout, identical in both:
-  MEMORY.md        — the index: one line per memory, loaded into context each
-                     session. Format: ``- [<description>](<slug>.md) — <date>``
-  <slug>.md        — one memory per file, human-editable Markdown with a small
-                     frontmatter block (name / description / date / tags) + body.
-  embeddings.json  — the parallel vector cache for that scope's memories.
-
-Slugs are unique within a scope, never across them: the global store is written by
-workspaces that never see each other, so cross-scope uniqueness is an invariant
-nothing here could enforce. Tools that take a name therefore resolve a (scope, name)
-pair, and a name living in both scopes is an error asking which one was meant.
-
-Workflow:
-  1. memory_add(text, scope, description?, tags?)  — store a fact as its own .md file
-  2. memory_search(query)                          — retrieve relevant memories
-  3. memory_list_all()                             — list every stored memory
-  4. memory_delete(name)                           — remove one memory file by its slug
-  5. memory_clear()                                — wipe one scope (irreversible)
+``workspace`` (<STATE_DIR>/memory/, this project) and ``global``
+(<GLOBAL_STATE_DIR>/memory/, the user across workspaces). Each holds ``MEMORY.md`` (the
+index), one ``<slug>.md`` per memory and ``embeddings.json``. Slugs are unique per scope;
+a name in both is an error asking which.
 """
 
 import os
@@ -242,13 +216,7 @@ def _load_scopes(scopes) -> list:
 
 
 def _write_index(store: _Store) -> None:
-    """Rewrite one scope's MEMORY.md — the human/agent-scannable index, newest first.
-
-    Reads the directory back rather than taking the caller's list: a caller holds the
-    entries it loaded *before* its own write, so an add concurrent with it would lose
-    its index line. The files are the source of truth, and for the global store the
-    concurrent writer can be any session on the machine.
-    """
+    """Rewrite one scope's MEMORY.md, newest first, from the files on disk (concurrent writers)."""
     lines = ["# Memory Index", ""]
     entries = _load(store)
     for e in sorted(entries, key=lambda x: (x.get("date", ""), x.get("name", "")), reverse=True):
@@ -283,13 +251,7 @@ def _is_near_duplicate(text: str, entries: list) -> dict | None:
 
 
 def _find(name: str, scope: str | None) -> tuple[dict, dict | None]:
-    """Resolve a slug to one memory, or to the error explaining why it cannot be.
-
-    Returns ``(entry, None)`` or ``({}, error)``. *scope* names the store
-    outright; ``None`` searches both, and a name living in both is an error rather than
-    a guess — deleting or rewriting the wrong one of two same-named memories is silent
-    and unrecoverable.
-    """
+    """``(entry, None)`` for a slug, or ``({}, error)``; *scope* None searches both, and a name in both is an error."""
     scopes = (scope,) if scope else _SCOPES
     matches = [e for e in _load_scopes(scopes) if e["name"] == name]
     if not matches:
@@ -357,14 +319,9 @@ def _prune_embeddings(store: _Store, names) -> None:
 
 
 def _semantic_search(query: str, candidates: list, limit: int) -> list | None:
-    """Rank *candidates* by embedding similarity to *query*, across scopes.
+    """Memories ranked by embedding similarity (each with a "score"), or None to fall back.
 
-    Returns a list of memories (each with a "score") or ``None`` to signal the
-    caller to fall back to substring search. Vectors missing from a cache (or
-    embedded under a different model) are backfilled and persisted on the fly —
-    each into its own scope's file, keyed off the candidate's "scope", so a search
-    spanning both stores cannot write one scope's vectors into the other's cache.
-    Scores stay comparable across scopes: one model, one metric.
+    Missing vectors are backfilled into their own scope's cache.
     """
     if not _embed.is_available():
         return None

@@ -10,32 +10,13 @@ import time
 from . import spawn_limits
 
 # ── Reaching the user from inside a sub-agent ─────────────────────────────────
-# A child that needs an approval, or has a question, must be able to reach the person
-# — otherwise the work stops on a step nobody was asked about. The route is the MCP
-# session, which is one per stdio connection and not one per request: it is there for
-# a detached child exactly as much as for a blocking one, and the client renders the
-# card it already renders for any other server.
-#
-# Two rules the relay owes the user:
-#   * ONE AT A TIME. Several children can be working at once; several cards at once is
-#     a pile nobody can answer in order. They queue on this lock, so a card is shown,
-#     answered, and only then is the next one raised. The client enforces the same rule
-#     across every source (the WebSocket worker's _show_next) — this lock keeps a fan-out from
-#     filling that queue in the first place.
-#   * WHO IS ASKING. Every card carries its sub-agent and its task as `origin`,
-#     because "allow this command?" from an unnamed process is a question the user
-#     cannot weigh.
+# Through the MCP session (one per connection, so a detached child can use it too). One
+# card at a time across children (this lock), and each carries its ``origin``.
 ASK_LOCK = asyncio.Lock()
 
 
 def child_origin(agent, task: str) -> dict:
-    """Which child this is, as data — for a card it raises and a run it leaves behind.
-
-    Every approval card carries it, because "allow this command?" from an unnamed
-    process is a question the user cannot weigh, and because several children can be
-    working at once. A badge on a run carries the same dict for the same reason: a job
-    on a node is worth nothing to read if it does not say whose.
-    """
+    """Which child this is (sub-agent and task), as ``origin`` data for its cards and runs."""
     label = task.strip().splitlines()[0][:60] if task.strip() else "a sub-agent"
     return {"kind": "subagent", "label": label,
             "session": getattr(agent, "session_id", "") or ""}
@@ -51,17 +32,10 @@ APPROVAL_OPTIONS = [
 
 async def ask_the_user(session, header: str, question: str, options: list[dict],
                         origin: dict | None = None) -> str:
-    """Put one card to the user and return the label they chose, or "" .
+    """Put one card to the user, after any other child's; return the chosen label, or "".
 
-    Queued behind every other sub-agent's card, so the answers cannot be attributed to
-    the wrong question. A channel that fails is silence, not an answer: the caller
-    reads "" as "they did not say", which every caller here treats as a refusal.
-
-    *session* is the MCP ``ServerSession`` — one per stdio connection, not one per
-    request — which is why this still reaches the user after the delegating call has
-    returned. *origin* says who is asking, and travels as data rather than as a prefix
-    glued to the question text: the front end shows it as a badge, and a badge is
-    something a person can read at a glance and the interface can style.
+    *session* is the MCP ``ServerSession``, so it works after the call returned; *origin*
+    travels as data for a badge.
     """
     spec_questions = [{
         "question": question,
@@ -172,16 +146,9 @@ class RelayedHuman:
 
 
 def install_user_channel(agent, session, loop, task: str) -> None:
-    """Route this child's approvals and questions to the user, through the caller.
+    """Route this child's approvals and questions to the user through the caller's session.
 
-    Installed for every child, detached or not. *session* is the MCP ``ServerSession``
-    — one per stdio connection, not one per request — so it still reaches the user
-    after the delegating call has returned; the client registers its elicitation
-    callback on connect, not per call, and routes whatever arrives to the front end.
-
-    The child runs in its own thread with its own event loop, so each relay hops back
-    onto the server's loop and blocks its own thread until the user answers. Blocking
-    is correct here: the child has nothing to do until it has its answer.
+    Each relay hops onto the server's loop and blocks the child's thread until answered.
     """
     origin = child_origin(agent, task)
 

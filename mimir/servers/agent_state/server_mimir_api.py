@@ -1,24 +1,7 @@
-"""
-MCP MIMIR API Server
-====================
-MIMIR's self-knowledge: the extension API a user or a developer writes against when
-they add a skill, an MCP server, a policy, a post-tool hook, a nudge or a base prompt
-under the workspace ``.mimir/``.
+"""MCP MIMIR API Server: the extension API, derived from the installed package at call time.
 
-Every answer is derived from the installed package at call time — the capability
-vocabulary is parsed out of ``client/context/capabilities.py``, the templates are the
-shipped ``mimir/examples/`` files read verbatim, the drop-in locations come from the
-same ``_shared/extension_paths`` the loaders use, and the bundled names are scanned off
-disk. Nothing here is a prose copy of the documentation, because a copy is what goes
-stale: a capability added to the vocabulary shows up in the next call, and the
-``.mimir/`` path reported is the one that will actually be scanned on restart.
-
-The companion methodology prompt is the bundled ``mimir-api`` skill, which drives this
-tool; this server only answers questions.
-
-Tools:
-  1. mimir_api(topic, name) — one topic of the extension API
-  2. load_skill(name) — one skill's methodology, loaded into the conversation on demand
+The capability vocabulary, the templates in ``mimir/examples/``, the drop-in locations
+and the bundled names are read live, never copied. Tools: ``mimir_api``, ``load_skill``.
 """
 
 import os
@@ -115,13 +98,7 @@ def _tool_kinds() -> tuple[str, ...]:
 
 
 def _capability_vocabulary() -> dict:
-    """The live capability vocabulary, parsed from the capability module's source.
-
-    Parsed rather than imported: the *notes* and the section grouping are what make the
-    list usable by someone choosing a flag, and those live in the comments. A flag's
-    note is its trailing comment plus any indented continuation lines, falling back to
-    the prose paragraph introducing its section when it has none.
-    """
+    """The capability vocabulary, parsed from the capability module's source (notes are comments)."""
     section = ""
     prose: list[str] = []
     flags: list[dict] = []
@@ -197,15 +174,7 @@ def _bundled_skill_names() -> list[dict]:
 
 
 def _bundled_server_names() -> dict:
-    """The namespaces a user server may not take (the core is protected).
-
-    Read from the client's bundled registry, because that is what the collision check
-    tests against and a filename is not always the namespace: ``server_spawn_agent.py``
-    is registered as ``agent``. The import is guarded and the answer says where it came
-    from — the registry module is a stdlib-only leaf, but a server must still run with
-    no client on the path (standalone, tests), and there the shipped filenames are the
-    closest honest answer rather than no answer.
-    """
+    """The namespaces a user server may not take, from the client's registry, else the filenames."""
     try:
         from mimir.client.config.servers import SERVERS
         return {"names": sorted(SERVERS), "source": "the client's bundled server registry"}
@@ -530,13 +499,9 @@ def mimir_api(topic: str = "index", name: str = "") -> dict:
 
 
 def _skill_md_path(name: str) -> str:
-    """The SKILL.md a pull must read — user directory first, then the bundled one.
+    """The SKILL.md a pull reads: the user's, else the bundled one; "" when neither exists.
 
-    Restates ``MimirAgent.load_skills(merge=True)``'s override rule across a process
-    boundary, so a workspace skill shadows the shipped one of the same name here too.
-    The duplication is held level by a parity test rather than by trust.
-
-    Returns "" when neither exists.
+    Mirrors ``MimirAgent.load_skills(merge=True)`` (held level by a parity test).
     """
     for base in (_skills_dir(), _BUNDLED_SKILLS):
         candidate = os.path.join(base, name, "SKILL.md")
@@ -571,13 +536,7 @@ def _available_skill_names() -> list[str]:
 
 
 def _rejects_as_path(name: str) -> bool:
-    """Whether *name* must not be joined onto a directory.
-
-    The only path-traversal surface this server adds: ``name`` arrives from the model
-    and is joined onto the skills directories. A skill name is one directory component,
-    so anything that could leave that component is refused before the join rather than
-    normalised into something plausible.
-    """
+    """Whether *name* could leave its one directory component (refused before any join)."""
     separators = {s for s in ("/", "\\", os.sep, os.altsep) if s}
     return (not name
             or name.startswith(".")

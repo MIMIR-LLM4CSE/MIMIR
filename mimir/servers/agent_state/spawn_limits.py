@@ -2,14 +2,8 @@
 from __future__ import annotations
 
 
-# Wall for one sub-agent run, by what the child was actually given to do. A child that
-# only reads answers a question and stops; a child that edits, compiles and measures is
-# doing the work this whole apparatus exists for, and ten minutes of it is a run cut off
-# for a reason that has nothing to do with the task.
-#
-# The rung the user set decides which applies, through the same test that decides
-# whether the child gets a copy of the repository — so "works in its own copy" and "has
-# hours to do it" can never disagree.
+# Wall for one sub-agent run, by what it was given: reading and concluding, or working in
+# its own copy. Chosen by the same rung test that gives it a copy.
 SUBAGENT_EXPLORE_BUDGET_SECS = 600            # 10 min: read, search, conclude
 
 
@@ -39,18 +33,8 @@ SUBAGENT_MAX_STEPS = 0
 SUBAGENT_ANSWER_TOKENS = 8192
 
 
-# How much of the model's window one child may fill, by what the child was given.
-# Not the model's whole window: a child exists to keep its reading out of the caller's
-# context, and several of them on one endpoint each budgeting for the full window is
-# how a fan-out becomes the thing it was meant to avoid. Both numbers are ceilings —
-# a model with a smaller window still sizes the budget, and the trimming, eviction and
-# compaction all follow from the total.
-#
-# An explorer reads a handful of files and returns a conclusion, and a sweep wide
-# enough to be sure is what it is for — twice the compact budget, so breadth is not
-# what makes it hand back a half-answer. A working child is the other case — it reads
-# what it must to change code, runs it, and reports what came back — so it gets the
-# standing full-mode budget rather than a share of it.
+# How much of the window one child may fill (a ceiling under the model's own): twice the
+# compact budget for an explorer, the full-mode budget for a working child.
 SUBAGENT_CONTEXT_TOKENS_EXPLORE = 64_000
 
 

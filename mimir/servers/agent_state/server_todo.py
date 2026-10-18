@@ -1,33 +1,7 @@
-"""
-MCP Todo Server
-===============
-Live task checklist for the agent — lets the model actively manage its
-execution plan rather than relying on a static system-prompt injection.
+"""MCP Todo Server: the session's live checklist and its prose plans.
 
-Stored per-session under the central state dir (<STATE_DIR>/sessions/<sid>/todo_list.md)
-as a markdown checkbox list:
-
-    - [ ] pending step
-    - [x] completed step
-
-Named prose plans are stored as a per-session history under plans/ (one
-<date>-<slug>.md file each, indexed by PLANS.md, with a .active pointer):
-
-    todo_set_plan(text, title) — write a named plan, making it the active one
-    todo_read_plan(name=None)  — read the active (or a named) plan back
-    todo_list_plans()          — browse the plan history
-
-Tools:
-  1. todo_set_plan(text, title) — write the named approach/rationale before starting
-  2. todo_write(steps)          — rewrite the whole checklist, carrying over the ticks
-                                  of steps whose text is unchanged; called first once the
-                                  plan it comes from has been approved and work starts
-  3. todo_read()                — return the current list (index, text, done)
-  4. todo_read_plan(name)       — return the active or a named prose plan
-  5. todo_list_plans()          — list the session's plan history
-  6. todo_delete_plan(name)     — delete one plan from the history
-  7. todo_update(index, done, text) — targeted edit of one item: tick/untick it,
-                                  reword it, or both
+``<STATE_DIR>/sessions/<sid>/todo_list.md`` holds ``- [ ]``/``- [x]`` steps; named plans live
+under ``plans/`` (indexed by PLANS.md, with an ``.active`` pointer).
 """
 
 import os
@@ -50,15 +24,7 @@ _UNSCOPED_TODO_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, TODO_FILENAME))
 
 
 def _get_todo_file() -> str:
-    """Return the todo file path for the session this server belongs to.
-
-    Resolved through ``session_state_dir()`` rather than by reading the active-session
-    pointer here: this server is one of the subprocesses of a single session's agent, and
-    that session is stamped into its environment at spawn. Reading "the active session"
-    would hand every concurrently running conversation the checklist of whichever one the
-    user happens to be looking at. The pointer lives on inside ``session_state_dir`` as the
-    single-session fallback (CLI, standalone, tests), where it is the right answer.
-    """
+    """This server's session todo file (``session_state_dir()``; the pointer only as fallback)."""
     base = session_state_dir(_MIMIR_DIR)
     if base == _MIMIR_DIR:
         return _UNSCOPED_TODO_FILE
@@ -193,15 +159,7 @@ def _load() -> list[dict]:
 
 
 def _done_counts(items: list[dict]) -> dict[str, int]:
-    """How many *done* items carry each text, so a rewrite can carry them over.
-
-    A count rather than a set because a list may legitimately hold the same text
-    twice (two files given the same one-line treatment): two done copies carry two
-    ticks over, one carries one, and the duplicate that was still pending stays
-    pending. Matching is on the exact stripped text — the identity of a step is
-    what it says, and a reworded step is a different step whose state the model
-    has to state itself (todo_update) rather than inherit by accident.
-    """
+    """How many done items carry each exact text, so a rewrite carries their ticks over."""
     counts: dict[str, int] = {}
     for it in items:
         if it.get("done"):

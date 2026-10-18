@@ -50,13 +50,7 @@ def repo_root() -> str:
 
 
 def sibling_cards(session: str) -> tuple[str, list[dict]]:
-    """The cards of every child of this one's parent session, newest first.
-
-    The card is the registry: it is written for the panel anyway, and it is the only
-    place that remembers where a finished child's copy was put. Best effort throughout
-    — a session whose cards cannot be read reclaims nothing, which costs disk and
-    breaks nothing.
-    """
+    """``(parent dir, cards)`` of every child of this session's parent, newest first; best-effort."""
     parent = session.rsplit("/subagents/", 1)[0] if "/subagents/" in session else ""
     if not parent:
         return "", []
@@ -83,15 +77,7 @@ def sibling_cards(session: str) -> tuple[str, list[dict]]:
 
 
 def card_is_live(card: dict) -> bool:
-    """Whether a card that says "running" still belongs to a living process.
-
-    A child runs in a thread of the server that spawned it, so its card is only ever
-    finished by that process: one killed mid-run leaves a card saying "running" for
-    good, and a copy that nothing would ever reclaim. The pid it recorded is the test.
-    A card from before pids were recorded, or one belonging to another user's process,
-    counts as live — erring towards keeping a copy rather than removing one that is
-    still being written.
-    """
+    """Whether a "running" card's process still exists (no pid, or another user's, counts as live)."""
     if card.get("state") != "running":
         return False
     pid = card.get("pid")
@@ -107,12 +93,9 @@ def card_is_live(card: dict) -> bool:
 
 
 def commit_copy(path: str, message: str) -> tuple[list[str], str]:
-    """Stage and commit whatever the copy holds. Returns (files, diffstat).
+    """Stage and commit whatever the copy holds; ``(files, diffstat)``.
 
-    The one place work leaves a copy for good, and it is called from both ends: when
-    the child finishes, and again before a copy is reclaimed. The second caller is why
-    this exists as a function — a copy dropped with uncommitted work in it is work
-    destroyed, and the reclaimer would have done it silently, three axes later.
+    Called when the child finishes and before a copy is reclaimed, so no work is dropped.
     """
     git(["add", "-A"], path)
     ok, changed = git(["diff", "--cached", "--name-only"], path)
@@ -126,17 +109,7 @@ def commit_copy(path: str, message: str) -> tuple[list[str], str]:
 
 
 def drop_branch_if_empty(repo: str, branch: str, base: str) -> bool:
-    """Delete *branch* when it is still exactly where it was cut from. Did it go?
-
-    The test is against the commit recorded when the copy was made, not against the
-    repository's HEAD: HEAD moves while a child works, and ``git branch -d`` would then
-    refuse a branch that carries nothing simply because the ground shifted under it —
-    leaving behind the litter this exists to remove. Emptiness established that way,
-    ``-D`` is the honest way to say it: there is nothing left to protect.
-
-    Without a recorded base on the card, nothing is deleted. A branch
-    kept for nothing costs a line in ``git branch``; one deleted wrongly costs an axis.
-    """
+    """Delete *branch* if it is still at the *base* commit it was cut from; whether it went."""
     if not branch or not base:
         return False
     ok, tip = git(["rev-parse", branch], repo)
@@ -184,18 +157,9 @@ def drop_copy(wt: dict, child_key: str = "") -> bool:
 
 
 def sweep_orphan_copies(repo: str) -> None:
-    """Drop copies of this repository that nothing remembers any more.
+    """Drop copies of this repository whose owner process and card are both gone.
 
-    The cards reclaim a session's own copies, but they are stored *with* the session:
-    deleting a conversation takes the registry away and leaves the copies on disk, where
-    the per-session rule can no longer reach them. What survives that is the copy's
-    marker, written beside it before it could be used.
-
-    A copy is an orphan when its owner is gone *and* its card is gone — both, because
-    either alone is a copy that is simply between states: a child still running holds
-    its pid, and a card is written a moment after the copy is made. One with no marker
-    at all predates this and is judged by git alone: a directory git does not register
-    is not a worktree anybody is using.
+    A copy without a marker is judged by git: one it does not register is unused.
     """
     base = os.path.join(WORKTREE_BASE, os.path.basename(repo))
     if not os.path.isdir(base):
@@ -228,20 +192,9 @@ def sweep_orphan_copies(repo: str) -> None:
 
 
 def reclaim_worktrees(session: str, keep: int) -> None:
-    """Drop this session's finished copies beyond the *keep* most recent.
+    """Drop this session's finished copies on disk beyond the *keep* most recent.
 
-    Called when the next copy is about to be made, which is the moment the disk is
-    known to be wanted — so a session holds *keep* finished copies plus the one being
-    made. A child still running is never counted, and a copy git refuses to remove is
-    left where it is.
-
-    Only copies that are actually on disk take a place: cards from before copies were
-    kept name a directory that is long gone, and counting those would push out a copy
-    that exists.
-
-    "Still running" is read off the pid on the card, not off the word: a server killed
-    mid-run leaves its card saying "running" for ever, and taking that at face value
-    would exempt its copy from reclamation forever after.
+    Running children (by the pid on their card) are never counted or removed.
     """
     _, cards = sibling_cards(session)
     copies = [w for w in (c.get("workspace") or {} for c in cards if not card_is_live(c))
@@ -291,19 +244,7 @@ def create_worktree(child_key: str, session: str = "") -> tuple[dict | None, str
 
 
 def finish_worktree(wt: dict, task: str, succeeded: bool) -> dict:
-    """Commit the axis and keep the copy.
-
-    The branch is what carries the *code*: a worktree shares the repository's object
-    store, so a commit survives the directory. Which is why the commit is made here
-    rather than asked of the child — a copy removed with uncommitted work in it is work
-    destroyed, and that must not depend on the model remembering.
-
-    But the copy carries what git never had: the build tree. Dropping it here threw
-    away the compile the axis had just paid for, and left behind a branch that, for
-    every child that wrote nothing, pointed at HEAD and said nothing. So the directory
-    stays — bounded by :func:`reclaim_worktrees`, which drops the oldest when the next
-    child needs room — and it is the empty branch that goes instead.
-    """
+    """Commit the axis on its branch and keep the copy (its build tree); drop an empty branch."""
     path, branch, repo = wt["path"], wt["branch"], wt["repo"]
     base = wt.get("base", "")
     report = {"branch": branch, "path": path, "repo": repo, "base": base,

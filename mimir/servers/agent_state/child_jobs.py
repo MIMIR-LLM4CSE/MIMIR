@@ -1,25 +1,9 @@
-"""A sub-agent's watcher, for the detached runs it launched itself.
+"""A sub-agent's own watcher for the detached runs it launched.
 
-The hook pair the client installs (``register_background_job`` /
-``watched_background_jobs``) is set on the agent the WebSocket worker owns; a child's
-agent is built here, and gets its own pair from this module. Without it a child would
-poll its runs in-turn, inside its wall budget, instead of preparing its next step.
-
-**The resume is a steer, not an event.** The parent's watcher puts ``job_complete`` on a
-queue, the event bus claims it and a turn is submitted with the wake folded in. A child has
-none of that: no ``out_q``, no bus, and no turn loop to submit to — it is one
-``agent.run(...)`` call. What it does have is ``poll_steer``, read at the top of every step
-by ``agent_loop._drain_steer`` and documented there as optional precisely for callers like
-this one. So a finished run reaches the child's reasoning the same way a user's mid-turn
-message reaches the parent's: as a user turn at the next step boundary, in the words
-``jobs.wakes.wake_text`` writes for every wake in the system.
-
-**Two threads, two methods.** The child runs ``asyncio.run()`` on a thread of its own, so
-its watch tasks live on a loop no other thread may touch — the same constraint
-``_abandon_child`` states for the cancel flag. :meth:`ChildWatcher.handover` is therefore
-the only method a caller on another thread may use: it reads descriptors under a lock and
-cancels nothing. :meth:`ChildWatcher.close` does the cancelling, and is called from the
-child's own ``finally``, on its own loop.
+It installs the child's ``register_background_job``/``watched_background_jobs`` pair. A
+finished run reaches the child as a steer (``poll_steer``), in ``wake_text``'s words. The
+child's loop is its own: only :meth:`ChildWatcher.handover` may be called from another
+thread; :meth:`ChildWatcher.close` cancels, on the child's loop.
 """
 from __future__ import annotations
 
@@ -71,14 +55,9 @@ class ChildWatcher:
     # ── the hooks the agent reads ────────────────────────────────────────────────
 
     def register(self, descriptor: dict, owner: str | None = None) -> bool:
-        """Put a watcher on a detached run. The child's ``register_background_job``.
+        """Watch a detached run (the child's ``register_background_job``); False means wait it out in-turn.
 
-        The return value is the whole contract, as it is for the client's own hook:
-        ``False`` means nothing is holding the run, and the caller must wait it out
-        in-turn instead. Refusing silently is what makes a run finish into nothing.
-
-        *owner* is accepted and ignored. The client's hook takes it to route a wake to a
-        conversation; here there is only one reader, and it is this child.
+        *owner* is ignored: the child is the only reader.
         """
         if not isinstance(descriptor, dict):
             logger.warning("child watcher: refused a descriptor that is not a mapping")
@@ -135,19 +114,10 @@ class ChildWatcher:
     # ── answering for the runs when the child ends ───────────────────────────────
 
     def handover(self) -> list[dict]:
-        """The runs still going, as descriptors the *parent* can poll.
+        """The runs still going, as descriptors the parent can poll; stops accepting new ones.
 
-        Called when the child is out of time, from the caller's thread. Cancels nothing:
-        the tasks live on the child's loop and only :meth:`close` may touch them. What it
-        does is stop accepting new runs and hand back what is in flight, so the client can
-        adopt it for the parent before the thread is let go.
-
-        A descriptor is rewritten by shape, never by tool name: one that carries a
-        ``run_dir`` whose ops do not name one gets it added to their arguments. A child's
-        job lives under the child's session, and a status op resolving a bare key against
-        the *parent's* session finds nothing — which it reports as ``unknown``, a terminal
-        state. Handing the parent an unqualified key would have it announce a healthy run
-        as lost seconds after adopting it.
+        Called from the caller's thread, cancels nothing. Ops are given the child's ``run_dir``,
+        or the parent's poll would resolve the key against its own session and read ``unknown``.
         """
         with self._lock:
             if self._handed_over:

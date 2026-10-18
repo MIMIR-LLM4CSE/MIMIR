@@ -23,15 +23,8 @@ JOBS_MAX = 64
 
 
 # ── How many at once ──────────────────────────────────────────────────────────
-# Nothing else bounds a fan-out: the client dispatches every non-writing call of one
-# model step concurrently, so a model that emits eight delegations gets eight — eight
-# threads, their MCP server subprocesses, and eight concurrent streams on one endpoint,
-# each budgeting for its own share of the window. The prompt asks for one to three;
-# that is guidance, and this is the bound.
-#
-# It lives here rather than in the client's dispatcher because this process owns what
-# is being protected, and because it sees a DETACHED child for its whole life — a
-# dispatcher-side limit would lose sight of one the moment its call returned.
+# The only bound on a fan-out (the client dispatches a step's delegations concurrently).
+# Here, because this process sees a detached child for its whole life.
 SUBAGENT_MAX_CONCURRENT = int(os.environ.get("MIMIR_SUBAGENT_MAX_CONCURRENT") or 3)
 
 
@@ -96,14 +89,7 @@ def busy_with() -> str:
 
 
 def job_descriptor(job_key: str) -> dict:
-    """The handle the client's watcher polls.
-
-    Data, not a tool name in loop code: the client reads ``status_op`` / ``summary_op``
-    off it and polls them generically, which is how a detached run gets watched
-    without the caller spending a model call per poll. ``summary_op`` is also what the
-    caller may read *while* the child works — the dispatch guard refuses the status
-    question, never the progress one.
-    """
+    """The watcher handle of a detached sub-agent: its ``status_op`` and ``summary_op``."""
     return {
         "server": "agent",
         "kind": "sub-agent",
@@ -165,18 +151,10 @@ def card_epoch(stamp: str | None) -> float:
 
 
 def entry_from_card(job_key: str) -> dict | None:
-    """Rebuild a forgotten job from the card its sub-agent left, or None.
+    """Rebuild a job this process forgot from its child's card, or None.
 
-    ``JOBS`` is this process's memory: a spawn server restarted since the run was
-    detached knows nothing about it, while the card on disk still holds the task, the
-    grant, the final state and the whole answer. The card is reachable without an index
-    because the job key IS the last segment of the child's session
-    (``<parent>/subagents/<job_key>``), so the parent session is the only thing to
-    resolve.
-
-    A card still saying "running" is judged by its pid like everywhere else here: the
-    process that would have finished it is gone, so the honest state is "unknown", not
-    a run the watcher would poll for ever.
+    The key is the child session's last segment. A "running" card whose pid is gone reads
+    ``unknown``.
     """
     if not job_key:
         return None
