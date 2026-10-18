@@ -32,12 +32,10 @@ class TerminalHuman:
 
     def approve_paths(self, agent: Any, paths: list[str], tool_name: str,
                       arguments: dict[str, Any] | None = None) -> tuple[bool, bool]:
-        """One prompt for the whole call: a command routinely names several outside
-        paths, and asking about each is the same decision put to the user three times.
+        """One prompt for the whole call, which routinely names several outside paths.
 
-        The header names the action with a short file name; the absolute paths go on
-        their own lines, since *where* is the decision being made — the locations being
-        authorised are never the part that is shortened.
+        The action is named by its short file name; the absolute paths, being the decision,
+        are listed in full.
         """
         short_args = shorten_display_args(tool_name, arguments or {}, agent.tool_caps)
         what = label_for(tool_name, short_args, agent.tool_caps) or tool_name

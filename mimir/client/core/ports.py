@@ -101,14 +101,10 @@ class AgentPort(Protocol):
 
 
 class HumanIO(Protocol):
-    """Whoever answers for the person at the end of a front-end.
+    """Whoever answers for the person at the end of a front-end (``agent.human``).
 
-    The agent asks through this and nothing else: a tool that needs approval, a path
-    outside the workspace, a question for the user. Each front-end puts its own on the
-    agent (``agent.human``) — the terminal prompts on stdin, the WebSocket raises a card
-    and parks the turn on its answer, a sub-agent relays to the session that delegated
-    it, an unattended run approves. It is handed the agent, since what to show about a
-    call (its label, its risk, its scope) is the agent's to say.
+    Approvals, outside paths and questions all go through it: the terminal prompts, the
+    WebSocket raises a card, a sub-agent relays to its parent, an unattended run approves.
     """
 
     def approve_tool(self, agent: AgentPort, tool_name: str, arguments: dict[str, Any],

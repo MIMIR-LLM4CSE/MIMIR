@@ -1,13 +1,8 @@
-"""The user's settings, as one table: what each one may be, and how it reaches an agent.
+"""The user's settings as one table: what each may be, and how it reaches an agent.
 
-Every front-end changes an agent the same way — ``apply_setting(agent, name, value)``
-— and reads it the same way. A value is checked by ``parse_setting`` before anything
-is changed, and that needs no agent: a front-end with none up yet records a setting to
-replay on the agent built later, and a value refused only at replay would be refused
-where nobody can see it. An invalid value raises ``ValueError`` with the message to
-show; a setting that cannot fail (a flag) does not. What is applied is the agent's own
-attribute, read live by the loop at every step, so a change lands on the next model
-call of a query already running.
+``parse_setting`` checks a value without an agent, so a front-end can record one to
+replay on an agent built later; ``apply_setting`` sets the attribute the loop reads at
+every step. An invalid value raises ``ValueError`` with the message to show.
 """
 from __future__ import annotations
 
@@ -112,15 +107,10 @@ def _store_backend(agent: Any, name: str) -> None:
 
 
 def _store_model(agent: Any, model: str) -> None:
-    """Switch the served model mid-session.
+    """Switch the served model mid-session; enforcement and temperature follow it.
 
-    The model is read live at every LLM call, so mutating it is enough for the next
-    call to use it — no reconnect. ``enforcement`` and the temperature are re-derived
-    from the new model, as they are resolved at construction.
-
-    Nothing is written to ``os.environ``: a server's environment is a copy frozen at
-    spawn, so a write there reaches no running server, and with concurrent sessions in
-    one process it would change what *another* session's servers were told.
+    Nothing goes to ``os.environ``: a server's environment is frozen at spawn, and in one
+    process it would change what another session's servers were told.
     """
     agent.model = model
     agent.enforcement = enforcement_level(model)
