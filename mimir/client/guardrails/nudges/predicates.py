@@ -158,11 +158,8 @@ def first_failing_edit_path(execution_context: ExecutionContext) -> str | None:
     Keyed on the per-file failure streak (any patch), so it reflects a model that keeps
     trying differently-anchored edits on the same file, not just identical retries.
     """
-    streaks = execution_context.edits.edit_fail_streak_by_file
-    for path, fails in streaks.items():
-        if fails >= 1:
-            return path
-    return None
+    return next((path for path, failures in execution_context.edits.edit_failures.items()
+                 if failures.streak >= 1), None)
 
 
 def should_nudge_validation(execution_context: ExecutionContext) -> bool:

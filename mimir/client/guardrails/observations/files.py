@@ -26,7 +26,7 @@ from ...context.capabilities import (
     target_path_arg,
 )
 from ...context.paths import is_scratch_path
-from ...context.execution_context import ExecutionContext
+from ...context.execution_context import EditFailures, ExecutionContext
 from ...core.ports import AgentPort
 from .call import Call
 
@@ -64,11 +64,11 @@ def _target_path(agent: AgentPort, tool_name: str, arguments: dict) -> str | Non
         target_path_arg(tool_name, arguments, agent.tool_caps))
 
 
-def _clear_edit_fail_streak(execution_context: ExecutionContext, path: str) -> None:
-    """Drop *path*'s edit-failure streak; re-arm the error_recovery budget once no file fails."""
-    streaks = execution_context.edits.edit_fail_streak_by_file
-    streaks.pop(path, None)
-    if not streaks:
+def _clear_edit_failures(execution_context: ExecutionContext, path: str) -> None:
+    """Forget *path*'s failed edits; re-arm the error_recovery budget once no file fails."""
+    failures = execution_context.edits.edit_failures
+    failures.pop(path, None)
+    if not failures:
         counts = execution_context.nudges.nudge_counts
         if isinstance(counts, dict):
             counts["error_recovery"] = 0
@@ -104,8 +104,7 @@ def record_code_edit(execution_context: ExecutionContext, edited_path: str) -> N
     # not retracted — a run is a past event, and its verdict is a statement about what
     # that event showed, which re-editing does not undo.
     execution_context.checks.validation_tier_by_file.pop(edited_path, None)
-    execution_context.edits.edit_loop_state.pop(edited_path, None)
-    _clear_edit_fail_streak(execution_context, edited_path)
+    _clear_edit_failures(execution_context, edited_path)
 
 
 def enter_post_edit_state(execution_context: ExecutionContext) -> None:
@@ -145,18 +144,14 @@ def edit_outcome(call: Call) -> None:
 
     current_signature = _edit_signature(
         call.tool_name, edited_path, call.arguments, call.agent.tool_caps)
-    last_sig, _fail_count = execution_context.edits.edit_loop_state.get(edited_path, (None, 0))
-    if current_signature == last_sig:
-        new_fail_count = _fail_count + 1
-        execution_context.edits.edit_loop_state[edited_path] = (last_sig, new_fail_count)
+    failures = execution_context.edits.edit_failures.setdefault(edited_path, EditFailures())
+    if current_signature == failures.signature:
+        failures.identical += 1
     else:
-        new_fail_count = 1
-        execution_context.edits.edit_loop_state[edited_path] = (current_signature, new_fail_count)
-    # Per-file streak, whatever the patch: what escalates different wrong anchors on one file.
-    # The file stays in the read sets: the failure already carries the current text
-    # (server_files._anchor_retry_hint).
-    streak = int(execution_context.edits.edit_fail_streak_by_file.get(edited_path, 0)) + 1
-    execution_context.edits.edit_fail_streak_by_file[edited_path] = streak
+        failures.signature, failures.identical = current_signature, 1
+    # The streak escalates different wrong anchors on one file. The file stays in the
+    # read sets: the failure already carries the current text.
+    failures.streak += 1
 
 
 def replacement_tracking(call: Call) -> None:
@@ -194,8 +189,7 @@ def edit_loop_clear(call: Call) -> None:
     read_path = call.agent.normalize_workspace_path(
         call.arguments.get("path") or call.arguments.get("filepath"))
     if read_path:
-        execution_context.edits.edit_loop_state.pop(read_path, None)
-        _clear_edit_fail_streak(execution_context, read_path)
+        _clear_edit_failures(execution_context, read_path)
 
 
 def delete(call: Call) -> None:

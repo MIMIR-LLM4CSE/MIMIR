@@ -182,7 +182,7 @@ class DelegatedExplorationTests(unittest.TestCase):
 
 
 class EditFailureStreakTests(unittest.TestCase):
-    """``edit_fail_streak_by_file`` counts every consecutive failure on a file, whatever the
+    """``edit_failures[path].streak`` counts every consecutive failure on a file, whatever the
     patch; the file stays in the read sets.
     """
 
@@ -217,11 +217,11 @@ class EditFailureStreakTests(unittest.TestCase):
         ec.discovery.read_files.add("mod.py")
 
         self._fail(agent, ec, "anchor A", "A2")   # failure 1
-        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 1)
+        self.assertEqual(ec.edits.edit_failures["mod.py"].streak, 1)
         self.assertIn("mod.py", ec.discovery.read_files)
 
         self._fail(agent, ec, "anchor B", "B2")   # failure 2 — DIFFERENT anchor
-        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 2)
+        self.assertEqual(ec.edits.edit_failures["mod.py"].streak, 2)
         # The escalation is the nudge, not a forged "you have not read this".
         self.assertIn("mod.py", ec.discovery.read_files)
         self.assertEqual(nudge_logic.predicates.first_failing_edit_path(ec), "mod.py")
@@ -230,26 +230,26 @@ class EditFailureStreakTests(unittest.TestCase):
         agent = self._agent()
         ec = build_execution_context()
         self._fail(agent, ec, "anchor A", "A2")
-        self.assertEqual(ec.edits.edit_fail_streak_by_file.get("mod.py"), 1)
+        self.assertEqual(ec.edits.edit_failures["mod.py"].streak, 1)
         runtime.record_tool_observation(
             agent, "replace_in_file",
             {"path": "mod.py", "old_text": "anchor A", "new_text": "A2"},
             '{"status": "ok"}', ec,
         )
-        self.assertNotIn("mod.py", ec.edits.edit_fail_streak_by_file)
+        self.assertNotIn("mod.py", ec.edits.edit_failures)
 
     def test_identical_hard_block_count_still_patch_specific(self) -> None:
-        # edit_loop_state (consumed by check_write_policy) must keep resetting on a new
+        # the identical count (consumed by check_write_policy) must keep resetting on a new
         # patch, so a corrected different attempt is never pre-blocked — while the
         # per-file streak keeps climbing across the different patches.
         agent = self._agent()
         ec = build_execution_context()
         self._fail(agent, ec, "anchor A", "A2")
         self._fail(agent, ec, "anchor A", "A2")   # identical patch
-        self.assertEqual(ec.edits.edit_loop_state["mod.py"][1], 2)
+        self.assertEqual(ec.edits.edit_failures["mod.py"].identical, 2)
         self._fail(agent, ec, "anchor B", "B2")   # different patch → identical count resets
-        self.assertEqual(ec.edits.edit_loop_state["mod.py"][1], 1)
-        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 3)
+        self.assertEqual(ec.edits.edit_failures["mod.py"].identical, 1)
+        self.assertEqual(ec.edits.edit_failures["mod.py"].streak, 3)
 
     def test_reread_resets_streak(self) -> None:
         from mimir.client.context.capabilities import READ, ToolCaps
@@ -258,11 +258,11 @@ class EditFailureStreakTests(unittest.TestCase):
         })
         ec = build_execution_context()
         self._fail(agent, ec, "anchor A", "A2")
-        self.assertEqual(ec.edits.edit_fail_streak_by_file["mod.py"], 1)
+        self.assertEqual(ec.edits.edit_failures["mod.py"].streak, 1)
         runtime.record_tool_observation(
             agent, "read_file", {"path": "mod.py"}, '{"status": "ok", "content": "x"}', ec,
         )
-        self.assertNotIn("mod.py", ec.edits.edit_fail_streak_by_file)
+        self.assertNotIn("mod.py", ec.edits.edit_failures)
 
     def test_resolving_streak_rearms_error_recovery_budget(self) -> None:
         # The error_recovery reminder is capped per query; once the streak that spent
@@ -293,7 +293,7 @@ class EditFailureStreakTests(unittest.TestCase):
             '{"status": "ok"}', ec,
         )
         self.assertEqual(ec.nudges.nudge_counts["error_recovery"], 2)  # b.py still failing
-        self.assertIn("b.py", ec.edits.edit_fail_streak_by_file)
+        self.assertIn("b.py", ec.edits.edit_failures)
 
 
 class BashCommandObservationTests(unittest.TestCase):

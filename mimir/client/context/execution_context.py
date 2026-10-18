@@ -133,6 +133,14 @@ class Discovery:
 
 
 @dataclass
+class EditFailures:
+    """A file's failed edits since its last successful edit or re-read."""
+    signature: Any = None   # the last failing patch
+    identical: int = 0      # consecutive failures of that same patch: the hard block
+    streak: int = 0         # consecutive failures whatever the patch: error_recovery
+
+
+@dataclass
 class Edits:
     """Planned and in-flight mutations, and how edits have failed."""
     # files the model intends to edit or has begun editing
@@ -150,10 +158,8 @@ class Edits:
     last_replace_old_text: str | None = _spec(lambda: None, (str, _NoneType,))
     last_replace_new_text: str = _spec(lambda: "", (str,))
     last_replace_file: str = _spec(lambda: "", (str,))
-    # path -> (last signature, identical consecutive failures): the identical-patch block
-    edit_loop_state: dict[str, tuple[Any, ...]] = _spec(dict, (dict,))
-    # path -> consecutive edit failures whatever the patch (error_recovery)
-    edit_fail_streak_by_file: dict[str, int] = _spec(dict, (dict,))
+    # path -> its failed edits since the last success or re-read
+    edit_failures: dict[str, EditFailures] = _spec(dict, (dict,))
     # loop steps since the last successful edit (idle gating)
     steps_since_last_edit: int = _spec(lambda: 0, (int,))
     # last successfully edited code file, cleared once a tick reminder is injected

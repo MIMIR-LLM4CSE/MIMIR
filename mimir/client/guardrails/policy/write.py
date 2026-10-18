@@ -71,7 +71,8 @@ def check_write_policy(
         return None
 
     is_code_target = agent.is_code_filepath(path)
-    repeated_failures = execution_context.edits.edit_loop_state.get(path, (None, 0))[1]
+    failures = execution_context.edits.edit_failures.get(path)
+    repeated_failures = failures.identical if failures else 0
 
     if has_cap(tool_name, REMOVE, agent.tool_caps):
         has_direct_context = has_delete_context(path, execution_context)

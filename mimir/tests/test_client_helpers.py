@@ -1,4 +1,5 @@
 from mimir.client.guardrails.observations import Call
+from mimir.client.context.execution_context import EditFailures
 from mimir.tests.support.context import build_execution_context
 import contextlib
 import io
@@ -611,7 +612,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_write_policy_does_not_demand_a_plan_before_the_first_edit(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py", "src/other.py", "src/third.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, code_mutation_started=False, plan_written=False, todo_written=False, edit_loop_state={})
+        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py", "src/other.py", "src/third.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, code_mutation_started=False, plan_written=False, todo_written=False, edit_failures={})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "replace_in_file",
@@ -641,7 +642,7 @@ class ClientHelperTests(unittest.TestCase):
         """
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files=set(), existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, edit_loop_state={})
+        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files=set(), existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, edit_failures={})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "write_file", {"path": "src/module.py", "content": "wiped"},
@@ -655,7 +656,7 @@ class ClientHelperTests(unittest.TestCase):
         """The delete guard blocks a delete without existence evidence."""
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = build_execution_context(searched=True, checked_paths={"src/gone.py"}, inspected_dirs=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={}, search_tool_calls=1, edit_loop_state={})
+        execution_context = build_execution_context(searched=True, checked_paths={"src/gone.py"}, inspected_dirs=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={}, search_tool_calls=1, edit_failures={})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "delete_file", {"path": "src/gone.py"}, execution_context,
@@ -667,14 +668,13 @@ class ClientHelperTests(unittest.TestCase):
     def test_write_policy_blocks_a_patch_retried_identically_to_the_limit(self) -> None:
         """The anti-thrashing branch — also never exercised before.
 
-        `edit_loop_state` holds (last patch signature, identical consecutive failures);
-        at `REPEATED_EDIT_FAILURE_LIMIT` the write is refused so the model stops
-        re-sending a patch that has already failed unchanged.
+        At `REPEATED_EDIT_FAILURE_LIMIT` identical failures of one patch the write is
+        refused, so the model stops re-sending a patch that already failed unchanged.
         """
         from mimir.client.config.limits import REPEATED_EDIT_FAILURE_LIMIT
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, edit_loop_state={"src/module.py": ("sig-abc", REPEATED_EDIT_FAILURE_LIMIT)})
+        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, edit_failures={"src/module.py": EditFailures("sig-abc", REPEATED_EDIT_FAILURE_LIMIT, REPEATED_EDIT_FAILURE_LIMIT)})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "replace_in_file",
