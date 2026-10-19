@@ -666,7 +666,8 @@ def test_the_queue_and_the_room_are_what_the_cluster_section_says():
 
 
 def _proxy():
-    return _load("server_proxy_panel", SERVERS_DIR / "proxy" / "server_proxy.py")
+    from mimir.servers.proxy._ops import panel as proxy_panel
+    return proxy_panel
 
 
 def test_a_session_pinned_elsewhere_says_so_before_the_run_not_after():
@@ -675,7 +676,7 @@ def test_a_session_pinned_elsewhere_says_so_before_the_run_not_after():
     proxy = _proxy()
     with mock.patch.object(proxy, "_this_machine",
                            return_value={"machine_signature": "here", "host": "login01"}):
-        lines = proxy._comparability_lines(
+        lines = proxy.comparability_lines(
             {"machine": {"machine_signature": "elsewhere", "host": "node042"}}, "time_s")
     assert lines[0] == {"label": "measured on", "value": "node042"}
     assert lines[1]["state"] == "warn"
@@ -686,7 +687,7 @@ def test_a_session_pinned_here_raises_nothing():
     proxy = _proxy()
     with mock.patch.object(proxy, "_this_machine",
                            return_value={"machine_signature": "here", "host": "node042"}):
-        lines = proxy._comparability_lines(
+        lines = proxy.comparability_lines(
             {"machine": {"machine_signature": "here", "host": "node042"}}, "time_s")
     assert len(lines) == 1
     assert "this machine" in lines[0]["value"]
@@ -695,11 +696,11 @@ def test_a_session_pinned_here_raises_nothing():
 def test_a_metric_that_does_not_depend_on_the_machine_is_never_pinned():
     """An accuracy is reproducible anywhere; warning about the host would be noise."""
     proxy = _proxy()
-    assert proxy._comparability_lines(
+    assert proxy.comparability_lines(
         {"machine": {"machine_signature": "elsewhere", "host": "node042"}},
         "l2_error") == []
 
 
 def test_nothing_is_said_until_a_baseline_has_pinned_a_machine():
     proxy = _proxy()
-    assert proxy._comparability_lines({}, "time_s") == []
+    assert proxy.comparability_lines({}, "time_s") == []

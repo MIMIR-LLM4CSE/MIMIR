@@ -247,10 +247,10 @@ class PanelLinesTests(unittest.TestCase):
     """The same account in the drawer, so the user sees it without asking either."""
 
     def _lines(self, axes: dict):
-        from mimir.servers.proxy import server_proxy
-        with mock.patch.object(server_proxy.eval_observe, "axes_tried",
+        from mimir.servers.proxy._ops import panel as proxy_panel
+        with mock.patch.object(proxy_panel.eval_observe, "axes_tried",
                                return_value=axes):
-            return server_proxy._axes_lines("solver")
+            return proxy_panel._axes_lines("solver")
 
     def test_the_shape_of_the_search_is_one_line(self):
         lines = self._lines({"tried": 7, "accepted": [{"axis": "tiling"}],
@@ -265,7 +265,7 @@ class PanelLinesTests(unittest.TestCase):
     def test_a_settled_run_shows_up_on_the_next_refresh(self):
         """The lines are cached on the ledger's own mtime, so there is no staleness to
         reason about: the moment a run settles, the next refresh re-reads it."""
-        from mimir.servers.proxy import server_proxy
+        from mimir.servers.proxy._ops import panel as proxy_panel
         tmp = tempfile.mkdtemp()
         ledger = os.path.join(tmp, "ledger.jsonl")
         open(ledger, "w").close()
@@ -273,22 +273,22 @@ class PanelLinesTests(unittest.TestCase):
                    {"tried": 2, "accepted": [], "rejected": ["unrolling", "simd"]}]
 
         with mock.patch("mimir.servers.proxy._lib.store.opt_ledger_file", return_value=ledger), \
-             mock.patch.object(server_proxy.eval_observe, "axes_tried",
+             mock.patch.object(proxy_panel.eval_observe, "axes_tried",
                                side_effect=answers):
-            first = server_proxy._axes_lines("solver")
+            first = proxy_panel._axes_lines("solver")
             # Same mtime: served from the cache, so the second answer is not consumed.
-            self.assertEqual(server_proxy._axes_lines("solver"), first)
+            self.assertEqual(proxy_panel._axes_lines("solver"), first)
             os.utime(ledger, (0, 0))    # a run settled
-            second = server_proxy._axes_lines("solver")
+            second = proxy_panel._axes_lines("solver")
         self.assertNotEqual(second, first)
         self.assertIn("simd", " ".join(line["value"] for line in second))
 
     def test_the_panel_survives_a_store_it_cannot_read(self):
         """One section that cannot answer costs its own lines, never the drawer."""
-        from mimir.servers.proxy import server_proxy
-        with mock.patch.object(server_proxy.eval_observe, "axes_tried",
+        from mimir.servers.proxy._ops import panel as proxy_panel
+        with mock.patch.object(proxy_panel.eval_observe, "axes_tried",
                                side_effect=RuntimeError("store is gone")):
-            self.assertEqual(server_proxy._axes_lines("solver"), [])
+            self.assertEqual(proxy_panel._axes_lines("solver"), [])
 
 
 class RecordedAxisTests(unittest.TestCase):
