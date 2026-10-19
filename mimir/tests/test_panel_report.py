@@ -33,6 +33,7 @@ def _report(hpc, **kwargs) -> dict:
     return asyncio.run(hpc.hpc_panel_report(**kwargs))
 
 from mimir.shared import slurm_site
+from mimir.servers.hpc import panel
 
 from mimir.client.tools.capabilities import PANEL_REPORT, ToolCaps, panel_sections
 from mimir.client.core.turn_state import TurnState
@@ -235,17 +236,17 @@ def test_a_refresh_drops_the_digest_that_outlives_every_other_cache():
     until something drops it. That is what the reader's ⟳ is for.
     """
     hpc = _load("server_hpc_refresh", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE.clear()
+    panel.forget()
     forgotten: list = []
 
-    with mock.patch.object(hpc, "_forget_cluster_digest",
+    with mock.patch.object(panel, "forget_cluster_digest",
                            side_effect=lambda *a: forgotten.append(a)), \
-         mock.patch.object(hpc, "slurm_hosts", return_value=[]), \
-         mock.patch.object(hpc, "_queue_line", return_value=None), \
-         mock.patch.object(hpc, "_partition_lines", return_value=[]):
-        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "host:stale"}]):
+         mock.patch.object(panel, "slurm_hosts", return_value=[]), \
+         mock.patch.object(panel, "_queue_line", return_value=None), \
+         mock.patch.object(panel, "_partition_lines", return_value=[]):
+        with mock.patch.object(panel, "_host_tree", return_value=[{"id": "host:stale"}]):
             _report(hpc)
-        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "host:fresh"}]):
+        with mock.patch.object(panel, "_host_tree", return_value=[{"id": "host:fresh"}]):
             held = _report(hpc)
             assert held["groups"] == [{"id": "host:stale"}]      # the timer's answer
             asked = _report(hpc, refresh=True)
@@ -257,33 +258,33 @@ def test_a_refresh_drops_the_digest_that_outlives_every_other_cache():
 def test_a_profile_landing_shows_without_a_refresh(tmp_path):
     """A node profiled during a turn reaches the timer's answer, not only ⟳'s."""
     hpc = _load("server_hpc_profile_lands", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE.clear()
+    panel.forget()
     host_dir = tmp_path / "local"
     host_dir.mkdir()
 
-    with mock.patch.object(hpc, "slurm_hosts", return_value=[""]), \
-         mock.patch.object(hpc, "profile_host_dir", return_value=str(host_dir)), \
-         mock.patch.object(hpc, "_queue_line", return_value=None), \
-         mock.patch.object(hpc, "_partition_lines", return_value=[]):
-        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "before"}]):
+    with mock.patch.object(panel, "slurm_hosts", return_value=[""]), \
+         mock.patch.object(panel, "profile_host_dir", return_value=str(host_dir)), \
+         mock.patch.object(panel, "_queue_line", return_value=None), \
+         mock.patch.object(panel, "_partition_lines", return_value=[]):
+        with mock.patch.object(panel, "_host_tree", return_value=[{"id": "before"}]):
             assert _report(hpc)["groups"] == [{"id": "before"}]
         (host_dir / "n01.json").write_text("{}")
         os.utime(host_dir, ns=(0, os.stat(host_dir).st_mtime_ns + 10**9))
-        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "after"}]):
+        with mock.patch.object(panel, "_host_tree", return_value=[{"id": "after"}]):
             assert _report(hpc)["groups"] == [{"id": "after"}]
 
 
 def test_a_host_that_did_not_answer_is_asked_again_soon():
     hpc = _load("server_hpc_retry", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE.clear()
-    with mock.patch.object(hpc, "slurm_hosts", return_value=[]), \
-         mock.patch.object(hpc, "_queue_line", return_value=None), \
-         mock.patch.object(hpc, "_partition_lines", return_value=[]):
-        with mock.patch.object(hpc, "_host_tree",
+    panel.forget()
+    with mock.patch.object(panel, "slurm_hosts", return_value=[]), \
+         mock.patch.object(panel, "_queue_line", return_value=None), \
+         mock.patch.object(panel, "_partition_lines", return_value=[]):
+        with mock.patch.object(panel, "_host_tree",
                                return_value=[{"id": "h", "state": "warn"}]):
             _report(hpc)
-        hpc._PANEL_CACHE["hosts"]["at"] -= hpc._PANEL_RETRY_SECS + 1
-        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "h"}]):
+        panel._CACHE["hosts"]["at"] -= panel._RETRY_SECS + 1
+        with mock.patch.object(panel, "_host_tree", return_value=[{"id": "h"}]):
             assert _report(hpc)["groups"] == [{"id": "h"}]
 
 
@@ -376,13 +377,12 @@ _SILENT_DIGEST = {"scheduler": "hpc2", "built_at": "", "source": "", "signature"
 
 def _tree(hosts, digests, profiles=None):
     """Build the host tree against canned digests and profiles — no scheduler is asked."""
-    hpc = _load("server_hpc_tree", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE.clear()
-    with mock.patch.object(hpc, "slurm_hosts", return_value=hosts), \
-         mock.patch.object(hpc, "_cluster_digest", side_effect=lambda h: digests[h]), \
-         mock.patch.object(hpc, "read_node_profile",
+    panel.forget()
+    with mock.patch.object(panel, "slurm_hosts", return_value=hosts), \
+         mock.patch.object(panel, "cluster_digest", side_effect=lambda h: digests[h]), \
+         mock.patch.object(panel, "read_node_profile",
                            side_effect=lambda node, host: (profiles or {}).get(node)):
-        return hpc._host_tree()
+        return panel._host_tree()
 
 
 def test_every_registered_scheduler_is_in_the_tree():
@@ -401,8 +401,7 @@ def test_the_schedulers_are_all_reached_at_once():
     cluster's, not this process's. Three of them one after another is three waits for
     a reader who asked one question."""
     import threading
-    hpc = _load("server_hpc_parallel", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE.clear()
+    panel.forget()
     hosts = ["hpc1", "hpc2", "hpc3"]
     barrier = threading.Barrier(len(hosts), timeout=5)
     probed: set[str] = set()
@@ -413,10 +412,10 @@ def test_the_schedulers_are_all_reached_at_once():
             probed.add(host)
         return _DIGEST
 
-    with mock.patch.object(hpc, "slurm_hosts", return_value=hosts), \
-         mock.patch.object(hpc, "_cluster_digest", side_effect=_slow), \
-         mock.patch.object(hpc, "read_node_profile", return_value=None):
-        tree = hpc._host_tree()
+    with mock.patch.object(panel, "slurm_hosts", return_value=hosts), \
+         mock.patch.object(panel, "cluster_digest", side_effect=_slow), \
+         mock.patch.object(panel, "read_node_profile", return_value=None):
+        tree = panel._host_tree()
     assert [g["label"] for g in tree] == hosts
 
 
@@ -626,14 +625,14 @@ def test_a_host_without_a_scheduler_reports_no_cluster_at_all():
     an empty cluster panel.
     """
     hpc = _load("server_hpc_panel", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE.clear()
+    panel.forget()
     # Both halves have to be silent for the section to be. The scheduler inventory is
     # its own question — a workspace can have registered a cluster over ssh while the
     # machine the panel runs on has no Slurm at all — so it is emptied explicitly
     # rather than left to whatever this test host happens to have installed.
     with mock.patch.object(hpc.cli, "run_bash",
                            return_value={"status": "error", "error": "no sinfo here"}), \
-         mock.patch.object(hpc, "slurm_hosts", return_value=[]):
+         mock.patch.object(panel, "slurm_hosts", return_value=[]):
         out = _report(hpc)
     assert out["status"] == "ok"
     assert out["lines"] == []
@@ -643,7 +642,7 @@ def test_a_host_without_a_scheduler_reports_no_cluster_at_all():
 
 def test_the_queue_and_the_room_are_what_the_cluster_section_says():
     hpc = _load("server_hpc_panel2", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE.clear()
+    panel.forget()
 
     # Every read names the scheduler it went to, so the stub takes the host and one
     # scheduler is forced: the probe is a fact about the developer's machine, and the
@@ -658,7 +657,7 @@ def test_the_queue_and_the_room_are_what_the_cluster_section_says():
     with mock.patch.object(hpc.cli, "run_bash", _bash), \
             mock.patch.object(slurm_site, "_HAS_SLURM", True), \
             mock.patch.object(hpc, "_recorded_jobs", return_value={}), \
-            mock.patch.object(hpc, "_host_tree", return_value=[]):
+            mock.patch.object(panel, "_host_tree", return_value=[]):
         out = _report(hpc)
     values = {line["label"]: line["value"] for line in out["lines"]}
     assert values["your jobs"] == "1 pending, 1 running"
