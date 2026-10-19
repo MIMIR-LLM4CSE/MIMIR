@@ -32,7 +32,7 @@ def _load(name: str, path: Path):
 def _report(hpc, **kwargs) -> dict:
     return asyncio.run(hpc.hpc_panel_report(**kwargs))
 
-from mimir.servers._shared import slurm_site
+from mimir.shared import slurm_site
 
 from mimir.client.tools.capabilities import PANEL_REPORT, ToolCaps, panel_sections
 from mimir.client.core.turn_state import TurnState

@@ -7,7 +7,7 @@ import json
 import os
 import threading
 import time
-from .._shared.jobs import descriptor, op
+from ...shared.jobs import descriptor, op
 from . import spawn_limits
 from . import spawn_user_channel
 from . import spawn_worktree
@@ -155,7 +155,7 @@ def entry_from_card(job_key: str) -> dict | None:
     if not job_key:
         return None
     try:
-        from .._shared.state_paths import active_session_id, subagents_dir
+        from ...shared.state_paths import active_session_id, subagents_dir
         path = os.path.join(subagents_dir(active_session_id()), job_key, "subagent.json")
         with open(path, encoding="utf-8") as fh:
             card = json.load(fh)

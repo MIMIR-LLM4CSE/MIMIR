@@ -16,7 +16,7 @@ from mimir.tests.support.proxy import (
     server_proxy,
     store,
 )
-from mimir.servers._shared.atomic import write_json  # noqa: E402
+from mimir.shared.atomic import write_json  # noqa: E402
 
 
 

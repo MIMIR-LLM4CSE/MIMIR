@@ -21,9 +21,9 @@ from ..tools.capabilities import infer_tool_caps
 from ..protocol.tool_call import DOING_ARG
 from ..config import paths
 from ..config.paths import GLOBAL_STATE_DIR, SERVER_BASE
-from ...servers._shared.launcher import launch_argv
+from ...shared.launcher import launch_argv
 from ..config.limits import USER_QUESTION_TIMEOUT_SECS
-from ...servers._shared.state_paths import scratch_home
+from ...shared.state_paths import scratch_home
 from ..core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
@@ -376,7 +376,7 @@ async def _handshake(session: Any) -> Any:
 
 def server_args(script: str) -> list[str]:
     """The arguments that start *script*: a bundled server runs as its module through
-    the launcher (``servers/_shared/launcher``); anything else by its path."""
+    the launcher (``shared/launcher``); anything else by its path."""
     bundled = os.path.realpath(SERVER_BASE)
     path = os.path.realpath(script)
     if script.endswith(".py") and path.startswith(bundled + os.sep):

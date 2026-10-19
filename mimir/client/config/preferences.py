@@ -14,7 +14,7 @@ import threading
 from typing import Any
 
 from . import paths
-from ...servers._shared.atomic import write_json
+from ...shared.atomic import write_json
 from .settings import DEFAULT_SUBAGENT_LEVEL, clamp_subagent_level
 
 logger = logging.getLogger(__name__)

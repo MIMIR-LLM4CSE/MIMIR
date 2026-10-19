@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ...servers._shared.responses import err
+from ...shared.responses import err
 
 
 # Payload keys whose value is a block of program text — a file's contents, a run's

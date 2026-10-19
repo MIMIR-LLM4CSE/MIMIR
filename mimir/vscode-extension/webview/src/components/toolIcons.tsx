@@ -18,7 +18,7 @@ const GitHubMark: React.FC = () => (
 );
 
 /** Work family → icon. The families are declared by the servers (`TOOL_KINDS` in
- *  servers/_shared/capabilities.py) and the row shows the same word it draws the glyph
+ *  shared/capabilities.py) and the row shows the same word it draws the glyph
  *  from, so the two cannot drift apart as a table keyed on tool names would.
  *
  *  Emoji throughout, with the one exception above: a bare text glyph (`❯`, `∑`) takes

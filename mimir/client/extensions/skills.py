@@ -2,7 +2,7 @@
 
 A user skill ``.mimir/skills/<name>/SKILL.md`` (override ``MIMIR_SKILLS_DIR``) is
 loaded by ``MimirAgent.load_skills`` over the bundled ones, a same-named one
-overriding; the file format is ``servers/_shared/skill_file``.
+overriding; the file format is ``shared/skill_file``.
 """
 
 from __future__ import annotations

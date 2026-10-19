@@ -9,7 +9,7 @@ import json
 import os
 from datetime import datetime, timezone
 
-from ..._shared.atomic import write_json
+from ....shared.atomic import write_json
 from . import store
 
 

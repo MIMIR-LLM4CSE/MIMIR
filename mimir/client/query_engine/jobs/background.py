@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from ...protocol.event_sink import emit
-from ....servers._shared import jobs
+from ....shared import jobs
 from ...tools.capabilities import BACKGROUNDABLE, has_cap
 from ...protocol.tool_result import parse_tool_payload
 from . import poll

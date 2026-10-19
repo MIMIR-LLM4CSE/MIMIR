@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import os
 
-_SERVERS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LAUNCHER = os.path.join(_SERVERS_DIR, "_launch.py")
+_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LAUNCHER = os.path.join(_PACKAGE_DIR, "servers", "_launch.py")
 # The directory holding the ``mimir`` package, for a generated script that imports it.
-PACKAGE_PARENT = os.path.dirname(os.path.dirname(_SERVERS_DIR))
+PACKAGE_PARENT = os.path.dirname(_PACKAGE_DIR)
 
 
 def launch_argv(module: str, *args: str) -> list[str]:

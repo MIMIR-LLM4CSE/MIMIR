@@ -9,8 +9,8 @@ fails the suite.
 ## The client's layers
 
 Read bottom to top: a unit imports, at load time, only units below it. Every unit also
-imports the foundations (`config`, `protocol`) and
-`mimir/servers/_shared`; those edges are omitted.
+imports the foundations (`config`, `protocol`) and `mimir/shared`, the code the client and
+the servers share; those edges are omitted.
 
 ```mermaid
 graph TD
@@ -147,11 +147,11 @@ actually fires.
 ## Detached runs
 
 A run that outlives its tool call is described the same way everywhere, by
-`servers/_shared/jobs.py`: the descriptor a watcher polls, the payload keys that carry it
+`shared/jobs.py`: the descriptor a watcher polls, the payload keys that carry it
 (`background_job` launched, `background_jobs` handed over), the terminal words and the files
 a run's directory holds. The servers produce descriptors through it; the client's watcher, its
 disk scan and the dispatch guards read them through it. Slurm's states are read into those
-words by `_shared/slurm_site`, which only the servers load.
+words by `shared/slurm_site`, which only the servers load.
 
 ## The VS Code extension
 
@@ -161,23 +161,29 @@ webview's state lives in hooks by concern (`useEndpoint`, `useAgentSettings`, `u
 `useComposer`) and the chat reducer; each hook answers the server messages about its state
 through a handler table. Both halves are type-checked by `npm test`.
 
+## What the client and the servers share
+
+`mimir/shared/` is the code both sides run: the on-disk layout, the atomic write, the shape
+of a tool answer, the capability vocabulary a server declares with, the run contract, the
+shell parsing. It imports neither the client nor the servers; both import it.
+
 ## The servers
 
 `mimir/servers/` is a package: each domain (`workspace`, `agent_state`, `hpc`, `proxy`,
-…) imports `_shared` and its siblings by package. A bundled server runs as a module
-through `servers/_launch.py` (`_shared/launcher.launch_argv`), which keeps the user's
+…) imports `mimir.shared` and its siblings by package. A bundled server runs as a module
+through `servers/_launch.py` (`shared/launcher.launch_argv`), which keeps the user's
 workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path.
 
-- `_shared` holds what two domains or more use; a module one domain uses lives in its
-  package (`hpc/slurm_digest`, `workspace/lsp_client`, `agent_state/model_catalog`).
-- `_shared` never imports the client.
+- `shared` holds what two domains or more use, or what the client reads too; a module one
+  domain uses lives in its package (`hpc/slurm_digest`, `workspace/lsp_client`,
+  `agent_state/model_catalog`).
 - Only `agent_state` (the sub-agent server builds a `MimirAgent`) and `interaction`
   import the client, and only its public names.
 
 ## Rules for every module
 
-- **One home per concept.** The on-disk layout (`_shared/state_paths`), the atomic write
-  (`_shared/atomic`), the shape of a tool answer (`_shared/responses`), the clock, the
+- **One home per concept.** The on-disk layout (`shared/state_paths`), the atomic write
+  (`shared/atomic`), the shape of a tool answer (`shared/responses`), the clock, the
   pid liveness check, the SKILL.md format: each has one module.
 - **No private name crosses a module.** A name another module imports or reads off a
   module (`store.read_json`) is public, in the client and the servers alike.
@@ -187,7 +193,7 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
   few lines of why (6 in all); a module's says what it holds (8 in all). The longer
   reasoning lives in the `*_DETAILED.md` docs. An MCP tool's docstring is exempt: it is
   what the model reads. The same holds for tests and for the extension's comments.
-- **Types are checked.** `mypy` covers `mimir/client` and `mimir/servers`; `core`,
+- **Types are checked.** `mypy` covers `mimir/client`, `mimir/servers` and `mimir/shared`; `core`,
   `context` and `config` are held to fully typed definitions. `MimirAgent` is checked
   against `AgentPort` statically.
 - **Tests go through public construction and behaviour.** No test reads the source or

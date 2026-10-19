@@ -10,8 +10,8 @@ from __future__ import annotations
 import os
 
 from ...config import paths
-from ....servers._shared.atomic import write_json
-from ....servers._shared.state_paths import session_state_dir
+from ....shared.atomic import write_json
+from ....shared.state_paths import session_state_dir
 
 
 def _real(abspath: str) -> str:

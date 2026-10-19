@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isValidElement } from "react";
 import { KIND_ICONS, iconForKind, labelForKind } from "./toolIcons";
 
-// The families the servers declare (servers/_shared/capabilities.py TOOL_KINDS). Kept
+// The families the servers declare (shared/capabilities.py TOOL_KINDS). Kept
 // here as a literal rather than imported: this is the UI's end of a wire contract, and
 // a family that loses its icon has to fail here and not fall silently back to 🔧.
 const TOOL_KINDS = [

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...config.limits import HARD_REPEAT_LIMIT
-from ....servers._shared.jobs import job_key_of
+from ....shared.jobs import job_key_of
 from ...tools.bash_classify import segment_program, shell_segments
 from ...tools.capabilities import EDIT, has_cap, shell_command_args
 from ...context.execution_context import ExecutionContext

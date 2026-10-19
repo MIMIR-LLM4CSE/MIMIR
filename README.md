@@ -167,7 +167,7 @@ is documented in [`SETUP.md`](SETUP.md).
 │                             MimirAgent (client)                               │
 │      backend.chat(model, messages, tools=[...]) (Ollama, vLLM or Ray)      │
 │                                                                             │
-│  servers/_shared/          shared response helpers, path sandboxing,         │
+│  shared/          shared response helpers, path sandboxing,         │
 │                            text tools, module env, Slurm node parsing,       │
 │                            embedding cache                                   │
 │                                                                             │

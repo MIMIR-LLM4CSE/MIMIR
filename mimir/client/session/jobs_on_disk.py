@@ -2,7 +2,7 @@
 
 Descriptors under ``<state>/sessions/<sid>/jobs/`` and ``.../hpc_jobs/`` say which runs
 still go and which ended unwatched. The files and
-words are the servers' own (``_shared.jobs``).
+words are the servers' own (``shared.jobs``).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import os
 import time
 from dataclasses import dataclass
 
-from ...servers._shared.jobs import (
+from ...shared.jobs import (
     EXIT_CODE,
     META,
     REPORTED,
@@ -25,8 +25,8 @@ from ...servers._shared.jobs import (
     shell_descriptor,
     slurm_descriptor,
 )
-from ...servers._shared.processes import is_running
-from ...servers._shared.state_paths import sessions_root, subagents_dir
+from ...shared.processes import is_running
+from ...shared.state_paths import sessions_root, subagents_dir
 from ..config import paths
 from ..query_engine.jobs.wakes import job_complete
 

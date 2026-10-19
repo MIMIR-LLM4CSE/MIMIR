@@ -13,7 +13,7 @@ from ...context.execution_context import (
     known_existing_files,
     nudge_count,
 )
-from ....servers._shared.shell_paths import any_command_on_path
+from ....shared.shell_paths import any_command_on_path
 from ...tools.capabilities import CODE_EXEC, names_with_cap
 from ...config.limits import (
     EXERCISE_BUDGET,

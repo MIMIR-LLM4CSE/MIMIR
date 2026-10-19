@@ -9,11 +9,11 @@ import re
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
-from .._shared.responses import err, ok
-from .._shared.state_paths import TODO_FILENAME, session_state_dir, state_dir
+from ...shared.capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
+from ...shared.responses import err, ok
+from ...shared.state_paths import TODO_FILENAME, session_state_dir, state_dir
 from .text_tools import yaml_scalar, yaml_unquote
-from .._shared.clock import utc_date, utc_minute
+from ...shared.clock import utc_date, utc_minute
 
 # Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager;
 # <workspace>/.mimir for standalone runs and tests). Todos and plans are per-session

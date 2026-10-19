@@ -16,15 +16,15 @@ from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.servers._shared import run_channel
-from mimir.servers._shared import slurm_site
+from mimir.shared import run_channel
+from mimir.shared import slurm_site
 
 from mimir.tests.support.scheduler import local_slurm
 from mimir.servers.workspace import bash_jobs
 from mimir.servers.workspace import server_bash
 from mimir.servers.workspace import bash_validation
 
-from mimir.servers._shared.trusted_read_roots import trusted_read_roots
+from mimir.shared.trusted_read_roots import trusted_read_roots
 
 
 def _jobs_on_disk() -> list[str]:

@@ -18,7 +18,7 @@ from ...config import paths
 from ...context.resource_context import augment_query_with_resources
 from ...llm.factory import get_backend
 from ...query_engine.context_budget import context_budget_for
-from ....servers._shared.state_paths import TODO_FILENAME, session_file
+from ....shared.state_paths import TODO_FILENAME, session_file
 
 logger = logging.getLogger(__name__)
 

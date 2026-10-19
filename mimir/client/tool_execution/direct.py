@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from ..protocol.tool_result import normalize_tool_content
-from ...servers._shared.responses import err, ok
+from ...shared.responses import err, ok
 
 logger = logging.getLogger(__name__)
 

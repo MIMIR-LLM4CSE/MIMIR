@@ -7,10 +7,10 @@ import os
 import re
 import shlex
 import sys
-from .._shared.atomic import write_json
-from .._shared.launcher import launch_argv
-from .._shared.state_paths import state_dir
-from .._shared.slurm_site import (
+from ...shared.atomic import write_json
+from ...shared.launcher import launch_argv
+from ...shared.state_paths import state_dir
+from ...shared.slurm_site import (
     LOCAL as _LOCAL_HOST,
     LOCAL_NAME as _LOCAL_NAME,
     name_of as _host_name,
@@ -23,8 +23,8 @@ from .slurm_nodes import (
     HARDWARE_FIELDS as _HARDWARE_FIELDS,
     as_int as _as_int,
 )
-from .._shared.slurm_script import node_python_lines
-from .._shared import cpu_facts
+from ...shared.slurm_script import node_python_lines
+from ...shared import cpu_facts
 from . import cli
 from .cli import (
     TIMEOUT_READ,

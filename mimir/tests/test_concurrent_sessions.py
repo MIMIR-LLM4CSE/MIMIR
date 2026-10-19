@@ -268,7 +268,7 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
 
                 # And a job whose process still runs counts, named by its command.
                 import json
-                from mimir.servers._shared.processes import proc_starttime
+                from mimir.shared.processes import proc_starttime
                 os.makedirs(os.path.join(jobs, "j1"))
                 with open(os.path.join(jobs, "j1", "meta.json"), "w") as fh:
                     json.dump({"job_key": "j1", "command": "make all", "pid": os.getpid(),

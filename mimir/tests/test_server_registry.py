@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.servers._shared.processes import proc_starttime
+from mimir.shared.processes import proc_starttime
 from mimir.client.ui.ws.server import registry as server_registry
 from mimir.tests.support.state import pin_state_dir
 

@@ -15,7 +15,7 @@ from ..config.settings import (
     subagent_level_allows,
 )
 from ..config import paths
-from ...servers._shared.state_paths import scratch_dir
+from ...shared.state_paths import scratch_dir
 
 logger = logging.getLogger(__name__)
 

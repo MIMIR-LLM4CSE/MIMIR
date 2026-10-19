@@ -15,7 +15,7 @@ from ..config.limits import TOOL_CALL_TIMEOUT_MAX_SECS, TOOL_CALL_TIMEOUT_SECS
 # ---------------------------------------------------------------------------
 # Capability vocabulary: flags a server declares per tool, each a behavioural contract
 # consumed by a policy or nudge, never a tool's identity. Mirrored in
-# servers/_shared/capabilities.py (kept level by test_capabilities).
+# shared/capabilities.py (kept level by test_capabilities).
 # ---------------------------------------------------------------------------
 
 # --- Discovery: reads, searches, inspections the policy tracks as evidence -
@@ -74,7 +74,7 @@ REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
 # --- Work families --------------------------------------------------------
 # The word a tool-activity row shows, and its icon: a family of work, declared by the
 # tool and derived by ``kind_for`` for one that declares none. Mirrored in
-# servers/_shared/capabilities.py.
+# shared/capabilities.py.
 TOOL_KINDS = (
     "read", "search", "list", "outline",            # discovery
     "write", "edit", "delete",                      # file mutation
@@ -111,7 +111,7 @@ BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result ma
                                        # background_job descriptor a watcher polls to completion
 DIVERTIBLE = "divertible"              # publishes a run channel under its own name while it
                                        # blocks, so the user can move the run it is waiting on
-                                       # to the background mid-flight (see _shared/run_channel.py)
+                                       # to the background mid-flight (see shared/run_channel.py)
 
 
 

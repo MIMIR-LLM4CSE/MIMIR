@@ -14,7 +14,7 @@ import types
 import unittest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-_SHARED = _ROOT / "servers" / "_shared"
+_SHARED = _ROOT / "shared"
 from mimir.tests.support.modules import spec_for
 
 

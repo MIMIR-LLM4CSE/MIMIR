@@ -77,7 +77,7 @@ class GrantPathTests(_TmpStateDir):
     def test_server_reads_client_sidecar(self) -> None:
         # End-to-end propagation: what the client writes, the server helper reads.
         import importlib
-        from mimir.servers._shared import approved_roots as ar
+        from mimir.shared import approved_roots as ar
         importlib.reload(ar)  # ensure it resolves state_dir() fresh
         m = self._mgr()
         m.paths.grant("/tmp/data/run.log", always=True)
@@ -182,7 +182,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
 
     def test_no_home_cache_root_is_trusted_any_more(self) -> None:
         """MIMIR writes under its state dir, the workspace and /tmp — nowhere else."""
-        from mimir.servers._shared.trusted_read_roots import trusted_read_roots
+        from mimir.shared.trusted_read_roots import trusted_read_roots
         home = os.path.expanduser("~")
         for root in trusted_read_roots():
             self.assertFalse(
@@ -376,7 +376,7 @@ class ShellPathApprovalTests(_TmpStateDir):
         agent = self._agent(script=(True, True))
         gates.check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd /tmp/granted && ls"}, {})
-        from mimir.servers._shared import approved_roots
+        from mimir.shared import approved_roots
         self.assertIn(os.path.realpath("/tmp/granted"), approved_roots.approved_roots())
 
     def test_non_exec_tool_is_not_scanned_for_cd(self) -> None:

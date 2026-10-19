@@ -16,7 +16,7 @@ import queue as _queue
 import threading
 from typing import Any
 
-from .....servers._shared.responses import err
+from .....shared.responses import err
 from ....agent_core import MimirAgent
 from ....config import TEMPERATURE_BACKENDS
 from ....config.models import thinking_can_disable, thinking_profile

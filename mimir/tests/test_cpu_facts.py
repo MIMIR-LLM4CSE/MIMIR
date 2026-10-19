@@ -2,16 +2,16 @@
 contexts (no scheduler, login node, allocation), the batch header, and shell ``srun``.
 """
 
-from mimir.servers._shared.launcher import launch_argv
+from mimir.shared.launcher import launch_argv
 import sys
 import unittest
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parents[1] / "servers" / "_shared"
+_SHARED = Path(__file__).resolve().parents[1] / "shared"
 
-from mimir.servers._shared import cpu_facts
-from mimir.servers._shared import slurm_script
-from mimir.servers._shared.shell_paths import allocates_cluster
+from mimir.shared import cpu_facts
+from mimir.shared import slurm_script
+from mimir.shared.shell_paths import allocates_cluster
 
 
 _LSCPU_X86 = """\

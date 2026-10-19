@@ -15,7 +15,7 @@ from mimir.tests.support.proxy import (
     server_proxy,
     store,
 )
-from mimir.servers._shared import jobs as shared_jobs, slurm_site
+from mimir.shared import jobs as shared_jobs, slurm_site
 
 
 class ValidateSlurmArgsTests(unittest.TestCase):

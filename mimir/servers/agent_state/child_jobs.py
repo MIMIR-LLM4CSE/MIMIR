@@ -13,7 +13,7 @@ import threading
 from collections import deque
 
 from mimir.client.query_engine.jobs import poll as job_poll
-from .._shared.jobs import job_key_of
+from ...shared.jobs import job_key_of
 from mimir.client.query_engine.jobs.wakes import job_complete, wake_text
 
 logger = logging.getLogger(__name__)

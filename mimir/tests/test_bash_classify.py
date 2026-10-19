@@ -13,7 +13,7 @@ from mimir.client.tools.bash_classify import (
     bash_command_is_readonly,
     classify_bash_command,
 )
-from mimir.servers._shared.shell_paths import (
+from mimir.shared.shell_paths import (
     BUILD_COMMANDS,
     EFFECT_BUILD,
     EFFECT_ENV_SETUP,
@@ -400,7 +400,7 @@ class NestedCommandParsingTests(unittest.TestCase):
     """
 
     def _segs(self, cmd):
-        from mimir.servers._shared.shell_paths import parse_segments
+        from mimir.shared.shell_paths import parse_segments
         return [(s.argv, s.nested) for s in parse_segments(cmd)]
 
     def test_nested_command_becomes_its_own_segment(self):
@@ -425,25 +425,25 @@ class NestedCommandParsingTests(unittest.TestCase):
         ])
 
     def test_unterminated_exec_raises(self):
-        from mimir.servers._shared.shell_paths import ShellParseError, parse_segments
+        from mimir.shared.shell_paths import ShellParseError, parse_segments
         with self.assertRaises(ShellParseError):
             parse_segments("find . -exec grep q {}")
 
     def test_a_redirection_inside_the_payload_belongs_to_find(self):
         # The shell applies it to find, so it must be confined like any other write.
-        from mimir.servers._shared.shell_paths import parse_segments
+        from mimir.shared.shell_paths import parse_segments
         segs = parse_segments(r"find . -exec cat {} > /tmp/out \;")
         self.assertEqual([(s.argv, s.write_targets) for s in segs],
                          [(["find", "."], ["/tmp/out"]), (["cat", "{}"], [])])
 
     def test_another_operator_inside_the_payload_raises(self):
-        from mimir.servers._shared.shell_paths import ShellParseError, parse_segments
+        from mimir.shared.shell_paths import ShellParseError, parse_segments
         for cmd in (r"find . -exec sh {} | tee /tmp/x \;", r"find . -exec a {} && b \;"):
             with self.subTest(cmd), self.assertRaises(ShellParseError):
                 parse_segments(cmd)
 
     def test_readonly_nested_set_is_derived_not_relisted(self):
-        from mimir.servers._shared.shell_paths import (
+        from mimir.shared.shell_paths import (
             INSPECT_COMMANDS,
             NEUTRAL_COMMANDS,
             READ_COMMANDS,
@@ -463,7 +463,7 @@ class NestedCommandParsingTests(unittest.TestCase):
         # The invariance guard. Every command exercised elsewhere in this file plus
         # the awkward shapes: none contains `-exec`, so all must parse to exactly
         # one non-nested segment set, unchanged by the nested-command state machine.
-        from mimir.servers._shared.shell_paths import parse_segments
+        from mimir.shared.shell_paths import parse_segments
         corpus = [
             "ls -la", "grep -n foo bar.py", "cat a.py | head -20",
             "cd sub && pytest t.py", "python -c 'print(1)'",

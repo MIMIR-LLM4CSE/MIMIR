@@ -8,7 +8,7 @@ from pathlib import Path
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
 
 from mimir.servers.hpc import slurm_digest
-from mimir.servers._shared import slurm_site
+from mimir.shared import slurm_site
 
 from mimir.tests.support.scheduler import local_slurm
 

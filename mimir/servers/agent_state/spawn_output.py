@@ -8,7 +8,7 @@ import queue
 import sys
 import time
 from typing import Any, Callable
-from .._shared.atomic import write_text
+from ...shared.atomic import write_text
 from mcp.server.fastmcp import Context
 from . import spawn_jobs
 
@@ -92,7 +92,7 @@ def compact_event(ev: dict) -> dict | None:
 
 
 def activity_path(session: str) -> str:
-    from .._shared.state_paths import ACTIVITY_FILENAME, session_dir
+    from ...shared.state_paths import ACTIVITY_FILENAME, session_dir
     return os.path.join(session_dir(session), ACTIVITY_FILENAME)
 
 

@@ -13,8 +13,8 @@ import urllib.request
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import tool_caps, EXTERNAL_FETCH
-from .._shared.responses import err, ok
+from ...shared.capabilities import tool_caps, EXTERNAL_FETCH
+from ...shared.responses import err, ok
 
 mcp = FastMCP(
     "GitHubServer",

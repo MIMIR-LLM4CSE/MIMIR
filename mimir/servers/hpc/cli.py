@@ -7,8 +7,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from .._shared.responses import err, ok
-from .._shared.slurm_site import (
+from ...shared.responses import err, ok
+from ...shared.slurm_site import (
     LOCAL as _LOCAL_HOST,
     hosts as slurm_hosts,
     name_of as _host_name,

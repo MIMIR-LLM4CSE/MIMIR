@@ -10,7 +10,7 @@ from ..verification.ladder import (
     register_run_failure,
 )
 from ..proxy_state import active_proxy_source
-from ....servers._shared.jobs import handed_over, launched
+from ....shared.jobs import handed_over, launched
 from ...tools.capabilities import (
     CODE_EXEC,
     PLAN_BLOCKED,

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from .....servers._shared.embed import verify_ssl
+from .....shared.embed import verify_ssl
 from ....llm.factory import get_backend
 from ..runtime import (
     ORIGINAL_STDOUT,

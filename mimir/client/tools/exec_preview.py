@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from ..protocol.tool_result import parse_tool_payload
-from ...servers._shared.jobs import launched
+from ...shared.jobs import launched
 from .display import COMMAND_KEYS
 
 # CSI / OSC escape sequences (colors, cursor movement) — noise in an HTML panel.

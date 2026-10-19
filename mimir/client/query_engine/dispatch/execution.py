@@ -14,7 +14,7 @@ from ...tools.capabilities import timeout_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...protocol.event_sink import emit
-from ....servers._shared.jobs import job_key_of
+from ....shared.jobs import job_key_of
 from ...protocol.tool_result import json_error_payload
 from ...tools.exec_preview import extract_exec_preview
 from ...tool_execution.executor import run_post_tool_annotations

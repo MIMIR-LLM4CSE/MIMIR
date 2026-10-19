@@ -28,7 +28,7 @@ def _log(msg: str) -> None:
 def _write_phase(run_dir: str, kind: str, text: str, **fields) -> None:
     """Record what this run is doing, atomically, for whoever waits on it (never fatal)."""
     try:
-        from .._shared.atomic import write_json
+        from ...shared.atomic import write_json
         write_json(os.path.join(run_dir, "phase.json"),
                            {"kind": kind, "text": text, **fields}, indent=2)
     except Exception:
@@ -168,7 +168,7 @@ def _record_machine(run_dir: str) -> None:
     """Write ``machine.json`` from the machine running this, so the ratchet compares
     timings taken on the same kind of machine. Never fatal."""
     try:
-        from .._shared.cpu_facts import local_machine
+        from ...shared.cpu_facts import local_machine
         machine = local_machine()
         with open(os.path.join(run_dir, "machine.json"), "w") as fh:
             json.dump(machine, fh, indent=2)

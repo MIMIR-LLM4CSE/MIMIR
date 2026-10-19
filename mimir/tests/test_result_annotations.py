@@ -171,7 +171,7 @@ class ForkHintTests(unittest.TestCase):
         self.assertEqual(self._hint(ec, "work/driver_v2.py"), "")
 
     def test_the_scratchpad_is_exactly_where_these_files_belong(self) -> None:
-        from mimir.servers._shared.state_paths import scratch_dir
+        from mimir.shared.state_paths import scratch_dir
         from mimir.client.config.paths import STATE_DIR
         scratch = scratch_dir(STATE_DIR)
         ec = build_execution_context()

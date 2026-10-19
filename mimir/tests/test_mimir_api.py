@@ -20,7 +20,7 @@ from mimir.client.config import paths as k
 from mimir.client.config.servers import SERVERS                   
 from mimir.client.tools import capabilities as caps             
 from mimir.client.extensions import resolve_skills_dir            
-from mimir.servers._shared import extension_paths                 
+from mimir.shared import extension_paths                 
 from mimir.tests.support.modules import spec_for
 
 
@@ -219,7 +219,7 @@ class LoadSkillTests(unittest.TestCase):
     """
 
     def test_the_body_is_the_file_verbatim(self):
-        from mimir.servers._shared.skill_file import parse_skill_markdown
+        from mimir.shared.skill_file import parse_skill_markdown
         source = (pathlib.Path(k.SKILL_BASE) / "debug-numerics" / "SKILL.md").read_text()
         result = api.load_skill("debug-numerics")
         self.assertEqual(result["status"], "ok")
@@ -278,7 +278,7 @@ class LoadSkillTests(unittest.TestCase):
                 self.assertEqual(result["description"], "OVERRIDDEN")
                 # And the client's loader agrees: the override rule is restated across
                 # a process boundary, so parity is tested rather than trusted.
-                from mimir.servers._shared.skill_file import read_skills_dir
+                from mimir.shared.skill_file import read_skills_dir
                 skills = read_skills_dir(k.SKILL_BASE)
                 skills.update(read_skills_dir(resolve_skills_dir()))
                 self.assertEqual(skills["write-tests"]["content"], "My own method.")

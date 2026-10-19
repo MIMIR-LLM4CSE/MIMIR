@@ -10,7 +10,7 @@ from unittest import mock
 
 import os
 
-from mimir.servers._shared.processes import proc_starttime
+from mimir.shared.processes import proc_starttime
 from mimir.client.session import jobs_on_disk
 from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.tests.support.pools import FakePool

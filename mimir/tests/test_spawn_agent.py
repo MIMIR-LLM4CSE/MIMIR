@@ -830,7 +830,7 @@ class ForgottenJobTests(unittest.TestCase):
     """
 
     def _with_card(self, card: dict, job_key: str = "sub-abcd1234"):
-        from mimir.servers._shared import state_paths
+        from mimir.shared import state_paths
         tmp = tempfile.mkdtemp()
         directory = os.path.join(tmp, "sessions", "parent-1", "subagents", job_key)
         os.makedirs(directory, exist_ok=True)
@@ -921,7 +921,7 @@ class _PollingAgent(_FakeAgent):
 
 def _bash_descriptor(job_key: str = "k1") -> dict:
     """What the bash server hands a child out, its directory in the op args."""
-    from mimir.servers._shared.jobs import shell_descriptor
+    from mimir.shared.jobs import shell_descriptor
     return shell_descriptor(job_key,
                             f"/state/sessions/parent/subagents/sub-1a2b3c4d/jobs/{job_key}")
 
@@ -1135,7 +1135,7 @@ class SubSessionTests(unittest.TestCase):
         self.assertEqual(agent.server_env, {"MIMIR_SESSION_ID": out["session"]})
 
     def test_a_sub_session_is_stored_under_its_parent(self):
-        from mimir.servers._shared import state_paths
+        from mimir.shared import state_paths
         with mock.patch.object(state_paths, "active_session_id", return_value="parent-1"):
             out, _ = self._session_of()
         self.assertTrue(out["session"].startswith("parent-1/subagents/sub-"))
@@ -1152,7 +1152,7 @@ class SubSessionTests(unittest.TestCase):
         self.assertNotEqual(first["session"], second["session"])
 
     def test_the_run_is_recorded_for_the_panel(self):
-        from mimir.servers._shared import state_paths
+        from mimir.shared import state_paths
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(state_paths, "state_dir", return_value=tmp), \
                  mock.patch.object(state_paths, "active_session_id", return_value="parent-1"):
@@ -1456,7 +1456,7 @@ class WorktreeTests(unittest.TestCase):
         self.assertTrue(path.startswith(self.base))
         # The scratchpad is writable without approval; a copy there would take every
         # edit the child makes out of the approval layer.
-        from mimir.servers._shared.state_paths import scratch_home
+        from mimir.shared.state_paths import scratch_home
         self.assertFalse(path.startswith(scratch_home()))
         self.assertEqual(agent.server_env["MCP_FILES_ROOT"], path)
         self.assertEqual(agent.server_env["SEARCH_ROOT"], path)

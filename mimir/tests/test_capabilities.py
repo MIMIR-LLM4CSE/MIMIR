@@ -99,7 +99,7 @@ class ServerDeclarationTest(unittest.TestCase):
     """The server-side tool_caps() helper round-trips through infer_tool_caps."""
 
     def test_vocab_in_sync(self):
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         client_vocab = {
             caps.READ, caps.CACHEABLE, caps.SEARCH, caps.SEARCH_WITH_PATH,
             caps.CANDIDATE_SEARCH, caps.INSPECT_DIR, caps.CHECK_EXISTENCE,
@@ -124,12 +124,12 @@ class ServerDeclarationTest(unittest.TestCase):
 
     def test_kind_vocab_in_sync(self):
         """The work families are one vocabulary, declared server-side, read client-side."""
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         self.assertEqual(set(caps.TOOL_KINDS), set(srv.TOOL_KINDS))
         self.assertIn(caps.DEFAULT_TOOL_KIND, caps.TOOL_KINDS)
 
     def test_a_declared_kind_round_trips(self):
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(kind="proxy eval")
         fake = types.SimpleNamespace(
             name="proxy_eval", meta={"mimir": desc}, annotations=None, inputSchema=None,
@@ -138,7 +138,7 @@ class ServerDeclarationTest(unittest.TestCase):
         self.assertEqual(caps.kind_for("proxy_eval", reg), "proxy eval")
 
     def test_a_kind_is_normalised_not_trusted_verbatim(self):
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         self.assertEqual(srv.build_descriptor(kind="  Proxy   EVAL ")["kind"], "proxy eval")
         # Nothing usable is not a declaration.
         self.assertNotIn("kind", srv.build_descriptor(kind="   "))
@@ -189,7 +189,7 @@ class WorkFamilyTest(unittest.TestCase):
 
     def test_declared_timeout_round_trips_and_is_clamped(self):
         from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         for declared, expected in (
             (660, 660),
             (99_999, TOOL_CALL_TIMEOUT_MAX_SECS),   # a server does not get to hang the loop
@@ -203,7 +203,7 @@ class WorkFamilyTest(unittest.TestCase):
                 self.assertEqual(caps.infer_tool_caps(fake).timeout_secs, expected)
 
     def test_readonly_invocation_spec_round_trips_and_drops_incomplete_specs(self):
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         for spec, expected in (
             ({"arg": "role", "values": ["explore"]}, {"arg": "role", "values": ["explore"]}),
             ({"arg": "role"}, None),
@@ -219,11 +219,11 @@ class WorkFamilyTest(unittest.TestCase):
     def test_reversibility_vocab_in_sync(self):
         # Declared on one side, consumed on the other — the two spellings must match
         # exactly, or a level a server declares silently falls back to the derivation.
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         self.assertEqual(caps.REVERSIBILITY_LEVELS, srv.REVERSIBILITY_LEVELS)
 
     def test_descriptor_round_trip(self):
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(
             caps=[srv.READ, srv.SEARCH],
             path_args=["path"],
@@ -265,7 +265,7 @@ class WorkFamilyTest(unittest.TestCase):
 
     def test_scope_and_risk_note_default_absent(self):
         # A descriptor without scope/risk_note resolves them to None (no fabrication).
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(caps=[srv.READ])
         c = caps.infer_tool_caps(types.SimpleNamespace(
             name="plain", meta={"mimir": desc}, annotations=None, inputSchema=None))
@@ -278,14 +278,14 @@ class WorkFamilyTest(unittest.TestCase):
 
     def test_argless_scope_dropped(self):
         # A scope spec with a kind but no args is dropped (nothing to narrow on).
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(caps=[srv.READ], scope={"kind": "host"})
         self.assertNotIn("scope", desc)
 
     def test_preview_normalisation(self):
         # An argless preview spec is kept (a deletion has a shape but reads no
         # content args); a kindless one has nothing to dispatch on and is dropped.
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(caps=[srv.REMOVE], preview={"kind": "delete"})
         self.assertEqual(desc["preview"], {"kind": "delete"})
         desc = srv.build_descriptor(caps=[srv.EDIT], preview={"args": ["content"]})
@@ -298,7 +298,7 @@ class ReversibilityDerivationTest(unittest.TestCase):
     """
 
     def _resolve(self, **descriptor_kwargs):
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(**descriptor_kwargs)
         tool = types.SimpleNamespace(
             name="t", meta={"mimir": desc}, annotations=None, inputSchema=None,
@@ -334,7 +334,7 @@ class ReversibilityDerivationTest(unittest.TestCase):
         self.assertEqual(caps.reversibility_of("t", {"t": c}), caps.IRREVERSIBLE)
 
     def test_a_declared_level_beats_the_derivation(self):
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         c = self._resolve(caps=[caps.READ], reversibility=srv.IRREVERSIBLE)
         self.assertEqual(c.reversibility, caps.IRREVERSIBLE)
         self.assertIn(caps.SENSITIVE, c.capabilities)

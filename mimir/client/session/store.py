@@ -15,8 +15,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..config import paths
-from ...servers._shared.atomic import write_json
-from ...servers._shared.state_paths import ACTIVITY_FILENAME, SUBAGENTS_DIRNAME, TODO_FILENAME, sessions_root
+from ...shared.atomic import write_json
+from ...shared.state_paths import (
+    ACTIVITY_FILENAME,
+    SUBAGENTS_DIRNAME,
+    TODO_FILENAME,
+    sessions_root,
+)
 
 logger = logging.getLogger(__name__)
 

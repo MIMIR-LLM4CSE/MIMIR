@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 from mimir.servers.proxy import server_proxy
-from mimir.servers._shared import slurm_site  # noqa: F401
+from mimir.shared import slurm_site  # noqa: F401
 
 from mimir.tests.support.scheduler import local_slurm
 from mimir.servers.proxy._lib import build, procs, ratchet, store, tree_snapshot  # noqa: F401

@@ -14,7 +14,7 @@ import os
 import threading
 
 from ..config import paths
-from ...servers._shared.atomic import write_json
+from ...shared.atomic import write_json
 
 logger = logging.getLogger(__name__)
 

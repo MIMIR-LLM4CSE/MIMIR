@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from mcp import ClientSession
 from pydantic import AnyUrl
 
-from ..servers._shared.state_paths import (
+from ..shared.state_paths import (
     TODO_FILENAME,
     ensure_scratch_home,
     scratch_home,
@@ -54,7 +54,7 @@ from .core.settings import apply_setting
 from .protocol.event_sink import reset_event_sink, set_event_sink
 from .core.extension_set import AMBIENT, ExtensionSet
 from .core.turn_state import TurnState
-from ..servers._shared.skill_file import read_skills_dir
+from ..shared.skill_file import read_skills_dir
 from .config.toggles import Toggles
 from .context.carry import CarryContext
 from .extensions import all_server_descriptions, all_servers, load_plugins, resolve_skills_dir

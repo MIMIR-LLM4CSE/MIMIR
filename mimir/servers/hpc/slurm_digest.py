@@ -18,10 +18,10 @@ from .slurm_nodes import (
     stable_signature,
     stable_types,
 )
-from .._shared.slurm_site import LOCAL, argv_for, name_of, slurm_is_local
+from ...shared.slurm_site import LOCAL, argv_for, name_of, slurm_is_local
 
 import subprocess
-from .._shared.clock import utc_stamp
+from ...shared.clock import utc_stamp
 
 # Long enough for ``scontrol show node`` on a cluster of a few thousand nodes, short
 # enough that a host which has stopped answering does not hold up a listing built from

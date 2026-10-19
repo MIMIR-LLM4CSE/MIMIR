@@ -17,7 +17,7 @@ from .._lib.ratchet import (
     run_primary_value,
     save_best,
 )
-from ..._shared.atomic import write_json
+from ....shared.atomic import write_json
 from .._lib.store import file_lock, opt_session_runs_dir, read_json, save_opt_config
 
 def ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:

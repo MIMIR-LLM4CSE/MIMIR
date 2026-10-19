@@ -10,7 +10,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from ..._shared.launcher import launch_argv
+from ....shared.launcher import launch_argv
 from . import with_next, err, ok
 from .._lib.procs import (
     run_log_path,
@@ -28,9 +28,9 @@ from ._eval_validate import (
     check_reference_requirements,
     check_requirements,
 )
-from ..._shared import run_channel
+from ....shared import run_channel
 from .._lib import tree_snapshot
-from ..._shared.atomic import write_json
+from ....shared.atomic import write_json
 from .._lib.store import (
     cache_dir,
     opt_git_dir,

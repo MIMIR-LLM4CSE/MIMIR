@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-_SHARED = Path(__file__).resolve().parents[1] / "servers" / "_shared"
+_SHARED = Path(__file__).resolve().parents[1] / "shared"
 _WORKSPACE = Path(__file__).resolve().parents[1] / "servers" / "workspace"
 
 from mimir.servers.workspace import root_paths

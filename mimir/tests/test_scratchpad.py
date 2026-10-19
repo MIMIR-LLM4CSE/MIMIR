@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from mimir.servers.workspace.root_paths import resolve_path_in_root
-from mimir.servers._shared.state_paths import (
+from mimir.shared.state_paths import (
     active_session_id,
     ensure_scratch_home,
     scratch_dir,
@@ -130,7 +130,7 @@ class EnsureScratchHomeTests(unittest.TestCase):
 
     def test_refuses_a_foreign_owner(self):
         os.makedirs(self.home, mode=0o700)
-        with patch("mimir.servers._shared.state_paths.os.getuid", return_value=-1):
+        with patch("mimir.shared.state_paths.os.getuid", return_value=-1):
             self.assertEqual(self._ensure(), "")
 
     def test_refuses_when_it_cannot_create(self):

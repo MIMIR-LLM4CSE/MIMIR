@@ -13,9 +13,9 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
-_SHARED = _ROOT / "mimir" / "servers" / "_shared"
+_SHARED = _ROOT / "mimir" / "shared"
 
-from mimir.servers._shared import embed
+from mimir.shared import embed
 from mimir.servers.hpc import slurm_nodes
 
 # Flat, the way the server under test imports them: reached through the package these
@@ -630,7 +630,7 @@ class DigestTests(CatalogueTestCase):
 
 
 class SharedSlurmNodesTests(unittest.TestCase):
-    """The parser moved to _shared so two servers could use it; it must be unchanged."""
+    """The parser moved to shared so two servers could use it; it must be unchanged."""
 
     def test_parse_and_aggregate_round_trip(self):
         nodes = slurm_nodes.parse_scontrol_nodes(SCONTROL_TWO_TYPES)

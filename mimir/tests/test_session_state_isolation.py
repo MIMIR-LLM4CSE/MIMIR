@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mimir.servers._shared.state_paths import (
+from mimir.shared.state_paths import (
     active_session_id,
     global_state_dir,
     scratch_dir,
@@ -192,7 +192,7 @@ class RunChannelIsolationTests(_StateDirCase):
 
     def test_the_server_half_resolves_the_same_path_from_its_environment(self):
         """Server and client must name the same file, or a divert reaches nothing."""
-        from mimir.servers._shared import run_channel as server_side
+        from mimir.shared import run_channel as server_side
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "aaa"}):
             self.assertEqual(
                 server_side._dir("bash_run"),

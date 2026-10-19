@@ -6,8 +6,8 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from .._shared.responses import err, ok
-from .._shared.shell_paths import (
+from ...shared.responses import err, ok
+from ...shared.shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
     DESTRUCTIVE_COMMANDS,
     ENV_MANAGER_COMMANDS as _ENV_MANAGER_COMMANDS,
@@ -201,8 +201,8 @@ def is_within_workspace(path: str) -> bool:
     # own standing grant (the scratchpad). Both read per-call: the server's env is
     # frozen at spawn, so the shared state dir is the only live channel.
     try:
-        from .._shared.approved_roots import approved_roots
-        from .._shared.state_paths import standing_roots
+        from ...shared.approved_roots import approved_roots
+        from ...shared.state_paths import standing_roots
         for extra in list(approved_roots()) + standing_roots():
             base = os.path.realpath(os.path.abspath(os.path.expanduser(extra)))
             if path == base or path.startswith(base + os.sep):

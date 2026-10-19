@@ -111,7 +111,7 @@ Declare them with `tool_caps(...)` on the server side; query them from a plugin 
 `has_cap(tool, CAP, agent.tool_caps)` / `names_with_cap(CAP, agent.tool_caps)`:
 
 ```python
-from mimir.servers._shared.capabilities import tool_caps, READ, CACHEABLE
+from mimir.shared.capabilities import tool_caps, READ, CACHEABLE
 
 @mcp.tool(**tool_caps(caps=[READ, CACHEABLE], path_args=["path"]))
 def read_note(path: str) -> str:
@@ -139,7 +139,7 @@ def read_note(path: str) -> str:
 | **Verdict** | `JUDGE` | Records the model's reading of what a run's output showed, settling a run that owed one. The tool executes nothing — the client reads its `verdict` / `verdict_reason` / `verdict_scope` arg-roles and applies the result to the blackboard. Declare it once: with several such tools connected, the name the model is pointed at is the first in sort order. |
 | **Execution** | `CODE_EXEC` | Runs a program / shell command / code payload. Two consequences: the run is recorded as owing a **verdict** on its output (exit 0 alone never validates an execution), and it is a scoping signal for guards. Note the shell-reading guards (proxy direct-execution, out-of-workspace shell paths) key on the `command_prefix` **scope** instead — a tool that executes through structured arguments has no command line for them to parse. |
 | | `BACKGROUNDABLE` | Launches a long detached run whose result may carry a `background_job` descriptor (status + summary ops), so a front-end with a worker watches it off the critical path and auto-resumes the agent on completion instead of having the model poll. |
-| | `DIVERTIBLE` | Publishes a run channel under its own name while it blocks, so the user can move the run it is waiting on to the background mid-flight (see `_shared/run_channel.py`). A strict subset of `BACKGROUNDABLE`: a tool that returns as soon as it has submitted has no wait to divert. |
+| | `DIVERTIBLE` | Publishes a run channel under its own name while it blocks, so the user can move the run it is waiting on to the background mid-flight (see `shared/run_channel.py`). A strict subset of `BACKGROUNDABLE`: a tool that returns as soon as it has submitted has no wait to divert. |
 | **Delegation** | `DELEGATE` | Runs a read-only sub-agent and reports back what it read. What the sub-agent opened is credited to `delegated_read_files`, which counts toward the plan-mode explore phase's evidence floor — otherwise the phase would punish the fan-out its own prompt asks for. It stays out of `read_files`, which answers the stricter question of whether *this* agent holds the lines it is about to edit. |
 | **Approval & mode** | `SENSITIVE` | Requires user approval before running. **Derived — do not declare it**: see *Reversibility* below. |
 | | `NON_BATCH` | Must prompt immediately; never batched. |
@@ -149,7 +149,7 @@ def read_note(path: str) -> str:
 | | `CLUSTER_SUBMIT` | Expensive cluster launch (Slurm submit / batch run); held until local validation. |
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
 
-The vocabulary is mirrored between `mimir/servers/_shared/capabilities.py` and
+The vocabulary is mirrored between `mimir/shared/capabilities.py` and
 `mimir/client/tools/capabilities.py` (parity guarded by
 `test_capabilities.test_vocab_in_sync`), and the other docs point here rather than
 re-listing it. This table is the **prose reference**; the **live list** is
@@ -173,7 +173,7 @@ def benchmark(target: str) -> dict:
 ```
 
 A family, never a tool's identity: several tools share one. The vocabulary is `TOOL_KINDS`
-in `_shared/capabilities.py`, mirrored client-side and served live by
+in `shared/capabilities.py`, mirrored client-side and served live by
 `mimir_api(topic="capabilities")` under `kinds` — ask the tool rather than trusting a
 table here. Name a family of your own and your word still shows, with the generic glyph.
 
@@ -191,7 +191,7 @@ and strips it before your tool is called, so you neither declare it nor receive 
 State **how far your tool's effect can be taken back**; approval-gating follows from it.
 
 ```python
-from mimir.servers._shared.capabilities import tool_caps, PLAN_BLOCKED, IRREVERSIBLE
+from mimir.shared.capabilities import tool_caps, PLAN_BLOCKED, IRREVERSIBLE
 
 @mcp.tool(**tool_caps(caps=[PLAN_BLOCKED], reversibility=IRREVERSIBLE,
                       risk_note="posts to an external service"))

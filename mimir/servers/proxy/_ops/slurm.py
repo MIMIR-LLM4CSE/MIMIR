@@ -6,12 +6,12 @@ import os
 import shlex
 from datetime import datetime, timezone
 
-from ..._shared.launcher import launch_argv
+from ....shared.launcher import launch_argv
 from . import with_next, err, ok
 from .._lib import build as build_mod
 from .._lib import placement
 from .._lib.command import build_sbatch, sbatch_header_lines
-from ..._shared.slurm_script import node_python_lines
+from ....shared.slurm_script import node_python_lines
 from .._lib.procs import (
     run_log_path,
     cancel_slurm_job,
@@ -33,7 +33,7 @@ from .._lib.store import (
 )
 from .eval_common import eval_background_descriptor
 from .eval_session import prepare_run
-from ..._shared.slurm_site import resolve_host as _slurm_resolve_host
+from ....shared.slurm_site import resolve_host as _slurm_resolve_host
 from .suites import prevalidate_suite
 
 _OPT_RUNNER = "mimir.servers.proxy._proxy_runner"

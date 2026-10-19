@@ -16,7 +16,7 @@ from .._lib.procs import (
 from .._lib.ratchet import load_best
 from .._lib.report import diff_run_pair, parse_runner_log
 from ._eval_ratchet import ratchet_state
-from ..._shared import build_progress
+from ....shared import build_progress
 from .._lib import build, procs
 from .._lib.store import (
     load_registry,

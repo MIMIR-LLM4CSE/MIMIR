@@ -1,11 +1,11 @@
-"""servers/_shared/atomic: a reader sees the old file or the new one, never half."""
+"""shared/atomic: a reader sees the old file or the new one, never half."""
 
 import json
 import os
 import tempfile
 import unittest
 
-from mimir.servers._shared.atomic import replace_symlink, write_json, write_text
+from mimir.shared.atomic import replace_symlink, write_json, write_text
 
 
 class WriteJsonTests(unittest.TestCase):

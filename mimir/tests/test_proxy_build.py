@@ -4,7 +4,7 @@ It happens once per run before any case; a failed build gives no verdict and no 
 entry; a restore leaves sources the build system notices.
 """
 
-from mimir.servers._shared.launcher import launch_argv
+from mimir.shared.launcher import launch_argv
 import json
 import os
 import shutil

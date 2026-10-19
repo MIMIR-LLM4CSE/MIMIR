@@ -12,9 +12,9 @@ import shlex
 import sys
 
 
-# The repository root: this file is mimir/servers/_shared/slurm_script.py.
+# The repository root: this file is mimir/shared/slurm_script.py.
 MIMIR_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                          "..", "..", ".."))
+                                          "..", ".."))
 
 # A Slurm feature expression (`skylake&ib`, `[a100|h100]`, `gpu*2`) and a hostlist
 # (`n[01-04],gpu7`). Both land in a `#SBATCH` line, so anything outside these sets —

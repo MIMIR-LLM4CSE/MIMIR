@@ -81,7 +81,7 @@ BACKGROUNDABLE = "backgroundable"        # launches a long detached run; result 
                                          # background_job descriptor a client watcher polls to completion
 DIVERTIBLE = "divertible"                # publishes a run channel under its own name while it
                                          # blocks, so the user can move the run it is waiting on
-                                         # to the background mid-flight (see _shared/run_channel.py)
+                                         # to the background mid-flight (see shared/run_channel.py)
 
 
 # ── Reversibility: how much of an action can be taken back ────────────────────

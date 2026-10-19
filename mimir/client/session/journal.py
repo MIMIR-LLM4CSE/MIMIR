@@ -11,7 +11,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from ...servers._shared.state_paths import JOURNAL_FILENAME, session_file
+from ...shared.state_paths import JOURNAL_FILENAME, session_file
 from ..config import paths
 
 logger = logging.getLogger(__name__)

@@ -9,8 +9,8 @@ import re
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import CACHEABLE, tool_caps
-from .._shared.extension_paths import (
+from ...shared.capabilities import CACHEABLE, tool_caps
+from ...shared.extension_paths import (
     MIMIR_DIRNAME,
     PLUGINS_DIR_ENV,
     PLUGINS_DIRNAME,
@@ -24,8 +24,8 @@ from .._shared.extension_paths import (
     resolve_extension_dir,
     workspace_root,
 )
-from .._shared.responses import err, ok
-from .._shared.skill_file import model_invocable
+from ...shared.responses import err, ok
+from ...shared.skill_file import model_invocable
 from .text_tools import yaml_unquote
 
 # The installed package root (``<...>/mimir/``): this file is mimir/servers/agent_state/.
@@ -36,7 +36,7 @@ _EXAMPLES = os.path.join(_PKG, "examples")
 _BUNDLED_SKILLS = os.path.join(_PKG, "skills")
 _BUNDLED_SERVERS = os.path.join(_PKG, "servers")
 # The vocabulary is defined twice on purpose — once client-side, once in
-# servers/_shared/capabilities.py, which is what a server imports — and a parity test
+# shared/capabilities.py, which is what a server imports — and a parity test
 # keeps them level. The client copy is the one read here: it carries the section
 # headers and the per-flag note that say what each flag is *for*.
 _CAP_SOURCE = os.path.join(_PKG, "client", "tools", "capabilities.py")
@@ -265,7 +265,7 @@ _TYPES: dict[str, dict] = {
             "which is the word its activity row shows and the icon drawn beside it. Ask "
             "topic `capabilities` for the vocabulary.",
             "A tool that names a file takes an absolute path (see workspace/root_paths).",
-            "Answer with the `ok()` / `err()` payload shape from _shared/responses.",
+            "Answer with the `ok()` / `err()` payload shape from shared/responses.",
             "Document each parameter in an `Args:` block — those lines are lifted into "
             "the JSON schema, which is the part a model actually obeys.",
         ],
@@ -411,7 +411,7 @@ def mimir_api(topic: str = "index", name: str = "") -> dict:
     if key == "capabilities":
         vocab = _capability_vocabulary()
         return ok({
-            "declare_with": "from mimir.servers._shared.capabilities import tool_caps, "
+            "declare_with": "from mimir.shared.capabilities import tool_caps, "
                             "READ, CACHEABLE   # server side",
             "read_with": "from mimir.client.tools.capabilities import has_cap, "
                          "names_with_cap   # policy / nudge side",
@@ -438,7 +438,7 @@ def mimir_api(topic: str = "index", name: str = "") -> dict:
                 "Beyond the flags, a declaration carries arg-roles (which argument is a "
                 "path, which carries the steps of a plan, which the verdict), an "
                 "approval scope, a risk note, a preview shape and a timeout — see the "
-                "`server` topic's template and _shared/capabilities.py.",
+                "`server` topic's template and shared/capabilities.py.",
             ],
         })
 

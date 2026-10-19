@@ -13,7 +13,7 @@ import unittest
 _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "proxy")
 
 from mimir.servers.proxy._lib import ratchet, store, tree_snapshot
-from mimir.servers._shared.atomic import write_json
+from mimir.shared.atomic import write_json
 from mimir.tests.support.modules import spec_for
 
 

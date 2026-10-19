@@ -10,6 +10,6 @@ ignored to protect the core.
 
 Tool capabilities (which policies/nudges apply) come from each tool's declaration — see
 [`server_example.py`](server_example.py) here and
-[`mimir/servers/_shared/capabilities.py`](../../servers/_shared/capabilities.py).
+[`mimir/shared/capabilities.py`](../../shared/capabilities.py).
 
 See [`PLUGINS_DETAILED.md`](../../../PLUGINS_DETAILED.md) for the full authoring guide.

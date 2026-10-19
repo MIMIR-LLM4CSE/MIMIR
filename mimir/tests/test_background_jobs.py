@@ -25,7 +25,7 @@ from mimir.tests.support.proxy import _TmpStorageTest, pin_local_scheduler, serv
 from mimir.tests.support.state import pin_state_dir
 from mimir.client.core.turn_state import TurnState
 from mimir.tests.support.agents import fake_agent
-from mimir.servers._shared import jobs as shared_jobs
+from mimir.shared import jobs as shared_jobs
 
 
 def _eval(*args, **kwargs):

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from ...protocol.tool_result import parse_tool_payload
-from ....servers._shared.jobs import TERMINAL
+from ....shared.jobs import TERMINAL
 
 logger = logging.getLogger(__name__)
 

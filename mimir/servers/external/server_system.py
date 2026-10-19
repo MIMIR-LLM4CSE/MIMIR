@@ -16,8 +16,8 @@ from pydantic import Field
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.responses import err, ok
-from .._shared.capabilities import tool_caps
+from ...shared.responses import err, ok
+from ...shared.capabilities import tool_caps
 
 mcp = FastMCP(
     "SystemServer",

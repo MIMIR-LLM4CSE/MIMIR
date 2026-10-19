@@ -16,13 +16,13 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from .._shared import build_progress
-from .._shared.jobs import EXIT_CODE, META
-from .._shared.processes import is_running, proc_starttime
+from ...shared import build_progress
+from ...shared.jobs import EXIT_CODE, META
+from ...shared.processes import is_running, proc_starttime
 
 def jobs_root() -> str:
     """This session's job root, resolved per call (the session-less fallback can move)."""
-    from .._shared.state_paths import session_state_dir
+    from ...shared.state_paths import session_state_dir
     return os.path.join(session_state_dir(), "jobs")
 
 # A job key is used as a directory name and echoed back by the client watcher, so it is

@@ -12,14 +12,14 @@ import logging
 import os
 from typing import Any
 
-from ....servers._shared.shell_paths import (
+from ....shared.shell_paths import (
     allocates_cluster,
     cd_destination,
     normalize_path_arg,
     parse_segments,
     segment_path_operands,
 )
-from ....servers._shared.trusted_read_roots import trusted_read_roots
+from ....shared.trusted_read_roots import trusted_read_roots
 from ...config import paths
 from ...config.limits import SKILL_PULL_MAX
 from ...config.servers import SKILL_LOAD_TOOL

@@ -20,7 +20,7 @@ from ....session.jobs_on_disk import (
 )
 from ....query_engine.jobs import poll
 from ....query_engine.jobs.wakes import job_complete
-from .....servers._shared.jobs import job_key_of
+from .....shared.jobs import job_key_of
 
 if TYPE_CHECKING:
     from .worker import AgentWorker

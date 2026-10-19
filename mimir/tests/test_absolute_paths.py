@@ -130,7 +130,7 @@ class PreconditionDoesNotWeakenTheSandboxTests(_WorkspaceFixture):
         # The standing root must survive the new precondition. MIMIR_SCRATCH_DIR is
         # pointed at a temp dir so the hermetic suite never writes into the real
         # scratchpad under /tmp.
-        from mimir.servers._shared.state_paths import scratch_dir
+        from mimir.shared.state_paths import scratch_dir
         state = tempfile.mkdtemp()
         scratch = tempfile.mkdtemp()
         for d in (state, scratch):

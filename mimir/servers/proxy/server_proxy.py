@@ -15,7 +15,7 @@ from pydantic import Field
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import (
+from ...shared.capabilities import (
     tool_caps,
     CODE_EXEC,
     PLAN_BLOCKED,
@@ -26,10 +26,10 @@ from .._shared.capabilities import (
     RECOVERABLE,
     PANEL_REPORT,
 )
-from .._shared.responses import err, ok
+from ...shared.responses import err, ok
 from ._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT
 from ._lib.procs import validate_slurm_args, validate_slurm_comment, validate_slurm_token
-from .._shared.slurm_script import validate_target
+from ...shared.slurm_script import validate_target
 from ._ops import (
     eval_observe,
     eval_session,
@@ -910,7 +910,7 @@ def _this_machine() -> dict:
     now = time.time()
     if not _PANEL_MACHINE["value"] or now - _PANEL_MACHINE["at"] > _PANEL_MACHINE_TTL_SECS:
         try:
-            from .._shared import cpu_facts
+            from ...shared import cpu_facts
             _PANEL_MACHINE["value"] = cpu_facts.local_machine()
             _PANEL_MACHINE["at"] = now
         except Exception:

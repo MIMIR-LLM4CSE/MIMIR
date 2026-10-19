@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unittest
 
-from mimir.servers._shared import slurm_site
+from mimir.shared import slurm_site
 
 
 def local_slurm(case: unittest.TestCase, present: bool = True) -> None:

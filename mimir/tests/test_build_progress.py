@@ -1,6 +1,6 @@
 """A build's progress, read from its own output, for any shell command.
 
-The parser first (``_shared/build_progress``), then the two places that carry it to
+The parser first (``shared/build_progress``), then the two places that carry it to
 the UI: a blocking ``bash_run`` republishing it on the run channel, and a detached
 job's status carrying it for the client watcher. Neither place knows the command was
 a build — that is the point: a ``make`` buried in a chain still prints its count.
@@ -16,8 +16,8 @@ from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.servers._shared import build_progress
-from mimir.servers._shared import run_channel
+from mimir.shared import build_progress
+from mimir.shared import run_channel
 from mimir.servers.workspace import bash_jobs
 from mimir.servers.workspace import server_bash
 

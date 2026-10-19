@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from ....servers._shared.jobs import job_key_of
+from ....shared.jobs import job_key_of
 
 
 # How much of a finished job's own summary a wake carries. Enough for an exit code

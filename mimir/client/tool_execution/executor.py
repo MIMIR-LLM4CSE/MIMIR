@@ -6,8 +6,8 @@ import logging
 import os
 from typing import Any
 
-from ...servers._shared.jobs import launched
-from ...servers._shared.state_paths import scratch_dir
+from ...shared.jobs import launched
+from ...shared.state_paths import scratch_dir
 from ..config import paths
 from ..config.models import (
     CALLER_MODE_META,

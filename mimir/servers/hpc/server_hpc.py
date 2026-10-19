@@ -21,7 +21,7 @@ from typing import Any
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import (
+from ...shared.capabilities import (
     tool_caps,
     PLAN_BLOCKED,
     CLUSTER_SUBMIT,
@@ -29,15 +29,15 @@ from .._shared.capabilities import (
     IRREVERSIBLE,
     PANEL_REPORT,
 )
-from .._shared.responses import err, ok
-from .._shared.jobs import (
+from ...shared.responses import err, ok
+from ...shared.jobs import (
     SLURM_JOB_ID,
     slurm_descriptor,
     is_terminal,
     record_terminal_state,
     recorded_terminal_state,
 )
-from .._shared.slurm_site import (
+from ...shared.slurm_site import (
     ADOPTED_FILE as _ADOPTED_FILE,
     HOST_FILE as _HOST_FILE,
     LOCAL as _LOCAL_HOST,
@@ -68,9 +68,9 @@ from .slurm_nodes import (
     parse_pipe_table as _parse_pipe_table,
     parse_scontrol_nodes as _parse_scontrol_nodes,
 )
-from .._shared.slurm_script import sbatch_header, validate_target
-from .._shared import build_progress
-from .._shared import cpu_facts
+from ...shared.slurm_script import sbatch_header, validate_target
+from ...shared import build_progress
+from ...shared import cpu_facts
 from . import cli
 from .cli import (
     TIMEOUT_ALLOC,
@@ -118,7 +118,7 @@ mcp = FastMCP(
 
 
 # ── Which scheduler a call goes to ────────────────────────────────────────────
-# The inventory is ``_shared/slurm_site``. A tool that acts resolves a host from its
+# The inventory is ``shared/slurm_site``. A tool that acts resolves a host from its
 # arguments (``_resolve_host``) and refuses when the choice is open; one acting on an
 # existing job finds where it is (``locate_job``). Every Slurm command goes through
 # ``slurm_argv``/``slurm_exec_argv``.

@@ -1064,7 +1064,7 @@ previewable write cannot slip past it.
 
 - paths under the workspace root;
 - **reads** under the trusted read roots (proxy/HPC caches, the state dir), defined once in
-  `servers/_shared/trusted_read_roots.py` and mirrored client-side so gate and servers
+  `shared/trusted_read_roots.py` and mirrored client-side so gate and servers
   cannot drift. They *did* drift once, in the one direction nothing tested: the servers
   admitted the state dir, the gate prompted for it, and the agent could not read back its
   own plans;
@@ -1098,7 +1098,7 @@ Behaviour:
 cannot see them. `_shell_path_targets` walks the segments and surfaces every path, so the rule is uniform:
 anything reaching outside the workspace asks, whatever tool or syntax it arrives in.
 
-The operand extraction lives in `servers/_shared/shell_paths.py`, imported by **both** this
+The operand extraction lives in `shared/shell_paths.py`, imported by **both** this
 gate and the bash server's sandbox guard, so the gate prompts for exactly the paths the
 guard would otherwise refuse. Two copies of "which tokens are paths" would fail silently in
 both directions: a path the gate misses cannot be granted, a path the guard misses is never

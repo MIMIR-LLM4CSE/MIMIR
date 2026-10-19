@@ -5,7 +5,7 @@ the closest names. Every request is faked.
 import unittest
 
 from mimir.servers.external import server_github
-from mimir.servers._shared.responses import err, ok
+from mimir.shared.responses import err, ok
 
 
 def _entries(*names: str) -> list[dict]:

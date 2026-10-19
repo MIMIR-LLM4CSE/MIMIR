@@ -1,1 +1,2 @@
-"""The bundled MCP servers, by domain, and what they share (``_shared``)."""
+"""The bundled MCP servers, by domain. What they share with each other and with the client
+is ``mimir.shared``."""

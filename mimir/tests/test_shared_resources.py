@@ -164,7 +164,7 @@ class WhatStaysSharedTests(unittest.TestCase):
     def test_workspace_goods_resolve_off_the_state_dir_root(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             with patch.dict(os.environ, {"MIMIR_STATE_DIR": d, "MIMIR_SESSION_ID": "s1"}):
-                from mimir.servers._shared.state_paths import session_state_dir, state_dir
+                from mimir.shared.state_paths import session_state_dir, state_dir
                 self.assertEqual(state_dir(), d)
                 # The conversation's own corner is a subdirectory of it, not a
                 # replacement for it.

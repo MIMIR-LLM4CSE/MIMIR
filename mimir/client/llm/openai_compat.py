@@ -21,9 +21,9 @@ from ..protocol.tool_call import normalize_arguments
 from ..protocol.messages import merge_consecutive_user_messages, reconcile_tool_pairs
 
 
-# Single source of truth in _shared so the embedding helper (which runs in the
+# Single source of truth in shared so the embedding helper (which runs in the
 # separate MCP server processes too) applies the exact same TLS policy.
-from ...servers._shared.embed import verify_ssl
+from ...shared.embed import verify_ssl
 from ..config.limits import CTX_RESERVED_RATIO, CTX_TOTAL_FULL
 from ..config.models import thinking_profile
 

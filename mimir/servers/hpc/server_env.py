@@ -12,9 +12,9 @@ import sys
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import tool_caps, PLAN_BLOCKED, ENV_MUTATE, REMOVE, RECOVERABLE
-from .._shared.responses import err, ok
-from .._shared.state_paths import state_dir
+from ...shared.capabilities import tool_caps, PLAN_BLOCKED, ENV_MUTATE, REMOVE, RECOVERABLE
+from ...shared.responses import err, ok
+from ...shared.state_paths import state_dir
 
 mcp = FastMCP(
     "EnvServer",

@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-from mimir.servers._shared.processes import proc_starttime
+from mimir.shared.processes import proc_starttime
 from mimir.client.session import jobs_on_disk
 from mimir.client.session.jobs_on_disk import DetachedJob, scan_all_sessions, scan_session
 from mimir.client.ui.ws.worker.jobs import JobWatcher

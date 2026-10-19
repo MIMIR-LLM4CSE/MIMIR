@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
-_SHARED = _ROOT / "mimir" / "servers" / "_shared"
+_SHARED = _ROOT / "mimir" / "shared"
 
-from mimir.servers._shared import embed
+from mimir.shared import embed
 
 from mimir.tests.support.memory import load_memory_server, point_stores
 

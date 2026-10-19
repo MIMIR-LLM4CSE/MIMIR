@@ -8,7 +8,7 @@ Each module holds plain functions returning ``ok()``/``err()`` dicts — no
 import os
 import re
 
-from ..._shared.responses import err, ok  # noqa: F401
+from ....shared.responses import err, ok  # noqa: F401
 
 # The proxy server's directory: where a generated proxy script finds its helpers.
 _PROXY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

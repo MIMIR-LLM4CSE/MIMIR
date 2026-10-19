@@ -24,8 +24,8 @@ from ..workflow import (
 )
 from ...tools.capabilities import shell_command_args
 from ...context.paths import is_python_test_filepath
-from ....servers._shared.jobs import launched
-from ....servers._shared.shell_paths import (
+from ....shared.jobs import launched
+from ....shared.shell_paths import (
     EFFECT_BUILD,
     EFFECT_RUN,
     EFFECT_VALIDATE,

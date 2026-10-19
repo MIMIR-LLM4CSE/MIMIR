@@ -18,9 +18,9 @@ from concurrent.futures import Future
 from typing import Annotated, Any, Callable
 
 from . import child_jobs
-from .._shared.approved_roots import approved_roots
-from .._shared.atomic import write_json
-from .._shared.capabilities import (
+from ...shared.approved_roots import approved_roots
+from ...shared.atomic import write_json
+from ...shared.capabilities import (
     BACKGROUNDABLE,
     DELEGATE,
     MAIN_ONLY,
@@ -30,7 +30,7 @@ from .._shared.capabilities import (
 )
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
-from .._shared.responses import err, ok
+from ...shared.responses import err, ok
 from . import spawn_limits
 from . import spawn_user_channel
 from . import spawn_worktree
@@ -144,7 +144,7 @@ def _write_record(session: str, record: dict) -> None:
     if not session:
         return
     try:
-        from .._shared.state_paths import session_dir
+        from ...shared.state_paths import session_dir
         write_json(os.path.join(session_dir(session), "subagent.json"), record,
                    ensure_ascii=False, indent=2)
     except Exception as exc:
@@ -380,7 +380,7 @@ def _sub_session_id() -> str:
     """A session of this child's own: ``<parent>/subagents/sub-xxxxxxxx`` (directories only)."""
     child = f"sub-{uuid.uuid4().hex[:8]}"
     try:
-        from .._shared.state_paths import active_session_id
+        from ...shared.state_paths import active_session_id
         parent = active_session_id()
     except Exception:
         parent = ""

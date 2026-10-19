@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-# The workspace registry servers/_shared/slurm_site.py appends to, one host per line.
+# The workspace registry shared/slurm_site.py appends to, one host per line.
 _HOSTS_FILE = "slurm_hosts"
 
 # A run nothing claimed is not dropped: it goes back to the caller for the flat list the

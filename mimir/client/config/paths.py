@@ -11,11 +11,11 @@ import os
 # it is defined once, server-side, and imported here rather than duplicated. The
 # .mimir extension paths come from server-side too: the mimir_api server reports the
 # drop-in locations this module's loaders scan, so both ends read one definition.
-from ...servers._shared.state_paths import (  # noqa: F401  (re-exported)
+from ...shared.state_paths import (  # noqa: F401  (re-exported)
     global_state_dir,
     workspace_id,
 )
-from ...servers._shared.extension_paths import (  # noqa: F401  (re-exported)
+from ...shared.extension_paths import (  # noqa: F401  (re-exported)
     MIMIR_DIRNAME,
     PLUGINS_DIR_ENV,
     PLUGINS_DIRNAME,
@@ -69,7 +69,7 @@ STATE_DIR = os.path.abspath(
 GLOBAL_STATE_DIR = global_state_dir(STATE_HOME)
 
 # The four extension locations (env var if set, else MIMIR_DIR/<name>; see
-# servers/_shared/extension_paths.py): the base system prompt, plugins (policy, post-tool
+# shared/extension_paths.py): the base system prompt, plugins (policy, post-tool
 # and nudge packs), skills (merged over the bundled ones) and servers (a name clashing
 # with a bundled one is skipped).
 

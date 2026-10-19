@@ -22,7 +22,7 @@ class DeclaredClassificationTest(unittest.TestCase):
         """Every tool declares a work family from the shared vocabulary; its row's word and icon
         come from it.
         """
-        from mimir.servers._shared import capabilities as srv
+        from mimir.shared import capabilities as srv
         for name, declared in sorted(self.reg.items()):
             with self.subTest(tool=name):
                 self.assertTrue(declared.kind, f"{name} declares no kind")

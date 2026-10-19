@@ -18,6 +18,7 @@ from mimir.tests.support.state import pin_state_dir
 PACKAGE = Path(__file__).resolve().parents[1]
 CLIENT = PACKAGE / "client"
 SERVERS = PACKAGE / "servers"
+SHARED = PACKAGE / "shared"
 
 # The client's units, bottom to top. A unit imports, at load time, only units of a
 # lower rank; only type annotations (``TYPE_CHECKING``) look upwards.
@@ -110,10 +111,10 @@ class LayerTests(unittest.TestCase):
                         upward.append(f"{path.relative_to(PACKAGE)}: {source_unit} -> {unit}")
         self.assertEqual(upward, [])
 
-    def test_the_shared_server_code_does_not_import_the_client(self) -> None:
-        offenders = [str(p.relative_to(PACKAGE)) for p in _python_files(SERVERS / "_shared")
+    def test_the_shared_code_imports_neither_the_client_nor_the_servers(self) -> None:
+        offenders = [str(p.relative_to(PACKAGE)) for p in _python_files(SHARED)
                      for _n, target, _a in _imports(p, top_level_only=False)
-                     if target.startswith("mimir.client")]
+                     if target.startswith(("mimir.client", "mimir.servers"))]
         self.assertEqual(offenders, [])
 
     def test_only_the_sub_agent_side_of_the_servers_imports_the_client(self) -> None:

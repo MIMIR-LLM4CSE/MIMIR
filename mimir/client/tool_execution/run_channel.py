@@ -1,4 +1,4 @@
-"""The client half of the divert channel (see servers/_shared/run_channel.py).
+"""The client half of the divert channel (see shared/run_channel.py).
 
 A blocking run is reachable through neither the model nor MCP, so the two ends meet in
 the session's state dir: the server announces its run, this writes the divert request
@@ -9,8 +9,8 @@ import json
 import os
 
 from ..config import paths
-from ...servers._shared.atomic import write_text
-from ...servers._shared.state_paths import session_state_dir
+from ...shared.atomic import write_text
+from ...shared.state_paths import session_state_dir
 
 
 def _dir(channel: str, session_id: str | None = None) -> str:

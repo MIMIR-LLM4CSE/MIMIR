@@ -8,12 +8,10 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from .._shared.responses import err
-from .._shared.state_paths import sessions_root
-from .._shared.jobs import (
-    SLURM_JOB_ID,
-)
-from .._shared.slurm_site import (
+from ...shared.responses import err
+from ...shared.state_paths import sessions_root
+from ...shared.jobs import SLURM_JOB_ID
+from ...shared.slurm_site import (
     slurm_state,
     HOST_FILE as _HOST_FILE,
     LOCAL as _LOCAL_HOST,
@@ -145,7 +143,7 @@ def locate_job(job_id: str, requested: str = "",
 def normalized_job_state(job_id: str, *,
                           host: str = _LOCAL_HOST) -> tuple[str, str, list[str]]:
     """``(state, raw, nodes)`` of a job on *host*: running, pending, done, crashed or
-    unknown (``_shared.slurm_site.slurm_state``)."""
+    unknown (``shared.slurm_site.slurm_state``)."""
     return slurm_state(job_id, lambda script: lines_of(cli.run_bash(script, TIMEOUT_READ,
                                                                     host=host)))
 

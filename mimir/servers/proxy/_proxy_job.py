@@ -1,6 +1,6 @@
 """Detached worker for proxy_exec's blocking ops; not an MCP server.
 
-Usage (through the launcher, ``_shared/launcher.launch_argv``):
+Usage (through the launcher, ``shared/launcher.launch_argv``):
     python servers/_launch.py mimir.servers.proxy._proxy_job --job-dir <path>
 
 Reads ``<job-dir>/job.json`` (``{"op": ..., "args": {...}}``), runs the op and writes
@@ -27,8 +27,8 @@ def main() -> None:
     parser.add_argument("--job-dir", required=True)
     job_dir = os.path.abspath(parser.parse_args().job_dir)
 
-    from .._shared.responses import err
-    from .._shared.atomic import write_json
+    from ...shared.responses import err
+    from ...shared.atomic import write_json
     from ._lib.store import read_json
     from ._ops import references, suites
     from ._ops.exec_jobs import JOB_FILE, RESULT_FILE

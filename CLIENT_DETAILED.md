@@ -696,7 +696,7 @@ once — on the revision it will ship at.
 Two details worth stating here:
 
 - `_trusted_read_roots()` is the client mirror of the roots the servers admit silently. It
-  shares `servers._shared.trusted_read_roots` with them, **plus `constants.STATE_DIR`
+  shares `shared.trusted_read_roots` with them, **plus `constants.STATE_DIR`
   appended explicitly**: the shared helper resolves the state dir from `MIMIR_STATE_DIR`,
   and `server_manager` places that variable only in the *server subprocesses'* env. Without
   the explicit append the agent could not read back its own plans without a prompt, while
@@ -1510,7 +1510,7 @@ settled it: a run delivered twice is a conversation woken twice for one build. W
 on disk is still going is one rule too (`DetachedJob.live`), which also decides whether
 deleting a conversation has to ask.
 
-The files and words are the servers' own (`servers/_shared/jobs.py`, see
+The files and words are the servers' own (`shared/jobs.py`, see
 SERVERS_DETAILED.md): a run killed by a signal reads `unknown` on disk as the bash server
 says, and a re-armed run keeps its kind and its summary op.
 
@@ -1590,7 +1590,7 @@ here, so they come back as live and the watcher's first poll settles it.
 The liveness check is a deliberate twin of `bash_jobs.is_running` rather than a call into
 it — the MCP servers resolve imports against their own directory, so nothing in
 `mimir.client` can import that tree, the same reason `tool_execution/run_channel.py` twins
-`servers/_shared/run_channel.py`. What must change in both together: a pid is alive only if
+`shared/run_channel.py`. What must change in both together: a pid is alive only if
 it exists, its start time matches the one recorded, and it is not a zombie.
 
 **Being findable at all.** A spawned server's port is learned by regexing its stdout, which

@@ -15,7 +15,7 @@ import time
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import (
+from ...shared.capabilities import (
     tool_caps,
     PLAN_READONLY,
     PLAN_BLOCKED,
@@ -25,13 +25,13 @@ from .._shared.capabilities import (
     BACKGROUNDABLE,
     DIVERTIBLE,
 )
-from .._shared.responses import err, ok
-from .._shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
+from ...shared.responses import err, ok
+from ...shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 from . import bash_jobs
-from .._shared import build_progress
-from .._shared import run_channel
-from .._shared.jobs import shell_descriptor
-from .._shared.slurm_site import (
+from ...shared import build_progress
+from ...shared import run_channel
+from ...shared.jobs import shell_descriptor
+from ...shared.slurm_site import (
     SLURM_COMMANDS,
     slurm_host_from_ssh,
     queued_by_host as slurm_queued_by_host,
@@ -39,7 +39,7 @@ from .._shared.slurm_site import (
     unwatched_by_host as slurm_unwatched_by_host,
     unwatched_hint as slurm_unwatched_hint,
 )
-from .._shared.shell_paths import (
+from ...shared.shell_paths import (
     ShellParseError as _ShellParseError,
     normalize_path_arg as _normalize_path_arg,
     parse_segments as _parse_segments,
@@ -600,7 +600,7 @@ def _resolve_run_dir(run_dir: str, job_key: str) -> tuple[str, dict | None]:
     """``(run_dir, None)`` for an explicit job directory inside this session's own state dir
     (its sub-agents' runs), else ``("", error)``.
     """
-    from .._shared.state_paths import session_state_dir
+    from ...shared.state_paths import session_state_dir
     resolved = os.path.realpath(os.path.expanduser(run_dir))
     root = os.path.realpath(session_state_dir())
     if os.path.commonpath([resolved, root]) != root:

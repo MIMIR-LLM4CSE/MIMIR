@@ -10,7 +10,7 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `_shared/` | What two domains or more use | `responses.py`, `capabilities.py`, `approved_roots.py`, `trusted_read_roots.py`, `module_env.py`, `embed.py`, `cpu_facts.py`, `slurm_script.py`, `slurm_site.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `jobs.py`, `run_channel.py`, `build_progress.py`, `atomic.py`, `clock.py`, `processes.py`, `launcher.py`, `skill_file.py` |
+| `shared/` | What two domains or more use | `responses.py`, `capabilities.py`, `approved_roots.py`, `trusted_read_roots.py`, `module_env.py`, `embed.py`, `cpu_facts.py`, `slurm_script.py`, `slurm_site.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `jobs.py`, `run_channel.py`, `build_progress.py`, `atomic.py`, `clock.py`, `processes.py`, `launcher.py`, `skill_file.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning, delegation & self-knowledge | `server_memory`, `server_todo`, `server_spawn_agent`, `server_mimir_api` |
@@ -19,10 +19,10 @@ Servers are organized into domain-based subdirectories:
 | `hpc/` | HPC & platform profiling | `server_hpc`, `server_platform`, `server_env` |
 | `proxy/` | Scientific proxy optimization | `server_proxy` (7 op-dispatched tools: registry, refs, runs, suites, eval loop, Slurm) |
 
-The servers are a package, `mimir.servers`, and import `_shared` and their siblings
-by package (`from .._shared.responses import ok`). The client starts a bundled server
+The servers are a package, `mimir.servers`, and import `shared` and their siblings
+by package (`from ..shared.responses import ok`). The client starts a bundled server
 as `python servers/_launch.py mimir.servers.<domain>.<server>`
-(`_shared/launcher.launch_argv`); so do the helpers that run as their own process —
+(`shared/launcher.launch_argv`); so do the helpers that run as their own process —
 the proxy runner and job worker, a node's platform profile. The launcher runs the
 module in its package and keeps the current directory, the user's workspace, off
 `sys.path`, so no file of the project can shadow a module a server imports. A server
@@ -97,14 +97,14 @@ transport. Either way the server itself looks healthy, which is why the symptom 
 MIMIR hanging, or as `ClosedResourceError` out of nowhere. A command that does read stdin
 now sees EOF — an answer rather than a wait.
 
-Normalization is handled by `mimir/servers/_shared/responses.py`:
+Normalization is handled by `mimir/shared/responses.py`:
 - `ok(...)` always preserves `status = ok`
 - `err(...)` always preserves `status = error`
 - reserved keys (`status`, `error`, `hint`) are protected from payload override
 - error messages are whitespace-normalized
 - contextual hints may be added automatically when no explicit hint is provided
 
-### Detached runs, one contract (`_shared/jobs.py`)
+### Detached runs, one contract (`shared/jobs.py`)
 
 Every server that leaves a run going, and the client that watches it, speak through one
 module:
@@ -118,13 +118,13 @@ module:
   going, from a status answer, an adoption or a sub-agent; no capability needed).
 - **the states**: `TERMINAL = {done, crashed, unknown}`; `exit_code_state` (0 done, a signal
   or nothing unknown, else crashed); `record_terminal_state` writes `slurm_state` once.
-  Slurm's own states are read into these words by `_shared/slurm_site` (`slurm_state`:
+  Slurm's own states are read into these words by `shared/slurm_site` (`slurm_state`:
   squeue, then sacct, arrays by their worst element; `locate_slurm_job`), for the HPC server
   and the proxy alike; the client never loads it.
 - **the files** a run's directory holds: `EXIT_CODE`, `META`, `SLURM_JOB_ID`, `SLURM_STATE`,
   `WATCHER_FILE`, `REPORTED`, `WAKE_BASELINE`.
 
-### Shared embeddings (`_shared/embed.py`)
+### Shared embeddings (`shared/embed.py`)
 
 Backend-aware text embedding with a lexical fallback, used by both the memory server
 (`server_memory.py`) and the client tool-ranking policy. It dispatches on the same
@@ -238,7 +238,7 @@ by agents in different workspaces, and the atomic write gives replacement, not
 lost-update protection): written on add/update, pruned on delete/clear/aging, and
 lazily backfilled for pre-existing memories on first search. A model change invalidates
 stale vectors (the model id is stored alongside each vector). The embedding backend and
-model are configured via the shared `_shared/embed.py` helper — see the `MIMIR_EMBED_*`
+model are configured via the shared `shared/embed.py` helper — see the `MIMIR_EMBED_*`
 env vars in [SETUP.md](SETUP.md). The `memory://all` index injection is unchanged.
 
 Tools (`scope` is `"workspace"` or `"global"`; `"all"` where both can be read at once):
@@ -320,7 +320,7 @@ Every `agent_state` server (and other persistent state: the module catalogue, se
 resolves paths off a single per-workspace **state dir**. The client computes
 `~/.mimir/<workspace-id>/` and passes it to server subprocesses via the `MIMIR_STATE_DIR`
 env var (`client/integration/server_manager.py`); servers read it through
-`servers/_shared/state_paths.py`. When `MIMIR_STATE_DIR` is unset (standalone runs, the
+`shared/state_paths.py`. When `MIMIR_STATE_DIR` is unset (standalone runs, the
 hermetic test suite), it is the in-workspace `<workspace>/.mimir`.
 
 Above it sits the **global state dir**, `~/.mimir/global/` — what belongs to the *user*
@@ -412,7 +412,7 @@ derived from the installed package at call time:
   says what a flag is *for*, which is what someone choosing between flags needs;
 - the templates are the shipped `mimir/examples/` files, **read verbatim**;
 - the drop-in paths come from the same
-  [`_shared/extension_paths.py`](mimir/servers/_shared/extension_paths.py) the loaders
+  [`shared/extension_paths.py`](mimir/shared/extension_paths.py) the loaders
   resolve, so the path a user is handed is the one that will actually be scanned — env
   overrides included, reported with the value they are set to;
 - the bundled skills are scanned off disk with their front-matter, and the reserved
@@ -604,7 +604,7 @@ undifferentiated wall. That is what makes the rest possible.
   parts. A query matching a **heading** returns that whole region: asking a thesis
   page for "résumé" should give the abstract, not six sentences containing the word.
   Only when no heading matches does it fall back to windows around the occurrences,
-  merged when they overlap, ranked by `lexical_rank` (`servers/_shared/embed.py`,
+  merged when they overlap, ranked by `lexical_rank` (`shared/embed.py`,
   the same scorer the memory and platform searches use). Each excerpt says its offset
   and the heading it sits under — the heading is looked up at the *hit*, not at the
   window start, which opens half its width earlier and on a short document lands in
@@ -697,9 +697,9 @@ Tools:
 
 > **The three servers that talk to Slurm ask one place which ones there are.** `server_hpc` through `slurm_argv`/`exec_argv`, the proxy's own submissions (`proxy/_lib/procs.py`: `sbatch`, `squeue`, `scancel`) through the same, and `server_platform` reads the recorded answers without probing them — its profile describes the machine it runs on and deliberately looks for no other host, but the absence of `sinfo` *here* is not reported as a verdict about the site: with schedulers known, it says so and names them. Locally the argv submitters stay shell-free, which is the property they are built as arguments for; `exec_argv` returns the argv untouched when the scheduler is this machine's. One exception, refused rather than attempted: `salloc_submit` aimed at a remote scheduler, because an interactive allocation needs a terminal on that host — over ssh it would take the allocation, find no shell, and hand it back, reporting success at having done nothing.
 
-> **The reminder's fact reaches it from the shell, too.** The gap between what the schedulers are running and what a descriptor covers is the work nothing is watching, and both servers compute it from one owner (`_shared/slurm_site`: `queued_by_host` through the same seam, `unwatched` against the descriptors on disk). It matters that the *bash* server does it: the ordinary failure is a job submitted by a site launcher and verified with a `squeue` a second later, and neither call reaches a typed cluster tool — so the conclude-phase reminder never got its fact. A `bash_run` whose parse shows a Slurm head, locally or past an `ssh`, and which *succeeded*, has proved that scheduler answers; the answer is then free, and it rides back on that payload (the client's observer reads the field, not the tool name). Asked of every reachable scheduler, because work nobody is watching is not more acceptable for being on the other cluster, and a cluster that does not reply contributes nothing rather than having its jobs reported as unwatched — `None` is "unknown", and silence read as an empty queue is the whole failure this exists for. Throttled to once a minute per server process, because a turn reads the queue several times and the reminder needs it once.
+> **The reminder's fact reaches it from the shell, too.** The gap between what the schedulers are running and what a descriptor covers is the work nothing is watching, and both servers compute it from one owner (`shared/slurm_site`: `queued_by_host` through the same seam, `unwatched` against the descriptors on disk). It matters that the *bash* server does it: the ordinary failure is a job submitted by a site launcher and verified with a `squeue` a second later, and neither call reaches a typed cluster tool — so the conclude-phase reminder never got its fact. A `bash_run` whose parse shows a Slurm head, locally or past an `ssh`, and which *succeeded*, has proved that scheduler answers; the answer is then free, and it rides back on that payload (the client's observer reads the field, not the tool name). Asked of every reachable scheduler, because work nobody is watching is not more acceptable for being on the other cluster, and a cluster that does not reply contributes nothing rather than having its jobs reported as unwatched — `None` is "unknown", and silence read as an empty queue is the whole failure this exists for. Throttled to once a minute per server process, because a turn reads the queue several times and the reminder needs it once.
 
-> **Which schedulers a workspace reaches — learned, not configured; several, not one.** Slurm's tools are commands on a host, and not always on the host MIMIR runs on: a login node holding the editor's remote session while the scheduler lives behind `ssh` is an ordinary arrangement, and on one of those every tool here answered "sbatch is not available" — so the work got submitted by hand through a shell, where nothing writes a descriptor, nothing is watched and no wake is ever owed. A setting would be the obvious fix and the wrong one: nobody knows to set it before the first night is lost. What is already happening instead is that the model reaches a scheduler over `ssh` constantly, to read the queue or check a job — so `_shared/slurm_site` records that host the first time such a call *succeeds*. The signal is the shell validator's own parse of the command (the same mechanism that refuses a bare `sbatch`) plus the exit status: a fact, not a pattern over text.
+> **Which schedulers a workspace reaches — learned, not configured; several, not one.** Slurm's tools are commands on a host, and not always on the host MIMIR runs on: a login node holding the editor's remote session while the scheduler lives behind `ssh` is an ordinary arrangement, and on one of those every tool here answered "sbatch is not available" — so the work got submitted by hand through a shell, where nothing writes a descriptor, nothing is watched and no wake is ever owed. A setting would be the obvious fix and the wrong one: nobody knows to set it before the first night is lost. What is already happening instead is that the model reaches a scheduler over `ssh` constantly, to read the queue or check a job — so `shared/slurm_site` records that host the first time such a call *succeeds*. The signal is the shell validator's own parse of the command (the same mechanism that refuses a bare `sbatch`) plus the exit status: a fact, not a pattern over text.
 >
 > It is an **inventory**, and that is load-bearing. A machine reaches its own scheduler when it has one — a probe (`bash -lc 'command -v sbatch'`, memoised; through a login shell because that is how the commands themselves run, so the `PATH` asked about is the one anybody uses) — plus every host `ssh` has proved, and one conversation uses several: a reference run on the local scheduler while a sweep goes out to another cluster. So learning a host *adds* a destination and displaces nothing; the jobs already running keep being polled where they are. Filed **per workspace** (`state_dir()/slurm_hosts`), because the clusters in play are a property of the work rather than of the conversation doing it: the sessions of one workspace share a project, the filesystems its inputs are on, and therefore the schedulers that can run it. It is also what makes the two halves of `slurm_site` agree — `recorded_jobs` already reads every session's descriptors, so a job submitted in one conversation is findable from the next; scoped per session, the registry would hand that conversation a job with no scheduler in its inventory to poll it on, which is a run watched by nobody.
 >
@@ -711,13 +711,13 @@ Tools:
 
 > **A job is not owned by a scheduler; it is run by one.** Which one is written beside the id in the descriptor (`slurm_host`, empty meaning local) by the submission and by `slurm_watch`, and that record is a **cache, not a binding**: `slurm_job_status(job_id)` applies it first — one call, which matters for something polled on a timer for the life of a run — and sweeps every reachable scheduler when it is absent or wrong, writing down whichever knew. That fallback is what keeps the wake working for all of them at once: the client watcher treats the descriptor as opaque and re-arms from disk with `{"job_id": id}` and no host (`client/ui/ws/jobs_on_disk.py`), so an id alone has to be enough. It also makes `slurm_watch` take an id from a launcher's output without the caller knowing which cluster printed it. The same shape in the proxy: the host is written into the run directory, so `run_state(run_dir)` and `cancel_run(run_dir)` keep their signatures and their ~15 callers are untouched.
 
-> **A run can be two things, and has to be filed as both.** A proxy run that submits to Slurm is that server's own state machine *and* a row in a queue. Every reader of `_shared/slurm_site` answers "is anything watching this id" by looking for a descriptor under the sessions tree, so a run filed only in the proxy's own store is work nobody is watching to all of them: `slurm_queue` marks it unwatched, the conclude-phase reminder names its id, and the remedy it offers — adopt the id — arms a *second* watcher on a run the proxy is already polling, so one result wakes the conversation twice. The writer of that descriptor therefore lives beside its readers (`slurm_site.record_job_dir`, with `new_job_dir` for the submitter that needs the directory before it has an id), and the proxy records its Slurm jobs through it: both halves of a split build/run submission, since both sit in the queue. `recorded_jobs` reads `jobs_dir()` itself as well as the sessions tree below it, because the two name different directories outside a session and under the test override, and a reader seeing only one of them calls its own submissions unwatched.
+> **A run can be two things, and has to be filed as both.** A proxy run that submits to Slurm is that server's own state machine *and* a row in a queue. Every reader of `shared/slurm_site` answers "is anything watching this id" by looking for a descriptor under the sessions tree, so a run filed only in the proxy's own store is work nobody is watching to all of them: `slurm_queue` marks it unwatched, the conclude-phase reminder names its id, and the remedy it offers — adopt the id — arms a *second* watcher on a run the proxy is already polling, so one result wakes the conversation twice. The writer of that descriptor therefore lives beside its readers (`slurm_site.record_job_dir`, with `new_job_dir` for the submitter that needs the directory before it has an id), and the proxy records its Slurm jobs through it: both halves of a split build/run submission, since both sit in the queue. `recorded_jobs` reads `jobs_dir()` itself as well as the sessions tree below it, because the two name different directories outside a session and under the test override, and a reader seeing only one of them calls its own submissions unwatched.
 >
 > Which watcher is put back after a reload is the other half. The descriptor carries `watcher.json` — the owning server's own `background_job` — when the run is not watched by the stock poll, so `jobs_on_disk` re-arms *that* watcher under *its* key and the dedup on `watches` recognises one that is still live. Only the run job carries it: a build job's end is the middle of the run, not its result. Liveness still comes from the Slurm record beside it (`slurm_state`), which is the only thing that can terminate the scan. And the two writers of the "already announced" marker — the live watcher settling its own completion, and a late scan finding the same run — resolve to one directory, or a run reported while the window was open is announced again when it comes back.
 
 > **Two clusters number independently, so an id is not an identity.** `9001` is a watched production run on one and somebody else's sweep on the other. Descriptors are therefore keyed by `(host, id)` (`recorded_jobs`, `covered_by`): keyed by id alone, the descriptor here vouches for the job there — the queue reports it watched, the nudge stays silent, and nothing polls it or owes a wake when it ends. A descriptor that recorded no host (written before the field existed) vouches for any, since an older submission read as unwatched work is a reminder nobody can act on.
 
-> **Three contexts.** `none` (no Slurm), `login` (Slurm, but this host is not an allocated node) and `in_allocation` (`SLURM_JOB_ID` set and this host in the nodelist). Computed by `_shared/cpu_facts.execution_context` and reported by `platform_probe` and `slurm_node_profile`. `local` stays a valid target from all three.
+> **Three contexts.** `none` (no Slurm), `login` (Slurm, but this host is not an allocated node) and `in_allocation` (`SLURM_JOB_ID` set and this host in the nodelist). Computed by `shared/cpu_facts.execution_context` and reported by `platform_probe` and `slurm_node_profile`. `local` stays a valid target from all three.
 >
 > **`srun` in the shell.** Outside an allocation it is a submission: it is never an approval-exempt read, and the cluster-submission hold applies to it (`shell_paths.allocates_cluster`). Inside an allocation it is a job step and is unchanged.
 
@@ -731,7 +731,7 @@ Purpose: report what this host actually is — hardware, scheduler, toolchains, 
 
 Tools:
 - `platform_probe` — collect and return a full profile of **this host** (CPU with caches, `-march`, OS and glibc, GPU, memory, Slurm, loaded modules, toolchains, Python environments), plus `execution_context` and `machine_signature`. Every fact is built on demand, so none of it can be stale; it reports the module catalogue's summary but never builds it. `python servers/_launch.py mimir.servers.hpc.server_platform --profile-json` prints the same profile without serving MCP: that is what a node probe runs. Probes run with `LC_ALL=C`, since `lscpu` translates its field names.
-  > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`ISA_EXTENSIONS` in `_shared/cpu_facts.py`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.
+  > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`ISA_EXTENSIONS` in `shared/cpu_facts.py`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.
 - `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. Always built fresh for the current host (so it can never serve another node's hardware), no cache, no the catalogue guard arg. The collectors whose answer cannot change while the process lives (CPU, GPU, Slurm, modules, toolchains) are memoized, so a second probe costs a fraction of the first. The probe tools are the **only** source of live platform facts: nothing injects a hardware summary into the system prompt, which would pay for it on every query to answer a question most of them never ask.
 
 - `platform_search(query, limit=10, refresh=False)` — search the host's **environment-module catalogue** by name (`"cuda"`) or by capability (`"parallel hdf5"`). Each hit carries `load`, the exact string to pass to `module load`.
@@ -869,7 +869,7 @@ is parked awaiting this very call, and a steer is only drained at a step boundar
 through MCP, since the call itself is what the server is busy with. So it goes through
 the shared state dir, like the approved-paths allowlist.
 
-`servers/_shared/run_channel.py` is that channel, and it is generic. A tool that blocks
+`shared/run_channel.py` is that channel, and it is generic. A tool that blocks
 publishes the run it is waiting on in `<state_dir>/runs/<channel>/current.json`;
 `client/tool_execution/run_channel.py` names it back in a `divert` file the wait loop
 consumes on its next tick. The channel is the blocking tool's own registered name, so
@@ -899,7 +899,7 @@ Backgrounding is a parameter on a command that has passed the same path checks a
 denylists, which is why the `&` operator stays refused: detaching is the server's job,
 not a shell operator the caller supplies. The job directory lives under the submitting
 session's own state dir (`<STATE_DIR>/sessions/<sid>/jobs/`), which is a trusted read root
-(`_shared/trusted_read_roots.py`), so the log is readable with the ordinary file tools while
+(`shared/trusted_read_roots.py`), so the log is readable with the ordinary file tools while
 the run is still going.
 
 **Per session**, for two reasons. `bash_job(op='list')` enumerates this conversation's jobs
@@ -994,7 +994,7 @@ implement. Read "confined" with that scope.
 Anything not named below runs. These three groups are refused because no approval
 prompt could make them reviewable, and each rejection names the route that replaces it
 — a refusal with no route is a dead end the model retries variants of. The sets live in
-`servers/_shared/shell_paths.py` (`DENIED_COMMANDS`) so both ends read the same list, and
+`shared/shell_paths.py` (`DENIED_COMMANDS`) so both ends read the same list, and
 `test_the_documented_table_is_the_denylist` fails if this table drifts from it.
 
 | Group | Commands | Why | Instead |
@@ -1019,7 +1019,7 @@ wrapper × interpreter pair unwraps to the interpreter) and
 
 ### What a command's category still decides
 
-The taxonomy in `servers/_shared/shell_paths.py` is not a gate — it is what the client's
+The taxonomy in `shared/shell_paths.py` is not a gate — it is what the client's
 classifier reads to decide approval and plan-mode availability.
 
 | Category | Commands | Plan mode | Approval |
@@ -1164,7 +1164,7 @@ auto-approves everything.
   checking it. Backgrounding (`&`) and command/process substitution (`$(...)`,
   backticks, `<(...)`) remain rejected. A single pipe and shell globbing (`*.py`) are
   permitted.
-- **Segmentation lives in `servers/_shared/shell_paths.py`** (`parse_segments`), the same
+- **Segmentation lives in `shared/shell_paths.py`** (`parse_segments`), the same
   module the client's gate and classifier import — one tokenizer, so "where does this
   command end" and "is `out.txt` a write or an argument of `ls`" cannot be answered two
   different ways by the guard and the prompt. The server keeps only the *policy*: the
@@ -1175,7 +1175,7 @@ auto-approves everything.
   in the wrapper around the validated command, so `module load cuda && nvcc ...` works
   within one call; module args are gated by a strict regex and a curated `MODULE*`/`LMOD_*`
   env is passed through — that allowlist is `MODULE_ENV_PASSTHROUGH` in
-  `_shared/module_env.py`, shared with the platform server's catalogue build so the two
+  `shared/module_env.py`, shared with the platform server's catalogue build so the two
   cannot resolve different module trees.
 - **The environment managers (`pip`, `conda`, `mamba`) are available**, scoped in the same
   spirit as `module`: query (`list`, `show`, `freeze`, `info`, …) and add (`install`,
@@ -1231,7 +1231,7 @@ auto-approves everything.
   forward, because that is an action the agent can take: the client's out-of-workspace
   gate surfaces every path a command names (see POLICY.md) and a grant reaches this
   guard through the shared sidecar, so an approved `cat /data/runs/log.txt` runs.
-- **One source of truth for "which tokens are paths"**: `servers/_shared/shell_paths.py`
+- **One source of truth for "which tokens are paths"**: `shared/shell_paths.py`
   holds `EXEC_COMMANDS`, `PATH_INSENSITIVE_COMMANDS`, `normalize_path_arg`,
   `segment_path_operands` and `cd_destination`, and is imported by this guard *and* by
   the client gate. This guard confines what that gate prompts for; two copies would
@@ -1558,7 +1558,7 @@ Helper package (not an MCP server) imported by `proxy/server_proxy.py`, the `pro
 | module | contents |
 |---|---|
 | `store.py` | Storage root `_CACHE_DIR` (env-overridable via `MIMIR_PROXY_BENCH_DIR`, default `<workspace>/proxy_bench`), the whole on-disk layout, atomic JSON/symlink IO, the re-entrant registry flock, and registry/suite/reference/opt-session persistence — including `workspace_root()` and `entry_or_err()`, which every op resolves a proxy through. |
-| `procs.py` | Process/run state: pid + `/proc` starttime bookkeeping (PID-recycling and zombie detection in `is_running`), `run_state` (a Slurm run read through `_shared/slurm_site.slurm_state` on whichever scheduler knows it, and settled into its workspace job directory once over); log access (`run_log_path`, `read_log` capped at `_MAX_LOG`); run lifecycle — `new_run_dir`, `write_run_config`, `launch_detached`, `submit_sbatch`, `cancel_run` (`scancel` else SIGTERM → SIGKILL), `validate_slurm_args`; active-run symlinks. |
+| `procs.py` | Process/run state: pid + `/proc` starttime bookkeeping (PID-recycling and zombie detection in `is_running`), `run_state` (a Slurm run read through `shared/slurm_site.slurm_state` on whichever scheduler knows it, and settled into its workspace job directory once over); log access (`run_log_path`, `read_log` capped at `_MAX_LOG`); run lifecycle — `new_run_dir`, `write_run_config`, `launch_detached`, `submit_sbatch`, `cancel_run` (`scancel` else SIGTERM → SIGKILL), `validate_slurm_args`; active-run symlinks. |
 | `metrics.py` | `parse_metrics_block` (block-delimited; strict fallback scan), `strip_reserved_metrics` (against `RESERVED_METRICS` from `numerics.py`) (server-side invariants the proxy cannot forge), `normalize_time_metrics` (server-measured `wall_time_s` + `time_s` plausibility guard), field I/O + `field_norms`, invariants (`finite_check`, `conservation_discrepancy`, `observed_convergence_order`), `evaluate_requirements`. |
 | `command.py` | `_render_param_file`, `_expand_cmd_template` (single template-expansion path for local + sbatch), `build_run_cmd`, `sbatch_header_lines`, `build_sbatch` (injection-safe `repr()` postrun; captures solver wall time + exit code for the post-run guard). |
 | `report.py` | Roofline (`_resolve_roofline` with platform-profile fallback, `_compute_roofline`), `row_with_extra`, `diff_run_pair`, `_diff_run_dirs`. |
@@ -1613,9 +1613,9 @@ Tools (sensitive / approval-gated, `confirm=True` required):
   - `proxy_eval_status()` returns `background_jobs` while the run it reports is `running` or `pending`, the same re-arming handle `bash_job` and `slurm_job_status` carry. `slurm_job_status` withholds it for a job another conversation submitted — reading a sibling's job stays allowed, adopting it does not, since the wake would be routed to whichever agent registered the watch.
 
 Tools (cluster, `CLUSTER_SUBMIT`):
-- `proxy_slurm(op, partition, …)` — ops: `run` (single job), `suite` (one job per case × sweep), `eval` (optimization run); carries a `risk_note` shown in the approval prompt. `run` and `eval` return a `background_job` descriptor unconditionally: `sbatch` answers while the job is still queued, so there is no variant of the call that carries a result, and a submission with no handle is a job nothing is watching — the agent ends its turn and is never resumed. `run` is watched through `proxy_runs(op='status', run_id=…)`, `eval` through `proxy_eval_status()`; `background=` is accepted for symmetry with `proxy_eval` and ignored. `suite` submits many jobs under one answer, which the single-descriptor shape cannot express — aggregate it with `proxy_get(op='report', …)` once they finish. All three ops accept `constraint` and `nodelist`: a partition says which queue, a feature expression says which hardware inside it, and the header carried neither before. Both land in `#SBATCH` lines rather than in a shell, so `validate_target` (`_shared/slurm_script.py`, shared with the HPC server) refuses anything outside Slurm's feature grammar, and `validate_slurm_token` does the same for the `build_*` fields, which are not part of a node target — a newline in any of these values would otherwise append directives of the caller's choosing.
+- `proxy_slurm(op, partition, …)` — ops: `run` (single job), `suite` (one job per case × sweep), `eval` (optimization run); carries a `risk_note` shown in the approval prompt. `run` and `eval` return a `background_job` descriptor unconditionally: `sbatch` answers while the job is still queued, so there is no variant of the call that carries a result, and a submission with no handle is a job nothing is watching — the agent ends its turn and is never resumed. `run` is watched through `proxy_runs(op='status', run_id=…)`, `eval` through `proxy_eval_status()`; `background=` is accepted for symmetry with `proxy_eval` and ignored. `suite` submits many jobs under one answer, which the single-descriptor shape cannot express — aggregate it with `proxy_get(op='report', …)` once they finish. All three ops accept `constraint` and `nodelist`: a partition says which queue, a feature expression says which hardware inside it, and the header carried neither before. Both land in `#SBATCH` lines rather than in a shell, so `validate_target` (`shared/slurm_script.py`, shared with the HPC server) refuses anything outside Slurm's feature grammar, and `validate_slurm_token` does the same for the `build_*` fields, which are not part of a node target — a newline in any of these values would otherwise append directives of the caller's choosing.
   - All three ops also accept `comment` — free text stored with the job and read back by `sacct -j <id> -o Comment`, so a queue of near-identical submissions says what each one was for; one `comment` labels every job of a `suite`, and a split build/run `eval` puts the same text on both jobs. Being free text it gets the looser check: `validate_slurm_comment` refuses control characters and anything over 512 characters, and the value is `shlex.quote`d so spaces stay one directive value.
-  - `ntasks` for an MPI proxy. `exclusive` defaults to on for `eval` and `suite` (timings) and off for `run`. The batch header comes from `_shared/slurm_script.py`, shared with `sbatch_submit`.
+  - `ntasks` for an MPI proxy. `exclusive` defaults to on for `eval` and `suite` (timings) and off for `run`. The batch header comes from `shared/slurm_script.py`, shared with `sbatch_submit`.
   - Everything runs on the node — the build too, unless a `build_partition` splits it onto another (below). The runner and the post-run step pick a Python the node can run (`.venv-<os>-<arch>`, then the server's), unless `python_executable` is set.
   - **Build/run decoupling** (`op='eval'`). A node dedicated to GPU simulation is not a node to compile on, and the node that compiles fastest is not the hardware anyone wants a number from — yet one `sbatch` carrying `_proxy_runner.py` gave both phases the same partition and the same node.
     - Naming a `build_partition` — on the call, or once on the registration, which is where it belongs since the ratchet submits the same run hundreds of times — splits the submission in two: a job running `--phase build`, and a job running `--phase run` chained behind it with `--dependency=afterok`. `_lib/placement.py` owns the resolution order (call argument > registration metadata > the run phase's own value), and `constraint`/`nodelist`/`gpus` are never inherited, since inheriting them would pin the build to the hardware the split exists to keep it off.
@@ -1701,7 +1701,7 @@ When a server adds or removes a tool:
 3. run `mimir/tests/test_server_contracts.py`
 4. declare the tool's semantics so the client classifies it (see below)
 
-If adding shared helper code used by multiple servers, put it in `_shared/`
+If adding shared helper code used by multiple servers, put it in `shared/`
 (cross-group utilities), `proxy/_lib/` (proxy-group helpers),
 or a new group-local `_shared_<domain>.py` module — never duplicate it.
 
@@ -1710,7 +1710,7 @@ If the client registration set changes, also update:
 - the *Registered Servers* table in `README.md` (and its server count)
 - the *Registered-by-default servers* list above
 
-### Declaring tool capabilities (`_shared/capabilities.py`)
+### Declaring tool capabilities (`shared/capabilities.py`)
 
 The client derives every tool's *semantics* — which tools are sensitive,
 plan-blocked, writes/edits, searches, validations, reads, cacheable, which args
@@ -1720,7 +1720,7 @@ not from hardcoded client-side lists. A tool declares this with the
 the MCP `Tool` model through `list_tools()`:
 
 ```python
-from _shared.capabilities import tool_caps, READ, SEARCH, EDIT, SENSITIVE
+from shared.capabilities import tool_caps, READ, SEARCH, EDIT, SENSITIVE
 
 @mcp.tool(**tool_caps(kind="read", caps=[READ], path_args=["path"],
                       label="Reading file: {path}"))
@@ -1743,7 +1743,7 @@ family derived from its capabilities (`kind_for`), so it renders correctly regar
 Pure tools, which declare no capabilities at all, still declare a `kind`: the row is
 drawn for every call, not only for the classified ones.
 
-The capability vocabulary is defined once in `_shared/capabilities.py` and mirrored
+The capability vocabulary is defined once in `shared/capabilities.py` and mirrored
 exactly in `client/tools/capabilities.py` (parity guarded by
 `test_capabilities.test_vocab_in_sync`); the per-flag reference table lives in
 [`PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md#tool-capabilities) — this file does not

@@ -12,7 +12,7 @@ import tempfile
 
 from mimir.client.tools.capabilities import ToolCaps, reserved_for_main
 from mimir.client.guardrails.policy.toollist import grantable_tools
-from mimir.servers._shared.state_paths import active_session_id
+from mimir.shared.state_paths import active_session_id
 from mimir.client.core.turn_state import TurnState
 from mimir.tests.support.agents import fake_agent
 
@@ -136,7 +136,7 @@ class TestSubSessionEnv:
     def test_a_named_session_wins_over_the_environment_too(self):
         """Several sub-agents live in one process, so the child's own scratchpad cannot
         be resolved from the environment either — it is named outright."""
-        from mimir.servers._shared.state_paths import scratch_dir
+        from mimir.shared.state_paths import scratch_dir
 
         with tempfile.TemporaryDirectory() as base:
             with open(os.path.join(base, "active_session"), "w", encoding="utf-8") as fh:

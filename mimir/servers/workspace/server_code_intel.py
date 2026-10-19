@@ -12,7 +12,7 @@ import time
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.capabilities import (
+from ...shared.capabilities import (
     tool_caps,
     CACHEABLE,
     CANDIDATE_SEARCH,
@@ -21,10 +21,10 @@ from .._shared.capabilities import (
     SEARCH,
     SEARCH_WITH_PATH,
 )
-from .._shared.responses import err, ok
+from ...shared.responses import err, ok
 from .root_paths import require_absolute, resolve_path_in_root
-from .._shared.approved_roots import approved_roots
-from .._shared.state_paths import standing_roots
+from ...shared.approved_roots import approved_roots
+from ...shared.state_paths import standing_roots
 from .lsp_client import LSPPool, path_for
 
 SEARCH_ROOT = os.environ.get(

@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-_SHARED_DIR = SERVERS_DIR / "_shared"
+_SHARED_DIR = SERVERS_DIR.parent / "shared"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Ahead of the first ``import mimir``, and ahead of any installed copy of the package:
@@ -19,14 +19,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # anywhere else — so the file would check one build while importing another. Anchored at
 # this file, it is always the tree this test belongs to.
 
-from mimir.servers._shared import shell_paths as _shell_paths 
+from mimir.shared import shell_paths as _shell_paths 
 from mimir.tests.support.modules import spec_for
 
 
 
 # Mapping from logical module name to (subdirectory, filename).
 _MODULE_PATHS: dict[str, tuple[str, str]] = {
-    "responses":              ("_shared",      "responses.py"),
+    "responses":              ("shared",      "responses.py"),
     "text_tools":             ("agent_state",  "text_tools.py"),
     "server_bash":            ("workspace",    "server_bash.py"),
     "server_datetime":        ("utilities",    "server_datetime.py"),
@@ -46,7 +46,7 @@ _MODULE_PATHS: dict[str, tuple[str, str]] = {
 def _load_server_module(module_name: str):
     if module_name in _MODULE_PATHS:
         subdir, filename = _MODULE_PATHS[module_name]
-        module_path = SERVERS_DIR / subdir / filename
+        module_path = (_SHARED_DIR if subdir == "shared" else SERVERS_DIR / subdir) / filename
     else:
         module_path = SERVERS_DIR / f"{module_name}.py"
     spec = spec_for(module_path)
@@ -1411,9 +1411,7 @@ class BashServerTests(unittest.TestCase):
         # command nobody classified from escaping it. The exemptions are the words
         # that open nothing: `tr`'s arguments are character sets, and the metadata
         # no-ops (`echo`, `which`, `pwd`, `df`) take words, not paths.
-        from mimir.servers._shared.shell_paths import (
-            PATH_INSENSITIVE_COMMANDS, takes_path_operands,
-        )
+        from mimir.shared.shell_paths import PATH_INSENSITIVE_COMMANDS, takes_path_operands
         self.assertEqual(
             PATH_INSENSITIVE_COMMANDS,
             {"tr", "echo", "which", "pwd", "df", "basename", "dirname",
@@ -1526,7 +1524,7 @@ class BashServerTests(unittest.TestCase):
         # program path must appear there or only one side would see it — which is
         # exactly how it ended up unprompted by the client and unapprovable.
         import os
-        from mimir.servers._shared.shell_paths import segment_path_operands
+        from mimir.shared.shell_paths import segment_path_operands
         cwd = bash_validation.WORKSPACE_ROOT
         self.assertIn("/opt/tools/run.sh",
                       segment_path_operands(["/opt/tools/run.sh"], cwd))
@@ -1620,10 +1618,16 @@ class BashServerTests(unittest.TestCase):
         """
         from mimir.client.guardrails import observations as obs
         from mimir.client.tools.bash_classify import READONLY_KINDS, classify_bash_command
-        from mimir.servers._shared.shell_paths import (
-            DENIED_COMMANDS, ENV_MANAGER_COMMANDS, EXEC_COMMANDS, INSPECT_COMMANDS,
-            NEUTRAL_COMMANDS, READ_COMMANDS, SEARCH_COMMANDS,
-            WRITE_COMMANDS, WRITE_VALUE_FLAGS_BY_CMD,
+        from mimir.shared.shell_paths import (
+            DENIED_COMMANDS,
+            ENV_MANAGER_COMMANDS,
+            EXEC_COMMANDS,
+            INSPECT_COMMANDS,
+            NEUTRAL_COMMANDS,
+            READ_COMMANDS,
+            SEARCH_COMMANDS,
+            WRITE_COMMANDS,
+            WRITE_VALUE_FLAGS_BY_CMD,
         )
 
         categories = {
@@ -1734,8 +1738,10 @@ class BashServerTests(unittest.TestCase):
     def test_every_refused_path_is_one_the_user_can_be_asked_about(self) -> None:
         """Every path the guard refuses is one the gate would surface, so the user can grant it."""
         from mimir.client.tools.bash_classify import shell_segments
-        from mimir.servers._shared.shell_paths import (
-            cd_destination, normalize_path_arg, segment_path_operands,
+        from mimir.shared.shell_paths import (
+            cd_destination,
+            normalize_path_arg,
+            segment_path_operands,
         )
 
         cwd = bash_validation.WORKSPACE_ROOT

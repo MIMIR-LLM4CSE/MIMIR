@@ -13,7 +13,7 @@ from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.servers._shared import run_channel as server_side
+from mimir.shared import run_channel as server_side
 
 _KEY = "20260101T120000Z-ab12"
 # Every case runs against both real channels: the properties below are about the

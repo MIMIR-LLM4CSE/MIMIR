@@ -6,7 +6,7 @@ optional but recommended. See PLUGINS_DETAILED.md.
 """
 
 from mcp.server.fastmcp import FastMCP
-from mimir.servers._shared.capabilities import tool_caps, READ, CACHEABLE
+from mimir.shared.capabilities import tool_caps, READ, CACHEABLE
 
 mcp = FastMCP("example")
 

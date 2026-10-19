@@ -23,10 +23,10 @@ from typing import Any
 
 
 from mcp.server.fastmcp import FastMCP
-from .._shared.atomic import write_json
-from .._shared.module_env import module_probe_script
-from .._shared.capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY, PANEL_REPORT
-from .._shared.cpu_facts import (
+from ...shared.atomic import write_json
+from ...shared.module_env import module_probe_script
+from ...shared.capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY, PANEL_REPORT
+from ...shared.cpu_facts import (
     GPU_FIELDS,
     GPU_FIELDS_BASE,
     GPU_PROBES,
@@ -40,11 +40,11 @@ from .._shared.cpu_facts import (
     parse_march,
     parse_nvidia_csv,
 )
-from .._shared.responses import ok
+from ...shared.responses import ok
 from .slurm_digest import cached_cluster_digest
-from .._shared.slurm_site import hosts as slurm_hosts, name_of as _host_name
-from .._shared.state_paths import state_dir
-from .._shared import embed as _embed
+from ...shared.slurm_site import hosts as slurm_hosts, name_of as _host_name
+from ...shared.state_paths import state_dir
+from ...shared import embed as _embed
 from . import vector_cache
 from .platform_parsers import (
     parse_avail_terse,
@@ -52,7 +52,7 @@ from .platform_parsers import (
     parse_whatis_bulk,
     parse_whatis_flat,
 )
-from .._shared.clock import utc_stamp
+from ...shared.clock import utc_stamp
 
 
 mcp = FastMCP(

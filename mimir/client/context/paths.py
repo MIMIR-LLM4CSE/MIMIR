@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from ...servers._shared.state_paths import standing_roots
+from ...shared.state_paths import standing_roots
 from ..config import paths
 
 

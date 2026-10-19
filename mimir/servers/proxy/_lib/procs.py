@@ -17,11 +17,11 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from ..._shared import build_progress
-from ..._shared.responses import err
-from ..._shared import jobs
-from ..._shared.jobs import WATCHER_FILE as _WATCHER_FILE
-from ..._shared.slurm_site import (
+from ....shared import build_progress
+from ....shared.responses import err
+from ....shared import jobs
+from ....shared.jobs import WATCHER_FILE as _WATCHER_FILE
+from ....shared.slurm_site import (
     locate_slurm_job as _locate_on_schedulers,
     slurm_state as _read_slurm_state,
     record_job_dir as _record_job_dir,
@@ -34,10 +34,10 @@ from ..._shared.slurm_site import (
     owns_job as _owns_slurm_job,
     record_host as _record_slurm_host,
 )
-from ..._shared.state_paths import active_session_id, session_owns
+from ....shared.state_paths import active_session_id, session_owns
 
-from ..._shared.atomic import replace_symlink
-from ..._shared.processes import is_running, proc_starttime
+from ....shared.atomic import replace_symlink
+from ....shared.processes import is_running, proc_starttime
 from . import store
 
 _MAX_LOG = 256 * 1024   # bytes
@@ -176,7 +176,7 @@ def _locate_slurm_job(run_dir: str, job_id: int) -> str:
 
 
 def _slurm_job_state(job_id: int, host: str) -> tuple[str, str, list[str]]:
-    """``_shared.slurm_site.slurm_state`` of *job_id* on *host*; raises when the scheduler
+    """``shared.slurm_site.slurm_state`` of *job_id* on *host*; raises when the scheduler
     cannot be asked."""
     def run_lines(script: str) -> list[str]:
         res = _slurm_run(shlex.split(script), 10, host=host)
@@ -208,7 +208,7 @@ def read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
 
 def _slurm_run(argv: list[str], timeout: int, stdin: str | None = None, *,
                host: str = _SLURM_LOCAL):
-    """Run one Slurm command on *host* through ``_shared/slurm_site`` (argv; *stdin* for ``sbatch``)."""
+    """Run one Slurm command on *host* through ``shared/slurm_site`` (argv; *stdin* for ``sbatch``)."""
     return subprocess.run(
         _slurm_exec_argv(argv, host=host, piped=stdin is not None),
         input=stdin,

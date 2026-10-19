@@ -8,13 +8,13 @@ the command and the parameter-file template.
 
 from __future__ import annotations
 
-from ..._shared.launcher import PACKAGE_PARENT
+from ....shared.launcher import PACKAGE_PARENT
 import os
 import re
 import shlex
 
 from . import procs
-from ..._shared.slurm_script import node_python_lines, sbatch_header
+from ....shared.slurm_script import node_python_lines, sbatch_header
 
 PARAM_EXT: dict[str, str] = {
     "text":              "txt",
@@ -136,7 +136,7 @@ def sbatch_header_lines(
     dependency: str = "",
     kill_on_invalid_dep: bool = False,
 ) -> list[str]:
-    """The ``#SBATCH`` lines of a proxy job: one node, directives from ``_shared/slurm_script``."""
+    """The ``#SBATCH`` lines of a proxy job: one node, directives from ``shared/slurm_script``."""
     return sbatch_header(
         job_name=job_name, partition=partition, nodes=1, ntasks=ntasks,
         cpus_per_task=cpus_per_task, wall_time=wall_time, mem=mem, log_file=log_file,

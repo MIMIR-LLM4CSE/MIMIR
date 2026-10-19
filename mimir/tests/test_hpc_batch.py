@@ -19,7 +19,7 @@ from mimir.servers.hpc import node_profiles as hpc_node_profiles
 from mimir.servers.hpc import jobs as hpc_jobs
 from mimir.servers.hpc import cli as hpc_cli
 from mimir.servers.hpc import slurm_digest
-from mimir.servers._shared import slurm_site
+from mimir.shared import slurm_site
 
 from mimir.tests.support.scheduler import local_slurm
 
@@ -1024,7 +1024,7 @@ class WhereAJobsOutputGoesTests(unittest.TestCase):
 
 class HowACommandReachesItsSchedulerTests(unittest.TestCase):
     """Running a command where Slurm is: locally or over ``ssh``, through
-    ``_shared/slurm_site``. Which scheduler a call goes to is resolved by the caller.
+    ``shared/slurm_site``. Which scheduler a call goes to is resolved by the caller.
     """
 
     def test_local_is_run_through_a_login_shell(self) -> None:

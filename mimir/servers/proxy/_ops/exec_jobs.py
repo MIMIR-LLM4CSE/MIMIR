@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import sys
 
-from ..._shared.launcher import launch_argv
+from ....shared.launcher import launch_argv
 from . import with_next, err, ok
 from .eval_common import NEXT_DETACHED
 from .eval_session import RUN_WAIT_BUDGET_S, await_terminal_state
@@ -21,7 +21,7 @@ from .._lib.procs import (
     background_descriptor,
 )
 from .._lib.store import read_json
-from ..._shared.atomic import write_json
+from ....shared.atomic import write_json
 
 _JOB_WORKER = "mimir.servers.proxy._proxy_job"
 JOB_FILE = "job.json"

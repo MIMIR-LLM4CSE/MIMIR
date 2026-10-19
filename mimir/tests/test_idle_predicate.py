@@ -12,7 +12,7 @@ import time
 import unittest
 from unittest import mock
 
-from mimir.servers._shared.processes import proc_starttime
+from mimir.shared.processes import proc_starttime
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.worker.human import HumanBridge

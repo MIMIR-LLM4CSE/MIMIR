@@ -535,7 +535,7 @@ failure, say) keeps the command already on the row rather than erasing it.
 
 Both of the first two come from **one** declared fact. A server names its tool's family
 of work in its own declaration — `tool_caps(kind="edit")`, vocabulary in
-`servers/_shared/capabilities.py` — and the row shows that word and draws its icon from
+`shared/capabilities.py` — and the row shows that word and draws its icon from
 it, so the glyph and the label cannot disagree, and the reducer keys on no tool name. A
 tool that declares no
 family gets one derived from its capabilities (`kind_for`), so a third-party server
@@ -753,7 +753,7 @@ export const KIND_ICONS: Record<string, ReactNode> = {
 };
 ```
 Then declare the family on the tools that belong to it, server-side, and add it to
-`TOOL_KINDS` in `servers/_shared/capabilities.py` (mirrored in
+`TOOL_KINDS` in `shared/capabilities.py` (mirrored in
 `client/tools/capabilities.py`):
 ```python
 @mcp.tool(**tool_caps(kind="benchmark", caps=[CODE_EXEC], label="Benchmarking {target}"))

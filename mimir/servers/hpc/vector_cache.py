@@ -7,8 +7,8 @@ corpora. Never raises.
 import json
 from typing import Any, Callable, Iterable
 
-from .._shared import embed as _embed
-from .._shared.atomic import write_json
+from ...shared import embed as _embed
+from ...shared.atomic import write_json
 
 
 def load_vectors(path: str) -> dict:
