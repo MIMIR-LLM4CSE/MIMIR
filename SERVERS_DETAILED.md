@@ -10,7 +10,7 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `shared/` | What two domains or more use | `responses.py`, `capabilities.py`, `approved_roots.py`, `trusted_read_roots.py`, `module_env.py`, `embed.py`, `cpu_facts.py`, `slurm_script.py`, `slurm_site.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `jobs.py`, `run_channel.py`, `build_progress.py`, `atomic.py`, `clock.py`, `processes.py`, `launcher.py`, `skill_file.py` |
+| `mimir/shared/` (beside `servers/`) | What two domains or more use, and the contract with the client ([ARCHITECTURE.md](ARCHITECTURE.md#what-the-client-and-the-servers-share)) | `responses.py`, `capabilities.py`, `approved_roots.py`, `trusted_read_roots.py`, `module_env.py`, `embed.py`, `cpu_facts.py`, `slurm_script.py`, `slurm_site.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `jobs.py`, `run_channel.py`, `build_progress.py`, `atomic.py`, `clock.py`, `processes.py`, `launcher.py`, `skill_file.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning, delegation & self-knowledge | `server_memory`, `server_todo`, `server_spawn_agent`, `server_mimir_api` |
@@ -870,8 +870,8 @@ through MCP, since the call itself is what the server is busy with. So it goes t
 the shared state dir, like the approved-paths allowlist.
 
 `shared/run_channel.py` is that channel, and it is generic. A tool that blocks
-publishes the run it is waiting on in `<state_dir>/runs/<channel>/current.json`;
-`client/tool_execution/run_channel.py` names it back in a `divert` file the wait loop
+publishes the run it is waiting on in `<state_dir>/runs/<channel>/current.json`; the
+client, through the same module, names it back in a `divert` file the wait loop
 consumes on its next tick. The channel is the blocking tool's own registered name, so
 the client addresses it straight off the row being diverted — neither end spells the
 other's name out, and one tool's request can never reach another's run. Two tools
@@ -1732,7 +1732,7 @@ def write_file(path: str, content: str) -> dict: ...
 
 `kind` is the tool's **family of work** — the word its activity row shows, and the icon
 the UI draws beside it, from the one declaration. The vocabulary is `TOOL_KINDS`, next
-to the capabilities and mirrored the same way (`test_capabilities.test_kind_vocab_in_sync`).
+to the capabilities and read by the client from the same module.
 It is a family and never a tool's identity: several tools share one, and
 `test_phase_b_servers` fails a tool that declares none. It is declared rather than derived
 because the distinctions that matter are invisible in the capability flags — nothing tells
@@ -1743,9 +1743,8 @@ family derived from its capabilities (`kind_for`), so it renders correctly regar
 Pure tools, which declare no capabilities at all, still declare a `kind`: the row is
 drawn for every call, not only for the classified ones.
 
-The capability vocabulary is defined once in `shared/capabilities.py` and mirrored
-exactly in `client/tools/capabilities.py` (parity guarded by
-`test_capabilities.test_vocab_in_sync`); the per-flag reference table lives in
+The capability vocabulary is defined once in `shared/capabilities.py`, which
+`client/tools/capabilities.py` re-exports; the per-flag reference table lives in
 [`PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md#tool-capabilities) — this file does not
 re-list it. Declare only the kinds
 that matter to a policy; umbrella flags the client can *derive* are not declarable

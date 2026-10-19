@@ -163,9 +163,13 @@ through a handler table. Both halves are type-checked by `npm test`.
 
 ## What the client and the servers share
 
-`mimir/shared/` is the code both sides run: the on-disk layout, the atomic write, the shape
-of a tool answer, the capability vocabulary a server declares with, the run contract, the
-shell parsing. It imports neither the client nor the servers; both import it.
+`mimir/shared/` imports neither the client nor the servers; both import it. It serves two
+readers:
+
+| Reader | Modules |
+|---|---|
+| **The client and the servers**: the contract between them, and what both run | `state_paths` (the on-disk layout), `jobs` (the run contract), `run_channel` (the divert channel), `capabilities` (the vocabulary a server declares with), `responses` (the shape of a tool answer), `shell_paths`, `trusted_read_roots`, `extension_paths`, `skill_file`, `launcher`, `atomic`, `processes`, `embed` |
+| **The servers only**: what two domains or more share | `slurm_site`, `slurm_script`, `cpu_facts`, `build_progress`, `approved_roots`, `module_env`, `clock` |
 
 ## The servers
 
