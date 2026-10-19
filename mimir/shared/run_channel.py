@@ -10,6 +10,7 @@ import json
 import os
 import time
 
+from . import state_paths
 from .atomic import write_text
 from .processes import is_running, proc_starttime
 
@@ -19,8 +20,7 @@ _STALE_S = 60.0
 
 
 def _dir(channel: str, base: str | None = None, session_id: str | None = None) -> str:
-    from .state_paths import session_state_dir
-    return os.path.join(session_state_dir(base, session_id), "runs", channel)
+    return os.path.join(state_paths.session_state_dir(base, session_id), "runs", channel)
 
 
 def _read_current(channel: str, base: str | None = None,
