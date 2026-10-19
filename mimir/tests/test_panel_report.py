@@ -577,7 +577,7 @@ def test_the_worker_reports_what_its_poll_learned():
     Where a run is and how far it has got were read on every tick and then dropped on
     the way out, so the panel could only ever say that something was running.
     """
-    from mimir.client.ui.ws.worker.jobs import _Watch
+    from mimir.client.query_engine.jobs import Watch as _Watch
     from mimir.client.ui.ws.worker.worker import AgentWorker
 
     class _Task:

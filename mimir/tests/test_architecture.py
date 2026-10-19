@@ -299,16 +299,20 @@ class JobPollingTests(unittest.TestCase):
             offenders += [f"{path.relative_to(PACKAGE)}: {g}" for g in self.GUARDS if g in names]
         self.assertEqual(offenders, [])
 
-    def test_every_watcher_polls_through_run_tool(self) -> None:
-        from mimir.client.query_engine.jobs import background
+    def test_every_watcher_is_the_engines_and_polls_through_run_tool(self) -> None:
+        from mimir.client.query_engine.jobs import RunWatcher, background
         from mimir.client.ui.ws.worker.jobs import JobWatcher
         from mimir.servers.agent_state.child_jobs import ChildWatcher
-        for probe in (background.await_background_job, JobWatcher._poll_to_completion,
-                      ChildWatcher._watch):
+        self.assertTrue(issubclass(JobWatcher, RunWatcher))
+        self.assertTrue(issubclass(ChildWatcher, RunWatcher))
+        for probe in (background.await_background_job, JobWatcher.tool_runner,
+                      ChildWatcher.tool_runner):
             with self.subTest(probe=probe.__qualname__):
                 tree = ast.parse(textwrap.dedent(inspect.getsource(probe)))
                 called = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
                 called |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+                called |= {n.value for n in ast.walk(tree)
+                           if isinstance(n, ast.Constant) and isinstance(n.value, str)}
                 self.assertIn("run_tool", called)
                 self.assertNotIn("dispatch_tool_calls", called)
 

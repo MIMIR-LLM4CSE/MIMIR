@@ -47,6 +47,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `streaming.py` | the model call (retry/backoff), `process_response`, the single `get_backend` handle |
 | `jobs/background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
 | `jobs/poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
+| `jobs/watcher.py` | `RunWatcher`: registering a detached run, polling it to its end, building its `job_complete`; a subclass says where it goes. A conversation's `JobWatcher` and a sub-agent's `ChildWatcher` are both one, and the package exports what a watcher outside the engine builds on |
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |
 | `finalize.py` | `finalize_answer` / `record_turn` |
 
@@ -1144,7 +1145,7 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 | `worker/worker.py` | `AgentWorker`: the agent's thread and loop, the query loop; `NoAgentWorker`, the worker of a conversation before its first query |
 | `worker/outbox.py`, `worker/backend_wait.py`, `worker/review.py`, `worker/panel.py`, `worker/usage.py` | the outbox that wakes the pump; the wait for the backend; the review bar and checklist; the panel sections and resources; the context overhead and compaction |
 | `worker/human.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
-| `worker/jobs.py` | `JobWatcher`: a conversation's detached runs and the check-in cycle |
+| `worker/jobs.py` | `JobWatcher` (a `RunWatcher`): a conversation's detached runs, delivered to the pool, and the check-in cycle |
 | `worker/file_preview.py`, `runtime.py` | the diff a write would make; what the parts share (stdout router, todo file, context budget) |
 
 What belongs here are the invariants that are not obvious from the protocol:

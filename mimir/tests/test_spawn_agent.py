@@ -934,17 +934,19 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self._intervals = (child_jobs._FIRST_INTERVAL, child_jobs._MAX_INTERVAL)
+        self._intervals = (child_jobs.ChildWatcher.first_interval,
+                           child_jobs.ChildWatcher.max_interval)
         # Long enough that a watch registered here is still in flight when the
         # assertion runs. The tests about a run *finishing* shorten it themselves.
         self._schedule(5.0)
 
     def tearDown(self) -> None:
-        child_jobs._FIRST_INTERVAL, child_jobs._MAX_INTERVAL = self._intervals
+        (child_jobs.ChildWatcher.first_interval,
+         child_jobs.ChildWatcher.max_interval) = self._intervals
 
     @staticmethod
     def _schedule(seconds: float) -> None:
-        child_jobs._FIRST_INTERVAL = child_jobs._MAX_INTERVAL = seconds
+        child_jobs.ChildWatcher.first_interval = child_jobs.ChildWatcher.max_interval = seconds
 
     @staticmethod
     def _watcher(agent, **kw):
@@ -1007,9 +1009,9 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
         async def body():
             watcher.register(_bash_descriptor())
             await asyncio.sleep(0.02)
-            self.assertEqual([d["job_key"] for d in watcher.live_descriptors()], ["k1"])
+            self.assertEqual([d["job_key"] for d in watcher.watched()], ["k1"])
             await watcher.close()
-            self.assertEqual(watcher.live_descriptors(), [])
+            self.assertEqual(watcher.watched(), [])
 
         self._run(body)
 
@@ -1023,7 +1025,7 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
         self.assertFalse(watcher.register({"job_key": "k1"}))
         self.assertFalse(watcher.register({"status_op": {"tool": "bash_job"}}))
         self.assertFalse(watcher.register("not a descriptor"))
-        self.assertEqual(watcher.live_descriptors(), [])
+        self.assertEqual(watcher.watched(), [])
 
     def test_the_probes_are_never_credited_to_the_child(self) -> None:
         self._schedule(0.0)

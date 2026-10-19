@@ -1376,7 +1376,8 @@ Tools:
     (`register_background_job` / `watched_background_jobs`) goes on the agent the
     WebSocket worker owns, and a child's agent is built here, so it gets its own; polled
     in-turn instead, a child would sit on a step until a build finished rather than
-    prepare the next one. `child_jobs.ChildWatcher` is the watcher, on
+    prepare the next one. `child_jobs.ChildWatcher` is the watcher — the engine's `RunWatcher`, as
+    the conversation's is, delivering to the child — on
     the loop `asyncio.run` creates for the child's thread — the only window in which
     `get_running_loop()` can hold one. The resume is a **steer**, not an event: a child
     has no `out_q` and no event bus, and no turn loop to submit to, so a finished run

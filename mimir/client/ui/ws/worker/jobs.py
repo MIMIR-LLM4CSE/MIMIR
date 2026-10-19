@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from dataclasses import dataclass, field
 from itertools import chain, repeat
 from typing import TYPE_CHECKING
 
@@ -18,9 +16,7 @@ from ....session.jobs_on_disk import (
     scan_session,
     subagent_sessions,
 )
-from ....query_engine.jobs import poll
-from ....query_engine.jobs.wakes import job_complete
-from .....shared.jobs import job_key_of
+from ....query_engine.jobs import RunWatcher, Tick, Watch
 
 if TYPE_CHECKING:
     from .worker import AgentWorker
@@ -47,30 +43,12 @@ def _checkin_fingerprint(jobs: list[dict]) -> tuple:
         for j in jobs))
 
 
-@dataclass
-class _Watch:
-    """A live watcher: its task, the job's descriptor, and the last ``status`` it learned.
-
-    The descriptor is what the dispatch guard compares calls against; check-ins read the
-    status instead of polling again.
-    """
-    task: asyncio.Task
-    descriptor: dict
-    status: dict = field(default_factory=dict)
-    # Alert categories ever seen in this run's log tail, kept once the line scrolls away.
-    alerts: dict = field(default_factory=dict)
-
-
-
-class JobWatcher:
+class JobWatcher(RunWatcher):
     """One conversation's background runs and its check-in cycle."""
 
     def __init__(self, worker: "AgentWorker") -> None:
+        super().__init__()
         self.worker = worker
-        # job_key -> _Watch(task, descriptor), polling a detached run to completion.
-        # Written by ``register`` (the agent's hook) and read back by ``watched``,
-        # which the dispatch guard uses. Only ever touched on the worker loop.
-        self.watches: dict[str, _Watch] = {}
         # The check-in cycle covering every job of this conversation, or None between
         # waves. One per conversation rather than one per job: three jobs launched in
         # the same step share a schedule and report together instead of waking it
@@ -81,59 +59,51 @@ class JobWatcher:
 
     def tasks(self) -> list[asyncio.Task]:
         """Every task this holds — watchers and the check-in cycle — for shutdown."""
-        tasks = [w.task for w in self.watches.values()]
+        tasks = super().tasks()
         if self._checkin_task is not None:
             tasks.append(self._checkin_task)
         return tasks
 
-    def register(self, descriptor: dict, owner: str | None = None) -> bool:
-        """Register a watcher for a detached run (the agent's hook); True when one is active.
+    # ── RunWatcher ──────────────────────────────────────────────────────────────
 
-        Deduplicated by ``job_key``. The wake goes to *owner*, else the session of the running
-        query.
-        """
-        if not isinstance(descriptor, dict):
-            logger.warning("background-job registration refused: descriptor is %s, "
-                           "not a dict", type(descriptor).__name__)
-            return False
-        job_key = job_key_of(descriptor)
-        if not job_key:
-            logger.warning("background-job registration refused: descriptor carries "
-                           "neither 'job_key' nor 'run_dir' (keys: %s)",
-                           sorted(descriptor))
-            return False
-        existing = self.watches.get(job_key)
-        if existing is not None and not existing.task.done():
-            return True  # already watched
-        session_id = owner or self.worker.query_session_id or self.worker.session_id
+    def tool_runner(self):
+        return self.worker.agent.run_tool
+
+    def session_for(self, owner: str | None) -> str | None:
+        return owner or self.worker.query_session_id or self.worker.session_id
+
+    def adopt(self, descriptor: dict, session_id: str | None) -> None:
         # Whose run this is, which is not the same question as who gets woken: a run a
         # sub-agent launched and handed over is watched for the parent and still named
         # after the child. setdefault, never an assignment: a descriptor that arrived
         # with an origin arrived with the only end that knew it.
-        descriptor.setdefault("origin", {"kind": "main", "label": "",
-                                         "session": session_id})
-        try:
-            # get_running_loop, not get_event_loop: the latter can hand back a loop
-            # that is not running, and a task created on one of those never polls
-            # anything while registration still reports success. That combination is
-            # the worst of both — the model is promised a resume, and nothing is
-            # holding the run. Registering is only ever done from the worker loop, so
-            # requiring a running one states the real precondition.
-            task = asyncio.get_running_loop().create_task(
-                self._watch_job(job_key, descriptor, session_id))
-        except RuntimeError:
-            # No running loop to host the watcher. Logged rather than swallowed: this
-            # is the point where a launched run stops being tracked by anything, and
-            # every minute after it is a run finishing into silence.
-            logger.warning("background-job registration failed for %r: no running "
-                           "event loop to host the watcher", job_key, exc_info=True)
-            return False
-        task.add_done_callback(self._watcher_died)
-        self.watches[job_key] = _Watch(task, descriptor)
-        logger.info("background job %r of session %s is now watched by %r",
-                    job_key, session_id, (descriptor.get("status_op") or {}).get("tool"))
+        descriptor.setdefault("origin", {"kind": "main", "label": "", "session": session_id})
+
+    def on_registered(self, job_key: str, descriptor: dict, session_id: str | None) -> None:
         self._start_checkins(session_id)
-        return True
+
+    def on_tick(self, job_key: str, watch: Watch, tick: Tick, fresh_alerts: dict,
+                session_id: str | None) -> None:
+        # A run gone wrong is not left waiting for the next point of the schedule.
+        if fresh_alerts:
+            self._emit_checkin(session_id)
+        # Starts at ("", None), so a run that never reports is never sent, while one
+        # whose count disappears is — a retraction is news too.
+        if (tick.phase, tick.percent) != watch.progress:
+            watch.progress = (tick.phase, tick.percent)
+            self.worker.out_q.put({
+                "type":       "job_progress",
+                "job_key":    job_key,
+                "phase":      tick.phase,
+                "percent":    tick.percent,
+                "session_id": session_id,
+            })
+
+    def deliver(self, job_key: str, event: dict) -> None:
+        # Not marked as reported here: emitting is not delivering, and a run settled
+        # when its event is queued is one every later scan takes for delivered. The
+        # consumer writes the marker (``jobs_on_disk.mark_wakes_reported``).
+        self.worker.out_q.put(event)
 
     def rearm_detached_jobs(self) -> dict:
         """Put watchers back on this session's runs and report those that ended; return what it did.
@@ -150,8 +120,7 @@ class JobWatcher:
         rearmed: list[str] = []
         reported: list[str] = []
         for job in jobs:
-            existing = self.watches.get(job.job_key)
-            if existing is not None and not existing.task.done():
+            if job.job_key in self.watched_job_keys():
                 continue   # a watcher is already holding it
             if job.live:
                 if self.register(job.descriptor(), owner=session_id):
@@ -164,16 +133,6 @@ class JobWatcher:
             logger.info("job scan: session %s re-armed %d run(s) and reported %d "
                         "that had ended", session_id, len(rearmed), len(reported))
         return {"rearmed": rearmed, "reported": reported}
-
-    @staticmethod
-    def _watcher_died(task: asyncio.Task) -> None:
-        """Log a watcher or check-in task that ended on an exception (nothing awaits them)."""
-        if task.cancelled():
-            return
-        exc = task.exception()
-        if exc is not None:
-            logger.warning("background-job task died: %r — any run it was holding will "
-                           "not wake anyone", exc, exc_info=exc)
 
     def _start_checkins(self, session_id: str | None) -> None:
         """Start a check-in cycle for a new wave of runs, replacing a stale one.
@@ -197,7 +156,7 @@ class JobWatcher:
                            "event loop to host the cycle", session_id)
             self._checkin_task = None
             return
-        self._checkin_task.add_done_callback(self._watcher_died)
+        self._checkin_task.add_done_callback(self.log_death)
 
     async def _checkin_cycle(self, session_id: str | None) -> None:
         """Emit ``job_checkin`` down ``_CHECKIN_SCHEDULE``, then hourly, while the conversation has live runs.
@@ -236,98 +195,6 @@ class JobWatcher:
             "jobs":       jobs,
         })
         return True
-
-    def watched_job_keys(self) -> list[str]:
-        """Keys of the runs this conversation still has in flight."""
-        return [k for k, w in self.watches.items() if not w.task.done()]
-
-    def watched(self) -> list[dict]:
-        """Descriptors of the runs a live watcher holds (the agent's hook for the dispatch guard)."""
-        return [w.descriptor for w in self.watches.values()
-                if isinstance(w.descriptor, dict) and not w.task.done()]
-
-    async def _watch_job(self, job_key: str, descriptor: dict,
-                         session_id: str | None = None) -> None:
-        """Poll a detached run to completion (:func:`poll.poll_until_terminal`), then emit ``job_complete``.
-
-        A task on the worker loop that outlives the launching turn; the event carries the
-        descriptor's own ops.
-        """
-        try:
-            await self._poll_to_completion(job_key, descriptor, session_id)
-        finally:
-            # One exit for every way this ends — a terminal state, a cancellation at
-            # shutdown, a status op that was never there, or an exception nothing
-            # catches. A run is in this table because something is still asking about
-            # it, so an entry that outlives its task is the table saying what is not
-            # true. Every reader already filters a finished task out; this is what
-            # keeps the table itself honest.
-            self.watches.pop(job_key, None)
-
-    async def _poll_to_completion(self, job_key: str, descriptor: dict,
-                                  session_id: str | None) -> None:
-        """Poll one run to its end and announce it. See :meth:`_watch_job`."""
-        status_op  = descriptor.get("status_op") or {}
-        summary_op = descriptor.get("summary_op") or {}
-        if not status_op.get("tool"):
-            return
-
-        # Last (phase, percent) announced, so a poll that learned nothing says nothing.
-        last_reported: tuple = ("", None)
-
-        def _tick(tick: poll.Tick) -> None:
-            nonlocal last_reported
-            # What a check-in reports, written by the poll that is running anyway. The
-            # state goes with it: "running" and "its status stopped being readable" are
-            # the two things a bulletin most needs to tell apart, and only the poll knows
-            # which one it is looking at.
-            watch = self.watches.get(job_key)
-            if watch is not None:
-                fresh = {k: v for k, v in
-                         poll.log_alerts(tick.fields.get("log_tail")).items()
-                         if k not in watch.alerts}
-                watch.alerts.update(fresh)
-                watch.status = {**tick.fields,
-                                "state": tick.state or "unreadable",
-                                "phase": tick.phase, "percent": tick.percent,
-                                "at": time.monotonic()}
-                if watch.alerts:
-                    watch.status["alerts"] = dict(watch.alerts)
-                # A run gone wrong is not left waiting for the next point of the schedule.
-                if fresh:
-                    self._emit_checkin(session_id)
-            # Starts at ("", None), so a run that never reports is never sent, while one
-            # whose count disappears is — a retraction is news too.
-            if (tick.phase, tick.percent) != last_reported:
-                last_reported = (tick.phase, tick.percent)
-                self.worker.out_q.put({
-                    "type":       "job_progress",
-                    "job_key":    job_key,
-                    "phase":      tick.phase,
-                    "percent":    tick.percent,
-                    "session_id": session_id,
-                })
-
-        state, reason = await poll.poll_until_terminal(
-            self.worker.agent.run_tool, status_op,
-            interval=5.0, max_interval=30.0,
-            call_timeout=poll.STATUS_CALL_TIMEOUT,
-            unreadable_limit=poll.UNREADABLE_POLL_LIMIT,
-            on_tick=_tick, label=job_key)
-
-        summary = await poll.read_summary(
-            self.worker.agent.run_tool, summary_op,
-            call_timeout=poll.STATUS_CALL_TIMEOUT, label=job_key)
-
-        logger.info("background job %r of session %s finished (%s); waking it",
-                    job_key, session_id, state)
-        self.worker.out_q.put(job_complete(descriptor, state, session_id=session_id,
-                                           summary=summary, reason=reason))
-        # Deliberately not marked as reported here. Emitting is not delivering: the
-        # event still has to be folded into a turn by whatever consumes the bus, and a
-        # run settled at the moment its event is queued is one every later scan takes
-        # for already delivered — so a wake nobody has read is a wake nobody ever will.
-        # The consumer writes the marker — see ``jobs_on_disk.mark_wakes_reported``.
 
     def watched_runs(self) -> list[dict]:
         """The runs held by watchers, for the panel: descriptor and last status, minus the local ``at``."""

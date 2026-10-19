@@ -10,7 +10,8 @@ import types
 import unittest
 
 from mimir.client.ui.ws.worker.human import HumanBridge
-from mimir.client.ui.ws.worker.jobs import JobWatcher, _Watch
+from mimir.client.ui.ws.worker.jobs import JobWatcher
+from mimir.client.query_engine.jobs import Watch as _Watch
 from unittest import mock
 
 from mimir.tests.support.pools import FakePool
@@ -836,22 +837,23 @@ class RegisterBgJobTests(unittest.TestCase):
 
     def test_descriptor_without_a_key_is_refused_out_loud(self) -> None:
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
+        with self.assertLogs("mimir.client.query_engine.jobs.watcher", "WARNING") as log:
             self.assertFalse(w.jobs.register({"server": "bash", "status_op": {}}))
         self.assertIn("job_key", "\n".join(log.output))
         self.assertEqual(w.jobs.watches, {})
 
     def test_non_dict_descriptor_is_refused_out_loud(self) -> None:
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
+        with self.assertLogs("mimir.client.query_engine.jobs.watcher", "WARNING") as log:
             self.assertFalse(w.jobs.register("not a descriptor"))
         self.assertIn("not a dict", "\n".join(log.output))
 
     def test_no_running_loop_is_refused_out_loud(self) -> None:
         """Called off the worker loop there is nothing to host the watcher."""
         w = self._worker()
-        with self.assertLogs("mimir.client.ui.ws.worker.jobs", "WARNING") as log:
-            self.assertFalse(w.jobs.register({"job_key": "fast", "status_op": {}}))
+        with self.assertLogs("mimir.client.query_engine.jobs.watcher", "WARNING") as log:
+            self.assertFalse(w.jobs.register({"job_key": "fast",
+                                               "status_op": {"tool": "bash_job"}}))
         self.assertIn("event loop", "\n".join(log.output))
         self.assertEqual(w.jobs.watches, {})
 

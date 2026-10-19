@@ -427,7 +427,7 @@ async def run_sub_agent(
     watcher = child_jobs.ChildWatcher(
         agent=agent, origin=spawn_user_channel.child_origin(agent, task), on_activity=on_event)
     agent.register_background_job = watcher.register
-    agent.watched_background_jobs = watcher.live_descriptors
+    agent.watched_background_jobs = watcher.watched
     agent.poll_steer = watcher.drain_steers
     if child is not None:
         child["agent"] = agent
