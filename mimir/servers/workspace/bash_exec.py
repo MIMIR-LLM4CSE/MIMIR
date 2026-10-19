@@ -11,6 +11,7 @@ from ...shared import build_progress, run_channel
 from ...shared.jobs import shell_descriptor
 from ...shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 from ...shared.responses import err, ok
+from ...shared.slurm_site import slurm_host_from_ssh
 from ...shared.shell_paths import ShellParseError as _ShellParseError, parse_segments as _parse_segments
 from . import bash_jobs
 from .bash_validation import REAL_HOME
@@ -115,6 +116,15 @@ def _is_clean_no_match(segments: list[list[str]] | None, returncode: int, stdout
     return returncode == 1 and head in _NO_MATCH_COMMANDS
 
 
+def _ssh_scheduler(command: str) -> str:
+    """The host whose Slurm *command* runs through ``ssh``, or "" (local, or no Slurm)."""
+    try:
+        segments = _parse_segments(command)
+    except _ShellParseError:
+        return ""
+    return next((host for seg in segments if (host := slurm_host_from_ssh(seg.argv))), "")
+
+
 def _output_targets(command: str) -> list[str]:
     """Files the command redirects its own output to, from the validator's parse.
 
@@ -202,7 +212,7 @@ def run_blocking(
         launched = bash_jobs.launch(
             command, cwd, safe_env(cwd), preamble=preamble,
             output_targets=_output_targets(command),
-            split_stderr=True, ephemeral=True,
+            split_stderr=True, ephemeral=True, scheduler=_ssh_scheduler(command),
         )
     except OSError as exc:
         return err(f"Could not start the command: {exc}", cwd=cwd)
@@ -312,18 +322,28 @@ def launch_background(command: str, cwd: str, preamble: str) -> dict:
     buffer.
     """
     try:
+        scheduler = _ssh_scheduler(command)
         launched = bash_jobs.launch(command, cwd, safe_env(cwd), preamble=preamble,
-                                     output_targets=_output_targets(command))
+                                     output_targets=_output_targets(command),
+                                     scheduler=scheduler)
     except OSError as exc:
         return err(f"Could not start the background job: {exc}", cwd=cwd)
 
     job_key = launched["job_key"]
+    on_cluster = {
+        "scheduler": scheduler,
+        # Said, because the pid above is not where the work is.
+        "where": f"Slurm on {scheduler}: the process here is the ssh session, and the "
+                 f"job itself is in {scheduler}'s queue (slurm_queue(scheduler="
+                 f"'{scheduler}')).",
+    } if scheduler else {}
     return ok({
         "cwd": cwd,
         "command": command,
         "job_key": job_key,
         "pid": launched["pid"],
         "log": launched["log"],
+        **on_cluster,
         # What was started, not what will happen next: whether anything watches this
         # run is the client's to know, and it says so itself when it registers one.
         # A server that promises a resume it does not perform produces a model that

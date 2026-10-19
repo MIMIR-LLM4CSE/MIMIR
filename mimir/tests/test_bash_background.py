@@ -65,6 +65,14 @@ class BashBackgroundTests(unittest.TestCase):
             os.environ["MIMIR_STATE_DIR"] = self._orig_state
         shutil.rmtree(self._tmp, ignore_errors=True)
 
+    def test_a_run_of_slurm_through_ssh_is_that_hosts_not_this_machines(self) -> None:
+        # The process here is the ssh session; the panel places a run by its scheduler,
+        # and a run without one lands on this machine.
+        launched = bash_jobs.launch("sleep 1", self._tmp, dict(os.environ), scheduler="cluster")
+        self.assertEqual(bash_jobs.state(launched["job_key"])["scheduler"], "cluster")
+        local = bash_jobs.launch("sleep 1", self._tmp, dict(os.environ))
+        self.assertNotIn("scheduler", bash_jobs.state(local["job_key"]))
+
     def test_launch_returns_immediately_with_a_watchable_handle(self) -> None:
         # The point of the feature: the call comes back while the work is still going,
         # carrying the descriptor the client polls generically (no tool name in loop
@@ -924,6 +932,29 @@ class LearnedSchedulersTests(unittest.TestCase):
         finally:
             server_bash.slurm_queued_by_host = orig
         self.assertNotIn("unwatched", second)
+
+
+
+class SlurmThroughSshTests(unittest.TestCase):
+    """Which host's Slurm a command reaches through ssh, wherever in its chain it runs."""
+
+    def test_slurm_anywhere_in_the_remote_chain_is_found(self) -> None:
+        for argv in (["ssh", "cluster", "srun -N1 ./solver"],
+                     ["ssh", "cluster", "cd run && module load gcc && srun ./solver"],
+                     ["ssh", "-p", "2222", "cluster", "timeout 600 srun ./solver"],
+                     ["ssh", "cluster", "squeue", "-u", "me"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(slurm_site.slurm_host_from_ssh(argv), "cluster")
+
+    def test_a_remote_command_without_slurm_is_not_a_scheduler(self) -> None:
+        self.assertEqual(slurm_site.slurm_host_from_ssh(["ssh", "cluster", "ls -la"]), "")
+        self.assertEqual(slurm_site.slurm_host_from_ssh(["srun", "./solver"]), "")
+
+    def test_the_launch_names_the_host_it_runs_on(self) -> None:
+        from mimir.servers.workspace import bash_exec
+        self.assertEqual(bash_exec._ssh_scheduler("ssh cluster 'cd run && srun ./a'"), "cluster")
+        self.assertEqual(bash_exec._ssh_scheduler("srun ./a"), "")
+        self.assertEqual(bash_exec._ssh_scheduler("ssh cluster ls"), "")
 
 
 if __name__ == "__main__":

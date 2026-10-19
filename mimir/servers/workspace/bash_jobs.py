@@ -136,11 +136,11 @@ def _write_meta(job_key: str, **fields) -> None:
 
 def launch(command: str, cwd: str, env: dict, preamble: str = "",
            output_targets: list[str] | None = None, *,
-           split_stderr: bool = False, ephemeral: bool = False) -> dict:
+           split_stderr: bool = False, ephemeral: bool = False, scheduler: str = "") -> dict:
     """Spawn *command* in its own session; return its key, pid, log path and ``proc`` handle.
 
-    *output_targets* are the files it redirects to (from the validator's parse);
-    *split_stderr* keeps stderr apart for a blocking run; *ephemeral* marks a scratch buffer.
+    *output_targets*: the files it redirects to; *split_stderr*: stderr apart (blocking run);
+    *ephemeral*: a scratch buffer; *scheduler*: the host whose Slurm it runs through ssh.
     ``proc`` is never written to ``meta.json``.
     """
     _sweep_once()
@@ -179,6 +179,8 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
             err_fh.close()
 
     extra: dict[str, Any] = {"split_stderr": bool(split_stderr), "ephemeral": bool(ephemeral)}
+    if scheduler:
+        extra["scheduler"] = scheduler
     if effective != command:
         # What bash was actually handed, kept next to what was asked for: a later
         # reader must be able to see that the two differ and how.
@@ -333,6 +335,9 @@ def state(job_key: str, run_dir: str = "") -> dict:
         "log": log_path(job_key, run_dir),
         "elapsed_s": round(time.time() - float(meta.get("started_at") or 0), 1),
     }
+    if meta.get("scheduler"):
+        # The process here is the ssh session; the work is that host's Slurm job.
+        payload["scheduler"] = meta["scheduler"]
     if alive and not rc_raw:
         payload["state"] = "running"
         # The build's own count, when its output carries one — the client watcher

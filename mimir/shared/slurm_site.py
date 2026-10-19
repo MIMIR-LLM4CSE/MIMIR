@@ -16,6 +16,7 @@ import time
 
 from . import cpu_facts
 from .jobs import SLURM_JOB_ID
+from .shell_paths import ShellParseError, parse_segments, unwrap_argv
 from .state_paths import SUBAGENTS_DIRNAME, session_state_dir, sessions_root, state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
@@ -129,17 +130,33 @@ def slurm_host_from_ssh(argv: list[str]) -> str:
             continue
         rest.append(token)
         index += 1
-    if not host or not rest:
-        return ""
-    try:
-        words = shlex.split(rest[0])
-    except ValueError:
-        return ""
-    if not words or os.path.basename(words[0]) not in SLURM_COMMANDS:
+    if not host or not rest or not _runs_slurm(" ".join(rest)):
         return ""
     # A user@host target reaches the same scheduler; the account is ssh's business and
     # is kept, so the recorded target is exactly what worked.
     return host
+
+
+def _runs_slurm(remote: str) -> bool:
+    """Whether the command line *remote* runs a Slurm command anywhere in its chain.
+
+    Anywhere, not first: ``cd run && module load x && srun ./solver`` is the ordinary
+    shape. A command behind a wrapper counts, and ``srun`` is itself one.
+    """
+    try:
+        segments = parse_segments(remote)
+    except ShellParseError:
+        return False
+    for segment in segments:
+        if not segment.argv:
+            continue
+        inner, wrappers = unwrap_argv(segment.argv)
+        heads = [os.path.basename(w) for w in wrappers]
+        if inner:
+            heads.append(os.path.basename(inner[0]))
+        if any(head in SLURM_COMMANDS for head in heads):
+            return True
+    return False
 
 
 def _path() -> str:
