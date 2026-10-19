@@ -1261,6 +1261,12 @@ Purpose: delegate a self-contained sub-task to a **fresh** `MimirAgent` that run
 completion and returns its answer, so the orchestrator can fan work out instead of
 carrying every intermediate step in its own context.
 
+The server holds the two tools. What a call says about its caller (approval mode, model,
+grantable tools, the user's rung) and what follows from it (the grant refused, the budget,
+the model) is `agent_state/caller.py`; the run itself — the child built, configured and
+driven in its own thread, its briefs, its reply, its overrun handoff — is
+`agent_state/sub_agent_run.py`.
+
 Tools:
 - `spawn_agent(task, context="", tools=[], max_steps=30, time_budget_secs=600, model="")`
   — spin up a child agent, run it, return its answer. `context` is prepended to the task
@@ -1331,7 +1337,7 @@ Tools:
     answer with a conclusion citing files, symbols and line numbers rather than the
     contents it read; the caller delegates precisely to keep those out of its window.
   - **Named tools decide the rest.** The child connects only the servers those tools live
-    in, then *prunes* its registry to the grant (`_prune_tools`): connecting a server
+    in, then *prunes* its registry to the grant (`sub_agent_run._prune_tools`): connecting a server
     brings its siblings, and an unpruned grant would be approximate. It runs in `agent`
     mode when at least one granted tool is `PLAN_BLOCKED` or `PLAN_READONLY` — without the
     second, a child given the shell to build with could not run the build — and is briefed
@@ -1440,7 +1446,7 @@ Execution model:
   the dispatcher's flat 120 s applied and no non-trivial delegation could finish.
 - A child that overruns keeps running in its own thread and its answer never arrives. The
   timeout branch therefore reports what can be read off the agent itself
-  (`_partial_handoff`): the files it had already touched, and its session — enough to
+  (`sub_agent_run.partial_handoff`): the files it had already touched, and its session — enough to
   carry the work on with a fresh child instead of starting it again.
 - Success payload: `{"status": "ok", "answer", "completed", "files_read", "files_written",
   "blocked_by_mode", "model", "tools", "session"}`

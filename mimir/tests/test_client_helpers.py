@@ -46,7 +46,6 @@ from mimir.tests.support.loops import run_agent
 import types
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
-from mimir.tests.support.modules import spec_for
 from mimir.tests.support.agents import FakeAgent, fake_agent
 client_module = types.SimpleNamespace(
     MimirAgent=MimirAgent,
@@ -2382,14 +2381,9 @@ class SubAgentRungTests(unittest.TestCase):
         The rung travels to the delegation server in a call's metadata, so a client of
         the previous version says "parallel" to a server of this one.
         """
-        import importlib.util
-        from pathlib import Path as _Path
-        root = _Path(__file__).resolve().parents[1] / "servers"
-        spec = spec_for(root / "agent_state" / "server_spawn_agent.py")
-        spawn = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(spawn)
-        self.assertEqual(spawn._SUBAGENT_LEVELS, ("explore", "build"))
-        self.assertTrue(spawn._level_allows("parallel", "build"))
+        from mimir.servers.agent_state import caller
+        self.assertEqual(caller.SUBAGENT_LEVELS, ("explore", "build"))
+        self.assertTrue(caller.level_allows("parallel", "build"))
 
 
 class ModulesCommandTests(unittest.TestCase):

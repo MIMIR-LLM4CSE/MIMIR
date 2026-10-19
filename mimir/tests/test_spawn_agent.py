@@ -6,7 +6,9 @@ which tools a child may be given, the toolkit an exploration gets by default, th
 anti-recursion, and the time budget it declares to its caller — none of which any
 other test covered.
 """
-from mimir.servers.agent_state import spawn_jobs, spawn_limits, spawn_output, spawn_user_channel, spawn_worktree
+from mimir.servers.agent_state import (
+    caller, spawn_jobs, spawn_limits, spawn_output, spawn_user_channel, spawn_worktree, sub_agent_run,
+)
 import asyncio
 import contextlib
 import tempfile
@@ -138,10 +140,10 @@ class _FakeAgent:
 def _run_child(tools: list[str] | None = None, answer: str = "done",
                agent: _FakeAgent | None = None, on_event=None,
                approval_mode: str = "manual", level: str = "build"):
-    """Drive _run_sub_agent against a fake agent and the real server catalog."""
+    """Drive run_sub_agent against a fake agent and the real server catalog."""
     agent = agent or _FakeAgent(answer)
     with _patched_agent(agent):
-        result = asyncio.run(spawn._run_sub_agent(
+        result = asyncio.run(sub_agent_run.run_sub_agent(
             "find X", "", list(tools or []), dict(_GRANTABLE), 5, approval_mode,
             on_event=on_event, level=level))
     return agent, result
@@ -420,7 +422,7 @@ class _MetaCtx(_RecordingCtx):
         super().__init__()
         from mcp.types import RequestParams
         self.request_context = types.SimpleNamespace(
-            meta=RequestParams.Meta(**{spawn._APPROVAL_MODE_META: mode}))
+            meta=RequestParams.Meta(**{caller.APPROVAL_MODE_META: mode}))
 
 
 class _BlockedAgent(_FakeAgent):
@@ -435,8 +437,8 @@ class _BlockedAgent(_FakeAgent):
 class ApprovalModeInheritanceTests(unittest.TestCase):
     def test_the_meta_key_matches_the_client_s(self):
         from mimir.client.guardrails.policy.approval import APPROVAL_MODE_META, ApprovalManager
-        self.assertEqual(spawn._APPROVAL_MODE_META, APPROVAL_MODE_META)
-        self.assertEqual(spawn._APPROVAL_MODES, ApprovalManager.APPROVAL_MODES)
+        self.assertEqual(caller.APPROVAL_MODE_META, APPROVAL_MODE_META)
+        self.assertEqual(caller.APPROVAL_MODES, ApprovalManager.APPROVAL_MODES)
 
     def test_the_child_runs_in_the_caller_s_mode(self):
         for mode in ("manual", "auto", "auto_all"):
@@ -474,7 +476,7 @@ class UserChannelTests(unittest.TestCase):
             return {"answer": "x", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             asyncio.run(spawn.spawn_agent("axis", ctx=ctx, background=True))
             self.assertTrue(done.wait(5))
         self.assertIs(seen["ask_session"], ctx.session)
@@ -492,7 +494,7 @@ class UserChannelTests(unittest.TestCase):
             return {"answer": "x", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             asyncio.run(spawn.spawn_agent("axis", ctx=None, background=True))
             self.assertTrue(done.wait(5))
         self.assertIsNone(seen["ask_session"])
@@ -625,8 +627,8 @@ class ParkedChildBudgetTests(unittest.TestCase):
         self.assertEqual(spawn_jobs.job_state(self._entry(120)), "unknown")
 
     def test_no_or_unknown_mode_falls_back_to_manual(self):
-        self.assertEqual(spawn._caller_approval_mode(None), "manual")
-        self.assertEqual(spawn._caller_approval_mode(_MetaCtx("yolo")), "manual")
+        self.assertEqual(caller.approval_mode(None), "manual")
+        self.assertEqual(caller.approval_mode(_MetaCtx("yolo")), "manual")
         agent = _FakeAgent()
         run_tool(agent, _RecordingCtx())
         self.assertEqual(agent.approvals.approval_mode, "manual")
@@ -651,7 +653,7 @@ class _ModelCtx(_RecordingCtx):
         super().__init__()
         from mcp.types import RequestParams
         self.request_context = types.SimpleNamespace(
-            meta=RequestParams.Meta(**{spawn._CALLER_MODEL_META: model}))
+            meta=RequestParams.Meta(**{caller.CALLER_MODEL_META: model}))
 
 
 _SERVED = [{"id": "RedHatAI/GLM-5.3-Flash-NVFP4"},
@@ -678,7 +680,7 @@ class SubAgentModelTests(unittest.TestCase):
 
     def test_the_meta_key_matches_the_client_s(self):
         from mimir.client.config.models import CALLER_MODEL_META
-        self.assertEqual(spawn._CALLER_MODEL_META, CALLER_MODEL_META)
+        self.assertEqual(caller.CALLER_MODEL_META, CALLER_MODEL_META)
 
     def test_without_a_model_the_child_follows_the_caller_s_current_one(self):
         """The env was frozen at spawn: a mid-session switch reaches the child via _meta."""
@@ -738,10 +740,10 @@ class _GrantCtx(_RecordingCtx):
         super().__init__()
         from mcp.types import RequestParams
         self.request_context = types.SimpleNamespace(meta=RequestParams.Meta(**{
-            spawn._GRANTABLE_TOOLS_META: dict(_GRANTABLE if grantable is None else grantable),
-            spawn._GRANTABLE_WRITERS_META: list(_WRITERS),
-            spawn._CALLER_MODE_META: mode,
-            spawn._SUBAGENT_LEVEL_META: level,
+            caller.GRANTABLE_TOOLS_META: dict(_GRANTABLE if grantable is None else grantable),
+            caller.GRANTABLE_WRITERS_META: list(_WRITERS),
+            caller.CALLER_MODE_META: mode,
+            caller.SUBAGENT_LEVEL_META: level,
         }))
 
 
@@ -755,8 +757,8 @@ class GrantRefusalTests(unittest.TestCase):
 
     def test_the_meta_keys_match_the_client_s(self):
         from mimir.client.config.models import CALLER_MODE_META, GRANTABLE_TOOLS_META
-        self.assertEqual(spawn._GRANTABLE_TOOLS_META, GRANTABLE_TOOLS_META)
-        self.assertEqual(spawn._CALLER_MODE_META, CALLER_MODE_META)
+        self.assertEqual(caller.GRANTABLE_TOOLS_META, GRANTABLE_TOOLS_META)
+        self.assertEqual(caller.CALLER_MODE_META, CALLER_MODE_META)
 
     def test_a_granted_tool_runs(self):
         out, agent = self._spawn(_GrantCtx(), tools=["read_file_lines"])
@@ -795,18 +797,18 @@ class SubAgentLevelTests(unittest.TestCase):
         from mimir.client.config.models import (
             GRANTABLE_WRITERS_META, SUBAGENT_LEVEL_META,
         )
-        self.assertEqual(spawn._SUBAGENT_LEVEL_META, SUBAGENT_LEVEL_META)
-        self.assertEqual(spawn._GRANTABLE_WRITERS_META, GRANTABLE_WRITERS_META)
-        self.assertEqual(spawn._SUBAGENT_LEVELS, SUBAGENT_LEVELS)
+        self.assertEqual(caller.SUBAGENT_LEVEL_META, SUBAGENT_LEVEL_META)
+        self.assertEqual(caller.GRANTABLE_WRITERS_META, GRANTABLE_WRITERS_META)
+        self.assertEqual(caller.SUBAGENT_LEVELS, SUBAGENT_LEVELS)
 
     def test_there_is_no_rung_for_writing_in_the_shared_tree(self):
         """Two sub-agents editing one tree overwrite each other in silence, and no
         instruction to a model prevents that. So writing means a copy, or nothing."""
-        self.assertEqual(spawn._SUBAGENT_LEVELS, ("explore", "build"))
+        self.assertEqual(caller.SUBAGENT_LEVELS, ("explore", "build"))
 
     def test_an_absent_or_unknown_rung_is_the_weakest(self):
-        self.assertEqual(spawn._subagent_level(_RecordingCtx()), "explore")
-        self.assertEqual(spawn._subagent_level(_GrantCtx(level="everything")), "explore")
+        self.assertEqual(caller.subagent_level(_RecordingCtx()), "explore")
+        self.assertEqual(caller.subagent_level(_GrantCtx(level="everything")), "explore")
 
     def test_at_explore_a_writing_tool_does_not_buy_agent_mode(self):
         """The caller should not have been able to grant one; if one arrives anyway,
@@ -964,8 +966,8 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
         with _patched_agent(_FakeAgent()) as agent, \
-             mock.patch.object(spawn, "_drive_sub_agent", _drive):
-            asyncio.run(spawn._run_sub_agent(
+             mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
+            asyncio.run(sub_agent_run.run_sub_agent(
                 "a task", "", [], {}, 4, lambda ev: None, session="parent/subagents/s1"))
         for hook in ("register_background_job", "watched_background_jobs",
                      "poll_steer"):
@@ -1186,7 +1188,7 @@ class TimeBudgetTests(unittest.TestCase):
             return {"answer": "done", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive), \
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive), \
                 _no_real_worktree():
             out = asyncio.run(spawn.spawn_agent("find X", ctx=ctx, **kwargs))
             self.assertTrue(entered.wait(5), "the sub-agent never started")
@@ -1232,13 +1234,13 @@ class TimeBudgetTests(unittest.TestCase):
             return {"answer": "done", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             asyncio.run(spawn.spawn_agent("find X", ctx=_GrantCtx()))
         self.assertEqual(seen["max_steps"], 0)
 
     def test_the_brief_no_longer_promises_a_step_ceiling(self):
-        self.assertNotIn("tool-call steps:", spawn._WORK_BRIEF)
-        self.assertIn("as many tool-call steps as the work needs", spawn._WORK_BRIEF)
+        self.assertNotIn("tool-call steps:", sub_agent_run.WORK_BRIEF)
+        self.assertIn("as many tool-call steps as the work needs", sub_agent_run.WORK_BRIEF)
 
 
 class ForcedDetachmentTests(unittest.TestCase):
@@ -1253,7 +1255,7 @@ class ForcedDetachmentTests(unittest.TestCase):
             return {"answer": "done", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive), \
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive), \
                 _no_real_worktree():
             out = asyncio.run(spawn.spawn_agent("axis", ctx=ctx, **kwargs))
             done.wait(5)
@@ -1287,7 +1289,7 @@ class ForcedDetachmentTests(unittest.TestCase):
             return {}
 
         with _patched_agent(agent), \
-             mock.patch.object(spawn, "_drive_sub_agent", _never), \
+             mock.patch.object(sub_agent_run, "drive_sub_agent", _never), \
              mock.patch.object(spawn_limits, "SUBAGENT_MIN_BUDGET_SECS", 1):
             out = asyncio.run(spawn.spawn_agent(
                 "optimise", ctx=_GrantCtx(), time_budget_secs=1))
@@ -1306,7 +1308,7 @@ class BackgroundTests(unittest.TestCase):
     @contextlib.contextmanager
     def _launched(self, agent, drive):
         """A detached child outlives its call, so the fakes must outlive it too."""
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", drive):
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", drive):
             yield asyncio.run(spawn.spawn_agent(
                 "optimise the inner loop", ctx=_GrantCtx(), background=True))
 
@@ -1443,7 +1445,7 @@ class WorktreeTests(unittest.TestCase):
         # waited for it. A writing child left to the default takes the working ceiling
         # (2 h), which is over the cap, so it is detached for length and the call
         # returns a background_job with no report on it yet.
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             out = asyncio.run(spawn.spawn_agent(
                 "vectorise the loop", tools=["write_file"], time_budget_secs=300,
                 ctx=_GrantCtx(level="build")))
@@ -1683,14 +1685,14 @@ class ReportedPathTests(unittest.TestCase):
     def test_a_path_inside_the_copy_comes_back_relative_to_the_repo(self):
         wt = {"path": "/tmp/wt/child"}
         self.assertEqual(
-            spawn._repo_relative(["/tmp/wt/child/src/solver.c"], wt), ["src/solver.c"])
+            sub_agent_run.repo_relative(["/tmp/wt/child/src/solver.c"], wt), ["src/solver.c"])
 
     def test_a_path_outside_the_copy_is_left_alone(self):
         wt = {"path": "/tmp/wt/child"}
-        self.assertEqual(spawn._repo_relative(["/tmp/notes.txt"], wt), ["/tmp/notes.txt"])
+        self.assertEqual(sub_agent_run.repo_relative(["/tmp/notes.txt"], wt), ["/tmp/notes.txt"])
 
     def test_a_child_without_a_copy_reports_what_it_read(self):
-        self.assertEqual(spawn._repo_relative(["/repo/src/a.c"], None), ["/repo/src/a.c"])
+        self.assertEqual(sub_agent_run.repo_relative(["/repo/src/a.c"], None), ["/repo/src/a.c"])
 
     def test_a_handoff_past_the_budget_uses_the_same_names(self):
         # The evidence of a child that overran is read off the agent, not its result —
@@ -1699,7 +1701,7 @@ class ReportedPathTests(unittest.TestCase):
             "read_files": ["/tmp/wt/child/src/solver.c"],
             "last_query_written_files": ["/tmp/wt/child/src/solver.c"],
         }))
-        out = spawn._partial_handoff({"agent": agent, "worktree": {"path": "/tmp/wt/child"}})
+        out = sub_agent_run.partial_handoff({"agent": agent, "worktree": {"path": "/tmp/wt/child"}})
         self.assertEqual(out["files_read"], ["src/solver.c"])
         self.assertEqual(out["files_written"], ["src/solver.c"])
 
@@ -1714,7 +1716,7 @@ class AbandonedChildTests(unittest.TestCase):
     def test_abandoning_sets_the_flag_the_child_s_loop_reads(self):
         flag = threading.Event()
         child = {"agent": types.SimpleNamespace(turn=TurnState(cancel_flag=flag))}
-        spawn._abandon_child(child)
+        sub_agent_run.abandon_child(child)
         self.assertTrue(flag.is_set())
         self.assertTrue(child["abandoned"])
 
@@ -1722,17 +1724,17 @@ class AbandonedChildTests(unittest.TestCase):
         # The thread publishes its agent a moment after it starts; a budget that
         # expires inside that window must not raise in the caller's timeout branch.
         child: dict = {}
-        spawn._abandon_child(child)
+        sub_agent_run.abandon_child(child)
         self.assertTrue(child["abandoned"])
 
     def test_an_abandoned_run_is_not_recorded_as_finished(self):
         self.assertEqual(
-            spawn._final_state({"abandoned": True}, {"completed": True}), "abandoned")
+            sub_agent_run.final_state({"abandoned": True}, {"completed": True}), "abandoned")
 
     def test_a_run_nobody_abandoned_keeps_its_own_verdict(self):
-        self.assertEqual(spawn._final_state({}, {"completed": True}), "finished")
-        self.assertEqual(spawn._final_state({}, None), "failed")
-        self.assertEqual(spawn._final_state(None, {"completed": False}), "finished")
+        self.assertEqual(sub_agent_run.final_state({}, {"completed": True}), "finished")
+        self.assertEqual(sub_agent_run.final_state({}, None), "failed")
+        self.assertEqual(sub_agent_run.final_state(None, {"completed": False}), "finished")
 
 
 class StatusForwardingTests(unittest.TestCase):
@@ -1770,7 +1772,7 @@ class BudgetTimeoutAdviceTests(unittest.TestCase):
     def test_it_says_the_clock_ended_it_and_not_the_work(self):
         """A handoff read as a conclusion is the failure this guards against:
         `completed: False` alone is a flag a reader skims past."""
-        note = spawn._overrun_note(7200)
+        note = sub_agent_run.overrun_note(7200)
         self.assertIn("about 2 hours", note)
         self.assertIn("time budget, not the end of its work", note)
         self.assertIn("not a conclusion", note)
@@ -1779,7 +1781,7 @@ class BudgetTimeoutAdviceTests(unittest.TestCase):
         """The caller reads this line and acts on it. Told only to use a fresh
         sub-agent, it respawned the same task verbatim and burned a second budget on
         it — so the line has to say that repeating it unchanged is the wrong move."""
-        note = spawn._overrun_note(600)
+        note = sub_agent_run.overrun_note(600)
         self.assertIn("rather than starting the task again", note)
         self.assertIn("nothing about it has changed", note)
 
@@ -1893,7 +1895,7 @@ class ConcurrencyBoundTests(unittest.TestCase):
             ])
 
         with _patched_agent(_FakeAgent()), \
-                mock.patch.object(spawn, "_drive_sub_agent", _drive):
+                mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             results = asyncio.run(_all())
         return inside["peak"], results
 
@@ -1913,7 +1915,7 @@ class ConcurrencyBoundTests(unittest.TestCase):
             raise RuntimeError("the child blew up")
 
         with _patched_agent(_FakeAgent()), \
-                mock.patch.object(spawn, "_drive_sub_agent", _boom):
+                mock.patch.object(sub_agent_run, "drive_sub_agent", _boom):
             for _ in range(3):        # more runs than slots
                 out = asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx()))
                 self.assertEqual(out["status"], "error")
@@ -1953,7 +1955,7 @@ class ConcurrencyBoundTests(unittest.TestCase):
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
         with _patched_agent(_FakeAgent()), \
-                mock.patch.object(spawn, "_drive_sub_agent", _drive):
+                mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             out = asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx(), background=True))
             self.assertIn("background_job", out)
             self.assertTrue(started.wait(5))

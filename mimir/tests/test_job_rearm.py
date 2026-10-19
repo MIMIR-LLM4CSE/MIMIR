@@ -326,7 +326,7 @@ class ASubAgentsRunsAreFoundTests(_ScanCase):
     def test_a_childs_run_is_the_parents_to_hear_about(self):
         """Whose run it is and who gets woken are two different answers.
 
-        Nothing can load a sub-session as a conversation: ``_sub_session_id`` writes
+        Nothing can load a sub-session as a conversation: ``new_sub_session`` writes
         directories and no ``<id>.json``. The person is watching the parent, and the
         parent's agent is the one that can act on what came back.
         """

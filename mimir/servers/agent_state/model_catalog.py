@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 import json
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -159,3 +160,28 @@ def subagent_model_refusal(model: str, served: list[dict[str, Any]]) -> str | No
     if not is_delegable(entry):
         return f"model {model!r} cannot run a sub-agent: {entry.get('note') or 'marked not delegable'}"
     return None
+
+
+def probe_served_models() -> list[dict]:
+    """The models the endpoint serves, asked once at start-up; [] when it lists none.
+
+    Once, so the ``model`` description below is the same on every turn and the
+    prompt prefix stays cacheable; a model added to the endpoint mid-session is
+    offered from the next session on.
+    """
+    try:
+        from mimir.client.llm.factory import get_backend
+        return get_backend().served_model_info()
+    except Exception as exc:  # a dead endpoint must not keep the server from starting
+        print(f"spawn_agent: could not list served models: {exc}", file=sys.stderr)
+        return []
+
+
+def served_models_description(served: list[dict]) -> str:
+    """The ``model`` argument's description: the served models, or a plain line without the catalog."""
+    try:
+        return describe_served_models(served)
+    except Exception as exc:
+        print(f"spawn_agent: model catalog unavailable: {exc}", file=sys.stderr)
+        return "Which model the sub-agent runs on. Leave it empty to use your own model."
+
