@@ -12,12 +12,9 @@ import type {
   ServerMessage,
   SessionMeta,
   PromptOrigin,
-  TodoItem,
-  DiffEntry,
   QuestionSpec,
   ApprovalMessage,
   UserQuestionMessage,
-  ToggleItem,
   ApprovalMode,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
@@ -27,6 +24,7 @@ import { usePanels } from "./hooks/usePanels";
 import { useEndpoint, type Host } from "./hooks/useEndpoint";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { useThreadScroll } from "./hooks/useThreadScroll";
+import { useWorkspaceState } from "./hooks/useWorkspaceState";
 import { ChatThread } from "./components/ChatThread";
 import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
@@ -44,7 +42,6 @@ import { SubAgentsPanel } from "./components/SubAgentsPanel";
 import { SciencePanel } from "./components/SciencePanel";
 import { ContextBar } from "./components/ContextBar";
 import { RunProgressDock } from "./components/RunProgressDock";
-import type { ContextUsage } from "./components/ContextBar";
 import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
 import { chooseRestoredMessages, planTranscript } from "./components/transcriptUtils";
@@ -80,7 +77,6 @@ export const App: React.FC = () => {
   const chatStateRef = useRef(chatState);
   chatStateRef.current = chatState;
 
-  const [todos, setTodos] = useState<TodoItem[]>([]);
   // The host's actions, read once useWebSocket below has created them.
   const hostRef = useRef<Host>({ connect: () => {}, fetchModels: () => {}, disconnect: () => {} });
   const endpoint = useEndpoint(useCallback(() => hostRef.current, []));
@@ -98,6 +94,8 @@ export const App: React.FC = () => {
     agentMode, thinkingLevel, thinkingProfile, streaming, contextMode, enforcement,
     temperature, approvalMode,
   } = settings;
+  const workspace = useWorkspaceState(sendVia);
+  const { onSessionLoaded: workspaceLoaded, reset: resetWorkspace } = workspace;
   // Set once the server says it has detached. One-way: a detached server has no
   // pipe to go back to.
   const [detached, setDetached] = useState(false);
@@ -105,11 +103,8 @@ export const App: React.FC = () => {
   // boolean "show the dialog" but the disconnect itself, held: cancelling means the
   // disconnect never happened.
   const [disconnectPending, setDisconnectPending] = useState(false);
-  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
-  const [serverToggles, setServerToggles] = useState<ToggleItem[]>([]);
-  const [skillToggles, setSkillToggles] = useState<ToggleItem[]>([]);
   const [userQuestion, setUserQuestion] = useState<{
     id: string;
     questions: QuestionSpec[];
@@ -122,8 +117,6 @@ export const App: React.FC = () => {
     // Epoch ms the agent stops waiting at, when the question carries a wall.
     expiresAt?: number;
   } | null>(null);
-  // Batch review: accumulated file diffs across queries; persists until user accepts/reverts.
-  const [batchFiles, setBatchFiles] = useState<DiffEntry[]>([]);
   // True between a session switch request and its session_loaded reply.
   const [sessionLoading, setSessionLoading] = useState(false);
   // Last submitted query text, so an error card can offer a one-click Retry.
@@ -225,22 +218,8 @@ export const App: React.FC = () => {
         if (msg.path) vscodePostMessage({ type: "open_preview", file: msg.path });
         return;
 
-      case "todo":
-        setTodos(msg.items);
-        return;
-
-      case "batch_status":
-        // Persistent batch review bar — accumulated file diffs.
-        setBatchFiles(msg.files ?? []);
-        return;
-
       case "sessions_list":
         setSessions(msg.sessions);
-        return;
-
-      case "toggles_list":
-        setServerToggles(msg.servers ?? []);
-        setSkillToggles(msg.skills ?? []);
         return;
 
       // Parks the agent on a person: the card is local state, and the reducer is
@@ -277,23 +256,6 @@ export const App: React.FC = () => {
         }
         setUserQuestion((prev) => (prev && prev.id !== msg.id ? prev : null));
         dispatch({ type: "prompt_answered", resumes: true });
-        return;
-
-      case "context_usage":
-        setContextUsage({
-          used_tokens: msg.used_tokens,
-          total_tokens: msg.total_tokens,
-          reserved_tokens: msg.reserved_tokens,
-          overhead_tokens: msg.overhead_tokens,
-          overhead_measured: msg.overhead_measured,
-          // Carried through, or the bar reads a floor as a verdict: a resumed
-          // session comes back with no agent, so `used_tokens` is missing the
-          // system prompt and tools and the figure must not be judged against
-          // the limit.
-          provisional: msg.provisional,
-          history_messages: msg.history_messages,
-          history_messages_full: msg.history_messages_full,
-        });
         return;
 
       // What this conversation produced while nobody was attached. Each event is fed
@@ -352,7 +314,7 @@ export const App: React.FC = () => {
         // Hand the richer copy straight back rather than waiting for the next turn
         // to end — the reconnect may be the last thing that happens in this session.
         if (restore.push) setTranscriptPush((n) => n + 1);
-        setTodos(msg.todos ?? []);
+        workspaceLoaded(msg.todos, prevSessionId !== msg.session_id);
         if (prevSessionId !== msg.session_id) {
           // Pending prompts belong to the turn of the session we just left. The
           // server sets that turn aside and keeps its card with that session: it is
@@ -360,30 +322,16 @@ export const App: React.FC = () => {
           // A reconnect to the *same* session keeps its cards: the worker is
           // still parked on them and will never re-send them.
           setUserQuestion(null);
-          setBatchFiles([]);
         }
-        setContextUsage(null);
         setSessionLoading(false);
         scrollToBottom();
         return;
       }
 
-      case "diff": {
-        // BatchReviewBar update lives outside the reducer; the editing-card
-        // message mutation is delegated to the reducer.
-        const { file: dFile, patch: dPatch } = msg;
-        const isNewFile = !dPatch || dPatch.includes("/dev/null");
-        setBatchFiles((prev) => {
-          const idx = prev.findIndex((d) => d.file === dFile);
-          if (idx >= 0)
-            return prev.map((d, i) =>
-              i === idx ? { ...d, patch: dPatch, is_new: isNewFile } : d
-            );
-          return [...prev, { file: dFile, patch: dPatch, is_new: isNewFile }];
-        });
+      // The batch keeps the file (useWorkspaceState); the reducer draws the edit card.
+      case "diff":
         dispatch(msg);
         return;
-      }
     }
 
     if (routed) return;
@@ -408,7 +356,7 @@ export const App: React.FC = () => {
     ) {
       scrollToBottom();
     }
-  }, [scrollToBottom, scrollToApproval]);
+  }, [scrollToBottom, scrollToApproval, workspaceLoaded]);
 
   // Kept in a ref so the `replay` case can run each bundled event through the handler
   // it is defined in.
@@ -418,7 +366,7 @@ export const App: React.FC = () => {
 
   const resetSession = () => {
     dispatch({ type: "reset" });
-    setTodos([]);
+    resetWorkspace();
     setUserQuestion(null);
     setActiveSessionId(null);
     setSessions([]);
@@ -473,7 +421,7 @@ export const App: React.FC = () => {
     setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
     refreshSubAgents, refreshPanel, reloadPanel,
   } = panels;
-  tablesRef.current = [endpoint.on, settings.on, panels.on];
+  tablesRef.current = [endpoint.on, settings.on, panels.on, workspace.on];
   useEffect(() => {
     if (readyCount === 0) return;
     const { thinkingLevel: tl, streaming: st, agentMode: am } = syncSettingsRef.current;
@@ -565,7 +513,7 @@ export const App: React.FC = () => {
   }, [busy, send, anchorNewQuery]);
 
   const composer = useComposer({
-    skillToggles,
+    skillToggles: workspace.skillToggles,
     sendCommand: (text: string) => send({ type: "command", text }),
     sendPrompt,
   });
@@ -683,8 +631,6 @@ export const App: React.FC = () => {
     const covered = val === "auto_all" || (val === "auto" && !leavesWorkspace);
     if (covered) handleApprovalResponse(card.approval.id, "y");
   }, [settings.changeApprovalMode, handleApprovalResponse]);
-
-  const hasTodos = todos.length > 0;
 
   // data-mode drives the chat's accent colour: blue agent / red plan / green ask.
   return (
@@ -909,32 +855,19 @@ export const App: React.FC = () => {
         {connection === "connected" && (
         <>
         {/* Batch review bar — accumulates file edits across queries until user accepts/reverts */}
-        {batchFiles.length > 0 && (
+        {workspace.batchFiles.length > 0 && (
           <BatchReviewBar
-            files={batchFiles}
-            onAccept={() => {
-              setBatchFiles([]);
-              send({ type: "batch_review_accept" });
-            }}
-            onRevert={() => {
-              setBatchFiles([]);
-              send({ type: "batch_review_revert" });
-            }}
-            onAcceptFile={(file) => {
-              setBatchFiles((prev) => prev.filter((f) => f.file !== file));
-              send({ type: "batch_review_accept_file", file });
-            }}
-            onRevertFile={(file) => {
-              setBatchFiles((prev) => prev.filter((f) => f.file !== file));
-              send({ type: "batch_review_revert_file", file });
-            }}
+            files={workspace.batchFiles}
+            onAccept={workspace.batch.acceptAll}
+            onRevert={workspace.batch.revertAll}
+            onAcceptFile={workspace.batch.acceptFile}
+            onRevertFile={workspace.batch.revertFile}
           />
         )}
         {/* Plan bar — shown above input box when todos exist */}
-        {hasTodos && <PlanBar items={todos} busy={busy} onClear={() => {
-          send({ type: "clear_todos" });
-          setTodos([]);
-        }} />}
+        {workspace.todos.length > 0 && (
+          <PlanBar items={workspace.todos} busy={busy} onClear={workspace.clearTodos} />
+        )}
         {/* Clarification / plan-approval question — anchored just above the
             input box (not floating at the top of the chat) so the decision
             point sits where the user is already acting. */}
@@ -1015,8 +948,8 @@ export const App: React.FC = () => {
               </button>
               {togglesOpen && (
                 <TogglesPanel
-                  servers={serverToggles}
-                  skills={skillToggles}
+                  servers={workspace.serverToggles}
+                  skills={workspace.skillToggles}
                   onToggleServer={(name, enabled) => send({ type: "toggle_server", name, enabled })}
                   onToggleSkill={(name, enabled) => send({ type: "toggle_skill", name, enabled })}
                   onClose={() => setTogglesOpen(false)}
@@ -1049,8 +982,8 @@ export const App: React.FC = () => {
           />
         </div>
         {/* Context usage bar — shown below the input box */}
-        {contextUsage && (
-          <ContextBar usage={contextUsage} contextMode={contextMode} />
+        {workspace.contextUsage && (
+          <ContextBar usage={workspace.contextUsage} contextMode={contextMode} />
         )}
         </>
         )}
