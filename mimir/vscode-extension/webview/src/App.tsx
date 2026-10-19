@@ -10,8 +10,6 @@ import type {
   ChatMessage,
   ClientMessage,
   ServerMessage,
-  PromptOrigin,
-  QuestionSpec,
   ApprovalMode,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
@@ -24,6 +22,8 @@ import { useThreadScroll } from "./hooks/useThreadScroll";
 import { useWorkspaceState } from "./hooks/useWorkspaceState";
 import { useSessions } from "./hooks/useSessions";
 import { useTranscriptSync } from "./hooks/useTranscriptSync";
+import { useUserQuestion } from "./hooks/useUserQuestion";
+import { useDisconnect } from "./hooks/useDisconnect";
 import { makeId } from "./state/ids";
 import { ChatThread } from "./components/ChatThread";
 import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
@@ -31,7 +31,6 @@ import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
 import { DetachButton } from "./components/DetachButton";
 import { DisconnectPrompt } from "./components/DisconnectPrompt";
-import { workingSessions } from "./components/disconnectUtils";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { BlocksIcon, GearIcon } from "./components/icons";
 import { TogglesPanel } from "./components/TogglesPanel";
@@ -87,27 +86,8 @@ export const App: React.FC = () => {
   } = settings;
   const workspace = useWorkspaceState(sendVia);
   const { onSessionLoaded: workspaceLoaded, reset: resetWorkspace } = workspace;
-  // Set once the server says it has detached. One-way: a detached server has no
-  // pipe to go back to.
-  const [detached, setDetached] = useState(false);
-  // True while the disconnect is waiting on an answer about the running work. Not a
-  // boolean "show the dialog" but the disconnect itself, held: cancelling means the
-  // disconnect never happened.
-  const [disconnectPending, setDisconnectPending] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
-  const [userQuestion, setUserQuestion] = useState<{
-    id: string;
-    questions: QuestionSpec[];
-    // Set when the card was raised by something other than the turn on screen — a
-    // sub-agent working alongside it. Rendered as a badge, because several can be
-    // working and an unattributed approval is one the user cannot weigh.
-    origin?: PromptOrigin;
-    // Which conversation asked, so the answer reaches the agent that is parked on it.
-    sessionId?: string;
-    // Epoch ms the agent stops waiting at, when the question carries a wall.
-    expiresAt?: number;
-  } | null>(null);
   // Last submitted query text, so an error card can offer a one-click Retry.
   const lastQueryRef = useRef<string>("");
   const {
@@ -127,11 +107,6 @@ export const App: React.FC = () => {
       // end: the reconnect may be the last thing that happens in this session.
       if (pushTranscript) pushTranscriptRef.current();
       workspaceLoaded(msg.todos, switched);
-      // Pending prompts belong to the turn of the session left. The server sets that
-      // turn aside and keeps its card with that session, sending it again when the
-      // user comes back. A reconnect to the same session keeps its cards: the worker
-      // is still parked on them and will never re-send them.
-      if (switched) setUserQuestion(null);
     },
     [workspaceLoaded],
   );
@@ -148,6 +123,10 @@ export const App: React.FC = () => {
     renderedSeqRef: conversations.renderedSeqRef,
   });
   pushTranscriptRef.current = transcript.requestPush;
+  const question = useUserQuestion({
+    send: sendVia, dispatch, activeSessionIdRef, isForeign, rememberForeign, forgetForeign,
+    scrollToBottom,
+  });
 
   // ── WebSocket message handler ─────────────────────────────────────────────
   // The parts that hold their own state answer through these tables; what is left is
@@ -171,48 +150,6 @@ export const App: React.FC = () => {
         // (like plan .md) in VS Code's Markdown preview; other files open as a
         // normal editor tab. Absolute paths supported.
         if (msg.path) vscodePostMessage({ type: "open_preview", file: msg.path });
-        return;
-
-      // Parks the agent on a person: the card is local state, and the reducer is
-      // told the turn stopped producing (see parkOnPrompt) — which is also what
-      // hands the transcript, plan included, back to the server.
-      case "user_question":
-        if (isForeign(msg)) {
-          // Another conversation's: it belongs in the strip, not this thread, and must not
-          // clear `busy` (parkOnPrompt does) while this conversation is still working.
-          rememberForeign(msg);
-          return;
-        }
-        setUserQuestion({
-          id: msg.id,
-          questions: msg.questions,
-          origin: msg.origin,
-          sessionId: msg.session_id ?? activeSessionIdRef.current ?? undefined,
-          expiresAt: msg.timeout_secs
-            ? Date.now() + msg.timeout_secs * 1000
-            : undefined,
-        });
-        dispatch(msg);
-        scrollToBottom();
-        return;
-
-      // The wait behind a card ended with nothing answered. Nothing is sent back —
-      // the agent has already gone on with the option it recommended — so this only
-      // takes the card down, wherever it is showing, and marks the turn as producing
-      // again (the same tail as an answered prompt).
-      case "prompt_expired":
-        if (isForeign(msg)) {
-          forgetForeign(msg.session_id as string);
-          return;
-        }
-        setUserQuestion((prev) => (prev && prev.id !== msg.id ? prev : null));
-        dispatch({ type: "prompt_answered", resumes: true });
-        return;
-
-      case "detached":
-        // Absent means detached: an older server sends no flag, and the message
-        // existed only to announce one.
-        setDetached(msg.detached !== false);
         return;
 
       // The batch keeps the file (useWorkspaceState); the reducer draws the edit card.
@@ -243,7 +180,7 @@ export const App: React.FC = () => {
     ) {
       scrollToBottom();
     }
-  }, [noteSeq, isForeign, rememberForeign, forgetForeign, activeSessionIdRef, scrollToBottom, scrollToApproval]);
+  }, [noteSeq, isForeign, rememberForeign, scrollToBottom, scrollToApproval]);
 
   // Kept in a ref so a replay can run each bundled event through this handler.
   useEffect(() => {
@@ -253,7 +190,7 @@ export const App: React.FC = () => {
   const resetSession = () => {
     dispatch({ type: "reset" });
     resetWorkspace();
-    setUserQuestion(null);
+    question.clear();
     conversations.reset();
     endpoint.reset();
   };
@@ -275,6 +212,13 @@ export const App: React.FC = () => {
   });
   sendRef.current = send;
   hostRef.current = { connect, fetchModels, disconnect };
+  const departure = useDisconnect({
+    send, sessions, activeSessionId, busy, approvalMode,
+    leave: () => {
+      disconnect();
+      resetSession();
+    },
+  });
 
   // Creating a session also opens it: the server makes the new session active
   // and answers with `session_loaded`, so we only have to show the (empty)
@@ -308,6 +252,7 @@ export const App: React.FC = () => {
   } = panels;
   tablesRef.current = [
     endpoint.on, settings.on, panels.on, workspace.on, conversations.on, transcript.on,
+    question.on, departure.on,
   ];
   useEffect(() => {
     if (readyCount === 0) return;
@@ -356,59 +301,6 @@ export const App: React.FC = () => {
     send({ type: "query", text });
     anchorNewQuery();
   }, [busy, send, anchorNewQuery]);
-
-  // The conversations still working.
-  //
-  // Two sources, because neither is enough alone. `running` in the session list is the
-  // server's answer for conversations this window is not reading — several turns run at
-  // once, and those are invisible without it — but the list is pushed when a turn
-  // *ends*, not when one starts, so it says nothing about the turn happening right here.
-  // For that one the client's own `busy` is authoritative and immediate.
-  const runningSessions = useMemo(
-    () => workingSessions(sessions, activeSessionId, busy),
-    [sessions, activeSessionId, busy],
-  );
-
-  /**
-   * Disconnect, asking first when it would end work that is still running.
-   *
-   * Nothing is torn down here when there is something to ask about: the disconnect is
-   * held until answered, and dismissing the question cancels it. A dialog that acted on
-   * being dismissed would make Escape a decision, and the decision can end a two-hour
-   * build.
-   */
-  const requestDisconnect = useCallback(() => {
-    if (runningSessions.length > 0 && !detached) {
-      setDisconnectPending(true);
-      return;
-    }
-    disconnect();
-    resetSession();
-  }, [runningSessions.length, detached, disconnect, resetSession]);
-
-  const confirmDetachThenDisconnect = useCallback(() => {
-    // Only the conversations that are working. Naming them rather than detaching
-    // everything keeps an idle conversation from silently gaining an autonomy level
-    // nobody chose for it.
-    send({
-      type: "detach",
-      autonomy: approvalMode,
-      session_ids: runningSessions.map((s) => s.id),
-    });
-    setDisconnectPending(false);
-    setDetached(true);
-    // After the message, so it leaves before the socket does.
-    setTimeout(() => {
-      disconnect();
-      resetSession();
-    }, 150);
-  }, [send, approvalMode, runningSessions, disconnect, resetSession]);
-
-  const confirmDisconnectAnyway = useCallback(() => {
-    setDisconnectPending(false);
-    disconnect();
-    resetSession();
-  }, [disconnect, resetSession]);
 
   // The click travels to the shell server through the session's state dir, not
   // through the model: the agent is parked awaiting this very tool call, so an
@@ -519,17 +411,17 @@ export const App: React.FC = () => {
           onToggleScience={() => setShowSciencePanel((v) => !v)}
           onSwitchModel={(name: string) => send({ type: "set_model", model: name })}
           onCancelConnect={endpoint.cancelConnect}
-          onDisconnect={requestDisconnect}
+          onDisconnect={departure.requestDisconnect}
         />
 
         {/* Asked only when disconnecting would end work in flight. Held, not fired:
             dismissing it cancels the disconnect. */}
-        {disconnectPending && (
+        {departure.disconnectPending && (
           <DisconnectPrompt
-            running={runningSessions}
-            onDetach={confirmDetachThenDisconnect}
-            onDiscard={confirmDisconnectAnyway}
-            onCancel={() => setDisconnectPending(false)}
+            running={departure.runningSessions}
+            onDetach={departure.detachThenDisconnect}
+            onDiscard={departure.disconnectAnyway}
+            onCancel={departure.cancelDisconnect}
           />
         )}
 
@@ -700,23 +592,12 @@ export const App: React.FC = () => {
         {/* Clarification / plan-approval question — anchored just above the
             input box (not floating at the top of the chat) so the decision
             point sits where the user is already acting. */}
-        {userQuestion && (
+        {question.userQuestion && (
           <UserQuestion
-            questions={userQuestion.questions}
-            origin={userQuestion.origin}
-            expiresAt={userQuestion.expiresAt}
-            onSubmit={(answers) => {
-              send({
-                type: "user_question_response",
-                id: userQuestion.id,
-                session_id: userQuestion.sessionId,
-                answers,
-              });
-              // Whatever was chosen, the agent goes back to work: even a rejected
-              // plan is the loop resuming to write the answer that says so.
-              dispatch({ type: "prompt_answered", resumes: true });
-              setUserQuestion(null);
-            }}
+            questions={question.userQuestion.questions}
+            origin={question.userQuestion.origin}
+            expiresAt={question.userQuestion.expiresAt}
+            onSubmit={question.answer}
           />
         )}
         <div className="input-area">
@@ -794,10 +675,9 @@ export const App: React.FC = () => {
             <div className="toolbar-end">
               <DetachButton
                 mode={approvalMode}
-                detached={detached}
-                onDetach={() => send({ type: "detach", autonomy: approvalMode })}
-                onReattach={() =>
-                  send({ type: "detach", autonomy: approvalMode, enabled: false })}
+                detached={departure.detached}
+                onDetach={departure.detach}
+                onReattach={departure.reattach}
               />
             </div>
           </div>
