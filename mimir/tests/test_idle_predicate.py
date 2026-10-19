@@ -16,7 +16,7 @@ from mimir.shared.processes import proc_starttime
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.worker.human import HumanBridge
-from mimir.client.ui.ws.server import registry as server_registry
+from mimir.client.ui.ws.process import registry as server_registry
 from mimir.client.ui.ws.pool import lifecycle as pool_lifecycle
 from mimir.client.session import jobs_on_disk
 from mimir.client.ui.ws.pool.pool import AgentPool

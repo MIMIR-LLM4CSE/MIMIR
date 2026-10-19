@@ -8,9 +8,9 @@ from __future__ import annotations
 import logging
 import os
 
-from ...server import registry as server_registry
+from ...process import registry as server_registry
 from .....config import paths
-from ...server.detach import detach as detach_process
+from ...process.detach import detach as detach_process
 from .....session.jobs_on_disk import ended_event, needing_attention, scan_all_sessions
 from ...pool.lifecycle import idle_stop_reason
 from ...pool.pool import AgentPool

@@ -312,7 +312,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
 
     def setUp(self) -> None:
         super().setUp()
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         pin_state_dir(self, self._tmp.name)
         self.registry = server_registry
 

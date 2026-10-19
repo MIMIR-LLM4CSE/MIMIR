@@ -1133,7 +1133,7 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 |---|---|
 | `server/main.py` | the entry point: the command line, `--cwd`, then `serving` |
 | `server/serving.py` | `serve`: model resolution, bind, the shutdown path |
-| `server/registry.py`, `server/detach.py` | the registry of live servers other windows find this one by; detaching from the terminal |
+| `process/registry.py`, `process/detach.py` | this process as others see it: the registry of live servers other windows find it by; detaching from the terminal. Apart from `server/`, which builds the pool and the connections, since both of those read it |
 | `connection/connection.py` | `Connection`, one connection: the handshake, the dispatch, the replay. Its handler groups in `connection/handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel` — share its `ViewState`, `Sender` and `Screen` |
 | `connection/router.py` | `EventRouter`: the connection's share of the stream, sent to its client, one handler per event type |
 | `connection/commands.py`, `connection/panel_runs.py` | the socket's side of the slash commands (`WsCommandHost`, `/cancel`, `/diag`); the runs the panel shows |
@@ -1593,7 +1593,7 @@ zombie. The run channel's announcement is checked the same way.
 
 **Being findable at all.** A spawned server's port is learned by regexing its stdout, which
 works exactly as long as the extension host is the parent holding that pipe. One meant to
-outlive that window has to leave its address on disk, so `server/registry.py` writes
+outlive that window has to leave its address on disk, so `process/registry.py` writes
 `<STATE_DIR>/server.json` once the socket is actually bound — with `--port 0` the argument
 was a placeholder and only the bound socket knows the answer. The choice of directory *is*
 "one server per workspace": `STATE_DIR` is already `<state home>/<basename>-<sha1(realpath)[:8]>`,

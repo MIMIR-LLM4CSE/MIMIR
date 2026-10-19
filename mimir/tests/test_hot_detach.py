@@ -11,7 +11,7 @@ import tempfile
 import types
 import unittest
 
-from mimir.client.ui.ws.server import detach as detach_mod
+from mimir.client.ui.ws.process import detach as detach_mod
 from mimir.tests.support.state import pin_state_dir
 
 
@@ -27,7 +27,7 @@ def _run_child(body: str, tmp: str) -> dict:
         f"import json, os, sys\n"
         f"sys.path.insert(0, {json.dumps(os.getcwd())})\n"
         f"RESULT = {json.dumps(result)}\n"
-        f"from mimir.client.ui.ws.server import detach as d\n"
+        f"from mimir.client.ui.ws.process import detach as d\n"
         + body
     )
     proc = subprocess.run([sys.executable, "-c", script],
@@ -60,7 +60,7 @@ class RedirectTests(unittest.TestCase):
         script = (
             f"import json, os, sys\n"
             f"sys.path.insert(0, {json.dumps(os.getcwd())})\n"
-            f"from mimir.client.ui.ws.server import detach as d\n"
+            f"from mimir.client.ui.ws.process import detach as d\n"
             f'print("before the redirect")\n'
             f"info = d.detach({json.dumps(self._tmp.name)})\n"
             f'print("after the redirect")\n'
@@ -92,7 +92,7 @@ class RedirectTests(unittest.TestCase):
         script = f"""
 import os, sys, time
 sys.path.insert(0, {json.dumps(os.getcwd())})
-from mimir.client.ui.ws.server import detach as d
+from mimir.client.ui.ws.process import detach as d
 d.detach({json.dumps(self._tmp.name)})
 # The reader is gone by now; an un-redirected write here would end the process.
 for i in range(200):
@@ -114,7 +114,7 @@ open({json.dumps(os.path.join(self._tmp.name, "survived"))}, "w").write("yes")
         script = f"""
 import sys
 sys.path.insert(0, {json.dumps(os.getcwd())})
-from mimir.client.ui.ws.server import detach as d
+from mimir.client.ui.ws.process import detach as d
 d.detach({json.dumps(self._tmp.name)})
 print("first")
 d.detach({json.dumps(self._tmp.name)})
@@ -224,7 +224,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         self.sess.screen.apply_setting = lambda name, *args: None
 
     def _detached_at(self, level: str, sessions: list[str] | None = None) -> None:
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
                                 model="m")
         server_registry.claim(sessions or ["s1"], level, log=None)
@@ -280,7 +280,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         # The whole of why a run that was left going dies with the next window: a claim
         # nothing drops on arrival makes the process immortal, because a window that
         # attached to a server holds no handle on it either.
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         self._detached_at("auto_all", ["s1", "s2"])
         await self.sess.detach.restore_detached_autonomy()
         self.assertEqual(server_registry.claims(), {})
@@ -301,7 +301,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         # `manual` parks at its next sensitive call. A registry that refuses a write
         # costs a process that outlives the window, which the stop command can end.
         from unittest import mock
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         self._detached_at("auto_all")
         with mock.patch.object(server_registry, "unclaim",
                                side_effect=OSError("read-only")):
@@ -312,7 +312,7 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
     async def test_each_conversation_comes_back_under_its_own_level(self):
         # The claim is per conversation and so is the level. One level for the whole
         # pool would hand a conversation left at `auto` the `auto_all` of another.
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
                                 model="m")
         server_registry.claim(["s1"], "auto")
@@ -327,20 +327,20 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         # The process survives for as long as any conversation claims it. Clearing one
         # flag for the whole workspace made another conversation's run mortal without
         # anybody asking for that.
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         self._detached_at("auto_all", ["s1", "s2"])
         left = server_registry.unclaim(["s1"])
         self.assertEqual(left, {"s2": "auto_all"})
         self.assertTrue(server_registry.read()["detached"])
 
     async def test_taking_it_back_for_the_last_one_makes_it_mortal(self):
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         self._detached_at("auto_all", ["s1"])
         self.assertEqual(server_registry.unclaim(["s1"]), {})
         self.assertFalse(server_registry.read()["detached"])
 
     async def test_a_server_that_never_detached_says_nothing(self):
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
                                 model="m")
         await self.sess.detach.restore_detached_autonomy()
@@ -466,7 +466,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         """A conversation whose agent was released is still claimed on detach; an empty claim
         would stop the server.
         """
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
         from mimir.client.ui.ws.connection.connection import Connection
         from mimir.tests.support.pools import FakePool
@@ -481,7 +481,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_naming_none_claims_the_conversation_on_screen_too(self):
         # A window detached the moment it opened claimed nothing at all: agents are
         # built on the first query, so the pool was empty and "all of them" was none.
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         from mimir.client.ui.ws.connection.connection import Connection
         from mimir.tests.support.pools import FakePool
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
@@ -491,7 +491,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server_registry.claims(), {"s1": "auto"})
 
     async def test_the_registry_entry_records_the_detachment(self):
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
         await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         entry = server_registry.read()
@@ -506,7 +506,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # front of the user, so changing their mind has to be possible. What makes a
         # server survive a window closing is that nobody kills it — a decision, not a
         # state of the process.
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
         await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto"})
         self.assertTrue(server_registry.read()["detached"])
@@ -541,7 +541,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # The button is one glyph in both positions, so the thread is where the user
         # reads which way it went — and the line names the consequence, since the word
         # alone does not say that closing the window now ends the run.
-        from mimir.client.ui.ws.server import registry as server_registry
+        from mimir.client.ui.ws.process import registry as server_registry
         server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
 
         await self.sess.detach.on_detach({"type": "detach", "autonomy": "auto_all"})

@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from ....config import DEFAULT_MODEL
 from ....llm.openai_compat import OpenAICompatBackend
-from . import registry as server_registry
+from ..process import registry as server_registry
 from ..runtime import CTX_DEFAULT_FULL, ORIGINAL_STDOUT, ensure_router_installed, get_backend
 from ..pool.pool import AgentPool
 from ..connection.connection import Connection

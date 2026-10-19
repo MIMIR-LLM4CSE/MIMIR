@@ -10,7 +10,7 @@ import os
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-from ..server import registry as server_registry
+from ..process import registry as server_registry
 from ....session.jobs_on_disk import has_baseline, scan_all_sessions
 from ..worker.human import detach_grace
 
