@@ -2,7 +2,7 @@
 // context, enforcement, temperature and approvals. Each change is sent as the session
 // command that sets it; the server's answer is what the panel then shows.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentMode,
   ApprovalMode,
@@ -29,6 +29,20 @@ export function useAgentSettings(send: (msg: ClientMessage) => void) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("manual");
 
   const command = useCallback((text: string) => send({ type: "command", text }), [send]);
+
+  // Every "ready" (the worker-ready after the backend loads included, since the first
+  // arrives before the agent exists) gets the choices this panel holds: the server
+  // starts each agent on its defaults.
+  const [readies, setReadies] = useState(0);
+  const heldRef = useRef({ thinkingLevel, streaming, agentMode });
+  heldRef.current = { thinkingLevel, streaming, agentMode };
+  useEffect(() => {
+    if (readies === 0) return;
+    const held = heldRef.current;
+    if (held.thinkingLevel > 0) command(`/thinking-depth ${held.thinkingLevel}`);
+    if (!held.streaming) command(`/streaming off`);
+    if (held.agentMode !== "agent") command(`/mode ${held.agentMode}`);
+  }, [readies, command]);
 
   const changeMode = useCallback((mode: AgentMode) => {
     setAgentMode(mode);
@@ -69,6 +83,7 @@ export function useAgentSettings(send: (msg: ClientMessage) => void) {
       if (msg.approval_mode) setApprovalMode(msg.approval_mode);
       if (msg.thinking) setThinkingProfile(msg.thinking);
       if (msg.temperature) setTemperature(msg.temperature);
+      setReadies((n) => n + 1);
     },
     model_changed: (msg: ServerMessageOf<"model_changed">) => {
       if (msg.thinking) setThinkingProfile(msg.thinking);

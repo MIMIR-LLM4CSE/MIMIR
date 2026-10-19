@@ -7,10 +7,8 @@ import React, {
   useMemo,
 } from "react";
 import type {
-  ChatMessage,
   ClientMessage,
   ServerMessage,
-  ApprovalMode,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { routeServerMessage, type ServerHandlers, type ServerMessageOf } from "./state/serverMessages";
@@ -24,17 +22,12 @@ import { useSessions } from "./hooks/useSessions";
 import { useTranscriptSync } from "./hooks/useTranscriptSync";
 import { useUserQuestion } from "./hooks/useUserQuestion";
 import { useDisconnect } from "./hooks/useDisconnect";
+import { useApprovals } from "./hooks/useApprovals";
 import { makeId } from "./state/ids";
 import { ChatThread } from "./components/ChatThread";
 import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
-import { AgentSettings } from "./components/AgentSettings";
-import { DetachButton } from "./components/DetachButton";
 import { DisconnectPrompt } from "./components/DisconnectPrompt";
-import { ModeSwitcher } from "./components/ModeSwitcher";
-import { BlocksIcon, GearIcon } from "./components/icons";
-import { TogglesPanel } from "./components/TogglesPanel";
-import { ConnectForm } from "./components/ConnectForm";
 import { UserQuestion } from "./components/UserQuestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { SubAgentsPanel } from "./components/SubAgentsPanel";
@@ -42,9 +35,12 @@ import { SciencePanel } from "./components/SciencePanel";
 import { ContextBar } from "./components/ContextBar";
 import { RunProgressDock } from "./components/RunProgressDock";
 import { BatchReviewBar } from "./components/BatchReviewBar";
-import { MimirIntro } from "./components/MimirIntro";
 import { Composer } from "./components/Composer";
 import { StatusBar } from "./components/StatusBar";
+import { BottomToolbar } from "./components/BottomToolbar";
+import { EmptyState } from "./components/EmptyState";
+import { EndpointForm } from "./components/EndpointForm";
+import { ReconnectPanel } from "./components/ReconnectPanel";
 import { useComposer } from "./hooks/useComposer";
 
 // VS Code webview API (optional — only present inside a webview).
@@ -70,24 +66,15 @@ export const App: React.FC = () => {
   // The host's actions, read once useWebSocket below has created them.
   const hostRef = useRef<Host>({ connect: () => {}, fetchModels: () => {}, disconnect: () => {} });
   const endpoint = useEndpoint(useCallback(() => hostRef.current, []));
-  const {
-    connection, agentReady, model, anthropicModels, backend, vllmBaseUrl, rayBaseUrl,
-    ollamaBaseUrl, remembered, runningServer, endpointModels, modelsError, modelsProbed,
-    connectFormKey,
-  } = endpoint;
+  const { connection, agentReady, model, runningServer, endpointModels } = endpoint;
   // The socket is opened below, by a hook that needs the message handler built from
   // these; parts that send go through this, which reads the socket once it exists.
   const sendRef = useRef<(msg: ClientMessage) => void>(() => {});
   const sendVia = useCallback((msg: ClientMessage) => sendRef.current(msg), []);
   const settings = useAgentSettings(sendVia);
-  const {
-    agentMode, thinkingLevel, thinkingProfile, streaming, contextMode, enforcement,
-    temperature, approvalMode,
-  } = settings;
+  const { agentMode, contextMode, approvalMode } = settings;
   const workspace = useWorkspaceState(sendVia);
   const { onSessionLoaded: workspaceLoaded, reset: resetWorkspace } = workspace;
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [togglesOpen, setTogglesOpen] = useState(false);
   // Last submitted query text, so an error card can offer a one-click Retry.
   const lastQueryRef = useRef<string>("");
   const {
@@ -235,12 +222,6 @@ export const App: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-sync client-side settings whenever the server signals it is ready.
-  // The server resets to defaults on each restart; the webview persists state.
-  // We sync on every "ready" (including the worker-ready that fires after vLLM
-  // finishes loading) because the first "ready" arrives before the agent exists.
-  const syncSettingsRef = useRef({ thinkingLevel, streaming, agentMode });
-  syncSettingsRef.current = { thinkingLevel, streaming, agentMode };
   const [readyCount, setReadyCount] = useState(0);
   const handleReady = useCallback(() => setReadyCount((n) => n + 1), []);
   const panels = usePanels(sendVia, { busy, readyCount, agentReady });
@@ -254,15 +235,9 @@ export const App: React.FC = () => {
     endpoint.on, settings.on, panels.on, workspace.on, conversations.on, transcript.on,
     question.on, departure.on,
   ];
+  // On every "ready", the attachable MCP resources for the @-mention autocomplete.
   useEffect(() => {
-    if (readyCount === 0) return;
-    const { thinkingLevel: tl, streaming: st, agentMode: am } = syncSettingsRef.current;
-    if (tl > 0) send({ type: "command", text: `/thinking-depth ${tl}` });
-    if (!st) send({ type: "command", text: `/streaming off` });
-    if (am !== "agent") send({ type: "command", text: `/mode ${am}` });
-    // Fetch attachable MCP resources for the @-mention autocomplete.
-    send({ type: "list_resources" });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (readyCount > 0) send({ type: "list_resources" });
   }, [readyCount, send]);
 
   // ── User actions ──────────────────────────────────────────────────────────
@@ -310,48 +285,10 @@ export const App: React.FC = () => {
     [send]
   );
 
-  const handleApprovalResponse = useCallback(
-    (id: string, choice: "y" | "n" | "a", approvedFiles?: string[]) => {
-      // Send approval_response for every merged ID so all blocked shims unblock.
-      const card = chatStateRef.current.messages.find(
-        (m) => m.kind === "approval" && m.approval?.id === id
-      );
-      const allIds = card?.approval?.ids ?? [id];
-      // The conversation that asked, read off the card. The server drops an answer
-      // carrying none rather than guessing; the session on screen is exactly the wrong
-      // guess for a card raised elsewhere.
-      const sessionId = card?.approval?.session_id ?? activeSessionIdRef.current ?? undefined;
-      for (const aid of allIds) {
-        const payload: {
-          type: "approval_response"; id: string; choice: "y" | "n" | "a";
-          session_id?: string; approved_files?: string[];
-        } = { type: "approval_response", id: aid, choice, session_id: sessionId };
-        if (approvedFiles !== undefined) payload.approved_files = approvedFiles;
-        send(payload);
-      }
-      // Update the card(s) and set busy via the reducer.
-      dispatch({ type: "approval_response", id, choice });
-    },
-    [send]
-  );
-
-  const handleApprovalModeChange = useCallback((val: ApprovalMode) => {
-    settings.changeApprovalMode(val);
-    // The switch has to work mid-run, and mid-run is exactly when a card is already
-    // on screen with the agent parked on it. The new mode covers that call, so
-    // answering it here is what the user just asked for — leaving it standing would
-    // make "auto" mean "auto, starting after you clear this one".
-    const msgs = chatStateRef.current.messages;
-    let card: ChatMessage | undefined;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].kind === "approval" && msgs[i].approval !== undefined) { card = msgs[i]; break; }
-    }
-    if (!card?.approval) return;
-    const leavesWorkspace =
-      (card.approval.oow_paths?.length ?? 0) > 0 || Boolean(card.approval.oow_path);
-    const covered = val === "auto_all" || (val === "auto" && !leavesWorkspace);
-    if (covered) handleApprovalResponse(card.approval.id, "y");
-  }, [settings.changeApprovalMode, handleApprovalResponse]);
+  const approvals = useApprovals({
+    send, dispatch, chatStateRef, activeSessionIdRef,
+    changeApprovalMode: settings.changeApprovalMode,
+  });
 
   // data-mode drives the chat's accent colour: blue agent / red plan / green ask.
   return (
@@ -464,112 +401,33 @@ export const App: React.FC = () => {
           bottomRef={bottomRef}
           lastUserMsgRef={lastUserMsgRef}
           onScroll={handleChatScroll}
-          onApprovalResponse={handleApprovalResponse}
+          onApprovalResponse={approvals.respond}
           onRetry={retryLastQuery}
           onDivert={handleDivert}
           emptyState={
-            connection === "disconnected" ? (
-              <div className="empty-state">
-                <MimirIntro />
-                <div className="empty-text">MIMIR</div>
-                <ConnectForm
-                  key={connectFormKey}
-                  backend={backend}
-                  vllmBaseUrl={vllmBaseUrl}
-                  rayBaseUrl={rayBaseUrl}
-                  ollamaBaseUrl={ollamaBaseUrl}
-                  anthropicModels={anthropicModels}
-                  models={endpointModels}
-                  modelsError={modelsError}
-                  modelsProbed={modelsProbed}
-                  remembered={remembered}
-                  onFetchModels={endpoint.fetchModels}
-                  onConnect={endpoint.connect}
-                />
-              </div>
-            ) : (
-              <div className="empty-state">
-                <MimirIntro loop={connection === "connecting" || connection === "error"} />
-                <div className="empty-text">MIMIR</div>
-                <div className="empty-hint">
-                  {/* "error" is a failed attempt the host is still retrying, not an
-                      agent coming up: ws_closed follows if the retries run out. */}
-                  {connection === "connecting" || connection === "error"
-                    ? "Connecting to agent…"
-                    : agentReady
-                      ? "Type a message to start"
-                      : "Starting the agent — waiting for the model backend…"}
-                </div>
-                {(connection === "connecting" || connection === "error" || !agentReady) && (
-                  <div className="loading-track" aria-hidden="true" />
-                )}
-                {(connection === "connecting" || connection === "error") && (
-                  <button className="connect-btn cancel-connect-btn" onClick={endpoint.cancelConnect}>
-                    Cancel connection
-                  </button>
-                )}
-              </div>
-            )
+            <EmptyState
+              connection={connection}
+              agentReady={agentReady}
+              form={<EndpointForm endpoint={endpoint} />}
+              onCancelConnect={endpoint.cancelConnect}
+            />
           }
         />
         <RunProgressDock runs={dockedRuns} onFocus={focusRun} />
         </div>
 
-        {/* Reconnect panel — shown when disconnected with existing history */}
-        {connection === "disconnected" && messages.length > 0 && (
-          <div className="reconnect-panel">
-            {runningServer ? (
-              <>
-                {/* A run is going without this panel. Rejoining it is the only thing
-                    worth offering here: the form below would collect an endpoint that
-                    a server already serving this workspace does not use. */}
-                <div className="reconnect-hint">
-                  {runningServer.detached
-                    ? "MIMIR is still working without this window"
-                    : "This workspace already has a MIMIR server"}
-                  {runningServer.autonomy && runningServer.autonomy !== "manual"
-                    ? ` — running under “${runningServer.autonomy}”`
-                    : ""}
-                </div>
-                <button className="reconnect-btn" onClick={endpoint.reattach}>
-                  Rejoin the run
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="reconnect-hint">Agent disconnected — reconnect to continue</div>
-                {endpoint.hasLastConnect() && (
-                  <button className="reconnect-btn" onClick={endpoint.reconnect}>
-                    Reconnect
-                  </button>
-                )}
-              </>
-            )}
-            <ConnectForm
-              key={connectFormKey}
-              backend={backend}
-              vllmBaseUrl={vllmBaseUrl}
-              rayBaseUrl={rayBaseUrl}
-              ollamaBaseUrl={ollamaBaseUrl}
-              anthropicModels={anthropicModels}
-              models={endpointModels}
-              modelsError={modelsError}
-              modelsProbed={modelsProbed}
-              remembered={remembered}
-              onFetchModels={endpoint.fetchModels}
-              onConnect={endpoint.connect}
-            />
-          </div>
-        )}
-
-        {/* Connecting banner (with history) */}
-        {connection === "connecting" && messages.length > 0 && (
-          <div className="reconnect-panel reconnect-panel--connecting">
-            <span className="inline-spinner" aria-hidden="true" /> Connecting to agent…
-            <button className="reconnect-btn cancel-connect-btn" onClick={endpoint.cancelConnect}>
-              Cancel
-            </button>
-          </div>
+        {/* Under a thread with history while not connected: rejoin, reconnect, or the
+            banner of a connection coming up. */}
+        {messages.length > 0 && (
+          <ReconnectPanel
+            connection={connection}
+            runningServer={runningServer}
+            canReconnect={endpoint.hasLastConnect()}
+            onRejoin={endpoint.reattach}
+            onReconnect={endpoint.reconnect}
+            onCancelConnect={endpoint.cancelConnect}
+            form={<EndpointForm endpoint={endpoint} />}
+          />
         )}
 
         {/* Input area — only when connected */}
@@ -601,92 +459,23 @@ export const App: React.FC = () => {
           />
         )}
         <div className="input-area">
-          {/* Bottom toolbar: settings + disconnect */}
-          <div className="bottom-toolbar">
-            {/* Mode — its own control, colour-coded like the rest of the chat */}
-            <ModeSwitcher mode={agentMode} onModeChange={settings.changeMode} />
-
-            <div className="settings-wrapper">
-
-              <button
-                className="settings-btn"
-                title="Agent settings"
-                aria-label="Agent settings"
-                aria-expanded={settingsOpen}
-                onClick={() => setSettingsOpen((o) => !o)}
-              >
-                {/* The gear alone. The two pills beside it — reasoning on, streaming
-                    off — stated what the popover they open already says, and a button
-                    whose glyphs come and go is a button the eye has to re-find. */}
-                <span className="settings-gear"><GearIcon /></span>
-              </button>
-              {settingsOpen && (
-                <AgentSettings
-                  thinkingLevel={thinkingLevel}
-                  thinkingProfile={thinkingProfile}
-                  streaming={streaming}
-                  contextMode={contextMode}
-                  enforcement={enforcement}
-                  subAgentLevel={subAgentLevel}
-                  onSubAgentLevelChange={panels.changeSubAgentLevel}
-                  temperature={temperature}
-                  onTemperatureChange={settings.changeTemperature}
-                  onThinkingLevelChange={settings.changeThinkingLevel}
-                  onStreamingToggle={settings.changeStreaming}
-                  onContextModeChange={settings.changeContextMode}
-                  onEnforcementChange={settings.changeEnforcement}
-                  onClose={() => setSettingsOpen(false)}
-                />
-              )}
-            </div>
-
-            {/* Server / skill toggles */}
-            <div className="toggles-wrapper">
-              <button
-                className="settings-btn"
-                title="Servers & skills"
-                aria-label="Servers and skills"
-                aria-expanded={togglesOpen}
-                onClick={() => {
-                  setTogglesOpen((o) => {
-                    if (!o) send({ type: "list_toggles" });
-                    return !o;
-                  });
-                }}
-              >
-                <span className="settings-gear"><BlocksIcon /></span>
-              </button>
-              {togglesOpen && (
-                <TogglesPanel
-                  servers={workspace.serverToggles}
-                  skills={workspace.skillToggles}
-                  onToggleServer={(name, enabled) => send({ type: "toggle_server", name, enabled })}
-                  onToggleSkill={(name, enabled) => send({ type: "toggle_skill", name, enabled })}
-                  onClose={() => setTogglesOpen(false)}
-                />
-              )}
-            </div>
-
-            {/* Hard right, away from the controls that change what the next turn does:
-                this one changes who owns the process, and it is pressed once a session
-                rather than adjusted. The autonomy it runs under is the approval mode
-                already set above the send button — it carries no picker of its own, so
-                the two cannot disagree. */}
-            <div className="toolbar-end">
-              <DetachButton
-                mode={approvalMode}
-                detached={departure.detached}
-                onDetach={departure.detach}
-                onReattach={departure.reattach}
-              />
-            </div>
-          </div>
+          <BottomToolbar
+            settings={settings}
+            subAgentLevel={subAgentLevel}
+            onSubAgentLevelChange={panels.changeSubAgentLevel}
+            serverToggles={workspace.serverToggles}
+            skillToggles={workspace.skillToggles}
+            send={send}
+            detached={departure.detached}
+            onDetach={departure.detach}
+            onReattach={departure.reattach}
+          />
           <Composer
             composer={composer}
             busy={busy}
             enabled={connection === "connected"}
             approvalMode={approvalMode}
-            onApprovalModeChange={handleApprovalModeChange}
+            onApprovalModeChange={approvals.changeMode}
             onStop={() => send({ type: "command", text: "/cancel" })}
           />
         </div>

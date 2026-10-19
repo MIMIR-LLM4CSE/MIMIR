@@ -163,6 +163,18 @@ webview/src/
 │   │                           polling
 │   ├── useComposer.ts        ← the message box: draft, "@" and "/" dropdowns, history,
 │   │                           keys, what Enter sends
+│   ├── useSessions.ts        ← the conversations: the list, the one on screen, the cards
+│   │                           other ones raised, replay, journal positions
+│   ├── useTranscriptSync.ts  ← handing the rendered chat to the server, at turn ends,
+│   │                           at checkpoints and on demand
+│   ├── useWorkspaceState.ts  ← the checklist, the batch review, the toggles, the context
+│   │                           usage
+│   ├── useUserQuestion.ts    ← the question a turn parks on, answered or expired
+│   ├── useApprovals.ts       ← answering approval cards, and the mode switch that answers
+│   │                           the standing one
+│   ├── useDisconnect.ts      ← leaving the server, asked first when work would end;
+│   │                           detaching
+│   ├── useThreadScroll.ts    ← where the chat pane is scrolled, and the run dock
 │   ├── useElapsed.ts         ← ticking elapsed-time counter for a running turn
 │   ├── useStickToBottom.ts   ← follow a pane's bottom while it streams, and let go when
 │   │                           the reader scrolls up. Used by the transcript and by the
@@ -180,6 +192,7 @@ webview/src/
 │   └── serverMessages.ts     ← routing a server message to the handler tables of the
 │                               hooks that hold its state
 ├── App.tsx                   ← root component: wires the hooks, the reducer and the layout
+│                               (BottomToolbar, EmptyState, ReconnectPanel, EndpointForm)
 └── components/
     ├── StatusBar.tsx          ← the bar above the chat: drawer toggles, connection, model
     ├── Composer.tsx           ← the message box and the controls beside it
@@ -249,7 +262,7 @@ webview/src/
 
 ### Chat input autocomplete ("@" and "/")
 
-The chat textarea in `App.tsx` drives two Copilot/Claude-style dropdowns that share the
+The chat textarea (`Composer`, driven by `useComposer`) drives two Copilot/Claude-style dropdowns that share the
 same mechanics (a pure `detect*/filter*/apply*` helper module + a presentational
 component + keyboard nav with `wrapIndex`):
 
@@ -271,7 +284,7 @@ component + keyboard nav with `wrapIndex`):
   `query.strip().startswith("/")`). The dropdown lists skills from `skillToggles`; picks
   insert `/name ` at the start.
 
-Both are wired identically in `App.tsx`: `syncMention`/`syncSlash` (on change/select),
+Both are wired identically in `hooks/useComposer.ts`: `syncMention`/`syncSlash` (on change/select),
 `pickMention`/`pickSlash`, and a shared `handleKeyDown` (Arrow/Enter/Tab/Esc) that routes
 to whichever dropdown is open. Helper logic lives outside React so it is unit-tested with
 vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`, `fileIndex.test.ts`).
@@ -309,9 +322,9 @@ a path.
 
 ## Where the panel's state lives
 
-`App.tsx` wires four hooks and the reducer. Each hook owns its state and answers the server
+`App.tsx` wires the hooks and the reducer. Each hook owns its state and answers the server
 messages about it through a handler table (`state/serverMessages.ts`); what no table answers
-goes to the chat reducer.
+goes to the chat reducer, whose handlers are grouped by family in `state/reducer/`.
 
 | Hook | Holds |
 |---|---|
@@ -319,19 +332,21 @@ goes to the chat reducer.
 | `useAgentSettings` | `agentMode`, `thinkingLevel`, `thinkingProfile`, `streaming`, `contextMode`, `enforcement`, `temperature`, `approvalMode` |
 | `usePanels` | the sub-agents, `panelSections`, `panelPending`, `panelAgentReady`, which drawer is open |
 | `useComposer` | the draft, the `@` and `/` dropdowns, the sent-message history, the active editor chip |
+| `useSessions` | `sessions`, `activeSessionId`, `sessionLoading`, the sessions drawer, the foreign cards, how far each journal has been rendered |
+| `useTranscriptSync` | what the server was last sent of the transcript |
+| `useWorkspaceState` | `todos`, `batchFiles`, the server and skill toggles, `contextUsage` |
+| `useUserQuestion` | the question card the turn on screen is parked on |
+| `useDisconnect` | `detached`, the disconnect held while the user is asked |
+| `useThreadScroll` | whether the pane follows the bottom, and the runs in the dock |
 
-What stays in `App.tsx`:
+The chat reducer's state (`state/chatState.ts`):
 
 | State variable | Type | Purpose |
 |----------------|------|---------|
 | `messages` | `ChatMessage[]` | Full chat history (persisted in memory across reconnects) |
 | `draft` | `string` | Prose of the turn in flight, held **out** of `messages` until the loop accepts it. A turn is only an answer once it ends with no tool call and no guardrail sends the model back to work; streaming it straight into the transcript is what made a finished-looking answer appear and then vanish. Committed on the next step's cards, on an approval/diff/error, or superseded by `answer`; dropped on `nudge_injected`. The drop is now the backstop rather than the norm: the client holds a turn's prose off the wire entirely when a guardrail could still refuse it (see `DraftHold` in POLICY.md), so the draft mostly carries turns that will be kept. |
-| `batchFiles` | `DiffEntry[]` | Files accumulated in the BatchReviewBar since last accept/revert |
 | `liveThinkingBlocks` | `ThinkingBlock[]` | Currently-streaming "Working…" blocks |
 | `busy` | `boolean` | True while the agent is running (input disabled) |
-| `todos` | `TodoItem[]` | Current todo/plan items |
-| `sessions` | `SessionMeta[]` | Session list from the server |
-| `activeSessionId` | `string \| null` | Currently active session |
 
 ---
 
@@ -739,14 +754,16 @@ Chat messages are rendered by `ChatMessage.tsx` based on `msg.kind`. To add a ne
    }
    ```
 
-4. **Push it into `messages`** from `App.tsx` when the relevant server event arrives:
+4. **Put it into `messages`** with a reducer handler, in the family of `state/reducer/`
+   it belongs to:
    ```typescript
-   case "my_custom":
-     setMessages((prev) => [
-       ...prev,
-       { id: makeId(), role: "agent", kind: "my_card", myCardData: { title: msg.label, value: msg.value } },
-     ]);
-     break;
+   my_custom: (state, action, makeId) => ({
+     ...state,
+     messages: [
+       ...state.messages,
+       { id: makeId(), role: "agent", kind: "my_card", myCardData: { title: action.label, value: action.value } },
+     ],
+   }),
    ```
 
 ---
@@ -784,14 +801,14 @@ glyph — and `mimir/tests/test_phase_b_servers.py` fails if a tool declares non
 
 ### Example 3 — Filter out a noisy status message from the thinking block
 
-`App.tsx`, inside `case "output"` / `case "status"`:
+`state/reducer/stream.ts`, in `noteActivity` (which `output` and `status` share):
 ```typescript
 if (
   t.startsWith("my noisy prefix")  // ← add this line
   || t.startsWith("✓")
   || ...
 ) {
-  break;
+  return state;
 }
 ```
 
