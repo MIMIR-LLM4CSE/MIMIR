@@ -149,9 +149,8 @@ def read_note(path: str) -> str:
 | | `CLUSTER_SUBMIT` | Expensive cluster launch (Slurm submit / batch run); held until local validation. |
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
 
-The vocabulary is mirrored between `mimir/shared/capabilities.py` and
-`mimir/client/tools/capabilities.py` (parity guarded by
-`test_capabilities.test_vocab_in_sync`), and the other docs point here rather than
+The vocabulary is defined once in `mimir/shared/capabilities.py` (the client re-exports
+it from `mimir/client/tools/capabilities.py`), and the other docs point here rather than
 re-listing it. This table is the **prose reference**; the **live list** is
 `mimir_api(topic="capabilities")`, which parses it out of the installed build with the
 note attached to each flag. Ask the tool when it matters that the answer is current — a
@@ -173,7 +172,7 @@ def benchmark(target: str) -> dict:
 ```
 
 A family, never a tool's identity: several tools share one. The vocabulary is `TOOL_KINDS`
-in `shared/capabilities.py`, mirrored client-side and served live by
+in `shared/capabilities.py`, read by the client and served live by
 `mimir_api(topic="capabilities")` under `kinds` — ask the tool rather than trusting a
 table here. Name a family of your own and your word still shows, with the generic glyph.
 

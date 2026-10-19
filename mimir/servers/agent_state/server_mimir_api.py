@@ -35,11 +35,10 @@ _PKG = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 _EXAMPLES = os.path.join(_PKG, "examples")
 _BUNDLED_SKILLS = os.path.join(_PKG, "skills")
 _BUNDLED_SERVERS = os.path.join(_PKG, "servers")
-# The vocabulary is defined twice on purpose — once client-side, once in
-# shared/capabilities.py, which is what a server imports — and a parity test
-# keeps them level. The client copy is the one read here: it carries the section
-# headers and the per-flag note that say what each flag is *for*.
-_CAP_SOURCE = os.path.join(_PKG, "client", "tools", "capabilities.py")
+# The one definition of the vocabulary, which servers declare with and the client
+# re-exports. Read as source: its section headers and per-flag notes say what each flag
+# is *for*.
+_CAP_SOURCE = os.path.join(_PKG, "shared", "capabilities.py")
 
 # A template is a file the user is meant to copy; none of the shipped ones is anywhere
 # near this, so the cap only bounds a pathological workspace, never a real answer.

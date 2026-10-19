@@ -2,7 +2,7 @@
 
 A :class:`ToolCaps` per tool, read by every consumer instead of a list of tool names.
 ``infer_tool_caps`` resolves it from ``tool.meta["mimir"]``, else the MCP annotations,
-else a conservative default. A pure-stdlib leaf.
+else a conservative default.
 """
 
 from __future__ import annotations
@@ -12,107 +12,48 @@ from typing import Any, Iterable
 
 from ..config.limits import TOOL_CALL_TIMEOUT_MAX_SECS, TOOL_CALL_TIMEOUT_SECS
 
-# ---------------------------------------------------------------------------
-# Capability vocabulary: flags a server declares per tool, each a behavioural contract
-# consumed by a policy or nudge, never a tool's identity. Mirrored in
-# shared/capabilities.py (kept level by test_capabilities).
-# ---------------------------------------------------------------------------
-
-# --- Discovery: reads, searches, inspections the policy tracks as evidence -
-# Feeds edit/delete preconditions and the "did exploration happen" nudges.
-READ = "read"                          # files.read -> read_files (edit/overwrite precondition; evidence)
-SEARCH = "search"                      # discovery.search_flags (evidence; blast-radius)
-SEARCH_WITH_PATH = "search_with_path"  # results locate hits by path and line
-CANDIDATE_SEARCH = "candidate_search"  # discovery.candidates -> path-clarification
-INSPECT_DIR = "inspect_dir"            # discovery.dir_inspect -> delete context
-CHECK_EXISTENCE = "check_existence"    # discovery.existence_check -> weaker delete context
-CODE_NAV = "code_nav"                  # symbol nav; relevance-cap "core keep" set
-ENV_DISCOVERY = "env_discovery"        # env.env_probe -> env-resolution nudge (enumerates conda/venv interpreters)
-CACHEABLE = "cacheable"                # executor result cache + invalidation
-
-# --- Mutation: kinds the write policy treats distinctly --------------------
-# delete needs existence+dir context; whole-file overwrite needs a prior read.
-# Finer details (where a batch tool's edits live, etc.) are arg-roles, not flags.
-EDIT = "edit"                          # any file writer/editor (state machine, dirty tracking, validation entry)
-CONTENT_WRITE = "content_write"        # create/append whole files (query-intent create-vs-edit filter)
-OVERWRITE = "overwrite"                # replaces an existing file's entire content (subset of content_write)
-REMOVE = "remove"                      # deletes a file (needs context; files.delete)
-REPLACEMENT_TRACK = "replacement_track"  # files.replacement_tracking -> cross-file completeness
-
-# --- Validation ------------------------------------------------------------
-# Validates code (syntax/lint/typecheck/test). No first-party tool carries this — the
-# stack validates through the bash server — but the flag stays so an extension-pack
-# server can ship its own validator, with the same conclude-gate contribution a bash
-# validation makes (`runs.validation_tool` + `clears_edit_loop`).
-VALIDATE = "validate"
-
-# --- Task planning ---------------------------------------------------------
-# One flag for "records a task plan"; the ordered-steps checklist is identified by
-# the `plan_steps` arg-role (which carries the steps), not a separate capability.
-TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or prose rationale)
-
-# --- Verdict ---------------------------------------------------------------
-# The channel through which the model states what a run's output showed
-# (evidence.verdict_tool -> guardrails/verdict.apply_verdict). Every consumer that has
-# to name the tool to the model resolves it from here, so the name lives in one place
-# — the server's declaration — and never in prompt or nudge copy.
-JUDGE = "judge"                        # records the model's verdict on a run's output
-DELEGATE = "delegate"                  # hands a self-contained sub-task to a fresh child agent that
-                                       # runs to completion and returns its answer
-MAIN_ONLY = "main_only"                # reserved to the orchestrating agent; never granted to a child
-PANEL_REPORT = "panel_report"          # fills one section of the scientific-computing panel
-
-# --- Approval & mode policy ------------------------------------------------
-# How much of a tool's effect can be taken back — the *declared* dimension, from which
-# SENSITIVE below is derived (see `_caps_from_meta`), so a tool states one fact about
-# its effect rather than two that can drift.
-REVERSIBLE = "reversible"              # the client itself can undo it (approval snapshots + revert_last)
-RECOVERABLE = "recoverable"            # undoable by hand, off the client's record (delete, env mutation)
-IRREVERSIBLE = "irreversible"          # leaves the machine or spends something real (cluster hours, outbound POST)
-REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
-
-# --- Work families --------------------------------------------------------
-# The word a tool-activity row shows, and its icon: a family of work, declared by the
-# tool and derived by ``kind_for`` for one that declares none. Mirrored in
-# shared/capabilities.py.
-TOOL_KINDS = (
-    "read", "search", "list", "outline",            # discovery
-    "write", "edit", "delete",                      # file mutation
-    "bash", "shell", "job", "verdict",              # local execution
-    "eval", "symbolic", "string", "date",           # calculation
-    "slurm", "env", "modules",                      # cluster & environment
-    "proxy", "proxy eval",                          # the proxy harness
-    "memory", "plan", "todo", "skill", "agent", "ask",  # agent state
-    "web", "github", "system",                      # outside the workspace
-    "tool",                                         # the unknown default
+# The capability vocabulary is the servers' declaration language, defined once in
+# shared/capabilities.py and re-exported here for the client's readers and plugin packs.
+from ...shared.capabilities import (  # noqa: F401  (re-exported)
+    BACKGROUNDABLE,
+    CACHEABLE,
+    CANDIDATE_SEARCH,
+    CHECK_EXISTENCE,
+    CLUSTER_SUBMIT,
+    CODE_EXEC,
+    CODE_NAV,
+    CONTENT_WRITE,
+    DELEGATE,
+    DIVERTIBLE,
+    EDIT,
+    ENV_DISCOVERY,
+    ENV_MUTATE,
+    EXTERNAL_FETCH,
+    INSPECT_DIR,
+    IRREVERSIBLE,
+    JUDGE,
+    MAIN_ONLY,
+    NON_BATCH,
+    OVERWRITE,
+    PANEL_REPORT,
+    PLAN_BLOCKED,
+    PLAN_READONLY,
+    READ,
+    RECOVERABLE,
+    REMOVE,
+    REPLACEMENT_TRACK,
+    REVERSIBILITY_LEVELS,
+    REVERSIBLE,
+    SEARCH,
+    SEARCH_WITH_PATH,
+    SENSITIVE,
+    TASK_PLANNING,
+    TOOL_KINDS,
+    VALIDATE,
 )
-# The family of a tool that declares none and whose capabilities derive none. Spelled as
-# the vocabulary's own last entry rather than as a second string literal: a bare
-# `NAME = "value"` line in this module is read as a capability flag by the live
-# `mimir_api(topic="capabilities")` parser, which this is not.
+
+# The family of a tool that declares none and whose capabilities derive none.
 DEFAULT_TOOL_KIND = TOOL_KINDS[-1]
-
-SENSITIVE = "sensitive"                # requires approval — DERIVED: reversibility != REVERSIBLE
-NON_BATCH = "non_batch"                # always prompt immediately; never batch
-# Both names predate ask mode and are kept for compatibility: they gate every mode in
-# config.models.READONLY_MODES (plan and ask), not plan alone.
-PLAN_BLOCKED = "plan_blocked"          # never called in a read-only mode (writes/exec/mutations)
-PLAN_READONLY = "plan_readonly"        # dual-use exec tool allowed in a read-only mode ONLY for read-only/
-                                       # discovery invocations (e.g. bash_run for `rg`/`ls`/`cat`); a
-                                       # call-time gate rejects its build/exec invocations there.
-CODE_EXEC = "code_exec"                # runs a program/shell command/code payload. Scoping signal for guards
-                                       # that must inspect *what* is executed (proxy exec guard); not a block.
-
-# --- Reach & cost ----------------------------------------------------------
-EXTERNAL_FETCH = "external_fetch"      # reaches outside the workspace (e.g. GitHub API)
-CLUSTER_SUBMIT = "cluster_submit"      # expensive cluster launch (Slurm submit / batch run)
-ENV_MUTATE = "env_mutate"              # env.env_mutation -> conclude-phase cleanup-offer nudge
-BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result may carry a
-                                       # background_job descriptor a watcher polls to completion
-DIVERTIBLE = "divertible"              # publishes a run channel under its own name while it
-                                       # blocks, so the user can move the run it is waiting on
-                                       # to the background mid-flight (see shared/run_channel.py)
-
 
 
 # The subset an exploring sub-agent connects — a *connection-cost* filter, not the

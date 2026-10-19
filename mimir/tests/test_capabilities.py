@@ -98,36 +98,6 @@ class RegistryHelpersTest(unittest.TestCase):
 class ServerDeclarationTest(unittest.TestCase):
     """The server-side tool_caps() helper round-trips through infer_tool_caps."""
 
-    def test_vocab_in_sync(self):
-        from mimir.shared import capabilities as srv
-        client_vocab = {
-            caps.READ, caps.CACHEABLE, caps.SEARCH, caps.SEARCH_WITH_PATH,
-            caps.CANDIDATE_SEARCH, caps.INSPECT_DIR, caps.CHECK_EXISTENCE,
-            caps.CONTENT_WRITE, caps.EDIT,
-            caps.REPLACEMENT_TRACK, caps.VALIDATE,
-            caps.PLAN_BLOCKED, caps.PLAN_READONLY, caps.CODE_EXEC, caps.SENSITIVE, caps.NON_BATCH,
-            caps.CODE_NAV, caps.ENV_DISCOVERY, caps.EXTERNAL_FETCH, caps.CLUSTER_SUBMIT,
-            caps.ENV_MUTATE, caps.BACKGROUNDABLE, caps.DIVERTIBLE,
-            caps.REMOVE, caps.OVERWRITE, caps.TASK_PLANNING, caps.JUDGE, caps.DELEGATE,
-        }
-        server_vocab = {
-            srv.READ, srv.CACHEABLE, srv.SEARCH, srv.SEARCH_WITH_PATH,
-            srv.CANDIDATE_SEARCH, srv.INSPECT_DIR, srv.CHECK_EXISTENCE,
-            srv.CONTENT_WRITE, srv.EDIT,
-            srv.REPLACEMENT_TRACK, srv.VALIDATE,
-            srv.PLAN_BLOCKED, srv.PLAN_READONLY, srv.CODE_EXEC, srv.SENSITIVE, srv.NON_BATCH,
-            srv.CODE_NAV, srv.ENV_DISCOVERY, srv.EXTERNAL_FETCH, srv.CLUSTER_SUBMIT,
-            srv.ENV_MUTATE, srv.BACKGROUNDABLE, srv.DIVERTIBLE,
-            srv.REMOVE, srv.OVERWRITE, srv.TASK_PLANNING, srv.JUDGE, srv.DELEGATE,
-        }
-        self.assertEqual(client_vocab, server_vocab)
-
-    def test_kind_vocab_in_sync(self):
-        """The work families are one vocabulary, declared server-side, read client-side."""
-        from mimir.shared import capabilities as srv
-        self.assertEqual(set(caps.TOOL_KINDS), set(srv.TOOL_KINDS))
-        self.assertIn(caps.DEFAULT_TOOL_KIND, caps.TOOL_KINDS)
-
     def test_a_declared_kind_round_trips(self):
         from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(kind="proxy eval")

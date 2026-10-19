@@ -1,103 +1,102 @@
 """The server side of tool capabilities: :func:`tool_caps` declares what a tool means.
 
 It emits ``meta={"mimir": descriptor}`` (read by the client's ``infer_tool_caps``) and
-standard ``ToolAnnotations``. The vocabulary is mirrored from the client as plain
-strings; a parity test keeps them level.
+standard ``ToolAnnotations``. The vocabulary below is the one definition of the flags;
+the client imports it.
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable
 
-# --- capability vocabulary (mirror of tools/capabilities.py) -------------
-# Grouped by behavioral family; values and membership must stay identical to the
-# client module (guarded by test_capabilities.test_vocab_in_sync).
+# ---------------------------------------------------------------------------
+# Capability vocabulary: flags a server declares per tool, each a behavioural contract
+# consumed by a client policy or nudge, never a tool's identity. Defined here once; the
+# client re-exports it, and `mimir_api(topic="capabilities")` lists it from this source,
+# so every flag carries a note saying what it drives.
+# ---------------------------------------------------------------------------
 
-# Discovery: reads, searches, inspections the policy tracks as evidence
-READ = "read"
-CACHEABLE = "cacheable"
-INSPECT_DIR = "inspect_dir"
-CHECK_EXISTENCE = "check_existence"
-CODE_NAV = "code_nav"                     # code navigation: symbol → definition, or file → symbol outline
-ENV_DISCOVERY = "env_discovery"           # enumerates available runtime environments (conda/venv interpreters)
-SEARCH = "search"
-SEARCH_WITH_PATH = "search_with_path"
-CANDIDATE_SEARCH = "candidate_search"
+# --- Discovery: reads, searches, inspections the policy tracks as evidence -
+# Feeds edit/delete preconditions and the "did exploration happen" nudges.
+READ = "read"                          # files.read -> read_files (edit/overwrite precondition; evidence)
+SEARCH = "search"                      # discovery.search_flags (evidence; blast-radius)
+SEARCH_WITH_PATH = "search_with_path"  # results locate hits by path and line
+CANDIDATE_SEARCH = "candidate_search"  # discovery.candidates -> path-clarification
+INSPECT_DIR = "inspect_dir"            # discovery.dir_inspect -> delete context
+CHECK_EXISTENCE = "check_existence"    # discovery.existence_check -> weaker delete context
+CODE_NAV = "code_nav"                  # symbol nav; relevance-cap "core keep" set
+ENV_DISCOVERY = "env_discovery"        # env.env_probe -> env-resolution nudge (enumerates conda/venv interpreters)
+CACHEABLE = "cacheable"                # executor result cache + invalidation
 
-# Mutation (delete and whole-file overwrite are distinct policy categories;
-# finer details are arg-roles, not flags). is_write / clears_edit_loop are
-# *derived* client-side, not declared — see tools/capabilities.py.
-EDIT = "edit"
-CONTENT_WRITE = "content_write"
-OVERWRITE = "overwrite"                  # replaces an existing file's entire content (subset of content_write)
-REMOVE = "remove"                        # deletes a file
-REPLACEMENT_TRACK = "replacement_track"
+# --- Mutation: kinds the write policy treats distinctly --------------------
+# delete needs existence+dir context; whole-file overwrite needs a prior read.
+# Finer details (where a batch tool's edits live, etc.) are arg-roles, not flags.
+# is_write / clears_edit_loop are derived client-side, not declared.
+EDIT = "edit"                          # any file writer/editor (state machine, dirty tracking, validation entry)
+CONTENT_WRITE = "content_write"        # create/append whole files (query-intent create-vs-edit filter)
+OVERWRITE = "overwrite"                # replaces an existing file's entire content (subset of content_write)
+REMOVE = "remove"                      # deletes a file (needs context; files.delete)
+REPLACEMENT_TRACK = "replacement_track"  # files.replacement_tracking -> cross-file completeness
 
-# Validates code (syntax/lint/typecheck/test). The first-party stack validates through
-# the bash server, but the flag stays declarable so an extension-pack server can ship
-# its own validator (a success marks the target file validated + clears the edit streak).
+# --- Validation ------------------------------------------------------------
+# Validates code (syntax/lint/typecheck/test). No first-party tool carries this — the
+# stack validates through the bash server — but the flag stays so an extension-pack
+# server can ship its own validator, with the same conclude-gate contribution a bash
+# validation makes (`runs.validation_tool` + `clears_edit_loop`).
 VALIDATE = "validate"
 
-# Task planning (the ordered-steps checklist is identified by the `plan_steps` arg-role)
-TASK_PLANNING = "task_planning"          # records a task plan (checklist and/or prose rationale)
+# --- Task planning ---------------------------------------------------------
+# One flag for "records a task plan"; the ordered-steps checklist is identified by
+# the `plan_steps` arg-role (which carries the steps), not a separate capability.
+TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or prose rationale)
 
-# Records the model's reading of what a run's output showed. Declared, not derived, so
-# the client can find the channel by capability instead of by name.
-JUDGE = "judge"
+# --- Verdict and delegation ------------------------------------------------
+# Declared, not derived, so the client finds each channel by capability instead of by
+# name: the name lives in one place, the server's declaration, and never in prompt or
+# nudge copy.
+JUDGE = "judge"                        # records the model's verdict on a run's output (evidence.verdict_tool)
+DELEGATE = "delegate"                  # hands a self-contained sub-task to a fresh child agent that
+                                       # runs to completion and returns its answer
+MAIN_ONLY = "main_only"                # reserved to the orchestrating agent; never granted to a child
+                                       # (the approved plan, the user's questions, the shared memory)
+PANEL_REPORT = "panel_report"          # fills one section of the scientific-computing panel, declared
+                                       # with a `panel` spec {"section", "order", "args", "refresh_arg"?}
 
-# Hands a self-contained sub-task to a fresh child agent that runs to completion and
-# returns its answer. Declared so prompt, guidance and observation can all speak of the
-# delegation channel without naming the tool.
-DELEGATE = "delegate"
-
-# Reserved to the orchestrating agent: never granted to a sub-agent. For what only the
-# run the user is watching may do — the plan it agreed to, the questions it asks, the
-# memory shared by every session. Declared by the tool, so the client filters by
-# capability and no list of names lives client-side.
-MAIN_ONLY = "main_only"
-
-# Fills one section of the client's panel, declared with a ``panel`` spec
-# (``{"section", "order", "args", "refresh_arg"?}``) and answering
-# ``{"title", "lines": [{"label", "value", "state"?}], "detail"?}``. ``refresh_arg`` names
-# the argument that bypasses the server's cache, set only for the user's ⟳.
-PANEL_REPORT = "panel_report"
-
-# Approval & mode policy
-SENSITIVE = "sensitive"
-NON_BATCH = "non_batch"
-# Both names predate ask mode; they gate every read-only mode (plan and ask), not plan alone.
-PLAN_BLOCKED = "plan_blocked"
-PLAN_READONLY = "plan_readonly"          # dual-use exec tool kept available in a read-only mode, but only
-                                         # for read-only/discovery invocations (client gates its exec use)
-CODE_EXEC = "code_exec"                  # runs a program / shell command / code payload. Marks the tool
-                                         # for guards that must inspect *what* is executed (e.g. the proxy
-                                         # exec guard); it does NOT by itself imply a block.
-
-# Reach & cost
-EXTERNAL_FETCH = "external_fetch"         # reaches outside the workspace (e.g. GitHub API)
-CLUSTER_SUBMIT = "cluster_submit"        # expensive cluster launch (Slurm submit / batch run)
-ENV_MUTATE = "env_mutate"                # installs a package / creates an env (records a cleanup obligation)
-BACKGROUNDABLE = "backgroundable"        # launches a long detached run; result may carry a
-                                         # background_job descriptor a client watcher polls to completion
-DIVERTIBLE = "divertible"                # publishes a run channel under its own name while it
-                                         # blocks, so the user can move the run it is waiting on
-                                         # to the background mid-flight (see shared/run_channel.py)
-
-
-# ── Reversibility: how much of an action can be taken back ────────────────────
-# One ordered dimension; approval-gating is derived from it client-side.
-#   reversible   the client can undo it (an in-workspace write it snapshotted); not gated.
-#   recoverable  undoable by hand: a delete, an environment mutation, a memory wipe.
-#   irreversible it leaves the machine or spends something: a submission, a POST.
-REVERSIBLE = "reversible"
-RECOVERABLE = "recoverable"
-IRREVERSIBLE = "irreversible"
+# --- Reversibility: how much of an action can be taken back ----------------
+# One ordered dimension, the *declared* one, from which SENSITIVE below is derived
+# client-side, so a tool states one fact about its effect rather than two that can drift.
+REVERSIBLE = "reversible"              # the client itself can undo it (approval snapshots + revert_last)
+RECOVERABLE = "recoverable"            # undoable by hand, off the client's record (delete, env mutation)
+IRREVERSIBLE = "irreversible"          # leaves the machine or spends something real (cluster hours, outbound POST)
 REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
+
+# --- Approval & mode policy ------------------------------------------------
+SENSITIVE = "sensitive"                # requires approval — DERIVED: reversibility != REVERSIBLE
+NON_BATCH = "non_batch"                # always prompt immediately; never batch
+# Both names gate every mode in config.models.READONLY_MODES (plan and ask), not plan alone.
+PLAN_BLOCKED = "plan_blocked"          # never called in a read-only mode (writes/exec/mutations)
+PLAN_READONLY = "plan_readonly"        # dual-use exec tool allowed in a read-only mode ONLY for read-only/
+                                       # discovery invocations (e.g. bash_run for `rg`/`ls`/`cat`); a
+                                       # call-time gate rejects its build/exec invocations there.
+CODE_EXEC = "code_exec"                # runs a program/shell command/code payload. Scoping signal for guards
+                                       # that must inspect *what* is executed (proxy exec guard); not a block.
+
+# --- Reach & cost ----------------------------------------------------------
+EXTERNAL_FETCH = "external_fetch"      # reaches outside the workspace (e.g. GitHub API)
+CLUSTER_SUBMIT = "cluster_submit"      # expensive cluster launch (Slurm submit / batch run)
+ENV_MUTATE = "env_mutate"              # installs a package / creates an env (env.env_mutation ->
+                                       # conclude-phase cleanup-offer nudge)
+BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result may carry a
+                                       # background_job descriptor a watcher polls to completion
+DIVERTIBLE = "divertible"              # publishes a run channel under its own name while it
+                                       # blocks, so the user can move the run it is waiting on
+                                       # to the background mid-flight (see shared/run_channel.py)
 
 
 # ── Work families: the word a tool-activity row shows, and its icon ───────────
-# Declared because it cannot always be derived; the row's sentence comes from the model's
-# ``doing`` argument.
+# Declared because it cannot always be derived (the client's ``kind_for`` derives one
+# for a tool that declares none); the row's sentence comes from the model's ``doing``
+# argument.
 TOOL_KINDS = (
     # discovery
     "read", "search", "list", "outline",
