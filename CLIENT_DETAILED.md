@@ -1018,7 +1018,7 @@ never a parse of the command, which is the guess the module exists to avoid. See
 
 - `scratch_roots()` / `is_scratch_path(path)` — the client's view of the scratchpad, one
   definition read by the out-of-workspace gate (scratch never prompts) and by
-  `observations.record_code_edit` (scratch writes never enter `dirty_written_files`).
+  `observations/files.py`'s `record_code_edit` (scratch writes never enter `dirty_written_files`).
   Without the second exclusion the scratchpad would trade workspace clutter for ledger
   clutter and spurious validation obligations.
 - `auto_validate_written_file()` — the post-write hook. The mandatory check is not here

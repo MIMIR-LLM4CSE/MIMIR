@@ -816,8 +816,8 @@ if (
 
 ### Example 4 — Add a badge to the approval card showing the affected file count
 
-`GlobalApprovalBar.tsx`, inside the header `<div>` (the per-file card it replaced,
-`InlineDiffApproval.tsx`, is gone — one banner now carries the whole call):
+`GlobalApprovalBar.tsx`, inside the header `<div>` (one banner carries the whole call,
+every file of it):
 ```tsx
 {diffs.length > 0 && (
   <span className="ida-file-count">{diffs.length} file{diffs.length > 1 ? "s" : ""}</span>
