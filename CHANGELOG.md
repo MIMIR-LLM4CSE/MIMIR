@@ -20,6 +20,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`/diag nudges all`) in every conversation of the workspace.
 
 ### Changed
+- **Sub-agents run longer**: up to an hour for reconnaissance and eight hours for a
+  sub-agent that builds and measures, a hard cap at which it stops and hands back where it
+  got to. A call waits on its sub-agent for up to about 19 minutes; one still working
+  then carries on in the background, and the caller is resumed with its answer.
 - **One set of slash commands for the terminal and the panel.** `/think`, `/thinking`
   and `/thinking-depth` are one command, as are `/stream` and `/streaming`, and both
   front-ends parse them the same way. `/modules` and `/backend` now work in the panel

@@ -73,10 +73,10 @@ _TOOLS_DESCRIPTION = (
     # BACKGROUNDABLE: a child the caller detached returns a background_job handle
     # instead of an answer, and the client's watcher resumes the caller when it lands —
     # the same machinery a detached shell command uses.
-    # Deliberately above the tool's own SUBAGENT_HARD_CAP_SECS, so the inner cap fires
-    # first and returns what the child had instead of the dispatcher killing the call
-    # with nothing to show.
-    timeout_secs=spawn_limits.SUBAGENT_HARD_CAP_SECS + 60,
+    # Deliberately above SUBAGENT_BLOCKING_WAIT_SECS, so this server answers first (the
+    # child's result, or its handle once it carries on detached) instead of the
+    # dispatcher killing the call with nothing to show.
+    timeout_secs=spawn_limits.SUBAGENT_BLOCKING_WAIT_SECS + 60,
     label="Sub-agent: {task}",
     read_only=False,
 ))
@@ -106,13 +106,15 @@ async def spawn_agent(
                     what bounds a sub-agent is its clock, not a step count, and a
                     count cut long work off for a reason unrelated to its difficulty.
         time_budget_secs:
-                    Wall time for this run. 0 (the default) takes the whole budget its
-                    rung allows: 10 minutes for reconnaissance, 2 hours for a
-                    sub-agent given a writing or executing tool — which is work that
-                    builds and measures, and ten minutes of it is a run cut short for
-                    no reason to do with the task. Pass a smaller number to bound a
-                    run you expect to be short; a larger one is clamped. The sub-agent
-                    is told its budget and is asked to hand over before it runs out.
+                    Wall time for this run, a hard cap: at it the sub-agent is stopped
+                    and hands back where it got to. 0 (the default) takes the whole
+                    budget its rung allows: 1 hour for reconnaissance, 8 hours for a
+                    sub-agent given a writing or executing tool. Pass a smaller number
+                    to bound a run you expect to be short; a larger one is clamped. The
+                    sub-agent is told its budget and is asked to hand over before it
+                    runs out. A call still working after about 19 minutes returns a
+                    handle and the sub-agent carries on in the background; you are
+                    resumed with its answer when it finishes.
         background: True detaches the sub-agent: this call returns a handle at once and
                     you are resumed with its answer when it finishes, so you can work
                     on something else meanwhile. Use it for a long piece of work you
@@ -175,11 +177,7 @@ async def spawn_agent(
     # event_sink.emit falls back to printing every event).
     spawn_output.silence_stdout_once()
     session = new_sub_session()
-    # Longer than a blocking call can hold (the client caps any declared timeout): detached
-    # whether or not it was asked for, since the model cannot see that ceiling.
-    detached_for_length = budget > spawn_limits.SUBAGENT_HARD_CAP_SECS
-    run = ChildRun(session=session, model=model, requested=requested, budget=budget,
-                    background=background or detached_for_length)
+    run = ChildRun(session=session, model=model, requested=requested, budget=budget)
 
     # A slot before anything is created or any clock starts: the wait is not the child's
     # time, and a worktree cut for a child that never runs is litter.
@@ -208,11 +206,16 @@ async def spawn_agent(
         # without one, the child runs unattended.
         ask_session=getattr(ctx, "session", None),
     )
-    if run.job_key:
-        return run.detached_reply(detached_for_length)
-    if not await run.wait(ctx):
+    if background:
+        return run.detached_reply()
+    ended = await run.wait(ctx)
+    if ended == "done":
+        return run.result_reply()
+    if ended == "out_of_budget":
         return run.overrun_reply()
-    return run.result_reply()
+    # Longer than a call can wait (the client caps any declared timeout): it carries on
+    # detached, and the caller is resumed when it lands.
+    return run.detached_reply(still_working=True)
 
 
 @mcp.tool(**tool_caps(kind="agent",
@@ -266,11 +269,8 @@ def subagent_job(
                    f"op='list' to see the ones this server still holds.")
     state = spawn_jobs.job_state(entry)
     if state == "unknown" and not entry.get("from_card"):
-        # Past its budget and still going in its own thread. Nothing else notices:
-        # the blocking path stops a child on its deadline, this one had no deadline to
-        # sit on, so a detached run that overran carried on spending model calls and
-        # tool budget on an answer nobody would ever read. Stopped here, at the first
-        # read that sees the wall crossed — the watcher polls this, so that is soon.
+        # Past its budget and still going in its own thread: its run's budget guard
+        # stops it, and so does this read when it sees the wall first.
         abandon_child(entry.get("child") or {})
     base = {
         "state": state,
@@ -304,7 +304,7 @@ def subagent_job(
         # as a conclusion is the whole failure this guards against.
         partial = partial_handoff(entry.get("child") or {})
         if state == "unknown":
-            budget = int(entry.get("budget") or spawn_limits.SUBAGENT_HARD_CAP_SECS)
+            budget = int(entry.get("budget") or spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
             partial["answer"] = (overrun_note(budget) + " " + partial["answer"]).strip()
             partial["ended_on_budget"] = True
         return ok({**base, **partial, "completed": False})

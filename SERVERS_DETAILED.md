@@ -1355,9 +1355,10 @@ Tools:
     mode when at least one granted tool is `PLAN_BLOCKED` or `PLAN_READONLY` — without the
     second, a child given the shell to build with could not run the build — and is briefed
     to end with a HANDOFF rather than stopping mid-air.
-  - `time_budget_secs` — the wall for this run, clamped to
-    `[SUBAGENT_MIN_BUDGET_SECS, SUBAGENT_HARD_CAP_SECS]` (60–1140 s). The child is told
-    how long it has, in the brief.
+  - `time_budget_secs` — the wall for this run, a hard cap, clamped to
+    `[SUBAGENT_MIN_BUDGET_SECS, the rung's budget]`: 1 h for reconnaissance
+    (`SUBAGENT_EXPLORE_BUDGET_SECS`), 8 h for a working child
+    (`SUBAGENT_WORKING_BUDGET_SECS`). The child is told how long it has, in the brief.
   - `background=True` **detaches the child**: the call returns a `background_job`
     descriptor at once, the caller carries on, and the client's watcher resumes it with
     the answer when the child lands — the same machinery a detached shell command uses
@@ -1452,16 +1453,20 @@ Execution model:
   running asyncio loop. Several `spawn_agent` calls emitted in one model step are
   dispatched **concurrently** by the parent's `asyncio.gather` in `query_engine/dispatch/` — which is
   why the prompt asks for the fan-out in a single response.
-- The per-call budget is enforced here, up to `SUBAGENT_HARD_CAP_SECS` (1140 s). The tool
+- **A call waits on its child up to `SUBAGENT_BLOCKING_WAIT_SECS` (1140 s).** The tool
   *declares* a larger wall to the dispatcher (`timeout_secs`, read by
   `capabilities.timeout_for`, and kept under the client ceiling
-  `TOOL_CALL_TIMEOUT_MAX_SECS`), so the inner cap always fires first and hands back what
-  the child had instead of the parent killing the call with nothing to show. Before this,
-  the dispatcher's flat 120 s applied and no non-trivial delegation could finish.
-- A child that overruns keeps running in its own thread and its answer never arrives. The
-  timeout branch therefore reports what can be read off the agent itself
-  (`sub_agent_run.partial_handoff`): the files it had already touched, and its session — enough to
-  carry the work on with a fresh child instead of starting it again.
+  `TOOL_CALL_TIMEOUT_MAX_SECS`), so this server always answers first. A child still
+  working then **carries on detached**: every run is registered as a job from the start
+  (`spawn_jobs`), so the call returns the same `background_job` handle a
+  `background=True` call gets, and the caller's watcher resumes it with the answer.
+- **The budget is a hard cap**, whoever is waiting. Each run has a guard on this
+  server's loop (`ChildRun._stop_at_budget`) that stops the child at its budget, time
+  spent in front of the user not counted; `subagent_job` stops it too when its read sees
+  the wall first. A stopped child's answer never arrives, so what it got to is read off
+  the agent itself (`sub_agent_run.partial_handoff`): the files it had already touched,
+  and its session — enough to carry the work on with a fresh child instead of starting it
+  again.
 - Success payload: `{"status": "ok", "answer", "completed", "files_read", "files_written",
   "blocked_by_mode", "model", "tools", "session"}`
   — `completed=False` means the sub-agent ran out of steps or reported the task incomplete

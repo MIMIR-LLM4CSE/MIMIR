@@ -30,8 +30,15 @@ export function stateLabel(sub: SubAgent): string {
 export function grantSummary(sub: SubAgent): string {
   const tools = sub.tools ?? [];
   const scope = tools.length ? tools.join(", ") : "read-only exploration";
-  const budget = sub.budget_secs ? `, ${Math.round(sub.budget_secs / 60)} min` : "";
+  const budget = sub.budget_secs ? `, ${durationLabel(sub.budget_secs)}` : "";
   return `${scope}${budget}`;
+}
+
+/** A budget in the unit a person reads it in: minutes under an hour, hours above. */
+function durationLabel(secs: number): string {
+  if (secs < 3600) return `${Math.round(secs / 60)} min`;
+  const hours = Math.round((secs / 3600) * 10) / 10;
+  return `${hours} h`;
 }
 
 /**

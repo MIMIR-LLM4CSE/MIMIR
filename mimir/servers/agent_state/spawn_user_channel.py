@@ -157,7 +157,7 @@ def install_user_channel(agent, session, loop, task: str) -> None:
             ask_the_user(session, header, question, options, origin), loop)
         started = time.monotonic()
         try:
-            return future.result(timeout=spawn_limits.SUBAGENT_HARD_CAP_SECS)
+            return future.result(timeout=spawn_limits.SUBAGENT_BLOCKING_WAIT_SECS)
         except Exception:
             return ""
         finally:

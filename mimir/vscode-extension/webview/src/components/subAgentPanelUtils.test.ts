@@ -47,6 +47,12 @@ describe("grantSummary", () => {
     expect(grantSummary(sub({ tools: [], budget_secs: 600 })))
       .toBe("read-only exploration, 10 min");
   });
+
+  it("says a budget of an hour or more in hours", () => {
+    expect(grantSummary(sub({ tools: [], budget_secs: 3600 }))).toBe("read-only exploration, 1 h");
+    expect(grantSummary(sub({ tools: ["bash_run"], budget_secs: 28800 }))).toBe("bash_run, 8 h");
+    expect(grantSummary(sub({ tools: [], budget_secs: 5400 }))).toBe("read-only exploration, 1.5 h");
+  });
 });
 
 describe("taskTitle", () => {

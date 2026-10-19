@@ -3,23 +3,22 @@ from __future__ import annotations
 
 
 # Wall for one sub-agent run, by what it was given: reading and concluding, or working in
-# its own copy. Chosen by the same rung test that gives it a copy.
-SUBAGENT_EXPLORE_BUDGET_SECS = 600            # 10 min: read, search, conclude
+# its own copy. Chosen by the same rung test that gives it a copy. A hard cap: at it the
+# child is stopped and hands back where it got to.
+SUBAGENT_EXPLORE_BUDGET_SECS = 3600           # 1 h: read, search, conclude
 
 
-SUBAGENT_WORKING_BUDGET_SECS = 7200           # 2 h:   edit, build, measure, repeat
+SUBAGENT_WORKING_BUDGET_SECS = 28800          # 8 h: edit, build, measure, repeat
 
 
 SUBAGENT_MIN_BUDGET_SECS = 60
 
 
-# The longest a BLOCKING sub-agent call can last. The client caps any timeout a tool
-# declares at config.limits.TOOL_CALL_TIMEOUT_MAX_SECS (1200s, see
-# tools.capabilities), so a call cannot hold a child for longer whatever this server
-# declares — a longer budget is detached instead (see spawn_agent). The margin below
-# that ceiling is what lets this server's own cap fire first and hand back what the
-# child had, rather than the dispatcher killing the call with nothing to show.
-SUBAGENT_HARD_CAP_SECS = 1140
+# The longest a call waits on its child. The client caps any timeout a tool declares at
+# config.limits.TOOL_CALL_TIMEOUT_MAX_SECS (1200s, see tools.capabilities); a child still
+# working then carries on detached, within its budget (see spawn_agent). The margin lets
+# this server answer before the dispatcher kills the call with nothing to show.
+SUBAGENT_BLOCKING_WAIT_SECS = 1140
 
 
 # What one child may spend in tool-call steps: nothing. A step ceiling cut a long run

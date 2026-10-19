@@ -171,7 +171,7 @@ def entry_from_card(job_key: str) -> dict | None:
         "outcome": state,
         "started": card_epoch(card.get("started_at")),
         "ended": card_epoch(card.get("ended_at")) or None,
-        "budget": card.get("budget_secs", spawn_limits.SUBAGENT_HARD_CAP_SECS),
+        "budget": card.get("budget_secs", spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS),
         "task": card.get("task", ""),
         "session": card.get("session", ""),
         "model": card.get("model", ""),
@@ -206,6 +206,6 @@ def job_state(entry: dict) -> str:
     # reported lost to the watcher — which treats "unknown" as terminal — while the
     # card it is waiting on is still on screen.
     working = (time.time() - entry.get("started", 0)) - spawn_user_channel.paused_secs(entry.get("session", ""))
-    if working > entry.get("budget", spawn_limits.SUBAGENT_HARD_CAP_SECS):
+    if working > entry.get("budget", spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS):
         return "unknown"
     return "running"

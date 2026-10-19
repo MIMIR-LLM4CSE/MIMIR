@@ -1196,15 +1196,15 @@ class TimeBudgetTests(unittest.TestCase):
             self.assertTrue(entered.wait(5), "the sub-agent never started")
         return seen.get("budget"), out
 
-    def test_a_reconnaissance_gets_ten_minutes(self):
+    def test_a_reconnaissance_gets_an_hour(self):
         budget, _ = self._budget(_GrantCtx())
         self.assertEqual(budget, spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
-        self.assertEqual(budget, 600)
+        self.assertEqual(budget, 3600)
 
-    def test_a_child_that_writes_gets_two_hours(self):
+    def test_a_child_that_writes_gets_eight_hours(self):
         budget, _ = self._budget(_GrantCtx(level="build"), tools=["write_file"])
         self.assertEqual(budget, spawn_limits.SUBAGENT_WORKING_BUDGET_SECS)
-        self.assertEqual(budget, 7200)
+        self.assertEqual(budget, 28800)
 
     def test_at_explore_a_writing_tool_buys_no_extra_time(self):
         """The rung is the user's decision; a grant that slipped through does not
@@ -1245,14 +1245,16 @@ class TimeBudgetTests(unittest.TestCase):
         self.assertIn("as many tool-call steps as the work needs", sub_agent_run.WORK_BRIEF)
 
 
-class ForcedDetachmentTests(unittest.TestCase):
-    """A run longer than a blocking call can hold is detached, asked for or not."""
+class LongRunTests(unittest.TestCase):
+    """A call waits on its child as long as it can; a child still working then carries on
+    detached, and its budget stops it wherever it is."""
 
-    def _spawn(self, ctx, **kwargs):
+    def _spawn(self, ctx, drive_secs: float = 0.0, **kwargs):
         agent = _FakeAgent()
         done = threading.Event()
 
         async def _drive(*a, **kw):
+            await asyncio.sleep(drive_secs)
             done.set()
             return {"answer": "done", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
@@ -1263,22 +1265,61 @@ class ForcedDetachmentTests(unittest.TestCase):
             done.wait(5)
         return out
 
-    def test_a_two_hour_child_is_detached_even_when_not_asked(self):
-        out = self._spawn(_GrantCtx(level="build"), tools=["write_file"],
-                          background=False)
+    def test_a_child_with_hours_of_budget_still_answers_in_place(self):
+        out = self._spawn(_GrantCtx(level="build"), tools=["write_file"])
+        self.assertNotIn("background_job", out)
+        self.assertEqual(out["answer"], "done")
+
+    def test_a_child_still_working_when_the_call_can_wait_no_longer_carries_on(self):
+        with mock.patch.object(spawn_limits, "SUBAGENT_BLOCKING_WAIT_SECS", 0.3):
+            out = self._spawn(_GrantCtx(), drive_secs=1.0)
+        self.assertEqual(out["status"], "ok")
         self.assertIn("background_job", out)
-        self.assertIn("Detached automatically", out["note"])
+        self.assertIn("carries on in the background", out["note"])
+        self.assertIn("about an hour", out["note"])
 
     def test_a_short_child_still_answers_in_place(self):
         out = self._spawn(_GrantCtx())
         self.assertNotIn("background_job", out)
         self.assertEqual(out["answer"], "done")
 
-    def test_the_blocking_cap_stays_under_what_the_client_allows(self):
-        """Or the dispatcher kills the call before this server's own cap can hand back
-        what the child had."""
+    def test_the_wait_stays_under_what_the_client_allows(self):
+        """Or the dispatcher kills the call before this server can answer it."""
         from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
-        self.assertLess(spawn_limits.SUBAGENT_HARD_CAP_SECS, TOOL_CALL_TIMEOUT_MAX_SECS)
+        self.assertLess(spawn_limits.SUBAGENT_BLOCKING_WAIT_SECS, TOOL_CALL_TIMEOUT_MAX_SECS)
+
+    def test_a_detached_child_is_stopped_at_its_budget_with_nobody_asking(self):
+        """The budget is a hard cap: no poll is needed for it to hold."""
+        agent = _FakeAgent()
+        stopped = threading.Event()
+
+        async def _drive(*a, **kw):
+            for _ in range(100):
+                if agent.turn.cancel_flag.is_set():
+                    stopped.set()
+                    break
+                await asyncio.sleep(0.05)
+            return {"answer": "", "completed": False, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        async def body():
+            out = await spawn.spawn_agent("axis", ctx=_GrantCtx(), background=True,
+                                          time_budget_secs=1)
+            for _ in range(60):
+                if spawn_jobs.job_snapshot(out["background_job"]["job_key"])["state"] != "running":
+                    break
+                await asyncio.sleep(0.05)
+            return out
+
+        with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive), \
+                mock.patch.object(spawn_limits, "SUBAGENT_MIN_BUDGET_SECS", 1), \
+                mock.patch.object(sub_agent_run, "_BUDGET_CHECK_SECS", 0.05):
+            out = asyncio.run(body())
+        self.assertTrue(stopped.is_set(), "the child ran on past its budget")
+        key = out["background_job"]["job_key"]
+        self.assertEqual(spawn_jobs.job_snapshot(key)["state"], "unknown")
+        result = spawn.subagent_job(op="result", job_key=key)
+        self.assertTrue(result["ended_on_budget"])
 
     def test_a_child_out_of_time_hands_back_where_it_got_to(self):
         """Its answer is gone with the thread; what it touched is not, and that is what
@@ -1442,11 +1483,6 @@ class WorktreeTests(unittest.TestCase):
             return {"answer": "3.2s → 1.9s", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
-        # An explicit budget under SUBAGENT_HARD_CAP_SECS, because what these tests
-        # read is the workspace report — and that is only on the answer of a call that
-        # waited for it. A writing child left to the default takes the working ceiling
-        # (2 h), which is over the cap, so it is detached for length and the call
-        # returns a background_job with no report on it yet.
         with _patched_agent(agent), mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             out = asyncio.run(spawn.spawn_agent(
                 "vectorise the loop", tools=["write_file"], time_budget_secs=300,
@@ -1817,7 +1853,7 @@ class DeclaredBudgetTests(unittest.TestCase):
     def test_declared_wall_exceeds_the_tool_s_own_cap(self):
         """Whichever fires first owns the outcome. The inner cap hands back the child's
         partial answer; the dispatcher's timeout hands back a failure line."""
-        self.assertGreater(self._descriptor().timeout_secs, spawn_limits.SUBAGENT_HARD_CAP_SECS)
+        self.assertGreater(self._descriptor().timeout_secs, spawn_limits.SUBAGENT_BLOCKING_WAIT_SECS)
 
     def test_the_dispatcher_reads_that_wall_and_not_the_global_default(self):
         from mimir.client.tools.capabilities import timeout_for
@@ -1826,12 +1862,11 @@ class DeclaredBudgetTests(unittest.TestCase):
         self.assertGreater(timeout_for("spawn_agent", registry), TOOL_CALL_TIMEOUT_SECS)
         self.assertEqual(timeout_for("other_tool", registry), TOOL_CALL_TIMEOUT_SECS)
 
-    def test_the_declared_budget_covers_every_blocking_run(self):
-        """The declared timeout stays above the longest blocking run; longer budgets are detached."""
+    def test_the_declared_timeout_covers_the_wait(self):
+        """The declared timeout stays above the longest a call waits, and under the client's."""
         from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
-        self.assertGreater(spawn_limits.SUBAGENT_HARD_CAP_SECS, spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
+        self.assertGreater(self._descriptor().timeout_secs, spawn_limits.SUBAGENT_BLOCKING_WAIT_SECS)
         self.assertLessEqual(self._descriptor().timeout_secs, TOOL_CALL_TIMEOUT_MAX_SECS)
-        self.assertGreater(spawn_limits.SUBAGENT_WORKING_BUDGET_SECS, spawn_limits.SUBAGENT_HARD_CAP_SECS)
 
     def test_delegation_is_no_longer_dual_use_by_argument(self):
         """Its read-only-ness is not an argument any more: in a read-only mode the
