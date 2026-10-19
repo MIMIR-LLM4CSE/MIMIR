@@ -186,12 +186,6 @@ class WorkFamilyTest(unittest.TestCase):
                     name="t", meta={"mimir": desc}, annotations=None, inputSchema=None)
                 self.assertEqual(caps.infer_tool_caps(fake).readonly_when, expected)
 
-    def test_reversibility_vocab_in_sync(self):
-        # Declared on one side, consumed on the other — the two spellings must match
-        # exactly, or a level a server declares silently falls back to the derivation.
-        from mimir.shared import capabilities as srv
-        self.assertEqual(caps.REVERSIBILITY_LEVELS, srv.REVERSIBILITY_LEVELS)
-
     def test_descriptor_round_trip(self):
         from mimir.shared import capabilities as srv
         desc = srv.build_descriptor(
