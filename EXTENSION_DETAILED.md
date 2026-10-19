@@ -69,7 +69,7 @@ extension host ◀──postMessage({type:"ws", payload:JSON})──────
 webview handleServerMessage() → React state update → render
 ```
 
-Every Python→frontend message is a JSON object with a `type` field. The full set is defined in `webview/src/types.ts` as the `ServerMessage` discriminated union.
+Every Python→frontend message is a JSON object with a `type` field. The full set is the `ServerMessage` discriminated union in `webview/src/types/index.ts`; each message is declared in the family file it belongs to (`types/turn.ts`, `types/tools.ts`, …).
 
 These message types never reach Python — the extension host answers them itself, before
 any server exists:
@@ -152,7 +152,9 @@ There are two emission paths into the WS layer. Messages originated by the conne
 ```
 webview/src/
 ├── index.tsx                 ← React entry point
-├── types.ts                  ← ALL shared TypeScript types (ServerMessage, ChatMessage, …)
+├── types/                    ← the shared TypeScript types by family (connection, settings, turn,
+│                               tools, prompts, jobs, session, panels, editor, chat); index.ts
+│                               holds the ServerMessage and ClientMessage unions and re-exports all
 ├── hooks/
 │   ├── useWebSocket.ts       ← postMessage bridge; send(), connect(), createSession(), …
 │   ├── useEndpoint.ts        ← the connection: socket state, endpoint, models, connect,
@@ -389,7 +391,7 @@ below it.
 
 ## How to add a new server→frontend message type
 
-1. **Define the interface** in `webview/src/types.ts`:
+1. **Define the interface** in the family file of `webview/src/types/` it belongs to:
    ```typescript
    export interface MyCustomMessage {
      type: "my_custom";
@@ -398,7 +400,7 @@ below it.
    }
    ```
 
-2. **Add it to the `ServerMessage` union** in `types.ts`:
+2. **Add it to the `ServerMessage` union** in `types/index.ts`:
    ```typescript
    export type ServerMessage =
      | ReadyMessage
@@ -425,7 +427,7 @@ below it.
 
 ## How to add a new client→server message type
 
-1. **Define the interface** in `types.ts`:
+1. **Define the interface** in the family file of `types/` it belongs to:
    ```typescript
    export interface MyActionMessage {
      type: "my_action";
@@ -433,7 +435,7 @@ below it.
    }
    ```
 
-2. **Add it to the `ClientMessage` union** in `types.ts`:
+2. **Add it to the `ClientMessage` union** in `types/index.ts`:
    ```typescript
    export type ClientMessage =
      | QueryMessage
@@ -730,12 +732,12 @@ hold and leaves when either stops.
 
 Chat messages are rendered by `ChatMessage.tsx` based on `msg.kind`. To add a new visual card:
 
-1. **Add the kind** to the `MessageKind` union in `types.ts`:
+1. **Add the kind** to the `MessageKind` union in `types/chat.ts`:
    ```typescript
    export type MessageKind = "text" | "status" | ... | "my_card";
    ```
 
-2. **Add any extra fields** to `ChatMessage` in `types.ts`:
+2. **Add any extra fields** to `ChatMessage` in `types/chat.ts`:
    ```typescript
    export interface ChatMessage {
      ...
