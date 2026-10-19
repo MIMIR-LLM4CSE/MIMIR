@@ -2,7 +2,7 @@
  * Finding the MIMIR server this workspace already has, from `<state dir>/server.json`.
  *
  * `workspaceId` must stay byte-identical to `state_paths.workspace_id` (pinned by
- * extension.test.ts). An entry is live when its pid exists, its start time matches, and
+ * serverRegistry.test.ts). An entry is live when its pid exists, its start time matches, and
  * its port accepts a connection; a stale entry costs one failed attempt.
  */
 import * as crypto from "crypto";

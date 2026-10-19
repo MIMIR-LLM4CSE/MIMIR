@@ -1700,12 +1700,12 @@ all" — which is what the extension reads to decide whether to skip the kill, a
 the process that stays right.
 
 The extension reads `detached` in the host, not the webview, because it is the host that does
-the killing: a module-global flag beside `serverProcess`, and the one path that does the
-killing — `endServerUnlessKeptRunning()`, called by `deactivate()`, `_teardownServer()` and the
-`disconnect` message — skips it when the flag is set. Beside those two sits `attachedPid`, the
-third answer to who owns this process and the one that was missing: `serverProcess` is
-undefined for a server this window attached to, so the handle is the pid from the registry
-entry it was found through, and it takes the same SIGTERM a child gets — the signal the
+the killing. `LocalServer` (`src/localServer.ts`) holds the three answers to who owns the
+process: the child it spawned, the pid it attached to, and the detached flag. Its one path
+that does the killing, `endUnlessKeptRunning()`, reached from `deactivate()`, a connect
+releasing the previous server and the `disconnect` message, skips it when the flag is set. A
+server this window attached to has no child, so the handle is the pid from the registry entry
+it was found through, and it takes the same SIGTERM a child gets — the signal the
 server's own handler turns into the exit that reaps the MCP servers. Only this workspace's own
 entry: a server reached through `mimir.wsUrl` is the user's own statement about where a server
 is, possibly one they run by hand for several windows, and is not ours to kill. Two servers are

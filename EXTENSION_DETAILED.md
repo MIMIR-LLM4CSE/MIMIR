@@ -14,8 +14,25 @@ The VS Code extension lives in `mimir/vscode-extension/`. It has two independent
 
 | Layer | Path | Language | Role |
 |-------|------|----------|------|
-| Extension host | `src/extension.ts` | TypeScript (Node.js) | Spawns the Python WS server, reads the endpoint's model list (`src/modelList.ts`), bridges WebSocket ↔ webview postMessage |
+| Extension host | `src/` | TypeScript (Node.js) | Spawns the Python WS server, reads the endpoint's model list, bridges WebSocket ↔ webview postMessage |
 | Webview (React) | `webview/src/` | TypeScript + React | Chat UI, approval cards, diff bars, session panel |
+
+The host is built from components; `chatView.ts` decides when to attach, spawn or
+reconnect and holds the others:
+
+| Module | Owns |
+|---|---|
+| `extension.ts` | activation: the chat view, the `mimir-diff:` documents, the commands; `deactivate()` |
+| `chatView.ts` | `MimirAgentViewProvider`: the webview, its message handlers, auto-connect and attach |
+| `connection.ts` | `ServerConnection`: the socket, its retries by generation, what is queued before it opens |
+| `localServer.ts` | `LocalServer`: the server this window is responsible for (spawned child, attached pid, detached flag), its log mirror, the start and stop commands |
+| `serverEnv.ts`, `selfUpdate.ts` | the interpreter and environment the server runs with; the shared site release |
+| `serverRegistry.ts` | the server a workspace already has, read from its registry entry |
+| `modelProbe.ts`, `modelList.ts`, `directHttp.ts` | the model list of an endpoint, fetched past the editor's proxy |
+| `workspaceFiles.ts`, `fileIndex.ts` | the "@" autocomplete's file list and its ranking |
+| `notifications.ts` | native notifications while the chat is not in front of the user |
+| `editors.ts`, `patch.ts`, `planPreview.ts` | opening files, diffs and patches; the plan panel |
+| `endpoints.ts` | the endpoint remembered for unattended reconnects |
 
 After changing any file under `webview/src/` run:
 ```bash
@@ -36,7 +53,7 @@ pick it up.
 User types query
    │
    ▼
-webview (React)  ──postMessage({type:"ws_send", payload:JSON})──▶  extension host (extension.ts)
+webview (React)  ──postMessage({type:"ws_send", payload:JSON})──▶  extension host (chatView.ts)
                                                                          │
                                                                          ▼
                                                                    Python server/main.py
@@ -87,8 +104,8 @@ Probing at activation rather than at the first `resolveWebviewView` is what make
 panel already connected when the user first opens it. It also means the socket can open
 before any webview exists, and the `ready` frame the Python server sends on connect goes
 to nobody. So the first view to resolve re-attaches — close the socket, connect again —
-and is greeted with a fresh `ready`; `_connectToServer`'s close handler ignores a socket
-that is no longer `this._ws`, so the replaced one drives no retry. A startup connect also
+and is greeted with a fresh `ready`; `ServerConnection`'s close handler ignores a socket
+it no longer holds, so the replaced one drives no retry. A startup connect also
 keeps the "MIMIR Server" output channel closed instead of popping it over the editor.
 
 The host starts the server with `--port 0` and reads the address from its

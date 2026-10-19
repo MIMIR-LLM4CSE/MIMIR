@@ -1,7 +1,7 @@
 /**
  * Shared-release helpers: a site deployment publishes immutable `releases/<version>`
  * trees behind a `current` symlink, activated by a `site.json` next to the bundle.
- * Dependency-free pieces only; the vscode/fs glue is in extension.ts.
+ * Dependency-free pieces only; the vscode/fs glue is in selfUpdate.ts.
  */
 
 /** Site configuration a deployment may ship as site.json beside the extension. */
