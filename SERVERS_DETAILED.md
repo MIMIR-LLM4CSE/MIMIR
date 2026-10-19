@@ -729,6 +729,8 @@ Tools:
 
 Purpose: report what this host actually is — hardware, scheduler, toolchains, Python environments — and search the site's environment-module catalogue.
 
+The server holds the tools and the panel. The probes are `hpc/host_probe.py` (one collector per fact, and the digest); the catalogue — fingerprint, tiers, persistence, background enrichment, ranking — is `hpc/module_catalogue.py`.
+
 Tools:
 - `platform_probe` — collect and return a full profile of **this host** (CPU with caches, `-march`, OS and glibc, GPU, memory, Slurm, loaded modules, toolchains, Python environments), plus `execution_context` and `machine_signature`. Every fact is built on demand, so none of it can be stale; it reports the module catalogue's summary but never builds it. `python servers/_launch.py mimir.servers.hpc.server_platform --profile-json` prints the same profile without serving MCP: that is what a node probe runs. Probes run with `LC_ALL=C`, since `lscpu` translates its field names.
   > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`ISA_EXTENSIONS` in `shared/cpu_facts.py`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.

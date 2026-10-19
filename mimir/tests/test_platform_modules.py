@@ -2,7 +2,7 @@
 rebuilt only when the module tree changes, and searchable by name with no embeddings.
 """
 
-from mimir.servers.hpc import platform_parsers
+from mimir.servers.hpc import host_probe, module_catalogue, platform_parsers
 from mimir.tests.support.stubs import stub_attr
 import importlib.util
 import json
@@ -169,30 +169,26 @@ class CatalogueTestCase(unittest.TestCase):
         self.state.mkdir()
 
         self.mod = _load_server_platform()
-        self.mod._MODULES_DIR = str(self.state)
-        self.mod._CATALOGUE_FILE = str(self.state / "catalogue-test.json")
-        self.mod._EMBEDDINGS_FILE = str(self.state / "embeddings-test.json")
+        stub_attr(self, module_catalogue, "MODULES_DIR", str(self.state))
+        stub_attr(self, module_catalogue, "CATALOGUE_FILE", str(self.state / "catalogue-test.json"))
+        stub_attr(self, module_catalogue, "EMBEDDINGS_FILE", str(self.state / "embeddings-test.json"))
 
         self.shell = _Shell(flavour=self.flavour, modulepath=str(self.tree))
-        self.mod._run_shell = self.shell
+        stub_attr(self, host_probe, "run_shell", self.shell)
 
         # Background work is captured, not spawned: enrichment runs when a test says so.
         self.pending = []
-        self.mod._schedule_background = self.pending.append
+        stub_attr(self, module_catalogue, "schedule_background", self.pending.append)
 
         self._reset_module_state()
+        self.addCleanup(module_catalogue.reset)
         embed._reset_availability_cache()
         # Registered before the stub, so it runs after the stub is undone.
         self.addCleanup(embed._reset_availability_cache)
-        stub_attr(self, self.mod._embed, "is_available", lambda: False)
+        stub_attr(self, embed, "is_available", lambda: False)
 
     def _reset_module_state(self):
-        self.mod._module_flavour.cache_clear()
-        self.mod._effective_modulepath.cache_clear()
-        self.mod._collect_modules.cache_clear()
-        self.mod._CATALOGUE_CACHE = None
-        self.mod._ENRICHING = False
-        self.mod._LAST_BUILD_MONOTONIC = None
+        module_catalogue.reset()
 
     def run_pending(self):
         """Run the enrichment that would have gone to a daemon thread."""
@@ -217,7 +213,7 @@ class NoModuleSystemTests(CatalogueTestCase):
         self.assertEqual(os.listdir(self.state), [])
 
     def test_collect_modules_reports_absence(self):
-        info = self.mod._collect_modules()
+        info = module_catalogue.collect_modules()
         self.assertFalse(info["available"])
         self.assertEqual(info["module_system"], "none")
 
@@ -274,7 +270,7 @@ class TierSelectionTests(CatalogueTestCase):
         top = result["modules"][0]
         self.assertEqual(top["load"], "cuda/12.2")
         self.assertIn("CUDA", top["description"])
-        on_disk = json.loads(Path(self.mod._CATALOGUE_FILE).read_text())
+        on_disk = json.loads(Path(module_catalogue.CATALOGUE_FILE).read_text())
         self.assertTrue(on_disk["enrich_done"])
 
     def test_spider_is_used_when_available(self):
@@ -357,9 +353,9 @@ class FreshnessSignalTests(CatalogueTestCase):
 
     def test_stale_schema_is_rejected(self):
         self.mod.platform_search("cuda")
-        stale = json.loads(Path(self.mod._CATALOGUE_FILE).read_text())
+        stale = json.loads(Path(module_catalogue.CATALOGUE_FILE).read_text())
         stale["schema"] = 0
-        Path(self.mod._CATALOGUE_FILE).write_text(json.dumps(stale))
+        Path(module_catalogue.CATALOGUE_FILE).write_text(json.dumps(stale))
         self._reset_module_state()
         self.mod.platform_search("cuda")
         self.assertEqual(self._build_count(), 2)
@@ -368,9 +364,9 @@ class FreshnessSignalTests(CatalogueTestCase):
         self.mod.platform_search("cuda")
         future = time.time() + 120
         os.utime(self.tree / "cuda", (future, future))
-        self.mod._effective_modulepath.cache_clear()
+        module_catalogue.effective_modulepath.cache_clear()
         self.run_pending()
-        on_disk = json.loads(Path(self.mod._CATALOGUE_FILE).read_text())
+        on_disk = json.loads(Path(module_catalogue.CATALOGUE_FILE).read_text())
         self.assertFalse(on_disk["enrich_done"])
         self.assertEqual(on_disk["tier"], "name")
 
@@ -382,7 +378,7 @@ class FreshnessSignalTests(CatalogueTestCase):
         self.run_pending()
         self.mod.platform_search("cuda")
         self.assertEqual(self.pending, [])
-        on_disk = json.loads(Path(self.mod._CATALOGUE_FILE).read_text())
+        on_disk = json.loads(Path(module_catalogue.CATALOGUE_FILE).read_text())
         self.assertTrue(on_disk["enrich_done"])
         self.assertTrue(on_disk["partial"])
 
@@ -402,16 +398,16 @@ class SearchTests(CatalogueTestCase):
         loads = [m["load"] for m in result["modules"]]
         self.assertEqual(loads, ["cuda/12.2", "cuda/11.8"])  # default first
         self.assertTrue(all(m["match"] == "name" for m in result["modules"]))
-        self.assertFalse(os.path.exists(self.mod._EMBEDDINGS_FILE))
+        self.assertFalse(os.path.exists(module_catalogue.EMBEDDINGS_FILE))
 
     def test_newest_version_first_among_non_defaults(self):
         entries = platform_parsers.parse_avail_terse("root:\nfoo/1.9\nfoo/1.10\nfoo/1.2\n")
-        ordered = [e["load"] for e in self.mod._name_matches(entries, "foo")]
+        ordered = [e["load"] for e in module_catalogue.name_matches(entries, "foo")]
         self.assertEqual(ordered, ["foo/1.10", "foo/1.9", "foo/1.2"])
 
     def test_exact_name_beats_substring(self):
         entries = platform_parsers.parse_avail_terse("root:\nmpi/1.0\nopenmpi/4.1.5\n")
-        ordered = [e["load"] for e in self.mod._name_matches(entries, "mpi")]
+        ordered = [e["load"] for e in module_catalogue.name_matches(entries, "mpi")]
         self.assertEqual(ordered[0], "mpi/1.0")
 
     def test_capability_search_falls_back_to_lexical(self):
@@ -430,19 +426,19 @@ class SearchTests(CatalogueTestCase):
             low = text.lower()
             return [1.0 if word in low else 0.0 for word in vocab]
 
-        stub_attr(self, self.mod._embed, "is_available", lambda: True)
-        stub_attr(self, self.mod._embed, "embed_texts", lambda texts: [vec(t) for t in texts])
-        stub_attr(self, self.mod._embed, "embed_one", vec)
-        stub_attr(self, self.mod._embed, "embed_model_id", lambda: "fake-model")
+        stub_attr(self, embed, "is_available", lambda: True)
+        stub_attr(self, embed, "embed_texts", lambda texts: [vec(t) for t in texts])
+        stub_attr(self, embed, "embed_one", vec)
+        stub_attr(self, embed, "embed_model_id", lambda: "fake-model")
 
         result = self.mod.platform_search("parallel IO library")
         top = result["modules"][0]
         self.assertEqual(top["load"], "hdf5/1.14.0")
         self.assertEqual(top["match"], "semantic")
         self.assertIsNotNone(top["score"])
-        store = json.loads(Path(self.mod._EMBEDDINGS_FILE).read_text())
+        store = json.loads(Path(module_catalogue.EMBEDDINGS_FILE).read_text())
         self.assertTrue(store)
-        self.assertLessEqual(len(store), self.mod._SEMANTIC_POOL)
+        self.assertLessEqual(len(store), module_catalogue.SEMANTIC_POOL)
         self.assertEqual(next(iter(store.values()))["model"], "fake-model")
 
     def test_embedding_model_change_revectorises(self):
@@ -454,18 +450,18 @@ class SearchTests(CatalogueTestCase):
             low = text.lower()
             return [1.0 if w in low else 0.0 for w in vocab]
 
-        stub_attr(self, self.mod._embed, "is_available", lambda: True)
-        stub_attr(self, self.mod._embed, "embed_texts", lambda texts: (calls.append(len(texts)) or
+        stub_attr(self, embed, "is_available", lambda: True)
+        stub_attr(self, embed, "embed_texts", lambda texts: (calls.append(len(texts)) or
                                                      [vec(t) for t in texts]))
-        stub_attr(self, self.mod._embed, "embed_one", vec)
-        stub_attr(self, self.mod._embed, "embed_model_id", lambda: "model-a")
+        stub_attr(self, embed, "embed_one", vec)
+        stub_attr(self, embed, "embed_model_id", lambda: "model-a")
         self.mod.platform_search("parallel IO")
         self.assertEqual(len(calls), 1)
 
-        stub_attr(self, self.mod._embed, "embed_model_id", lambda: "model-b")
+        stub_attr(self, embed, "embed_model_id", lambda: "model-b")
         self.mod.platform_search("parallel IO")
         self.assertEqual(len(calls), 2)  # vectors under the old model are not reused
-        store = json.loads(Path(self.mod._EMBEDDINGS_FILE).read_text())
+        store = json.loads(Path(module_catalogue.EMBEDDINGS_FILE).read_text())
         self.assertEqual(next(iter(store.values()))["model"], "model-b")
 
     def test_limit_is_clamped(self):
@@ -477,7 +473,7 @@ class SearchTests(CatalogueTestCase):
         result = self.mod.platform_search("   ")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["modules"], [])
-        self.assertFalse(os.path.exists(self.mod._CATALOGUE_FILE))
+        self.assertFalse(os.path.exists(module_catalogue.CATALOGUE_FILE))
 
     def test_result_entry_shape(self):
         self._indexed()
@@ -501,14 +497,14 @@ class RefreshTests(CatalogueTestCase):
     def test_refresh_rebuilds_a_fresh_catalogue(self):
         self.mod.platform_search("cuda")
         self.run_pending()
-        self.mod._LAST_BUILD_MONOTONIC = time.monotonic() - 120  # past the debounce
+        module_catalogue._LAST_BUILD_MONOTONIC = time.monotonic() - 120  # past the debounce
         self.mod.platform_search("cuda", refresh=True)
         self.assertEqual(self._build_count(), 2)
 
     def test_repeat_refresh_is_debounced(self):
         self.mod.platform_search("cuda")
         self.run_pending()
-        self.mod._LAST_BUILD_MONOTONIC = time.monotonic() - 120
+        module_catalogue._LAST_BUILD_MONOTONIC = time.monotonic() - 120
         self.mod.platform_search("cuda", refresh=True)
         self.run_pending()
         self.mod.platform_search("cuda", refresh=True)  # immediately again
@@ -532,8 +528,8 @@ class DurabilityTests(CatalogueTestCase):
         def explode(*_args, **_kwargs):
             raise AssertionError("platform_probe must not build the catalogue")
 
-        self.mod._build_tier_c = explode
-        info = self.mod._collect_modules()
+        stub_attr(self, module_catalogue, "_build_tier_c", explode)
+        info = module_catalogue.collect_modules()
         self.assertTrue(info["available"])
         self.assertFalse(info["catalogue"]["indexed"])
         self.assertEqual(info["loaded"], ["cuda/12.2"])
@@ -541,7 +537,7 @@ class DurabilityTests(CatalogueTestCase):
 
     def test_effective_modulepath_is_memoised(self):
         for _ in range(3):
-            self.mod._effective_modulepath()
+            module_catalogue.effective_modulepath()
         probes = [s for s in self.shell.scripts if "${MODULEPATH:-}" in s]
         self.assertEqual(len(probes), 1)
 
@@ -557,9 +553,9 @@ class DigestTests(CatalogueTestCase):
     def setUp(self):
         super().setUp()
         self.scontrol = SCONTROL_TWO_TYPES
-        self.mod._collect_toolchains = lambda: {"gcc": "gcc (GCC) 11.3.0"}
-        self.mod._collect_cpu = lambda: {"arch": "x86_64", "logical_cpus": 8}
-        self.mod._collect_memory = lambda: {"total_gb": 32.0}
+        stub_attr(self, host_probe, "collect_toolchains", lambda: {"gcc": "gcc (GCC) 11.3.0"})
+        stub_attr(self, host_probe, "collect_cpu", lambda: {"arch": "x86_64", "logical_cpus": 8})
+        stub_attr(self, host_probe, "collect_memory", lambda: {"total_gb": 32.0})
         self._real_capture = slurm_digest._capture
         slurm_digest._capture = self._capture
         self.addCleanup(setattr, slurm_digest, "_capture", self._real_capture)
@@ -577,7 +573,7 @@ class DigestTests(CatalogueTestCase):
         return None
 
     def test_digest_records_node_types_and_partitions(self):
-        digest = self.mod._build_digest()
+        digest = host_probe.build_digest()
         self.assertEqual(len(digest["node_types"]), 2)
         arches = {t["arch"] for t in digest["node_types"]}
         self.assertEqual(arches, {"x86_64", "aarch64"})
@@ -596,7 +592,7 @@ class DigestTests(CatalogueTestCase):
         slurm_digest._capture = lambda script, host, timeout: asked.append(script)
         local_slurm(self, False)
         slurm_digest.forget_cluster_digest()
-        digest = self.mod._build_digest()
+        digest = host_probe.build_digest()
         self.assertEqual(digest["node_types"], [])
         self.assertEqual(digest["partitions"], [])
         self.assertEqual(digest["signature"], "")
@@ -609,7 +605,7 @@ class DigestTests(CatalogueTestCase):
         slurm_digest._capture = lambda script, host, timeout: (
             "cn001|compute*|idle|64|256000|200000|(null)|2|32|1\n"
             if script.startswith("sinfo -N") else None)
-        digest = self.mod._build_digest()
+        digest = host_probe.build_digest()
         self.assertEqual(len(digest["node_types"]), 1)
         self.assertIn("architecture", digest["degraded"])
 
@@ -623,7 +619,7 @@ class DigestTests(CatalogueTestCase):
         Built inside the catalogue's enrichment, it reached nobody on a host with no
         module system and nobody until the first search anywhere else.
         """
-        self.mod._load_catalogue = lambda: None
+        stub_attr(self, module_catalogue, "load_catalogue", lambda: None)
         status = self.mod.platform_catalogue_status()
         self.assertFalse(status["indexed"])
         self.assertEqual(len(status["digest"]["node_types"]), 2)

@@ -1,9 +1,11 @@
+from mimir.servers.hpc import host_probe
 from mimir.servers.workspace import bash_validation
 import importlib.util
 import io
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 import urllib.error
 from pathlib import Path
 import sys
@@ -576,19 +578,13 @@ class PlatformPortabilityTests(unittest.TestCase):
     """
 
     def _probe_cpu(self, arch: str, lscpu: str) -> dict:
-        server_platform._collect_cpu.cache_clear()
-        orig_run, orig_exists, orig_machine = (
-            server_platform._run, server_platform._cmd_exists, server_platform.platform.machine)
-        server_platform._run = lambda cmd, timeout=8: {
-            "ok": True, "returncode": 0, "stdout": lscpu, "stderr": ""}
-        server_platform._cmd_exists = lambda name: True
-        server_platform.platform.machine = lambda: arch
-        try:
-            return server_platform._collect_cpu()
-        finally:
-            (server_platform._run, server_platform._cmd_exists,
-             server_platform.platform.machine) = orig_run, orig_exists, orig_machine
-            server_platform._collect_cpu.cache_clear()
+        host_probe.collect_cpu.cache_clear()
+        self.addCleanup(host_probe.collect_cpu.cache_clear)
+        reply = {"ok": True, "returncode": 0, "stdout": lscpu, "stderr": ""}
+        with mock.patch.object(host_probe, "run", lambda cmd, timeout=8: reply), \
+                mock.patch.object(host_probe, "cmd_exists", lambda name: True), \
+                mock.patch.object(host_probe.platform, "machine", lambda: arch):
+            return host_probe.collect_cpu()
 
     def test_aarch64_reports_its_own_vector_extensions(self) -> None:
         # aarch64 lscpu prints the extension list under "Features", not "Flags".
@@ -609,9 +605,9 @@ class PlatformPortabilityTests(unittest.TestCase):
         self.assertIn("riscv64", cpu["simd_note"])
 
     def _probe_gpu(self, replies: dict) -> dict:
-        """Run _collect_gpu with nvidia-smi present and *replies* keyed by query."""
-        server_platform._collect_gpu.cache_clear()
-        orig_exists, orig_shell = server_platform._cmd_exists, server_platform._run_shell
+        """Run collect_gpu with nvidia-smi present and *replies* keyed by query."""
+        host_probe.collect_gpu.cache_clear()
+        self.addCleanup(host_probe.collect_gpu.cache_clear)
 
         def fake_shell(script: str, timeout: int = 10) -> dict:
             for key, reply in replies.items():
@@ -619,14 +615,9 @@ class PlatformPortabilityTests(unittest.TestCase):
                     return reply
             return {"ok": False, "stdout": "", "stderr": "unknown query"}
 
-        server_platform._cmd_exists = lambda name: name == "nvidia-smi"
-        server_platform._run_shell = fake_shell
-        try:
-            return server_platform._collect_gpu()
-        finally:
-            server_platform._cmd_exists = orig_exists
-            server_platform._run_shell = orig_shell
-            server_platform._collect_gpu.cache_clear()
+        with mock.patch.object(host_probe, "cmd_exists", lambda name: name == "nvidia-smi"), \
+                mock.patch.object(host_probe, "run_shell", fake_shell):
+            return host_probe.collect_gpu()
 
     def test_compute_capability_is_reported_not_inferred_from_the_name(self) -> None:
         # The arch flag of a CUDA build comes from compute_cap and from nothing else
@@ -666,14 +657,10 @@ class PlatformPortabilityTests(unittest.TestCase):
     def test_non_nvidia_accelerator_is_not_reported_as_no_gpu(self) -> None:
         """Claiming "no GPU" on a host whose accelerator this probe cannot read is
         worse than saying the probe does not cover it."""
-        server_platform._collect_gpu.cache_clear()
-        orig = server_platform._cmd_exists
-        server_platform._cmd_exists = lambda name: name == "rocm-smi"
-        try:
-            gpu = server_platform._collect_gpu()
-        finally:
-            server_platform._cmd_exists = orig
-            server_platform._collect_gpu.cache_clear()
+        host_probe.collect_gpu.cache_clear()
+        self.addCleanup(host_probe.collect_gpu.cache_clear)
+        with mock.patch.object(host_probe, "cmd_exists", lambda name: name == "rocm-smi"):
+            gpu = host_probe.collect_gpu()
         self.assertTrue(gpu["available"])
         self.assertEqual(gpu["vendors"], ["amd"])
         self.assertIn("not enumerated", gpu["note"])
