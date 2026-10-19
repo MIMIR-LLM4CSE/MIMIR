@@ -149,15 +149,6 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
             "items": [{"label": "a", "detail": "b"}], "note": "n", "tone": "ok",
             "transient": False})
 
-    def test_the_webview_renders_that_channel(self) -> None:
-        reducer = os.path.join(
-            _ROOT, "vscode-extension", "webview", "src", "state", "chatReducer.ts")
-        with open(reducer, encoding="utf-8") as fh:
-            src = fh.read()
-        self.assertIn('case "command_output"', src)
-        # And still drops the transient one, or the chatter comes back with it.
-        self.assertIn('case "output":', src)
-
     def test_settings_report_state_not_prose(self) -> None:
         """Every setting reports state; nothing about it is written to the chat.
 

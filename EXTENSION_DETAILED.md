@@ -170,9 +170,13 @@ webview/src/
 │   └── useOffscreenRows.ts   ← which tool rows have scrolled out of the thread, found by
 │                               `data-tool-id`; what decides when the progress dock shows
 ├── state/
-│   ├── chatReducer.ts        ← the chat state machine: every message, tool row and
-│   │                           thinking block the transcript holds. The reducer never
-│   │                           mutates, which is what makes identity a valid change test
+│   ├── chatState.ts          ← the chat state: every message, tool row and thinking block
+│   │                           the transcript holds, and the actions that change it
+│   ├── chatReducer.ts        ← the reducer: one table of handlers gathered from reducer/.
+│   │                           It never mutates, which is what makes identity a valid
+│   │                           change test
+│   ├── reducer/              ← the handlers by family (turn, stream, tools, jobs,
+│   │                           session), and the transcript and tool-row helpers they share
 │   └── serverMessages.ts     ← routing a server message to the handler tables of the
 │                               hooks that hold its state
 ├── App.tsx                   ← root component: wires the hooks, the reducer and the layout
