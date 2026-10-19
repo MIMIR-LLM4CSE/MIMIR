@@ -1,7 +1,8 @@
 """A sub-agent's own watcher for the detached runs it launched: the conversation's
 :class:`RunWatcher`, delivering to the child.
 
-A finished run reaches the child as a steer (``poll_steer``), in ``wake_text``'s words.
+A finished run and a check-in reach the child as steers (``poll_steer``), in
+``wake_text``'s and ``checkin_steer``'s words.
 The child's loop is its own: only :meth:`ChildWatcher.handover` may be called from another
 thread; :meth:`ChildWatcher.close` cancels, on the child's loop.
 """
@@ -10,7 +11,7 @@ from __future__ import annotations
 import logging
 from collections import deque
 
-from mimir.client.query_engine.jobs import RunWatcher, wake_text
+from mimir.client.query_engine.jobs import RunWatcher, checkin_steer, wake_text
 
 logger = logging.getLogger(__name__)
 
@@ -54,18 +55,21 @@ class ChildWatcher(RunWatcher):
     def session_for(self, owner: str | None) -> str | None:
         return None   # the child is the only reader
 
-    def deliver(self, job_key: str, event: dict) -> None:
+    def deliver(self, event: dict) -> None:
         with self._lock:
             handed_over = self._handed_over
         if handed_over:
-            # Its caller has already been told this run is the parent's. Steering the
+            # Its caller has already been told these runs are the parent's. Steering the
             # child now would have two agents answering for one run.
+            return
+        if event.get("type") == "job_checkin":
+            self._steers.append(checkin_steer(event))
             return
         self._steers.append(wake_text(event))
         if self._on_activity is not None:
             try:
-                self._on_activity({"type": "status",
-                                   "text": f"background job {job_key}: {event.get('state')}"})
+                self._on_activity({"type": "status", "text": f"background job "
+                                   f"{event.get('job_key')}: {event.get('state')}"})
             except Exception:
                 pass   # a child's activity line must not fail its run
 

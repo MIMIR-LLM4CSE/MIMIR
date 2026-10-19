@@ -997,6 +997,35 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
 
         self._run(body)
 
+    def test_a_run_going_wrong_reaches_the_child_at_once(self) -> None:
+        """The conversation's check-ins, as steers: a build that fails at minute three is
+        heard at minute three, not when it ends."""
+        self._schedule(0.0)
+
+        class _Failing(_PollingAgent):
+            async def run_tool(self, tool, args, execution_context=None,
+                               record_observations: bool = True) -> str:
+                self.polls += 1
+                if self.polls == 1:
+                    return json.dumps({"state": "running",
+                                       "log_tail": ["it 12 residual = nan"]})
+                return json.dumps({"state": "running" if self.polls < 4 else "crashed"})
+
+        watcher = self._watcher(_Failing([]))
+
+        async def body():
+            self.assertTrue(watcher.register(_bash_descriptor()))
+            await asyncio.sleep(0.05)
+            steers = watcher.drain_steers()
+            # The alert while it runs, then its end: two steers, in that order.
+            self.assertEqual(len(steers), 2, steers)
+            self.assertIn("ALERT", steers[0])
+            self.assertIn("carry on with what you were doing", steers[0])
+            self.assertNotIn("ALERT", steers[1])
+            await watcher.close()
+
+        self._run(body)
+
     def test_a_watched_run_is_what_the_dispatch_guards_consult(self) -> None:
         """They used to abstain inside a child for want of anything to ask.
 

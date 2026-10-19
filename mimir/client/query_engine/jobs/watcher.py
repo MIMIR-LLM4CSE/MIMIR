@@ -11,6 +11,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from itertools import chain, repeat
 from typing import Any, Awaitable, Callable
 
 from ....shared.jobs import job_key_of
@@ -20,6 +21,24 @@ from .wakes import job_complete
 logger = logging.getLogger(__name__)
 
 RunTool = Callable[..., Awaitable[Any]]
+
+# When check-ins fire, in seconds from the previous one (T+30s, 2.5min, 12.5min,
+# 42.5min), then hourly for as long as the run lasts: early mistakes are cheap to catch,
+# and the longest runs are never left silent.
+_CHECKIN_SCHEDULE = (30.0, 120.0, 600.0, 1800.0)
+_CHECKIN_INTERVAL = 3600.0
+
+# Status fields that move on every tick without saying anything about the run. The tail
+# is read for its alerts, which are compared instead.
+_CHECKIN_VOLATILE = frozenset({"at", "elapsed_s", "log_tail"})
+
+
+def _checkin_fingerprint(jobs: list[dict]) -> tuple:
+    """What a bulletin says, minus the clock: equal fingerprints mean nothing new."""
+    return tuple(sorted(
+        (str(j.get("job_key")),
+         repr(sorted((k, repr(v)) for k, v in j.items() if k not in _CHECKIN_VOLATILE)))
+        for j in jobs))
 
 
 @dataclass
@@ -54,6 +73,12 @@ class RunWatcher:
     def __init__(self) -> None:
         self.watches: dict[str, Watch] = {}
         self._lock = threading.Lock()
+        # The check-in cycle covering every run of this agent, or None between waves. One
+        # per agent rather than one per run: runs launched in the same step share a
+        # schedule and report together.
+        self._checkin_task: asyncio.Task | None = None
+        # Fingerprint of the last bulletin sent, so one with nothing new is not.
+        self._checkin_last: tuple | None = None
 
     # ── what each watcher supplies ───────────────────────────────────────────────
 
@@ -61,8 +86,8 @@ class RunWatcher:
         """The agent's ``run_tool``, asked for when a watch first polls."""
         raise NotImplementedError
 
-    def deliver(self, job_key: str, event: dict) -> None:
-        """Hand a finished run's ``job_complete`` to whoever answers for it."""
+    def deliver(self, event: dict) -> None:
+        """Hand a ``job_complete`` or a ``job_checkin`` to whoever answers for the runs."""
         raise NotImplementedError
 
     def accepts(self) -> bool:
@@ -76,10 +101,7 @@ class RunWatcher:
     def adopt(self, descriptor: dict, session_id: str | None) -> None:
         """Complete a descriptor as it is taken on (its origin, say)."""
 
-    def on_registered(self, job_key: str, descriptor: dict, session_id: str | None) -> None:
-        """Called once a new watch is running."""
-
-    def on_tick(self, job_key: str, watch: Watch, tick: poll.Tick, fresh_alerts: dict,
+    def on_tick(self, job_key: str, watch: Watch, tick: poll.Tick,
                 session_id: str | None) -> None:
         """Called after each poll, once ``watch.status`` holds what it read."""
 
@@ -126,7 +148,7 @@ class RunWatcher:
         task.add_done_callback(self.log_death)
         logger.info("background job %r of session %s is now watched by %r",
                     job_key, session_id, descriptor["status_op"]["tool"])
-        self.on_registered(job_key, descriptor, session_id)
+        self._start_checkins(session_id)
         return True
 
     def watched(self) -> list[dict]:
@@ -140,9 +162,12 @@ class RunWatcher:
             return [k for k, w in self.watches.items() if not w.task.done()]
 
     def tasks(self) -> list[asyncio.Task]:
-        """Every watch's task, for shutdown."""
+        """Every task this holds — the watches and the check-in cycle — for shutdown."""
         with self._lock:
-            return [w.task for w in self.watches.values()]
+            tasks = [w.task for w in self.watches.values()]
+        if self._checkin_task is not None:
+            tasks.append(self._checkin_task)
+        return tasks
 
     async def close(self) -> None:
         """Cancel every watch and wait for it, on the loop that runs them."""
@@ -166,6 +191,67 @@ class RunWatcher:
         if exc is not None:
             logger.warning("background-job task died: %r — any run it was holding will "
                            "not wake anyone", exc, exc_info=exc)
+
+    # ── the check-in cycle ───────────────────────────────────────────────────────
+
+    def _start_checkins(self, session_id: str | None) -> None:
+        """Start a check-in cycle for a new wave of runs, replacing a stale one.
+
+        A job joining a running wave inherits its schedule.
+        """
+        wave_starts = len(self.watched_job_keys()) <= 1
+        if self._checkin_task is not None and not self._checkin_task.done():
+            if not wave_starts:
+                return
+            self._checkin_task.cancel()
+        self._checkin_last = None
+        try:
+            self._checkin_task = asyncio.get_running_loop().create_task(
+                self._checkin_cycle(session_id))
+        except RuntimeError:
+            # Same precondition as the watcher's, and the same honesty: without a loop
+            # there are no check-ins, and the run is still watched. Not a failure of the
+            # registration — the completion wake does not depend on this.
+            logger.warning("background check-ins unavailable for session %s: no running "
+                           "event loop to host the cycle", session_id)
+            self._checkin_task = None
+            return
+        self._checkin_task.add_done_callback(self.log_death)
+
+    async def _checkin_cycle(self, session_id: str | None) -> None:
+        """Emit ``job_checkin`` down ``_CHECKIN_SCHEDULE``, then hourly, while live runs remain.
+
+        Reads what the watchers already know; a point with nothing new says nothing.
+        """
+        try:
+            for delay in chain(_CHECKIN_SCHEDULE, repeat(_CHECKIN_INTERVAL)):
+                await asyncio.sleep(delay)
+                if not self._emit_checkin(session_id):
+                    return
+        finally:
+            # Only if the slot still holds *this* cycle. A new wave cancels the old one
+            # and puts its own task in the slot, and cancellation is delivered after
+            # that — so an unconditional clear here would erase the live cycle's
+            # reference and let the next launch start a second one beside it.
+            if self._checkin_task is asyncio.current_task():
+                self._checkin_task = None
+
+    def _emit_checkin(self, session_id: str | None) -> bool:
+        """Send a bulletin if it says something the last one did not. False: no live run."""
+        with self._lock:
+            jobs = [
+                {"job_key": key, "kind": w.descriptor.get("kind"),
+                 "server": w.descriptor.get("server"), **w.status}
+                for key, w in self.watches.items() if not w.task.done()
+            ]
+        if not jobs:
+            return False
+        fingerprint = _checkin_fingerprint(jobs)
+        if fingerprint == self._checkin_last:
+            return True
+        self._checkin_last = fingerprint
+        self.deliver({"type": "job_checkin", "session_id": session_id, "jobs": jobs})
+        return True
 
     # ── one watch ────────────────────────────────────────────────────────────────
 
@@ -208,7 +294,10 @@ class RunWatcher:
                             "at": time.monotonic()}
             if watch.alerts:
                 watch.status["alerts"] = dict(watch.alerts)
-            self.on_tick(job_key, watch, tick, fresh, session_id)
+            # A run gone wrong is not left waiting for the next point of the schedule.
+            if fresh:
+                self._emit_checkin(session_id)
+            self.on_tick(job_key, watch, tick, session_id)
 
         state, reason = await poll.poll_until_terminal(
             run_tool, status_op,
@@ -221,5 +310,5 @@ class RunWatcher:
                                           label=job_key)
         logger.info("background job %r of session %s finished (%s)",
                     job_key, session_id, state)
-        self.deliver(job_key, job_complete(descriptor, state, session_id=session_id,
-                                           summary=summary, reason=reason))
+        self.deliver(job_complete(descriptor, state, session_id=session_id,
+                                  summary=summary, reason=reason))

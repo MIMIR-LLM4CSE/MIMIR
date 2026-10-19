@@ -167,8 +167,8 @@ def wake_text(ev: dict) -> str:
     return f"{head} Carry on with the work it was part of."
 
 
-def checkin_text(ev: dict) -> str:
-    """The check-in instruction of a ``job_checkin`` event: report briefly, investigate only if off."""
+def _checkin_body(ev: dict) -> str:
+    """One line per run of a ``job_checkin``, with its alerts and its last log lines."""
     lines = []
     for job in (ev.get("jobs") or []):
         if not isinstance(job, dict):
@@ -189,13 +189,28 @@ def checkin_text(ev: dict) -> str:
         if isinstance(tail, list) and tail:
             lines.append("  last log lines:")
             lines.extend(f"    {ln}" for ln in tail)
-    body = "\n".join(lines) or "- (no status recorded yet)"
+    return "\n".join(lines) or "- (no status recorded yet)"
+
+
+def checkin_text(ev: dict) -> str:
+    """The check-in instruction of a ``job_checkin`` event: report briefly, investigate only if off."""
     return (
         "Background check-in. Still running in this conversation:\n"
-        f"{body}\n"
+        f"{_checkin_body(ev)}\n"
         "If this looks healthy, say so in ONE short line and stop — no tool call, "
         "no restating the plan, and do not re-answer the question these runs were "
         "launched for. If it does not — an ALERT, log lines showing the run going "
         "wrong, a status that stopped being readable, a phase that should have moved "
         "on by now — say what is wrong and what you are doing about it."
+    )
+
+
+def checkin_steer(ev: dict) -> str:
+    """A ``job_checkin`` as a steer into work in progress: act on it only if it is off."""
+    return (
+        "Background check-in on the runs you launched, still going:\n"
+        f"{_checkin_body(ev)}\n"
+        "If this looks healthy, carry on with what you were doing and do not mention it. "
+        "If it does not — an ALERT, log lines showing the run going wrong, a status that "
+        "stopped being readable — deal with that before anything else."
     )
