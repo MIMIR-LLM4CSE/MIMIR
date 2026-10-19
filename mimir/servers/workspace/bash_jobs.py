@@ -17,7 +17,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ...shared import build_progress
-from ...shared.jobs import EXIT_CODE, META
+from ...shared.jobs import EXIT_CODE, META, shell_descriptor
+from ...shared.responses import err, ok
 from ...shared.processes import is_running, proc_starttime
 
 def jobs_root() -> str:
@@ -470,3 +471,51 @@ def stop(job_key: str) -> dict:
     out = state(job_key)
     out["stopped"] = "sigkill"
     return out
+
+
+def resolve_run_dir(run_dir: str, job_key: str) -> tuple[str, dict | None]:
+    """``(run_dir, None)`` for an explicit job directory inside this session's own state dir
+    (its sub-agents' runs), else ``("", error)``.
+    """
+    from ...shared.state_paths import session_state_dir
+    resolved = os.path.realpath(os.path.expanduser(run_dir))
+    root = os.path.realpath(session_state_dir())
+    if os.path.commonpath([resolved, root]) != root:
+        return "", err("That run_dir is outside this session.",
+                       hint="A run_dir names a job of this session or of one of its "
+                            "sub-agents; leave it out to read this session's own job.")
+    if os.path.basename(os.path.dirname(resolved)) != "jobs":
+        return "", err("That run_dir is not a job directory.",
+                       hint="A job directory sits under a 'jobs/' directory and is "
+                            "named like the handle bash_run returned.")
+    if not valid_key(os.path.basename(resolved)):
+        return "", err("That run_dir is not named like a job.",
+                       hint="Its last segment is the handle bash_run returned.")
+    if job_key and os.path.basename(resolved) != job_key:
+        return "", err("That run_dir names a different job than job_key does.",
+                       hint="Pass the pair as the descriptor handed them over, or "
+                            "leave run_dir out.")
+    return resolved, None
+
+
+def with_live_descriptors(payload: dict, jobs: list[dict], run_dir: str = "") -> dict:
+    """Attach a watcher handle (``background_jobs``, plural) for every job still running.
+
+    Asking about a run is what lets a client that lost its watchers put them back.
+    """
+    live = [shell_descriptor(j["job_key"],
+                            run_dir or job_dir(j["job_key"]))
+            for j in jobs
+            if isinstance(j, dict) and j.get("state") == "running" and j.get("job_key")]
+    if live:
+        payload["background_jobs"] = live
+    return payload
+
+
+def answer(payload: dict) -> dict:
+    """Wrap a job-layer answer in ``ok()``, unless it carries ``error`` (a key naming no job)."""
+    reason = payload.pop("error", "")
+    if reason:
+        return err(reason, hint="Use bash_job(op='list') to see this session's jobs.",
+                   **payload)
+    return ok(payload)

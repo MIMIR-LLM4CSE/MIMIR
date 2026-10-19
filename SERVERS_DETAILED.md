@@ -78,7 +78,7 @@ every measurement taken afterwards.
 and signals the **group** on timeout — SIGTERM, then SIGKILL after a short grace. The
 session leadership is the safety property: the child's pgid equals its pid and can never
 be the caller's own group, so killing it cannot reach MIMIR. Used where MIMIR runs code
-it did not write: `server_bash._run` and both proxy execution paths in
+it did not write: `bash_exec.run_blocking` and both proxy execution paths in
 `proxy/_lib/execute.py` (a solver may fork MPI ranks; left running past a timeout they
 compete with the very next timing the ratchet takes). Fixed-argv callers
 (`module avail`, `squeue`, the LSP) are unchanged.
@@ -804,6 +804,8 @@ confinement, with the no-substitution model kept load-bearing. This is also the
 (`grep`/`rg`) — there is no dedicated grep tool; a leading `grep`/`rg` classifies
 read-only, so it needs no approval and feeds the same discovery signals a tool would.
 
+The server holds the tools and the validation call. Running a command — its environment, the blocking run with its cap and divert, the result it reports, the detached launch — is `workspace/bash_exec.py`; a job's directory and how a read of it is answered are `workspace/bash_jobs.py`.
+
 Tools:
 - `bash_run` — takes `background=True` for a run that does not fit the 120 s cap (see
   *Detached runs* below).
@@ -1119,7 +1121,7 @@ The detail behind each row:
   the client's out-of-workspace gate for free (`find /etc -exec cat {} \;` still refuses).
   This grants no new power: `python f.py` is directly invocable anyway, and read-only
   fan-out keeps a working spelling.
-- TeX shell-escape/`write18` in every spelling (plus `_safe_env` pinning
+- TeX shell-escape/`write18` in every spelling (plus `bash_exec.safe_env` pinning
   `shell_escape=f`, `openout_any=p`, `openin_any=p`).
 - env managers: `run`/`execute` only — they nest an arbitrary command. Install,
   uninstall, create, remove and config all run under the approval prompt; every
@@ -1152,7 +1154,7 @@ auto-approves everything.
   bash reports — and a search piped into `head` exits 0 on empty output, so an empty
   stdout at exit 0 is treated as an empty search result too.
 - **TeX is sandboxed twice**: every shell-escape/`write18` flag is denylisted at
-  validation, and `_safe_env` pins kpathsea's `shell_escape=f` / `openout_any=p` /
+  validation, and `bash_exec.safe_env` pins kpathsea's `shell_escape=f` / `openout_any=p` /
   `openin_any=p` so `\write18` stays off even if the site's `texmf.cnf` enables it.
 - **Command chaining is allowed** (`;`, `&&`, `||`, `|`) — each segment is tokenized and
   validated independently, so one denied command anywhere rejects the call, and one
@@ -1195,7 +1197,7 @@ auto-approves everything.
   the workspace, `/etc/req.txt` needs approval), but what an install writes lands in the
   target interpreter's site-packages — outside the workspace by construction. That is
   the point of allowing them, and it is the approval prompt that governs it, not a path
-  check. Note the target: `_safe_env` puts MIMIR's own interpreter first on PATH, so a
+  check. Note the target: `bash_exec.safe_env` puts MIMIR's own interpreter first on PATH, so a
   bare `pip install` provisions *that* env. Client-side they classify as `ENV_DISCOVERY`
   (a local query — plan-safe) or `ENV_MUTATE` (install/create, and the network queries
   `search`/`index`/`download`), never `EXEC`.

@@ -381,7 +381,7 @@ class BackstopIsWideEnoughTests(unittest.TestCase):
 
     # (tool, its own documented maximum, in bytes)
     _SERVER_CEILINGS = [
-        ("bash_run", 64 * 1024),              # server_bash._MAX_OUTPUT
+        ("bash_run", 64 * 1024),              # bash_exec.MAX_OUTPUT
         ("slurm/hpc", 128 * 1024),            # server_hpc._MAX_OUTPUT
         ("http_get prose", 128 * 1024),       # server_web._MAX_TEXT_CHARS
         ("github_get_file", 256 * 1024),      # server_github._MAX_FILE_BYTES

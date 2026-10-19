@@ -1,4 +1,5 @@
 from mimir.servers.hpc import host_probe
+from mimir.servers.workspace import bash_exec
 from mimir.servers.workspace import bash_validation
 import importlib.util
 import io
@@ -1528,7 +1529,7 @@ class BashServerTests(unittest.TestCase):
         # so a command that works in the user's shell failed under MIMIR. HOME is
         # inherited; what confines a command is the path check on its operands.
         import os
-        env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
+        env = bash_exec.safe_env(bash_validation.WORKSPACE_ROOT)
         self.assertEqual(env["HOME"], os.path.realpath(os.path.expanduser("~")))
         self.assertNotEqual(env["HOME"], bash_validation.WORKSPACE_ROOT)
         # Startup files are what --noprofile/--norc and BASH_ENV are for, and that
@@ -1818,19 +1819,19 @@ class BashServerTests(unittest.TestCase):
             "no_proxy": "localhost,10.0.0.1",
         }
         with unittest.mock.patch.dict(os.environ, ambient):
-            env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
+            env = bash_exec.safe_env(bash_validation.WORKSPACE_ROOT)
         for name, value in ambient.items():
             self.assertEqual(env[name], value)
         # An unset var stays unset rather than being handed over as an empty string,
         # which curl reads as "no proxy" and would mask the site's own configuration.
         with unittest.mock.patch.dict(os.environ, {}, clear=True):
-            env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
+            env = bash_exec.safe_env(bash_validation.WORKSPACE_ROOT)
         self.assertNotIn("http_proxy", env)
 
     def test_tex_sandbox_is_pinned_in_the_environment(self) -> None:
         # Backstop for the denylisted flags: kpathsea reads these from the env,
         # so \write18 stays off even if the site's texmf.cnf enables it.
-        env = server_bash._safe_env(bash_validation.WORKSPACE_ROOT)
+        env = bash_exec.safe_env(bash_validation.WORKSPACE_ROOT)
         self.assertEqual(env["shell_escape"], "f")
         self.assertEqual(env["openout_any"], "p")
 
