@@ -7,7 +7,7 @@ import os
 import sys
 import time
 
-from ...shared import build_progress, run_channel
+from ...shared import build_progress, run_channel, shell_activity
 from ...shared.jobs import shell_descriptor
 from ...shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 from ...shared.responses import err, ok
@@ -208,6 +208,7 @@ def run_blocking(
     At the cap the group is killed and the partial output returned; on a divert the run is
     left going and a background handle returned (the only promotion, always a user act).
     """
+    started_at = time.time()
     try:
         launched = bash_jobs.launch(
             command, cwd, safe_env(cwd), preamble=preamble,
@@ -224,6 +225,7 @@ def run_blocking(
     run_channel.publish(_DIVERT_CHANNEL, job_key, launched["pid"], command, cwd,
                         float(timeout))
 
+    diverted = False
     try:
         next_divert_check = started + _DIVERT_POLL_S
         next_progress_check = started + _PROGRESS_POLL_S
@@ -279,6 +281,7 @@ def run_blocking(
             if now >= next_divert_check:
                 next_divert_check = now + _DIVERT_POLL_S
                 if run_channel.requested(_DIVERT_CHANNEL, job_key):
+                    diverted = True
                     bash_jobs.promote(job_key, "diverted")
                     bash_jobs.ABANDONED.append(proc)
                     stdout, stderr, truncated = bash_jobs.streams(
@@ -312,6 +315,9 @@ def run_blocking(
             time.sleep(_tick(now - started))
     finally:
         run_channel.clear(_DIVERT_CHANNEL, job_key)
+        # What a job submitted from here is later recognised by (see shell_activity).
+        shell_activity.record(started_at, None if diverted else time.time(),
+                              launched["job_dir"] if diverted else "")
 
 
 def launch_background(command: str, cwd: str, preamble: str) -> dict:
@@ -323,11 +329,13 @@ def launch_background(command: str, cwd: str, preamble: str) -> dict:
     """
     try:
         scheduler = _ssh_scheduler(command)
+        started_at = time.time()
         launched = bash_jobs.launch(command, cwd, safe_env(cwd), preamble=preamble,
                                      output_targets=_output_targets(command),
                                      scheduler=scheduler)
     except OSError as exc:
         return err(f"Could not start the background job: {exc}", cwd=cwd)
+    shell_activity.record(started_at, None, launched["job_dir"])
 
     job_key = launched["job_key"]
     on_cluster = {

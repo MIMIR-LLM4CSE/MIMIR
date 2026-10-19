@@ -17,7 +17,7 @@ import time
 from . import cpu_facts
 from .jobs import SLURM_JOB_ID
 from .shell_paths import ShellParseError, parse_segments, unwrap_argv
-from .state_paths import SUBAGENTS_DIRNAME, session_state_dir, sessions_root, state_dir
+from .state_paths import session_family, session_state_dir, sessions_root, state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
 # of these, and that succeeded, proves the far side has a scheduler — no other host
@@ -379,18 +379,8 @@ def _owned_jobs_roots() -> list[str]:
     roots = [jobs_dir()]
     if os.environ.get("MIMIR_HPC_JOBS_DIR"):
         return roots
-    pending = [session_state_dir()]
-    while pending:
-        sub = os.path.join(pending.pop(), SUBAGENTS_DIRNAME)
-        try:
-            children = sorted(os.listdir(sub))
-        except OSError:
-            continue
-        for child in children:
-            child_dir = os.path.join(sub, child)
-            roots.append(os.path.join(child_dir, _JOBS_SUBDIR))
-            pending.append(child_dir)
-    return roots
+    return roots + [os.path.join(d, _JOBS_SUBDIR)
+                    for d in session_family(session_state_dir())[1:]]
 
 
 def owned_jobs() -> dict[str, set[str]]:

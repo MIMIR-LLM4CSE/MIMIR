@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 from ...shared.responses import err, ok
+from ...shared import shell_activity
 from ...shared.state_paths import sessions_root
 from ...shared.jobs import SLURM_JOB_ID, slurm_descriptor
 from ...shared.slurm_site import (
@@ -275,3 +276,27 @@ def submit_batch(host: str, work_dir: str, command: str, header: list[str], *,
     # user's is running unaccounted for can be acted on here, in the same turn.
     add_unwatched(payload)
     return ok(payload)
+
+
+def launched_from_this_session(job_id: str, requested: str = "") -> str | None:
+    """The scheduler of *job_id* when it was submitted while a command of this session ran
+    and no other session's did, else None: whose a job submitted by a launcher or a script
+    is. The submit time is read on the scheduler's host and in its own time zone.
+    """
+    # Read on disk first: a session that ran no command submitted nothing this way, and
+    # the scheduler is not asked about a job that cannot be its own.
+    if not shell_activity.ran_commands():
+        return None
+    host, state, _raw, _nodes = locate_job(job_id, requested)
+    if state == "unknown":
+        return None
+    queued = cli.run_argv(["squeue", "-h", "-j", job_id, "-o", "%V"], TIMEOUT_READ, host=host)
+    stamp = (queued.get("stdout") or "").strip().splitlines()
+    if queued.get("status") != "ok" or not stamp:
+        return None
+    epoch = cli.run_argv(["date", "-d", stamp[0].strip(), "+%s"], TIMEOUT_READ, host=host)
+    try:
+        moment = float((epoch.get("stdout") or "").strip())
+    except ValueError:
+        return None
+    return host if shell_activity.submitted_by_this_session(moment) else None

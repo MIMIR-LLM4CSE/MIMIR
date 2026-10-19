@@ -625,8 +625,9 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
     a fix, a hung job burning allocation hours. A running job stops where it is, so its
     output is whatever it had written by then. One job per call — or one task of an
     array, as '1234_5'. Only jobs submitted by this conversation or by its sub-agents
-    can be cancelled: one from another conversation or workspace, one adopted with
-    slurm_watch, or one no longer in the queue is refused.
+    can be cancelled: through the cluster tools, or by a launcher or script one of its
+    own commands ran (recognised by when it was submitted). One from another
+    conversation or workspace, or one no longer in the queue, is refused.
 
     A job this session watches ends like any other: you are resumed with its end, so
     there is nothing to poll after cancelling it.
@@ -652,11 +653,19 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
         scheduler = scheduler.strip()
         owned &= {_LOCAL_HOST if scheduler == _LOCAL_NAME else scheduler}
     if not owned:
+        # Submitted outside the cluster tools — by a launcher or a script — yet while a
+        # command of this conversation ran, and no other conversation's did.
+        named = scheduler.strip() if scheduler else ""
+        launched = jobs.launched_from_this_session(
+            job_id, "" if named in ("", _LOCAL_NAME) else named)
+        if launched is not None:
+            owned = {launched}
+    if not owned:
         return err(f"Job {job_id} was not submitted by this conversation or its "
-                   "sub-agents, so it is not this conversation's to cancel.",
-                   hint="Jobs of other conversations, other workspaces, or adopted "
-                        "with slurm_watch are left alone; ask the user to cancel "
-                        "them where they were started.")
+                   "sub-agents — neither through the cluster tools nor while one of "
+                   "its own commands ran — so it is not this conversation's to cancel.",
+                   hint="Jobs of other conversations or workspaces are left alone; "
+                        "ask the user to cancel them where they were started.")
     if len(owned) > 1:
         return err(f"Job {job_id} was submitted here on several schedulers: "
                    + ", ".join(_host_name(h) for h in sorted(owned)) + ".",

@@ -75,6 +75,22 @@ def session_owns(owner: str) -> bool:
     return owner == cur or (bool(cur) and owner.startswith(f"{cur}/subagents/"))
 
 
+def session_family(session_dir: str) -> list[str]:
+    """*session_dir* and the directories of its sub-agents, at any depth."""
+    family = [session_dir]
+    pending = [session_dir]
+    while pending:
+        sub = os.path.join(pending.pop(), SUBAGENTS_DIRNAME)
+        try:
+            children = sorted(os.listdir(sub))
+        except OSError:
+            continue
+        for child in children:
+            family.append(os.path.join(sub, child))
+            pending.append(os.path.join(sub, child))
+    return family
+
+
 def session_state_dir(base: str | None = None, session_id: str | None = None) -> str:
     """``<state_dir>/sessions/<sid>/``, or ``state_dir()`` outside a session. Not created here."""
     root = base or state_dir()

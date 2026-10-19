@@ -19,7 +19,7 @@ from mimir.servers.hpc import node_profiles as hpc_node_profiles
 from mimir.servers.hpc import jobs as hpc_jobs
 from mimir.servers.hpc import cli as hpc_cli
 from mimir.servers.hpc import slurm_digest
-from mimir.shared import slurm_site
+from mimir.shared import shell_activity, slurm_site
 
 from mimir.tests.support.scheduler import local_slurm
 
@@ -795,8 +795,15 @@ class SlurmCancelTests(unittest.TestCase):
         local_slurm(self)
         stub_attr(self, hpc_cli, "run_bash", _canned({"squeue": ("ok", "RUNNING")}))
 
+        # When the scheduler says a job was submitted, and that moment in epoch seconds.
+        self.submitted_at = 1_000_000.0
+
         def fake_argv(argv, timeout, *, host=""):
             self.argvs.append(argv)
+            if argv[0] == "squeue" and argv[-1] == "%V":
+                return {"status": "ok", "stdout": "2026-10-19T16:00:00\n", "stderr": "", "returncode": 0}
+            if argv[0] == "date":
+                return {"status": "ok", "stdout": f"{int(self.submitted_at)}\n", "stderr": "", "returncode": 0}
             if argv[0] == "squeue":
                 return {"status": "ok", "stdout": self.queue, "stderr": "", "returncode": 0}
             return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
@@ -841,6 +848,32 @@ class SlurmCancelTests(unittest.TestCase):
     def test_an_adopted_job_is_refused(self) -> None:
         self._submit("4000", adopted="\n")
         self._refused("4000")
+
+    def _ran_command(self, session: str, start: float, end: float) -> None:
+        """Record a shell command of *session* that ran from *start* to *end*."""
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": session}):
+            shell_activity.record(start, end)
+
+    def test_a_job_a_launcher_of_this_conversation_submitted_is_cancelled(self) -> None:
+        # Submitted outside the cluster tools, by a command this conversation ran, then
+        # adopted: its own, recognised by when it was submitted.
+        self._submit("9000", adopted="\n")
+        self._ran_command("s-a", self.submitted_at - 30, self.submitted_at + 30)
+        res = server_hpc.slurm_cancel(job_id="9000", confirm=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(self._cancels(), [["scancel", "9000"]])
+
+    def test_a_job_submitted_while_another_conversation_ran_a_command_is_refused(self) -> None:
+        # Two conversations working at that moment: whose it is cannot be told.
+        self._ran_command("s-a", self.submitted_at - 30, self.submitted_at + 30)
+        self._ran_command("s-b", self.submitted_at - 10, self.submitted_at + 10)
+        self._refused("9100")
+
+    def test_a_job_submitted_outside_every_command_of_this_conversation_is_refused(self) -> None:
+        # Another session's, adopted here: this conversation was not running anything.
+        self._submit("9200", adopted="\n")
+        self._ran_command("s-a", self.submitted_at - 7200, self.submitted_at - 3600)
+        self._refused("9200")
 
     def test_a_job_recorded_on_another_scheduler_is_refused_here(self) -> None:
         self._submit("5000", host="cluster-b")
