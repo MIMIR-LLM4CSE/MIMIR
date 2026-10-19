@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 from ..runtime import todo_file_for_session
 from ....protocol.events import DURABLE_EVENTS
-from ....tool_execution import run_channel
+from ....config import paths
+from .....shared import run_channel
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -272,7 +273,7 @@ class EventRouter:
             if names.count(name) > 1:
                 continue
             try:
-                run = run_channel.current_run(name, sid)
+                run = run_channel.current_run(name, paths.STATE_DIR, sid)
             except Exception:
                 logger.debug("_push_run_progress: a best-effort step failed and was skipped", exc_info=True)
                 continue

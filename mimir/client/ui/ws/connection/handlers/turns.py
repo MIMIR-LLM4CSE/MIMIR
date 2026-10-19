@@ -10,7 +10,8 @@ import logging
 
 from .....protocol.messages import reconcile_tool_pairs
 from .....session.conversation import trim_front
-from .....tool_execution import run_channel
+from .....config import paths
+from ......shared import run_channel
 from ...runtime import get_backend
 from ...worker.worker import AgentWorker
 from .base import Handlers
@@ -294,7 +295,7 @@ class TurnHandlers(Handlers):
         """
         channel = self.view.rows_for(self.view.active_session_id).get(str(msg.get("id") or ""))
         if channel is None or run_channel.request_divert(
-                channel, self.view.active_session_id) is None:
+                channel, paths.STATE_DIR, self.view.active_session_id) is None:
             await self.out.send({
                 "type": "status",
                 "text": "  ⓘ Nothing to move — that run had already finished.",

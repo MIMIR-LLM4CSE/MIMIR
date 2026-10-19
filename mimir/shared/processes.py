@@ -39,7 +39,7 @@ def is_running(pid: object, expected_starttime: int | None = None) -> bool:
         return False
     try:
         os.kill(pid, 0)
-    except OSError:
+    except (OSError, OverflowError):  # a pid past the platform's range is no process
         return False
     fields = _stat_fields(pid)
     if fields and fields[0] == "Z":

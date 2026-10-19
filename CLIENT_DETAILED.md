@@ -1171,7 +1171,7 @@ session, called a 60k window an overflow, and compacted and trimmed to fit 32k.
 
 **Progress is pushed, never recorded.** A tool call that blocks the turn cannot report
 on itself, so the router reads the blocking run's channel once a second while that turn
-is live (`EventRouter._push_run_progress`, reading `tool_execution/run_channel.py`) and pushes a
+is live (`EventRouter._push_run_progress`, reading `shared/run_channel.py`) and pushes a
 `tool_progress` for the row; once the run is detached, the watcher's own status poll
 sends `job_progress` instead. Neither reaches `transcript` or any of the three lists
 above: they describe a moment, and a watcher ticking for an hour would otherwise fill
@@ -1587,11 +1587,9 @@ baseline is about what has ended. Slurm
 jobs are never declared finished by inspection: their state is in the controller, not in a pid
 here, so they come back as live and the watcher's first poll settles it.
 
-The liveness check is a deliberate twin of `bash_jobs.is_running` rather than a call into
-it — the MCP servers resolve imports against their own directory, so nothing in
-`mimir.client` can import that tree, the same reason `tool_execution/run_channel.py` twins
-`shared/run_channel.py`. What must change in both together: a pid is alive only if
-it exists, its start time matches the one recorded, and it is not a zombie.
+The liveness check is `shared/processes.is_running`, the one the servers record against:
+a pid is alive only if it exists, its start time matches the one recorded, and it is not a
+zombie. The run channel's announcement is checked the same way.
 
 **Being findable at all.** A spawned server's port is learned by regexing its stdout, which
 works exactly as long as the extension host is the parent holding that pipe. One meant to

@@ -1,8 +1,9 @@
 """The user's channel into a blocking run: two files under ``<session_state_dir>/runs/<channel>/``.
 
 ``current.json``, written by the server while it waits (job key, phase); ``divert``,
-written by the client, which the wait loop consumes to stop waiting and leave the run
-going. *channel* is the blocking tool's name; one call per tool per session. Fail-open.
+written by the client, which the wait loop consumes to leave the run going. *channel* is
+the blocking tool's name. Both ends are here: a server resolves its directory from its
+environment, the client names the state dir and session. Fail-open.
 """
 
 import json
@@ -10,32 +11,38 @@ import os
 import time
 
 from .atomic import write_text
+from .processes import is_running, proc_starttime
 
 # How long a divert request stays meaningful. Past this it names a run that has
 # almost certainly ended, and consuming it would detach the *next* command instead.
 _STALE_S = 60.0
 
 
-def _dir(channel: str) -> str:
+def _dir(channel: str, base: str | None = None, session_id: str | None = None) -> str:
     from .state_paths import session_state_dir
-    return os.path.join(session_state_dir(), "runs", channel)
+    return os.path.join(session_state_dir(base, session_id), "runs", channel)
 
 
-def _read_current(channel: str) -> dict | None:
+def _read_current(channel: str, base: str | None = None,
+                  session_id: str | None = None) -> dict | None:
     """The announcement as it stands, or None when there is none to read."""
     try:
-        with open(os.path.join(_dir(channel), "current.json"), encoding="utf-8") as fh:
+        with open(os.path.join(_dir(channel, base, session_id), "current.json"),
+                  encoding="utf-8") as fh:
             run = json.load(fh)
     except (OSError, ValueError):
         return None
     return run if isinstance(run, dict) and run.get("job_key") else None
 
 
+# ── The server's end ──────────────────────────────────────────────────────────
+
 def publish(channel: str, job_key: str, pid: int, command: str, cwd: str,
             deadline_s: float, phase: str = "", percent: float | None = None) -> None:
     """Announce the foreground run the client may divert, clearing a leftover divert request.
 
-    ``server_pid`` lets the client tell a live announcement from a crashed server's.
+    ``server_pid`` and ``server_started`` let the client tell a live announcement from
+    a crashed server's, even once its pid is reused.
     """
     try:
         base = _dir(channel)
@@ -50,6 +57,7 @@ def publish(channel: str, job_key: str, pid: int, command: str, cwd: str,
             "job_key": job_key,
             "pid": pid,
             "server_pid": os.getpid(),
+            "server_started": proc_starttime(os.getpid()),
             "command": command,
             "cwd": cwd,
             "deadline_s": deadline_s,
@@ -111,3 +119,39 @@ def requested(channel: str, job_key: str) -> bool:
     except OSError:
         pass
     return True
+
+
+# ── The client's end ──────────────────────────────────────────────────────────
+
+def _server_alive(run: dict) -> bool:
+    """Whether the announcing server still runs; an announcement without its pid is believed."""
+    pid = run.get("server_pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return True
+    started = run.get("server_started")
+    return is_running(pid, started if isinstance(started, int) else None)
+
+
+def current_run(channel: str, base: str | None = None,
+                session_id: str | None = None) -> dict | None:
+    """The foreground run a live server is waiting on for *channel*, if there is one."""
+    run = _read_current(channel, base, session_id)
+    return run if run is not None and _server_alive(run) else None
+
+
+def request_divert(channel: str, base: str | None = None,
+                   session_id: str | None = None) -> dict | None:
+    """Ask the server to detach the current run; return what was targeted.
+
+    ``None`` means there was nothing to divert — almost always because the command
+    finished between the click and the read. The caller says so rather than
+    pretending something happened.
+    """
+    run = current_run(channel, base, session_id)
+    if run is None:
+        return None
+    try:
+        write_text(os.path.join(_dir(channel, base, session_id), "divert"), str(run["job_key"]))
+    except OSError:
+        return None
+    return run

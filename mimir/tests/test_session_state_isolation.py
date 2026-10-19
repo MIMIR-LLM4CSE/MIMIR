@@ -180,11 +180,9 @@ class RunChannelIsolationTests(_StateDirCase):
     """Two conversations can each have a blocking run; a divert must reach its own."""
 
     def test_the_two_ends_agree_on_one_directory_per_session(self):
-        from mimir.client.tool_execution import run_channel as client_side
-        # STATE_DIR is bound into this module at import, so patch the name it holds.
-        with patch("mimir.client.config.paths.STATE_DIR", self.state):
-            mine = client_side._dir("bash_run", "aaa")
-            theirs = client_side._dir("bash_run", "bbb")
+        from mimir.shared import run_channel
+        mine = run_channel._dir("bash_run", self.state, "aaa")
+        theirs = run_channel._dir("bash_run", self.state, "bbb")
         self.assertNotEqual(mine, theirs)
         self.assertEqual(
             mine, os.path.join(self.state, "sessions", "aaa", "runs", "bash_run")
