@@ -9,7 +9,7 @@ from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.servers.workspace import server_files as sf
+from mimir.servers.workspace import server_files as sf, text_edits
 from mimir.servers.workspace import server_search as ss
 
 
@@ -98,10 +98,10 @@ class NumberedTextComingBackAsAnEditTests(unittest.TestCase):
         self.assertIn("1: 'ALPHA',", self._body(fp))
 
     def test_a_non_consecutive_prefix_run_is_not_treated_as_numbering(self) -> None:
-        self.assertIsNone(sf._strip_line_number_prefixes("10: a\n40: b"))
+        self.assertIsNone(text_edits.strip_line_number_prefixes("10: a\n40: b"))
 
     def test_unnumbered_text_is_left_alone(self) -> None:
-        self.assertIsNone(sf._strip_line_number_prefixes("a = 1\nb = 2"))
+        self.assertIsNone(text_edits.strip_line_number_prefixes("a = 1\nb = 2"))
 
 
 if __name__ == "__main__":

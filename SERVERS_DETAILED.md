@@ -459,6 +459,8 @@ loaded body is byte-identical to what the client's own parser produces for the s
 
 Purpose: workspace-scoped file CRUD and surgical edit helpers.
 
+The server resolves the path, reads, checks and writes; the editing itself — a range or an anchored span replaced, its fallbacks, every occurrence found or replaced, an edit already applied recognised, the excerpt a failed anchor shows — is `workspace/text_edits.py`, which never touches the disk.
+
 ### Absolute paths only
 
 Every model-facing tool here requires an **absolute** `path`; a relative one is rejected by `_require_abs` at the tool boundary. The check itself is `require_absolute()` in `servers/workspace/root_paths.py`, shared with the read-only servers (see below); `_require_abs` is the file server's thin wrapper over it.

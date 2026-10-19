@@ -9,14 +9,14 @@ from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.servers.workspace import server_files as sf
+from mimir.servers.workspace import server_files as sf, text_edits
 
 
 class ChangedSpanTests(unittest.TestCase):
     """The span is derived from the two contents, not from any tool's arguments."""
 
     def _span(self, old: str, new: str) -> tuple[int, int]:
-        return sf._changed_line_span(old.splitlines(True), new.splitlines(True))
+        return text_edits._changed_line_span(old.splitlines(True), new.splitlines(True))
 
     def test_single_line_replacement(self) -> None:
         self.assertEqual(self._span("a\nb\nc\n", "a\nB\nc\n"), (2, 2))
@@ -154,8 +154,8 @@ class AnchorMissHandsBackTheAnchorTests(unittest.TestCase):
         res = sf.replace_in_file(
             path=fp, old_text="value = compute()", new_text="x")
         excerpt = res["anchor_excerpt"]
-        self.assertIn(f"{21 - sf._ANCHOR_SNIPPET_MARGIN}: pad_", excerpt)
-        self.assertIn(f"{21 + sf._ANCHOR_SNIPPET_MARGIN}: tail_", excerpt)
+        self.assertIn(f"{21 - text_edits.ANCHOR_SNIPPET_MARGIN}: pad_", excerpt)
+        self.assertIn(f"{21 + text_edits.ANCHOR_SNIPPET_MARGIN}: tail_", excerpt)
 
     def test_no_near_match_still_directs_to_a_read(self) -> None:
         fp = self._write("a = 0\nb = 0\n")
