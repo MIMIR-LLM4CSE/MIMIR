@@ -678,6 +678,11 @@ not here either: *discovery* is `platform_search` on `server_platform`, which se
 index of the site's whole module tree, and *loading* is the bash server's `module` command,
 because a load mutates one subprocess's environment.)
 
+A tool here is its contract, the check of its arguments, and a call. What runs behind
+them lives beside it: a job's record and the submission itself (`hpc/jobs.py`, whose
+`sbatch_on` both submitters use), node profiles and probes (`hpc/node_profiles.py`), the
+Slurm commands (`hpc/cli.py`), and the Cluster panel section (`hpc/panel.py`).
+
 Tools:
 - `slurm_schedulers(add="", forget="")` — **the schedulers this workspace can submit to**, which is what the model reads before choosing one: the local scheduler when this host has one, plus every host learned or declared. `add=` verifies `sbatch` answers there before recording it (nothing is recorded on a guess: an unreachable host in the inventory is a destination that swallows submissions); `forget=` drops one. Each entry carries **what its machines are** — node types, architectures, GPU models, partition count — because that is half of what the choice turns on, and a model that must spend a `slurm_nodes` call per candidate before it can choose will choose without looking. Live occupancy is deliberately not there: it changes between two reads and belongs to `slurm_nodes(scheduler=…)`. See *Which schedulers a workspace reaches* and *What a cluster is made of* below.
 - `slurm_partitions`

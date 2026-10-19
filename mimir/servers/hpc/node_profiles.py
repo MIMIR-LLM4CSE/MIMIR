@@ -6,8 +6,12 @@ import json
 import os
 import re
 import shlex
+import socket
 import sys
+import time
 from ...shared.atomic import write_json
+from ...shared.jobs import slurm_descriptor
+from ...shared.responses import err, ok
 from ...shared.launcher import launch_argv
 from ...shared.state_paths import state_dir
 from ...shared.slurm_site import (
@@ -22,8 +26,9 @@ from .slurm_digest import (
 from .slurm_nodes import (
     HARDWARE_FIELDS as _HARDWARE_FIELDS,
     as_int as _as_int,
+    hardware_key,
 )
-from ...shared.slurm_script import node_python_lines
+from ...shared.slurm_script import node_python_lines, sbatch_header
 from ...shared import cpu_facts
 from . import cli
 from .cli import (
@@ -331,3 +336,133 @@ def hardware_of(host: str) -> dict:
     if digest["degraded"]:
         summary["degraded"] = digest["degraded"]
     return summary
+
+
+def submit_probe(host: str, partition: str, constraint: str, nodelist: str,
+                 account: str) -> dict:
+    """Submit a few-second job that profiles one node with the platform collectors.
+
+    The job's directory carries ``PROBE_MARKER``, which ``harvest_probes`` reads once
+    the job has ended.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    job_dir = os.path.join(_hpc_jobs_dir(), f"{stamp}-probe")
+    suffix = 1
+    while os.path.exists(job_dir):
+        suffix += 1
+        job_dir = os.path.join(_hpc_jobs_dir(), f"{stamp}-probe{suffix}")
+    os.makedirs(job_dir)
+    # Where the job writes, on the node that runs it. A scheduler on this machine
+    # writes into the submission's own directory; one reached over ssh has no access
+    # to this filesystem, so it writes beside its own state and the harvest reads it
+    # back over the same connection. The expansion is the script's, not ours — only
+    # the far side knows what $HOME is there.
+    if host:
+        work_dir = ('"${MIMIR_STATE_HOME:-$HOME/.mimir}"/node_probes/'
+                    + os.path.basename(job_dir))
+    else:
+        work_dir = job_dir
+    log_file = os.path.join(work_dir, "slurm.log")
+    header = sbatch_header(
+        job_name="mimir-probe", partition=partition, cpus_per_task=1,
+        wall_time="00:05:00", log_file=log_file, account=account, nodes=1, ntasks=1,
+        constraint=constraint, nodelist=nodelist,
+    )
+    script = probe_script(work_dir, header, make_dir=bool(host))
+    # Written locally whatever the scheduler, for a reader: the submission's directory
+    # is where someone goes to see what was actually asked for.
+    script_path = os.path.join(job_dir, "probe.sh")
+    try:
+        with open(script_path, "w") as fh:
+            fh.write(script)
+    except OSError as exc:
+        return err(f"Could not write the probe script: {exc}")
+
+    job_id, refusal = jobs.sbatch_on(host, script, "Check partition, account and constraint.")
+    if refusal:
+        return refusal
+    # The host is recorded twice on purpose: in the marker the harvest reads, and in
+    # the descriptor's own host file, which is what every other cluster tool resolves a
+    # job's scheduler from.
+    jobs.record_job_host(job_dir, host)
+    with open(os.path.join(job_dir, PROBE_MARKER), "w") as fh:
+        json.dump({"job_id": job_id, "partition": partition, "constraint": constraint,
+                   "nodelist": nodelist, "submitted_at": stamp,
+                   "host": host, "work_dir": work_dir}, fh)
+    return ok({
+        "job_id": job_id,
+        "job_dir": job_dir,
+        "partition": partition,
+        "note": f"Probe job {job_id} submitted to '{partition}'. Its result is read "
+                "with the node-profile tool once the job ends.",
+        "background_job": slurm_descriptor(job_id),
+    })
+
+
+def refresh_own_profile(by_name: dict[str, dict], host: str) -> None:
+    """Profile the node this runs on when it is an allocated node and its profile is stale.
+
+    Free here: inside an allocation the collectors run on the node itself, no job needed.
+    """
+    here = by_name.get(socket.gethostname().split(".")[0])
+    if here:
+        cached = read_node_profile(here["node"], host)
+        if not cached or cached.get("slurm") != slurm_facts(here):
+            record = local_profile_record(here)
+            if record:
+                write_node_profile(here["node"], record, host)
+
+
+def describe_node_types(nodes: list[dict], types: list[dict], sched_host: str,
+                        host: dict, full: bool) -> list[dict]:
+    """Each kind in *types* (the kinds *nodes* fall into), with what a fresh profile of
+    one of its nodes says it is.
+
+    A profile is fresh while Slurm still describes its node the same way. *full* gives
+    each kind its whole profile rather than a summary.
+    """
+    members: dict[tuple, list[dict]] = {}
+    for n in nodes:
+        members.setdefault(hardware_key(n), []).append(n)
+    out = []
+    for t in types:
+        group = members.get(hardware_key(t), [])
+        fresh: list[dict] = []
+        stale: list[dict] = []
+        for n in group:
+            rec = read_node_profile(n["node"], sched_host)
+            if not rec:
+                continue
+            (fresh if rec.get("slurm") == slurm_facts(n) else stale).append(rec)
+        entry = {k: t.get(k) for k in ("arch", "cpus", "mem_gb", "gres", "sockets",
+                                       "cores_per_socket", "threads_per_core", "features",
+                                       "partitions", "nodes_total", "by_state", "example_nodes")}
+        if not fresh:
+            entry["profiled"] = False
+            entry["note"] = ("No node of this kind profiled"
+                             + (" since Slurm's description of it changed" if stale else "")
+                             + "; probe one to know its CPU, ISA and -march.")
+        else:
+            rec = fresh[0]
+            profile = rec.get("profile") or {}
+            entry.update({
+                "profiled": True,
+                "profiled_on": rec.get("node"),
+                "profiled_at": rec.get("probed_at"),
+                "source": rec.get("source"),
+                "matches_this_host": compare_with_host(profile, host),
+                "profile": profile if full else summary(profile),
+            })
+            if rec.get("partial"):
+                entry["partial"] = rec.get("partial_reason", True)
+            models = {(r.get("profile") or {}).get("cpu", {}).get("model") for r in fresh}
+            models.discard(None)
+            if len(models) > 1:
+                entry["cpu_models_differ"] = sorted(models)
+            if len(fresh) < len(group):
+                entry["unprofiled_nodes"] = len(group) - len(fresh)
+                entry["caveat"] = ("Slurm's signature does not include the CPU model: "
+                                   "the unprofiled nodes of this kind are assumed, not "
+                                   "known, to be the same machine.")
+        out.append(entry)
+    return out

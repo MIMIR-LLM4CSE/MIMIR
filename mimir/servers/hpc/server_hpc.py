@@ -7,9 +7,7 @@ the bash server.
 """
 
 import asyncio
-import json
 import os
-import re
 import shlex
 import socket
 from typing import Any
@@ -26,7 +24,6 @@ from ...shared.capabilities import (
 )
 from ...shared.responses import err, ok
 from ...shared.jobs import (
-    SLURM_JOB_ID,
     slurm_descriptor,
     is_terminal,
     record_terminal_state,
@@ -40,8 +37,6 @@ from ...shared.slurm_site import (
     covered_by as _covered_by,
     hosts as slurm_hosts,
     name_of as _host_name,
-    jobs_dir as _hpc_jobs_dir,
-    new_job_dir as _new_job_dir,
     owned_job_hosts as _owned_job_hosts,
     record_job_dir as _record_job_dir,
     recorded_jobs as _recorded_jobs,
@@ -56,7 +51,6 @@ from .slurm_digest import (
 from .slurm_nodes import (
     SCONTROL_NODES_ARGV as _SCONTROL_NODES_ARGV,
     aggregate_node_types as _aggregate_node_types,
-    hardware_key as _hardware_key,
     parse_pipe_table as _parse_pipe_table,
     parse_scontrol_nodes as _parse_scontrol_nodes,
 )
@@ -78,27 +72,18 @@ from .cli import (
 from . import jobs
 from .jobs import (
     JOB_ID_RE,
-    LOG_FILE,
     LOG_NAME,
     add_unwatched,
     find_job_dir,
     locate_job,
-    record_job_host,
     recorded_log,
     salloc_argv,
 )
 from . import node_profiles, panel
 from .node_profiles import (
     FULL_PROFILE_TYPES,
-    PROBE_MARKER,
-    compare_with_host,
     hardware_of,
     harvest_probes,
-    probe_script,
-    read_node_profile,
-    slurm_facts,
-    summary,
-    write_node_profile,
 )
 
 mcp = FastMCP(
@@ -825,8 +810,6 @@ def sbatch_submit(
                    hint="Pass work_dir as a directory you can write and the compute "
                         "nodes share — the run's own tree, or a scratch filesystem.")
 
-    job_dir = _new_job_dir()
-    script_path = os.path.join(job_dir, "batch_script.sh")
     header = sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, log_file=os.path.join(work_dir, LOG_NAME),
@@ -834,62 +817,8 @@ def sbatch_submit(
         nodes=nodes or None, ntasks=ntasks or None, constraint=constraint,
         nodelist=nodelist, exclusive=exclusive, comment=comment,
     )
-    script = "\n".join(header + ["", command, ""]) + "\n"
-    # Kept for a reader — a model or a person asking what was actually submitted —
-    # and not for the scheduler, which is handed the text itself below.
-    try:
-        with open(script_path, "w") as fh:
-            fh.write(script)
-    except OSError as exc:
-        return err(f"Could not write batch script: {exc}")
-
-    # On stdin, not by path. ``sbatch`` reads its script from standard input when given
-    # no file, which means nothing of ours has to exist on the host running it — the one
-    # thing a scheduler behind ``ssh`` cannot promise. The command line is one word, so
-    # there is no path to quote either.
-    res = cli.run_bash("sbatch", TIMEOUT_SUBMIT, stdin=script, host=host)
-    if res.get("status") != "ok":
-        return err(res.get("stderr") or res.get("error", "sbatch failed"),
-                   hint="Check partition, account/qos, and requested resources. "
-                        + no_scheduler_hint(host))
-    match = re.search(r"(\d+)", res.get("stdout", ""))
-    if not match:
-        return err("Could not parse a job id from sbatch output.",
-                   hint=f"sbatch said: {res.get('stdout', '').strip()[:200]}")
-    job_id = match.group(1)
-    log_file = os.path.join(work_dir, LOG_NAME.replace("%j", job_id))
-    try:
-        with open(os.path.join(job_dir, SLURM_JOB_ID), "w") as fh:
-            fh.write(job_id)
-        with open(os.path.join(job_dir, LOG_FILE), "w") as fh:
-            fh.write(log_file)
-    except OSError:
-        pass
-    # Beside the id, so the watcher's first poll goes straight to the right scheduler
-    # instead of sweeping. And into the session's inventory: a submission that
-    # succeeded is proof this host reaches that scheduler, which is the same evidence
-    # a queue read gives, from the call that mattered more.
-    record_job_host(job_dir, host)
-    if host:
-        _record_host(host)
-
-    payload = {
-        "job_id":       job_id,
-        "job_dir":      job_dir,
-        "batch_script": script_path,
-        "work_dir":     work_dir,
-        "log":          log_file,
-        "partition":    partition,
-        "scheduler":    _host_name(host),
-        "comment":      comment or None,
-        "note":         f"Slurm job {job_id} submitted to '{partition}' on "
-                        f"{_host_name(host)}.",
-        "background_job": slurm_descriptor(job_id),
-    }
-    # The submission is the other moment the model holds job ids: what else of the
-    # user's is running unaccounted for can be acted on here, in the same turn.
-    add_unwatched(payload)
-    return ok(payload)
+    return jobs.submit_batch(host, work_dir, command, header,
+                             partition=partition, comment=comment)
 
 
 # ── compute-node profiles ─────────────────────────────────────────────────────
@@ -943,67 +872,7 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
         return err("Submission not confirmed.",
                    hint="Set confirm=True only after user approval.")
 
-    import time as _time
-    stamp = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
-    job_dir = os.path.join(_hpc_jobs_dir(), f"{stamp}-probe")
-    suffix = 1
-    while os.path.exists(job_dir):
-        suffix += 1
-        job_dir = os.path.join(_hpc_jobs_dir(), f"{stamp}-probe{suffix}")
-    os.makedirs(job_dir)
-    # Where the job writes, on the node that runs it. A scheduler on this machine
-    # writes into the submission's own directory; one reached over ssh has no access
-    # to this filesystem, so it writes beside its own state and the harvest reads it
-    # back over the same connection. The expansion is the script's, not ours — only
-    # the far side knows what $HOME is there.
-    if host:
-        work_dir = ('"${MIMIR_STATE_HOME:-$HOME/.mimir}"/node_probes/'
-                    + os.path.basename(job_dir))
-    else:
-        work_dir = job_dir
-    log_file = os.path.join(work_dir, "slurm.log")
-    header = sbatch_header(
-        job_name="mimir-probe", partition=partition, cpus_per_task=1,
-        wall_time="00:05:00", log_file=log_file, account=account, nodes=1, ntasks=1,
-        constraint=constraint, nodelist=nodelist,
-    )
-    script = probe_script(work_dir, header, make_dir=bool(host))
-    # Written locally whatever the scheduler, for a reader: the submission's directory
-    # is where someone goes to see what was actually asked for.
-    script_path = os.path.join(job_dir, "probe.sh")
-    try:
-        with open(script_path, "w") as fh:
-            fh.write(script)
-    except OSError as exc:
-        return err(f"Could not write the probe script: {exc}")
-
-    # On stdin, not by path: a remote scheduler cannot read a file on this machine,
-    # and the local one does not need to.
-    res = cli.run_bash("sbatch", TIMEOUT_SUBMIT, stdin=script, host=host)
-    if res.get("status") != "ok":
-        return err(res.get("stderr") or res.get("error", "sbatch failed"),
-                   hint="Check partition, account and constraint.")
-    match = re.search(r"(\d+)", res.get("stdout", ""))
-    if not match:
-        return err("Could not parse a job id from sbatch output.",
-                   hint=f"sbatch said: {res.get('stdout', '').strip()[:200]}")
-    job_id = match.group(1)
-    # The host is recorded twice on purpose: in the marker the harvest reads, and in
-    # the descriptor's own host file, which is what every other cluster tool resolves a
-    # job's scheduler from.
-    record_job_host(job_dir, host)
-    with open(os.path.join(job_dir, PROBE_MARKER), "w") as fh:
-        json.dump({"job_id": job_id, "partition": partition, "constraint": constraint,
-                   "nodelist": nodelist, "submitted_at": stamp,
-                   "host": host, "work_dir": work_dir}, fh)
-    return ok({
-        "job_id": job_id,
-        "job_dir": job_dir,
-        "partition": partition,
-        "note": f"Probe job {job_id} submitted to '{partition}'. Its result is read "
-                "with the node-profile tool once the job ends.",
-        "background_job": slurm_descriptor(job_id),
-    })
+    return node_profiles.submit_probe(host, partition, constraint, nodelist, account)
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
@@ -1055,13 +924,7 @@ def slurm_node_profile(partition: str = "", node: str = "",
 
     ctx = cpu_facts.execution_context(has_slurm=True)
     if ctx["context"] == "in_allocation":
-        here = by_name.get(socket.gethostname().split(".")[0])
-        if here:
-            cached = read_node_profile(here["node"], sched_host)
-            if not cached or cached.get("slurm") != slurm_facts(here):
-                record = node_profiles.local_profile_record(here)
-                if record:
-                    write_node_profile(here["node"], record, sched_host)
+        node_profiles.refresh_own_profile(by_name, sched_host)
 
     nodes = all_nodes
     if node:
@@ -1072,52 +935,9 @@ def slurm_node_profile(partition: str = "", node: str = "",
         return ok({"node_types": [], "note": "No node matched.", "pending_probes": pending})
 
     host = node_profiles.host_identity()
-    members: dict[tuple, list[dict]] = {}
-    for n in nodes:
-        members.setdefault(_hardware_key(n), []).append(n)
     types = _aggregate_node_types(nodes)
     full = bool(node) or len(types) <= FULL_PROFILE_TYPES
-    out = []
-    for t in types:
-        group = members.get(_hardware_key(t), [])
-        fresh: list[dict] = []
-        stale: list[dict] = []
-        for n in group:
-            rec = read_node_profile(n["node"], sched_host)
-            if not rec:
-                continue
-            (fresh if rec.get("slurm") == slurm_facts(n) else stale).append(rec)
-        entry = {k: t.get(k) for k in ("arch", "cpus", "mem_gb", "gres", "sockets",
-                                       "cores_per_socket", "threads_per_core", "features",
-                                       "partitions", "nodes_total", "by_state", "example_nodes")}
-        if not fresh:
-            entry["profiled"] = False
-            entry["note"] = ("No node of this kind profiled"
-                             + (" since Slurm's description of it changed" if stale else "")
-                             + "; probe one to know its CPU, ISA and -march.")
-        else:
-            rec = fresh[0]
-            profile = rec.get("profile") or {}
-            entry.update({
-                "profiled": True,
-                "profiled_on": rec.get("node"),
-                "profiled_at": rec.get("probed_at"),
-                "source": rec.get("source"),
-                "matches_this_host": compare_with_host(profile, host),
-                "profile": profile if full else summary(profile),
-            })
-            if rec.get("partial"):
-                entry["partial"] = rec.get("partial_reason", True)
-            models = {(r.get("profile") or {}).get("cpu", {}).get("model") for r in fresh}
-            models.discard(None)
-            if len(models) > 1:
-                entry["cpu_models_differ"] = sorted(models)
-            if len(fresh) < len(group):
-                entry["unprofiled_nodes"] = len(group) - len(fresh)
-                entry["caveat"] = ("Slurm's signature does not include the CPU model: "
-                                   "the unprofiled nodes of this kind are assumed, not "
-                                   "known, to be the same machine.")
-        out.append(entry)
+    out = node_profiles.describe_node_types(nodes, types, sched_host, host, full)
 
     payload = {
         "execution_context": ctx,

@@ -8,9 +8,9 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from ...shared.responses import err
+from ...shared.responses import err, ok
 from ...shared.state_paths import sessions_root
-from ...shared.jobs import SLURM_JOB_ID
+from ...shared.jobs import SLURM_JOB_ID, slurm_descriptor
 from ...shared.slurm_site import (
     slurm_state,
     HOST_FILE as _HOST_FILE,
@@ -18,6 +18,9 @@ from ...shared.slurm_site import (
     hosts as slurm_hosts,
     job_host as _job_host,
     jobs_dir as _hpc_jobs_dir,
+    name_of as _host_name,
+    new_job_dir,
+    record_host,
     queued_by_host as slurm_queued_by_host,
     unwatched_by_host as slurm_unwatched_by_host,
     unwatched_hint as slurm_unwatched_hint,
@@ -25,6 +28,8 @@ from ...shared.slurm_site import (
 from . import cli
 from .cli import (
     TIMEOUT_READ,
+    TIMEOUT_SUBMIT,
+    no_scheduler_hint,
     lines_of,
     validate_comment,
     validate_mem,
@@ -196,3 +201,77 @@ def salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int,
                            hint="Every token must start with '-'; pass resources via the named arguments.")
         argv += extra
     return argv, None
+
+
+def sbatch_on(host: str, script: str, hint: str) -> tuple[str, dict | None]:
+    """Submit *script* to the scheduler on *host*: its job id, or the error answer.
+
+    On stdin, not by path: ``sbatch`` reads its script from standard input when given no
+    file, so nothing of ours has to exist on the host running it — the one thing a
+    scheduler behind ``ssh`` cannot promise.
+    """
+    res = cli.run_bash("sbatch", TIMEOUT_SUBMIT, stdin=script, host=host)
+    if res.get("status") != "ok":
+        return "", err(res.get("stderr") or res.get("error", "sbatch failed"), hint=hint)
+    match = re.search(r"(\d+)", res.get("stdout", ""))
+    if not match:
+        return "", err("Could not parse a job id from sbatch output.",
+                       hint=f"sbatch said: {res.get('stdout', '').strip()[:200]}")
+    return match.group(1), None
+
+
+def submit_batch(host: str, work_dir: str, command: str, header: list[str], *,
+                 partition: str, comment: str) -> dict:
+    """Submit *command* under *header* on *host*, and file what came back.
+
+    A directory of its own records the script, the id, the log and the scheduler; the
+    answer carries the ``background_job`` the client polls.
+    """
+    job_dir = new_job_dir()
+    script_path = os.path.join(job_dir, "batch_script.sh")
+    script = "\n".join(header + ["", command, ""]) + "\n"
+    # Kept for a reader — a model or a person asking what was actually submitted —
+    # and not for the scheduler, which is handed the text itself below.
+    try:
+        with open(script_path, "w") as fh:
+            fh.write(script)
+    except OSError as exc:
+        return err(f"Could not write batch script: {exc}")
+
+    job_id, refusal = sbatch_on(host, script, "Check partition, account/qos, and requested "
+                                              "resources. " + no_scheduler_hint(host))
+    if refusal:
+        return refusal
+    log_file = os.path.join(work_dir, LOG_NAME.replace("%j", job_id))
+    try:
+        with open(os.path.join(job_dir, SLURM_JOB_ID), "w") as fh:
+            fh.write(job_id)
+        with open(os.path.join(job_dir, LOG_FILE), "w") as fh:
+            fh.write(log_file)
+    except OSError:
+        pass
+    # Beside the id, so the watcher's first poll goes straight to the right scheduler
+    # instead of sweeping. And into the session's inventory: a submission that
+    # succeeded is proof this host reaches that scheduler, which is the same evidence
+    # a queue read gives, from the call that mattered more.
+    record_job_host(job_dir, host)
+    if host:
+        record_host(host)
+
+    payload = {
+        "job_id":       job_id,
+        "job_dir":      job_dir,
+        "batch_script": script_path,
+        "work_dir":     work_dir,
+        "log":          log_file,
+        "partition":    partition,
+        "scheduler":    _host_name(host),
+        "comment":      comment or None,
+        "note":         f"Slurm job {job_id} submitted to '{partition}' on "
+                        f"{_host_name(host)}.",
+        "background_job": slurm_descriptor(job_id),
+    }
+    # The submission is the other moment the model holds job ids: what else of the
+    # user's is running unaccounted for can be acted on here, in the same turn.
+    add_unwatched(payload)
+    return ok(payload)
