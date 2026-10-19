@@ -10,21 +10,21 @@ import type {
   ChatMessage,
   ClientMessage,
   ServerMessage,
-  SessionMeta,
   PromptOrigin,
   QuestionSpec,
-  ApprovalMessage,
-  UserQuestionMessage,
   ApprovalMode,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
-import { routeServerMessage, type ServerHandlers } from "./state/serverMessages";
+import { routeServerMessage, type ServerHandlers, type ServerMessageOf } from "./state/serverMessages";
 import { useAgentSettings } from "./hooks/useAgentSettings";
 import { usePanels } from "./hooks/usePanels";
 import { useEndpoint, type Host } from "./hooks/useEndpoint";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { useThreadScroll } from "./hooks/useThreadScroll";
 import { useWorkspaceState } from "./hooks/useWorkspaceState";
+import { useSessions } from "./hooks/useSessions";
+import { useTranscriptSync } from "./hooks/useTranscriptSync";
+import { makeId } from "./state/ids";
 import { ChatThread } from "./components/ChatThread";
 import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
@@ -44,8 +44,6 @@ import { ContextBar } from "./components/ContextBar";
 import { RunProgressDock } from "./components/RunProgressDock";
 import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
-import { chooseRestoredMessages, planTranscript } from "./components/transcriptUtils";
-import type { TranscriptSync } from "./components/transcriptUtils";
 import { Composer } from "./components/Composer";
 import { StatusBar } from "./components/StatusBar";
 import { useComposer } from "./hooks/useComposer";
@@ -57,13 +55,6 @@ function getWsUrl(): string {
   return (window as unknown as { __MIMIR_WS_URL__?: string }).__MIMIR_WS_URL__
     ?? "ws://localhost:8765";
 }
-
-function makeId(): string {
-  return crypto.randomUUID();
-}
-
-/** How often the rendered transcript is checkpointed to the server mid-turn. */
-const TRANSCRIPT_CHECKPOINT_MS = 5000;
 
 
 export const App: React.FC = () => {
@@ -117,90 +108,54 @@ export const App: React.FC = () => {
     // Epoch ms the agent stops waiting at, when the question carries a wall.
     expiresAt?: number;
   } | null>(null);
-  // True between a session switch request and its session_loaded reply.
-  const [sessionLoading, setSessionLoading] = useState(false);
   // Last submitted query text, so an error card can offer a one-click Retry.
   const lastQueryRef = useRef<string>("");
-  // Bumped whenever the rendered transcript must reach the server now rather than at
-  // the next end of turn (currently: a reconnect that kept the richer copy).
-  const [transcriptPush, setTranscriptPush] = useState(0);
-
-  // ── Session state ─────────────────────────────────────────────────────────
-  const [sessions, setSessions] = useState<SessionMeta[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  // Ref kept in sync so the WS handler always reads the current session ID
-  // without stale-closure issues.
-  const activeSessionIdRef = useRef<string | null>(null);
-
-  /** Whether a card belongs to a conversation other than the one on screen.
-   *
-   *  A card carrying no session_id comes from a server that does not attribute them, and
-   *  counts as this conversation's — which is what such a server means by it. */
-  const rememberForeign = useCallback(
-    (msg: ApprovalMessage | UserQuestionMessage) => {
-      // One per conversation: the newest card is the one its turn is parked on, and a
-      // conversation waits on one at a time.
-      setForeignPrompts((prev) => ({ ...prev, [msg.session_id as string]: msg }));
-    },
-    []
-  );
-
-  const forgetForeign = useCallback((sessionId: string) => {
-    setForeignPrompts((prev) => {
-      if (!(sessionId in prev)) return prev;
-      const next = { ...prev };
-      delete next[sessionId];
-      return next;
-    });
-  }, []);
-
-  const isForeign = useCallback(
-    (msg: { session_id?: string }) =>
-      !!msg.session_id && msg.session_id !== activeSessionIdRef.current,
-    []
-  );
-  const [showSessionsPanel, setShowSessionsPanel] = useState(false);
-  // Cards raised by conversations the user is not reading, newest per conversation.
-  // They do not belong in this chat's thread — that is another transcript — but they
-  // cannot be hidden either: each one is a turn parked on a person with no timeout, so
-  // an unanswered card is a conversation stopped for ever. They are shown in a strip
-  // above the thread, and answering one sends its own session_id.
-  const [foreignPrompts, setForeignPrompts] = useState<
-    Record<string, ApprovalMessage | UserQuestionMessage>
-  >({});
-
-  // Read by the message handler, which is set up before sendTranscript exists.
-  const sendTranscriptRef = useRef<(force?: boolean) => void>(() => {});
-
   const {
     chatThreadRef, bottomRef, lastUserMsgRef, onScroll: handleChatScroll,
     scrollToBottom, scrollToApproval, anchorNewQuery, dockedRuns, focusRun,
   } = useThreadScroll(chatState);
 
-  // ── WebSocket message handler ─────────────────────────────────────────────
-  // Scalar/config message types update local React state directly; the
-  // streaming/thinking/approval/diff state machine is delegated to the reducer.
-  // How far into each session's journal this window has rendered, keyed by session.
-  // Per session rather than one number: switching conversations would otherwise carry
-  // one session's high-water mark onto another and tell the server we had already seen
-  // events we never got.
-  const renderedSeqRef = useRef<Record<string, number>>({});
-
-  // A `replay` frame is a bundle of ordinary events, so it goes through this very
-  // handler — one reducer for what happened live and what happened while we were away.
+  // A `replay` frame is a bundle of ordinary events, so it goes through the panel's
+  // own handler — one reducer for what happened live and while nobody was attached.
   const handlerRef = useRef<(m: ServerMessage) => void>(() => {});
-  // The handler tables of the parts that hold their own state.
+  const redeliver = useCallback((m: ServerMessage) => handlerRef.current(m), []);
+  // A loaded conversation's share for the parts that are not the session list.
+  const pushTranscriptRef = useRef<() => void>(() => {});
+  const onSessionLoaded = useCallback(
+    (msg: ServerMessageOf<"session_loaded">, switched: boolean, pushTranscript: boolean) => {
+      // Hand the richer copy straight back rather than waiting for the next turn to
+      // end: the reconnect may be the last thing that happens in this session.
+      if (pushTranscript) pushTranscriptRef.current();
+      workspaceLoaded(msg.todos, switched);
+      // Pending prompts belong to the turn of the session left. The server sets that
+      // turn aside and keeps its card with that session, sending it again when the
+      // user comes back. A reconnect to the same session keeps its cards: the worker
+      // is still parked on them and will never re-send them.
+      if (switched) setUserQuestion(null);
+    },
+    [workspaceLoaded],
+  );
+  const conversations = useSessions({
+    dispatch, chatStateRef, scrollToBottom, redeliver, onLoaded: onSessionLoaded,
+  });
+  const {
+    sessions, activeSessionId, activeSessionIdRef, sessionLoading, setSessionLoading,
+    showSessionsPanel, setShowSessionsPanel, foreignPrompts, isForeign, rememberForeign,
+    forgetForeign, noteSeq,
+  } = conversations;
+  const transcript = useTranscriptSync({
+    send: sendVia, busy, chatStateRef, activeSessionIdRef,
+    renderedSeqRef: conversations.renderedSeqRef,
+  });
+  pushTranscriptRef.current = transcript.requestPush;
+
+  // ── WebSocket message handler ─────────────────────────────────────────────
+  // The parts that hold their own state answer through these tables; what is left is
+  // the reducer's.
   const tablesRef = useRef<ServerHandlers[]>([]);
 
   const handleServerMessage = useCallback((msg: ServerMessage) => {
-    // Every journaled event carries the point it was written at. Remembering the
-    // highest is what lets a later attach replay only what this window missed.
-    const seq = (msg as { seq?: unknown }).seq;
-    const owner = (msg as { session_id?: unknown }).session_id;
-    if (typeof seq === "number" && typeof owner === "string") {
-      const seen = renderedSeqRef.current[owner] ?? 0;
-      if (seq > seen) renderedSeqRef.current[owner] = seq;
-    }
+    noteSeq(msg);
 
     // The parts that hold their own state answer first; a type only they know ends here.
     const routed = routeServerMessage(msg, tablesRef.current);
@@ -216,10 +171,6 @@ export const App: React.FC = () => {
         // (like plan .md) in VS Code's Markdown preview; other files open as a
         // normal editor tab. Absolute paths supported.
         if (msg.path) vscodePostMessage({ type: "open_preview", file: msg.path });
-        return;
-
-      case "sessions_list":
-        setSessions(msg.sessions);
         return;
 
       // Parks the agent on a person: the card is local state, and the reducer is
@@ -258,75 +209,11 @@ export const App: React.FC = () => {
         dispatch({ type: "prompt_answered", resumes: true });
         return;
 
-      // What this conversation produced while nobody was attached. Each event is fed
-      // to this same handler, which is what rebuilds the rich transcript — tool rows,
-      // diff cards, reasoning panels — for a stretch this window was not there for.
-      // Streamed deltas are not in it by design: a resumed turn arrives as the
-      // aggregates that closed its blocks, not as its keystrokes.
-      case "replay": {
-        for (const ev of msg.events ?? []) handlerRef.current(ev as ServerMessage);
-        const seen = renderedSeqRef.current[msg.session_id] ?? 0;
-        if (msg.through_seq > seen) renderedSeqRef.current[msg.session_id] = msg.through_seq;
-        if (!msg.more) scrollToBottom();
-        return;
-      }
-
-      // A recorded prose block, which only a replay carries. Dispatched as a token so
-      // the existing draft-and-boundary logic places it relative to the tool cards that
-      // followed it — the same path the live stream takes, so a turn read back after an
-      // absence is laid out the way it would have been watched.
-      case "assistant_text":
-        dispatch({ type: "token", text: msg.text });
-        return;
-
-      // The server has made itself survivable. Shown rather than announced: what
-      // changes is a standing fact about this run, not an event in the conversation.
-      case "transcript_resync":
-        if (msg.session_id === activeSessionIdRef.current) {
-          sendTranscriptRef.current(true);
-        }
-        return;
-
       case "detached":
         // Absent means detached: an older server sends no flag, and the message
         // existed only to announce one.
         setDetached(msg.detached !== false);
         return;
-
-      case "session_loaded": {
-        // Capture BEFORE updating so we can compare old vs new session id.
-        const prevSessionId = activeSessionIdRef.current;
-        activeSessionIdRef.current = msg.session_id;
-        setActiveSessionId(msg.session_id);
-        // This conversation's card belongs in the thread now, not the strip: if its turn
-        // is still parked the server resends the card on arrival, and a strip entry beside
-        // it would show the same question twice.
-        forgetForeign(msg.session_id);
-        const prevMessages = chatStateRef.current.messages;
-        // Reconnecting to the session on screen keeps the live transcript when the
-        // stored copy is behind it (chooseRestoredMessages).
-        const restore = chooseRestoredMessages(
-          msg.display_messages, prevMessages, prevSessionId === msg.session_id,
-        );
-        dispatch({ type: "session_loaded_messages", messages: restore.messages });
-        // After the restore, which resets the turn state this window arrives with.
-        if (msg.turn_running) dispatch({ type: "turn_resumed" });
-        // Hand the richer copy straight back rather than waiting for the next turn
-        // to end — the reconnect may be the last thing that happens in this session.
-        if (restore.push) setTranscriptPush((n) => n + 1);
-        workspaceLoaded(msg.todos, prevSessionId !== msg.session_id);
-        if (prevSessionId !== msg.session_id) {
-          // Pending prompts belong to the turn of the session we just left. The
-          // server sets that turn aside and keeps its card with that session: it is
-          // sent again, after this message, when the user comes back to it.
-          // A reconnect to the *same* session keeps its cards: the worker is
-          // still parked on them and will never re-send them.
-          setUserQuestion(null);
-        }
-        setSessionLoading(false);
-        scrollToBottom();
-        return;
-      }
 
       // The batch keeps the file (useWorkspaceState); the reducer draws the edit card.
       case "diff":
@@ -356,10 +243,9 @@ export const App: React.FC = () => {
     ) {
       scrollToBottom();
     }
-  }, [scrollToBottom, scrollToApproval, workspaceLoaded]);
+  }, [noteSeq, isForeign, rememberForeign, forgetForeign, activeSessionIdRef, scrollToBottom, scrollToApproval]);
 
-  // Kept in a ref so the `replay` case can run each bundled event through the handler
-  // it is defined in.
+  // Kept in a ref so a replay can run each bundled event through this handler.
   useEffect(() => {
     handlerRef.current = handleServerMessage;
   }, [handleServerMessage]);
@@ -368,8 +254,7 @@ export const App: React.FC = () => {
     dispatch({ type: "reset" });
     resetWorkspace();
     setUserQuestion(null);
-    setActiveSessionId(null);
-    setSessions([]);
+    conversations.reset();
     endpoint.reset();
   };
 
@@ -421,7 +306,9 @@ export const App: React.FC = () => {
     setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
     refreshSubAgents, refreshPanel, reloadPanel,
   } = panels;
-  tablesRef.current = [endpoint.on, settings.on, panels.on, workspace.on];
+  tablesRef.current = [
+    endpoint.on, settings.on, panels.on, workspace.on, conversations.on, transcript.on,
+  ];
   useEffect(() => {
     if (readyCount === 0) return;
     const { thinkingLevel: tl, streaming: st, agentMode: am } = syncSettingsRef.current;
@@ -432,64 +319,6 @@ export const App: React.FC = () => {
     send({ type: "list_resources" });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readyCount, send]);
-
-  // Hand the rendered chat to the server so a reload can show it again.
-  //
-  // Tool rows, reasoning panels and diff cards are assembled by the reducer and live
-  // nowhere else, so the server keeps this copy for a reconnect.
-  //
-  // Sending is skipped when the list is the one already sent, so the checkpoint below
-  // costs nothing on a quiet turn. The reducer never mutates, so identity is the whole
-  // test: a changed transcript is always a new array.
-  const lastSentMessagesRef = useRef<ChatMessage[] | null>(null);
-  // What the server was last sent, so the next send carries only what changed.
-  const transcriptSyncRef = useRef<TranscriptSync | null>(null);
-  const sendTranscript = useCallback((force = false) => {
-    const sessionId = activeSessionIdRef.current;
-    const messages = chatStateRef.current.messages;
-    if (!sessionId || messages.length === 0) return;
-    if (!force && messages === lastSentMessagesRef.current) return;
-    lastSentMessagesRef.current = messages;
-    const { body, next } = planTranscript(
-      messages, sessionId, transcriptSyncRef.current, force, makeId);
-    transcriptSyncRef.current = next;
-    send({
-      type: "transcript",
-      session_id: sessionId,
-      ...body,
-      // How far these messages reach. The server stores it and replays from it, so a
-      // window that has rendered everything is sent nothing on its next attach.
-      through_seq: renderedSeqRef.current[sessionId] ?? 0,
-    });
-  }, [send]);
-  sendTranscriptRef.current = sendTranscript;
-
-  // At the end of the turn. The delay lets the last few events (a trailing verdict,
-  // the batch status) land in the transcript before it is sent.
-  const wasBusyRef = useRef(false);
-  useEffect(() => {
-    const wasBusy = wasBusyRef.current;
-    wasBusyRef.current = chatState.busy;
-    if (chatState.busy || !wasBusy) return;
-    const timer = setTimeout(sendTranscript, 1000);
-    return () => clearTimeout(timer);
-  }, [chatState.busy, sendTranscript]);
-
-  // And during it, at step boundaries (streaming prose is held in `draft`), so a drop
-  // or reload mid-turn does not lose the work on screen.
-  useEffect(() => {
-    if (!chatState.busy) return;
-    const timer = setInterval(sendTranscript, TRANSCRIPT_CHECKPOINT_MS);
-    return () => clearInterval(timer);
-  }, [chatState.busy, sendTranscript]);
-
-  // A push asked for out of band (a reconnect that kept the richer copy). Forced:
-  // the list may be the very one the last send was handed, and that send is exactly
-  // what the closed socket swallowed — which is why the server is behind at all.
-  useEffect(() => {
-    if (transcriptPush === 0) return;
-    sendTranscript(true);
-  }, [transcriptPush, sendTranscript]);
 
   // ── User actions ──────────────────────────────────────────────────────────
 
