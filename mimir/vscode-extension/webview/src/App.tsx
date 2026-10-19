@@ -3,7 +3,6 @@ import React, {
   useCallback,
   useRef,
   useEffect,
-  useLayoutEffect,
   useReducer,
   useMemo,
 } from "react";
@@ -27,7 +26,7 @@ import { useAgentSettings } from "./hooks/useAgentSettings";
 import { usePanels } from "./hooks/usePanels";
 import { useEndpoint, type Host } from "./hooks/useEndpoint";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
-import { useStickToBottom } from "./hooks/useStickToBottom";
+import { useThreadScroll } from "./hooks/useThreadScroll";
 import { ChatThread } from "./components/ChatThread";
 import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
@@ -45,8 +44,6 @@ import { SubAgentsPanel } from "./components/SubAgentsPanel";
 import { SciencePanel } from "./components/SciencePanel";
 import { ContextBar } from "./components/ContextBar";
 import { RunProgressDock } from "./components/RunProgressDock";
-import { runsInFlight } from "./components/runDockUtils";
-import { useOffscreenRows } from "./hooks/useOffscreenRows";
 import type { ContextUsage } from "./components/ContextBar";
 import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
@@ -179,88 +176,13 @@ export const App: React.FC = () => {
     Record<string, ApprovalMessage | UserQuestionMessage>
   >({});
 
-  const bottomRef = useRef<HTMLDivElement>(null);
   // Read by the message handler, which is set up before sendTranscript exists.
   const sendTranscriptRef = useRef<(force?: boolean) => void>(() => {});
 
-  // The pane follows the bottom of the thread as it grows, and lets go when the
-  // reader scrolls up. The hook owns that decision — see useStickToBottom for why
-  // it cannot be taken from the scroll position alone.
   const {
-    ref: chatThreadRef,
-    stickRef: followBottomRef,
-    scrollToBottom,
-    follow: forceFollowBottom,
-    release: releaseFollowBottom,
-    onScroll: handleChatScroll,
-  } = useStickToBottom<HTMLDivElement>();
-
-  // Runs still going, and which of their rows have scrolled out of sight. A run can
-  // outlast the part of the conversation that started it — the agent carries on and
-  // the thread grows past it — so the dock keeps the ones the reader can no longer
-  // see. `messages.length` re-runs the search when a live row freezes into a message,
-  // which replaces its element.
-  const inFlightRuns = useMemo(
-    () => runsInFlight(messages, liveToolCalls),
-    [messages, liveToolCalls],
-  );
-  const offscreenRuns = useOffscreenRows(
-    useMemo(() => inFlightRuns.map((r) => r.id), [inFlightRuns]),
-    chatThreadRef,
-    messages.length,
-  );
-  const dockedRuns = useMemo(
-    () => inFlightRuns.filter((r) => offscreenRuns.has(r.id)),
-    [inFlightRuns, offscreenRuns],
-  );
-  const focusRun = useCallback((id: string) => {
-    const el = chatThreadRef.current?.querySelector(`[data-tool-id="${CSS.escape(id)}"]`);
-    if (!el) return;
-    // Let go of the bottom first: the run is still reporting progress, and the next
-    // update would otherwise scroll the pane back down before the reader got there.
-    // Scrolling back to the bottom resumes the follow on its own.
-    // A jump, not a smooth scroll: the first frames of an animation are still near
-    // the bottom, and onScroll takes "near the bottom" as a reason to follow again.
-    releaseFollowBottom();
-    el.scrollIntoView({ behavior: "auto", block: "center" });
-  }, [chatThreadRef, releaseFollowBottom]);
-
-  // Ref to the last user message element so we can scroll it to the top.
-  const lastUserMsgRef = useRef<HTMLDivElement>(null);
-  // Set on submit so the bottom-follow effect yields the next commit to
-  // scrollQueryToTop (which anchors the new question at the top instead).
-  const pendingScrollToTopRef = useRef(false);
-
-  // Scroll the newly submitted user message to the top of the chat pane.
-  const scrollQueryToTop = useCallback(() => {
-    requestAnimationFrame(() => {
-      const el = lastUserMsgRef.current;
-      const container = chatThreadRef.current;
-      if (!el || !container) return;
-      container.scrollTop = el.offsetTop - container.offsetTop - 8;
-    });
-  }, []);
-
-  // Keep the view pinned to the bottom as the thread grows. This runs *after*
-  // the DOM has committed (unlike the synchronous scrollToBottom() calls in the
-  // message handler, which read a stale scrollHeight from before React rendered
-  // the new content and therefore lag behind streaming tokens / tool rows). It
-  // honours the follow flag, so a reader who scrolled up is left undisturbed.
-  useLayoutEffect(() => {
-    // A fresh submit anchors the new question at the top (scrollQueryToTop),
-    // so skip the bottom-follow for that one commit to avoid a bottom→top jump.
-    if (pendingScrollToTopRef.current) {
-      pendingScrollToTopRef.current = false;
-      return;
-    }
-    scrollToBottom();
-  }, [messages, draft, liveToolCalls, liveThinkingBlocks, scrollToBottom]);
-
-  // Force-scrolls to bottom when an approval arrives so the live editing card
-  // is visible regardless of whether the user had scrolled up.
-  const scrollToApproval = useCallback(() => {
-    setTimeout(forceFollowBottom, 80);
-  }, [forceFollowBottom]);
+    chatThreadRef, bottomRef, lastUserMsgRef, onScroll: handleChatScroll,
+    scrollToBottom, scrollToApproval, anchorNewQuery, dockedRuns, focusRun,
+  } = useThreadScroll(chatState);
 
   // ── WebSocket message handler ─────────────────────────────────────────────
   // Scalar/config message types update local React state directly; the
@@ -638,11 +560,9 @@ export const App: React.FC = () => {
     }
     lastQueryRef.current = text;
     dispatch({ type: "submit_query", text });
-    followBottomRef.current = true; // a new query resumes following the bottom
-    pendingScrollToTopRef.current = true; // let scrollQueryToTop win this commit
     send({ type: "query", text });
-    scrollQueryToTop();
-  }, [busy, send, scrollQueryToTop, followBottomRef]);
+    anchorNewQuery();
+  }, [busy, send, anchorNewQuery]);
 
   const composer = useComposer({
     skillToggles,
@@ -656,11 +576,9 @@ export const App: React.FC = () => {
     const text = lastQueryRef.current;
     if (!text || busy) return;
     dispatch({ type: "submit_query", text });
-    followBottomRef.current = true;
-    pendingScrollToTopRef.current = true; // let scrollQueryToTop win this commit
     send({ type: "query", text });
-    scrollQueryToTop();
-  }, [busy, send, scrollQueryToTop, followBottomRef]);
+    anchorNewQuery();
+  }, [busy, send, anchorNewQuery]);
 
   // The conversations still working.
   //
