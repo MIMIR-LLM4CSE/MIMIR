@@ -7,6 +7,7 @@ in-turn, polling the descriptor's status op with no model calls. It also emits t
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from ...protocol.event_sink import emit
@@ -14,6 +15,7 @@ from ....shared import jobs
 from ...tools.capabilities import BACKGROUNDABLE, has_cap
 from ...protocol.tool_result import parse_tool_payload
 from . import poll
+from .watcher import RunWatcher, Watch
 from ...core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
@@ -130,45 +132,48 @@ def maybe_register_background_job(
     return result_text + note, True
 
 
-async def await_background_job(descriptor: dict, agent: AgentPort, result_text: str) -> str:
-    """Wait out a detached run in-turn without model calls, then append its summary.
+class _InTurnWait(RunWatcher):
+    """A run waited out by the turn that launched it: the CLI's, which has no watcher."""
 
-    For the CLI, which has no watcher; the same :func:`poll.poll_until_terminal` with a
-    tighter schedule, stopped by the user's Stop.
-    """
-    status_op  = descriptor.get("status_op") or {}
-    summary_op = descriptor.get("summary_op") or {}
-    if not status_op.get("tool"):
-        return result_text
+    # Tighter than a watcher's: the turn is held until it ends.
+    first_interval = 3.0
+    max_interval = 20.0
 
-    def _tick(tick: poll.Tick) -> None:
+    def __init__(self, agent: AgentPort) -> None:
+        super().__init__()
+        self._agent = agent
+        self.event: dict = {}
+
+    def tool_runner(self):
+        return self._agent.run_tool
+
+    def cancel_flag(self):
+        return self._agent.turn.cancel_flag
+
+    def on_tick(self, job_key: str, watch: Watch, tick: poll.Tick,
+                session_id: str | None) -> None:
         # Only what the op actually answered: a probe that raised is a tick nobody
         # asked about, and "background run: " with nothing after it is noise in the
         # one place the caller is watching this run from.
         if tick.answered:
             emit({"type": "status", "text": f"background run: {tick.state}"})
 
-    state, _reason = await poll.poll_until_terminal(
-        agent.run_tool, status_op,
-        interval=3.0, max_interval=20.0,
-        # The same limits as a watcher's: a status op that hangs or keeps erroring ends
-        # the wait as "unknown" instead of holding the turn for weeks, and the user's
-        # Stop ends it at the next tick.
-        call_timeout=poll.STATUS_CALL_TIMEOUT,
-        unreadable_limit=poll.UNREADABLE_POLL_LIMIT,
-        cancel_flag=agent.turn.cancel_flag,
-        on_tick=_tick)
+    def deliver(self, event: dict) -> None:
+        self.event = event
 
-    summary_text = ""
-    summary_tool = summary_op.get("tool")
-    if summary_tool:
-        try:
-            summary_text = await agent.run_tool(
-                summary_tool, dict(summary_op.get("args") or {}),
-                record_observations=False)
-        except Exception:
-            summary_text = ""
-    note = f"\n\n[background:awaited] Run reached state '{state}'."
-    if summary_text:
-        note += f" Results:\n{summary_text}"
+
+async def await_background_job(descriptor: dict, agent: AgentPort, result_text: str) -> str:
+    """Wait out a detached run in-turn without model calls, then append its summary.
+
+    For the CLI, which has no watcher: a :class:`RunWatcher` followed by the turn itself,
+    with the watcher's limits, stopped by the user's Stop.
+    """
+    if not (descriptor.get("status_op") or {}).get("tool"):
+        return result_text
+    waiter = _InTurnWait(agent)
+    await waiter.follow(descriptor)
+    note = f"\n\n[background:awaited] Run reached state '{waiter.event.get('state', '')}'."
+    summary = waiter.event.get("summary")
+    if summary:
+        note += f" Results:\n{json.dumps(summary, indent=2, default=str)}"
     return result_text + note

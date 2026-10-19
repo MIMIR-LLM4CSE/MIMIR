@@ -2,7 +2,9 @@
 
 :class:`RunWatcher` registers a run, polls it to its end through the agent's
 ``run_tool`` and builds its ``job_complete``; where that event goes is the subclass's
-(:meth:`RunWatcher.deliver`). Its table may be read from another thread, hence the lock.
+(:meth:`RunWatcher.deliver`). A run is held by a task of its own (:meth:`RunWatcher.register`)
+or by the waiting turn (:meth:`RunWatcher.follow`). Its table may be read from another
+thread, hence the lock.
 """
 from __future__ import annotations
 
@@ -90,6 +92,10 @@ class RunWatcher:
         """Hand a ``job_complete`` or a ``job_checkin`` to whoever answers for the runs."""
         raise NotImplementedError
 
+    def cancel_flag(self) -> Any:
+        """An event that, once set, ends every poll (the user's Stop), or None."""
+        return None
+
     def accepts(self) -> bool:
         """Whether a new run may be taken on now."""
         return True
@@ -150,6 +156,16 @@ class RunWatcher:
                     job_key, session_id, descriptor["status_op"]["tool"])
         self._start_checkins(session_id)
         return True
+
+    async def follow(self, descriptor: dict) -> None:
+        """Watch a run to its end in the caller's own task: a turn that waits it out.
+
+        No check-ins: the turn is already waiting on it.
+        """
+        job_key = job_key_of(descriptor) or "?"
+        with self._lock:
+            self.watches[job_key] = Watch(asyncio.current_task(), descriptor)  # type: ignore[arg-type]
+        await self._watch_job(job_key, descriptor, self.session_for(None))
 
     def watched(self) -> list[dict]:
         """Descriptors of the runs a live watch holds (what the dispatch guards consult)."""
@@ -305,7 +321,7 @@ class RunWatcher:
             call_timeout=call_timeout,
             unreadable_limit=(self.unreadable_limit if self.unreadable_limit is not None
                               else poll.UNREADABLE_POLL_LIMIT),
-            on_tick=_tick, label=job_key)
+            on_tick=_tick, label=job_key, cancel_flag=self.cancel_flag())
         summary = await poll.read_summary(run_tool, summary_op, call_timeout=call_timeout,
                                           label=job_key)
         logger.info("background job %r of session %s finished (%s)",

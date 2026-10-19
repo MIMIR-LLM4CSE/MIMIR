@@ -45,7 +45,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `history.py` | context budgeting: trim → compact → force-fit → repair, plus the compaction marker |
 | `context_budget.py` | `context_budget_for(model, mode)` — the window a model actually has |
 | `streaming.py` | the model call (retry/backoff), `process_response`, the single `get_backend` handle |
-| `jobs/background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
+| `jobs/background.py` | detached jobs: detect, register, await in-turn (a `RunWatcher` the turn follows itself, for the CLI), adopt a handover, `open_editor` |
 | `jobs/poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
 | `jobs/watcher.py` | `RunWatcher`: registering a detached run, polling it to its end, building its `job_complete`, and the check-in cycle (`job_checkin`: 30 s, 2 min, 10 min, 30 min, then hourly, at once on a log alert); a subclass says where they go. A conversation's `JobWatcher` and a sub-agent's `ChildWatcher` are both one, and the package exports what a watcher outside the engine builds on |
 | `deferral.py` | setting a turn parked on a card aside, and resuming it with the answer |

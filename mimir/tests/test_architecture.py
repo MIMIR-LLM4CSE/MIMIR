@@ -300,21 +300,28 @@ class JobPollingTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_every_watcher_is_the_engines_and_polls_through_run_tool(self) -> None:
+        """The conversation's, the sub-agent's and the turn that waits a run out alike."""
         from mimir.client.query_engine.jobs import RunWatcher, background
         from mimir.client.ui.ws.worker.jobs import JobWatcher
         from mimir.servers.agent_state.child_jobs import ChildWatcher
-        self.assertTrue(issubclass(JobWatcher, RunWatcher))
-        self.assertTrue(issubclass(ChildWatcher, RunWatcher))
-        for probe in (background.await_background_job, JobWatcher.tool_runner,
-                      ChildWatcher.tool_runner):
-            with self.subTest(probe=probe.__qualname__):
-                tree = ast.parse(textwrap.dedent(inspect.getsource(probe)))
-                called = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
-                called |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-                called |= {n.value for n in ast.walk(tree)
-                           if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        watchers = RunWatcher.__subclasses__()
+        self.assertTrue({JobWatcher, ChildWatcher} <= set(watchers))
+        waits = _names_in(background.await_background_job)
+        self.assertIn("follow", waits, "the in-turn wait polls on its own")
+        for cls in watchers:
+            with self.subTest(watcher=cls.__qualname__):
+                called = _names_in(cls.tool_runner)
                 self.assertIn("run_tool", called)
                 self.assertNotIn("dispatch_tool_calls", called)
+
+
+def _names_in(function) -> set[str]:
+    """Every attribute, name and string a function's source mentions."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    return ({n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+            | {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+            | {n.value for n in ast.walk(tree)
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)})
 
 
 def _port_members() -> tuple[set[str], set[str]]:
