@@ -2,6 +2,7 @@
 best-so-far, ledger monotonicity, and ``reset_to_best``.
 """
 
+from mimir.shared import proxy_store
 import json
 import os
 
@@ -59,7 +60,7 @@ class _RatchetFixture(_TmpStorageTest):
     def _complete_run(self, run_id: str, all_passed: bool, time_s: float,
                       wall_time_s: float | None = None) -> str:
         """Fabricate a finished run dir and point the active symlink at it."""
-        session_dir = store.opt_session_runs_dir("tiny")
+        session_dir = proxy_store.opt_session_runs_dir("tiny")
         run_dir = os.path.join(session_dir, run_id)
         os.makedirs(run_dir, exist_ok=True)
         case_metrics = {"time_s": time_s}
@@ -348,7 +349,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         return run_dir
 
     def _ledger_lines(self) -> list[dict]:
-        path = os.path.join(store.opt_session_runs_dir("fast"), "ledger.jsonl")
+        path = os.path.join(proxy_store.opt_session_runs_dir("fast"), "ledger.jsonl")
         if not os.path.isfile(path):
             return []
         with open(path) as fh:
@@ -376,7 +377,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         # The accepted state is the TREE as it stood at launch, recorded for the whole
         # optimize_paths set — not a copy of one source file, which could only ever
         # restore part of a multi-file change.
-        launch = store.read_json(os.path.join(run_dir, "tree_at_launch.json"))
+        launch = proxy_store.read_json(os.path.join(run_dir, "tree_at_launch.json"))
         self.assertTrue(launch, "no launch tree recorded")
         self.assertEqual(best["tree_snapshot"], launch["snapshot_id"])
 

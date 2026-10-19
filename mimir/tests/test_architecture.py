@@ -117,6 +117,13 @@ class LayerTests(unittest.TestCase):
                      if target.startswith(("mimir.client", "mimir.servers"))]
         self.assertEqual(offenders, [])
 
+    def test_the_client_imports_no_server(self) -> None:
+        """What the client reads of a server's files is a contract in ``shared``."""
+        offenders = {str(p.relative_to(PACKAGE)) for p in _python_files(CLIENT)
+                     for _n, target, _a in _imports(p, top_level_only=False)
+                     if target.startswith("mimir.servers")}
+        self.assertEqual(sorted(offenders), [])
+
     def test_only_the_sub_agent_side_of_the_servers_imports_the_client(self) -> None:
         offenders = set()
         for path in _python_files(SERVERS):

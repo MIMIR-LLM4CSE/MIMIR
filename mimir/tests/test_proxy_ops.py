@@ -2,10 +2,11 @@
 ``metadata`` merge, and the ``next_step`` contract of the eval loop.
 """
 
+from mimir.shared import proxy_store
 import os
 import unittest
 
-from mimir.tests.support.proxy import _TmpStorageTest, _call, _eval, server_proxy, store
+from mimir.tests.support.proxy import _TmpStorageTest, _call, _eval, server_proxy
 
 
 class DispatchTests(_TmpStorageTest):
@@ -283,14 +284,14 @@ class EvalLoopTests(_TmpStorageTest):
 
     def test_end_clears_the_active_session(self) -> None:
         self._init_session()
-        self.assertEqual(store.resolve_proxy_name(""), "tiny")
+        self.assertEqual(proxy_store.resolve_proxy_name(""), "tiny")
         res = _eval(op="end", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         self.assertEqual(res["ended"], "tiny")
         self.assertIn("proxy_eval(op='init'", res["next_step"])
-        self.assertFalse(store.resolve_proxy_name(""))
+        self.assertFalse(proxy_store.resolve_proxy_name(""))
         # History survives; only the pointer is gone.
-        self.assertTrue(os.path.isdir(store.opt_session_runs_dir("tiny")))
+        self.assertTrue(os.path.isdir(proxy_store.opt_session_runs_dir("tiny")))
         self.assertEqual(server_proxy.proxy_eval_status()["state"], "no_session")
 
 

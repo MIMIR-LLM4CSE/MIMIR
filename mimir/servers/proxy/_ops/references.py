@@ -6,14 +6,8 @@ import os
 
 from . import check_name, with_next, ok
 from .._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT, seal_reference
-from .._lib.store import (
-    refs_dir,
-    entry_or_err,
-    reference_dir,
-    load_ref_metrics,
-    ref_output_path,
-    read_json,
-)
+from .._lib.store import refs_dir, entry_or_err, reference_dir, load_ref_metrics, ref_output_path
+from ....shared.proxy_store import read_json
 
 
 def list_references() -> dict:

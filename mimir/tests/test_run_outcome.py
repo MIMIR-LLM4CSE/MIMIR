@@ -10,6 +10,7 @@ import types
 import unittest
 
 
+from mimir.shared import proxy_store
 from mimir.client.tools.capabilities import (
     CODE_EXEC,
     PLAN_BLOCKED,
@@ -160,14 +161,14 @@ class MeasuredTierTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = store._CACHE_DIR
-        store._CACHE_DIR = self._tmp.name
+        self._saved_root = proxy_store._ROOT
+        proxy_store._ROOT = self._tmp.name
         self.source = os.path.join(self._tmp.name, "solver.py")
         with open(self.source, "w") as fh:
             fh.write("x = 1\n")
-        os.makedirs(store.opt_session_runs_dir("p"), exist_ok=True)
+        os.makedirs(proxy_store.opt_session_runs_dir("p"), exist_ok=True)
         write_json(
-            store.opt_config_file("p"),
+            proxy_store.opt_config_file("p"),
             {"proxy_name": "p", "proxy_source_path": self.source})
         store.write_active_session("p")
         self.agent = _runner_agent()
@@ -178,7 +179,7 @@ class MeasuredTierTests(unittest.TestCase):
         self.ec.edits.dirty_written_files.add(self.source)
 
     def tearDown(self) -> None:
-        store._CACHE_DIR = self._saved_root
+        proxy_store._ROOT = self._saved_root
         self._tmp.cleanup()
 
     def _report(self, **fields) -> None:

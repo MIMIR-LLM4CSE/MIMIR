@@ -168,7 +168,7 @@ readers:
 
 | Reader | Modules |
 |---|---|
-| **The client and the servers**: the contract between them, and what both run | `state_paths` (the on-disk layout), `jobs` (the run contract), `run_channel` (the divert channel), `capabilities` (the vocabulary a server declares with), `responses` (the shape of a tool answer), `shell_paths`, `trusted_read_roots`, `extension_paths`, `skill_file`, `launcher`, `atomic`, `processes`, `embed` |
+| **The client and the servers**: the contract between them, and what both run | `state_paths` (the on-disk layout), `proxy_store` (the proxy server's store, which the guardrails read), `jobs` (the run contract), `run_channel` (the divert channel), `capabilities` (the vocabulary a server declares with), `responses` (the shape of a tool answer), `shell_paths`, `trusted_read_roots`, `extension_paths`, `skill_file`, `launcher`, `atomic`, `processes`, `embed` |
 | **The servers only**: what two domains or more share | `slurm_site`, `slurm_script`, `shell_activity`, `cpu_facts`, `build_progress`, `approved_roots`, `module_env`, `clock` |
 
 ## The servers
@@ -183,6 +183,8 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
   `agent_state/model_catalog`).
 - Only `agent_state` (the sub-agent server builds a `MimirAgent`) and `interaction`
   import the client, and only its public names.
+- The client imports no server: what it reads of a server's files is a contract in
+  `shared`.
 
 ## Rules for every module
 

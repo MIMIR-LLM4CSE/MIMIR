@@ -7,6 +7,7 @@ as two jobs. Its config and log lines: SERVERS_DETAILED.md, "proxy".
 
 from __future__ import annotations
 
+from ...shared import proxy_store
 import argparse
 import json
 import os
@@ -118,7 +119,7 @@ def _build_phase(reg: dict, suite: dict, proxy_name: str, entry: dict, run_dir: 
     # Makefile, a generated header listed in optimize_paths) leaves the measured
     # tree different from the one snapshotted at launch, so the run would be
     # recorded against code that is not what ran.
-    launch = store.read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
+    launch = proxy_store.read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
     opt_paths = (cfg.get("optimize_paths") or launch.get("paths") or [])
     expected = launch.get("fingerprint", "")
     if expected and opt_paths:
@@ -286,7 +287,7 @@ def _measure_replicates(plan: _Plan, case: dict, case_entry: dict, idx: int,
         )
         if "error" in row:
             break
-        rep_metrics = store.read_json(os.path.join(run_case_dir, "metrics.json"), {}) or {}
+        rep_metrics = proxy_store.read_json(os.path.join(run_case_dir, "metrics.json"), {}) or {}
         replicates.append(rep_metrics)
         if plan.repeat > 1:
             _log(f"[proxy_runner] case={case_id} sweep={idx} replicate={rep} "

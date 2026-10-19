@@ -7,9 +7,10 @@ import os
 import tempfile
 import unittest
 
+from mimir.shared import proxy_store
 from mimir.client.guardrails.policy import gates
 from mimir.client.tools.capabilities import ToolCaps, CODE_EXEC, READ
-# Same module object the guard imports via `from ...servers.proxy._lib import store`.
+# The store the server writes; the guard reads it through shared.proxy_store.
 from mimir.servers.proxy._lib import store
 from mimir.shared.atomic import write_json  # noqa: E402
 
@@ -36,8 +37,8 @@ class _FakeAgent:
 class ProxyExecGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = store._CACHE_DIR
-        store._CACHE_DIR = self._tmp.name
+        self._saved_root = proxy_store._ROOT
+        proxy_store._ROOT = self._tmp.name
         self.agent = _FakeAgent()
 
         # A proxy source and executable living outside any workspace.
@@ -47,18 +48,18 @@ class ProxyExecGuardTests(unittest.TestCase):
             fh.write("print('hi')\n")
 
     def tearDown(self) -> None:
-        store._CACHE_DIR = self._saved_root
+        proxy_store._ROOT = self._saved_root
         self._tmp.cleanup()
 
     # -- helpers ---------------------------------------------------------------
 
     def _init_session(self, name: str = "tiny") -> None:
-        os.makedirs(store.opt_session_runs_dir(name), exist_ok=True)
+        os.makedirs(proxy_store.opt_session_runs_dir(name), exist_ok=True)
         write_json(
-            store.opt_config_file(name),
+            proxy_store.opt_config_file(name),
             {"proxy_name": name, "proxy_source_path": self.src},
         )
-        write_json(store.registry_path(), {name: {"executable_path": self.exe}})
+        write_json(proxy_store.registry_path(), {name: {"executable_path": self.exe}})
         store.write_active_session(name)
 
     def _check(self, tool: str, **args) -> str | None:

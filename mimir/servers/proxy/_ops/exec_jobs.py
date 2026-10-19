@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from ....shared import proxy_store
 import os
 import sys
 
@@ -11,7 +12,6 @@ from ....shared.launcher import launch_argv
 from . import with_next, err, ok
 from .eval_common import NEXT_DETACHED
 from .eval_session import RUN_WAIT_BUDGET_S, await_terminal_state
-from .._lib import store
 from .._lib.procs import (
     launch_detached,
     run_log_path,
@@ -20,7 +20,7 @@ from .._lib.procs import (
     run_state,
     background_descriptor,
 )
-from .._lib.store import read_json
+from ....shared.proxy_store import read_json
 from ....shared.atomic import write_json
 
 _JOB_WORKER = "mimir.servers.proxy._proxy_job"
@@ -31,7 +31,7 @@ _DIVERT_CHANNEL = "proxy_exec"
 
 
 def jobs_dir() -> str:
-    return os.path.join(store.cache_dir(), "exec_jobs")
+    return os.path.join(proxy_store.cache_dir(), "exec_jobs")
 
 
 def is_job_dir(path: str) -> bool:
@@ -87,7 +87,7 @@ async def run_awaited(op: str, args: dict, background: bool = False,
     job_dir = new_run_dir(jobs_dir(), tag_suffix=op)
     write_json(os.path.join(job_dir, JOB_FILE), {"op": op, "args": args}, indent=2)
     # The tests (and any embedder) repoint the store in-process; the worker must follow.
-    env = {**os.environ, "MIMIR_PROXY_BENCH_DIR": store.cache_dir()}
+    env = {**os.environ, "MIMIR_PROXY_BENCH_DIR": proxy_store.cache_dir()}
     pid = launch_detached([sys.executable, *launch_argv(_JOB_WORKER, "--job-dir", job_dir)],
                            job_dir, log_file=run_log_path(job_dir), env=env)
 

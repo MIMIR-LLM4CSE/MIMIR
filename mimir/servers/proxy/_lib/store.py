@@ -1,7 +1,5 @@
-"""Where proxy state lives (under ``<workspace>/proxy_bench/``) and its persistence.
-
-Every path derives from ``_CACHE_DIR`` (``MIMIR_PROXY_BENCH_DIR``); also the atomic IO and
-the registry, suite, reference and optimization-session stores.
+"""The proxy server's persistence over the layout of ``shared/proxy_store``: the registry,
+suite, reference and optimization-session stores, and their locks.
 """
 
 from __future__ import annotations
@@ -14,22 +12,13 @@ import shutil
 import threading
 
 from ....shared.atomic import write_json, write_text
+from ....shared.proxy_store import (
+    active_session_file, cache_dir, opt_config_file, opt_session_runs_dir,
+    read_json, registry_path, resolve_proxy_name,
+)
 from ....shared.responses import err
 
 # ── storage root ──────────────────────────────────────────────────────────────
-
-# Under the workspace, so the experiment goes with the project; not `.mimir/` (the
-# extensions directory) nor the state dir (references are megabytes). Workspace from
-# MCP_FILES_ROOT, else cwd; MIMIR_PROXY_BENCH_DIR wins (tests).
-_WORKSPACE_ROOT = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd())
-
-_CACHE_DIR = (os.environ.get("MIMIR_PROXY_BENCH_DIR")
-              or os.path.join(_WORKSPACE_ROOT, "proxy_bench"))
-
-
-def cache_dir() -> str:
-    return _CACHE_DIR
-
 
 def workspace_root() -> str:
     """The live workspace root, realpath-resolved (``build`` keeps its spelling instead)."""
@@ -37,64 +26,27 @@ def workspace_root() -> str:
         os.environ.get("MCP_FILES_ROOT") or os.getcwd()))
 
 
-def registry_path() -> str:
-    return os.path.join(_CACHE_DIR, "registry.json")
-
-
 def registry_lock_path() -> str:
     return registry_path() + ".lock"
 
 
 def refs_dir() -> str:
-    return os.path.join(_CACHE_DIR, "references")
+    return os.path.join(cache_dir(), "references")
 
 
 def runs_dir() -> str:
-    return os.path.join(_CACHE_DIR, "runs")
+    return os.path.join(cache_dir(), "runs")
 
 
 def suites_dir() -> str:
-    return os.path.join(_CACHE_DIR, "suites")
+    return os.path.join(cache_dir(), "suites")
 
 
 def scaffolds_dir() -> str:
-    return os.path.join(_CACHE_DIR, "scaffolds")
+    return os.path.join(cache_dir(), "scaffolds")
 
 
-def opt_runs_dir() -> str:
-    return os.path.join(_CACHE_DIR, "opt_runs")
-
-
-def active_session_file(session_id: str | None = None) -> str:
-    """The pointer to the proxy a nameless ``proxy_eval`` op acts on: one per MIMIR session."""
-    sid = session_id if session_id is not None else _mimir_session_id()
-    name = f"active_session.{sid}" if sid else "active_session"
-    return os.path.join(opt_runs_dir(), name)
-
-
-def _mimir_session_id() -> str:
-    """The MIMIR session this process is acting for, or "".
-
-    Best-effort: a store reachable without the shared state helpers (a bare test
-    fixture) must keep working, and "no session" is the pre-existing behaviour.
-    """
-    try:
-        from ....shared.state_paths import active_session_id
-        return active_session_id()
-    except Exception:
-        return ""
-
-
-# ── generic atomic IO ─────────────────────────────────────────────────────────
-
-def read_json(path: str, default=None):
-    """Best-effort JSON read; returns *default* on a missing or corrupt file."""
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        return default
-
+# ── run directories ───────────────────────────────────────────────────────────
 
 def run_dir_names(parent: str) -> list[str]:
     """Run-dir names under *parent*, newest first; the 'active' symlink excluded."""
@@ -141,10 +93,10 @@ def registry_lock(create: bool = False):
         finally:
             _REGISTRY_LOCK_LOCAL.depth -= 1
         return
-    if not create and not os.path.isdir(_CACHE_DIR):
+    if not create and not os.path.isdir(cache_dir()):
         yield
         return
-    os.makedirs(_CACHE_DIR, exist_ok=True)
+    os.makedirs(cache_dir(), exist_ok=True)
     fd = open(registry_lock_path(), "w")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -255,15 +207,6 @@ def latest_suite_results(name: str) -> str | None:
 
 # ── optimization-session layout ───────────────────────────────────────────────
 
-def opt_session_runs_dir(proxy_name: str) -> str:
-    """Directory that holds timestamped run dirs for one proxy's opt sessions."""
-    return os.path.join(opt_runs_dir(), proxy_name)
-
-
-def opt_config_file(proxy_name: str) -> str:
-    """Per-proxy opt config path: opt_runs/<proxy_name>/opt_config.json."""
-    return os.path.join(opt_session_runs_dir(proxy_name), "opt_config.json")
-
 
 def opt_active_link(proxy_name: str) -> str:
     return os.path.join(opt_session_runs_dir(proxy_name), "active")
@@ -311,25 +254,6 @@ def entry_or_err(proxy_name: str) -> tuple[dict, dict | None]:
         return {}, err(f"Proxy '{proxy_name}' not registered.",
                          hint="Call proxy_manage(op='register', ...) first.")
     return reg[proxy_name], None
-
-
-def resolve_proxy_name(arg: str, session_id: str | None = None) -> str | None:
-    """Return *arg* if non-empty, else read this session's pointer, else None.
-
-    *session_id* is for callers in the client process, where N sessions share one
-    environment and the id can only come from the agent that is acting.
-    """
-    if arg:
-        return arg
-    path = active_session_file(session_id)
-    if os.path.isfile(path):
-        try:
-            name = open(path).read().strip()
-            if name:
-                return name
-        except OSError:
-            pass
-    return None
 
 
 def write_active_session(proxy_name: str, session_id: str | None = None) -> None:

@@ -11,17 +11,10 @@ from datetime import datetime, timezone
 from . import check_name, with_next, err, ok
 from .._lib.execute import REF_RUN_TIMEOUT, run_benchmark_case, seal_reference
 from .._lib.store import (
-    refs_dir,
-    suites_dir,
-    entry_or_err,
-    load_registry_or_err,
-    suite_path,
-    load_suite,
-    save_suite,
-    suite_results_dir,
-    latest_suite_results,
-    read_json,
+    refs_dir, suites_dir, entry_or_err, load_registry_or_err, suite_path, load_suite,
+    save_suite, suite_results_dir, latest_suite_results,
 )
+from ....shared.proxy_store import read_json
 
 
 # ── read-only ─────────────────────────────────────────────────────────────────

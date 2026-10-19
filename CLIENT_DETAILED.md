@@ -585,7 +585,7 @@ The pluggable LLM backends behind one interface, plus token counting.
 
 Behaviour governance. `policy/` blocks, `nudges/` advises, `observations/` writes the
 blackboard, `workflow/` holds the state, `verification/` establishes what is verified; the root
-holds `proxy_state`, the one reader of the proxy server's store, which several of them ask. Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
+holds `proxy_state`, the one reader of the proxy server's store (through `shared/proxy_store`), which several of them ask. Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
 Paths below are relative to `mimir/client/guardrails/`.
 
 ### `workflow/` (root)

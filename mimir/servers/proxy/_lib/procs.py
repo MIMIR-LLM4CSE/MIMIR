@@ -8,6 +8,7 @@ in ``store``; this module only adds process semantics on top of it.
 
 from __future__ import annotations
 
+from ....shared import proxy_store
 import json
 import os
 import re
@@ -383,7 +384,7 @@ def write_run_config(run_dir: str, config: dict) -> None:
 
 def update_run_config(run_dir: str, updates: dict) -> None:
     """Merge *updates* into an existing run config, preserving every other key."""
-    from .store import read_json
+    from ....shared.proxy_store import read_json
     cfg = read_json(os.path.join(run_dir, "config.json"), {}) or {}
     cfg.update(updates)
     write_run_config(run_dir, cfg)
@@ -627,7 +628,7 @@ def update_opt_active_link(proxy_name: str, run_dir: str) -> None:
 
 def opt_active_run_dir(proxy_name: str) -> str | None:
     link = store.opt_active_link(proxy_name)
-    session_dir = store.opt_session_runs_dir(proxy_name)
+    session_dir = proxy_store.opt_session_runs_dir(proxy_name)
     if os.path.islink(link):
         target = os.readlink(link)
         if not os.path.isabs(target):

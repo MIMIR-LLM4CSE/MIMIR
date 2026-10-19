@@ -18,15 +18,8 @@ from .._lib.report import diff_run_pair, parse_runner_log
 from ._eval_ratchet import ratchet_state
 from ....shared import build_progress
 from .._lib import build, procs
-from .._lib.store import (
-    load_registry,
-    load_opt_config,
-    opt_session_runs_dir,
-    opt_ledger_file,
-    resolve_proxy_name,
-    read_json,
-    run_dir_names,
-)
+from .._lib.store import load_registry, load_opt_config, opt_ledger_file, run_dir_names
+from ....shared.proxy_store import opt_session_runs_dir, resolve_proxy_name, read_json
 from .eval_common import (
     LONG_BUILD_S,
     NEXT_RESET_BEST,

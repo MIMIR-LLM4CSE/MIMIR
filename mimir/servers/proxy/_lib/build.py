@@ -8,6 +8,7 @@ SERVERS_DETAILED.md, "proxy".
 
 from __future__ import annotations
 
+from ....shared import proxy_store
 import json
 import os
 import re
@@ -18,7 +19,7 @@ import time
 
 from . import proc_run
 
-from . import procs, store
+from . import procs
 
 # Long enough for a real project's first build, bounded so a wedged build cannot
 # hold a run for the whole 24 h measurement budget. Half an hour was not: a GPU
@@ -269,7 +270,7 @@ def write_report(run_dir: str, records: list[dict]) -> dict:
 
 def read_report(run_dir: str) -> dict | None:
     """Read a run's build.json, or None when the run declared no build."""
-    data = store.read_json(report_path(run_dir))
+    data = proxy_store.read_json(report_path(run_dir))
     return data if isinstance(data, dict) else None
 
 

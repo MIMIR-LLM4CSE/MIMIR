@@ -1,13 +1,13 @@
-"""Which proxy this conversation is optimising, read off the proxy server's own store.
+"""Which proxy this conversation is optimising, read off the proxy server's store.
 
 Its own module because three guardrail modules ask (the policy gate, the evidence the
-observations record, the completion report) and none of them owns the answer; nothing
-else in the client reads the store. It is imported at the moment of asking: it is the
-proxy server's library, heavy, and needed only by a conversation that optimises.
+observations record, the completion report) and none of them owns the answer.
 """
 from __future__ import annotations
 
 import logging
+
+from ...shared import proxy_store
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +19,8 @@ def active_proxy_source(session_id: str | None = None) -> str:
     which only the evidence paths use (they never gate).
     """
     try:
-        from ...servers.proxy._lib import store
-
-        name = store.resolve_proxy_name("", session_id)
-        if not name:
-            return ""
-        cfg = store.read_json(store.opt_config_file(name))
-        src = cfg.get("proxy_source_path") if isinstance(cfg, dict) else None
-        return src if isinstance(src, str) else ""
+        name = proxy_store.resolve_proxy_name("", session_id)
+        return proxy_store.source_path(name) if name else ""
     except Exception:
         logger.debug("active_proxy_source: a best-effort step failed and was skipped", exc_info=True)
         return ""
@@ -37,18 +31,7 @@ def proxy_executable_paths(session_id: str | None = None) -> set[str]:
 
     Not best-effort: the exec gate reads it, and an unreadable store must not open it.
     """
-    from ...servers.proxy._lib import store
-
-    name = store.resolve_proxy_name("", session_id)
+    name = proxy_store.resolve_proxy_name("", session_id)
     if not name:
         return set()
-    paths = set()
-    src = active_proxy_source(session_id)
-    if src:
-        paths.add(src)
-    reg = store.read_json(store.registry_path())
-    entry = reg.get(name) if isinstance(reg, dict) else None
-    exe = entry.get("executable_path") if isinstance(entry, dict) else None
-    if isinstance(exe, str) and exe:
-        paths.add(exe)
-    return paths
+    return {p for p in (active_proxy_source(session_id), proxy_store.executable_path(name)) if p}

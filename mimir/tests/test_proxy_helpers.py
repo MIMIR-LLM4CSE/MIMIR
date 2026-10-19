@@ -14,6 +14,7 @@ from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
+from mimir.shared import proxy_store
 from mimir.servers.proxy._lib import execute, metrics, procs, ratchet, report, store
 from mimir.tests.support.proxy import _TmpStorageTest, pin_local_scheduler
 from mimir.shared.atomic import write_json
@@ -238,7 +239,7 @@ class PostRunFinalizeTests(_TmpStorageTest):
         np.savez(os.path.join(rd, "output.npz"), field=np.arange(16, dtype=np.float64))
         write_json(os.path.join(rd, "metrics.json"),
                                  {"mass": 120.0, "time_s": 1.0})
-        write_json(store.registry_path(), {"tiny": {
+        write_json(proxy_store.registry_path(), {"tiny": {
             "name": "tiny", "executable_path": "/bin/true",
             "run_cmd_template": "true", "output_format": "npz",
             "conserved_metric": "mass",
@@ -258,7 +259,7 @@ class PostRunFinalizeTests(_TmpStorageTest):
     def test_detached_run_carries_the_invariants(self) -> None:
         d = self._run_dir()
         execute._post_run_finalize(d, "tiny", "ref1", "npz", wall_s=0.6, returncode=0)
-        m = store.read_json(os.path.join(d, "metrics.json"))
+        m = proxy_store.read_json(os.path.join(d, "metrics.json"))
 
         self.assertEqual(m["comparison_to_reference"]["reference"], "ref1")
         # Error norms lifted to top level so requirements can gate on them.
@@ -273,13 +274,13 @@ class PostRunFinalizeTests(_TmpStorageTest):
     def test_conservation_drift_surfaces_as_a_metric(self) -> None:
         d = self._run_dir(mass=126.0)
         execute._post_run_finalize(d, "tiny", "ref1", "npz", wall_s=0.6, returncode=0)
-        m = store.read_json(os.path.join(d, "metrics.json"))
+        m = proxy_store.read_json(os.path.join(d, "metrics.json"))
         self.assertAlmostEqual(m["conservation_residual"], 0.05, places=6)
 
     def test_unknown_proxy_still_settles(self) -> None:
         d = self._run_dir()
         execute._post_run_finalize(d, "ghost", "ref1", "npz", wall_s=0.6, returncode=0)
-        m = store.read_json(os.path.join(d, "metrics.json"))
+        m = proxy_store.read_json(os.path.join(d, "metrics.json"))
         self.assertEqual(m["finite"], 1)          # entry-independent invariant
         self.assertNotIn("conservation_residual", m)   # needs conserved_metric
 
@@ -603,7 +604,7 @@ class ReservedMetricsTests(unittest.TestCase):
     def test_run_benchmark_case_ignores_forged_invariants(self) -> None:
         import time as _time
         with tempfile.TemporaryDirectory() as tmp:
-            old_root, store._CACHE_DIR = store._CACHE_DIR, tmp
+            old_root, proxy_store._ROOT = proxy_store._ROOT, tmp
             try:
                 exe = os.path.join(tmp, "forger.py")
                 with open(exe, "w") as fh:
@@ -636,7 +637,7 @@ class ReservedMetricsTests(unittest.TestCase):
                                  ["conservation_residual", "l2_rel"])
                 self.assertEqual(metrics["finite"], 1)
             finally:
-                store._CACHE_DIR = old_root
+                proxy_store._ROOT = old_root
 
 
 class NormalizeTimeMetricsTests(unittest.TestCase):
@@ -696,7 +697,7 @@ class RunBenchmarkCaseIntegrityTests(unittest.TestCase):
 
     def test_forged_time_s_is_replaced_by_wall_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            old_root, store._CACHE_DIR = store._CACHE_DIR, tmp
+            old_root, proxy_store._ROOT = proxy_store._ROOT, tmp
             try:
                 run_dir, row = self._run_case(tmp, textwrap.dedent("""\
                     print("PROXY_METRICS_BEGIN")
@@ -716,11 +717,11 @@ class RunBenchmarkCaseIntegrityTests(unittest.TestCase):
                 self.assertEqual(metrics["time_s_ignored"], 99999)
                 self.assertEqual(metrics["returncode"], 0)
             finally:
-                store._CACHE_DIR = old_root
+                proxy_store._ROOT = old_root
 
     def test_nonzero_exit_fails_case_even_with_metrics_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            old_root, store._CACHE_DIR = store._CACHE_DIR, tmp
+            old_root, proxy_store._ROOT = proxy_store._ROOT, tmp
             try:
                 run_dir, row = self._run_case(tmp, textwrap.dedent("""\
                     import sys
@@ -735,7 +736,7 @@ class RunBenchmarkCaseIntegrityTests(unittest.TestCase):
                 self.assertFalse(os.path.isfile(os.path.join(run_dir, "metrics.json")))
                 self.assertEqual(procs.run_state(run_dir)["state"], "crashed")
             finally:
-                store._CACHE_DIR = old_root
+                proxy_store._ROOT = old_root
 
 
 class RegistryLockThreadingTests(_TmpStorageTest):

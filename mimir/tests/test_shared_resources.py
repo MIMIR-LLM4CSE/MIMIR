@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from mimir.shared import proxy_store
 from mimir.client.config import paths
 from mimir.tests.support.agents import fake_agent
 
@@ -26,9 +27,9 @@ class ProxyActiveSessionPointerTests(unittest.TestCase):
         self.store = store
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self._orig_cache = store._CACHE_DIR
-        store._CACHE_DIR = os.path.join(self._tmp.name, "proxy_bench")
-        self.addCleanup(setattr, store, "_CACHE_DIR", self._orig_cache)
+        self._orig_cache = proxy_store._ROOT
+        proxy_store._ROOT = os.path.join(self._tmp.name, "proxy_bench")
+        self.addCleanup(setattr, proxy_store, "_ROOT", self._orig_cache)
         env = patch.dict(os.environ, {"MIMIR_STATE_DIR": self._tmp.name}, clear=False)
         env.start()
         self.addCleanup(env.stop)
