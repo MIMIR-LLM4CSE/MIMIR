@@ -11,7 +11,7 @@ import logging
 import os
 import signal
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from ....config import DEFAULT_MODEL
 from ....llm.openai_compat import OpenAICompatBackend
@@ -36,6 +36,9 @@ __all__ = ["serve"]
 # Ceiling on an inbound frame. Sized for the client transcript, the only message that
 # can get large: a long session's tool rows, diffs and clipped command output.
 _MAX_FRAME_BYTES = 32 * 1024 * 1024
+# How long a starting server waits for the lock of one that is stopping: closing every
+# agent's MCP servers takes seconds, and a minute covers a slow one.
+_LOCK_WAIT_SECS = 60.0
 
 
 def _announced_address(sockets: Any) -> tuple[str, int]:
@@ -134,7 +137,7 @@ async def serve(
 
     # The pool: one agent per conversation, built on its first query, shared by every
     # connection. One server per workspace, enforced before binding (see registry.acquire).
-    if not server_registry.acquire():
+    if not await _acquire_lock():
         existing = server_registry.current()
         if existing:
             # Say where the real one is, on the line the extension parses. A caller
@@ -181,8 +184,16 @@ async def serve(
         _addr = _announced_address(server.sockets)
         server_registry.publish(url=url, host=_addr[0], port=_addr[1],
                                 model=pool.model)
+        def _retire() -> None:
+            # First thing on the way out, before the agents are closed: closing them
+            # takes seconds, and a window opened meanwhile must not find this address and
+            # attach to a server that is going away. Listening stops with it; the
+            # connections already open finish on their own.
+            server_registry.clear()
+            server.close(close_connections=False)
+
         try:
-            await _run_until_signalled(pool)
+            await _run_until_signalled(pool, retire=_retire)
         finally:
             # Retired here rather than in the signal path: a crash leaves it behind on
             # purpose, and a reader checks liveness instead of trusting the file.
@@ -190,11 +201,30 @@ async def serve(
             server_registry.release()
 
 
-async def _run_until_signalled(pool: AgentPool) -> None:
+async def _acquire_lock() -> bool:
+    """Take the workspace's server lock, waiting while its holder is on the way out.
+
+    A stopping server holds the lock while it closes its agents, its address already
+    withdrawn, so a server started then waits rather than refuse. False once a live
+    server answers, or when the wait ends with the lock still held.
+    """
+    deadline = asyncio.get_running_loop().time() + _LOCK_WAIT_SECS
+    while True:
+        if server_registry.acquire():
+            return True
+        if server_registry.current() is not None:
+            return False
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.25)
+
+
+async def _run_until_signalled(pool: AgentPool, retire: Callable[[], None] = lambda: None) -> None:
     """Serve until a signal, a client ``shutdown`` or the pool's idle stop; then close every agent.
 
-    Only closing an agent's exit stack reaps its MCP servers (each in its own process
-    group). Uses ``add_signal_handler``; without it (Windows) serves until stopped.
+    *retire* runs first, so nothing new reaches a server that is stopping. Only closing an
+    agent's exit stack reaps its MCP servers (each in its own process group). Uses
+    ``add_signal_handler``; without it (Windows) serves until stopped.
     """
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
@@ -223,6 +253,10 @@ async def _run_until_signalled(pool: AgentPool) -> None:
         print(f"Stopping ({why}) — closing agent connections…",
               file=ORIGINAL_STDOUT, flush=True)
     finally:
+        try:
+            retire()
+        except Exception:
+            logger.warning("stopping: could not retire this server's address", exc_info=True)
         asked.cancel()
         for sig in installed:
             try:
