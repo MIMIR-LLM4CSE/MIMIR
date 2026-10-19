@@ -189,8 +189,8 @@ def _next_tool_class(policy_stage: str, execution_context: ExecutionContext | No
         return "local_discovery"
     if policy_stage == "cluster_submit":
         return "local_validation"
-    if policy_stage == "proxy_exec":
-        return "proxy_eval_run"
+    if policy_stage == "sealed_exec":
+        return "the_sealing_servers_route"
     if policy_stage == "approval":
         # Not "…_or_approval": asking again is the one move a refusal rules out.
         return "safe_alternative_or_skip_or_hand_back"

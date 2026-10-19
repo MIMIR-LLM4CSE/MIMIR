@@ -98,7 +98,7 @@ Gates run in this fixed order. The first one that objects stops the call.
 | 1 | registry | unknown tool name | blocks | blocks | blocks |
 | 2 | pack `pre_mutation` | application rules, before the built-ins | blocks | blocks | blocks |
 | 3 | cluster-submit | holds a cluster job until something was checked locally | blocks | blocks | blocks |
-| 4 | proxy-exec | forbids running an optimised proxy outside `proxy_eval` | blocks | blocks | blocks |
+| 4 | sealed-exec | forbids running directly a file a server sealed (the proxy under optimisation) | blocks | blocks | blocks |
 | 5 | state guard | refuses edits to a file that exhausted its retry budget | blocks | blocks | blocks |
 | 6 | write policy | read-before-overwrite, delete evidence, anti-thrashing | blocks | blocks | blocks |
 | 7 | pack `pre_approval` | application rules, just before the prompt | blocks | blocks | blocks |
@@ -284,7 +284,7 @@ target **already exists** — a file that does not exist yet has no callers to b
 |---|---|
 | `guardrails/policy/engine.py` | `evaluate_tool_preconditions` — the gate order and the pack slots |
 | `guardrails/policy/violations.py` | violation enrichment, missing evidence, path clarification |
-| `guardrails/policy/gates.py` | the individual gates: cluster-submit, proxy-exec, out-of-workspace |
+| `guardrails/policy/gates.py` | the individual gates: cluster-submit, sealed-exec, out-of-workspace |
 | `guardrails/policy/write.py` | read-before-overwrite, delete evidence, anti-thrashing |
 | `guardrails/policy/state_machine.py` | the workflow-state guard and the retry budget |
 | `guardrails/policy/approval.py` | `ApprovalManager`: prompts, `always` grants, batch mode, snapshots, revert |
@@ -1003,14 +1003,20 @@ by declaring the capability.
 
 ---
 
-## Proxy direct-execution guard
+## Sealed-execution guard
 
-During a proxy optimisation session the model may improve the proxy only by editing its
-source and going through `proxy_eval(op='run')`. A direct `python proxy.py` bypasses
-reference sealing, the numerical invariants and the ratchet, and would let a hand-run be
-reported as a win.
+A server may seal files for a conversation: they run only through its own tools. The
+proxy server seals the proxy under optimisation, its source and its executable: during
+a session it improves only by editing the source and going through
+`proxy_eval(op='run')`, and a direct `python proxy.py` would bypass reference sealing,
+the numerical invariants and the ratchet, and let a hand-run be reported as a win.
 
-`gates.check_proxy_exec` runs right after the cluster-submit guard.
+The seal is a file the server writes, `<session state>/seals/<owner>.json`
+(`shared/exec_seals`): the paths, the files its runs measure, and the refusal and hint
+the client returns. The client knows no domain: `gates.check_sealed_exec` runs right
+after the cluster-submit guard and reads the seals of the calling agent's session; the
+evidence reads the measured files (a run the server records raises them to `measured`,
+and the report names one edited and never measured).
 
 - Scoped by the **`command_prefix` scope** — the tools taking a raw shell command — not by
   `CODE_EXEC`, which also marks tools executing through structured arguments. Reading
@@ -1020,13 +1026,16 @@ reported as a win.
   proxy **in command position**. The command is parsed the same way `bash_classify`
   segments it. Read-only inspection (`cat`/`grep`/`ls proxy.py`) never matches: the proxy
   is an argument there, not the executed program.
-- Blocking steers to `proxy_eval(op='run')` via `suggested_next_tool_class`.
-- `proxy_eval(op='end')` clears the session and lifts the guard. `reset`/`reset_to_best`
-  are mid-loop reverts and do not end it.
+- Blocking returns the seal's own refusal and hint, which name the route
+  (`proxy_eval(op='run')`) and how to lift it.
+- The proxy server rewrites its seal whenever the store changes what it covers (the
+  session's start, its configuration, the registered executable); `proxy_eval(op='end')`
+  removes it and lifts the guard. `reset`/`reset_to_best` are mid-loop reverts and do
+  not end it.
 
 A hard anti-bypass block, so **never** enforcement-tiered, capability-driven, and
-**fail-open** on any internal error — a store or parse failure yields "no opinion", never a
-wedged pipeline. Residual gap: pasting the proxy's body inline into a fresh script is not
+**fail-open** on any internal error — an unreadable seal or a parse failure yields "no
+opinion", never a wedged pipeline. Residual gap: pasting the proxy's body inline into a fresh script is not
 detected; the server-side reserved-metrics guard still prevents forging a result.
 
 ---

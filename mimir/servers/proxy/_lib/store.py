@@ -1,4 +1,4 @@
-"""The proxy server's persistence over the layout of ``shared/proxy_store``: the registry,
+"""The proxy server's persistence over its ``layout``: the registry,
 suite, reference and optimization-session stores, and their locks.
 """
 
@@ -11,10 +11,17 @@ import os
 import shutil
 import threading
 
+from ....shared import exec_seals
 from ....shared.atomic import write_json, write_text
-from ....shared.proxy_store import (
-    active_session_file, cache_dir, opt_config_file, opt_session_runs_dir,
-    read_json, registry_path, resolve_proxy_name,
+from .layout import (
+    active_session_file,
+    cache_dir,
+    opt_config_file,
+    opt_runs_dir,
+    opt_session_runs_dir,
+    read_json,
+    registry_path,
+    resolve_proxy_name,
 )
 from ....shared.responses import err
 
@@ -147,6 +154,7 @@ def save_registry(reg: dict) -> None:
     # write creates the directory itself in any case.
     with registry_lock():
         write_json(registry_path(), reg, indent=2)
+    republish_seals()
 
 
 # ── run / reference layout ────────────────────────────────────────────────────
@@ -239,6 +247,7 @@ def save_opt_config(cfg: dict, proxy_name: str = "") -> None:
     if not name:
         return
     write_json(opt_config_file(name), cfg, indent=2)
+    republish_seals()
 
 
 def entry_or_err(proxy_name: str) -> tuple[dict, dict | None]:
@@ -257,17 +266,80 @@ def entry_or_err(proxy_name: str) -> tuple[dict, dict | None]:
 
 
 def write_active_session(proxy_name: str, session_id: str | None = None) -> None:
-    """Persist *proxy_name* as this MIMIR session's most-recently initialized proxy."""
+    """Persist *proxy_name* as this MIMIR session's most-recently initialized proxy, and seal it."""
     write_text(active_session_file(session_id), proxy_name)
+    publish_seal(session_id)
 
 
 def clear_active_session(session_id: str | None = None) -> None:
     """Drop the active-session pointer (best-effort). Leaves opt_config/runs intact
     for history; only the "current session" marker is removed, so nameless ops no
-    longer resolve to it and the client's proxy-exec guard lifts."""
+    longer resolve to it and the seal on running the proxy directly lifts."""
     try:
         os.remove(active_session_file(session_id))
     except FileNotFoundError:
         pass
     except OSError:
         pass
+    exec_seals.unseal(SEAL_OWNER, session_id)
+
+
+# ── the seal on running the proxy directly ────────────────────────────────────
+# During a session the proxy runs through proxy_eval(op='run') only: a direct run skips
+# reference sealing, the invariants and the ratchet. The client's execution gate reads
+# the seal (shared/exec_seals), and its evidence reads the source a run measures.
+
+SEAL_OWNER = "proxy"
+SEAL_REFUSAL = "Direct execution of the proxy under optimization is blocked."
+SEAL_HINT = (
+    "A proxy optimization session is active. Run the proxy through "
+    "proxy_eval(op='run') — executing it directly bypasses reference sealing, "
+    "the numerical invariants and the ratchet, so a hand-run cannot be a valid "
+    "result. To run it directly again, end the session with proxy_eval(op='end')."
+)
+
+
+def publish_seal(session_id: str | None = None) -> None:
+    """Seal the session's active proxy, its source and its executable, from the store as it is."""
+    name = resolve_proxy_name("", session_id)
+    cfg = read_json(opt_config_file(name)) if name else None
+    reg = read_json(registry_path()) if name else None
+    src = cfg.get("proxy_source_path") if isinstance(cfg, dict) else None
+    entry = reg.get(name) if isinstance(reg, dict) and name else None
+    exe = entry.get("executable_path") if isinstance(entry, dict) else None
+    paths = [p for p in (src, exe) if isinstance(p, str) and p]
+    if not paths:
+        exec_seals.unseal(SEAL_OWNER, session_id)
+        return
+    exec_seals.seal(SEAL_OWNER, paths, measured=[src] if isinstance(src, str) and src else [],
+                    refusal=SEAL_REFUSAL, hint=SEAL_HINT, session_id=session_id)
+
+
+def sessions_with_an_active_proxy() -> list[str]:
+    """The session ids whose pointer names a proxy ("" for the pointer outside a session)."""
+    root = opt_runs_dir()
+    prefix = os.path.basename(active_session_file(""))
+    out: list[str] = []
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return out
+    for entry in entries:
+        if not entry.startswith(prefix):
+            continue
+        path = os.path.join(root, entry)
+        if os.path.isfile(path):
+            out.append(entry[len(prefix) + 1:])
+            continue
+        # A sub-session's id carries slashes, so its pointer sits in directories.
+        for dirpath, _dirs, files in os.walk(path):
+            for name in files:
+                rel = os.path.relpath(os.path.join(dirpath, name), root)
+                out.append(rel[len(prefix) + 1:])
+    return out
+
+
+def republish_seals() -> None:
+    """Re-seal every session with an active proxy: a store write may change what it covers."""
+    for session_id in sessions_with_an_active_proxy():
+        publish_seal(session_id)

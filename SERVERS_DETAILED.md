@@ -1707,7 +1707,7 @@ Storage layout (all under `<workspace>/proxy_bench/`):
 - `references/<name>/` — sealed reference datasets (metrics + output files)
 - `runs/<proxy_name>/<timestamp>/` — per-run outputs, metrics, param file, postrun.py; `runs/<proxy_name>/active` symlink to the most-recent run
 - `suites/<name>/suite.json` + `suites/<name>/results/<timestamp>/summary.json` (+ per-case `run_dir` pointers)
-- `opt_runs/active_session`, `opt_runs/canonical/<proxy>.<ext>` (one-time source snapshot, never overwritten), `opt_runs/<proxy>/opt_config.json` + timestamped run dirs + `active` symlink; ratchet state: `opt_runs/<proxy>/best.json` + `best_source<ext>` (best-so-far pointer + its source snapshot for `reset_to_best`), `opt_runs/<proxy>/ledger.jsonl` (append-only per-run verdicts), and a frozen `ratchet.json` inside each run dir
+- `opt_runs/active_session.<session>` (the pointer a nameless op resolves; the seal the client reads is written beside it, in the session's `seals/proxy.json`, by `store.publish_seal`), `opt_runs/canonical/<proxy>.<ext>` (one-time source snapshot, never overwritten), `opt_runs/<proxy>/opt_config.json` + timestamped run dirs + `active` symlink; ratchet state: `opt_runs/<proxy>/best.json` + `best_source<ext>` (best-so-far pointer + its source snapshot for `reset_to_best`), `opt_runs/<proxy>/ledger.jsonl` (append-only per-run verdicts), and a frozen `ratchet.json` inside each run dir
 - `scaffolds/<component>/` — generated harness files
 
 Safety model:

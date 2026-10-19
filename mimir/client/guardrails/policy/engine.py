@@ -11,7 +11,7 @@ from .gates import (
     mode_denied_payload,
     check_cluster_submit,
     check_out_of_workspace_access,
-    check_proxy_exec,
+    check_sealed_exec,
     check_skill_pull,
     out_of_workspace_targets,
 )
@@ -112,10 +112,10 @@ def _cluster_gate(call: _PolicyCall) -> PolicyEvaluation | None:
     return call.refuse(violation, "cluster_submit") if violation is not None else None
 
 
-def _proxy_gate(call: _PolicyCall) -> PolicyEvaluation | None:
-    violation = check_proxy_exec(call.agent, call.tool_name, call.arguments,
-                                  call.execution_context)
-    return call.refuse(violation, "proxy_exec") if violation is not None else None
+def _sealed_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    violation = check_sealed_exec(call.agent, call.tool_name, call.arguments,
+                                   call.execution_context)
+    return call.refuse(violation, "sealed_exec") if violation is not None else None
 
 
 def _skill_gate(call: _PolicyCall) -> PolicyEvaluation | None:
@@ -211,7 +211,7 @@ _PIPELINE: tuple = (
     _registry_gate,
     "pre_mutation",
     _cluster_gate,
-    _proxy_gate,
+    _sealed_gate,
     _skill_gate,
     _state_gate,
     _write_gate,

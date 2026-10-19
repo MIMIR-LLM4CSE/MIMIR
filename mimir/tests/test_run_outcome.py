@@ -8,9 +8,10 @@ import os
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
-from mimir.shared import proxy_store
+from mimir.servers.proxy._lib import layout
 from mimir.client.tools.capabilities import (
     CODE_EXEC,
     PLAN_BLOCKED,
@@ -161,14 +162,17 @@ class MeasuredTierTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = proxy_store._ROOT
-        proxy_store._ROOT = self._tmp.name
+        self._saved_root = layout._ROOT
+        layout._ROOT = self._tmp.name
+        state = mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": os.path.join(self._tmp.name, "state")})
+        state.start()
+        self.addCleanup(state.stop)
         self.source = os.path.join(self._tmp.name, "solver.py")
         with open(self.source, "w") as fh:
             fh.write("x = 1\n")
-        os.makedirs(proxy_store.opt_session_runs_dir("p"), exist_ok=True)
+        os.makedirs(layout.opt_session_runs_dir("p"), exist_ok=True)
         write_json(
-            proxy_store.opt_config_file("p"),
+            layout.opt_config_file("p"),
             {"proxy_name": "p", "proxy_source_path": self.source})
         store.write_active_session("p")
         self.agent = _runner_agent()
@@ -179,7 +183,7 @@ class MeasuredTierTests(unittest.TestCase):
         self.ec.edits.dirty_written_files.add(self.source)
 
     def tearDown(self) -> None:
-        proxy_store._ROOT = self._saved_root
+        layout._ROOT = self._saved_root
         self._tmp.cleanup()
 
     def _report(self, **fields) -> None:
@@ -227,7 +231,7 @@ class MeasuredTierTests(unittest.TestCase):
             arguments={"command": f"ruff check {self.source}"}, status="ok",
             payload={"stdout": ""}, execution_context=self.ec, call_id="call",
         ))
-        lines = workflow.unmeasured_proxy_source_lines(self.ec)
+        lines = workflow.unmeasured_source_lines(self.ec)
         self.assertEqual(len(lines), 1)
         self.assertIn("never measured", lines[0])
         summary = workflow.finalize_incomplete_answer("done", self.ec)
@@ -236,7 +240,7 @@ class MeasuredTierTests(unittest.TestCase):
 
     def test_a_measured_source_is_not_reported(self) -> None:
         self._report(state="done", feasible=True)
-        self.assertEqual(workflow.unmeasured_proxy_source_lines(self.ec), [])
+        self.assertEqual(workflow.unmeasured_source_lines(self.ec), [])
 
 
 # The command that produced the report this class exists to prevent: a heredoc the

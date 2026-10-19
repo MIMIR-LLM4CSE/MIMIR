@@ -38,9 +38,9 @@ from ...tools.capabilities import (
 from ...context.execution_context import ExecutionContext
 from ...context.paths import absolute_workspace_path, scratch_roots
 from ...core.ports import AgentPort
+from ....shared import exec_seals
 from ...protocol.tool_result import json_error_payload
 from ...tools.display import shorten_display_args, tool_arg_preview, tool_status_message
-from ..proxy_state import proxy_executable_paths
 
 logger = logging.getLogger(__name__)
 
@@ -284,9 +284,9 @@ def check_cluster_submit(
     )
 
 
-# ── proxy direct-execution guard ──────────────────────────────────────────────
-# In an optimization session the proxy improves through ``proxy_eval(op='run')`` only;
-# a direct run skips sealing, the invariants and the ratchet.
+# ── sealed-execution guard ────────────────────────────────────────────────────
+# A server seals the files that must run only through its own tools (shared/exec_seals);
+# running one directly is refused in the seal's own words.
 
 def _executed_programs(command: str, base: str) -> set[str]:
     """Real paths of the programs a shell command (or a bare path) would execute.
@@ -304,44 +304,36 @@ def _executed_programs(command: str, base: str) -> set[str]:
             progs.add(os.path.realpath(os.path.join(base, os.path.expanduser(prog))))
     return progs
 
-def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
-    """Real paths of the proxy under optimization in this conversation's session, or empty."""
-    return {os.path.realpath(p) for p in proxy_executable_paths(session_id)}
-
-
-def check_proxy_exec(
+def check_sealed_exec(
     agent: AgentPort, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:
-    """Block direct execution of a proxy under optimization (fail-open).
+    """Refuse running a file a server sealed for this conversation (fail-open).
 
     Only for tools with a ``command_prefix`` scope, and only a program in command position;
-    reading the source never matches (POLICY.md, "Proxy direct-execution guard").
+    reading a sealed file never matches (POLICY.md, "Sealed-execution guard").
     """
     if shell_command_args(tool_name, agent.tool_caps) is None:
         return None
     try:
-        targets = _proxy_exec_targets(getattr(agent, "session_id", None))
-        if not targets:
+        seals = exec_seals.sealed(getattr(agent, "session_id", None))
+        if not seals:
             return None
         _root, base = _call_base(agent, tool_name, arguments)
         executed: set[str] = set()
         for val in arguments.values():
             if isinstance(val, str) and val.strip():
                 executed |= _executed_programs(val, base)
-        if not (executed & targets):
+        hit = next((seals[p] for p in sorted(executed) if p in seals), None)
+        if hit is None:
             return None
     except Exception:
-        logger.debug("check_proxy_exec: a best-effort step failed and was skipped", exc_info=True)
+        logger.debug("check_sealed_exec: a best-effort step failed and was skipped", exc_info=True)
         return None
     return json_error_payload(
-        f"Direct execution of the proxy under optimization is blocked ('{tool_name}').",
-        hint=(
-            "A proxy optimization session is active. Run the proxy through "
-            "proxy_eval(op='run') — executing it directly bypasses reference sealing, "
-            "the numerical invariants and the ratchet, so a hand-run cannot be a valid "
-            "result. To run it directly again, end the session with proxy_eval(op='end')."
-        ),
+        f"{str(hit.get('refusal') or 'This file is sealed: it runs only through its server.')} "
+        f"('{tool_name}')",
+        hint=str(hit.get("hint") or ""),
         tool=tool_name,
     )
 

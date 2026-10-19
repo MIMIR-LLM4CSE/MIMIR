@@ -19,7 +19,7 @@ from .completion import (
     render_completion_report,
     split_answer_completion,
     unjudged_run_lines,
-    unmeasured_proxy_source_lines,
+    unmeasured_source_lines,
 )
 from .denials import (
     STAGE_DROP_OR_STOP,
@@ -50,6 +50,6 @@ __all__ = [
     "is_incomplete_answer", "parse_completion_block", "pending_validation_paths",
     "refused_action_lines", "render_completion_report", "set_workflow_state",
     "split_answer_completion", "turn_made_commitments", "unchecked_checklist_items",
-    "unhonoured_commitments", "unjudged_run_lines", "unmeasured_proxy_source_lines",
+    "unhonoured_commitments", "unjudged_run_lines", "unmeasured_source_lines",
     "worst_denial_stage",
 ]

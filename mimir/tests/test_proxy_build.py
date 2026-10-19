@@ -4,7 +4,7 @@ It happens once per run before any case; a failed build gives no verdict and no 
 entry; a restore leaves sources the build system notices.
 """
 
-from mimir.shared import proxy_store
+from mimir.servers.proxy._lib import layout
 from mimir.shared.launcher import launch_argv
 import json
 import os
@@ -292,7 +292,7 @@ class FailedBuildTests(_TmpStorageTest):
             "optimize_paths": [self._tracked()],
             "requirements": [], "primary_metric": "time_s", "primary_goal": "min",
         }, "tiny")
-        run_dir = procs.new_run_dir(proxy_store.opt_session_runs_dir("tiny"), "failed")
+        run_dir = procs.new_run_dir(layout.opt_session_runs_dir("tiny"), "failed")
         build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                       "returncode": 2, "duration_s": 4.0,
                                       "error": "build exited 2"}])
@@ -507,7 +507,7 @@ class RunnerPhaseTests(_TmpStorageTest):
         exe = self._make_exe()
         reg = {"tiny": {"build_cmd": sh, "executable_path": exe}}
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
-        run_dir = procs.new_run_dir(proxy_store.opt_session_runs_dir("tiny"), "g")
+        run_dir = procs.new_run_dir(layout.opt_session_runs_dir("tiny"), "g")
         with open(os.path.join(run_dir, "tree_at_launch.json"), "w") as fh:
             json.dump({"paths": [tracked],
                        "fingerprint": tree_snapshot.fingerprint(self.root, [tracked])},
@@ -537,7 +537,7 @@ class SplitPhaseTests(_TmpStorageTest):
     def _run_phase(self, run_dir: str, phase: str):
         import subprocess
         env = {**os.environ,
-               "MIMIR_PROXY_BENCH_DIR": proxy_store._ROOT,
+               "MIMIR_PROXY_BENCH_DIR": layout._ROOT,
                "MCP_FILES_ROOT": self.root}
         return subprocess.run(
             [sys.executable, *launch_argv("mimir.servers.proxy._proxy_runner", "--run-dir", run_dir, "--phase", phase)],
@@ -555,7 +555,7 @@ class SplitPhaseTests(_TmpStorageTest):
         server_proxy.proxy_manage(
             op="suite_define", name="bench",
             cases=[{"case_id": "c0", "proxy_name": "tiny"}], confirm=True)
-        run_dir = procs.new_run_dir(proxy_store.opt_session_runs_dir("tiny"))
+        run_dir = procs.new_run_dir(layout.opt_session_runs_dir("tiny"))
         procs.write_run_config(run_dir, {
             "proxy_name": "tiny", "benchmark_name": "bench", "requirements": [],
         })

@@ -269,6 +269,8 @@ class Bookkeeping:
     observed_agent_mode: str | None = _spec(lambda: None, (str, _NoneType))
     # the tree this agent works in; empty: the workspace the client started in
     workspace_root: str = _spec(lambda: "", (str,))
+    # the conversation this query belongs to; empty: the process's own
+    session_id: str = _spec(lambda: "", (str,))
     # the per-query dedup and spin guards
     loop_control: LoopControlState = _spec(LoopControlState, (LoopControlState,))
 

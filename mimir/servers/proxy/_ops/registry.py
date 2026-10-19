@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ....shared import proxy_store
+from .._lib import layout
 import os
 import shutil
 from datetime import datetime, timezone
@@ -13,7 +13,7 @@ from .._lib.command import PARAM_EXT
 from .._lib.procs import run_state
 from .._lib import store
 from .._lib.store import load_registry_or_err, save_registry, registry_lock, proxy_runs_dir
-from ....shared.proxy_store import read_json
+from .._lib.layout import read_json
 
 # Registration fields carried by the ``metadata`` dict parameter. Descriptive,
 # except the build triple: ``build_cmd`` is executed by the server before every
@@ -387,7 +387,7 @@ def unregister(name: str) -> dict:
 def _other_proxies_with_state(name: str) -> list[str]:
     """Other proxies that still have runs or a session on disk (after this one's removal)."""
     found: set[str] = set()
-    for directory in (store.runs_dir(), proxy_store.opt_runs_dir()):
+    for directory in (store.runs_dir(), layout.opt_runs_dir()):
         try:
             entries = os.listdir(directory)
         except OSError:
@@ -409,7 +409,7 @@ def clean(name: str) -> dict:
     kept_snapshots = ""
     for path, label in (
         (os.path.join(store.runs_dir(), name), "runs"),
-        (os.path.join(proxy_store.opt_runs_dir(), name), "optimisation state"),
+        (os.path.join(layout.opt_runs_dir(), name), "optimisation state"),
     ):
         if os.path.isdir(path):
             try:
@@ -419,8 +419,8 @@ def clean(name: str) -> dict:
                 return err(f"Could not remove {label}: {exc}")
 
     # The snapshot repository is shared by every proxy, so it is never removed for one.
-    snapshot_paths = [os.path.join(proxy_store.cache_dir(), "opt.git"),
-                      os.path.join(proxy_store.cache_dir(), "tree_snapshots")]
+    snapshot_paths = [os.path.join(layout.cache_dir(), "opt.git"),
+                      os.path.join(layout.cache_dir(), "tree_snapshots")]
     others = _other_proxies_with_state(name)
     if others:
         if any(os.path.isdir(p) for p in snapshot_paths):
@@ -435,7 +435,7 @@ def clean(name: str) -> dict:
                 except OSError:
                     pass
 
-    if proxy_store.resolve_proxy_name("") == name:
+    if layout.resolve_proxy_name("") == name:
         store.clear_active_session()
         removed.append("active-session pointer")
 
@@ -464,7 +464,7 @@ def clean(name: str) -> dict:
         kept.append(f"tree snapshots — one store shared with {kept_snapshots}, whose "
                     f"reset_to_best still needs it; removing it here would break their "
                     f"rollback. It goes when the last proxy with state is cleaned, or by "
-                    f"hand from {proxy_store.cache_dir()}")
+                    f"hand from {layout.cache_dir()}")
 
     return ok(with_next({
         "cleaned":  name,

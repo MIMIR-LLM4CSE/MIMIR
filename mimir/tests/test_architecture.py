@@ -124,6 +124,30 @@ class LayerTests(unittest.TestCase):
                      if target.startswith("mimir.servers")}
         self.assertEqual(sorted(offenders), [])
 
+    def test_the_guardrails_name_no_server_domain(self) -> None:
+        """What a server forbids reaches them as a seal or a capability, never by its name.
+
+        ``workspace`` and ``external`` are also the client's own words (its workspace root,
+        the ``EXTERNAL_FETCH`` capability), so they are not read as domains.
+        """
+        domains = {p.name for p in SERVERS.iterdir()
+                   if p.is_dir() and not p.name.startswith("_")} - {"workspace", "external"}
+        offenders = set()
+        for path in _python_files(CLIENT / "guardrails"):
+            tree = ast.parse(path.read_text())
+            words: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    words |= set(re.findall(r"[a-z]+", node.value.lower()))
+                elif isinstance(node, ast.Name):
+                    words |= set(node.id.lower().split("_"))
+                elif isinstance(node, ast.Attribute):
+                    words |= set(node.attr.lower().split("_"))
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    words |= set(node.name.lower().split("_"))
+            offenders |= {f"{path.relative_to(PACKAGE)}: {d}" for d in words & domains}
+        self.assertEqual(sorted(offenders), [])
+
     def test_only_the_sub_agent_side_of_the_servers_imports_the_client(self) -> None:
         offenders = set()
         for path in _python_files(SERVERS):

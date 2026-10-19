@@ -27,7 +27,7 @@ NOT_IN_THE_REPOSITORY = frozenset({
     "best.json", "build.json", "current.json", "embeddings.json", "machine.json",
     "meta.json", "metrics.json", "phase.json", "preferences.json", "probe.json",
     "ratchet.json", "registry.json", "subagent.json", "tree_at_launch.json",
-    "watcher.json", "todo_list.md", "postrun.py", "MEMORY.md", "PLANS.md",
+    "watcher.json", "todo_list.md", "postrun.py", "MEMORY.md", "PLANS.md", "seals/proxy.json",
     "harnesses/", "plans/", "references/", "scaffolds/", "subagents/",
     # the user's
     ".vscode/settings.json",

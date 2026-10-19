@@ -29,7 +29,7 @@ def main() -> None:
 
     from ...shared.responses import err
     from ...shared.atomic import write_json
-    from ...shared.proxy_store import read_json
+    from ._lib.layout import read_json
     from ._ops import references, suites
     from ._ops.exec_jobs import JOB_FILE, RESULT_FILE
 

@@ -103,7 +103,7 @@ def comparability_lines(cfg: dict, metric: str) -> list[dict]:
 def report() -> dict:
     """The section for the session this workspace is optimising, or a line saying none is."""
     from .._lib.store import load_registry
-    from ....shared.proxy_store import resolve_proxy_name
+    from .._lib.layout import resolve_proxy_name
     from .._lib.ratchet import load_best
 
     name = resolve_proxy_name("")

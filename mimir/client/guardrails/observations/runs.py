@@ -9,7 +9,7 @@ from ..verification.ladder import (
     record_run_outcome,
     register_run_failure,
 )
-from ..proxy_state import active_proxy_source
+from ....shared import exec_seals
 from ....shared.jobs import handed_over, launched
 from ...tools.capabilities import (
     CODE_EXEC,
@@ -123,19 +123,19 @@ def run_outcome(call: Call) -> None:
 def _credit_measured_source(
     execution_context: ExecutionContext, payload: dict, spec: dict[str, Any],
 ) -> None:
-    """Raise the optimisation session's source to the ``measured`` tier.
+    """Raise the files a sealing server says its runs measure to the ``measured`` tier.
 
-    The one exception to "a run validates no file": the session names exactly one source.
-    It records that the file was measured, not that the measurement was good.
+    The one exception to "a run validates no file": the seal names them. It records that
+    the file was measured, not that the measurement was good.
     """
     if _matches(payload, spec, "failed") or _matches(payload, spec, "crashed"):
         return
     if not _matches(payload, spec, "measured"):
         return
 
-    source = active_proxy_source()
-    if source and source in execution_context.edits.dirty_written_files:
-        mark_file_validated(execution_context, source, "measured")
+    for source in exec_seals.measured_sources(execution_context.bookkeeping.session_id or None):
+        if source in execution_context.edits.dirty_written_files:
+            mark_file_validated(execution_context, source, "measured")
 
 
 def _settle_from_machine(

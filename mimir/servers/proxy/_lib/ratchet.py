@@ -5,7 +5,7 @@ ledger, and the measurement policy (replicates, margin). The session-level settl
 
 from __future__ import annotations
 
-from ....shared import proxy_store
+from . import layout
 import json
 import os
 from datetime import datetime, timezone
@@ -91,7 +91,7 @@ def run_primary_value(run_metrics: dict, primary_metric: str):
 
 def load_best(proxy_name: str) -> dict | None:
     """Return the best-so-far record, or ``None`` if none has been recorded yet."""
-    return proxy_store.read_json(store.opt_best_file(proxy_name))
+    return layout.read_json(store.opt_best_file(proxy_name))
 
 
 def save_best(proxy_name: str, run_id: str, primary_value: float | None,

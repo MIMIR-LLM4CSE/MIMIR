@@ -1,17 +1,21 @@
-"""The proxy direct-execution guard (``gates.check_proxy_exec``): during a session, running
-the proxy's source directly is blocked; reading it is not.
+"""The sealed-execution guard (``gates.check_sealed_exec``) on the proxy's seal: during a
+session, running the proxy's source or executable directly is blocked; reading it is not.
+The seal is what the proxy server's store publishes; the guard knows no proxy.
 """
 
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
-from mimir.shared import proxy_store
+from mimir.servers.proxy._lib import layout
 from mimir.client.guardrails.policy import gates
 from mimir.client.tools.capabilities import ToolCaps, CODE_EXEC, READ
-# The store the server writes; the guard reads it through shared.proxy_store.
+# The store the server writes; the guard reads it through shared.layout.
 from mimir.servers.proxy._lib import store
+from mimir.shared import exec_seals
+from mimir.tests.support.proxy import _TmpStorageTest, _eval
 from mimir.shared.atomic import write_json  # noqa: E402
 
 
@@ -37,8 +41,12 @@ class _FakeAgent:
 class ProxyExecGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = proxy_store._ROOT
-        proxy_store._ROOT = self._tmp.name
+        self._saved_root = layout._ROOT
+        layout._ROOT = self._tmp.name
+        # The seals live in the session's state directory: this test's own.
+        state = mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": os.path.join(self._tmp.name, "state")})
+        state.start()
+        self.addCleanup(state.stop)
         self.agent = _FakeAgent()
 
         # A proxy source and executable living outside any workspace.
@@ -48,22 +56,22 @@ class ProxyExecGuardTests(unittest.TestCase):
             fh.write("print('hi')\n")
 
     def tearDown(self) -> None:
-        proxy_store._ROOT = self._saved_root
+        layout._ROOT = self._saved_root
         self._tmp.cleanup()
 
     # -- helpers ---------------------------------------------------------------
 
     def _init_session(self, name: str = "tiny") -> None:
-        os.makedirs(proxy_store.opt_session_runs_dir(name), exist_ok=True)
+        os.makedirs(layout.opt_session_runs_dir(name), exist_ok=True)
         write_json(
-            proxy_store.opt_config_file(name),
+            layout.opt_config_file(name),
             {"proxy_name": name, "proxy_source_path": self.src},
         )
-        write_json(proxy_store.registry_path(), {name: {"executable_path": self.exe}})
+        write_json(layout.registry_path(), {name: {"executable_path": self.exe}})
         store.write_active_session(name)
 
     def _check(self, tool: str, **args) -> str | None:
-        return gates.check_proxy_exec(self.agent, tool, args, {})
+        return gates.check_sealed_exec(self.agent, tool, args, {})
 
     def _assert_blocked(self, res: str | None) -> None:
         self.assertIsNotNone(res)
@@ -174,11 +182,45 @@ class ProxyExecGuardTests(unittest.TestCase):
     def test_registered_executable_is_read_under_its_real_key(self) -> None:
         """The registry stores the binary under ``executable_path``.
 
-        Reading any other key silently narrows the target set to the source file,
-        letting ``./the_binary`` through while the session is active.
+        Reading any other key silently narrows the seal to the source file, letting
+        ``./the_binary`` through while the session is active.
         """
         self._init_session()
-        self.assertIn(os.path.realpath(self.exe), gates._proxy_exec_targets())
+        self.assertIn(os.path.realpath(self.exe), exec_seals.sealed())
+
+    def test_a_new_executable_is_sealed_as_it_is_registered(self) -> None:
+        """The seal follows the store: it is rewritten when what it covers changes."""
+        self._init_session()
+        moved = os.path.join(self._tmp.name, "proxy_bin_v2")
+        reg = store.load_registry()
+        reg["tiny"]["executable_path"] = moved
+        store.save_registry(reg)
+        self._assert_blocked(self._check("bash_run", command=moved))
+        self.assertIsNone(self._check("bash_run", command=self.exe))
+
+    def test_another_conversation_is_not_sealed(self) -> None:
+        self._init_session()
+        self.assertEqual(exec_seals.sealed("another-conversation"), {})
+
+    def test_the_source_is_what_its_runs_measure(self) -> None:
+        self._init_session()
+        self.assertEqual(exec_seals.measured_sources(), {self.src})
+
+
+class TheServersOwnOpsSealTests(_TmpStorageTest):
+    """Through the proxy server's own tools: ``init`` seals, ``end`` lifts."""
+
+    def _blocked(self, command: str) -> bool:
+        return gates.check_sealed_exec(_FakeAgent(), "bash_run", {"command": command}, {}) is not None
+
+    def test_a_session_seals_its_source_until_it_ends(self) -> None:
+        res = self._session()
+        self.assertEqual(res.get("status"), "ok", res)
+        src = layout.read_json(layout.opt_config_file("tiny"))["proxy_source_path"]
+        self.assertTrue(self._blocked(f"python {src}"))
+        self.assertFalse(self._blocked(f"cat {src}"))
+        self.assertEqual(_eval(op="end", proxy_name="tiny", confirm=True).get("status"), "ok")
+        self.assertFalse(self._blocked(f"python {src}"))
 
 
 if __name__ == "__main__":

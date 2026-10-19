@@ -12,7 +12,7 @@ import unittest
 
 _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "proxy")
 
-from mimir.shared import proxy_store
+from mimir.servers.proxy._lib import layout
 from mimir.servers.proxy._lib import ratchet, store, tree_snapshot
 from mimir.shared.atomic import write_json
 from mimir.tests.support.modules import spec_for
@@ -26,16 +26,16 @@ class _Workspace(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.wt, True)
         os.environ["MCP_FILES_ROOT"] = self.wt
         self.addCleanup(os.environ.pop, "MCP_FILES_ROOT", None)
-        # `proxy_store._ROOT` is computed once at import, so setting MCP_FILES_ROOT here
+        # `layout._ROOT` is computed once at import, so setting MCP_FILES_ROOT here
         # moves the workspace without moving the store — every test in this file was
         # sharing one, and `opt_runs/` accumulated the proxies of whichever tests ran
         # first. Harmless until something asks "is this the last proxy with state?", and
         # then answered with another test's leftovers. Repointed the same way
         # `test_proxy_ops._TmpStorageTest` does, at the path `TreeAtomicityTests` already
         # spells out by hand.
-        self._saved_cache = proxy_store._ROOT
-        proxy_store._ROOT = os.path.join(self.wt, "proxy_bench")
-        self.addCleanup(setattr, proxy_store, "_ROOT", self._saved_cache)
+        self._saved_cache = layout._ROOT
+        layout._ROOT = os.path.join(self.wt, "proxy_bench")
+        self.addCleanup(setattr, layout, "_ROOT", self._saved_cache)
         os.makedirs(os.path.join(self.wt, "pkg"))
         self.harness = os.path.join(self.wt, "harness.py")
         self.a = os.path.join(self.wt, "pkg", "solver.py")
@@ -194,7 +194,7 @@ class RebaselineTests(_Workspace):
             "primary_goal": "min", "min_improvement": 0.02,
             "max_stall": 5, "stall": 3,
         }
-        os.makedirs(proxy_store.opt_session_runs_dir("p"), exist_ok=True)
+        os.makedirs(layout.opt_session_runs_dir("p"), exist_ok=True)
         store.save_opt_config(cfg)
         with open(store.opt_ledger_file("p"), "w", encoding="utf-8") as fh:
             fh.write('{"run_id": "r0", "primary_value": 0.0894}\n')
@@ -213,7 +213,7 @@ class RebaselineTests(_Workspace):
         archived = [n for n in out["archived"] if n.startswith("ledger")]
         self.assertEqual(len(archived), 1)
         self.assertTrue(archived[0].endswith(".jsonl"))
-        with open(os.path.join(proxy_store.opt_session_runs_dir("p"), archived[0])) as fh:
+        with open(os.path.join(layout.opt_session_runs_dir("p"), archived[0])) as fh:
             self.assertIn("0.0538", fh.read())
         # The best-so-far moves with it: both or neither, never a ledger that
         # disagrees with the best it is supposed to explain.
@@ -354,7 +354,7 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
     """
 
     def _optimisation(self, name: str, marker: str) -> None:
-        os.makedirs(proxy_store.opt_session_runs_dir(name), exist_ok=True)
+        os.makedirs(layout.opt_session_runs_dir(name), exist_ok=True)
         self._write(self.a, f"{marker}\n")
         snap = tree_snapshot.snapshot(
             store.opt_git_dir(), self.wt, [self.a, self.b], f"{name} best")
@@ -424,7 +424,7 @@ class ResumeNoticeTests(_Workspace):
     def _session(self, *, measured: bool = True) -> None:
         from mimir.servers.proxy._lib import procs
         self._write(self.a, "MEASURED_STATE\n")
-        os.makedirs(proxy_store.opt_session_runs_dir("bench"), exist_ok=True)
+        os.makedirs(layout.opt_session_runs_dir("bench"), exist_ok=True)
         snap = tree_snapshot.snapshot(
             store.opt_git_dir(), self.wt, [self.a], "baseline")
         store.save_opt_config({
@@ -435,7 +435,7 @@ class ResumeNoticeTests(_Workspace):
             "baseline_run_id": "r0" if measured else "",
             "primary_metric": "time_s", "primary_goal": "min",
             "min_improvement": 0.02, "max_stall": 5, "stall": 0})
-        run_dir = os.path.join(proxy_store.opt_session_runs_dir("bench"), "20240101T000000Z")
+        run_dir = os.path.join(layout.opt_session_runs_dir("bench"), "20240101T000000Z")
         os.makedirs(run_dir, exist_ok=True)
         write_json(os.path.join(run_dir, "tree_at_launch.json"), {
             "snapshot_id": snap, "paths": [self.a],

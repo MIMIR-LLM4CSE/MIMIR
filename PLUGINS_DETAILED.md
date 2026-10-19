@@ -96,6 +96,26 @@ no MIMIR metadata is still connected and classified from its standard MCP annota
 (`readOnlyHint` / `destructiveHint`). Example:
 [`mimir/examples/servers/server_example.py`](mimir/examples/servers/server_example.py).
 
+### Sealing a file the model must run only through your tools
+
+A server whose results are only valid when it runs the program itself (a benchmark that
+seals its reference, a harness that checks invariants) seals that program for the
+conversation. The client then refuses a shell command that runs it directly, in your
+words, and the evidence credits a run you record as having measured the files you name:
+
+```python
+from mimir.shared import exec_seals
+
+exec_seals.seal("bench", [source, binary], measured=[source],
+                refusal="Running the benchmark directly is blocked.",
+                hint="Run it through bench_run(); bench_end() lifts this.")
+# ... and when the session ends:
+exec_seals.unseal("bench")
+```
+
+The seal is per conversation (the session the server runs for) and per owner; reading the
+file stays allowed. See POLICY.md, *Sealed-execution guard*.
+
 ---
 
 ## Tool capabilities

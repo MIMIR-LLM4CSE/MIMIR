@@ -585,8 +585,8 @@ The pluggable LLM backends behind one interface, plus token counting.
 ## guardrails
 
 Behaviour governance. `policy/` blocks, `nudges/` advises, `observations/` writes the
-blackboard, `workflow/` holds the state, `verification/` establishes what is verified; the root
-holds `proxy_state`, the one reader of the proxy server's store (through `shared/proxy_store`), which several of them ask. Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
+blackboard, `workflow/` holds the state, `verification/` establishes what is verified. None of
+them knows a server's domain: what a server forbids is a seal it publishes (`shared/exec_seals`). Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
 Paths below are relative to `mimir/client/guardrails/`.
 
 ### `workflow/` (root)
@@ -686,7 +686,7 @@ once — on the revision it will ship at.
 |---|---|
 | `engine.py` | `evaluate_tool_preconditions()` — the gate order and the two pack slots |
 | `violations.py` | violation enrichment, the evidence a refused call lacks, path clarification |
-| `gates.py` | `check_cluster_submit()`, `check_proxy_exec()`, `check_out_of_workspace_access()` |
+| `gates.py` | `check_cluster_submit()`, `check_sealed_exec()`, `check_out_of_workspace_access()` |
 | `write.py` | `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` |
 | `state_machine.py` | `check_state_machine_guard()` and the retry budget |
 | `approval.py` | `ApprovalManager`: prompts, `always` grants, batch queue, snapshots, revert |

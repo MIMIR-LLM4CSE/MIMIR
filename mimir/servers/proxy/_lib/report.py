@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ....shared import proxy_store
+from . import layout
 import os
 
 
@@ -99,10 +99,10 @@ def _diff_run_dirs(dir_a: str, dir_b: str) -> dict:
     Numeric metrics get ``{a, b, delta, pct_change}``; non-numeric metrics get
     ``{a, b}`` only when they differ.  Config values are compared verbatim.
     """
-    cfg_a = proxy_store.read_json(os.path.join(dir_a, "config.json"), {})
-    cfg_b = proxy_store.read_json(os.path.join(dir_b, "config.json"), {})
-    met_a = proxy_store.read_json(os.path.join(dir_a, "metrics.json"), {})
-    met_b = proxy_store.read_json(os.path.join(dir_b, "metrics.json"), {})
+    cfg_a = layout.read_json(os.path.join(dir_a, "config.json"), {})
+    cfg_b = layout.read_json(os.path.join(dir_b, "config.json"), {})
+    met_a = layout.read_json(os.path.join(dir_a, "metrics.json"), {})
+    met_b = layout.read_json(os.path.join(dir_b, "metrics.json"), {})
 
     config_diff: dict = {}
     for k in sorted(set(cfg_a) | set(cfg_b)):

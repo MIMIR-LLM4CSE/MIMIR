@@ -24,7 +24,7 @@ from .._lib.report import diff_run_pair, row_with_extra
 from .._lib.store import (
     refs_dir, runs_dir, entry_or_err, load_registry_or_err, proxy_runs_dir, run_dir_names,
 )
-from ....shared.proxy_store import read_json
+from .._lib.layout import read_json
 
 
 def _resolve_run_dir(run_id: str) -> str:

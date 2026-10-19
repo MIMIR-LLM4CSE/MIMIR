@@ -1,15 +1,12 @@
-"""Where the proxy server keeps its state (``<workspace>/proxy_bench/``), and the reads the
-client makes of it: which proxy a conversation optimises, its source, its executable.
-
-The proxy server writes this layout (``servers/proxy/_lib/store``); the client's guardrails
-read it to gate running the proxy directly.
+"""Where the proxy server keeps its state (``<workspace>/proxy_bench/``): the layout and its
+plain reads, under one root the tests redirect (``_ROOT``). ``store`` persists over it.
 """
 from __future__ import annotations
 
 import json
 import os
 
-from .state_paths import active_session_id
+from ....shared.state_paths import active_session_id
 
 # Under the workspace, so the experiment goes with the project; not `.mimir/` (the
 # extensions directory) nor the state dir (references are megabytes). Workspace from
@@ -76,17 +73,3 @@ def resolve_proxy_name(arg: str, session_id: str | None = None) -> str | None:
             pass
     return None
 
-
-def source_path(proxy_name: str) -> str:
-    """The proxy's source file as its optimisation session recorded it, or ""."""
-    cfg = read_json(opt_config_file(proxy_name))
-    src = cfg.get("proxy_source_path") if isinstance(cfg, dict) else None
-    return src if isinstance(src, str) else ""
-
-
-def executable_path(proxy_name: str) -> str:
-    """The proxy's registered executable, or ""."""
-    reg = read_json(registry_path())
-    entry = reg.get(proxy_name) if isinstance(reg, dict) else None
-    exe = entry.get("executable_path") if isinstance(entry, dict) else None
-    return exe if isinstance(exe, str) else ""

@@ -14,7 +14,7 @@ from .._lib.store import (
     refs_dir, suites_dir, entry_or_err, load_registry_or_err, suite_path, load_suite,
     save_suite, suite_results_dir, latest_suite_results,
 )
-from ....shared.proxy_store import read_json
+from .._lib.layout import read_json
 
 
 # ── read-only ─────────────────────────────────────────────────────────────────

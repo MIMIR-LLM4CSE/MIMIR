@@ -5,7 +5,7 @@ metrics.json). All share the reserved-metrics purge, the timing guard and the in
 
 from __future__ import annotations
 
-from ....shared import proxy_store
+from . import layout
 import hashlib
 import json
 import os
@@ -78,7 +78,7 @@ def _apply_invariants(
                 run_metrics[k] = comparison[k]
 
     if reference_name:
-        sealed = (proxy_store.read_json(os.path.join(store.reference_dir(reference_name),
+        sealed = (layout.read_json(os.path.join(store.reference_dir(reference_name),
                                                 "config.json"), {}) or {}
                   ).get("executable_fingerprint") or {}
         current = _binary_fingerprint(entry.get("executable_path", ""))

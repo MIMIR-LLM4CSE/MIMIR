@@ -10,7 +10,7 @@ from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.shared import proxy_store
+from mimir.servers.proxy._lib import layout
 from mimir.servers.proxy import server_proxy
 
 
@@ -25,13 +25,13 @@ class StoreCreationTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.workspace = self._tmp.name
         self.cache = os.path.join(self.workspace, "proxy_bench")
-        self._saved_root = proxy_store._ROOT
-        proxy_store._ROOT = self.cache
+        self._saved_root = layout._ROOT
+        layout._ROOT = self.cache
         self._saved_ws = os.environ.get("MCP_FILES_ROOT")
         os.environ["MCP_FILES_ROOT"] = self.workspace
 
     def tearDown(self) -> None:
-        proxy_store._ROOT = self._saved_root
+        layout._ROOT = self._saved_root
         if self._saved_ws is None:
             os.environ.pop("MCP_FILES_ROOT", None)
         else:
@@ -80,7 +80,7 @@ class StoreCreationTests(unittest.TestCase):
             op="register", name="tiny", executable_path=exe,
             run_cmd_template="python3 {executable}", confirm=True)
         self.assertEqual(res.get("status"), "ok")
-        self.assertTrue(os.path.isfile(proxy_store.registry_path()))
+        self.assertTrue(os.path.isfile(layout.registry_path()))
         # And the read that used to create it now finds the real entry.
         listed = server_proxy.proxy_get(op="proxies")
         self.assertEqual(listed.get("status"), "ok")
@@ -98,22 +98,22 @@ class StoreLocationTests(unittest.TestCase):
 
     def test_the_default_is_under_the_workspace(self) -> None:
         import importlib
-        self.addCleanup(importlib.reload, proxy_store)
+        self.addCleanup(importlib.reload, layout)
         wt = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, wt, True)
         os.environ["MCP_FILES_ROOT"] = wt
         os.environ.pop("MIMIR_PROXY_BENCH_DIR", None)
         self.addCleanup(os.environ.pop, "MCP_FILES_ROOT", None)
-        importlib.reload(proxy_store)
-        self.assertEqual(proxy_store.cache_dir(), os.path.join(wt, "proxy_bench"))
+        importlib.reload(layout)
+        self.assertEqual(layout.cache_dir(), os.path.join(wt, "proxy_bench"))
 
     def test_the_env_override_still_wins(self) -> None:
         import importlib
-        self.addCleanup(importlib.reload, proxy_store)
+        self.addCleanup(importlib.reload, layout)
         os.environ["MIMIR_PROXY_BENCH_DIR"] = "/tmp/explicit_store"
         self.addCleanup(os.environ.pop, "MIMIR_PROXY_BENCH_DIR", None)
-        importlib.reload(proxy_store)
-        self.assertEqual(proxy_store.cache_dir(), "/tmp/explicit_store")
+        importlib.reload(layout)
+        self.assertEqual(layout.cache_dir(), "/tmp/explicit_store")
 
 
 if __name__ == "__main__":

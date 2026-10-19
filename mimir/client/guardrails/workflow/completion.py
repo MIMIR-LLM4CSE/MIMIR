@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from ...context.signals import SOURCE_FILE_EXTENSIONS
-from ..proxy_state import active_proxy_source
+from ....shared import exec_seals
 from ...context.execution_context import (
     failed_runs,
     unsettled_runs,
@@ -149,18 +149,16 @@ def unjudged_run_lines(execution_context: ExecutionContext) -> list[str]:
     return lines[:5]
 
 
-def unmeasured_proxy_source_lines(execution_context: ExecutionContext) -> list[str]:
-    """One line when an optimisation session's source was edited and never measured.
+def unmeasured_source_lines(execution_context: ExecutionContext) -> list[str]:
+    """One line per file a sealing server's runs measure, edited and never measured.
 
     Reported, never counted: a cluster or a dataset may not be there.
     """
-
-    source = active_proxy_source()
-    if not source or source not in execution_context.edits.dirty_written_files:
-        return []
-    if validation_tier(execution_context, source) == "measured":
-        return []
-    return [f"{source} — edited under an optimisation session, never measured by a run"]
+    sources = exec_seals.measured_sources(execution_context.bookkeeping.session_id or None)
+    return [f"{source} — edited, never measured by a run of its server"
+            for source in sorted(sources)
+            if source in execution_context.edits.dirty_written_files
+            and validation_tier(execution_context, source) != "measured"]
 
 
 def blocked_run_lines(execution_context: ExecutionContext) -> list[str]:
@@ -321,7 +319,7 @@ def finalize_incomplete_answer(
     # above and uncapped below — it was the largest single thing in the report, and the
     # second copy told the reader nothing the first had not. `unjudged_run_lines` is
     # still what decides, below, whether there is anything to report at all.
-    unmeasured = unmeasured_proxy_source_lines(execution_context)
+    unmeasured = unmeasured_source_lines(execution_context)
     if unmeasured:
         sections.append("Checked but never measured:\n- " + "\n- ".join(unmeasured))
     if issues:

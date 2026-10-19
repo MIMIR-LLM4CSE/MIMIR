@@ -35,7 +35,7 @@ from .._lib.store import (
     opt_git_dir, workspace_root, entry_or_err, load_suite, load_opt_config, save_opt_config,
     opt_ledger_file, opt_best_file, write_active_session, clear_active_session,
 )
-from ....shared.proxy_store import cache_dir, opt_session_runs_dir, resolve_proxy_name, read_json
+from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name, read_json
 from .eval_common import (
     NEXT_DETACHED,
     NEXT_RUN,

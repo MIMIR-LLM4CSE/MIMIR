@@ -8,7 +8,7 @@ SERVERS_DETAILED.md, "proxy".
 
 from __future__ import annotations
 
-from ....shared import proxy_store
+from . import layout
 import json
 import os
 import re
@@ -270,7 +270,7 @@ def write_report(run_dir: str, records: list[dict]) -> dict:
 
 def read_report(run_dir: str) -> dict | None:
     """Read a run's build.json, or None when the run declared no build."""
-    data = proxy_store.read_json(report_path(run_dir))
+    data = layout.read_json(report_path(run_dir))
     return data if isinstance(data, dict) else None
 
 

@@ -10,7 +10,7 @@ import os
 import tempfile
 import unittest
 
-from mimir.shared import proxy_store
+from mimir.servers.proxy._lib import layout
 from mimir.servers.proxy import server_proxy
 from mimir.shared import slurm_site  # noqa: F401
 
@@ -56,8 +56,8 @@ class _TmpStorageTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = proxy_store._ROOT
-        proxy_store._ROOT = self._tmp.name
+        self._saved_root = layout._ROOT
+        layout._ROOT = self._tmp.name
         self.root = self._tmp.name
         self._saved_ws = os.environ.get("MCP_FILES_ROOT")
         os.environ["MCP_FILES_ROOT"] = self._tmp.name
@@ -65,7 +65,7 @@ class _TmpStorageTest(unittest.TestCase):
         os.environ["MIMIR_STATE_DIR"] = os.path.join(self._tmp.name, ".mimir")
 
     def tearDown(self) -> None:
-        proxy_store._ROOT = self._saved_root
+        layout._ROOT = self._saved_root
         if self._saved_ws is None:
             os.environ.pop("MCP_FILES_ROOT", None)
         else:
