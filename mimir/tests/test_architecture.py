@@ -142,11 +142,11 @@ def _module_aliases(path: Path, tree: ast.Module) -> set[str]:
 
 class PrivateNameTests(unittest.TestCase):
     """A name another module uses is public: no ``from x import _name``, no
-    ``module._name``, in the client and the servers alike."""
+    ``module._name``, in the client, the servers and the code they share."""
 
     def test_no_private_name_crosses_a_module(self) -> None:
         offenders = []
-        for path in _python_files(CLIENT) + _python_files(SERVERS):
+        for path in _python_files(CLIENT) + _python_files(SERVERS) + _python_files(SHARED):
             tree = ast.parse(path.read_text())
             for _n, target, name in _imports(path, top_level_only=False):
                 if name and name.startswith("_") and not name.startswith("__"):
@@ -164,7 +164,7 @@ class PrivateNameTests(unittest.TestCase):
 class CommentTests(unittest.TestCase):
     def test_no_comment_or_docstring_narrates_history(self) -> None:
         found = []
-        for path in _python_files(CLIENT) + _python_files(SERVERS):
+        for path in _python_files(CLIENT) + _python_files(SERVERS) + _python_files(SHARED):
             text = path.read_text()
             pieces = [tok.string for tok in tokenize.generate_tokens(io.StringIO(text).readline)
                       if tok.type == tokenize.COMMENT]
@@ -282,7 +282,7 @@ class JobPollingTests(unittest.TestCase):
 
     def test_the_guards_are_named_only_in_the_dispatcher(self) -> None:
         offenders = []
-        for path in _python_files(CLIENT) + _python_files(SERVERS):
+        for path in _python_files(CLIENT) + _python_files(SERVERS) + _python_files(SHARED):
             if (CLIENT / "query_engine" / "dispatch") in path.parents:
                 continue
             names = {n.id for n in ast.walk(ast.parse(path.read_text()))
