@@ -1,18 +1,22 @@
 """Ollama LLM backend — wraps the ollama Python package."""
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import urllib.request
 from typing import Any
 
-try:
-    import ollama
-except ImportError:  # the backend is optional: its SDK is needed only to call it
-    ollama = None
-
 from .base import ChatTurn, LLMBackend, env_positive_int
 from ..protocol.tool_call import as_dict
+
+# The backend is optional: its SDK is needed only to call it, and typed loosely so the
+# check does not depend on which version, if any, is installed.
+ollama: Any
+try:
+    ollama = importlib.import_module("ollama")
+except ImportError:
+    ollama = None
 
 
 def _done_reason(obj: Any) -> Any:

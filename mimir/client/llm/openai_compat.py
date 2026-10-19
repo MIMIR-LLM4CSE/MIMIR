@@ -459,15 +459,15 @@ class OpenAICompatBackend(LLMBackend):
         with self._clients_lock:
             client = self._clients.get(key)
             if client is None:
-                from openai import OpenAI
-                import httpx
+                from openai import DefaultHttpxClient, OpenAI
 
                 # trust_env=False so an HTTP proxy (HTTP_PROXY/HTTPS_PROXY)
                 # is bypassed — vLLM is on the local cluster network, no proxy needed.
+                # DefaultHttpxClient is built on the HTTP library this openai uses.
                 client = OpenAI(
                     base_url=base_url,
                     api_key=api_key,
-                    http_client=httpx.Client(trust_env=False, verify=verify_ssl()),
+                    http_client=DefaultHttpxClient(trust_env=False, verify=verify_ssl()),
                 )
                 self._clients[key] = client
             return client
