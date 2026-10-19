@@ -17,8 +17,8 @@ export class ModelProbe {
    */
   private seq = 0;
   /**
-   * Log channel for the results, created on first use. The connect form probes before
-   * any server is started, so this cannot rely on the per-connect channel existing.
+   * Log channel for the results, created on first use; its own, apart from the server's,
+   * since the connect form probes before any server is started.
    */
   private log: vscode.OutputChannel | undefined;
 

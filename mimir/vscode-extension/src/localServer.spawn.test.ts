@@ -2,10 +2,16 @@ import { EventEmitter } from "events";
 import { describe, expect, it, vi } from "vitest";
 
 const spawned: { command: string; options: Record<string, unknown> }[] = [];
+const channels: string[] = [];
 
 vi.mock("vscode", () => ({
   workspace: { getConfiguration: () => ({ get: (_key: string, fallback?: unknown) => fallback }) },
-  window: { createOutputChannel: () => ({ show() {}, append() {}, appendLine() {} }) },
+  window: {
+    createOutputChannel: (name: string) => {
+      channels.push(name);
+      return { show() {}, append() {}, appendLine() {} };
+    },
+  },
 }));
 
 vi.mock("child_process", () => ({
@@ -39,6 +45,14 @@ describe("spawning the server", () => {
     expect(command).toMatch(/>> '\/state\/logs\/server-[^']+\.log' 2>&1$/);
     expect(command).toContain("--backend vllm --vllm-base-url http://node:8000/v1");
     expect(server.childRunning).toBe(true);
+  });
+
+  it("writes every start to the one server channel", async () => {
+    const server = new LocalServer("/ext");
+    const request = { model: "m", backend: "ollama", baseUrl: "http://node:11434", anthropicApiKey: "", silent: true };
+    await server.spawn(request, () => {});
+    await server.spawn(request, () => {});
+    expect(channels.filter((name) => name === "MIMIR Server")).toHaveLength(1);
   });
 
   it("keeps the Claude key out of the command line", async () => {

@@ -13,6 +13,7 @@ import { LocalServer, type SpawnRequest } from "./localServer";
 import { fetchModels, type DiscoverableBackend } from "./modelList";
 import { ModelProbe } from "./modelProbe";
 import { Notifier } from "./notifications";
+import { serverChannel } from "./serverChannel";
 import { findLiveServer, type ServerEntry } from "./serverRegistry";
 import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "./shared/defaults";
 import type { HostMessage, HostMessageOf } from "./shared/hostMessages";
@@ -153,7 +154,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     }).catch((err) => {
       // Reported rather than swallowed: a rejection here leaves the panel on
       // "connecting" with nothing said about why.
-      vscode.window.createOutputChannel("MIMIR Server").appendLine(
+      serverChannel().appendLine(
         `Starting the server failed: ${err instanceof Error ? err.message : String(err)}`);
       this.pendingAutoConnect = undefined;
       this.post({ type: "ws_closed" });
@@ -213,7 +214,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     }
     if (!entry) return false;
 
-    const log = vscode.window.createOutputChannel("MIMIR Server");
+    const log = serverChannel();
     if (!silent) log.show();
     log.appendLine(
       `Attaching to the MIMIR server already running for this workspace ` +
@@ -252,7 +253,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     if (msg?.type !== "detached") return;
-    const log = vscode.window.createOutputChannel("MIMIR Server");
+    const log = serverChannel();
     // Absent means detached: a server that sends no flag sends the message only to
     // announce a detachment.
     if (msg.detached === false) {
@@ -366,7 +367,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       // Said in the server channel anyway: a stray `mimir.wsUrl` (easily left behind
       // in a workspace's .vscode/settings.json) otherwise silently disables the
       // whole spawn path, and the connect form just reappears with no trace of why.
-      const attachLog = vscode.window.createOutputChannel("MIMIR Server");
+      const attachLog = serverChannel();
       if (!req.silent) attachLog.show();
       attachLog.appendLine(
         `Attaching to ${override} — no server is started here because the ` +
@@ -466,7 +467,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     this.autoConnectStarted = true;
     void this.startServerAndConnect({ model, backend, baseUrl, anthropicApiKey, silent: false })
       .catch((err) => {
-        vscode.window.createOutputChannel("MIMIR Server").appendLine(
+        serverChannel().appendLine(
           `Starting the server failed: ${err instanceof Error ? err.message : String(err)}`);
         this.post({ type: "ws_closed" });
       });

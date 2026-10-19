@@ -5,6 +5,7 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as fs from "fs";
+import { serverChannel } from "./serverChannel";
 import { findLiveServer, logPath, waitForServer } from "./serverRegistry";
 import { maxModelLenEnv, mimirServerEnv, noProxyFor, resolvePython } from "./serverEnv";
 import { workspaceRoot } from "./workspace";
@@ -98,7 +99,7 @@ export class LocalServer {
     const pythonPath = resolvePython(this.extensionRoot);
     const cwd = workspaceRoot();
 
-    const outputChannel = vscode.window.createOutputChannel("MIMIR Server");
+    const outputChannel = serverChannel();
     // A connect the user clicked shows its log; one we started at VS Code launch
     // stays out of the way (the channel is still there to open by hand).
     if (!req.silent) outputChannel.show();
@@ -212,7 +213,7 @@ export class LocalServer {
       return;
     }
 
-    const outputChannel = vscode.window.createOutputChannel("MIMIR Server");
+    const outputChannel = serverChannel();
     outputChannel.show();
 
     const cwd = workspaceRoot();

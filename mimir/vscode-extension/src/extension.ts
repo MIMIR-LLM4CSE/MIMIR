@@ -8,6 +8,7 @@ import { diffContentProvider } from "./editors";
 import { LocalServer } from "./localServer";
 import { stopPlanWatch } from "./planPreview";
 import { maybeSelfUpdate } from "./selfUpdate";
+import { disposeServerChannel } from "./serverChannel";
 
 /** The server this window is responsible for, reachable from `deactivate()`. */
 let localServer: LocalServer | undefined;
@@ -62,4 +63,5 @@ export function deactivate(): void {
   // The server is left running when detached; the timer mirroring its log is the one
   // part of that which must not survive a disposed extension host.
   localServer?.release();
+  disposeServerChannel();
 }
