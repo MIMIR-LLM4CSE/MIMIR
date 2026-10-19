@@ -141,6 +141,7 @@ def read_note(path: str) -> str:
 | | `BACKGROUNDABLE` | Launches a long detached run whose result may carry a `background_job` descriptor (status + summary ops), so a front-end with a worker watches it off the critical path and auto-resumes the agent on completion instead of having the model poll. |
 | | `DIVERTIBLE` | Publishes a run channel under its own name while it blocks, so the user can move the run it is waiting on to the background mid-flight (see `shared/run_channel.py`). A strict subset of `BACKGROUNDABLE`: a tool that returns as soon as it has submitted has no wait to divert. |
 | **Delegation** | `DELEGATE` | Runs a read-only sub-agent and reports back what it read. What the sub-agent opened is credited to `delegated_read_files`, which counts toward the plan-mode explore phase's evidence floor — otherwise the phase would punish the fan-out its own prompt asks for. It stays out of `read_files`, which answers the stricter question of whether *this* agent holds the lines it is about to edit. |
+| | `MAIN_ONLY` | Reserved to the orchestrating agent; never granted to a sub-agent (the approved plan, the user's questions, the shared memory). |
 | **Approval & mode** | `SENSITIVE` | Requires user approval before running. **Derived — do not declare it**: see *Reversibility* below. |
 | | `NON_BATCH` | Must prompt immediately; never batched. |
 | | `PLAN_BLOCKED` | Never callable in a read-only mode — plan **or ask** (writes / exec / mutations). Name kept for compatibility. |
@@ -148,14 +149,14 @@ def read_note(path: str) -> str:
 | **Reach & cost** | `EXTERNAL_FETCH` | Opens a socket to a host (network / remote API). Carried by the HTTP and GitHub tools. No core gate consumes it — it exists as the rename-proof handle an application policy keys off, which is why the drift guard scans the shipped example packs as well as `client/`. |
 | | `CLUSTER_SUBMIT` | Expensive cluster launch (Slurm submit / batch run); held until local validation. |
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
+| **Panel** | `PANEL_REPORT` | Fills one section of the scientific-computing panel, declared with a `panel` spec (`section`, `order`, `args`, and an optional `refresh_arg`). |
 
 The vocabulary is defined once in `mimir/shared/capabilities.py` (the client re-exports
 it from `mimir/client/tools/capabilities.py`), and the other docs point here rather than
 re-listing it. This table is the **prose reference**; the **live list** is
 `mimir_api(topic="capabilities")`, which parses it out of the installed build with the
-note attached to each flag. Ask the tool when it matters that the answer is current — a
-hand-maintained table drifts, and this one did: it carried a count of 25 while the
-vocabulary had grown past it. Note that `is_write` (= `EDIT`∪`CONTENT_WRITE`∪`REMOVE`) and
+note attached to each flag. `test_docs` holds this table to the vocabulary, both ways.
+Note that `is_write` (= `EDIT`∪`CONTENT_WRITE`∪`REMOVE`) and
 `clears_edit_loop` (= `READ`∪`VALIDATE`) are **derived helpers, not declarable flags**:
 declaring `EDIT` is enough, there is no umbrella to forget.
 

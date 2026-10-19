@@ -1,7 +1,8 @@
-"""What the docs cite exists: the paths they name and the ``module.name`` they point at.
+"""What the docs cite exists, and the tables that restate the code say what it says.
 
 The changelogs are history and are not read. A path is a repository file or directory;
-the names MIMIR writes at run time, and the examples, are listed here once.
+the names MIMIR writes at run time, and the examples, are listed here once. A table is
+compared with the code it restates; the code is right.
 """
 from __future__ import annotations
 
@@ -123,6 +124,81 @@ class CitedSymbolsTests(unittest.TestCase):
                 if name not in _defined(sources[0]):
                     missing.append(f"{doc.name}: {module}.{name} ({sources[0]})")
         self.assertEqual(missing, [])
+
+
+def _table(doc: str, header: str) -> list[list[str]]:
+    """The body rows of the markdown table under *header*, each a list of stripped cells."""
+    text = (REPO / doc).read_text(encoding="utf-8")
+    start = text.index(header)
+    rows = []
+    for line in text[start:].splitlines()[2:]:
+        if not line.startswith("|"):
+            break
+        rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
+    return rows
+
+
+def _ticked(cell: str) -> str:
+    return cell.strip().strip("`")
+
+
+class TablesTests(unittest.TestCase):
+    def test_the_capability_table_is_the_vocabulary(self) -> None:
+        from mimir.shared import capabilities
+        rows = _table("PLUGINS_DETAILED.md", "| Group | Capability | Meaning |")
+        documented = {_ticked(r[1]) for r in rows}
+        levels = {name for name in dir(capabilities)
+                  if getattr(capabilities, name) in capabilities.REVERSIBILITY_LEVELS}
+        flags = {name for name, value in vars(capabilities).items()
+                 if name.isupper() and isinstance(value, str) and name not in levels}
+        self.assertEqual(sorted(documented ^ flags), [])
+
+    def test_the_reversibility_table_is_the_levels(self) -> None:
+        from mimir.shared import capabilities
+        rows = _table("PLUGINS_DETAILED.md", "| Level | Declare it when… | Effect |")
+        documented = [getattr(capabilities, _ticked(r[0])) for r in rows]
+        self.assertEqual(tuple(documented), capabilities.REVERSIBILITY_LEVELS)
+
+    def test_the_nudge_table_is_the_cascade_and_its_tiers(self) -> None:
+        """Name, layer, and whether it fires at each level (in agent mode)."""
+        from mimir.client.guardrails.nudges.cascade import CORE_NUDGES
+        from mimir.client.guardrails.nudges.tiers import GUIDANCE_BY_LEVEL_MODE
+        rows = _table("POLICY.md", "| Nudge | Layer | Fires on |")
+        documented = {_ticked(r[0]): (r[1], r[3], r[4], r[5]) for r in rows}
+        expected = {}
+        for nudge in CORE_NUDGES:
+            on = [nudge.layer == "verification"
+                  or nudge.name in GUIDANCE_BY_LEVEL_MODE.get((level, "agent"), ())
+                  for level in ("strict", "light", "off")]
+            expected[nudge.name] = (nudge.layer, *("✅" if o else "❌" for o in on))
+        self.assertEqual(documented, expected)
+
+    def test_the_constants_table_says_their_values(self) -> None:
+        from mimir.client.config import limits
+        rows = _table("CLIENT_DETAILED.md", "| Constant | Value | Bounds |")
+        wrong = [f"{_ticked(r[0])}: doc {r[1]}, code {getattr(limits, _ticked(r[0]), None)}"
+                 for r in rows if str(getattr(limits, _ticked(r[0]), None)) != r[1]]
+        self.assertEqual(wrong, [])
+
+    def test_the_trait_table_is_the_traits(self) -> None:
+        from mimir.client.context import execution_context
+        rows = _table("POLICY.md", "| Trait | Meaning | Derived list |")
+        documented = {getattr(execution_context, _ticked(r[0]), None) for r in rows}
+        self.assertEqual(documented, set(execution_context.FIELD_TRAITS))
+
+    def test_the_layer_diagram_is_the_ranks_top_down(self) -> None:
+        """Every unit is drawn or named as a foundation, and drawn units go down in rank."""
+        from mimir.tests.test_architecture import RANKS
+        text = (REPO / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        start = text.index("```mermaid")
+        diagram = text[start:text.index("```", start + 3)]
+        drawn = [label.split("/")[0].removesuffix(".py")
+                 for label in re.findall(r'\["([\w./]+?)(?:<br/>|")', diagram)]
+        foundations = set(re.findall(r"`(\w+)`", text[:start].split("foundations", 1)[1]
+                                     .split(")", 1)[0]))
+        self.assertEqual(set(drawn) | foundations, set(RANKS))
+        ranks = [RANKS[u] for u in dict.fromkeys(drawn)]
+        self.assertEqual(ranks, sorted(ranks, reverse=True))
 
 
 if __name__ == "__main__":
