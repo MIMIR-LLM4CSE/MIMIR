@@ -40,7 +40,7 @@ from ...context.paths import absolute_workspace_path, scratch_roots
 from ...core.ports import AgentPort
 from ...protocol.tool_result import json_error_payload
 from ...tools.display import shorten_display_args, tool_arg_preview, tool_status_message
-from ..proxy_state import active_proxy_source
+from ..proxy_state import proxy_executable_paths
 
 logger = logging.getLogger(__name__)
 
@@ -306,27 +306,7 @@ def _executed_programs(command: str, base: str) -> set[str]:
 
 def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
     """Real paths of the proxy under optimization in this conversation's session, or empty."""
-    # Imported here, as in ``proxy_state``: the proxy server's library is heavy, and
-    # only a conversation running an optimisation ever needs it.
-    from ....servers.proxy._lib import store
-
-    name = store.resolve_proxy_name("", session_id)
-    if not name:
-        return set()
-
-    paths: set[str] = set()
-    src = active_proxy_source(session_id)
-    if src:
-        paths.add(src)
-    reg = store.read_json(store.registry_path())
-    if isinstance(reg, dict):
-        entry = reg.get(name)
-        if isinstance(entry, dict):
-            exe = entry.get("executable_path")
-            if isinstance(exe, str) and exe:
-                paths.add(exe)
-
-    return {os.path.realpath(p) for p in paths}
+    return {os.path.realpath(p) for p in proxy_executable_paths(session_id)}
 
 
 def check_proxy_exec(
