@@ -2,18 +2,30 @@
 
 A report is ``{"adapter", "model", "enforcement", "repeat", "runs": [...]}``; each run is a
 ``RunResult`` with the variant it ran under and its repetition. The comparison reads the
-first variant as the reference and states, for each other, whether the gap is measurable.
+first variant as the reference and states, for each other, whether the gap is measurable,
+its intervals widened for the number of variants compared at once.
 """
 from __future__ import annotations
 
 import json
 import os
 from collections import defaultdict
+from statistics import NormalDist
 from typing import Any, Iterable
 
-from .stats import newcombe, wilson
+from .stats import Z95, newcombe, wilson
 
 REFERENCE = "code"
+# The chance, over all the variants compared at once, that any is called measurably
+# different by luck alone.
+FAMILY_ERROR = 0.05
+
+
+def joint_z(comparisons: int) -> float:
+    """The z that holds *comparisons* intervals together at ``FAMILY_ERROR`` (Bonferroni)."""
+    if comparisons <= 1:
+        return Z95
+    return NormalDist().inv_cdf(1 - FAMILY_ERROR / (2 * comparisons))
 
 
 class Report:
@@ -80,15 +92,24 @@ def compare(runs: list[dict[str, Any]]) -> str:
             f"| {_pct(sum(1 for r in scored[v] if r.get('incomplete')) / n) if n else '—'} |")
 
     reference = names[0]
+    comparisons = len(names) - 1
+    z = joint_z(comparisons)
     verdicts = []
+    if comparisons > 1:
+        # Five wordings each held at 95 % alone would crown one by luck about once in four.
+        verdicts.append(f"{comparisons} variants are compared with the reference at once: each "
+                        f"interval below is widened (Bonferroni) so that the chance of any of them "
+                        f"being called different by luck stays under {FAMILY_ERROR:.0%}.")
+        verdicts.append("")
     for v in names[1:]:
-        gap, lo, hi = newcombe(passed[reference], len(scored[reference]), passed[v], len(scored[v]))
+        gap, lo, hi = newcombe(passed[reference], len(scored[reference]), passed[v], len(scored[v]), z)
         if lo <= 0 <= hi:
             verdict = "no measurable difference"
         else:
             verdict = "measurably better" if gap > 0 else "measurably worse"
+        level = "95 %" if comparisons <= 1 else "joint 95 %"
         verdicts.append(f"- **{v}** against **{reference}**: {gap * 100:+.0f} points "
-                        f"(95 % interval {lo * 100:+.0f} to {hi * 100:+.0f}) — {verdict}.")
+                        f"({level} interval {lo * 100:+.0f} to {hi * 100:+.0f}) — {verdict}.")
 
     tasks = sorted({r["task_id"] for r in runs})
     per_task = ["| Task | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]

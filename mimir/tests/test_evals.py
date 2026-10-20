@@ -71,6 +71,17 @@ class CompareTests(unittest.TestCase):
         self.assertIn("measurably worse", compare(_runs("code", 18, 20) + _runs("terse", 6, 20)))
         self.assertIn("measurably better", compare(_runs("code", 6, 20) + _runs("terse", 18, 20)))
 
+    def test_several_variants_at_once_widen_every_interval(self) -> None:
+        """A gap measurable against one wording alone is not, among five tried together."""
+        alone = compare(_runs("code", 10, 20) + _runs("v1", 17, 20))
+        self.assertIn("**v1** against **code**: +35 points", alone)
+        self.assertIn("measurably better", alone)
+        together = compare(_runs("code", 10, 20) + _runs("v1", 17, 20)
+                           + sum((_runs(f"v{i}", 10, 20) for i in range(2, 6)), []))
+        self.assertIn("5 variants are compared with the reference at once", together)
+        self.assertIn("joint 95 % interval", together)
+        self.assertNotIn("measurably better", together)
+
     def test_skipped_runs_are_not_counted(self) -> None:
         runs = _runs("code", 1, 2) + [{**_runs("code", 0, 1)[0], "skipped": True}]
         self.assertIn("50 % (1/2)", compare(runs))

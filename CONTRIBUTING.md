@@ -71,7 +71,9 @@ wording. A change to them is measured before it is made:
 
 3. Change the code's text only when the comparison reports a measurable gain. A gap whose
    95 % interval holds zero is reported as no measurable difference: more repetitions, or
-   more tasks, are the answer, not a second reading of the same numbers.
+   more tasks, are the answer, not a second reading of the same numbers. Several variants
+   compared in one run widen every interval (Bonferroni), so that trying five wordings does
+   not crown one by luck: try few at a time.
 
 `mimir/evals/scientific/` holds six local tasks on what a generic coding benchmark does
 not measure — an invariant kept, a tolerance respected, a speed-up claimed no higher than
