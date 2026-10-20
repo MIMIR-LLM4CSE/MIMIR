@@ -20,8 +20,8 @@ from .readonly_exempt import readonly_bash_exempt
 from ..workflow import approval_is_settled
 from .approval import MODE_DENIED_NOTE
 from ...tools.capabilities import target_path_arg
-from ...context.execution_context import ExecutionContext
 from ...protocol.tool_result import json_error_payload
+from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from .violations import clarify_path, enrich_violation_payload, violation_kind
 

@@ -1,14 +1,14 @@
 """What the model said it would do this turn, and the checklist steps still open."""
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 from ...context.todo import load_todo_items
 from ...context.execution_context import (
     unwritten_declared_files,
 )
-from ...context.execution_context import ExecutionContext
 
 
-def turn_made_commitments(execution_context: ExecutionContext) -> bool:
+def turn_made_commitments(execution_context: ContextView) -> bool:
     """Did this turn commit to producing something: an edit, a declared target, a checklist?
 
     All three are per-query fields, so no earlier turn's intent carries over.
@@ -20,7 +20,7 @@ def turn_made_commitments(execution_context: ExecutionContext) -> bool:
     )
 
 
-def unhonoured_commitments(execution_context: ExecutionContext) -> bool:
+def unhonoured_commitments(execution_context: ContextView) -> bool:
     """True when this turn promised work and some of it is still undone.
 
     The two halves of "promised and then skipped" that the codebase already defines
@@ -36,7 +36,7 @@ def unhonoured_commitments(execution_context: ExecutionContext) -> bool:
     )
 
 
-def unchecked_checklist_items(execution_context: ExecutionContext) -> list[dict]:
+def unchecked_checklist_items(execution_context: ContextView) -> list[dict]:
     """Unticked steps of the live checklist, optional ones included; [] without a checklist."""
     todo_fp = execution_context.plan.todo_file_path
     if not todo_fp:

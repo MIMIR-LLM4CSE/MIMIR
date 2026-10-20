@@ -103,7 +103,9 @@ def _apply_blocked(
         return []
     addressed = _runs_addressed(runs, scope) or runs
     settled: list[dict[str, Any]] = []
-    for command, run in addressed.items():
+    for command in addressed:
+        # Written in the record itself: what failed_runs returns is only read.
+        run = execution_context.execution.runs[command]
         run["verdict"], run["reason"], run["blocked"] = "blocked", reason, reason
         run["failures"] = 0
         settled.append({**run, "command": run.get("command") or command})

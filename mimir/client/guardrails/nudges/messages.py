@@ -5,6 +5,7 @@ When each one is sent is decided elsewhere; only the wording lives here.
 """
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 
 from ..verification.builtin_check import builtin_check_failures
 from ..workflow import (
@@ -15,7 +16,6 @@ from ..workflow import (
     STAGE_DROP_OR_STOP,
 )
 from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER, VALIDATION_RETRY_BUDGET
-from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
 
@@ -58,7 +58,7 @@ def _validation_nudge_message(findings: dict[str, str]) -> str:
     )
 
 
-def denial_nudge_message(context: ExecutionContext) -> str:
+def denial_nudge_message(context: ContextView) -> str:
     stage = worst_denial_stage(context)
 
     if stage == STAGE_DROP_OR_STOP:
@@ -181,7 +181,7 @@ def unfinished_plan_nudge_message(unchecked: list[dict]) -> str:
     )
 
 
-def env_resolution_nudge_message(execution_context: ExecutionContext) -> str:
+def env_resolution_nudge_message(execution_context: ContextView) -> str:
     modules = sorted(m for m in execution_context.env.unresolved_modules if m)
     mod_hint = f" (missing: {', '.join(modules[:3])})" if modules else ""
     return (
@@ -200,7 +200,7 @@ def env_resolution_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def env_cleanup_nudge_message(execution_context: ExecutionContext) -> str:
+def env_cleanup_nudge_message(execution_context: ContextView) -> str:
     mutations = execution_context.env.env_mutations or []
     lines = []
     for m in mutations[:4]:
@@ -218,7 +218,7 @@ def env_cleanup_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def unwatched_run_nudge_message(execution_context: ExecutionContext) -> str:
+def unwatched_run_nudge_message(execution_context: ContextView) -> str:
     ids = sorted(execution_context.execution.unwatched_runs or set())
     named = ", ".join(ids[:6]) + (f" (+{len(ids) - 6} more)" if len(ids) > 6 else "")
     plural = "s" if len(ids) != 1 else ""
@@ -236,7 +236,7 @@ def unwatched_run_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def documentation_nudge_message(execution_context: ExecutionContext) -> str:
+def documentation_nudge_message(execution_context: ContextView) -> str:
     written = sorted(execution_context.edits.dirty_written_files)
     file_hint = f" You modified: {', '.join(written[:3])}." if written else ""
     return (
@@ -247,7 +247,7 @@ def documentation_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def blast_radius_nudge_message(execution_context: ExecutionContext) -> str:
+def blast_radius_nudge_message(execution_context: ContextView) -> str:
     read_files = sorted(execution_context.discovery.read_files)
     file_hint = f" You have read: {', '.join(read_files[:3])}." if read_files else ""
     return (
@@ -258,7 +258,7 @@ def blast_radius_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def creation_nudge_message(execution_context: ExecutionContext) -> str:
+def creation_nudge_message(execution_context: ContextView) -> str:
     targets = sorted(execution_context.edits.planned_edit_targets)
     target_hint = f" Declared target(s): {', '.join(targets[:3])}." if targets else ""
     return (
@@ -271,7 +271,7 @@ def creation_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def todo_nudge_message(execution_context: ExecutionContext) -> str:
+def todo_nudge_message(execution_context: ContextView) -> str:
     files = sorted(
         execution_context.edits.dirty_written_files
         | execution_context.edits.planned_edit_targets
@@ -294,7 +294,7 @@ def todo_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def validation_nudge_message(agent: AgentPort, execution_context: ExecutionContext) -> str:
+def validation_nudge_message(agent: AgentPort, execution_context: ContextView) -> str:
     """What the model is told about the files the built-in check rejected.
 
     The loop already ran the check: the message is the finding.
@@ -412,7 +412,7 @@ PLAN_ALREADY_RECORDED_ERROR = (
 )
 
 
-def evidence_handback_message(execution_context: ExecutionContext) -> str:
+def evidence_handback_message(execution_context: ContextView) -> str:
     """The machine-recorded state, handed to the model before it writes its conclusion.
 
     The completion report comes after the summary, so without this the model never sees
@@ -514,7 +514,7 @@ _EMPTY_TURN_ESCALATION = (
 
 
 def empty_turn_retry_message(
-    execution_context: ExecutionContext | None = None, *, attempt: int = 1,
+    execution_context: ContextView | None = None, *, attempt: int = 1,
 ) -> str:
     """What to say after a turn that produced nothing, given what the turn still owes.
 

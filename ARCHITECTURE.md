@@ -133,8 +133,16 @@ What one query has established is an `ExecutionContext` of nine records, one per
 `discovery`, `edits`, `checks`, `execution`, `env`, `denials`, `plan`, `nudges` and
 `bookkeeping`, with `workflow_state` and `action_op_count` on top. Every field declares its
 default, its types and its traits; the derived lists (what is carried to the next query, what
-a deleted file is purged from, what counts as discovery) are computed from the traits. The
-writers of each record are listed in CLIENT_DETAILED.md, "Who writes what".
+a deleted file is purged from, what counts as discovery) are computed from the traits.
+
+- **Who writes** each record is declared in the code (`execution_context.WRITERS`), and
+  `test_architecture` holds every write to it.
+- **Who only reads** takes a `ContextView` (`context/context_view.py`): the same object,
+  typed read-only, so the type checker refuses a write through it, an alias included. The
+  nudges, the workflow and the policy gates take it; the few functions there that write
+  their own state (a nudge's count, the skill gate's reservation, the workflow state) take
+  the `ExecutionContext`, which says so in their signature.
+- Not covered: the order of a step, a read of a field before the step that fills it.
 
 ## The guardrails
 

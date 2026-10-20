@@ -1,9 +1,9 @@
 """Putting a reminder into the conversation, and taking the transient ones out again."""
 from __future__ import annotations
 
+from ...context.execution_context import ExecutionContext
 from typing import Any
 from ...protocol.event_sink import emit
-from ...context.execution_context import ExecutionContext
 
 
 # Prefix marking every workflow nudge as machine-generated rather than user speech.

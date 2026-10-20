@@ -134,6 +134,22 @@ class LayerTests(unittest.TestCase):
             if _writer_unit(path) not in WRITERS[record])
         self.assertEqual(offenders, [])
 
+    def test_every_record_has_its_read_only_view(self) -> None:
+        """``context_view`` restates each record's fields, no more and no fewer."""
+        import dataclasses
+        from mimir.client.context import context_view as views
+        from mimir.client.context import execution_context as ec
+        pairs = {ec.LoopControlState: views.LoopControlView, ec.EditFailures: views.EditFailuresView,
+                 ec.Discovery: views.DiscoveryView, ec.Edits: views.EditsView,
+                 ec.Checks: views.ChecksView, ec.Execution: views.ExecutionView,
+                 ec.Environment: views.EnvironmentView, ec.Denials: views.DenialsView,
+                 ec.PlanState: views.PlanStateView, ec.NudgeState: views.NudgeStateView,
+                 ec.Bookkeeping: views.BookkeepingView, ec.ExecutionContext: views.ContextView}
+        for record, view in pairs.items():
+            with self.subTest(record=record.__name__):
+                members = {n for n, v in vars(view).items() if isinstance(v, property)}
+                self.assertEqual(members, {f.name for f in dataclasses.fields(record)})
+
     def test_the_guardrails_name_no_server_domain(self) -> None:
         """What a server forbids reaches them as a seal or a capability, never by its name.
 

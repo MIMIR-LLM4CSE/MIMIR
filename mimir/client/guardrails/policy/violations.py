@@ -1,6 +1,7 @@
 """What a refusal tells the model: the violation payload, the evidence it lacks, a path to clarify."""
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 import json
 import logging
 import os
@@ -13,7 +14,6 @@ from ...context.execution_context import (
     has_discovery_evidence,
     unwritten_declared_files,
 )
-from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
 
@@ -33,7 +33,7 @@ def _is_interactive_session(agent: AgentPort) -> bool:
         return False
 
 
-def _collect_candidate_paths(path: str, execution_context: ExecutionContext | None) -> list[str]:
+def _collect_candidate_paths(path: str, execution_context: ContextView | None) -> list[str]:
     """Collect likely candidate paths related to `path` from execution context."""
     if execution_context is None:
         return []
@@ -59,7 +59,7 @@ def clarify_path(
     agent: AgentPort,
     tool_name: str,
     path: str,
-    execution_context: ExecutionContext | None,
+    execution_context: ContextView | None,
 ) -> str | None:
     """Ask the user to confirm or correct an ambiguous target path.
 
@@ -110,7 +110,7 @@ def clarify_path(
     return reply
 
 
-def missing_evidence(execution_context: ExecutionContext | None) -> list[str]:
+def missing_evidence(execution_context: ContextView | None) -> list[str]:
     """Return concrete missing evidence items to guide the agent toward policy compliance."""
     if execution_context is None:
         return []
@@ -170,7 +170,7 @@ def missing_evidence(execution_context: ExecutionContext | None) -> list[str]:
     return deduped
 
 
-def _next_tool_class(policy_stage: str, execution_context: ExecutionContext | None) -> str:
+def _next_tool_class(policy_stage: str, execution_context: ContextView | None) -> str:
     if policy_stage == "state_guard" and execution_context is not None:
         state = execution_context.workflow_state
         if state == "discover":
@@ -212,7 +212,7 @@ def enrich_violation_payload(
     *,
     violation: str,
     policy_stage: str,
-    execution_context: ExecutionContext | None,
+    execution_context: ContextView | None,
     tool_name: str,
 ) -> str:
     """Attach metadata to JSON policy violations; keep non-JSON violations untouched."""

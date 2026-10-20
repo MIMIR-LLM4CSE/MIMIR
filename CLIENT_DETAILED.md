@@ -18,7 +18,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `config/` | the vocabulary: `paths`, `limits`, `settings` (the closed sets of each user setting), `servers`, `models` and the model catalogue, the `preferences` store |
 | `protocol/` | the shapes that cross a boundary: `events` (event types, the private answer extras), `messages` (chat-message invariants, `reconcile_tool_pairs`), `tool_call`, `tool_result`; `event_sink` (`emit()`: structured events to a bound callback (WS) or JSON on stdout (CLI)); `human_pause` (time spent waiting on a person, not charged to a tool's timeout) |
 | `tools/` | what the client knows about tools: `capabilities` (the registry each server declares into), `bash_classify` (what a shell command does), `display` and the previews (how a call and its result read on screen) |
-| `context/` | the `ExecutionContext` dataclass, query signals, `@`-mention attach, the checklist file |
+| `context/` | the `ExecutionContext` dataclass and its read-only `ContextView`, query signals, `@`-mention attach, the checklist file |
 | `core/` | the contracts: `ports` (`AgentPort`, `HumanIO`), `settings` (`apply_setting` / `read_setting`), `human` (`TerminalHuman`, `Unattended`) |
 | `prompt/` | system-prompt construction |
 | `extensions/` | everything the user drops in the workspace `.mimir/` — servers, skills, plugin packs |
@@ -390,6 +390,14 @@ intent, and a nudge has to rest on something checkable.
   structured-data extensions the floor holds a real parser for (`.json`, `.toml`, `.ini`,
   `.cfg`, `.xml` and dialects), and deliberately not YAML, which has no stdlib parser. A
   spelling missing here (`.f03`, say) is an edit never recorded as modified.
+
+### `context_view.py`
+
+`ContextView` and one read-only view per record (`DiscoveryView`, `EditsView`, …): the
+same fields with `AbstractSet`, `Mapping` and `Sequence` for the containers and read-only
+properties for the rest. `ExecutionContext` satisfies it as it is. A function that only
+reads takes it, and mypy refuses a write through it; `test_architecture` holds each view
+to its record's fields.
 
 ### `resource_context.py`
 

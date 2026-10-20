@@ -8,6 +8,8 @@ return; the gates know nothing of the orchestration.
 
 from __future__ import annotations
 
+from ...context.context_view import ContextView
+from ...context.execution_context import ExecutionContext
 import logging
 import os
 from typing import Any
@@ -35,7 +37,6 @@ from ...tools.capabilities import (
     label_for,
     shell_command_args,
 )
-from ...context.execution_context import ExecutionContext
 from ...context.paths import absolute_workspace_path, scratch_roots
 from ...core.ports import AgentPort
 from ....shared import exec_seals
@@ -212,7 +213,7 @@ def _name_paths(paths: list[str], limit: int = 4) -> str:
 
 
 def check_out_of_workspace_access(
-    agent: AgentPort, tool_name: str, arguments: dict, execution_context: ExecutionContext | None,
+    agent: AgentPort, tool_name: str, arguments: dict, execution_context: ContextView | None,
     targets: list[str] | None = None,
 ) -> str | None:
     """Ask the user once about every outside path of this call; deny when no one can answer.
@@ -251,7 +252,7 @@ def check_out_of_workspace_access(
 # ── cluster submit ────────────────────────────────────────────────────────────
 
 def check_cluster_submit(
-    agent: AgentPort, tool_name: str, execution_context: ExecutionContext | None,
+    agent: AgentPort, tool_name: str, execution_context: ContextView | None,
     arguments: dict[str, Any] | None = None,
 ) -> str | None:
     """Hold a ``CLUSTER_SUBMIT`` call until something has been validated locally.
@@ -306,7 +307,7 @@ def _executed_programs(command: str, base: str) -> set[str]:
 
 def check_sealed_exec(
     agent: AgentPort, tool_name: str, arguments: dict[str, Any],
-    execution_context: ExecutionContext | None,
+    execution_context: ContextView | None,
 ) -> str | None:
     """Refuse running a file a server sealed for this conversation (fail-open).
 

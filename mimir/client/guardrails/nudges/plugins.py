@@ -7,21 +7,21 @@ reading capabilities (``has_cap``), never tool names.
 
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 import logging
 from dataclasses import dataclass
 from typing import Callable
 
 from ...config.limits import CUSTOM_NUDGE_MAX_PER_QUERY
 from ...core.extension_set import registration_target
-from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
 # (agent, query, active_mode, execution_context) -> should this nudge fire now?
-NudgePredicate = Callable[[AgentPort, str, str, ExecutionContext], bool]
+NudgePredicate = Callable[[AgentPort, str, str, ContextView], bool]
 # (agent, execution_context) -> the message text (without the automated-reminder tag).
-NudgeRender = Callable[[AgentPort, ExecutionContext], str]
+NudgeRender = Callable[[AgentPort, ContextView], str]
 
 VALID_NUDGE_LAYERS = ("verification", "guidance")
 
@@ -50,7 +50,7 @@ class NudgeRule:
     def budget_key(self) -> str:
         return self.name
 
-    def fires(self, agent: AgentPort, query: str, mode: str, ec: ExecutionContext, level: str) -> bool:
+    def fires(self, agent: AgentPort, query: str, mode: str, ec: ContextView, level: str) -> bool:
         """Whether the rule would fire now: under its per-query cap, in tier (guidance),
         and its predicate holds. A predicate that raises is "no", and is logged. The
         cascade skips a rule the user switched off before asking."""
@@ -65,7 +65,7 @@ class NudgeRule:
             logger.warning("nudge rule %r raised; skipped", self.name, exc_info=True)
             return False
 
-    def text(self, agent: AgentPort, ec: ExecutionContext) -> str:
+    def text(self, agent: AgentPort, ec: ContextView) -> str:
         try:
             return str(self.render(agent, ec) or "")
         except Exception:

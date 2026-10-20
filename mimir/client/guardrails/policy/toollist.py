@@ -7,6 +7,7 @@ from declared capabilities. Nothing is pruned by the query's wording.
 
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 import logging
 from typing import Any
 
@@ -21,14 +22,13 @@ from ...tools.capabilities import (
     names_with_cap,
     reserved_for_main,
 )
-from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
 
 def blocked_tools_for_context(
-    query: str, execution_context: ExecutionContext | None, tool_caps: Any = None,
+    query: str, execution_context: ContextView | None, tool_caps: Any = None,
 ) -> set[str]:
 
     if execution_context is None:
@@ -42,7 +42,7 @@ def blocked_tools_for_context(
 def tools_for_context(
     *,
     query: str,
-    execution_context: ExecutionContext | None,
+    execution_context: ContextView | None,
     tools: list[dict[str, Any]],
     tool_caps: Any = None,
 ) -> list[dict[str, Any]]:

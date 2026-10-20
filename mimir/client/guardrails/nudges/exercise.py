@@ -5,6 +5,7 @@ model has answered, the subject is closed for the query. No nudge asks for a ver
 """
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 import os
 from ..workflow import (
     has_pending_validation,
@@ -19,7 +20,6 @@ from ...config.limits import (
     EXERCISE_BUDGET,
     NUDGE_MAX_EXERCISE,
 )
-from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from .predicates import untested_edited_sources
 
@@ -53,7 +53,7 @@ _CONFIGURED_BUILDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _exercise_budget_left(execution_context: ExecutionContext) -> bool:
+def _exercise_budget_left(execution_context: ContextView) -> bool:
     """True while the one shared exercise/verdict ask is still available."""
     return (
         not execution_context.execution.exercise_advice_closed
@@ -61,7 +61,7 @@ def _exercise_budget_left(execution_context: ExecutionContext) -> bool:
     )
 
 
-def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tuple[str, str]:
+def exercise_route(agent: AgentPort, execution_context: ContextView) -> tuple[str, str]:
     """``(route, obstacle)``: the one direct command that would exercise this change, or "".
 
     A route is one invocation with something installed and a build file already seen;
@@ -115,11 +115,11 @@ def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tup
     return _blocked("nothing written here starts with one direct command")
 
 
-def exercise_hint(agent: AgentPort, execution_context: ExecutionContext) -> str:
+def exercise_hint(agent: AgentPort, execution_context: ContextView) -> str:
     return exercise_route(agent, execution_context)[0]
 
 
-def should_nudge_regression(execution_context: ExecutionContext) -> bool:
+def should_nudge_regression(execution_context: ContextView) -> bool:
     """Budget left and an edited source has an on-disk test that was never run."""
     return (
         _exercise_budget_left(execution_context)
@@ -127,7 +127,7 @@ def should_nudge_regression(execution_context: ExecutionContext) -> bool:
     )
 
 
-def should_nudge_unexercised_code(agent: AgentPort, execution_context: ExecutionContext) -> bool:
+def should_nudge_unexercised_code(agent: AgentPort, execution_context: ContextView) -> bool:
     """Budget left, every written file checked, a route exists, and nothing was ever run.
 
     The state right after ``validation`` stops speaking. A recommendation, bounded by the

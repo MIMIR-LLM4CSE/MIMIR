@@ -1,6 +1,10 @@
 """The completion report: what is still open when the loop ends, and its marker."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
+from ...context.context_view import ContextView
 import re
 from ...context.signals import SOURCE_FILE_EXTENSIONS
 from ....shared import exec_seals
@@ -11,7 +15,6 @@ from ...context.execution_context import (
     weakest_validation_tier,
 )
 from ...config.limits import VALIDATION_RETRY_BUDGET
-from ...context.execution_context import ExecutionContext
 from .commitments import turn_made_commitments, unchecked_checklist_items
 from .denials import handback_required
 from .state import pending_validation_paths
@@ -35,12 +38,12 @@ _TERMINATION_ISSUE: dict[str, str] = {
 }
 
 
-def _run_label(run: dict) -> str:
+def _run_label(run: Mapping[str, Any]) -> str:
     """"Build" or "Run" — what hit the wall, in the user's vocabulary."""
     return "Build" if run.get("effect") == "build" else "Run"
 
 
-def _validation_findings(execution_context: ExecutionContext) -> tuple[list[str], list[str]]:
+def _validation_findings(execution_context: ContextView) -> tuple[list[str], list[str]]:
     """Pending files by how far their checks got, or what the checks proved."""
     pending = pending_validation_paths(execution_context)
     if not pending:
@@ -64,7 +67,7 @@ def _validation_findings(execution_context: ExecutionContext) -> tuple[list[str]
     return issues, []
 
 
-def _refusal_findings(execution_context: ExecutionContext) -> tuple[list[str], list[str]]:
+def _refusal_findings(execution_context: ContextView) -> tuple[list[str], list[str]]:
     """A refusal is a blocker only when it ended the run (hand-back); otherwise it is
     reported in its own section (:func:`refused_action_lines`), never as a failure."""
     if not execution_context.denials.denied_tool_calls:
@@ -75,7 +78,7 @@ def _refusal_findings(execution_context: ExecutionContext) -> tuple[list[str], l
     return [], []
 
 
-def _run_findings(execution_context: ExecutionContext) -> tuple[list[str], list[str]]:
+def _run_findings(execution_context: ContextView) -> tuple[list[str], list[str]]:
     """Every failed run, with what was tried once its budget is spent.
 
     Unjudged and blocked runs are reported elsewhere and never charged: a verdict is a
@@ -95,7 +98,7 @@ def _run_findings(execution_context: ExecutionContext) -> tuple[list[str], list[
     return issues, []
 
 
-def _checklist_findings(execution_context: ExecutionContext) -> list[str]:
+def _checklist_findings(execution_context: ContextView) -> list[str]:
     unchecked = [it for it in unchecked_checklist_items(execution_context)
                  if not it.get("optional")]
     if not unchecked or not turn_made_commitments(execution_context):
@@ -105,7 +108,7 @@ def _checklist_findings(execution_context: ExecutionContext) -> list[str]:
 
 
 def collect_completion_issues(
-    execution_context: ExecutionContext, termination: str = TERMINATION_ANSWERED,
+    execution_context: ContextView, termination: str = TERMINATION_ANSWERED,
 ) -> tuple[list[str], list[str]]:
     """Return (issues, completed) describing the final completion state.
 
@@ -134,7 +137,7 @@ def collect_completion_issues(
     return issues, completed
 
 
-def unjudged_run_lines(execution_context: ExecutionContext) -> list[str]:
+def unjudged_run_lines(execution_context: ContextView) -> list[str]:
     """One line per run whose output was never read out: reported, never counted."""
     runs = execution_context.execution.runs or {}
     lines = [
@@ -149,7 +152,7 @@ def unjudged_run_lines(execution_context: ExecutionContext) -> list[str]:
     return lines[:5]
 
 
-def unmeasured_source_lines(execution_context: ExecutionContext) -> list[str]:
+def unmeasured_source_lines(execution_context: ContextView) -> list[str]:
     """One line per file a sealing server's runs measure, edited and never measured.
 
     Reported, never counted: a cluster or a dataset may not be there.
@@ -161,7 +164,7 @@ def unmeasured_source_lines(execution_context: ExecutionContext) -> list[str]:
             and validation_tier(execution_context, source) != "measured"]
 
 
-def blocked_run_lines(execution_context: ExecutionContext) -> list[str]:
+def blocked_run_lines(execution_context: ContextView) -> list[str]:
     """One line per run that hit a wall this environment put there, for the report.
 
     Reported, never counted: a prerequisite that is missing is a limitation the user has to
@@ -175,7 +178,7 @@ def blocked_run_lines(execution_context: ExecutionContext) -> list[str]:
     ][:5]
 
 
-def refused_action_lines(execution_context: ExecutionContext) -> list[str]:
+def refused_action_lines(execution_context: ContextView) -> list[str]:
     """One line per action the user refused, for the completion report.
 
     Deduplicated, and named by target where there is one: three refusals of the same
@@ -288,7 +291,7 @@ def is_incomplete_answer(answer: str) -> bool:
 
 
 def finalize_incomplete_answer(
-    answer: str, execution_context: ExecutionContext, termination: str = TERMINATION_ANSWERED,
+    answer: str, execution_context: ContextView, termination: str = TERMINATION_ANSWERED,
 ) -> str:
     issues, completed = collect_completion_issues(execution_context, termination)
     pending = pending_validation_paths(execution_context)

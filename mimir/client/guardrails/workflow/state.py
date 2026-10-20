@@ -1,14 +1,15 @@
 """The workflow state (discover, edit, validate, conclude) and what still owes a check."""
 from __future__ import annotations
 
-import warnings
+from ...context.context_view import ContextView
 from ...context.execution_context import ExecutionContext
+import warnings
 
 
 WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
 
-def pending_validation_paths(execution_context: ExecutionContext) -> list[str]:
+def pending_validation_paths(execution_context: ContextView) -> list[str]:
     """Dirty files that still owe a check, except those that cannot be read as text."""
     dirty_files = set(execution_context.edits.dirty_written_files)
     validated_files = set(execution_context.checks.validated_files)
@@ -19,11 +20,11 @@ def pending_validation_paths(execution_context: ExecutionContext) -> list[str]:
     )
 
 
-def has_pending_validation(execution_context: ExecutionContext) -> bool:
+def has_pending_validation(execution_context: ContextView) -> bool:
     return bool(pending_validation_paths(execution_context))
 
 
-def has_blocking_denials(execution_context: ExecutionContext) -> bool:
+def has_blocking_denials(execution_context: ContextView) -> bool:
     return bool(execution_context.denials.denied_tool_calls)
 
 

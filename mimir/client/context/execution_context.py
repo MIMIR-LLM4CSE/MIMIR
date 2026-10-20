@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import MISSING, dataclass, field, fields
-from collections.abc import Iterable, Set as AbstractSet
+from collections.abc import Iterable, Mapping, Set as AbstractSet
 from typing import Any, Callable
+
+from .context_view import ContextView
 
 from ..config.limits import (
     DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
@@ -426,7 +428,7 @@ def fields_with(*traits: str) -> tuple[str, ...]:
                  if wanted <= f.metadata.get("traits", frozenset()))
 
 
-def was_read(execution_context: ExecutionContext, path: str) -> bool:
+def was_read(execution_context: ContextView, path: str) -> bool:
     """Whether *path* was read through a direct read tool this query.
 
     Says nothing about *how much* of it was read, and deliberately so: reads are
@@ -436,7 +438,7 @@ def was_read(execution_context: ExecutionContext, path: str) -> bool:
     return path in (execution_context.discovery.read_files or set())
 
 
-def is_known_to_exist(execution_context: ExecutionContext, path: str) -> bool:
+def is_known_to_exist(execution_context: ContextView, path: str) -> bool:
     """Whether *path* is proven to exist — a successful read or an existence hit.
 
     Stronger than :func:`was_checked_for`, which only records that a look happened.
@@ -452,7 +454,7 @@ def was_checked_for(execution_context: ExecutionContext, path: str) -> bool:
     return path in (execution_context.discovery.checked_paths or set())
 
 
-def known_existing_files(execution_context: ExecutionContext) -> set[str]:
+def known_existing_files(execution_context: ContextView) -> set[str]:
     """Every file path the model has encountered this session (proof they exist).
 
     One implementation for a question that had two: the policy engine's path-clarification
@@ -481,12 +483,12 @@ def known_existing_files(execution_context: ExecutionContext) -> set[str]:
 DISCOVERY_EVIDENCE_SIGNALS: tuple[str, ...] = fields_with(DISCOVERY)
 
 
-def discovery_signal_count(execution_context: ExecutionContext) -> int:
+def discovery_signal_count(execution_context: ContextView) -> int:
     """Number of distinct model-initiated discovery signals present in *execution_context*."""
     return sum(1 for s in DISCOVERY_EVIDENCE_SIGNALS if execution_context.get(s))
 
 
-def nudge_count(execution_context: ExecutionContext, category: str) -> int:
+def nudge_count(execution_context: ContextView, category: str) -> int:
     """How many times the *category* nudge has fired this query (0 if never).
 
     Named accessor for the ``execution_context.nudge_counts.get(category, 0)``
@@ -505,7 +507,7 @@ def idle_steps(execution_context: ExecutionContext) -> int:
     return int(execution_context.edits.steps_since_last_edit)
 
 
-def has_discovery_evidence(execution_context: ExecutionContext, *, min_distinct: int = 1) -> bool:
+def has_discovery_evidence(execution_context: ContextView, *, min_distinct: int = 1) -> bool:
     """True once the model has done at least *min_distinct* distinct discovery actions."""
     return discovery_signal_count(execution_context) >= min_distinct
 
@@ -546,7 +548,7 @@ def _declared_target_written(declared: str, written: set[str], root: str) -> boo
     return any(os.path.abspath(os.path.join(root, w)) == target for w in same_name)
 
 
-def unwritten_declared_files(execution_context: ExecutionContext) -> list[str]:
+def unwritten_declared_files(execution_context: ContextView) -> list[str]:
     """Declared edit targets no write of this query honoured, sorted.
 
     Guidance mid-run only: the set is scraped from checklist prose.
@@ -575,7 +577,7 @@ VALIDATION_TIERS: tuple[str, ...] = ("structural", "syntax", "static", "compiled
 _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 
 
-def validation_tier(execution_context: ExecutionContext, path: str) -> str | None:
+def validation_tier(execution_context: ContextView, path: str) -> str | None:
     """The strength of *path*'s validation, or None if it was never validated."""
     return execution_context.checks.validation_tier_by_file.get(path)
 
@@ -594,7 +596,7 @@ def raise_validation_tier(execution_context: ExecutionContext, path: str, tier: 
 
 
 def weakest_validation_tier(
-    execution_context: ExecutionContext, paths: Iterable[str],
+    execution_context: ContextView, paths: Iterable[str],
 ) -> str | None:
     """The lowest tier across *paths*, or None if none of them was validated.
 
@@ -683,7 +685,7 @@ def record_run(
     return run
 
 
-def unsettled_runs(execution_context: ExecutionContext) -> dict[str, dict[str, Any]]:
+def unsettled_runs(execution_context: ContextView) -> dict[str, Mapping[str, Any]]:
     """Runs that reached their end and still owe a reading of what they showed.
 
     A run that did not complete owes nothing: its non-zero exit *is* the finding, and
@@ -700,7 +702,7 @@ def unsettled_runs(execution_context: ExecutionContext) -> dict[str, dict[str, A
 RUN_CLASSES: tuple[str, ...] = ("blocked", "broken", "unknown", "pass", "unjudged")
 
 
-def run_class(run: dict[str, Any]) -> str:
+def run_class(run: Mapping[str, Any]) -> str:
     """Which of :data:`RUN_CLASSES` *run* falls in.
 
     Blocked (a wall of this environment) comes first; broken is a run that did not
@@ -716,7 +718,7 @@ def run_class(run: dict[str, Any]) -> str:
     return "pass" if verdict else "unjudged"
 
 
-def failed_runs(execution_context: ExecutionContext) -> dict[str, dict[str, Any]]:
+def failed_runs(execution_context: ContextView) -> dict[str, Mapping[str, Any]]:
     """Runs that did not reach their end, or whose output the model judged wrong.
 
     A blocked run is excluded: it charges no repair budget, so leaving it here would hold

@@ -1,6 +1,8 @@
 """The nudge cascade: at most one reminder per step, verification before guidance."""
 from __future__ import annotations
 
+from ...context.context_view import ContextView
+from ...context.execution_context import ExecutionContext
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
@@ -24,7 +26,6 @@ from ...config.models import resolve_enforcement
 from ...config.limits import (
     EXERCISE_BUDGET,
 )
-from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from .exercise import exercise_hint, should_nudge_regression, should_nudge_unexercised_code
 from .predicates import (
@@ -104,7 +105,7 @@ def nudge_pending(
     agent: AgentPort,
     query: str,
     active_mode: str,
-    execution_context: ExecutionContext,
+    execution_context: ContextView,
 ) -> bool:
     """True if :func:`maybe_append_nudge` would fire now; predicates only, no side effect.
 
@@ -118,7 +119,7 @@ def nudge_pending(
 
 
 def _log_no_nudge(
-    execution_context: ExecutionContext,
+    execution_context: ContextView,
     *,
     level: str,
     active_mode: str,
@@ -150,10 +151,10 @@ class Nudge(Protocol):
     @property
     def budget_key(self) -> str: ...
 
-    def fires(self, agent: AgentPort, query: str, mode: str, ec: ExecutionContext,
+    def fires(self, agent: AgentPort, query: str, mode: str, ec: ContextView,
               level: str) -> bool: ...
 
-    def text(self, agent: AgentPort, ec: ExecutionContext) -> str: ...
+    def text(self, agent: AgentPort, ec: ContextView) -> str: ...
 
 
 def _enabled(agent: AgentPort, name: str) -> bool:
@@ -168,7 +169,7 @@ def _cascade(agent: AgentPort, layer: str) -> list[Nudge]:
     return [n for n in nudges if _enabled(agent, n.name)]
 
 
-def _validation_nudge_content(agent: AgentPort, execution_context: ExecutionContext) -> str:
+def _validation_nudge_content(agent: AgentPort, execution_context: ContextView) -> str:
     # Short pointer only — the full TIER 1 rationale already lives in the system
     # prompt; re-asserting it here as a user-role message would just duplicate the
     # strictest content through the more coercive channel. Pending validation is
@@ -209,17 +210,17 @@ def maybe_inject_env_resolution(
 class CoreNudge:
     name: str        # nudge_counts category / toggle key
     layer: str       # "verification" | "guidance"
-    should_fire: Callable[[AgentPort, str, str, ExecutionContext, str], bool]  # (agent, query, mode, ec, level)
-    render: Callable[[AgentPort, ExecutionContext], str]                       # (agent, ec) -> text
+    should_fire: Callable[[AgentPort, str, str, ContextView, str], bool]  # (agent, query, mode, ec, level)
+    render: Callable[[AgentPort, ContextView], str]                       # (agent, ec) -> text
     budget_key: str = ""  # counter charged when rows ration a shared budget; default = name
 
     # Per-category caps and (for guidance) the enforcement/mode gate live inside each
     # row's ``should_fire``, so the row answers the cascade's interface directly.
 
-    def fires(self, agent: AgentPort, query: str, mode: str, ec: ExecutionContext, level: str) -> bool:
+    def fires(self, agent: AgentPort, query: str, mode: str, ec: ContextView, level: str) -> bool:
         return self.should_fire(agent, query, mode, ec, level)
 
-    def text(self, agent: AgentPort, ec: ExecutionContext) -> str:
+    def text(self, agent: AgentPort, ec: ContextView) -> str:
         return str(self.render(agent, ec) or "")
 
 

@@ -5,6 +5,7 @@ predicates are a reasoning aid, gated by enforcement and mode through ``tiers``.
 """
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 import os
 from ...config.limits import VALIDATION_RETRY_BUDGET
 from ..workflow import (
@@ -37,11 +38,10 @@ from ...config.limits import (
     TODO_NUDGE_MULTIFILE_THRESHOLD,
     TODO_NUDGE_OP_THRESHOLD,
 )
-from ...context.execution_context import ExecutionContext
 from .tiers import guidance_enabled
 
 
-def _all_pending_budget_exhausted(execution_context: ExecutionContext) -> bool:
+def _all_pending_budget_exhausted(execution_context: ContextView) -> bool:
     """True when every dirty file is validated, budget-exhausted, or not checkable at all."""
     dirty = execution_context.edits.dirty_written_files
     if not dirty:
@@ -56,7 +56,7 @@ def _all_pending_budget_exhausted(execution_context: ExecutionContext) -> bool:
     )
 
 
-def has_declared_write_target(execution_context: ExecutionContext) -> bool:
+def has_declared_write_target(execution_context: ContextView) -> bool:
     """True once the model committed, in its own words, to writing something.
 
     A declared edit target or a recorded plan; reading files is not commitment. The gate
@@ -69,7 +69,7 @@ def has_declared_write_target(execution_context: ExecutionContext) -> bool:
     )
 
 
-def _declared_targets_already_existing(execution_context: ExecutionContext) -> bool:
+def _declared_targets_already_existing(execution_context: ContextView) -> bool:
     """True when a path this turn committed to writing already exists.
 
     Tells changing (``blast_radius``) from creating (``creation``) by a fact about the
@@ -83,7 +83,7 @@ def _declared_targets_already_existing(execution_context: ExecutionContext) -> b
     return bool(declared & known_existing_files(execution_context))
 
 
-def _retryable_pending_validation_exists(execution_context: ExecutionContext) -> bool:
+def _retryable_pending_validation_exists(execution_context: ContextView) -> bool:
     """Return True if there is at least one pending file that still has retry budget."""
     dirty = execution_context.edits.dirty_written_files or set()
     validated = execution_context.checks.validated_files or set()
@@ -94,7 +94,7 @@ def _retryable_pending_validation_exists(execution_context: ExecutionContext) ->
     return any(int(fail_counts.get(p, 0)) < VALIDATION_RETRY_BUDGET for p in pending)
 
 
-def untested_edited_sources(execution_context: ExecutionContext) -> list[tuple[str, str]]:
+def untested_edited_sources(execution_context: ContextView) -> list[tuple[str, str]]:
     """``[(source, test)]``: edited Python sources whose ``test_<stem>.py`` exists and did not run."""
     dirty = execution_context.edits.dirty_written_files or set()
     edited_sources = [
@@ -120,14 +120,14 @@ def untested_edited_sources(execution_context: ExecutionContext) -> list[tuple[s
     return pairs
 
 
-def _has_non_doc_code_changes(execution_context: ExecutionContext) -> bool:
+def _has_non_doc_code_changes(execution_context: ContextView) -> bool:
     dirty = execution_context.edits.dirty_written_files or set()
     if not dirty:
         return False
     return any(not p.endswith(".md") for p in dirty)
 
 
-def needs_incomplete_finalization(execution_context: ExecutionContext) -> bool:
+def needs_incomplete_finalization(execution_context: ContextView) -> bool:
 
     # Open steps on the model's own checklist first: validation alone says nothing about
     # steps never started. `turn_made_commitments`, so a turn that declared files and wrote
@@ -152,7 +152,7 @@ def needs_incomplete_finalization(execution_context: ExecutionContext) -> bool:
     )
 
 
-def first_failing_edit_path(execution_context: ExecutionContext) -> str | None:
+def first_failing_edit_path(execution_context: ContextView) -> str | None:
     """First path with at least one recorded consecutive edit failure, else None.
 
     Keyed on the per-file failure streak (any patch), so it reflects a model that keeps
@@ -162,7 +162,7 @@ def first_failing_edit_path(execution_context: ExecutionContext) -> str | None:
                  if failures.streak >= 1), None)
 
 
-def should_nudge_validation(execution_context: ExecutionContext) -> bool:
+def should_nudge_validation(execution_context: ContextView) -> bool:
     """The built-in check rejected a file, and there is budget left to repair it.
 
     Verification layer, every level: the one obligation ``needs_incomplete_finalization``
@@ -176,7 +176,7 @@ def should_nudge_validation(execution_context: ExecutionContext) -> bool:
     )
 
 
-def should_nudge_denial(execution_context: ExecutionContext) -> bool:
+def should_nudge_denial(execution_context: ContextView) -> bool:
     """Blocking denials exist, budget left, and not already in the exhausted dead end.
 
     Never at the hand-back stage: the ``handback`` corrective said it during the loop, and
@@ -190,7 +190,7 @@ def should_nudge_denial(execution_context: ExecutionContext) -> bool:
     )
 
 
-def should_nudge_error_recovery(execution_context: ExecutionContext) -> bool:
+def should_nudge_error_recovery(execution_context: ContextView) -> bool:
     """Budget left and at least one file is stuck in a repeated edit failure."""
     return (
         nudge_count(execution_context, "error_recovery") < NUDGE_MAX_ERROR_RECOVERY
@@ -198,7 +198,7 @@ def should_nudge_error_recovery(execution_context: ExecutionContext) -> bool:
     )
 
 
-def worst_run_failure_streak(execution_context: ExecutionContext) -> int:
+def worst_run_failure_streak(execution_context: ContextView) -> int:
     """How many times the most-retried failing command has failed (derived, never stored)."""
     return max(
         (int(r.get("failures", 0)) for r in failed_runs(execution_context).values()),
@@ -206,7 +206,7 @@ def worst_run_failure_streak(execution_context: ExecutionContext) -> int:
     )
 
 
-def should_nudge_stuck_repair(execution_context: ExecutionContext) -> bool:
+def should_nudge_stuck_repair(execution_context: ContextView) -> bool:
     """One fire per rung, in order (`stuck_repair_nudge_message`).
 
     The fire count is the rung index, so a streak jumping 2 → 3 never repeats rung one.
@@ -220,7 +220,7 @@ def should_nudge_stuck_repair(execution_context: ExecutionContext) -> bool:
     return False
 
 
-def required_unchecked_steps(execution_context: ExecutionContext) -> list[dict]:
+def required_unchecked_steps(execution_context: ContextView) -> list[dict]:
     """Unticked checklist steps the plan did not mark optional."""
     return [
         it for it in unchecked_checklist_items(execution_context)
@@ -228,7 +228,7 @@ def required_unchecked_steps(execution_context: ExecutionContext) -> list[dict]:
     ]
 
 
-def should_nudge_unfinished_plan(execution_context: ExecutionContext) -> bool:
+def should_nudge_unfinished_plan(execution_context: ContextView) -> bool:
     """Budget left, the turn committed to something, and its checklist has open steps.
 
     Verification layer: the evidence is ``- [ ]`` lines the model wrote. False with no
@@ -242,7 +242,7 @@ def should_nudge_unfinished_plan(execution_context: ExecutionContext) -> bool:
 
 
 def should_nudge_env_resolution(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
+    execution_context: ContextView, *, level: str, active_mode: str
 ) -> bool:
     """A check/run failed for a missing module and envs were not enumerated yet."""
     return (
@@ -254,7 +254,7 @@ def should_nudge_env_resolution(
 
 
 def should_nudge_env_cleanup(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
+    execution_context: ContextView, *, level: str, active_mode: str
 ) -> bool:
     """The agent mutated the environment and is now concluding — offer cleanup."""
     return (
@@ -266,7 +266,7 @@ def should_nudge_env_cleanup(
 
 
 def should_nudge_unwatched_run(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
+    execution_context: ContextView, *, level: str, active_mode: str
 ) -> bool:
     """A scheduler listed work of the user's that no record covers, and the turn is concluding.
 
@@ -281,7 +281,7 @@ def should_nudge_unwatched_run(
 
 
 def should_nudge_doc(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
+    execution_context: ContextView, *, level: str, active_mode: str
 ) -> bool:
     """Code edited, the workflow at validate/conclude, nothing pending, not all edits docs."""
     return (
@@ -296,7 +296,7 @@ def should_nudge_doc(
 
 
 def should_nudge_blast_radius(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
+    execution_context: ContextView, *, level: str, active_mode: str
 ) -> bool:
     """An existing declared target, nothing written yet, files read, callers never searched."""
     return (
@@ -313,7 +313,7 @@ def should_nudge_blast_radius(
 
 
 def should_nudge_creation(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
+    execution_context: ContextView, *, level: str, active_mode: str
 ) -> bool:
     """A declared write target that does not exist yet, context gathered, nothing written.
 
@@ -332,7 +332,7 @@ def should_nudge_creation(
 
 
 def should_nudge_todo(
-    execution_context: ExecutionContext, *, level: str, active_mode: str
+    execution_context: ContextView, *, level: str, active_mode: str
 ) -> bool:
     """A multi-step task underway with no checklist yet.
 

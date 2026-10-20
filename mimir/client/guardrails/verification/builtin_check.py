@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from xml.etree import ElementTree
 
 from ...context.execution_context import ExecutionContext
+from ...context.context_view import ContextView
 from .ladder import mark_file_validated, register_validation_failure
 from ..workflow import pending_validation_paths
 
@@ -533,7 +534,7 @@ def sweep_builtin_checks(execution_context: ExecutionContext, absolute_path_fn=N
             mark_file_validated(execution_context, path, outcome.tier)
 
 
-def builtin_check_failures(execution_context: ExecutionContext) -> dict[str, str]:
+def builtin_check_failures(execution_context: ContextView) -> dict[str, str]:
     """Files the floor rejected and that are still dirty, path -> diagnostic."""
     findings = execution_context.checks.builtin_check_findings or {}
     validated = execution_context.checks.validated_files

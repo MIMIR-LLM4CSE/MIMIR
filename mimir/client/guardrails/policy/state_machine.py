@@ -4,10 +4,10 @@ The ``validate`` state blocks nothing (POLICY.md, "Workflow state machine").
 """
 from __future__ import annotations
 
+from ...context.context_view import ContextView
 
 from ...tools.capabilities import EDIT, has_cap, target_path_arg
 from ...config.limits import VALIDATION_RETRY_BUDGET
-from ...context.execution_context import ExecutionContext
 from ...protocol.tool_result import json_error_payload
 from ...core.ports import AgentPort
 
@@ -16,7 +16,7 @@ def check_state_machine_guard(
     agent: AgentPort,
     tool_name: str,
     arguments: dict,
-    execution_context: ExecutionContext | None,
+    execution_context: ContextView | None,
 ) -> str | None:
     if execution_context is None:
         return None

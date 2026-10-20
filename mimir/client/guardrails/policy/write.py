@@ -5,6 +5,8 @@ retried into the ground); a preferred working order belongs to the nudges.
 """
 from __future__ import annotations
 
+from ...context.context_view import ContextView
+from ...context.execution_context import ExecutionContext
 import os
 
 from ...context import (
@@ -15,11 +17,10 @@ from ...context import (
 from ...tools.capabilities import EDIT, OVERWRITE, REMOVE, has_cap, target_path_arg
 from ...config.limits import REPEATED_EDIT_FAILURE_LIMIT
 from ...protocol.tool_result import json_error_payload
-from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 
 
-def has_delete_context(path: str, execution_context: ExecutionContext) -> bool:
+def has_delete_context(path: str, execution_context: ContextView) -> bool:
     """Require stronger evidence before allowing deletion.
 
     `checked_paths` proves only that a check was attempted, not that the file really exists.
