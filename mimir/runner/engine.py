@@ -19,6 +19,7 @@ from typing import Any
 from mimir.client.extensions import all_servers
 from mimir.client.agent_core import MimirAgent
 from mimir.client.core.human import Unattended
+from mimir.client.core.ports import AgentHost
 
 from .types import BenchmarkAdapter, BenchTask, CheckContext
 
@@ -39,7 +40,7 @@ class RunResult:
 
 def _install_auto_approve(agent: MimirAgent) -> None:
     """Make the agent approve every tool without prompting (unattended mode)."""
-    agent.human = Unattended("benchmark-auto-approve")
+    agent.attach(AgentHost(human=Unattended("benchmark-auto-approve")))
 
 
 async def run_one(
@@ -65,7 +66,7 @@ async def run_one(
     os.chdir(workspace)  # MCP file/search servers root at the cwd they're spawned in
 
     # Optionally swap the live backend for a scripted one (model-free CI mode).
-    backend_patch = contextlib.nullcontext()
+    backend_patch: contextlib.AbstractContextManager[Any] = contextlib.nullcontext()
     if get_backend_override is not None:
         from unittest.mock import patch
         import mimir.client.query_engine.streaming as streaming_module

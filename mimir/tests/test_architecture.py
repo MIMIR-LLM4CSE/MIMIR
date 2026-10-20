@@ -462,6 +462,18 @@ class PortsByNeedTests(unittest.TestCase):
                 offenders += [f"{path.relative_to(PACKAGE)}: {n}" for n in named - {port}]
         self.assertEqual(sorted(offenders), [])
 
+    def test_a_person_is_lent_only_through_attach(self) -> None:
+        """``agent.human = …`` is read by nobody: the agent asks its host's person."""
+        offenders = []
+        for path in _python_files(PACKAGE):
+            if "tests" in path.relative_to(PACKAGE).parts:
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Attribute) and node.attr == "human"
+                        and isinstance(node.ctx, ast.Store) and _is_agent(node.value)):
+                    offenders.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
+        self.assertEqual(offenders, [])
+
     def test_no_layer_reaches_around_its_port(self) -> None:
         """``getattr(agent, "name")`` reads what no port declares, unseen by the checker."""
         offenders = []

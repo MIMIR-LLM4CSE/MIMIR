@@ -10,9 +10,7 @@ import os
 import unittest
 
 from mimir.runner import BenchTask, CheckContext, run_benchmark
-from mimir.runner.engine import _install_auto_approve
 from mimir.tests.support.backend import ScriptedBackend
-from mimir.tests.support.agents import fake_agent
 
 
 def _scripted_override():
@@ -104,14 +102,30 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(os.getcwd(), before)
 
 
+class _ApprovalAdapter:
+    """One task whose scorer asks the live agent for an approval nobody is there to give."""
+
+    name = "test_approval"
+
+    def __init__(self) -> None:
+        self.verdict: tuple[bool, str] | None = None
+
+    def load_tasks(self, limit=None):
+        return [BenchTask(id="task", query="q", servers=(), max_steps=1)]
+
+    async def score(self, task, answer, ctx: CheckContext):
+        self.verdict = ctx.agent.request_tool_approval("bash_run", {"command": "ls"})
+        return True, "asked"
+
+
 class AutoApproveTests(unittest.TestCase):
-    def test_install_auto_approve_approves_any_tool(self) -> None:
-        agent = fake_agent()
-        _install_auto_approve(agent)
-        # Any tool — including ones that would normally block (non-batch) — is approved,
-        # and nobody is asked.
-        ok, reason = agent.human.approve_tool(agent, "bash_run", {"cmd": "ls"})
-        self.assertTrue(ok)
+    def test_an_unattended_run_approves_without_asking_anyone(self) -> None:
+        """The agent asks whoever its host lends; a benchmark lends nobody at a terminal."""
+        adapter = _ApprovalAdapter()
+        asyncio.run(run_benchmark(adapter, model="dummy",
+                                  get_backend_override=_scripted_override()))
+        approved, reason = adapter.verdict
+        self.assertTrue(approved, reason)
         self.assertIn("auto-approve", reason)
 
 
