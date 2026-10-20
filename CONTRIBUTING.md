@@ -51,6 +51,33 @@ npm run package      # build a .vsix without installing it
 After `npm run deploy`, reload the VS Code window to pick up the new bundle
 (`Ctrl+Shift+P` → *Developer: Reload Window*).
 
+## Changing the prose: measure first
+
+The system prompt (`prompt/system_prompt.py`) and the nudge messages
+(`guardrails/nudges/messages.py`) are the agent's behaviour, and no unit test can judge a
+wording. A change to them is measured before it is made:
+
+1. Write the new wording as a variant, a JSON file naming the ids it replaces —
+   `{"name": "terse-validation", "sections": {"validation": "…"}, "messages": {…}}`. The ids
+   are those of `system_prompt.SECTIONS` and `messages.MESSAGES`; an unknown one is refused.
+2. Run it against the code's own texts, on the scientific benchmark and on any other
+   adapter you have:
+
+   ```bash
+   python -m mimir.evals run --adapter mimir.evals.scientific:Scientific \
+       --variant terse-validation.json --repeat 5 --model <model> --out report.json
+   python -m mimir.evals compare report.json
+   ```
+
+3. Change the code's text only when the comparison reports a measurable gain. A gap whose
+   95 % interval holds zero is reported as no measurable difference: more repetitions, or
+   more tasks, are the answer, not a second reading of the same numbers.
+
+`mimir/evals/scientific/` holds six local tasks on what a generic coding benchmark does
+not measure — an invariant kept, a tolerance respected, a speed-up claimed no higher than
+measured. Each scorer is itself tested to fail the task as given and pass its reference
+solution. An external benchmark plugs in as a `BenchmarkAdapter` (`mimir/runner/types.py`).
+
 ## Releasing
 
 MIMIR has one version for the Python package and the extension. The rules for

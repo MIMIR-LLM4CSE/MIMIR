@@ -84,7 +84,9 @@ save are still ahead, `strict` only, with its own toggle and a budget of one. Th
 **What fires, measured.** `/diag nudges` counts the reminders that reached the model in this
 conversation (`/diag nudges all`: every conversation of the workspace), its sub-agents
 included, read from the journals: a sub-agent keeps its session's journal as a
-conversation does. The next change to this table is decided on those counts.
+conversation does. The next change to this table is decided on those counts, and a change
+to a nudge's wording is measured first (CONTRIBUTING.md, "Changing the prose: measure
+first").
 
 **At the end of a turn**, three escalations follow one another, never together: a nudge if
 one fires; otherwise, once per query, the completion ledger handed back for the model to

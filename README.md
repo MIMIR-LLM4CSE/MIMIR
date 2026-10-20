@@ -112,6 +112,8 @@ mimir                                      # interactive CLI
 
 `mimir/runner` drives the agent unattended over a benchmark's tasks (a `BenchmarkAdapter`
 supplies the tasks and scores the answers), for measuring the agent rather than using it.
+`python -m mimir.evals` repeats a benchmark under prose variants and compares them — see
+[CONTRIBUTING.md](CONTRIBUTING.md#changing-the-prose-measure-first).
 
 ## Installation
 
