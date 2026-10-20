@@ -177,5 +177,41 @@ class MissingModuleTests(unittest.TestCase):
         self.assertIn("no_such_module_mimir_test", result["detail"])
 
 
+
+class MeasuresTests(unittest.TestCase):
+    """What a run reports beyond pass or fail: its cost, what it was told, under which prose."""
+
+    def _run(self, responses: list[dict], variant=None) -> dict:
+        from mimir.client.prompt.variants import use_variant
+        backend = ScriptedBackend(responses)
+        with use_variant(variant):
+            summary = asyncio.run(run_benchmark(_RecordingAdapter(), model="dummy", limit=1,
+                                                get_backend_override=lambda: backend))
+        return summary["results"][0]
+
+    def test_model_calls_and_reported_prompt_tokens_are_counted(self) -> None:
+        result = self._run([{"role": "assistant", "content": "done", "prompt_tokens": 1200}])
+        self.assertGreaterEqual(result["model_calls"], 1)
+        self.assertEqual(result["prompt_tokens"], 1200)
+        self.assertGreaterEqual(result["elapsed_secs"], 0.0)
+
+    def test_a_backend_that_reports_no_size_says_so(self) -> None:
+        self.assertIsNone(self._run([{"role": "assistant", "content": "done"}])["prompt_tokens"])
+
+    def test_the_variant_in_force_is_named(self) -> None:
+        self.assertEqual(self._run([], {"name": "terse"})["variant"], "terse")
+        self.assertEqual(self._run([])["variant"], "")
+
+    def test_reminders_are_counted_by_category(self) -> None:
+        from mimir.runner.engine import _CountingBackend, _measures
+        events = [{"type": "nudge_injected", "category": "todo"},
+                  {"type": "nudge_injected", "category": "todo"},
+                  {"type": "nudge_injected", "category": "validation"},
+                  {"type": "tool_call"}]
+        measures = _measures(events, _CountingBackend(lambda: None), 0.0)
+        self.assertEqual(measures["nudges"], {"todo": 2, "validation": 1})
+        self.assertEqual(measures["tool_calls"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
