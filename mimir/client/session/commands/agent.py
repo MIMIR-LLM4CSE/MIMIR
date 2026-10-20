@@ -64,7 +64,7 @@ class ResourcesCommand(Command):
                   "e.g. @src/foo.py:10-20.")
 
     async def run(self, host: CommandHost, args: list[str]) -> CommandResult:
-        resources = getattr(host.agent, "resources", None) or {}
+        resources = host.agent.resources or {}
         if not resources:
             return CommandResult("No MCP resources are declared by connected servers.",
                                  note=self._FILE_HINT, tone="empty")

@@ -358,7 +358,7 @@ class AgentWorker:
             answer_ev["_turn_start"] = self._agent.turn.last_turn_start
             # This turn's agent, not whichever one is on screen: several conversations
             # answer at once, and their modes need not agree.
-            answer_ev["_context_mode"] = getattr(self._agent, "context_mode", "full")
+            answer_ev["_context_mode"] = self._agent.context_mode
         answer_ev["_submitted_len"] = getattr(self, "_turn_submitted_len", None)
         deferred = self.human._deferred_record()
         if deferred is not None and not cancelled:
@@ -549,7 +549,7 @@ class AgentWorker:
         """
         backend = os.environ.get("LLM_BACKEND", "vllm").lower()
         if self._agent is not None:
-            value = getattr(self._agent, "temperature", None)
+            value = self._agent.temperature
         else:
             value = load_temperature(self.model)
         return {"supported": backend in TEMPERATURE_BACKENDS, "value": value}

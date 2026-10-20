@@ -222,7 +222,7 @@ async def augment_query_with_resources(
     if "@" not in text:
         return text, []
 
-    registry = getattr(agent, "resources", None) or {}
+    registry = agent.resources or {}
     # Resource mentions first (they win over a like-named file); file mentions then scan
     # whatever survived — unresolved resource tokens are left verbatim for the file pass.
     cleaned, uris = parse_resource_mentions(text, registry) if registry else (text, [])

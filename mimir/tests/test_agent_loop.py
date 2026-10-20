@@ -1257,8 +1257,8 @@ class DrainSteerTests(unittest.TestCase):
         loop_base_module.drain_steer(agent, messages)
         self.assertEqual(messages, [])
 
-        # No poll_steer attr at all (CLI / sub-agents / tests) → untouched.
-        bare = types.SimpleNamespace()
+        # No front-end lending a steer channel (the CLI) → untouched.
+        bare = fake_agent()
         msgs2: list[dict] = [{"role": "user", "content": "x"}]
         loop_base_module.drain_steer(bare, msgs2)
         self.assertEqual(msgs2, [{"role": "user", "content": "x"}])
@@ -1796,7 +1796,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
     def _agent(self, run_tool):
         approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
             record_snapshot=lambda p: None, snapshots={}))
-        return types.SimpleNamespace(
+        return fake_agent(
             is_write_tool=lambda n: False,
             tool_caps={"code_check_file": ToolCaps(name="code_check_file")},
             get_tool_file_targets=lambda n, a: [],
@@ -1908,7 +1908,7 @@ class WriteDiffEmitTests(unittest.TestCase):
 
         approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
             record_snapshot=record_snapshot, snapshots=snapshots))
-        return types.SimpleNamespace(
+        return fake_agent(
             is_write_tool=lambda n: n == "replace_in_file",
             tool_caps={"replace_in_file": ToolCaps(name="replace_in_file")},
             get_tool_file_targets=lambda n, a: [a["path"]],

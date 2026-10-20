@@ -8,7 +8,6 @@ import json
 import logging
 from typing import Any, Callable
 
-from ....agent_core import build_base_system_content
 from ....llm import token_calibration
 from ....llm.factory import get_backend
 
@@ -88,14 +87,12 @@ class Usage:
             # to the except below.
             probe = getattr(backend, "measured_prompt_overhead", None)
             measured = probe(model) if callable(probe) else None
-            mode = getattr(agent, "mode", "") or ""
-            build = getattr(agent, "build_system_content_now", None)
-            prompt = build(mode) if callable(build) else build_base_system_content()
-            narrow = getattr(agent, "advertised_tools_for_mode", None)
-            tools = narrow(mode) if callable(narrow) else getattr(agent, "tools", None)
+            mode = agent.mode or ""
+            prompt = agent.build_system_content_now(mode)
+            tools = agent.advertised_tools_for_mode(mode)
             tools_json = json.dumps(tools) if tools else ""
             key = token_calibration.overhead_key(
-                model, getattr(agent, "context_mode", "full"), prompt, tools_json
+                model, agent.context_mode, prompt, tools_json
             )
             if measured is not None:
                 # Write-through, so the next run of this same configuration starts

@@ -107,9 +107,7 @@ class TestSubAgentLevels:
 
     def test_an_agent_with_no_rung_is_treated_as_explore(self):
         """The absence of a choice is the cautious answer, not the permissive one."""
-        agent = _agent()
-        del agent.subagent_level
-        assert "write_file" not in grantable_tools(agent)
+        assert "write_file" not in grantable_tools(_agent(level=""))
 
     def test_an_unknown_rung_falls_back_to_explore(self):
         assert "write_file" not in grantable_tools(_agent(level="everything"))

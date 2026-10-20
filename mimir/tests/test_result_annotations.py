@@ -102,7 +102,7 @@ def _agent():
             name="read_file_lines", capabilities=frozenset({READ, CACHEABLE}),
         ),
     }
-    return types.SimpleNamespace(
+    return fake_agent(
         normalize_workspace_path=lambda p: p or "",
         tool_caps=caps,turn=TurnState())
 

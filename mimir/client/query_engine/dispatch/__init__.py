@@ -207,9 +207,9 @@ def _bound_results(results: list[str], agent: AgentPort) -> list[str]:
         bounded, cut = bound_step_results(
             results,
             model=agent.model,
-            context_mode=getattr(agent, "context_mode", "full"),
+            context_mode=agent.context_mode,
             token_counter=lambda text: backend.count_text_tokens(agent.model, text),
-            context_ceiling=int(getattr(agent, "max_context_tokens", 0) or 0) or None,
+            context_ceiling=int(agent.max_context_tokens or 0) or None,
         )
     except Exception:  # noqa: BLE001 — a budget failure must not drop the evidence
         logger.debug("_bound_results: a best-effort step failed and was skipped", exc_info=True)

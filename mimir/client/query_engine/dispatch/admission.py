@@ -144,7 +144,7 @@ def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContex
 
 def _watched_jobs(agent: AgentPort) -> list[dict]:
     """Descriptors of the runs a watcher is holding right now. Best-effort, never raises."""
-    hook = getattr(agent, "watched_background_jobs", None)
+    hook = agent.watched_background_jobs
     if not hook:
         return []
     try:

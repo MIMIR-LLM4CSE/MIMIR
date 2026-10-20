@@ -56,11 +56,11 @@ def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort)
         parse_tool_payload(result_text) if isinstance(result_text, str) else None)
     if not descriptors:
         return result_text
-    hook = getattr(agent, "register_background_job", None)
+    hook = agent.register_background_job
     if not hook:
         return result_text   # CLI: no watcher to re-arm, and nothing was promised
     known = set()
-    watched = getattr(agent, "watched_background_jobs", None)
+    watched = agent.watched_background_jobs
     if callable(watched):
         try:
             known = {jobs.job_key_of(d) for d in (watched() or []) if isinstance(d, dict)}
@@ -102,7 +102,7 @@ def maybe_register_background_job(
     if descriptor is None:
         return result_text, False
     job_key = jobs.job_key_of(descriptor) or "?"
-    hook = getattr(agent, "register_background_job", None)
+    hook = agent.register_background_job
     if not hook:
         # CLI: there is no watcher to register with. Not a failure — the caller waits
         # the run out in-turn instead.

@@ -32,7 +32,7 @@ def missing_module(call: Call) -> None:
     """
     execution_context = call.execution_context
     if call.status == "ok":
-        if has_cap(call.tool_name, CODE_EXEC, getattr(call.agent, "tool_caps", None)):
+        if has_cap(call.tool_name, CODE_EXEC, call.agent.tool_caps):
             execution_context.env.unresolved_modules.clear()
         return
     unresolved = execution_context.env.unresolved_modules
@@ -62,7 +62,7 @@ def env_probe(call: Call) -> None:
     the env-resolution nudge stops firing — the agent has the env list it was steered to.
     """
     execution_context = call.execution_context
-    if has_cap(call.tool_name, ENV_DISCOVERY, getattr(call.agent, "tool_caps", None)):
+    if has_cap(call.tool_name, ENV_DISCOVERY, call.agent.tool_caps):
         execution_context.env.env_probed = True
 
 
@@ -71,7 +71,7 @@ def env_mutation(call: Call) -> None:
     execution_context = call.execution_context
     if call.status != "ok":
         return
-    if not has_cap(call.tool_name, ENV_MUTATE, getattr(call.agent, "tool_caps", None)):
+    if not has_cap(call.tool_name, ENV_MUTATE, call.agent.tool_caps):
         return
     mutations = execution_context.env.env_mutations
     record = {

@@ -16,7 +16,6 @@ from ..config.models import (
     GRANTABLE_WRITERS_META,
     SUBAGENT_LEVEL_META,
 )
-from ..config.settings import DEFAULT_SUBAGENT_LEVEL
 from ..tools.capabilities import (
     CACHEABLE,
     CODE_NAV,
@@ -233,7 +232,7 @@ def _build_fork_hint(
     # This agent's scratchpad, named by its own session: the hint compares where the
     # file landed against where *this* conversation's throwaway work belongs, and the
     # active-session pointer would hand a concurrent session another one's directory.
-    scratch = scratch_dir(paths.STATE_DIR, getattr(agent, "session_id", None))
+    scratch = scratch_dir(paths.STATE_DIR, agent.session_id)
 
     base = _fork_base_stem(stem)
     if base:
@@ -448,8 +447,7 @@ async def execute_tool_call(
         call_meta[GRANTABLE_TOOLS_META] = granted
         call_meta[GRANTABLE_WRITERS_META] = grantable_writers(agent, granted)
         call_meta[CALLER_MODE_META] = agent.mode
-        call_meta[SUBAGENT_LEVEL_META] = getattr(
-            agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
+        call_meta[SUBAGENT_LEVEL_META] = agent.subagent_level
     result = await session.call_tool(
         tool_name, arguments, progress_callback=_make_subagent_progress_cb(call_id),
         meta=call_meta)

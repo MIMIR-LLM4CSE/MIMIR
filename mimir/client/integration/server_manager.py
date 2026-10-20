@@ -286,7 +286,7 @@ def server_environment(agent: ConnectorAgent) -> dict[str, str]:
     # dir, the scratchpad (vetted once by the client), MIMIR_SESSION_ID (an agent serves one
     # session for life; empty for the CLI and tests) and MIMIR_DEFAULT_MODEL. ``agent.server_env``
     # goes last and wins: a sub-agent's own session and roots.
-    root = getattr(agent, "workspace_root", None) or os.getcwd()
+    root = agent.workspace_root or os.getcwd()
     return {
         **os.environ,
         "MCP_FILES_ROOT": root,
@@ -294,10 +294,10 @@ def server_environment(agent: ConnectorAgent) -> dict[str, str]:
         "MIMIR_STATE_DIR": paths.STATE_DIR,
         "MIMIR_GLOBAL_STATE_DIR": GLOBAL_STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
-        "MIMIR_SESSION_ID": getattr(agent, "session_id", "") or "",
+        "MIMIR_SESSION_ID": agent.session_id or "",
         "MIMIR_DEFAULT_MODEL": agent.model,
-        "LLM_BACKEND": getattr(agent, "backend", "") or os.environ.get("LLM_BACKEND", ""),
-        **(getattr(agent, "server_env", None) or {}),
+        "LLM_BACKEND": agent.backend or os.environ.get("LLM_BACKEND", ""),
+        **(agent.server_env or {}),
     }
 
 

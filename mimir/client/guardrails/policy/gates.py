@@ -143,7 +143,7 @@ def _call_base(agent: PolicyAgent, tool_name: str, arguments: dict) -> tuple[str
     # ITS workspace there, and outside the caller's — which is the whole point of the
     # copy. Falls back to the module constant for anything agent-like without one.
     root = os.path.realpath(os.path.abspath(
-        getattr(agent, "workspace_root", None) or paths.WORKSPACE_ROOT))
+        agent.workspace_root or paths.WORKSPACE_ROOT))
     # The bash server has no cwd role — every call starts at the workspace root — so
     # this normally leaves the base at the root.
     base = root
@@ -233,10 +233,9 @@ def check_out_of_workspace_access(
         return None
     if agent.approvals.unattended:
         return mode_denied_payload(agent, tool_name, arguments, "auto_all")
-    prompt = getattr(agent, "request_path_approval", None)
     # The call's own arguments travel with the paths so the prompt can show the
     # usual tool description ("Running: …") instead of bare paths.
-    approved, always = prompt(targets, tool_name, arguments) if prompt else (False, False)
+    approved, always = agent.request_path_approval(targets, tool_name, arguments)
     if not approved:
         return json_error_payload(
             f"Access outside the workspace was not approved: {_name_paths(targets)}.",
@@ -317,7 +316,7 @@ def check_sealed_exec(
     if shell_command_args(tool_name, agent.tool_caps) is None:
         return None
     try:
-        seals = exec_seals.sealed(getattr(agent, "session_id", None))
+        seals = exec_seals.sealed(agent.session_id)
         if not seals:
             return None
         _root, base = _call_base(agent, tool_name, arguments)
@@ -375,12 +374,10 @@ def check_skill_pull(
             tool=tool_name,
         )
 
-    available = dict(getattr(agent, "skills", None) or {})
+    available = dict(agent.skills or {})
     meta = available.get(skill)
     offered = []
-    fn = getattr(agent, "model_invocable_skills", None)
-    if callable(fn):
-        offered = [name for name, _desc in fn()]
+    offered = [name for name, _desc in agent.model_invocable_skills()]
 
     # A skill the operator soft-hid gets the SAME answer as one that does not exist,
     # deliberately. It is absent from the index the model was given, so naming it as

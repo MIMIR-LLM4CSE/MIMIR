@@ -40,7 +40,7 @@ def validation_tool(call: Call) -> None:
     qualifies, its target read from its declared ``path_args`` (else filepath/path).
     """
     execution_context = call.execution_context
-    caps = getattr(call.agent, "tool_caps", None)
+    caps = call.agent.tool_caps
     if call.status != "ok" or not has_cap(call.tool_name, VALIDATE, caps):
         return
     arg_names = path_args(call.tool_name, caps) or ("filepath", "path")
@@ -94,7 +94,7 @@ def tool_run(call: Call) -> None:
         return
     if not has_cap(call.tool_name, CODE_EXEC, call.agent.tool_caps):
         return
-    spec = run_outcome_spec(call.tool_name, getattr(call.agent, "tool_caps", None))
+    spec = run_outcome_spec(call.tool_name, call.agent.tool_caps)
     record_run_outcome(
         execution_context, _run_key(call.tool_name, call.payload or {}, spec), True, call.call_id)
 
@@ -106,7 +106,7 @@ def run_outcome(call: Call) -> None:
     status is not read.
     """
     execution_context = call.execution_context
-    spec = run_outcome_spec(call.tool_name, getattr(call.agent, "tool_caps", None))
+    spec = run_outcome_spec(call.tool_name, call.agent.tool_caps)
     if not spec or not isinstance(call.payload, dict):
         return
     _settle_from_machine(execution_context, call.tool_name, call.payload, spec, call.call_id)

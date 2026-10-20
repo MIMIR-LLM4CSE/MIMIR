@@ -24,7 +24,7 @@ async def call_tool_directly(agent: Any, tool: str, arguments: dict) -> dict:
     """
     if agent is None:
         return err(NO_AGENT)
-    owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
+    owner = (agent.tool_owner or {}).get(tool)
     if owner is None:
         return err(f"The server owning '{tool}' is not connected.")
     try:

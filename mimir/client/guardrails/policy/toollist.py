@@ -11,7 +11,7 @@ from ...context.context_view import ContextView
 import logging
 from typing import Any
 
-from ...config.settings import DEFAULT_SUBAGENT_LEVEL, subagent_level_allows
+from ...config.settings import subagent_level_allows
 from ...config.models import READONLY_MODES
 from ...tools.capabilities import (
     PLAN_BLOCKED,
@@ -102,7 +102,7 @@ def grantable_tools(agent: PolicyAgent) -> dict[str, str]:
     """
     hidden = reserved_for_main(agent.tool_caps)
     tools = agent.advertised_tools()
-    level = getattr(agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
+    level = agent.subagent_level
     mode = agent.mode
     if mode in READONLY_MODES or not subagent_level_allows(level, "build"):
         tools = tools_for_readonly_mode(

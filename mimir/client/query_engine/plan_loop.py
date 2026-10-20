@@ -40,7 +40,6 @@ from .loop_base import (
     ModeSwitch,
     StepLoop,
     TurnContext,
-    step_tools,
     drain_steer,
     rebuild_system_content,
 )
@@ -129,9 +128,7 @@ async def _request_plan_decision(agent: AgentPort) -> tuple[str, str]:
 
     ``"none"`` without an interactive front-end or when dismissed: the plan is delivered.
     """
-    ask = getattr(agent, "request_user_question", None)
-    if not callable(ask):
-        return "none", ""
+    ask = agent.request_user_question
     try:
         # The shim blocks (queue wait / CLI input); keep the event loop responsive.
         resp = await asyncio.to_thread(
@@ -201,7 +198,7 @@ class PlanLoop(StepLoop):
 
     def _plan_tools(self) -> list:
         return tools_for_plan_mode(
-            step_tools(self.agent), self.agent.tool_caps, exploring=self.exploring,
+            self.agent.advertised_tools(), self.agent.tool_caps, exploring=self.exploring,
         )
 
     def prepare_calls(self, tool_calls: list[Any]) -> list[Any]:
@@ -375,13 +372,11 @@ class PlanLoop(StepLoop):
         if decision == "accept":
             emit({"type": "status", "text": "  ✔ Plan approved — switching to agent mode"})
             # Persisted so the in-session default flips to "agent" and the front-end
-            # toggle syncs via the "mode" event. Guarded for stand-ins without apply_setting.
-            apply = getattr(self.agent, "apply_setting", None)
-            if callable(apply):
-                try:
-                    apply("mode", "agent")
-                except Exception:
-                    logger.debug("decide: a best-effort step failed and was skipped", exc_info=True)
+            # toggle syncs via the "mode" event.
+            try:
+                self.agent.apply_setting("mode", "agent")
+            except Exception:
+                logger.debug("decide: a best-effort step failed and was skipped", exc_info=True)
             emit({"type": "mode", "mode": "agent"})
             # Through the shared rule: the agent-mode prompt renders the checklist this
             # plan just wrote, and the skill block survives the handoff.

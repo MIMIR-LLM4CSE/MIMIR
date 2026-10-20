@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..core.ports import AgentSettings
+
 import json
 import os
 from collections.abc import Iterable
@@ -178,9 +183,9 @@ def enforcement_level(model: str) -> str:
     return level if level in ("strict", "light", "off") else "light"
 
 
-def resolve_enforcement(agent: object) -> str:
+def resolve_enforcement(agent: AgentSettings) -> str:
     """An agent's enforcement level: its ``enforcement`` attribute, else its model's default."""
-    level = getattr(agent, "enforcement", None)
-    if isinstance(level, str) and level in ("strict", "light", "off"):
+    level = agent.enforcement
+    if level in ("strict", "light", "off"):
         return level
-    return enforcement_level(getattr(agent, "model", ""))
+    return enforcement_level(agent.model)

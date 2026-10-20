@@ -9,6 +9,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from mimir.tests.support.agents import fake_agent
 from mimir.tests.support.backend import ScriptedBackend
 from mimir.client.query_engine import agent_loop as agent_loop_module
 from mimir.client.query_engine import history as history_module
@@ -254,16 +255,16 @@ class LiveRungChangeTests(unittest.TestCase):
         )
 
 
-class StubFallbackTests(unittest.TestCase):
-    """Callers driving a bare stub keep the flag they passed in."""
+class UnsetSettingsTests(unittest.TestCase):
+    """An agent whose thinking settings were never chosen keeps the flag passed in."""
 
-    def test_live_thinking_falls_back_without_the_attribute(self):
-        bare = types.SimpleNamespace(model="m")
+    def test_live_thinking_falls_back_when_unset(self):
+        bare = fake_agent(model="m")
         self.assertTrue(loop_base_module._live_thinking(bare, True))
         self.assertFalse(loop_base_module._live_thinking(bare, False))
 
     def test_directive_sync_is_a_noop_without_a_depth(self):
-        bare = types.SimpleNamespace(model="m")
+        bare = fake_agent(model="m")
         messages = [{"role": "system", "content": "S"}]
         auto, sys_content = asyncio.run(
             loop_base_module._sync_thinking_directive(

@@ -67,24 +67,24 @@ class ModeSwitch:
 # ── Live settings ───────────────────────────────────────────────────────────────
 # The user can change these while a query is already running (the WS command handler
 # and the CLI mutate the agent from outside the loop), and the change has to land on
-# the next step rather than the next query. Callers that drive a bare stub without the
-# attribute (tests, embedders) keep the value they passed in.
+# the next step rather than the next query. A setting never chosen (None) keeps the value
+# the caller passed in.
 
 def _live_thinking(agent: AgentPort, fallback: bool) -> bool:
     """The thinking flag to use for the *next* model call."""
-    val = getattr(agent, "thinking", None)
+    val = agent.thinking
     return fallback if val is None else bool(val)
 
 
 def _live_thinking_budget(agent: AgentPort) -> int:
     """The token budget for the next model call. ``-1`` = unbudgeted."""
-    val = getattr(agent, "thinking_budget", -1)
+    val = agent.thinking_budget
     return val if isinstance(val, int) else -1
 
 
 def _live_temperature(agent: AgentPort) -> float | None:
     """The temperature the user set for this model, re-read per call; None = its own."""
-    val = getattr(agent, "temperature", None)
+    val = agent.temperature
     if isinstance(val, bool) or not isinstance(val, (int, float)):
         return None
     return float(val)
@@ -130,14 +130,13 @@ async def _sync_thinking_directive(
 
     That rung's calibration directive lives in the prompt; returns ``(auto, system_content)``.
     """
-    depth = getattr(agent, "thinking_depth", None)
+    depth = agent.thinking_depth
     if depth is None:
         return auto_active, system_content
     now = depth == THINKING_DEPTH_AUTO
     if now == auto_active:
         return auto_active, system_content
-    if getattr(agent, "build_system_content", None) and messages \
-            and messages[0].get("role") == "system":
+    if messages and messages[0].get("role") == "system":
         system_content = await rebuild_system_content(
             agent, active_mode, execution_context,
         )
@@ -157,13 +156,6 @@ async def _apply_mode_switch(
     return system_content
 
 
-def step_tools(agent: AgentPort) -> list[dict]:
-    """The tool list to expose this step: the agent's soft-hide-filtered set when it
-    provides one (``advertised_tools``), else its raw ``tools`` (keeps lightweight
-    test stubs working, matching the loop's defensive ``getattr`` idiom)."""
-    fn = getattr(agent, "advertised_tools", None)
-    return fn() if callable(fn) else agent.tools
-
 
 # ── Steering and diagnostics ────────────────────────────────────────────────────
 
@@ -173,7 +165,7 @@ def drain_steer(agent: AgentPort, messages: list[dict]) -> None:
     Through the optional ``poll_steer`` hook. Nothing may follow a steer before the call:
     the last position is what the model answers.
     """
-    poll = getattr(agent, "poll_steer", None)
+    poll = agent.poll_steer
     if not poll:
         return
     for text in (poll() or []):
@@ -225,20 +217,20 @@ class StepLoop:
         self.empty_turns = 0
         # Whether the system message carries the "auto" calibration directive, so a
         # mid-run rung change can rewrite it (see _sync_thinking_directive).
-        self.auto_active = getattr(self.agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
+        self.auto_active = self.agent.thinking_depth == THINKING_DEPTH_AUTO
         # Read once: properties of the run. Re-read per step, a mid-run change would
         # move the budget the history was already trimmed against.
-        self.context_mode = getattr(self.agent, "context_mode", "full")
-        self.compact_fn = getattr(self.agent, "compact_messages", None)
+        self.context_mode = self.agent.context_mode
+        self.compact_fn = self.agent.compact_messages
         # An agent may be held below the model's window (a sub-agent is: see
         # server_spawn_agent.SUBAGENT_CONTEXT_TOKENS_*).
-        self.context_ceiling = int(getattr(self.agent, "max_context_tokens", 0) or 0) or None
+        self.context_ceiling = int(self.agent.max_context_tokens or 0) or None
         # No sampling params by default: the server applies the model's own
         # generation_config. A sub-agent caps its own answer: left to the backend
         # default it gets the whole answer reserve, and a step that runs away is
         # invisible from outside — one mute row for as long as it takes to generate.
         self.base_options: dict = {}
-        answer_cap = int(getattr(self.agent, "max_answer_tokens", 0) or 0)
+        answer_cap = int(self.agent.max_answer_tokens or 0)
         if answer_cap > 0:
             self.base_options["max_tokens"] = answer_cap
 

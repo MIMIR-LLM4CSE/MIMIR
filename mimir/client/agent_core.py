@@ -106,6 +106,8 @@ class MimirAgent:
     def __init__(self, model: str = DEFAULT_MODEL, session_id: str | None = None):
         self.model = model
         self.server_env: dict[str, str] = {}
+        # Set by a front-end with no terminal behind it (a detached server).
+        self.non_interactive = False
         # The tree this agent works in. The module constant for the agent the user
         # drives; a sub-agent given a copy of the repository points here instead, and
         # every root-sensitive check reads it off the agent rather than off the import.

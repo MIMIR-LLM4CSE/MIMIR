@@ -22,9 +22,7 @@ logger = logging.getLogger(__name__)
 
 def _is_interactive_session(agent: PolicyAgent) -> bool:
     """Return True if it is reasonable to prompt the human mid-run."""
-    if getattr(agent, "batch_mode", False):
-        return False
-    if getattr(agent, "non_interactive", False):
+    if agent.non_interactive:
         return False
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()

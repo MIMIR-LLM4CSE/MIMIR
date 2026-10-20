@@ -437,6 +437,13 @@ def _port_members(port: type = AgentPort) -> tuple[set[str], set[str]]:
     return attributes, methods
 
 
+def _is_agent(node: ast.AST) -> bool:
+    """``agent``, ``self.agent``, ``call.agent``, ``self._agent``…: how the client names one."""
+    names = ("agent", "_agent")
+    return ((isinstance(node, ast.Name) and node.id in names)
+            or (isinstance(node, ast.Attribute) and node.attr in names))
+
+
 class PortsByNeedTests(unittest.TestCase):
     """Each layer is handed the port of its need, never the whole agent."""
 
@@ -454,6 +461,31 @@ class PortsByNeedTests(unittest.TestCase):
                          if isinstance(n, ast.Name)} & others
                 offenders += [f"{path.relative_to(PACKAGE)}: {n}" for n in named - {port}]
         self.assertEqual(sorted(offenders), [])
+
+    def test_no_layer_reaches_around_its_port(self) -> None:
+        """``getattr(agent, "name")`` reads what no port declares, unseen by the checker."""
+        offenders = []
+        for path in _python_files(CLIENT):
+            if path.name == "agent_core.py":
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "getattr" and len(node.args) >= 2
+                        and _is_agent(node.args[0])
+                        and isinstance(node.args[1], ast.Constant)):
+                    offenders.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
+        self.assertEqual(offenders, [])
+
+    def test_every_member_of_a_port_is_used(self) -> None:
+        """A member nothing reads is not part of what the layers need: it leaves the port."""
+        attributes, methods = _port_members(AgentPort)
+        used: set[str] = set()
+        for path in _python_files(CLIENT):
+            if path.name in ("agent_core.py", "ports.py"):
+                continue
+            used |= {node.attr for node in ast.walk(ast.parse(path.read_text()))
+                     if isinstance(node, ast.Attribute) and _is_agent(node.value)}
+        self.assertEqual(sorted((attributes | methods) - used), [])
 
     def test_every_port_is_made_of_bricks_the_agent_port_holds(self) -> None:
         from mimir.client.core import ports

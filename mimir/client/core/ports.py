@@ -35,6 +35,8 @@ class ToolRegistry(Protocol):
     extensions: ExtensionSet
 
     def advertised_tools(self) -> list[dict[str, Any]]: ...
+    def advertised_tools_for_mode(self, active_mode: str | None = None) -> list[dict[str, Any]]: ...
+    def model_invocable_skills(self) -> list[tuple[str, str]]: ...
     def skill_enabled(self, name: str) -> bool: ...
     def is_write_tool(self, tool_name: str) -> bool: ...
     def normalize_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
@@ -67,6 +69,8 @@ class Approvals(Protocol):
     """Asking the user, and recording what was refused."""
 
     approvals: ApprovalManager
+    # No terminal behind the agent (a detached server): nothing may be prompted mid-run.
+    non_interactive: bool
 
     def approval_scope(self, tool_name: str, arguments: dict[str, Any]) -> str: ...
     def request_tool_approval(self, tool_name: str, arguments: dict[str, Any]) -> tuple[bool, str]: ...
@@ -94,9 +98,12 @@ class AgentSettings(Protocol):
     enforcement: str
     subagent_level: str
     toggles: Toggles
+    backend: str
     # Bounds a caller may set (a sub-agent is held below the model's window).
     max_context_tokens: int
     max_answer_tokens: int
+
+    def apply_setting(self, name: str, value: Any) -> Any: ...
 
 
 class TurnHost(Protocol):
@@ -114,6 +121,8 @@ class TurnHost(Protocol):
     def new_execution_context(self) -> ExecutionContext: ...
     def todo_file(self) -> str: ...
     async def build_system_content(self, active_mode: str) -> str: ...
+    def build_system_content_now(self, active_mode: str) -> str: ...
+    def compact_messages(self, middle: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
 
 
 class Connections(Protocol):
@@ -122,6 +131,8 @@ class Connections(Protocol):
     sessions: dict[str, Any]
     resources: dict[str, Any]
     exit_stack: AsyncExitStack
+    # Added to every server's environment (a sub-agent's session, its copy of the tree).
+    server_env: dict[str, str]
 
 
 # ── Per layer ─────────────────────────────────────────────────────────────────
@@ -143,7 +154,7 @@ class ExecutorAgent(ToolRunner, ToolRegistry, WorkspacePaths, Approvals, AgentSe
     """What the tool executor and the validation read."""
 
 
-class ConnectorAgent(Connections, ToolRegistry, Approvals, AgentSettings, Protocol):
+class ConnectorAgent(Connections, ToolRegistry, WorkspacePaths, Approvals, AgentSettings, Protocol):
     """What connecting the MCP servers fills in and reads."""
 
 

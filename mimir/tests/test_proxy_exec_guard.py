@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from mimir.tests.support.agents import FakeAgent
 from mimir.servers.proxy._lib import layout
 from mimir.client.guardrails.policy import gates
 from mimir.client.tools.capabilities import ToolCaps, CODE_EXEC, READ
@@ -19,10 +20,11 @@ from mimir.tests.support.proxy import _TmpStorageTest, _eval
 from mimir.shared.atomic import write_json  # noqa: E402
 
 
-class _FakeAgent:
+class _FakeAgent(FakeAgent):
     """Minimal surface the guard touches: tool_caps + _json_error_payload."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.tool_caps = {
             "bash_run":     ToolCaps(
                 name="bash_run", capabilities=frozenset({CODE_EXEC}),

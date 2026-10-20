@@ -159,7 +159,7 @@ def capture(
         command = shell_command_of(tool_name, arguments, agent.tool_caps)
         if not command or bash_command_is_readonly(command):
             return None
-        root = getattr(agent, "workspace_root", "") or os.getcwd()
+        root = agent.workspace_root or os.getcwd()
         probe = _Probe(root=root)
         probe.git = _git_state(root)
         if probe.git is None:

@@ -9,6 +9,7 @@ import queue
 import types
 import unittest
 
+from mimir.tests.support.agents import FakeAgent
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.query_engine.jobs import Watch as _Watch
@@ -107,8 +108,9 @@ class BackgroundDescriptorTests(_TmpStorageTest):
 
 # ── 2. Client: dispatch detects the descriptor and registers a watcher ─────────
 
-class _FakeAgent:
+class _FakeAgent(FakeAgent):
     def __init__(self, cap: bool, with_hook: bool, outcome: object = True) -> None:
+        super().__init__()
         self.turn = TurnState()
         caps = frozenset({BACKGROUNDABLE}) if cap else frozenset()
         self.tool_caps = {"proxy_eval": ToolCaps(name="proxy_eval", capabilities=caps)}
@@ -860,11 +862,12 @@ class RegisterBgJobTests(unittest.TestCase):
 
 # ── 3c. The dispatch guards: a watched run is neither polled nor waited on ─────
 
-class _GuardAgent:
+class _GuardAgent(FakeAgent):
     """Just enough agent for the two dispatch guards."""
 
     def __init__(self, watched: list[dict] | None = None, *, with_hook: bool = True,
                  shell_tool: str = "bash_run") -> None:
+        super().__init__()
         from mimir.client.tools.capabilities import ToolCaps
         self.tool_caps = {
             shell_tool: ToolCaps(name=shell_tool, capabilities=frozenset(),
@@ -2320,7 +2323,7 @@ class RewatchDetectionTests(unittest.TestCase):
 
     def test_a_cli_with_no_watcher_hook_is_left_alone(self) -> None:
         """Nothing was promised, so there is nothing to re-arm or to say."""
-        del self.agent.register_background_job
+        self.agent.register_background_job = None   # the CLI lends no watcher
         payload = self._result(self._descriptor("j1"))
         self.assertEqual(
             self.background.maybe_rewatch_background_jobs("bash_job", payload, self.agent),

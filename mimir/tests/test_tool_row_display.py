@@ -7,6 +7,7 @@ import json
 import unittest
 
 import mimir.client.query_engine.dispatch.execution as dispatch_execution
+from mimir.tests.support.agents import FakeAgent
 from mimir.client.protocol.event_sink import event_sink as capture_events
 from mimir.tests.support.context import build_execution_context
 from mimir.client.tools.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
@@ -522,10 +523,11 @@ class ClipDoingTests(unittest.TestCase):
         self.assertTrue(clipped.endswith("…"))
 
 
-class _FakeAgent:
+class _FakeAgent(FakeAgent):
     """The slice of the agent ``dispatch_tool_calls`` touches."""
 
     def __init__(self, registry):
+        super().__init__()
         self.tool_caps = registry
         self.tool_owner = {name: "fake" for name in registry}
         self.model = "fake-model"

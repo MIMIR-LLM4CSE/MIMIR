@@ -66,9 +66,9 @@ def _dead_transport_hint(name: str, exc: BaseException, agent: AgentPort) -> str
     """The hint for a tool whose server is gone (it never recovers), or None."""
     if type(exc).__name__ not in _DEAD_TRANSPORT:
         return None
-    owner = (getattr(agent, "tool_owner", None) or {}).get(name) or "its"
+    owner = (agent.tool_owner or {}).get(name) or "its"
     siblings = sorted(
-        tool for tool, server in (getattr(agent, "tool_owner", None) or {}).items()
+        tool for tool, server in (agent.tool_owner or {}).items()
         if server == owner and tool != name
     )
     also = f" The same goes for {', '.join(siblings[:6])}." if siblings else ""

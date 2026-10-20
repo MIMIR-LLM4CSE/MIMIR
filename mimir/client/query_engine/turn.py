@@ -100,8 +100,8 @@ async def run_agent_query(
     execution_context = agent.new_execution_context()
     # Set here rather than passed in: a front-end's stand-in agent supplies its own
     # zero-argument factory, and the root is a fact about the agent either way.
-    execution_context.bookkeeping.workspace_root = getattr(agent, "workspace_root", "")
-    execution_context.bookkeeping.session_id = getattr(agent, "session_id", None) or ""
+    execution_context.bookkeeping.workspace_root = agent.workspace_root
+    execution_context.bookkeeping.session_id = agent.session_id or ""
     agent.carry.apply(execution_context)
     validate_execution_context(execution_context)
     active_mode = normalize_mode(mode or agent.mode)
@@ -162,7 +162,7 @@ async def run_agent_query(
     skill_name = None
     if query.strip().startswith("/"):
         candidate = query.strip()[1:].split()[0]
-        if getattr(agent, "skills", None) and candidate in agent.skills:
+        if agent.skills and candidate in agent.skills:
             skill_name = candidate
 
     if skill_name:
