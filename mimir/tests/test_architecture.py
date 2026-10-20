@@ -111,6 +111,14 @@ class LayerTests(unittest.TestCase):
                         upward.append(f"{path.relative_to(PACKAGE)}: {source_unit} -> {unit}")
         self.assertEqual(upward, [])
 
+    def test_nothing_the_agent_runs_on_imports_what_measures_it(self) -> None:
+        """The runner and the evaluations drive the agent; the agent never knows them."""
+        offenders = [str(p.relative_to(PACKAGE))
+                     for p in _python_files(CLIENT) + _python_files(SERVERS) + _python_files(SHARED)
+                     for _n, target, _a in _imports(p, top_level_only=False)
+                     if target.startswith(("mimir.runner", "mimir.evals"))]
+        self.assertEqual(offenders, [])
+
     def test_the_shared_code_imports_neither_the_client_nor_the_servers(self) -> None:
         offenders = [str(p.relative_to(PACKAGE)) for p in _python_files(SHARED)
                      for _n, target, _a in _imports(p, top_level_only=False)

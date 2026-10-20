@@ -95,14 +95,14 @@ graph TD
 
 | Rank | Units | What they are |
 |---|---|---|
-| 0 | `config`, `protocol` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam, the time spent waiting on a person |
+| 0 | `config`, `protocol` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles, the prose variant in force), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam, the time spent waiting on a person |
 | 1 | `tools`, `llm` | what each tool is (its capabilities, what a bash command does) and how a call reads on screen; the model backends and their token accounting |
 | 2 | `context` | the `ExecutionContext` blackboard, the carry context, the path rules |
 | 3 | `core` | the contracts the layers above agree on: the agent's ports, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
 | 4 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the `verification` that establishes what is checked (the mandatory check, the repair ladder, the ledger) |
 | 5 | `tool_execution` | a call run through the guardrails: policy before, observations after |
 | 6 | `extensions`, `integration` | the user's `.mimir/` extensions; connecting MCP servers |
-| 7 | `prompt` | the system prompt |
+| 7 | `prompt` | the system prompt, its sections by id, and the prose variants that reword them for a run |
 | 8 | `query_engine` | a turn: the loops, the dispatcher, detached jobs, the context budget |
 | 9 | `agent_core` | `MimirAgent`, which every front-end, the runner and the sub-agent server instantiate; it satisfies `AgentPort` |
 | 10 | `session` | a conversation, independent of the front-end showing it, and what it keeps on disk |
@@ -195,6 +195,22 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
   watches its runs with a `RunWatcher` of its own.
 - The client imports no server: what it reads of a server's files is a contract in
   `shared`.
+
+## Measuring the agent
+
+Beside the client and the servers, two packages drive the agent without a person:
+
+- `mimir/runner` runs it unattended over a benchmark's tasks: a fresh agent and workspace
+  per task, every tool approved through the host it lends, and what each run cost (model
+  calls, prompt tokens, reminders by category) recorded beside its score. A benchmark plugs
+  in as a `BenchmarkAdapter`.
+- `mimir/evals` repeats a benchmark under prose variants (`prompt/variants`: the prompt's
+  sections and the constant messages, reworded by id) and compares the reports with
+  intervals, so a wording is changed on a measured gap. `evals/scientific` is a first-party
+  adapter: local tasks on keeping an invariant, respecting a tolerance and claiming no more
+  than was measured, each scorer itself tested.
+
+Both use the client's public names only; nothing in the client or the servers imports them.
 
 ## Rules for every module
 
