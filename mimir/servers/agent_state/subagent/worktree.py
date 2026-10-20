@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 import subprocess
-from ...shared.atomic import write_json
+from ....shared.atomic import write_json
 
 # On the local disk, not in the state dir: a home under quota cannot hold a checkout
 # plus everything a build writes. Deliberately NOT under the scratchpad either — that
@@ -55,7 +55,7 @@ def sibling_cards(session: str) -> tuple[str, list[dict]]:
     if not parent:
         return "", []
     try:
-        from ...shared.state_paths import subagents_dir
+        from ....shared.state_paths import subagents_dir
         base = subagents_dir(parent)
         names = sorted(os.listdir(base))
     except Exception:
@@ -168,7 +168,7 @@ def sweep_orphan_copies(repo: str) -> None:
     registered = {line.split(" ", 1)[1] for line in listed.splitlines()
                   if ok and line.startswith("worktree ")}
     try:
-        from ...shared.state_paths import sessions_root
+        from ....shared.state_paths import sessions_root
         sessions = sessions_root()
     except Exception:
         return

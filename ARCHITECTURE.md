@@ -190,7 +190,9 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
   domain uses lives in its package (`hpc/slurm_digest`, `workspace/lsp_client`,
   `agent_state/model_catalog`).
 - Only `agent_state` (the sub-agent server builds a `MimirAgent`) and `interaction`
-  import the client, and only its public names.
+  import the client, and only its public names. The sub-agent is the
+  `agent_state/subagent/` package; it is lent an `AgentHost` as a conversation is, and
+  watches its runs with a `RunWatcher` of its own.
 - The client imports no server: what it reads of a server's files is a contract in
   `shared`.
 

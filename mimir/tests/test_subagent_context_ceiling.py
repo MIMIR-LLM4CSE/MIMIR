@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from mimir.client.config.limits import CTX_RESERVED_RATIO, CTX_TOTAL_COMPACT, CTX_TOTAL_FULL
 from mimir.client.query_engine.context_budget import context_budget_for
-from mimir.servers.agent_state import spawn_limits
+from mimir.servers.agent_state.subagent import limits
 
 
 class _WindowFixture(unittest.TestCase):
@@ -59,7 +59,7 @@ class UnknownWindowTests(_WindowFixture):
 
 class SubagentCeilingsTests(unittest.TestCase):
     def test_an_explorer_gets_room_for_a_wide_sweep(self) -> None:
-        explore = spawn_limits.SUBAGENT_CONTEXT_TOKENS_EXPLORE
+        explore = limits.SUBAGENT_CONTEXT_TOKENS_EXPLORE
         self.assertEqual(explore, 64_000)
         # Between the two standing budgets: more than a compact session, so breadth
         # is affordable; well under a working child, whose reading it must not match.
@@ -67,7 +67,7 @@ class SubagentCeilingsTests(unittest.TestCase):
         self.assertLess(explore, CTX_TOTAL_FULL)
 
     def test_a_working_child_gets_the_full_budget(self) -> None:
-        self.assertEqual(spawn_limits.SUBAGENT_CONTEXT_TOKENS_WORKING,
+        self.assertEqual(limits.SUBAGENT_CONTEXT_TOKENS_WORKING,
                          CTX_TOTAL_FULL)
 
 

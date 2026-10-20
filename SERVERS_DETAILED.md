@@ -1274,11 +1274,22 @@ Purpose: delegate a self-contained sub-task to a **fresh** `MimirAgent` that run
 completion and returns its answer, so the orchestrator can fan work out instead of
 carrying every intermediate step in its own context.
 
-The server holds the two tools. What a call says about its caller (approval mode, model,
-grantable tools, the user's rung) and what follows from it (the grant refused, the budget,
-the model) is `agent_state/caller.py`; the run itself — the child built, configured and
-driven in its own thread, its briefs, its reply, its overrun handoff — is
-`agent_state/sub_agent_run.py`.
+The server holds the two tools; the sub-agent itself is the `agent_state/subagent/`
+package:
+
+| Module | What it holds |
+|---|---|
+| `caller.py` | what a call says about its caller (approval mode, model, grantable tools, the user's rung) and what follows from it: the grant refused, the budget, the model |
+| `limits.py` | the budgets, the blocking wait, the step and token ceilings |
+| `run.py` | `ChildRun`: the thread and loop a child runs in, the wait, the budget guard, the reply |
+| `build.py` | the child agent built, configured and driven; its session card |
+| `brief.py` | what the child is told about its task |
+| `outcome.py` | what the end of a run says: finished, stopped on its budget, abandoned, and where it got to |
+| `jobs.py` | the table of detached children and the slots that cap how many run |
+| `worktree.py` | the copy of the repository a working child gets |
+| `output.py` | its events forwarded to the caller, the heartbeat, the activity log |
+| `human.py` | its questions and approvals relayed to the delegating session |
+| `watcher.py` | `ChildWatcher`, the watcher of the runs it detaches |
 
 Tools:
 - `spawn_agent(task, context="", tools=[], max_steps=30, time_budget_secs=600, model="")`
@@ -1350,7 +1361,7 @@ Tools:
     answer with a conclusion citing files, symbols and line numbers rather than the
     contents it read; the caller delegates precisely to keep those out of its window.
   - **Named tools decide the rest.** The child connects only the servers those tools live
-    in, then *prunes* its registry to the grant (`sub_agent_run._prune_tools`): connecting a server
+    in, then *prunes* its registry to the grant (`build._prune_tools`): connecting a server
     brings its siblings, and an unpruned grant would be approximate. It runs in `agent`
     mode when at least one granted tool is `PLAN_BLOCKED` or `PLAN_READONLY` — without the
     second, a child given the shell to build with could not run the build — and is briefed
@@ -1378,7 +1389,7 @@ Tools:
     worker lends one to the agents it owns, and a child's agent is built here, so it is
     lent its own; polled
     in-turn instead, a child would sit on a step until a build finished rather than
-    prepare the next one. `child_jobs.ChildWatcher` is the watcher — the engine's `RunWatcher`, as
+    prepare the next one. `watcher.ChildWatcher` is the watcher — the engine's `RunWatcher`, as
     the conversation's is, delivering to the child, check-ins included (`checkin_steer`: a run
     going wrong is heard while it runs, not when it ends) — on
     the loop `asyncio.run` creates for the child's thread — the only window in which
@@ -1460,13 +1471,13 @@ Execution model:
   `capabilities.timeout_for`, and kept under the client ceiling
   `TOOL_CALL_TIMEOUT_MAX_SECS`), so this server always answers first. A child still
   working then **carries on detached**: every run is registered as a job from the start
-  (`spawn_jobs`), so the call returns the same `background_job` handle a
+  (`subagent/jobs`), so the call returns the same `background_job` handle a
   `background=True` call gets, and the caller's watcher resumes it with the answer.
 - **The budget is a hard cap**, whoever is waiting. Each run has a guard on this
   server's loop (`ChildRun._stop_at_budget`) that stops the child at its budget, time
   spent in front of the user not counted; `subagent_job` stops it too when its read sees
   the wall first. A stopped child's answer never arrives, so what it got to is read off
-  the agent itself (`sub_agent_run.partial_handoff`): the files it had already touched,
+  the agent itself (`outcome.partial_handoff`): the files it had already touched,
   and its session — enough to carry the work on with a fresh child instead of starting it
   again.
 - Success payload: `{"status": "ok", "answer", "completed", "files_read", "files_written",

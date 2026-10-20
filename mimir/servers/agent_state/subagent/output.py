@@ -8,9 +8,9 @@ import queue
 import sys
 import time
 from typing import Any, Callable
-from ...shared.atomic import write_text
+from ....shared.atomic import write_text
 from mcp.server.fastmcp import Context
-from . import spawn_jobs
+from . import jobs
 
 CHILD_QUEUE_MAX = 256      # child events buffered between two forwarding ticks
 
@@ -92,7 +92,7 @@ def compact_event(ev: dict) -> dict | None:
 
 
 def activity_path(session: str) -> str:
-    from ...shared.state_paths import ACTIVITY_FILENAME, session_dir
+    from ....shared.state_paths import ACTIVITY_FILENAME, session_dir
     return os.path.join(session_dir(session), ACTIVITY_FILENAME)
 
 
@@ -127,8 +127,8 @@ def make_child_sink(q: queue.Queue, counters: dict,
                 return
             append_activity(session, compact)
             if job_key and compact.get("t") == "tc":
-                with spawn_jobs.JOBS_LOCK:
-                    entry = spawn_jobs.JOBS.get(job_key)
+                with jobs.JOBS_LOCK:
+                    entry = jobs.JOBS.get(job_key)
                     if entry is not None:
                         entry["phase"] = compact.get("l") or compact.get("n") or ""
             q.put_nowait(compact)

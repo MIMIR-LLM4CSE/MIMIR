@@ -403,7 +403,7 @@ class JobPollingTests(unittest.TestCase):
         """The conversation's, the sub-agent's and the turn that waits a run out alike."""
         from mimir.client.query_engine.jobs import RunWatcher, background
         from mimir.client.ui.ws.worker.jobs import JobWatcher
-        from mimir.servers.agent_state.child_jobs import ChildWatcher
+        from mimir.servers.agent_state.subagent.watcher import ChildWatcher
         watchers = RunWatcher.__subclasses__()
         self.assertTrue({JobWatcher, ChildWatcher} <= set(watchers))
         waits = _names_in(background.await_background_job)

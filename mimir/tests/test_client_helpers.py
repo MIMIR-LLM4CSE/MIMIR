@@ -2381,7 +2381,7 @@ class SubAgentRungTests(unittest.TestCase):
         The rung travels to the delegation server in a call's metadata, so a client of
         the previous version says "parallel" to a server of this one.
         """
-        from mimir.servers.agent_state import caller
+        from mimir.servers.agent_state.subagent import caller
         self.assertEqual(caller.SUBAGENT_LEVELS, ("explore", "build"))
         self.assertTrue(caller.level_allows("parallel", "build"))
 

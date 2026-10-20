@@ -128,7 +128,7 @@ except ImportError:  # pragma: no cover - running without the client package on 
 
 # Grantable: any agent — the orchestrator or a sub-agent — reaches the user through it.
 # A sub-agent's card is queued behind any other child's and says which child is asking
-# (see server_spawn_agent._install_user_channel).
+# (``agent_state/subagent/human.install_user_channel``).
 @mcp.tool(**tool_caps(kind="ask", read_only=True, label="Asking the user"))
 async def ask_user_question(
     questions: list[dict[str, Any]],

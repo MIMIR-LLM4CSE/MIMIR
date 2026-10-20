@@ -284,7 +284,7 @@ def _literal(node, module_consts: dict | None = None):
             return consts[node.id]
         return getattr(srv, node.id)
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-        # A constant of a sibling module the server imports (``spawn_limits.X``).
+        # A constant of a sibling module the server imports (``limits.X``).
         return consts[f"{node.value.id}.{node.attr}"]
     if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
         return _BINOPS[type(node.op)](
@@ -295,9 +295,10 @@ def _literal(node, module_consts: dict | None = None):
 
 @functools.lru_cache(maxsize=None)
 def _sibling_constants(directory: pathlib.Path) -> dict:
-    """``{"module.NAME": value}`` for the constants of every module in *directory*."""
+    """``{"module.NAME": value}`` for the constants of every module in *directory* and its
+    subpackages (``subagent/limits.py`` is ``limits``)."""
     out: dict = {}
-    for sibling in directory.glob("*.py"):
+    for sibling in [*directory.glob("*.py"), *directory.glob("*/*.py")]:
         for name, value in _module_constants(ast.parse(sibling.read_text())).items():
             out[f"{sibling.stem}.{name}"] = value
     return out

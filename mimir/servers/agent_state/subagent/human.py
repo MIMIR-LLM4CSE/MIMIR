@@ -8,7 +8,7 @@ import json
 import sys
 import threading
 import time
-from . import spawn_limits
+from . import limits
 
 # ── Reaching the user from inside a sub-agent ─────────────────────────────────
 # Through the MCP session (one per connection, so a detached child can use it too). One
@@ -158,7 +158,7 @@ def install_user_channel(agent, session, loop, task: str) -> None:
             ask_the_user(session, header, question, options, origin), loop)
         started = time.monotonic()
         try:
-            return future.result(timeout=spawn_limits.SUBAGENT_BLOCKING_WAIT_SECS)
+            return future.result(timeout=limits.SUBAGENT_BLOCKING_WAIT_SECS)
         except Exception:
             return ""
         finally:

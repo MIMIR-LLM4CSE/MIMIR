@@ -2,8 +2,9 @@
 
 Async, so several calls in one step run concurrently; the child's tool calls stream back
 as progress. It gets only the tools the caller grants (and their servers), on the
-caller's model unless another served one is named. What the call says about its caller
-is read in ``caller``; the run itself is ``sub_agent_run``.
+caller's model unless another served one is named. The sub-agent itself is the
+``subagent`` package: its caller (``caller``), its run (``run``, ``build``), its copy of
+the repository (``worktree``).
 """
 
 from __future__ import annotations
@@ -14,16 +15,12 @@ from typing import Annotated
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
-from . import caller, spawn_jobs, spawn_limits, spawn_output, spawn_worktree
+from .subagent import caller, jobs, limits, output
 from .model_catalog import probe_served_models, served_models_description
-from .sub_agent_run import (
-    NO_ANSWER,
-    ChildRun,
-    abandon_child,
-    new_sub_session,
-    overrun_note,
-    partial_handoff,
-)
+from .subagent.build import new_sub_session
+from .subagent.outcome import NO_ANSWER, abandon_child, overrun_note, partial_handoff
+from .subagent.run import ChildRun
+from .subagent.worktree import create_worktree
 from ...shared.capabilities import (
     BACKGROUNDABLE,
     DELEGATE,
@@ -76,7 +73,7 @@ _TOOLS_DESCRIPTION = (
     # Deliberately above SUBAGENT_BLOCKING_WAIT_SECS, so this server answers first (the
     # child's result, or its handle once it carries on detached) instead of the
     # dispatcher killing the call with nothing to show.
-    timeout_secs=spawn_limits.SUBAGENT_BLOCKING_WAIT_SECS + 60,
+    timeout_secs=limits.SUBAGENT_BLOCKING_WAIT_SECS + 60,
     label="Sub-agent: {task}",
     read_only=False,
 ))
@@ -84,7 +81,7 @@ async def spawn_agent(
     task: str,
     context: str = "",
     tools: Annotated[list[str], Field(description=_TOOLS_DESCRIPTION)] = [],
-    max_steps: int = spawn_limits.SUBAGENT_MAX_STEPS,
+    max_steps: int = limits.SUBAGENT_MAX_STEPS,
     time_budget_secs: int = 0,
     background: bool = False,
     model: Annotated[str, Field(description=_MODEL_DESCRIPTION)] = "",
@@ -175,16 +172,16 @@ async def spawn_agent(
     # This server's stdout IS the JSON-RPC pipe, so anything printed corrupts the
     # protocol: stdout goes to stderr, and the child gets an event sink (without one,
     # event_sink.emit falls back to printing every event).
-    spawn_output.silence_stdout_once()
+    output.silence_stdout_once()
     session = new_sub_session()
     run = ChildRun(session=session, model=model, requested=requested, budget=budget)
 
     # A slot before anything is created or any clock starts: the wait is not the child's
     # time, and a worktree cut for a child that never runs is litter.
-    if not await spawn_jobs.wait_for_slot():
+    if not await jobs.wait_for_slot():
         return err(
-            f"no room to start another sub-agent: {spawn_jobs.SUBAGENT_MAX_CONCURRENT} are already "
-            f"running ({spawn_jobs.busy_with()}). Do something else and delegate this when one "
+            f"no room to start another sub-agent: {jobs.SUBAGENT_MAX_CONCURRENT} are already "
+            f"running ({jobs.busy_with()}). Do something else and delegate this when one "
             f"lands — you are resumed as each finishes — or do it yourself. Do not "
             f"retry this call immediately: nothing will have changed.",
             **NO_ANSWER,
@@ -194,7 +191,7 @@ async def spawn_agent(
     # A child granted anything writing or executing works in its own copy of the
     # repository, so concurrent children cannot overwrite each other.
     if working:
-        run.worktree, refusal = spawn_worktree.create_worktree(run.child_key, session)
+        run.worktree, refusal = create_worktree(run.child_key, session)
         if run.worktree is None:
             run.slot.release()
             return err(refusal, **NO_ANSWER)
@@ -252,22 +249,22 @@ def subagent_job(
     """
     op = (op or "status").strip().lower()
     if op == "list":
-        with spawn_jobs.JOBS_LOCK:
-            jobs = [
-                {"job_key": key, "state": spawn_jobs.job_state(entry), "task": entry.get("task", ""),
+        with jobs.JOBS_LOCK:
+            listed = [
+                {"job_key": key, "state": jobs.job_state(entry), "task": entry.get("task", ""),
                  "session": entry.get("session", ""),
                  "elapsed_secs": int(time.time() - entry.get("started", 0))}
-                for key, entry in spawn_jobs.JOBS.items()
+                for key, entry in jobs.JOBS.items()
             ]
-        jobs.sort(key=lambda j: j["elapsed_secs"])
-        return ok({"jobs": jobs, "count": len(jobs)})
+        listed.sort(key=lambda j: j["elapsed_secs"])
+        return ok({"jobs": listed, "count": len(listed)})
 
-    entry = spawn_jobs.job_snapshot(job_key) or spawn_jobs.entry_from_card(job_key)
+    entry = jobs.job_snapshot(job_key) or jobs.entry_from_card(job_key)
     if entry is None:
         return err(f"unknown sub-agent job {job_key!r}: no sub-agent of this session "
                    f"was started under that handle, and none left a card under it. Use "
                    f"op='list' to see the ones this server still holds.")
-    state = spawn_jobs.job_state(entry)
+    state = jobs.job_state(entry)
     if state == "unknown" and not entry.get("from_card"):
         # Past its budget and still going in its own thread: its run's budget guard
         # stops it, and so does this read when it sees the wall first.
@@ -304,7 +301,7 @@ def subagent_job(
         # as a conclusion is the whole failure this guards against.
         partial = partial_handoff(entry.get("child") or {})
         if state == "unknown":
-            budget = int(entry.get("budget") or spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
+            budget = int(entry.get("budget") or limits.SUBAGENT_EXPLORE_BUDGET_SECS)
             partial["answer"] = (overrun_note(budget) + " " + partial["answer"]).strip()
             partial["ended_on_budget"] = True
         return ok({**base, **partial, "completed": False})

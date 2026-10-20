@@ -12,7 +12,7 @@ import os
 
 from mcp.server.fastmcp import Context
 
-from . import spawn_limits
+from . import limits
 
 # The request-_meta key the client sends its approval mode under (client
 # guardrails.policy.approval.APPROVAL_MODE_META). A child runs in that mode; absent or
@@ -134,9 +134,9 @@ def budget(ctx: Context | None, level: str, requested: list[str],
     anything else is reconnaissance. Decided before the child connects any server.
     """
     working = level_allows(level, "build") and bool(set(requested) & writers(ctx))
-    ceiling = (spawn_limits.SUBAGENT_WORKING_BUDGET_SECS if working
-               else spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS)
-    budget = max(spawn_limits.SUBAGENT_MIN_BUDGET_SECS,
+    ceiling = (limits.SUBAGENT_WORKING_BUDGET_SECS if working
+               else limits.SUBAGENT_EXPLORE_BUDGET_SECS)
+    budget = max(limits.SUBAGENT_MIN_BUDGET_SECS,
                  min(int(time_budget_secs or ceiling), ceiling))
     return working, budget
 
@@ -151,6 +151,6 @@ def resolve_model(ctx: Context | None, model: str,
     own = model_of(ctx)
     model = (model or "").strip()
     if model and model != own:
-        from .model_catalog import subagent_model_refusal
+        from ..model_catalog import subagent_model_refusal
         return model, subagent_model_refusal(model, served)
     return own, None

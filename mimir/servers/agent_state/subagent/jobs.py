@@ -7,10 +7,10 @@ import json
 import os
 import threading
 import time
-from ...shared.jobs import descriptor, op
-from . import spawn_limits
-from . import spawn_user_channel
-from . import spawn_worktree
+from ....shared.jobs import descriptor, op
+from . import limits
+from . import human
+from . import worktree
 
 JOBS: dict[str, dict] = {}
 
@@ -155,7 +155,7 @@ def entry_from_card(job_key: str) -> dict | None:
     if not job_key:
         return None
     try:
-        from ...shared.state_paths import active_session_id, subagents_dir
+        from ....shared.state_paths import active_session_id, subagents_dir
         path = os.path.join(subagents_dir(active_session_id()), job_key, "subagent.json")
         with open(path, encoding="utf-8") as fh:
             card = json.load(fh)
@@ -163,7 +163,7 @@ def entry_from_card(job_key: str) -> dict | None:
         return None
     state = str(card.get("state") or "unknown")
     if state == "running":
-        job_state = "running" if spawn_worktree.card_is_live(card) else "unknown"
+        job_state = "running" if worktree.card_is_live(card) else "unknown"
     else:
         job_state = CARD_STATE_TO_JOB.get(state, "unknown")
     return {
@@ -171,7 +171,7 @@ def entry_from_card(job_key: str) -> dict | None:
         "outcome": state,
         "started": card_epoch(card.get("started_at")),
         "ended": card_epoch(card.get("ended_at")) or None,
-        "budget": card.get("budget_secs", spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS),
+        "budget": card.get("budget_secs", limits.SUBAGENT_EXPLORE_BUDGET_SECS),
         "task": card.get("task", ""),
         "session": card.get("session", ""),
         "model": card.get("model", ""),
@@ -205,7 +205,7 @@ def job_state(entry: dict) -> str:
     # this, a run parked on its own approval card ages out of its budget and is
     # reported lost to the watcher — which treats "unknown" as terminal — while the
     # card it is waiting on is still on screen.
-    working = (time.time() - entry.get("started", 0)) - spawn_user_channel.paused_secs(entry.get("session", ""))
-    if working > entry.get("budget", spawn_limits.SUBAGENT_EXPLORE_BUDGET_SECS):
+    working = (time.time() - entry.get("started", 0)) - human.paused_secs(entry.get("session", ""))
+    if working > entry.get("budget", limits.SUBAGENT_EXPLORE_BUDGET_SECS):
         return "unknown"
     return "running"
