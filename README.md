@@ -12,6 +12,11 @@ A local AI agent that connects to multiple [MCP](https://modelcontextprotocol.io
 servers and reasons over them using a selectable LLM backend: [Ollama](https://ollama.com/)
 vLLM, or Ray Serve (OpenAI-compatible API).
 
+**MIMIR is used from VS Code**: a panel streams the agent's work, raises its approval
+cards and its questions, shows its runs on the cluster, and keeps its conversations. The
+terminal client is the development harness — to try a model, debug a server or replay a
+turn — see [The terminal, for development](#the-terminal-for-development).
+
 The client in [`client/agent_core.py`](mimir/client/agent_core.py) runs a simple loop:
 start each MCP server as a stdio child process, discover every tool and its JSON schema,
 expose those tools to the backend, route each call to the right server, and repeat until the
@@ -81,16 +86,22 @@ git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git && cd MIMIR
 
 `install.sh` fetches a portable Python 3.10, creates `.venv-<os>-<arch>` (e.g.
 `.venv-linux-x86_64`), installs the package with a smoke test, and — when
-`npm` is available — builds and installs the VS Code extension. No npm? The CLI
-still works; [SETUP.md §6a](SETUP.md#6a-get-nodejs-and-npm) explains how to get
-Node.js and npm, then re-run `./install.sh` for the panel.
+`npm` is available — builds and installs the VS Code extension.
+[SETUP.md §6a](SETUP.md#6a-get-nodejs-and-npm) explains how to get Node.js and npm if
+it is missing; re-run `./install.sh` afterwards.
 
-**In VS Code:** reload the window, open the MIMIR panel, pick a backend, and type
-the address of your server (`http://<host>:8000` for vLLM or Ray Serve,
-`http://<host>:11434` for Ollama). The model list fills itself from that address.
-Nothing goes in `.vscode/settings.json`.
+Then reload the VS Code window, open the MIMIR panel, pick a backend, and type the
+address of your server (`http://<host>:8000` for vLLM or Ray Serve,
+`http://<host>:11434` for Ollama). The model list fills itself from that address, and
+the panel starts the agent's server for you. Nothing goes in `.vscode/settings.json`.
 
-**On the command line:**
+See [`SETUP.md`](SETUP.md) for backends, environment variables, and the extension.
+
+## The terminal, for development
+
+The same agent runs without the panel — the engine, the servers and the guardrails are
+shared; only the front-end differs. Use it to try a model or a backend, debug an MCP
+server, or replay a turn while working on MIMIR itself:
 
 ```bash
 source .venv-linux-x86_64/bin/activate
@@ -99,7 +110,8 @@ cd /path/to/your/project                   # becomes the sandbox root
 mimir                                      # interactive CLI
 ```
 
-See [`SETUP.md`](SETUP.md) for backends, environment variables, and the extension.
+`mimir/runner` drives the agent unattended over a benchmark's tasks (a `BenchmarkAdapter`
+supplies the tasks and scores the answers), for measuring the agent rather than using it.
 
 ## Installation
 
@@ -110,9 +122,8 @@ an [Ollama](https://ollama.com/) server, or an Anthropic API key. MIMIR connects
 it; it never starts or schedules it.
 
 ```bash
-pip install ".[vllm]"                          # installs the `mimir` command
+pip install ".[vllm]"                          # the `mimir-server` the panel starts, and the `mimir` CLI
 export VLLM_BASE_URL=http://<node>:8000        # vLLM is the default backend
-cd /path/to/your/project && mimir
 
 # Ray Serve instead — the same OpenAI API, with the cluster placing and scaling the
 # vLLM engines behind it (replicas, autoscaling and GPU placement are Ray's side):
