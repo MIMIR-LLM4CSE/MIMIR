@@ -15,7 +15,20 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-10-20
+
 ### Added
+- **Measure a wording before changing it.** `python -m mimir.evals` runs a benchmark under
+  the code's prompt and under prose variants — JSON files rewording the prompt's sections
+  and the constant reminders by id — and compares them with intervals, saying when a gap is
+  not measurable. A first-party scientific benchmark (`mimir.evals.scientific`) checks what
+  a generic coding benchmark does not: an invariant kept, a tolerance respected, a
+  speed-up claimed no higher than measured. See CONTRIBUTING.md.
+- **A sub-agent hears how its runs are going**, as a conversation does: progress
+  check-ins while a run it launched is going, and at once when its log turns bad.
+- **A server can seal files the model must run only through its tools**
+  (`mimir.shared.exec_seals`): running one directly is refused in the server's own words.
+  The proxy server seals the proxy under optimisation this way.
 - **`/diag nudges`** counts the reminders that reached the model, in this conversation or
   (`/diag nudges all`) in every conversation of the workspace, sub-agents included.
 - **A sub-agent keeps its session journal** (`transcript.jsonl`) as a conversation does:
@@ -50,6 +63,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still applies to all of them.
 
 ### Fixed
+- **A job started with `ssh <host> … srun` shows as a job on that host**, not as a
+  process of the local machine.
+- **A window reopened while the server is stopping waits for the new one** instead of
+  attaching to the server going away and failing on its first message.
+- **`slurm_cancel` cancels a job this conversation submitted through a launcher or a
+  script**, and still never another conversation's.
+- **The extension writes to one "MIMIR Server" output channel** instead of opening a new
+  one per message.
 - **A `find -exec … > file` redirection is confined.** An operator inside the `-exec`
   payload was read as part of the nested command, so a redirection there could write outside
   the workspace without approval; any other operator there is refused.
