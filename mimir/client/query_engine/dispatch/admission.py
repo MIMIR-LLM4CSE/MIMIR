@@ -137,18 +137,17 @@ def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContex
 
 
 # ── Guards for a run something else is already watching ───────────────────────
-# Both read the live watchers through the optional ``agent.watched_background_jobs``
-# hook. In the dispatch, the model's path, not in a policy gate: the watcher's own probes
+# Both read the live watchers through the host's watcher, when it lends one. In the dispatch, the model's path, not in a policy gate: the watcher's own probes
 # call ``agent.run_tool`` directly and must not be refused.
 
 
 def _watched_jobs(agent: AgentPort) -> list[dict]:
     """Descriptors of the runs a watcher is holding right now. Best-effort, never raises."""
-    hook = agent.watched_background_jobs
-    if not hook:
+    watcher = agent.host.watcher
+    if watcher is None:
         return []
     try:
-        jobs = hook() or []
+        jobs = watcher.watched() or []
     except Exception:
         logger.debug("_watched_jobs: a best-effort step failed and was skipped", exc_info=True)
         return []

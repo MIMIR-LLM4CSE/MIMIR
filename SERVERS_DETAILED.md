@@ -1373,9 +1373,10 @@ Tools:
     and several children working in parallel cannot collide. It leaves a `subagent.json`
     card next to them for the sub-agents panel, and the whole thing goes when the parent
     session is deleted.
-  - **A child watches its own detached runs.** The hook pair the client installs
-    (`register_background_job` / `watched_background_jobs`) goes on the agent the
-    WebSocket worker owns, and a child's agent is built here, so it gets its own; polled
+  - **A child watches its own detached runs.** A front-end lends its agent a host
+    (`core.ports.AgentHost`: a person, a watcher, a steer channel); the WebSocket
+    worker lends one to the agents it owns, and a child's agent is built here, so it is
+    lent its own; polled
     in-turn instead, a child would sit on a step until a build finished rather than
     prepare the next one. `child_jobs.ChildWatcher` is the watcher — the engine's `RunWatcher`, as
     the conversation's is, delivering to the child, check-ins included (`checkin_steer`: a run
@@ -1383,7 +1384,7 @@ Tools:
     the loop `asyncio.run` creates for the child's thread — the only window in which
     `get_running_loop()` can hold one. The resume is a **steer**, not an event: a child
     has no `out_q` and no event bus, and no turn loop to submit to, so a finished run
-    reaches its reasoning through `agent.poll_steer` at the next step boundary, in the
+    reaches its reasoning through its host's `steer` at the next step boundary, in the
     words `jobs.wakes.wake_text` writes for every wake in the system. Two threads, two
     methods: `handover()` is the only one a caller on another thread may use and cancels
     nothing, while `close()` does the cancelling from the child's own `finally` — a task

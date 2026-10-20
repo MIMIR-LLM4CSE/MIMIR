@@ -1,7 +1,7 @@
 """A sub-agent's own watcher for the detached runs it launched: the conversation's
 :class:`RunWatcher`, delivering to the child.
 
-A finished run and a check-in reach the child as steers (``poll_steer``), in
+A finished run and a check-in reach the child as steers (its host's ``steer``), in
 ``wake_text``'s and ``checkin_steer``'s words.
 The child's loop is its own: only :meth:`ChildWatcher.handover` may be called from another
 thread; :meth:`ChildWatcher.close` cancels, on the child's loop.
@@ -76,7 +76,7 @@ class ChildWatcher(RunWatcher):
     # ── the steer channel and the handover ───────────────────────────────────────
 
     def drain_steers(self) -> list[str]:
-        """Pop every wake waiting for the child. The child's ``poll_steer``."""
+        """Pop every wake waiting for the child: its host's ``steer``."""
         out = []
         while self._steers:
             out.append(self._steers.popleft())

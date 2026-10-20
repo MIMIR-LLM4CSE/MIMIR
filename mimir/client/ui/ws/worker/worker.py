@@ -16,6 +16,7 @@ import queue as _queue
 import threading
 from typing import Any
 
+from ....core.ports import AgentHost
 from .....shared.responses import err
 from ....agent_core import MimirAgent
 from ....config import TEMPERATURE_BACKENDS
@@ -182,17 +183,11 @@ class AgentWorker:
             await agent.connect_servers(all_servers())
             agent.seed_classification_from_caps()
 
-            # Approvals, outside paths and questions become cards on this socket.
-            agent.human = self.human
-            # Let the loop pick up messages the user types WHILE the agent is
-            # working (chat-while-busy steering); drained at each step boundary.
-            agent.poll_steer = self._drain_steer_q
-            # Let the loop detach a long run: the agent ends its turn and this
-            # worker watches the run to completion, then notifies + auto-resumes.
-            agent.register_background_job = self.jobs.register
-            # The twin of the hook above: what the dispatch guard reads to know a run
-            # is already being watched, so asking whether it is done can be refused.
-            agent.watched_background_jobs = self.jobs.watched
+            # Approvals, outside paths and questions become cards on this socket; a
+            # long run is detached and this worker wakes the turn when it ends; what
+            # the user types while the agent works is drained at each step boundary.
+            agent.attach(AgentHost(human=self.human, watcher=self.jobs,
+                                   steer=self._drain_steer_q))
 
             self._agent = agent
             self.out_q.put({"type": "ready", "model": self.model, "agent_ready": True})
@@ -491,7 +486,7 @@ class AgentWorker:
 
 
     def _drain_steer_q(self) -> list[str]:
-        """Pop and return all queued steer messages (the agent's ``poll_steer``)."""
+        """Pop and return all queued steer messages (the host's ``steer``)."""
         out: list[str] = []
         while True:
             try:

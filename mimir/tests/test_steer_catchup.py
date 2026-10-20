@@ -14,6 +14,7 @@ import threading
 import types
 import unittest
 
+from mimir.tests.support.agents import lent
 from mimir.client.protocol.events import pop_answer_extras
 from mimir.client.ui.ws.worker.worker import AgentWorker
 
@@ -77,7 +78,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
     def test_a_turn_that_read_its_steering_carries_nothing(self) -> None:
         w = _worker()
         w.submit_steer("read me")
-        w.agent.poll_steer = w._drain_steer_q   # what the loop patches on
+        w.agent.host = lent(steer=w._drain_steer_q)   # what the worker lends
         w.agent.run = lambda **_kw: _read_then_answer(w)
         self.assertNotIn("_unconsumed_steer", _answer(w))
 
@@ -103,7 +104,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
 
 
 async def _read_then_answer(w: AgentWorker) -> str:
-    w.agent.poll_steer()
+    w.agent.host.steer()
     return "done"
 
 

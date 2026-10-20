@@ -56,16 +56,14 @@ def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort)
         parse_tool_payload(result_text) if isinstance(result_text, str) else None)
     if not descriptors:
         return result_text
-    hook = agent.register_background_job
-    if not hook:
+    watcher = agent.host.watcher
+    if watcher is None:
         return result_text   # CLI: no watcher to re-arm, and nothing was promised
-    known = set()
-    watched = agent.watched_background_jobs
-    if callable(watched):
-        try:
-            known = {jobs.job_key_of(d) for d in (watched() or []) if isinstance(d, dict)}
-        except Exception:
-            known = set()
+    hook = watcher.register
+    try:
+        known = {jobs.job_key_of(d) for d in (watcher.watched() or []) if isinstance(d, dict)}
+    except Exception:
+        known = set()
     rearmed = []
     for descriptor in descriptors:
         job_key = jobs.job_key_of(descriptor)
@@ -94,7 +92,7 @@ def maybe_register_background_job(
 ) -> tuple[str, bool]:
     """Register a watcher for a detached run; ``(result, registered)``.
 
-    Through the optional ``agent.register_background_job`` hook; the "end your turn" note is
+    Through the host's watcher, when it lends one; the "end your turn" note is
     added only when a watcher holds the run. Best-effort, and logged.
     """
     if descriptor is None:
@@ -102,15 +100,15 @@ def maybe_register_background_job(
     if descriptor is None:
         return result_text, False
     job_key = jobs.job_key_of(descriptor) or "?"
-    hook = agent.register_background_job
-    if not hook:
+    watcher = agent.host.watcher
+    if watcher is None:
         # CLI: there is no watcher to register with. Not a failure — the caller waits
         # the run out in-turn instead.
         logger.debug("no background-job watcher hook; job %r will be awaited in-turn",
                      job_key)
         return result_text, False
     try:
-        registered = bool(hook(descriptor))
+        registered = bool(watcher.register(descriptor))
     except Exception:
         logger.warning("background watcher registration raised for job %r — "
                        "falling back to an in-turn await", job_key, exc_info=True)

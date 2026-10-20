@@ -190,11 +190,12 @@ The contracts the layers above agree on.
 | `settings.py` | one table, `SETTINGS`: per setting, how to `parse` it (raising `ValueError` with the message to show), how to `store` it on an agent, how to `read` it, and what is in force with no agent. `apply_setting(agent, name, value)` and `read_setting(agent, name)` are the only way any front-end changes or reads a setting |
 | `human.py` | the two `HumanIO`s that need nothing but the agent: `TerminalHuman` (stdin; EOF answers no) and `Unattended` (the benchmark runner) |
 
-Each front-end puts its own `HumanIO` on the agent (`agent.human`): the WebSocket's is
-`ui/ws/worker/human.HumanBridge`, the sub-agent server's relays to the delegating session.
-What a front-end lends a turn besides — `poll_steer`, `register_background_job`,
-`watched_background_jobs` — are declared attributes of the agent, `None` where it lends
-nothing.
+What a front-end lends the agent is one `AgentHost` (`MimirAgent.attach`): its `HumanIO`,
+a watcher for the runs the agent detaches (a `RunWatcher`), and the steer channel the user
+types into while a turn runs. The terminal lends a person only (`TerminalHuman`, `CliHuman`);
+the WebSocket worker lends its `HumanBridge`, its `JobWatcher` and its steer queue; the
+sub-agent server lends the relay to the delegating session, its `ChildWatcher` and that
+watcher's steers.
 
 ---
 

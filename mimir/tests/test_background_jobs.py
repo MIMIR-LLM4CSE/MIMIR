@@ -9,7 +9,7 @@ import queue
 import types
 import unittest
 
-from mimir.tests.support.agents import FakeAgent
+from mimir.tests.support.agents import FakeAgent, lent
 from mimir.client.ui.ws.worker.human import HumanBridge
 from mimir.client.ui.ws.worker.jobs import JobWatcher
 from mimir.client.query_engine.jobs import Watch as _Watch
@@ -119,7 +119,7 @@ class _FakeAgent(FakeAgent):
         # instance is raised. The last two are the paths the field failure took.
         self._outcome = outcome
         if with_hook:
-            self.register_background_job = self._hook
+            self.host = lent(register=self._hook)
 
     def _hook(self, descriptor: dict) -> bool:
         self.registered.append(descriptor)
@@ -263,7 +263,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
         registered: list[dict] = []
         agent = fake_agent(
             tool_caps=registry,
-            register_background_job=lambda d: bool(registered.append(d) or True),turn=TurnState())
+            host=lent(register=lambda d: bool(registered.append(d) or True)),turn=TurnState())
         out, was_registered = maybe_register_background_job(
             "bash_run", json.dumps(result), agent)
 
@@ -300,8 +300,8 @@ class LiveRegistrySeamTests(unittest.TestCase):
         registered: list[dict] = []
         agent = fake_agent(
             tool_caps=registry,
-            watched_background_jobs=lambda: [],
-            register_background_job=lambda d: bool(registered.append(d) or True),turn=TurnState())
+            host=lent(watched=lambda: [],
+                      register=lambda d: bool(registered.append(d) or True)),turn=TurnState())
         out = maybe_rewatch_background_jobs("bash_watch", json.dumps(result), agent)
 
         self.assertEqual([d["job_key"] for d in registered], [job_key])
@@ -782,9 +782,8 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
         from mimir.client.query_engine import dispatch as dispatch_module
 
         agent = self._agent(result_text)
-        agent.register_background_job = \
-            lambda d, owner=None: (agent.registered.append(d), True)[1]
-        agent.watched_background_jobs = lambda: []
+        agent.host = lent(register=lambda d: (agent.registered.append(d), True)[1],
+                          watched=lambda: [])
         asyncio.run(dispatch_module.dispatch_tool_calls(
             [{"id": "1", "function": {"name": "spawn_agent", "arguments": "{}"}}],
             agent, [], build_execution_context()))
@@ -876,7 +875,7 @@ class _GuardAgent(FakeAgent):
         }
         self._watched = watched or []
         if with_hook:
-            self.watched_background_jobs = lambda: list(self._watched)
+            self.host = lent(watched=lambda: list(self._watched))
 
 
 def _descriptor(job_key: str = "j1") -> dict:
@@ -924,7 +923,7 @@ class WatchedRunPollGuardTests(unittest.TestCase):
         agent = _GuardAgent()
         def _boom():
             raise RuntimeError("worker gone")
-        agent.watched_background_jobs = _boom
+        agent.host = lent(watched=_boom)
         self.assertIsNone(self._asks(agent, "bash_job", {"job_key": "j1"}))
 
 
@@ -2262,8 +2261,8 @@ class RewatchDetectionTests(unittest.TestCase):
         self.registered: list[dict] = []
         self.agent = fake_agent(
             tool_caps={},
-            register_background_job=lambda d: (self.registered.append(d), True)[1],
-            watched_background_jobs=lambda: [],turn=TurnState())
+            host=lent(register=lambda d: (self.registered.append(d), True)[1],
+                      watched=lambda: []),turn=TurnState())
 
     def _result(self, *descriptors: dict) -> str:
         return json.dumps({"status": "ok", "state": "running",
@@ -2308,7 +2307,8 @@ class RewatchDetectionTests(unittest.TestCase):
         self.assertEqual(self.registered, [])
 
     def test_a_run_already_watched_is_not_announced_again(self) -> None:
-        self.agent.watched_background_jobs = lambda: [self._descriptor("j1")]
+        self.agent.host = lent(register=lambda d: (self.registered.append(d), True)[1],
+                               watched=lambda: [self._descriptor("j1")])
         out = self.background.maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("j1")), self.agent)
         self.assertEqual(self.registered, [])
@@ -2323,7 +2323,7 @@ class RewatchDetectionTests(unittest.TestCase):
 
     def test_a_cli_with_no_watcher_hook_is_left_alone(self) -> None:
         """Nothing was promised, so there is nothing to re-arm or to say."""
-        self.agent.register_background_job = None   # the CLI lends no watcher
+        self.agent.host = lent()   # the CLI lends no watcher
         payload = self._result(self._descriptor("j1"))
         self.assertEqual(
             self.background.maybe_rewatch_background_jobs("bash_job", payload, self.agent),

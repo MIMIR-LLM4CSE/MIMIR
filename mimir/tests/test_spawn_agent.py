@@ -6,6 +6,7 @@ which tools a child may be given, the toolkit an exploration gets by default, th
 anti-recursion, and the time budget it declares to its caller — none of which any
 other test covered.
 """
+from mimir.tests.support.agents import FakeAgent
 from mimir.servers.agent_state import (
     caller, spawn_jobs, spawn_limits, spawn_output, spawn_user_channel, spawn_worktree, sub_agent_run,
 )
@@ -27,7 +28,7 @@ from pathlib import Path
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
 from mimir.tests.support.modules import spec_for
-from mimir.tests.support.agents import fake_agent
+from mimir.tests.support.agents import fake_agent, lent
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
@@ -61,10 +62,11 @@ _WRITERS = sorted(name for _, tools in _SERVER_TOOLS.items() for name, caps in t
                   if caps & {"plan_blocked", "plan_readonly"})
 
 
-class _FakeAgent:
+class _FakeAgent(FakeAgent):
     """A MimirAgent stand-in recording what the spawn server does to it."""
 
     def __init__(self, answer: str = "done", session_id: str | None = None):
+        super().__init__()
         self.turn = TurnState()
         self.connected: list[str] = []
         self.model = "parent/model"
@@ -101,13 +103,13 @@ class _FakeAgent:
 
     # As MimirAgent does: the agent asks through whoever answers for the user.
     def request_tool_approval(self, tool_name, arguments, max_attempts=3):
-        return self.human.approve_tool(self, tool_name, arguments, max_attempts)
+        return self.host.human.approve_tool(self, tool_name, arguments, max_attempts)
 
     def request_path_approval(self, paths, tool_name, arguments=None):
-        return self.human.approve_paths(self, paths, tool_name, arguments)
+        return self.host.human.approve_paths(self, paths, tool_name, arguments)
 
     def request_user_question(self, questions, origin=None, timeout_secs=None):
-        return self.human.ask(self, questions, origin, timeout_secs)
+        return self.host.human.ask(self, questions, origin, timeout_secs)
 
     def apply_setting(self, name, value):
         if name == "approval_mode":
@@ -458,7 +460,7 @@ class UserChannelTests(unittest.TestCase):
         run_tool(agent, _MetaCtx("manual"))
         self.assertFalse(agent.approvals.unattended)
         # The person behind the child is the caller's user, reached through it.
-        self.assertIsInstance(agent.human, spawn_user_channel.RelayedHuman)
+        self.assertIsInstance(agent.host.human, spawn_user_channel.RelayedHuman)
 
     def test_a_detached_child_can_reach_the_user_too(self):
         """A detached child can still raise a card: the elicitation callback belongs to the
@@ -957,11 +959,11 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
     def _run(self, body) -> None:
         asyncio.run(body())
 
-    def test_the_hooks_the_client_installs_are_installed_on_a_child_too(self) -> None:
-        """What makes the difference: with the hook present the launch is registered.
+    def test_a_child_is_lent_a_watcher_and_a_steer_channel_as_a_conversation_is(self) -> None:
+        """What makes the difference: with a watcher lent the launch is registered.
 
-        ``background.maybe_register_background_job`` branches on the hook, so this is
-        the whole of why a child now ends its step instead of waiting.
+        ``background.maybe_register_background_job`` reads the host's watcher, so this is
+        the whole of why a child ends its step instead of waiting.
         """
         async def _drive(*a, **kw):
             return {"answer": "", "completed": True, "files_read": [],
@@ -971,9 +973,8 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
              mock.patch.object(sub_agent_run, "drive_sub_agent", _drive):
             asyncio.run(sub_agent_run.run_sub_agent(
                 "a task", "", [], {}, 4, lambda ev: None, session="parent/subagents/s1"))
-        for hook in ("register_background_job", "watched_background_jobs",
-                     "poll_steer"):
-            self.assertTrue(callable(getattr(agent, hook, None)), hook)
+        self.assertIsInstance(agent.host.watcher, sub_agent_run.child_jobs.ChildWatcher)
+        self.assertTrue(callable(agent.host.steer))
 
     def test_a_finished_run_reaches_the_child_as_a_steer(self) -> None:
         """And in the words every wake in the system is written in.
@@ -1459,7 +1460,7 @@ class BackgroundTests(unittest.TestCase):
             _asks_whether_a_watched_run_is_done,
         )
         descriptor = spawn_jobs.job_descriptor("sub-ab12cd34")
-        agent = fake_agent(watched_background_jobs=lambda: [descriptor])
+        agent = fake_agent(host=lent(watched=lambda: [descriptor]))
         status = descriptor["status_op"]
         summary = descriptor["summary_op"]
         self.assertEqual(

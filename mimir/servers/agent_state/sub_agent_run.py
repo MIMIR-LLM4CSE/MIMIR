@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from mcp.server.fastmcp import Context
 
+from mimir.client.core.ports import AgentHost
 from . import caller, child_jobs
 from . import spawn_jobs, spawn_limits, spawn_output, spawn_user_channel, spawn_worktree
 from ...shared.approved_roots import approved_roots
@@ -460,9 +461,8 @@ async def run_sub_agent(
     # hears about it through its steer channel, at its next step boundary.
     watcher = child_jobs.ChildWatcher(
         agent=agent, origin=spawn_user_channel.child_origin(agent, task), on_activity=on_event)
-    agent.register_background_job = watcher.register
-    agent.watched_background_jobs = watcher.watched
-    agent.poll_steer = watcher.drain_steers
+    agent.attach(AgentHost(human=agent.host.human, watcher=watcher,
+                           steer=watcher.drain_steers))
     if child is not None:
         child["agent"] = agent
         # Published for the same reason the agent is: a caller out of patience reads the

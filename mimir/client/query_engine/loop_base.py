@@ -162,11 +162,11 @@ async def _apply_mode_switch(
 def drain_steer(agent: AgentPort, messages: list[dict]) -> None:
     """Append the messages the user typed mid-run as user turns, at a step boundary.
 
-    Through the optional ``poll_steer`` hook. Nothing may follow a steer before the call:
-    the last position is what the model answers.
+    Through the host's steer channel, when it lends one. Nothing may follow a steer before
+    the call: the last position is what the model answers.
     """
-    poll = agent.poll_steer
-    if not poll:
+    poll = agent.host.steer
+    if poll is None:
         return
     for text in (poll() or []):
         text = (text or "").strip()

@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
     from mimir.client.extensions import all_servers
     from mimir.client.protocol import human_pause
     from mimir.client.core.human import TerminalHuman
+    from mimir.client.core.ports import AgentHost
 else:
     from .... import __version__
     from ...agent_core import MimirAgent
@@ -30,6 +31,7 @@ else:
     from ...extensions import all_servers
     from ...protocol import human_pause
     from ...core.human import TerminalHuman
+    from ...core.ports import AgentHost
 
 
 class CliHuman(TerminalHuman):
@@ -46,7 +48,7 @@ async def main(model: str | None = None) -> None:
     print(f"Using model: {model} ({os.environ.get('LLM_BACKEND', 'vllm')})")
     agent = MimirAgent(model=model)
 
-    agent.human = CliHuman()
+    agent.attach(AgentHost(human=CliHuman()))
 
     await agent.connect_servers(all_servers())
     agent.seed_classification_from_caps()

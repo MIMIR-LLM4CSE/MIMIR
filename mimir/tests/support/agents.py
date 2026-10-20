@@ -7,6 +7,8 @@ from typing import Any
 from mimir.client.config.toggles import Toggles
 from mimir.client.context.carry import CarryContext
 from mimir.client.core.extension_set import AMBIENT, ExtensionSet
+from mimir.client.core.human import Unattended
+from mimir.client.core.ports import AgentHost
 from mimir.client.core.turn_state import TurnState
 
 
@@ -41,10 +43,8 @@ def agent_parts() -> dict[str, Any]:
         "max_context_tokens": 0,
         "max_answer_tokens": 0,
         "non_interactive": False,
-        # No front-end lending anything.
-        "poll_steer": None,
-        "register_background_job": None,
-        "watched_background_jobs": None,
+        # No front-end lending a watcher or a steer channel; nobody to ask.
+        "host": AgentHost(human=Unattended()),
         # No model behind it to summarise with: the loop does not compact.
         "compact_messages": None,
     }
@@ -67,6 +67,9 @@ class FakeAgent:
             if not hasattr(type(self), name):
                 setattr(self, name, value)
 
+    def attach(self, host: AgentHost) -> None:
+        self.host = host
+
     def request_user_question(self, questions: list, origin: dict | None = None,
                               timeout_secs: float | None = None) -> dict:
         return {}   # nobody to ask: no answer
@@ -82,3 +85,24 @@ class FakeAgent:
         if mode in READONLY_MODES:
             tools = tools_for_readonly_mode(tools, self.tool_caps, mode=mode)
         return tools
+
+
+class _Watching:
+    """A watcher made of two callables, as a test lends one."""
+
+    def __init__(self, register, watched) -> None:
+        self._register, self._watched = register, watched
+
+    def register(self, descriptor: dict, owner: str | None = None) -> bool:
+        return self._register(descriptor)
+
+    def watched(self) -> list[dict]:
+        return self._watched()
+
+
+def lent(*, steer=None, register=None, watched=None, human=None) -> AgentHost:
+    """A host lending *steer*, and a watcher when *register* or *watched* is given."""
+    watcher = None
+    if register is not None or watched is not None:
+        watcher = _Watching(register or (lambda d: False), watched or (lambda: []))
+    return AgentHost(human=human or Unattended(), watcher=watcher, steer=steer)

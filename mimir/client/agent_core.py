@@ -49,7 +49,7 @@ from .tools.capabilities import (
 )
 from .context.execution_context import ExecutionContext
 from .core.human import TerminalHuman
-from .core.ports import HumanIO
+from .core.ports import AgentHost
 from .core.settings import apply_setting
 from .protocol.event_sink import reset_event_sink, set_event_sink
 from .core.extension_set import AMBIENT, ExtensionSet
@@ -166,12 +166,9 @@ class MimirAgent:
         # Constructed empty; classification is seeded from the live per-agent
         # registry after servers connect (seed_classification_from_caps).
         self.approvals = ApprovalManager(session_id=session_id)
-        # Who answers for the user: the terminal, unless the front-end puts its own.
-        self.human: HumanIO = TerminalHuman()
-        # What a front-end lends the turn (core.ports.AgentPort); none by default.
-        self.poll_steer: Callable[[], list[str]] | None = None
-        self.register_background_job: Callable[..., bool] | None = None
-        self.watched_background_jobs: Callable[[], list[dict]] | None = None
+        # What a front-end lends (core.ports.AgentHost): a person at the terminal, no
+        # watcher and no steer channel, until one attaches its own.
+        self.host = AgentHost(human=TerminalHuman())
         self.session_approved_scopes = self.approvals.approved_scopes
 
         self.plan_todos: list[str] = []
@@ -374,16 +371,20 @@ class MimirAgent:
             if self.skill_enabled(name) and meta.get("model_invocable", True)
         ]
 
+    def attach(self, host: AgentHost) -> None:
+        """Take what a front-end lends: its person, its watcher, its steer channel."""
+        self.host = host
+
     # ── The person behind the front-end (core.ports.HumanIO) ─────────────────
 
     def request_tool_approval(self, tool_name: str, arguments: dict,
                               max_attempts: int = 3) -> tuple[bool, str]:
-        return self.human.approve_tool(self, tool_name, arguments, max_attempts)
+        return self.host.human.approve_tool(self, tool_name, arguments, max_attempts)
 
     def request_path_approval(self, paths: list[str], tool_name: str,
                               arguments: dict | None = None) -> tuple[bool, bool]:
         """Approve out-of-workspace access to *paths*. Returns (approved, always)."""
-        return self.human.approve_paths(self, paths, tool_name, arguments)
+        return self.host.human.approve_paths(self, paths, tool_name, arguments)
 
     def request_user_question(self, questions: list, origin: dict | None = None,
                               timeout_secs: float | None = None) -> dict:
@@ -392,7 +393,7 @@ class MimirAgent:
         *origin* names an asker other than the turn on screen; *timeout_secs* None waits
         indefinitely. Returns ``{"answers": [...]}``, flagged ``timed_out`` when the wait ran out.
         """
-        return self.human.ask(self, questions, origin, timeout_secs)
+        return self.host.human.ask(self, questions, origin, timeout_secs)
 
     def denied_tool_result(
         self,

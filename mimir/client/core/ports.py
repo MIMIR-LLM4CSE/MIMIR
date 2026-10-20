@@ -9,6 +9,7 @@ these members, and the real agent is checked against each by type.
 from __future__ import annotations
 
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from ..config.toggles import Toggles
@@ -111,12 +112,7 @@ class TurnHost(Protocol):
 
     turn: TurnState
     carry: CarryContext
-    # Messages the user typed while the turn runs, drained at each step boundary.
-    poll_steer: Callable[[], list[str]] | None
-    # Hand a long run to the front-end, which watches it and wakes the turn after.
-    register_background_job: Callable[..., bool] | None
-    # The runs the front-end is already watching, so asking about one can be refused.
-    watched_background_jobs: Callable[[], list[dict[str, Any]]] | None
+    host: AgentHost
 
     def new_execution_context(self) -> ExecutionContext: ...
     def todo_file(self) -> str: ...
@@ -161,6 +157,33 @@ class ConnectorAgent(Connections, ToolRegistry, WorkspacePaths, Approvals, Agent
 class AgentPort(ToolRegistry, WorkspacePaths, ToolRunner, Approvals, AgentSettings,
                 TurnHost, Connections, Protocol):
     """Every brick: the agent as the engine, which orchestrates them, uses it."""
+
+
+class RunWatching(Protocol):
+    """A front-end's watcher of detached runs (``query_engine.jobs.RunWatcher``)."""
+
+    def register(self, descriptor: dict[str, Any], owner: str | None = None) -> bool:
+        """Hold a long run and wake the turn after; False means wait it out in-turn."""
+        ...
+
+    def watched(self) -> list[dict[str, Any]]:
+        """The runs held now, so asking whether one is done can be refused."""
+        ...
+
+
+@dataclass(frozen=True)
+class AgentHost:
+    """What a front-end lends the agent: the person behind it, a watcher for the runs it
+    detaches, and the messages the user types while a turn runs.
+
+    The terminal lends a person only; the WebSocket worker and the sub-agent server lend
+    all three, each its own (``MimirAgent.attach``).
+    """
+
+    human: HumanIO
+    watcher: RunWatching | None = None
+    # Drained at each step boundary.
+    steer: Callable[[], list[str]] | None = None
 
 
 class HumanIO(Protocol):

@@ -3,6 +3,7 @@ session that delegated it, and the time the user took to answer kept off the bud
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import sys
 import threading
@@ -163,7 +164,7 @@ def install_user_channel(agent, session, loop, task: str) -> None:
         finally:
             record_pause(origin["session"], time.monotonic() - started)
 
-    agent.human = RelayedHuman(_ask)
+    agent.attach(dataclasses.replace(agent.host, human=RelayedHuman(_ask)))
     # It is no longer unattended: there is a person at the end of the channel, and the
     # mode gate must ask them rather than refuse on their behalf.
     agent.approvals.unattended = False

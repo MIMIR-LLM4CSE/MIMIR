@@ -46,7 +46,7 @@ import mimir.client.query_engine.turn as turn_module
 from mimir.tests.support.loops import as_loop_run, run_plan
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
-from mimir.tests.support.agents import FakeAgent, fake_agent
+from mimir.tests.support.agents import FakeAgent, fake_agent, lent
 
 
 def _reminder_calls(backend, text: str) -> list[int]:
@@ -1237,7 +1237,7 @@ class DrainSteerTests(unittest.TestCase):
     """Unit coverage for ``drain_steer`` — the chat-while-busy injection point."""
 
     def test_injects_queued_messages_as_user_turns(self) -> None:
-        agent = fake_agent(poll_steer=lambda: ["focus on the parser", "skip tests"])
+        agent = fake_agent(host=lent(steer=lambda: ["focus on the parser", "skip tests"]))
         messages: list[dict] = [{"role": "tool", "content": "prev result"}]
         emitted: list[dict] = []
         with capture_events(lambda ev: emitted.append(ev)):
@@ -1252,7 +1252,7 @@ class DrainSteerTests(unittest.TestCase):
 
     def test_blank_and_missing_poll_are_noops(self) -> None:
         # Whitespace-only messages are skipped.
-        agent = fake_agent(poll_steer=lambda: ["  ", ""])
+        agent = fake_agent(host=lent(steer=lambda: ["  ", ""]))
         messages: list[dict] = []
         loop_base_module.drain_steer(agent, messages)
         self.assertEqual(messages, [])
@@ -1277,7 +1277,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
             drains["n"] += 1
             return ["focus on the parser"] if drains["n"] == 2 else []
 
-        agent.poll_steer = _poll
+        agent.host = lent(steer=_poll)
 
         backend = ScriptedBackend([
             {"content": "working", "tool_calls": [_tool_call("noop")]},
@@ -1341,7 +1341,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
             drains["n"] += 1
             return ["focus on the parser"] if drains["n"] == 2 else []
 
-        agent.poll_steer = _poll
+        agent.host = lent(steer=_poll)
 
         backend = ScriptedBackend([
             {"content": "working", "tool_calls": [_tool_call("noop")]},

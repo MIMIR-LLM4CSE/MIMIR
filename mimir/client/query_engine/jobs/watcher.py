@@ -62,8 +62,7 @@ class Watch:
 class RunWatcher:
     """An agent's detached runs, each polled to its end and announced once.
 
-    Installed on the agent as ``register_background_job`` (:meth:`register`) and
-    ``watched_background_jobs`` (:meth:`watched`).
+    Lent to the agent as its host's ``watcher`` (``core.ports.AgentHost``).
     """
 
     first_interval = 5.0
