@@ -24,7 +24,7 @@ from ..config.paths import GLOBAL_STATE_DIR, SERVER_BASE
 from ...shared.launcher import launch_argv
 from ..config.limits import USER_QUESTION_TIMEOUT_SECS
 from ...shared.state_paths import scratch_home
-from ..core.ports import AgentPort
+from ..core.ports import ConnectorAgent
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ def _bind_question_handler(ask: Any):
     return _call
 
 
-def _make_elicitation_callback(agent: AgentPort):
+def _make_elicitation_callback(agent: ConnectorAgent):
     """Bridge MCP elicitation requests (``ask_user_question``) to ``agent.request_user_question``.
 
     The blocking handler runs in an executor, with the wait marked as human time on the
@@ -280,7 +280,7 @@ def _make_elicitation_callback(agent: AgentPort):
     return _callback
 
 
-def server_environment(agent: AgentPort) -> dict[str, str]:
+def server_environment(agent: ConnectorAgent) -> dict[str, str]:
     """The environment a server of *agent* is started with, frozen at spawn."""
     # What a server is told at spawn, frozen in its environment: the workspace root, the state
     # dir, the scratchpad (vetted once by the client), MIMIR_SESSION_ID (an agent serves one
@@ -301,7 +301,7 @@ def server_environment(agent: AgentPort) -> dict[str, str]:
     }
 
 
-async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
+async def _spawn_session(*, agent: ConnectorAgent, name: str, script: str) -> Any:
     """Start a server and open its session, short of ``initialize``, on the agent's exit stack.
 
     Separate so the handshakes of a whole registry overlap.
@@ -320,7 +320,7 @@ async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
     )
 
 
-async def _register_session(*, agent: AgentPort, name: str, session: Any, listing: Any) -> None:
+async def _register_session(*, agent: ConnectorAgent, name: str, session: Any, listing: Any) -> None:
     """Record an initialized session's tools and resources on the agent.
 
     Callers register one server at a time, in registry order: the tool schema is sent
@@ -385,7 +385,7 @@ def server_args(script: str) -> list[str]:
     return [script]
 
 
-async def connect_server(*, agent: AgentPort, name: str, script: str) -> None:
+async def connect_server(*, agent: ConnectorAgent, name: str, script: str) -> None:
     """Spawn one MCP server process and register its tools on the agent."""
     session = await _spawn_session(agent=agent, name=name, script=script)
     listing = await _handshake(session)
@@ -394,7 +394,7 @@ async def connect_server(*, agent: AgentPort, name: str, script: str) -> None:
 
 async def connect_servers(
     *,
-    agent: AgentPort,
+    agent: ConnectorAgent,
     registry: dict[str, str],
     on_error: Callable[[str, BaseException], None] | None = None,
 ) -> None:
@@ -425,7 +425,7 @@ async def connect_servers(
         await _register_session(agent=agent, name=name, session=session, listing=listing)
 
 
-async def register_resources(*, agent: AgentPort, name: str, session: Any) -> int:
+async def register_resources(*, agent: ConnectorAgent, name: str, session: Any) -> int:
     """Discover a server's MCP resources into ``agent.resources``; return the count (fail-open)."""
     n_resources = 0
     try:

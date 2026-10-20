@@ -25,7 +25,7 @@ from ..tools.bash_classify import bash_command_is_readonly, classify_bash_comman
 from ..tools.capabilities import shell_command_of
 from ..context.execution_context import ExecutionContext
 from ..context.signals import SOURCE_FILE_EXTENSIONS
-from ..core.ports import AgentPort
+from ..core.ports import ExecutorAgent
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class _Probe:
 
 
 def _candidate_dirs(
-    agent: AgentPort, command: str, root: str, execution_context: ExecutionContext | None,
+    agent: ExecutorAgent, command: str, root: str, execution_context: ExecutionContext | None,
 ) -> list[str]:
     """Directories to watch when git cannot answer: the root, those written to this query, and
     the command's own operands.
@@ -151,7 +151,7 @@ def _scan(dirs: list[str]) -> dict[str, list[str] | None]:
 
 
 def capture(
-    agent: AgentPort, tool_name: str, arguments: dict,
+    agent: ExecutorAgent, tool_name: str, arguments: dict,
     execution_context: ExecutionContext | None = None,
 ) -> _Probe | None:
     """Snapshot enough state to report what this call changes, or None to skip it."""

@@ -14,13 +14,13 @@ from ...context.execution_context import (
     has_discovery_evidence,
     unwritten_declared_files,
 )
-from ...core.ports import AgentPort
+from ...core.ports import PolicyAgent
 
 
 logger = logging.getLogger(__name__)
 
 
-def _is_interactive_session(agent: AgentPort) -> bool:
+def _is_interactive_session(agent: PolicyAgent) -> bool:
     """Return True if it is reasonable to prompt the human mid-run."""
     if getattr(agent, "batch_mode", False):
         return False
@@ -56,7 +56,7 @@ def _collect_candidate_paths(path: str, execution_context: ContextView | None) -
 
 def clarify_path(
     *,
-    agent: AgentPort,
+    agent: PolicyAgent,
     tool_name: str,
     path: str,
     execution_context: ContextView | None,

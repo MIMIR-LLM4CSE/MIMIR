@@ -98,7 +98,7 @@ graph TD
 | 0 | `config`, `protocol` | the vocabulary (paths, limits, the closed sets of each setting, the models, the toggles), the shapes that cross a boundary (events, chat messages, error payloads), the `emit()` seam, the time spent waiting on a person |
 | 1 | `tools`, `llm` | what each tool is (its capabilities, what a bash command does) and how a call reads on screen; the model backends and their token accounting |
 | 2 | `context` | the `ExecutionContext` blackboard, the carry context, the path rules |
-| 3 | `core` | the contracts the layers above agree on: `AgentPort`, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
+| 3 | `core` | the contracts the layers above agree on: the agent's ports, `HumanIO`, `TurnState`, `ExtensionSet`, the settings table |
 | 4 | `guardrails` | hard `policy` gates, soft `nudges`, the `workflow` state, the `observations` that write the blackboard, the `verification` that establishes what is checked (the mandatory check, the repair ladder, the ledger) |
 | 5 | `tool_execution` | a call run through the guardrails: policy before, observations after |
 | 6 | `extensions`, `integration` | the user's `.mimir/` extensions; connecting MCP servers |
@@ -210,6 +210,12 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
 - **Types are checked.** `mypy` covers `mimir/client`, `mimir/servers` and `mimir/shared`; `core`,
   `context` and `config` are held to fully typed definitions. `MimirAgent` is checked
   against `AgentPort` statically.
+- **A layer gets the port of its need.** `core/ports.py` holds small bricks (the tool
+  registry, the workspace paths, running a tool, the approvals, the settings, the turn,
+  the MCP connections), composed per layer: the nudges get a `NudgeAgent`, the
+  observations an `ObserverAgent`, the policy a `PolicyAgent`, the executor an
+  `ExecutorAgent`, the server connection a `ConnectorAgent`. `AgentPort`, every brick, is
+  the engine's. mypy refuses a layer reaching past its port.
 - **Tests go through public construction and behaviour.** No test reads the source or
   builds an object around its constructor; shared fixtures live in `mimir/tests/support/`.
   The architecture leads and the tests follow it: a test that pins an old internal is

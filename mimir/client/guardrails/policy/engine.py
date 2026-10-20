@@ -22,7 +22,7 @@ from .approval import MODE_DENIED_NOTE
 from ...tools.capabilities import target_path_arg
 from ...protocol.tool_result import json_error_payload
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import PolicyAgent
 from .violations import clarify_path, enrich_violation_payload, violation_kind
 
 
@@ -41,7 +41,7 @@ class PolicyEvaluation:
 class _PolicyCall:
     """The call under evaluation, as every gate of the pipeline sees and may refine it."""
 
-    agent: AgentPort
+    agent: PolicyAgent
     tool_name: str
     arguments: dict[str, Any]
     execution_context: ExecutionContext | None
@@ -223,7 +223,7 @@ _PIPELINE: tuple = (
 
 def evaluate_tool_preconditions(
     *,
-    agent: AgentPort,
+    agent: PolicyAgent,
     tool_name: str,
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None = None,

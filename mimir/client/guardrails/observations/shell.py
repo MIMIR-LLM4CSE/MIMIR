@@ -39,7 +39,7 @@ from ...tools.bash_classify import (
     FILE_LIKE_RE,
 )
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import ObserverAgent
 from .call import Call
 from .files import enter_post_edit_state, record_code_edit, register_known_path
 
@@ -104,7 +104,7 @@ def _call_was_refused(status: Any, payload: dict[str, Any]) -> bool:
 
 
 def bash_validation_scan(
-    agent: AgentPort, command: str,
+    agent: ObserverAgent, command: str,
 ) -> tuple[list[str], bool, str, str, str, bool]:
     """Scan a command: ``(targets, whole_project, tier, execution, missing_head, exit_is_the_run_s)``.
 

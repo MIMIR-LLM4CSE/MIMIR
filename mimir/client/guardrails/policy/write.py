@@ -17,7 +17,7 @@ from ...context import (
 from ...tools.capabilities import EDIT, OVERWRITE, REMOVE, has_cap, target_path_arg
 from ...config.limits import REPEATED_EDIT_FAILURE_LIMIT
 from ...protocol.tool_result import json_error_payload
-from ...core.ports import AgentPort
+from ...core.ports import PolicyAgent
 
 
 def has_delete_context(path: str, execution_context: ContextView) -> bool:
@@ -50,7 +50,7 @@ def write_policy_violation(tool_name: str, path: str, detail: str | None = None,
 
 
 def check_write_policy(
-    agent: AgentPort,
+    agent: PolicyAgent,
     tool_name: str,
     arguments: dict,
     execution_context: ExecutionContext | None,

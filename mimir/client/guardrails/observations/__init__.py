@@ -8,7 +8,7 @@ from __future__ import annotations
 from ...context import ensure_execution_context
 from ...tools.capabilities import target_path_arg
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import ObserverAgent
 from ...protocol.tool_result import parse_tool_payload
 from . import discovery, env, evidence, files, plan, runs, shell
 from .evidence import record_denial
@@ -50,7 +50,7 @@ ORDER: tuple[Observer, ...] = (
 
 
 def record_tool_observation(
-    agent: AgentPort,
+    agent: ObserverAgent,
     tool_name: str,
     arguments: dict,
     result: str,

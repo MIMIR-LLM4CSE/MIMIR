@@ -12,11 +12,11 @@ from typing import Any, Callable
 
 from ..context.execution_context import ExecutionContext
 from ..core.extension_set import registration_target
-from ..core.ports import AgentPort
+from ..core.ports import ExecutorAgent
 
 # (agent, tool_name, arguments, result, execution_context) -> annotation appended to the
 # tool result, or "" / None for nothing. May be a coroutine function.
-PostToolFn = Callable[[AgentPort, str, dict[str, Any], str, ExecutionContext | None], Any]
+PostToolFn = Callable[[ExecutorAgent, str, dict[str, Any], str, ExecutionContext | None], Any]
 
 
 @dataclass(frozen=True)

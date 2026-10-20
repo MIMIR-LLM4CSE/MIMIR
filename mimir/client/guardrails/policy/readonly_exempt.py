@@ -11,7 +11,7 @@ from ...tools.capabilities import (
     shell_command_of,
 )
 from ...tools.bash_classify import bash_command_is_readonly
-from ...core.ports import AgentPort
+from ...core.ports import PolicyAgent
 
 
 def is_readonly_invocation(tool_name: str, arguments: dict[str, Any], caps: Any) -> bool:
@@ -29,7 +29,7 @@ def is_readonly_invocation(tool_name: str, arguments: dict[str, Any], caps: Any)
     return bash_command_is_readonly(shell_command_of(tool_name, arguments, caps))
 
 
-def readonly_bash_exempt(agent: AgentPort, tool_name: str, arguments: dict[str, Any]) -> bool:
+def readonly_bash_exempt(agent: PolicyAgent, tool_name: str, arguments: dict[str, Any]) -> bool:
     """True when a sensitive dual-use call is read-only and needs no approval.
 
     Applies in every mode. Before it shared :func:`is_readonly_invocation`, a

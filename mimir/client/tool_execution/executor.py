@@ -29,7 +29,7 @@ from ..tools.capabilities import (
 )
 from ..context.execution_context import ExecutionContext, failed_runs, unsettled_runs
 from ..context.paths import absolute_workspace_path, is_scratch_path
-from ..core.ports import AgentPort
+from ..core.ports import ExecutorAgent
 from ..protocol.event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.approval import APPROVAL_MODE_META
@@ -54,7 +54,7 @@ _OUTLINE_STRUCTURAL_KINDS = frozenset({
 })
 
 
-def _build_continuation_hint(agent: AgentPort, tool_name: str, payload: dict) -> str:
+def _build_continuation_hint(agent: ExecutorAgent, tool_name: str, payload: dict) -> str:
     """A MORE_CONTENT hint when the window the server returned stops short of the file's end."""
     if not payload.get("truncated"):
         return ""
@@ -77,7 +77,7 @@ def _build_continuation_hint(agent: AgentPort, tool_name: str, payload: dict) ->
 
 
 async def _build_outline_hint(
-    agent: AgentPort, tool_name: str, payload: dict, execution_context: ExecutionContext | None,
+    agent: ExecutorAgent, tool_name: str, payload: dict, execution_context: ExecutionContext | None,
 ) -> str:
     """A symbol map of the file a truncated read showed a slice of (once per file per query)."""
     if execution_context is None or not payload.get("truncated"):
@@ -134,7 +134,7 @@ async def _build_outline_hint(
 
 
 def _build_verdict_due_hint(
-    agent: AgentPort, execution_context: ExecutionContext | None, before: set[str],
+    agent: ExecutorAgent, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
     """A VERDICT_DUE line on the result of a call that left an unjudged run, naming the judge tool."""
     if execution_context is None:
@@ -156,7 +156,7 @@ def _build_verdict_due_hint(
 
 
 def _build_imputation_hint(
-    agent: AgentPort, execution_context: ExecutionContext | None, before: set[str],
+    agent: ExecutorAgent, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
     """An IMPUTATION_DUE line when this call left a run red for the first time.
 
@@ -181,7 +181,7 @@ def _build_imputation_hint(
     )
 
 
-def _path_stamp(agent: AgentPort, arguments: dict) -> tuple | None:
+def _path_stamp(agent: ExecutorAgent, arguments: dict) -> tuple | None:
     """``(mtime_ns, size)`` of the file this call names, or ``None``: what keeps the read cache honest."""
     raw = arguments.get("path") or arguments.get("filepath") or ""
     if not isinstance(raw, str) or not raw.strip():
@@ -200,7 +200,7 @@ def _fork_base_stem(stem: str) -> str:
 
 
 def _build_fork_hint(
-    agent: AgentPort, tool_name: str, arguments: dict, result: str,
+    agent: ExecutorAgent, tool_name: str, arguments: dict, result: str,
     execution_context: ExecutionContext | None,
     require_edit_cap: bool = True,
 ) -> str:
@@ -264,7 +264,7 @@ def _build_fork_hint(
 
 
 async def run_post_write_validation(
-    agent: AgentPort,
+    agent: ExecutorAgent,
     tool_name: str,
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
@@ -287,7 +287,7 @@ async def run_post_write_validation(
 
 
 async def run_post_tool_annotations(
-    agent: AgentPort,
+    agent: ExecutorAgent,
     tool_name: str,
     arguments: dict[str, Any],
     result: str,
@@ -370,7 +370,7 @@ def _make_subagent_progress_cb(call_id: str):
 
 async def execute_tool_call(
     *,
-    agent: AgentPort,
+    agent: ExecutorAgent,
     tool_name: str,
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None = None,

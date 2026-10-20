@@ -38,7 +38,7 @@ from ...tools.capabilities import (
     shell_command_args,
 )
 from ...context.paths import absolute_workspace_path, scratch_roots
-from ...core.ports import AgentPort
+from ...core.ports import PolicyAgent
 from ....shared import exec_seals
 from ...protocol.tool_result import json_error_payload
 from ...tools.display import shorten_display_args, tool_arg_preview, tool_status_message
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # ── unattended agents ─────────────────────────────────────────────────────────
 
-def describe_action(agent: AgentPort, tool_name: str, arguments: dict) -> str:
+def describe_action(agent: PolicyAgent, tool_name: str, arguments: dict) -> str:
     """The action as the user would read it on a tool row — never the tool's name."""
     short_args = shorten_display_args(tool_name, arguments or {}, agent.tool_caps)
     label = label_for(tool_name, short_args, agent.tool_caps)
@@ -58,7 +58,7 @@ def describe_action(agent: AgentPort, tool_name: str, arguments: dict) -> str:
     return f"{status}: {preview}" if preview else status
 
 
-def mode_denied_payload(agent: AgentPort, tool_name: str, arguments: dict, needs: str) -> str:
+def mode_denied_payload(agent: PolicyAgent, tool_name: str, arguments: dict, needs: str) -> str:
     """The result an unattended agent gets for an action its mode does not cover.
 
     Deterministic, not a reading to choose among: no one refused, so there is no
@@ -93,7 +93,7 @@ def _trusted_read_roots() -> list[str]:
             for r in (*trusted_read_roots(), paths.STATE_DIR)]
 
 
-def _shell_path_targets(agent: AgentPort, tool_name: str, arguments: dict, base: str) -> list[str]:
+def _shell_path_targets(agent: PolicyAgent, tool_name: str, arguments: dict, base: str) -> list[str]:
     """Every filesystem path a shell call names, as abspaths: operands, redirections, ``cd``.
 
     Segmented by the server's own ``parse_segments`` and ``segment_path_operands``, so what
@@ -135,7 +135,7 @@ def _shell_path_targets(agent: AgentPort, tool_name: str, arguments: dict, base:
     return out
 
 
-def _call_base(agent: AgentPort, tool_name: str, arguments: dict) -> tuple[str, str]:
+def _call_base(agent: PolicyAgent, tool_name: str, arguments: dict) -> tuple[str, str]:
     """``(root, base)``: the agent's workspace root, and where this call's relative
     paths resolve — a declared ``cwd`` arg-role where the tool has one, else the root.
     """
@@ -154,7 +154,7 @@ def _call_base(agent: AgentPort, tool_name: str, arguments: dict) -> tuple[str, 
     return root, base
 
 
-def out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict) -> list[str]:
+def out_of_workspace_targets(agent: PolicyAgent, tool_name: str, arguments: dict) -> list[str]:
     """Absolute target paths of this call outside the workspace and not yet approved.
 
     File targets, a declared ``cwd``, and the paths inside a shell command; trusted read
@@ -213,7 +213,7 @@ def _name_paths(paths: list[str], limit: int = 4) -> str:
 
 
 def check_out_of_workspace_access(
-    agent: AgentPort, tool_name: str, arguments: dict, execution_context: ContextView | None,
+    agent: PolicyAgent, tool_name: str, arguments: dict, execution_context: ContextView | None,
     targets: list[str] | None = None,
 ) -> str | None:
     """Ask the user once about every outside path of this call; deny when no one can answer.
@@ -252,7 +252,7 @@ def check_out_of_workspace_access(
 # ── cluster submit ────────────────────────────────────────────────────────────
 
 def check_cluster_submit(
-    agent: AgentPort, tool_name: str, execution_context: ContextView | None,
+    agent: PolicyAgent, tool_name: str, execution_context: ContextView | None,
     arguments: dict[str, Any] | None = None,
 ) -> str | None:
     """Hold a ``CLUSTER_SUBMIT`` call until something has been validated locally.
@@ -306,7 +306,7 @@ def _executed_programs(command: str, base: str) -> set[str]:
     return progs
 
 def check_sealed_exec(
-    agent: AgentPort, tool_name: str, arguments: dict[str, Any],
+    agent: PolicyAgent, tool_name: str, arguments: dict[str, Any],
     execution_context: ContextView | None,
 ) -> str | None:
     """Refuse running a file a server sealed for this conversation (fail-open).
@@ -342,7 +342,7 @@ def check_sealed_exec(
 # ── loading a skill on demand ─────────────────────────────────────────────────
 
 def check_skill_pull(
-    agent: AgentPort, tool_name: str, arguments: dict[str, Any],
+    agent: PolicyAgent, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:
     """Refuse a skill pull the toggles, the skill itself, or the budget rules out.

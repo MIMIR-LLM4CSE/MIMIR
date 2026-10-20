@@ -22,7 +22,7 @@ from ...tools.capabilities import (
     names_with_cap,
     reserved_for_main,
 )
-from ...core.ports import AgentPort
+from ...core.ports import PolicyAgent
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def tools_for_readonly_mode(
     ]
 
 
-def grantable_tools(agent: AgentPort) -> dict[str, str]:
+def grantable_tools(agent: PolicyAgent) -> dict[str, str]:
     """What the orchestrator may hand a sub-agent now: ``{tool: server}``.
 
     Filtered by the user's toggles, the orchestrator's mode, the sub-agent rung (writing
@@ -116,7 +116,7 @@ def grantable_tools(agent: AgentPort) -> dict[str, str]:
     return granted
 
 
-def grantable_writers(agent: AgentPort, granted: dict[str, str] | None = None) -> list[str]:
+def grantable_writers(agent: PolicyAgent, granted: dict[str, str] | None = None) -> list[str]:
     """Which granted tools would change the tree a sub-agent works in."""
     granted = grantable_tools(agent) if granted is None else granted
     return sorted(

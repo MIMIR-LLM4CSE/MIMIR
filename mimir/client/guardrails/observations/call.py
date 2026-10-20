@@ -5,12 +5,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import ObserverAgent
 
 
 @dataclass(frozen=True)
 class Call:
-    agent: AgentPort
+    agent: ObserverAgent
     tool_name: str
     execution_context: ExecutionContext
     arguments: dict = field(default_factory=dict)

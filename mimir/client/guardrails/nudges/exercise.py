@@ -20,7 +20,7 @@ from ...config.limits import (
     EXERCISE_BUDGET,
     NUDGE_MAX_EXERCISE,
 )
-from ...core.ports import AgentPort
+from ...core.ports import NudgeAgent
 from .predicates import untested_edited_sources
 
 
@@ -61,7 +61,7 @@ def _exercise_budget_left(execution_context: ContextView) -> bool:
     )
 
 
-def exercise_route(agent: AgentPort, execution_context: ContextView) -> tuple[str, str]:
+def exercise_route(agent: NudgeAgent, execution_context: ContextView) -> tuple[str, str]:
     """``(route, obstacle)``: the one direct command that would exercise this change, or "".
 
     A route is one invocation with something installed and a build file already seen;
@@ -115,7 +115,7 @@ def exercise_route(agent: AgentPort, execution_context: ContextView) -> tuple[st
     return _blocked("nothing written here starts with one direct command")
 
 
-def exercise_hint(agent: AgentPort, execution_context: ContextView) -> str:
+def exercise_hint(agent: NudgeAgent, execution_context: ContextView) -> str:
     return exercise_route(agent, execution_context)[0]
 
 
@@ -127,7 +127,7 @@ def should_nudge_regression(execution_context: ContextView) -> bool:
     )
 
 
-def should_nudge_unexercised_code(agent: AgentPort, execution_context: ContextView) -> bool:
+def should_nudge_unexercised_code(agent: NudgeAgent, execution_context: ContextView) -> bool:
     """Budget left, every written file checked, a route exists, and nothing was ever run.
 
     The state right after ``validation`` stops speaking. A recommendation, bounded by the

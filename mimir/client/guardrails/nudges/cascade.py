@@ -26,7 +26,7 @@ from ...config.models import resolve_enforcement
 from ...config.limits import (
     EXERCISE_BUDGET,
 )
-from ...core.ports import AgentPort
+from ...core.ports import NudgeAgent
 from .exercise import exercise_hint, should_nudge_regression, should_nudge_unexercised_code
 from .predicates import (
     first_failing_edit_path,
@@ -72,7 +72,7 @@ def _fire_nudge(
 
 def maybe_append_nudge(
     *,
-    agent: AgentPort,
+    agent: NudgeAgent,
     query: str,
     active_mode: str,
     execution_context: ExecutionContext,
@@ -102,7 +102,7 @@ def maybe_append_nudge(
 
 def nudge_pending(
     *,
-    agent: AgentPort,
+    agent: NudgeAgent,
     query: str,
     active_mode: str,
     execution_context: ContextView,
@@ -151,17 +151,17 @@ class Nudge(Protocol):
     @property
     def budget_key(self) -> str: ...
 
-    def fires(self, agent: AgentPort, query: str, mode: str, ec: ContextView,
+    def fires(self, agent: NudgeAgent, query: str, mode: str, ec: ContextView,
               level: str) -> bool: ...
 
-    def text(self, agent: AgentPort, ec: ContextView) -> str: ...
+    def text(self, agent: NudgeAgent, ec: ContextView) -> str: ...
 
 
-def _enabled(agent: AgentPort, name: str) -> bool:
+def _enabled(agent: NudgeAgent, name: str) -> bool:
     return agent.toggles.enabled("nudge", name)
 
 
-def _cascade(agent: AgentPort, layer: str) -> list[Nudge]:
+def _cascade(agent: NudgeAgent, layer: str) -> list[Nudge]:
     """The enabled nudges of *layer*, in the order they are tried: the core table, then
     the packs, so a built-in reality check always wins over an application's."""
     nudges: list[Nudge] = [n for n in CORE_NUDGES if n.layer == layer]
@@ -169,7 +169,7 @@ def _cascade(agent: AgentPort, layer: str) -> list[Nudge]:
     return [n for n in nudges if _enabled(agent, n.name)]
 
 
-def _validation_nudge_content(agent: AgentPort, execution_context: ContextView) -> str:
+def _validation_nudge_content(agent: NudgeAgent, execution_context: ContextView) -> str:
     # Short pointer only — the full TIER 1 rationale already lives in the system
     # prompt; re-asserting it here as a user-role message would just duplicate the
     # strictest content through the more coercive channel. Pending validation is
@@ -179,7 +179,7 @@ def _validation_nudge_content(agent: AgentPort, execution_context: ContextView) 
 
 def maybe_inject_env_resolution(
     *,
-    agent: AgentPort,
+    agent: NudgeAgent,
     active_mode: str,
     execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
@@ -210,17 +210,17 @@ def maybe_inject_env_resolution(
 class CoreNudge:
     name: str        # nudge_counts category / toggle key
     layer: str       # "verification" | "guidance"
-    should_fire: Callable[[AgentPort, str, str, ContextView, str], bool]  # (agent, query, mode, ec, level)
-    render: Callable[[AgentPort, ContextView], str]                       # (agent, ec) -> text
+    should_fire: Callable[[NudgeAgent, str, str, ContextView, str], bool]  # (agent, query, mode, ec, level)
+    render: Callable[[NudgeAgent, ContextView], str]                       # (agent, ec) -> text
     budget_key: str = ""  # counter charged when rows ration a shared budget; default = name
 
     # Per-category caps and (for guidance) the enforcement/mode gate live inside each
     # row's ``should_fire``, so the row answers the cascade's interface directly.
 
-    def fires(self, agent: AgentPort, query: str, mode: str, ec: ContextView, level: str) -> bool:
+    def fires(self, agent: NudgeAgent, query: str, mode: str, ec: ContextView, level: str) -> bool:
         return self.should_fire(agent, query, mode, ec, level)
 
-    def text(self, agent: AgentPort, ec: ContextView) -> str:
+    def text(self, agent: NudgeAgent, ec: ContextView) -> str:
         return str(self.render(agent, ec) or "")
 
 

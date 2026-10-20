@@ -16,7 +16,7 @@ from ..workflow import (
     STAGE_DROP_OR_STOP,
 )
 from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER, VALIDATION_RETRY_BUDGET
-from ...core.ports import AgentPort
+from ...core.ports import NudgeAgent
 
 
 # A refusal is an instruction, not an error to report and retry. The three readings
@@ -294,7 +294,7 @@ def todo_nudge_message(execution_context: ContextView) -> str:
     )
 
 
-def validation_nudge_message(agent: AgentPort, execution_context: ContextView) -> str:
+def validation_nudge_message(agent: NudgeAgent, execution_context: ContextView) -> str:
     """What the model is told about the files the built-in check rejected.
 
     The loop already ran the check: the message is the finding.

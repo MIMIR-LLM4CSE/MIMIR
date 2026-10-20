@@ -424,12 +424,45 @@ def _names_in(function) -> set[str]:
                if isinstance(n, ast.Constant) and isinstance(n.value, str)})
 
 
-def _port_members() -> tuple[set[str], set[str]]:
-    """AgentPort's declared attributes, and its methods."""
-    attributes = set(AgentPort.__annotations__)
-    methods = {name for name, value in vars(AgentPort).items()
-               if not name.startswith("__") and callable(value)}
+def _port_members(port: type = AgentPort) -> tuple[set[str], set[str]]:
+    """A port's declared attributes, and its methods, its bricks' included."""
+    attributes: set[str] = set()
+    methods: set[str] = set()
+    for brick in port.__mro__:
+        if brick is object or not getattr(brick, "_is_protocol", False):
+            continue
+        attributes |= set(vars(brick).get("__annotations__", {}))
+        methods |= {name for name, value in vars(brick).items()
+                    if not name.startswith("_") and callable(value)}
     return attributes, methods
+
+
+class PortsByNeedTests(unittest.TestCase):
+    """Each layer is handed the port of its need, never the whole agent."""
+
+    LAYERS = {"guardrails/nudges": "NudgeAgent", "guardrails/observations": "ObserverAgent",
+              "guardrails/policy": "PolicyAgent", "tool_execution": "ExecutorAgent",
+              "integration": "ConnectorAgent"}
+
+    def test_a_layer_names_only_its_own_port(self) -> None:
+        from mimir.client.core import ports
+        others = {name for name in vars(ports) if name.endswith("Agent") or name == "AgentPort"}
+        offenders = []
+        for layer, port in self.LAYERS.items():
+            for path in _python_files(CLIENT / layer):
+                named = {n.id for n in ast.walk(ast.parse(path.read_text()))
+                         if isinstance(n, ast.Name)} & others
+                offenders += [f"{path.relative_to(PACKAGE)}: {n}" for n in named - {port}]
+        self.assertEqual(sorted(offenders), [])
+
+    def test_every_port_is_made_of_bricks_the_agent_port_holds(self) -> None:
+        from mimir.client.core import ports
+        all_attributes, all_methods = _port_members(AgentPort)
+        for port in self.LAYERS.values():
+            with self.subTest(port=port):
+                attributes, methods = _port_members(getattr(ports, port))
+                self.assertLessEqual(attributes, all_attributes)
+                self.assertLessEqual(methods, all_methods)
 
 
 class AgentPortConformanceTests(unittest.TestCase):

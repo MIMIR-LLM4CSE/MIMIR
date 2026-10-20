@@ -27,7 +27,7 @@ from ...tools.capabilities import (
 )
 from ...context.paths import is_scratch_path
 from ...context.execution_context import EditFailures, ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import ObserverAgent
 from .call import Call
 
 
@@ -58,7 +58,7 @@ def register_known_path(execution_context: ExecutionContext, candidate_path: str
     execution_context.discovery.existing_paths.add(candidate_path)
 
 
-def _target_path(agent: AgentPort, tool_name: str, arguments: dict) -> str | None:
+def _target_path(agent: ObserverAgent, tool_name: str, arguments: dict) -> str | None:
     """The normalized workspace path this call targets."""
     return agent.normalize_workspace_path(
         target_path_arg(tool_name, arguments, agent.tool_caps))
