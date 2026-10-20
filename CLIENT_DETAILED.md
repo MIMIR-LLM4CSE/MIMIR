@@ -496,6 +496,16 @@ mid-query voids the prompt prefix for every remaining step, and a pull happens a
 readily as at step 1. So the body stays where it landed — the tool result in the tail — and
 is protected there instead.
 
+### `variants.py`, and `config/prompt_variants.py`
+
+The prose is named: `system_prompt.SECTIONS` gives every section a stable id, and
+`nudges.messages.MESSAGES` every constant message (the ones built from arguments are not
+among them). The prompt and the messages read their texts through
+`config/prompt_variants.text`, which answers the variant in force, else the code's.
+`variants.load_variant(path)` reads a JSON variant (`{"name", "sections", "messages"}`)
+and refuses an id the code does not have; `use_variant(variant)` puts it in force for a
+block. It is how a wording is measured before the code is changed.
+
 ### The pin
 
 One set of ids, `execution_context["pinned_call_ids"]`, and three passes that honour it. It
@@ -817,7 +827,7 @@ array adopted under its base id clears the tasks the queue listed separately. It
 conclusion, which is the last moment the record can still be written, and it is one of the
 three rows kept at `light` — costly, hard to detect, and not self-correcting.
 
-`nudges/messages.py` holds the message copy for every built-in row. `nudges/plugins.py`
+`nudges/messages.py` holds the message copy for every built-in row; its constant messages are read through `message(id)`, so a prose variant can reword them. `nudges/plugins.py`
 holds the `NudgeRule` descriptor and `register_nudge()`; the rules run are the agent's
 `extensions.nudge_rules()`;
 pack guidance rules are tier-gated by `rule_tier_enabled()`, suppressed when their name is in

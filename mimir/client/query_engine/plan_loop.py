@@ -19,21 +19,7 @@ from ..core.ports import AgentPort
 from ..protocol.event_sink import emit
 from ..guardrails.nudges import inject_reminder
 from ..guardrails.policy.toollist import tools_for_plan_mode
-from ..guardrails.nudges.messages import (
-    PLAN_ALREADY_RECORDED_ERROR,
-    PLAN_APPROVED_EXECUTE,
-    PLAN_DELIVER_ANSWER,
-    PLAN_DELIVER_ANSWER_FIRM,
-    PLAN_EXPLORE_BUDGET_SPENT,
-    PLAN_EXPLORE_DELEGATE,
-    PLAN_EXPLORE_FIRST,
-    PLAN_REJECTED_ANSWER,
-    PLAN_REJECTED_STOP,
-    plan_revision_nudge,
-    PLAN_REWORK_NUDGE,
-    PLAN_TODO_NUDGE_EARLY,
-    PLAN_TODO_NUDGE_LATE,
-)
+from ..guardrails.nudges.messages import message, plan_revision_nudge
 from ..protocol.tool_call import as_dict, normalize_arguments
 from .deferral import KIND_PLAN_DECISION, deferred_prompts, mark_deferred
 from .loop_base import (
@@ -109,7 +95,7 @@ def _reject_stalled_calls(tool_calls: list[Any], messages: list[dict]) -> None:
     for tc in tool_calls:
         name = as_dict(as_dict(tc).get("function", {})).get("name", "")
         emit({"type": "status", "text": f"  ⏭ Plan already recorded — skipped '{name}'"})
-        messages.append(refusal_reply(tc, PLAN_ALREADY_RECORDED_ERROR))
+        messages.append(refusal_reply(tc, message("plan_already_recorded_error")))
 
 
 def _clear_recorded_plan(execution_context: ExecutionContext) -> None:
@@ -294,7 +280,7 @@ class PlanLoop(StepLoop):
                 # back; escalate to the firm one once it has been ignored.
                 inject_reminder(
                     self.messages,
-                    PLAN_DELIVER_ANSWER if not self.deliver_nudged else PLAN_DELIVER_ANSWER_FIRM,
+                    message("plan_deliver_answer") if not self.deliver_nudged else message("plan_deliver_answer_firm"),
                     category="plan_deliver", tagged=False,
                     execution_context=self.ec, step=self.step,
                 )
@@ -318,7 +304,7 @@ class PlanLoop(StepLoop):
         elif self.explore_turns >= PLAN_EXPLORE_MAX_TURNS:
             self.exploring = False
             emit({"type": "status", "text": "  ⚠ Exploration thin — unlocking the plan tool"})
-            inject_reminder(self.messages, PLAN_EXPLORE_BUDGET_SPENT, category="plan_explore",
+            inject_reminder(self.messages, message("plan_explore_budget_spent"), category="plan_explore",
                             tagged=False, execution_context=self.ec, step=self.step)
         if self.exploring:
             self.explore_turns += 1
@@ -337,14 +323,14 @@ class PlanLoop(StepLoop):
                 return
         self.last_nudged[category] = self.step
         if self.exploring:
-            text = PLAN_EXPLORE_FIRST
+            text = message("plan_explore_first")
             if names_with_cap(DELEGATE, self.agent.tool_caps):
-                text += PLAN_EXPLORE_DELEGATE
+                text += message("plan_explore_delegate")
             inject_reminder(self.messages, text, category="plan_explore", tagged=False,
                             execution_context=self.ec, step=self.step)
             return
         late = not self.unbounded and self.step > self.turn.max_steps - 5
-        inject_reminder(self.messages, PLAN_TODO_NUDGE_LATE if late else PLAN_TODO_NUDGE_EARLY,
+        inject_reminder(self.messages, message("plan_todo_nudge_late") if late else message("plan_todo_nudge_early"),
                         category="plan_todo", tagged=False,
                         execution_context=self.ec, step=self.step)
 
@@ -382,7 +368,7 @@ class PlanLoop(StepLoop):
             # plan just wrote, and the skill block survives the handoff.
             agent_system = await rebuild_system_content(self.agent, "agent", self.ec)
             self.messages[0]["content"] = agent_system
-            self.messages.append({"role": "user", "content": PLAN_APPROVED_EXECUTE})
+            self.messages.append({"role": "user", "content": message("plan_approved_execute")})
             return ModeSwitch("agent", agent_system)
         if decision == "revise":
             emit({"type": "status", "text": "  ↻ Reworking the plan per your feedback"})
@@ -391,15 +377,15 @@ class PlanLoop(StepLoop):
             return "continue"
         if decision == "rework":
             emit({"type": "status", "text": "  ↺ Plan sent back — reworking from scratch"})
-            self.messages.append({"role": "user", "content": PLAN_REWORK_NUDGE})
+            self.messages.append({"role": "user", "content": message("plan_rework_nudge")})
             self.back_to_drafting()
             return "continue"
         if decision == "reject":
             # Hard stop: the plan is dropped and nothing is executed. The denial is
             # recorded in history so the next query knows this plan was turned down.
             emit({"type": "status", "text": "  ✗ Plan denied — stopping here"})
-            self.messages.append({"role": "user", "content": PLAN_REJECTED_STOP})
-            self.answer = PLAN_REJECTED_ANSWER
+            self.messages.append({"role": "user", "content": message("plan_rejected_stop")})
+            self.answer = message("plan_rejected_answer")
             return "deliver"
         # "none": no interactive front-end / dismissed — deliver the plan as-is.
         return "deliver"

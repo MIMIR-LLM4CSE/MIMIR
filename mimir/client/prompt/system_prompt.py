@@ -14,7 +14,7 @@ from ..config.settings import (
     THINKING_DEPTH_AUTO,
     subagent_level_allows,
 )
-from ..config import paths
+from ..config import paths, prompt_variants
 from ...shared.state_paths import scratch_dir
 
 logger = logging.getLogger(__name__)
@@ -514,9 +514,19 @@ _CORE_SYSTEM_CONTENT = "\n\n".join([
 _DEFAULT_BASE_SYSTEM_CONTENT = _DEFAULT_DOCTRINE_CONTENT + "\n\n" + _CORE_SYSTEM_CONTENT
 
 
+def _doctrine_in_force() -> str:
+    return "\n\n".join(_text(i) for i in ("identity", "style", "scope", "workflow", "reasoning"))
+
+
+def _core_in_force() -> str:
+    return "\n\n".join(_text(i) for i in ("non_negotiables", "latitude", "tool_results",
+                                         "discovery", "editing", "validation", "running",
+                                         "planning"))
+
+
 def build_base_system_content(context_file: str = "") -> str:
     """The base system prompt: the doctrine (or its override file), then the core sections."""
-    doctrine = _DEFAULT_DOCTRINE_CONTENT
+    doctrine = _doctrine_in_force()
     path = resolve_system_prompt_file(context_file)
     if path:
         try:
@@ -528,7 +538,7 @@ def build_base_system_content(context_file: str = "") -> str:
                 logger.warning("system-prompt file %s is empty; using built-in default", path)
         except OSError as exc:
             logger.warning("could not read system-prompt file %s: %s; using built-in default", path, exc)
-    return doctrine + "\n\n" + _CORE_SYSTEM_CONTENT
+    return doctrine + "\n\n" + _core_in_force()
 
 
 # Index lines look like: ``- [<description>](<slug>.md) — <YYYY-MM-DD>``
@@ -660,6 +670,37 @@ _MEMORY_INDEX_CAVEAT = (
 )
 
 
+# Every section by a stable id: what a prose variant (``config.prompt_variants``) replaces.
+SECTIONS: dict[str, str] = {
+    "identity": _SECTION_IDENTITY,
+    "non_negotiables": _SECTION_NON_NEGOTIABLES,
+    "latitude": _SECTION_LATITUDE,
+    "tool_results": _SECTION_TOOL_RESULTS,
+    "style": _SECTION_STYLE,
+    "scope": _SECTION_SCOPE,
+    "workflow": _SECTION_WORKFLOW,
+    "discovery": _SECTION_DISCOVERY,
+    "editing": _SECTION_EDITING,
+    "validation": _SECTION_VALIDATION,
+    "running": _SECTION_RUNNING,
+    "planning": _SECTION_PLANNING,
+    "reasoning": _SECTION_REASONING,
+    "thinking_directive_auto": _THINKING_DIRECTIVE_AUTO,
+    "subagents": _SECTION_SUBAGENTS,
+    "subagents_lead": _SECTION_SUBAGENTS_LEAD,
+    "subagents_axes": _SECTION_SUBAGENTS_AXES,
+    "memory": _SECTION_MEMORY,
+    "clarify": _SECTION_CLARIFY,
+    "delegation_clause": _DELEGATION_CLAUSE,
+    "memory_index_caveat": _MEMORY_INDEX_CAVEAT,
+}
+
+
+def _text(section_id: str) -> str:
+    """A section as it is in force: the variant's text, else the code's."""
+    return prompt_variants.text("sections", section_id, SECTIONS[section_id])
+
+
 def _render_memory_block(label: str, index_file: str, entries: list[dict]) -> str:
     """One scope's index, as the lines the prompt carries."""
     lines = []
@@ -693,7 +734,7 @@ def _capability_sections(*, active_mode: str, tool_owner: dict[str, str],
     # ahead of the dynamic blocks — the rung only moves on an explicit user action, so
     # the prefix stays stable across a run of queries.
     if thinking_depth == THINKING_DEPTH_AUTO:
-        content += _section("\n" + _THINKING_DIRECTIVE_AUTO)
+        content += _section("\n" + _text("thinking_directive_auto"))
 
     # Capability-gated section: describing the sub-agent contract when no sub-agent
     # tool is connected is a phantom instruction the model tries to act on. Placed
@@ -705,9 +746,9 @@ def _capability_sections(*, active_mode: str, tool_owner: dict[str, str],
         # The rungs the user granted decide how much of the section applies: describing
         # a team of writers to a session where sub-agents may only read is the same
         # phantom instruction the gate above exists to prevent.
-        section = _SECTION_SUBAGENTS
+        section = _text("subagents")
         if subagent_level_allows(subagent_level, "build"):
-            section += _SECTION_SUBAGENTS_LEAD + _SECTION_SUBAGENTS_AXES
+            section += _text("subagents_lead") + _text("subagents_axes")
         content += _section("\n" + section)
 
     # Same gating shape, on the tool rather than on a capability: the question channel
@@ -715,7 +756,7 @@ def _capability_sections(*, active_mode: str, tool_owner: dict[str, str],
     # not already give (memory_context_file is keyed off tool_owner the same way).
     # ASK is excluded: it answers and changes nothing, so a fork has no work to divide.
     if "ask_user_question" in (tool_owner or {}) and active_mode in ("agent", "plan"):
-        content += _section("\n" + _SECTION_CLARIFY)
+        content += _section("\n" + _text("clarify"))
 
     # Only when ``load_skill`` is connected; the caller already dropped disabled and
     # user-only skills. Before every dynamic block, so it stays in the cached prefix.
@@ -774,7 +815,7 @@ def _memory_section(memory_context_file: str, global_memory_context_file: str) -
         if entries:
             blocks.append(_render_memory_block(label, path, entries))
     if blocks:
-        blocks.insert(0, _MEMORY_INDEX_CAVEAT)
+        blocks.insert(0, _text("memory_index_caveat"))
     else:
         # One line, not one per scope: a fresh global store would otherwise print a
         # near-identical paragraph on the first run of every workspace. No caveat
@@ -784,7 +825,7 @@ def _memory_section(memory_context_file: str, global_memory_context_file: str) -
         )
         blocks = ["No memory stored yet. Memories are stored under: " + dirs]
     # Leading blank line, as for the other headed sections: _section only prepends one.
-    return _section("\n" + _SECTION_MEMORY + "\n\n" + "\n\n".join(blocks))
+    return _section("\n" + _text("memory") + "\n\n" + "\n\n".join(blocks))
 
 
 
@@ -831,7 +872,7 @@ def _plan_mode_section(tool_owner: dict[str, str], sensitive_tools: set[str],
         "queries) and READ the code this task touches — opening the files and following the symbols, not merely "
         "listing directories and matching file names. The plan document tool is withheld until you have done so. "
         "Continue until you could name the concrete files and symbols the change touches and say what happens to each.\n"
-        + (" " + _DELEGATION_CLAUSE + "\n" if delegation_available else "")
+        + (" " + _text("delegation_clause") + "\n" if delegation_available else "")
         +
         "\n"
         "PHASE 2 — write the plan, once, over what you found. Exploring, surveying, examining, reviewing and "
@@ -869,7 +910,7 @@ def _ask_mode_section(delegation_available: bool) -> str:
         "queries) to find the actual files, symbols, and behaviour the question is about "
         "before answering. Never answer "
         "a question about this codebase from assumption when you could have read the code.\n"
-        + (_DELEGATION_CLAUSE + "\n" if delegation_available else "")
+        + (_text("delegation_clause") + "\n" if delegation_available else "")
         +
         "\n"
         "Answer the question directly, in prose, grounded in what you actually read: cite the "

@@ -5,6 +5,7 @@ When each one is sent is decided elsewhere; only the wording lives here.
 """
 from __future__ import annotations
 
+from ...config import prompt_variants
 from ...context.context_view import ContextView
 
 from ..verification.builtin_check import builtin_check_failures
@@ -523,13 +524,13 @@ def empty_turn_retry_message(
     """
     if execution_context is not None and unhonoured_commitments(execution_context):
         base = (
-            EMPTY_TURN_OPENING
+            message("empty_turn_opening")
             + "call the tool the next unfinished step needs. Your checklist still has "
             "open steps and files you named are not written, so this is not a turn to "
             "summarise — do the next piece of the work."
         )
     else:
-        base = EMPTY_TURN_OPENING + "call the tool the task needs next, or write the answer."
+        base = message("empty_turn_opening") + "call the tool the task needs next, or write the answer."
     if attempt <= 1:
         return base
     return base + _EMPTY_TURN_ESCALATION[min(attempt, len(_EMPTY_TURN_ESCALATION) + 1) - 2]
@@ -577,3 +578,28 @@ def handback_corrective_message(refusals: list[dict]) -> str:
         "other, unrelated parts of the task remain and are unaffected by the refusal, finish "
         "those first, then hand back."
     )
+
+# Every constant message by a stable id: what a prose variant (``config.prompt_variants``)
+# replaces. The messages built from arguments are not among them.
+MESSAGES: dict[str, str] = {
+    "plan_explore_first": PLAN_EXPLORE_FIRST,
+    "plan_explore_delegate": PLAN_EXPLORE_DELEGATE,
+    "plan_explore_budget_spent": PLAN_EXPLORE_BUDGET_SPENT,
+    "plan_todo_nudge_early": PLAN_TODO_NUDGE_EARLY,
+    "plan_todo_nudge_late": PLAN_TODO_NUDGE_LATE,
+    "plan_deliver_answer": PLAN_DELIVER_ANSWER,
+    "plan_deliver_answer_firm": PLAN_DELIVER_ANSWER_FIRM,
+    "plan_already_recorded_error": PLAN_ALREADY_RECORDED_ERROR,
+    "plan_approved_execute": PLAN_APPROVED_EXECUTE,
+    "plan_rejected_stop": PLAN_REJECTED_STOP,
+    "plan_rejected_answer": PLAN_REJECTED_ANSWER,
+    "plan_rework_nudge": PLAN_REWORK_NUDGE,
+    "step_limit_nudge": STEP_LIMIT_NUDGE,
+    "empty_turn_opening": EMPTY_TURN_OPENING,
+}
+
+
+def message(message_id: str) -> str:
+    """A constant message as it is in force: the variant's text, else the code's."""
+    return prompt_variants.text("messages", message_id, MESSAGES[message_id])
+

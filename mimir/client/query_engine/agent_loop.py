@@ -20,7 +20,7 @@ from ..guardrails.nudges import (
     nudge_pending,
 )
 from ..guardrails.workflow import finalize_incomplete_answer, TERMINATION_STEP_LIMIT
-from ..guardrails.nudges.messages import evidence_handback_message, STEP_LIMIT_NUDGE
+from ..guardrails.nudges.messages import evidence_handback_message, message
 from .loop_base import (
     ModeSwitch, StepLoop, TurnContext, drain_steer,
     rebuild_system_content,
@@ -149,7 +149,7 @@ class AgentLoop(StepLoop):
             # Two steps before the budget boundary, ask for a summary of what is done
             # and what remains, so the handoff is meaningful rather than a bare "limit".
             if budget > 0 and budget - 3 <= self.step < budget - 1:
-                inject_reminder(self.messages, STEP_LIMIT_NUDGE, category="step_limit",
+                inject_reminder(self.messages, message("step_limit_nudge"), category="step_limit",
                                 tagged=False, execution_context=self.ec, step=self.step)
             # Steps since the last successful edit, so the nudges can tell a refactor
             # in progress from a paused one.

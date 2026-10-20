@@ -46,6 +46,7 @@ import mimir.client.query_engine.turn as turn_module
 from mimir.tests.support.loops import as_loop_run, run_plan
 from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
+from mimir.client.guardrails.nudges import messages as nudge_messages
 from mimir.tests.support.agents import FakeAgent, fake_agent, lent
 
 
@@ -560,7 +561,7 @@ class RunPlanModeTests(unittest.TestCase):
         self.assertTrue(any(
             m["role"] == "tool" and "already recorded" in m["content"] for m in messages
         ))
-        self.assertTrue(_reminder_calls(backend, plan_loop_module.PLAN_DELIVER_ANSWER_FIRM))
+        self.assertTrue(_reminder_calls(backend, nudge_messages.PLAN_DELIVER_ANSWER_FIRM))
 
     def test_checklist_call_is_blocked_in_plan_mode(self) -> None:
         # The ordered checklist belongs to the execution that follows approval, so a
@@ -919,7 +920,7 @@ class RunPlanModeTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(result, plan_loop_module.PLAN_REJECTED_ANSWER)
+        self.assertEqual(result, nudge_messages.PLAN_REJECTED_ANSWER)
         self.assertEqual(len(backend.calls), 2)
         self.assertTrue(any(
             m["role"] == "user" and "REJECTED" in m["content"] for m in messages
@@ -984,8 +985,8 @@ class RunPlanModeTests(unittest.TestCase):
         self.assertEqual(result, "Here is the plan.")
         # Turn 1 explores with the document withheld; the reads flip the phase for turn 2.
         self.assertEqual(seen_exploring, [True, False])
-        explore_at = _reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_FIRST)
-        record_at = _reminder_calls(backend, plan_loop_module.PLAN_TODO_NUDGE_EARLY)
+        explore_at = _reminder_calls(backend, nudge_messages.PLAN_EXPLORE_FIRST)
+        record_at = _reminder_calls(backend, nudge_messages.PLAN_TODO_NUDGE_EARLY)
         self.assertTrue(explore_at)
         # And the record nudge never fired while the tool did not exist.
         self.assertTrue(all(r > explore_at[0] for r in record_at))
@@ -1015,10 +1016,10 @@ class RunPlanModeTests(unittest.TestCase):
         # teaches one-call-per-turn — including ignoring the fan-out this text asks for.
         every = plan_loop_module._PLAN_NUDGE_EVERY
         self.assertEqual(
-            len(_reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_FIRST)),
+            len(_reminder_calls(backend, nudge_messages.PLAN_EXPLORE_FIRST)),
             -(-PLAN_EXPLORE_MAX_TURNS // every),
         )
-        self.assertTrue(_reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_BUDGET_SPENT))
+        self.assertTrue(_reminder_calls(backend, nudge_messages.PLAN_EXPLORE_BUDGET_SPENT))
 
     def test_a_turn_that_only_talks_is_always_told_why(self) -> None:
         # The throttle covers turns that acted. A turn that only produced prose has that
@@ -1041,7 +1042,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         self.assertEqual(result, "Here is the plan.")
         self.assertEqual(
-            len(_reminder_calls(backend, plan_loop_module.PLAN_TODO_NUDGE_EARLY)), 3)
+            len(_reminder_calls(backend, nudge_messages.PLAN_TODO_NUDGE_EARLY)), 3)
 
     def test_explore_phase_skipped_when_enforcement_off(self) -> None:
         # At enforcement "off" the phase gate is disabled outright: the document tool
@@ -1061,7 +1062,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         self.assertEqual(result, "Here is the plan.")
         self.assertFalse(any(seen_exploring))
-        self.assertFalse(_reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_FIRST))
+        self.assertFalse(_reminder_calls(backend, nudge_messages.PLAN_EXPLORE_FIRST))
         self.assertEqual(len(backend.calls), 2)
 
 
