@@ -216,8 +216,11 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
   registry, the workspace paths, running a tool, the approvals, the settings, the turn,
   the MCP connections), composed per layer: the nudges get a `NudgeAgent`, the
   observations an `ObserverAgent`, the policy a `PolicyAgent`, the executor an
-  `ExecutorAgent`, the server connection a `ConnectorAgent`. `AgentPort`, every brick, is
-  the engine's. mypy refuses a layer reaching past its port, and `test_architecture`
+  `ExecutorAgent`, the server connection a `ConnectorAgent`. Inside the engine, the
+  detached-run handling gets a `JobsAgent`, closing a turn a `FinalizeAgent`, the deferral
+  only the turn (`TurnHost`), and the dispatch a `DispatchAgent`, which is the executor's
+  since it hands the agent on. `AgentPort`, every brick, is the loops' and the turn's,
+  which orchestrate them. mypy refuses a layer reaching past its port, and `test_architecture`
   refuses a `getattr(agent, "…")` around it and a member no layer reads.
 - **Tests go through public construction and behaviour.** No test reads the source or
   builds an object around its constructor; shared fixtures live in `mimir/tests/support/`.

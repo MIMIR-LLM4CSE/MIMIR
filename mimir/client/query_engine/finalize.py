@@ -11,7 +11,7 @@ from ..guardrails.verification.ladder import record_exercise_obstacle
 from ..protocol.messages import reconcile_tool_pairs
 from ..guardrails.verification.ledger import build_ledger, render_ledger
 from ..context.execution_context import ExecutionContext
-from ..core.ports import AgentPort
+from ..core.ports import FinalizeAgent
 
 
 def _annotate_answer_with_changes(answer: str, execution_context: ExecutionContext) -> str:
@@ -23,7 +23,7 @@ def _annotate_answer_with_changes(answer: str, execution_context: ExecutionConte
 
 
 async def finalize_answer(
-    agent: AgentPort,
+    agent: FinalizeAgent,
     query: str,
     answer: str,
     execution_context: ExecutionContext,
@@ -39,7 +39,7 @@ async def finalize_answer(
     return answer
 
 
-def record_turn(agent: AgentPort, messages: list[dict], *, repair: bool = True) -> None:
+def record_turn(agent: FinalizeAgent, messages: list[dict], *, repair: bool = True) -> None:
     """Stash this turn's transcript (minus the system prompt) for full-context history.
 
     On every exit, so a cancelled or failed turn keeps its own work. *repair* is off for a
@@ -67,7 +67,7 @@ def _drop_earlier_reasoning(messages: list[dict], turn_start: int | None) -> Non
             messages[i] = {k: v for k, v in m.items() if k != "reasoning"}
 
 
-def _turn_start_index(agent: AgentPort, messages: list[dict]) -> int | None:
+def _turn_start_index(agent: FinalizeAgent, messages: list[dict]) -> int | None:
     """Where this turn's messages begin in ``messages[1:]`` (one past the opening), or None.
 
     Found by identity of the opening message, which survives eviction and compaction;

@@ -17,7 +17,7 @@ from ...config.limits import IDENTICAL_REPEAT_THRESHOLD, SOFT_REPEAT_THRESHOLD
 from ...config.servers import SKILL_LOAD_TOOL
 from ...tools.capabilities import CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import DispatchAgent
 from ...protocol.event_sink import emit
 from ...tools.exec_preview import exec_input_preview
 from ...tools.display import (
@@ -41,7 +41,7 @@ __all__ = ["ToolDispatcher", "dispatch_tool_calls", "post_dispatch_inject"]
 class ToolDispatcher:
     """One step's calls, from what the model issued to the tool messages in history."""
 
-    def __init__(self, agent: AgentPort, messages: list[dict], execution_context: ExecutionContext) -> None:
+    def __init__(self, agent: DispatchAgent, messages: list[dict], execution_context: ExecutionContext) -> None:
         self.agent = agent
         self.messages = messages
         self.ec = execution_context
@@ -160,14 +160,14 @@ class ToolDispatcher:
                                   "content": json.dumps({"status": "skipped", "note": why})})
 
 
-async def dispatch_tool_calls(tool_calls: list, agent: AgentPort, messages: list[dict],
+async def dispatch_tool_calls(tool_calls: list, agent: DispatchAgent, messages: list[dict],
                                execution_context: ExecutionContext) -> None:
     """Run one step's calls (see :class:`ToolDispatcher`)."""
     await ToolDispatcher(agent, messages, execution_context).run(tool_calls)
 
 
 def _pin_loaded_skill(
-    agent: AgentPort,
+    agent: DispatchAgent,
     name: str,
     args: dict,
     call_id: str,
@@ -195,7 +195,7 @@ def _pin_loaded_skill(
     emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
 
 
-def _bound_results(results: list[str], agent: AgentPort) -> list[str]:
+def _bound_results(results: list[str], agent: DispatchAgent) -> list[str]:
     """Apply the per-result and per-step context budgets, and say so when they bite.
 
     Best effort: a backend that cannot count tokens, or a budget that cannot be

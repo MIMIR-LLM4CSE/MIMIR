@@ -154,6 +154,19 @@ class ConnectorAgent(Connections, ToolRegistry, WorkspacePaths, Approvals, Agent
     """What connecting the MCP servers fills in and reads."""
 
 
+class DispatchAgent(ExecutorAgent, Protocol):
+    """What the engine's dispatch reads: admitting, running and following a step's calls.
+    It hands the agent to the executor, so it holds what the executor needs."""
+
+
+class FinalizeAgent(NudgeAgent, TurnHost, Protocol):
+    """What closing a turn reads: its carry and turn, and the exercise route it records."""
+
+
+class JobsAgent(ToolRegistry, ToolRunner, TurnHost, Protocol):
+    """What the engine's detached-run handling reads."""
+
+
 class AgentPort(ToolRegistry, WorkspacePaths, ToolRunner, Approvals, AgentSettings,
                 TurnHost, Connections, Protocol):
     """Every brick: the agent as the engine, which orchestrates them, uses it."""

@@ -16,7 +16,7 @@ from ...tools.capabilities import BACKGROUNDABLE, has_cap
 from ...protocol.tool_result import parse_tool_payload
 from . import poll
 from .watcher import RunWatcher, Watch
-from ...core.ports import AgentPort
+from ...core.ports import JobsAgent
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def maybe_emit_open_editor(result_text: str) -> None:
         emit({"type": "open_editor", "path": path})
 
 
-def detect_background_job(name: str, result_text: str, agent: AgentPort) -> dict | None:
+def detect_background_job(name: str, result_text: str, agent: JobsAgent) -> dict | None:
     """Return a ``background_job`` descriptor from a BACKGROUNDABLE tool result, else None.
 
     Shape-driven like ``maybe_emit_open_editor`` — no tool name is hard-coded, and
@@ -43,7 +43,7 @@ def detect_background_job(name: str, result_text: str, agent: AgentPort) -> dict
     return jobs.launched(parse_tool_payload(result_text) if isinstance(result_text, str) else None)
 
 
-def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort) -> str:
+def maybe_rewatch_background_jobs(name: str, result_text: str, agent: JobsAgent) -> str:
     """Put watchers on the in-flight runs a result reported — a status answer's, or
     the one an adopter just handed over.
 
@@ -88,7 +88,7 @@ def maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort)
 
 
 def maybe_register_background_job(
-    name: str, result_text: str, agent: AgentPort, descriptor: dict | None = None,
+    name: str, result_text: str, agent: JobsAgent, descriptor: dict | None = None,
 ) -> tuple[str, bool]:
     """Register a watcher for a detached run; ``(result, registered)``.
 
@@ -137,7 +137,7 @@ class _InTurnWait(RunWatcher):
     first_interval = 3.0
     max_interval = 20.0
 
-    def __init__(self, agent: AgentPort) -> None:
+    def __init__(self, agent: JobsAgent) -> None:
         super().__init__()
         self._agent = agent
         self.event: dict = {}
@@ -160,7 +160,7 @@ class _InTurnWait(RunWatcher):
         self.event = event
 
 
-async def await_background_job(descriptor: dict, agent: AgentPort, result_text: str) -> str:
+async def await_background_job(descriptor: dict, agent: JobsAgent, result_text: str) -> str:
     """Wait out a detached run in-turn without model calls, then append its summary.
 
     For the CLI, which has no watcher: a :class:`RunWatcher` followed by the turn itself,

@@ -186,7 +186,7 @@ The contracts the layers above agree on.
 
 | Module | Holds |
 |---|---|
-| `ports.py` | The agent's ports, as `Protocol`s so a test hands in any object with their members: bricks by need (`ToolRegistry`, `WorkspacePaths`, `ToolRunner`, `Approvals`, `AgentSettings`, `TurnHost`, `Connections`), one composition per layer (`NudgeAgent`, `ObserverAgent`, `PolicyAgent`, `ExecutorAgent`, `ConnectorAgent`), and `AgentPort`, every brick, for the engine. `HumanIO` — how the agent reaches a person: `approve_tool`, `approve_paths`, `ask` |
+| `ports.py` | The agent's ports, as `Protocol`s so a test hands in any object with their members: bricks by need (`ToolRegistry`, `WorkspacePaths`, `ToolRunner`, `Approvals`, `AgentSettings`, `TurnHost`, `Connections`), one composition per layer (`NudgeAgent`, `ObserverAgent`, `PolicyAgent`, `ExecutorAgent`, `ConnectorAgent`, and in the engine `DispatchAgent`, `JobsAgent`, `FinalizeAgent`), and `AgentPort`, every brick, for the loops and the turn. `HumanIO` — how the agent reaches a person: `approve_tool`, `approve_paths`, `ask` |
 | `settings.py` | one table, `SETTINGS`: per setting, how to `parse` it (raising `ValueError` with the message to show), how to `store` it on an agent, how to `read` it, and what is in force with no agent. `apply_setting(agent, name, value)` and `read_setting(agent, name)` are the only way any front-end changes or reads a setting |
 | `human.py` | the two `HumanIO`s that need nothing but the agent: `TerminalHuman` (stdin; EOF answers no) and `Unattended` (the benchmark runner) |
 

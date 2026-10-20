@@ -13,11 +13,11 @@ from ...guardrails.nudges.messages import (
     repeat_corrective_message,
 )
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import DispatchAgent
 
 
 async def post_dispatch_inject(
-    agent: AgentPort,
+    agent: DispatchAgent,
     messages: list[dict],
     execution_context: ExecutionContext,
     *,

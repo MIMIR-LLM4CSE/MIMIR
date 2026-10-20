@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from contextvars import ContextVar
 from ..context.execution_context import ExecutionContext
-from ..core.ports import AgentPort
+from ..core.ports import TurnHost
 
 # The tool call whose execution is running in this context. Set around each call's
 # task, so a prompt raised from inside the call can say which call it holds up.
@@ -29,7 +29,7 @@ DEFERRED_RESULT = json.dumps({
 })
 
 
-def deferred_prompts(agent: AgentPort) -> list[dict]:
+def deferred_prompts(agent: TurnHost) -> list[dict]:
     """The prompts set aside during this turn, as ``{"call_id", "prompt", "questions"}``."""
     return list(agent.turn.deferred_prompts or [])
 
@@ -42,7 +42,7 @@ def park_results(messages: list[dict], call_ids: list[str]) -> None:
             messages[i] = {**m, "content": DEFERRED_RESULT}
 
 
-def mark_deferred(agent: AgentPort, *, kind: str, query: str, mode: str,
+def mark_deferred(agent: TurnHost, *, kind: str, query: str, mode: str,
                   call_ids: list[str] | None = None) -> None:
     """Record that this turn ended deferred, for the front-end to store."""
     agent.turn.deferred_turn = {
@@ -73,7 +73,7 @@ def _call_asking(tool_calls: list, questions: list) -> str | None:
     return None
 
 
-def end_deferred_calls(agent: AgentPort, messages: list[dict], tool_calls: list, *,
+def end_deferred_calls(agent: TurnHost, messages: list[dict], tool_calls: list, *,
                        query: str, mode: str) -> bool:
     """After a dispatch: if a call was deferred, park its result and mark the turn.
 
@@ -93,7 +93,7 @@ def end_deferred_calls(agent: AgentPort, messages: list[dict], tool_calls: list,
     return True
 
 
-def end_deferred_turn(agent: AgentPort, execution_context: ExecutionContext) -> str:
+def end_deferred_turn(agent: TurnHost, execution_context: ExecutionContext) -> str:
     """End a turn whose calls were set aside. The answer is empty: nothing concluded.
 
     What the turn learned is kept for the one that resumes it; its transcript is

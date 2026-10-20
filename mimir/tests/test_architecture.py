@@ -449,7 +449,8 @@ class PortsByNeedTests(unittest.TestCase):
 
     LAYERS = {"guardrails/nudges": "NudgeAgent", "guardrails/observations": "ObserverAgent",
               "guardrails/policy": "PolicyAgent", "tool_execution": "ExecutorAgent",
-              "integration": "ConnectorAgent"}
+              "integration": "ConnectorAgent", "query_engine/dispatch": "DispatchAgent",
+              "query_engine/jobs": "JobsAgent"}
 
     def test_a_layer_names_only_its_own_port(self) -> None:
         from mimir.client.core import ports

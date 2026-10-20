@@ -18,7 +18,7 @@ from ....shared.jobs import job_key_of
 from ...tools.bash_classify import segment_program, shell_segments
 from ...tools.capabilities import EDIT, has_cap, shell_command_args
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import DispatchAgent
 from ...protocol.event_sink import emit
 from ...protocol.tool_call import DOING_ARG, UNPARSED_ARGUMENTS, as_dict, normalize_arguments
 from ...protocol.tool_result import json_error_payload
@@ -56,11 +56,11 @@ class Admission:
     skipped: list[tuple[str, str]] = field(default_factory=list)
 
 
-def is_write(agent: AgentPort, name: str) -> bool:
+def is_write(agent: DispatchAgent, name: str) -> bool:
     return agent.is_write_tool(name) or has_cap(name, EDIT, agent.tool_caps)
 
 
-def _read_call(agent: AgentPort, idx: int, tc: Any) -> Call:
+def _read_call(agent: DispatchAgent, idx: int, tc: Any) -> Call:
     tc = as_dict(tc)
     fn = as_dict(tc.get("function", {}))
     args = normalize_arguments(fn.get("arguments") or {})
@@ -77,7 +77,7 @@ def _read_call(agent: AgentPort, idx: int, tc: Any) -> Call:
     return Call(fn.get("name", ""), args, call_id, doing)
 
 
-def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContext) -> Admission:
+def admit(tool_calls: list, agent: DispatchAgent, execution_context: ExecutionContext) -> Admission:
     """Read the step's calls and decide, for each, whether it runs."""
     admission = Admission()
     # (name, args) -> the id of the first call issued that way in this step.
@@ -141,7 +141,7 @@ def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContex
 # call ``agent.run_tool`` directly and must not be refused.
 
 
-def _watched_jobs(agent: AgentPort) -> list[dict]:
+def _watched_jobs(agent: DispatchAgent) -> list[dict]:
     """Descriptors of the runs a watcher is holding right now. Best-effort, never raises."""
     watcher = agent.host.watcher
     if watcher is None:
@@ -155,7 +155,7 @@ def _watched_jobs(agent: AgentPort) -> list[dict]:
 
 
 def _asks_whether_a_watched_run_is_done(
-    agent: AgentPort, name: str, args: dict,
+    agent: DispatchAgent, name: str, args: dict,
 ) -> str | None:
     """The job_key this call asks the state of, when a watcher already answers it; else None.
 
@@ -186,7 +186,7 @@ def _op_matches(op: Any, name: str, args: dict) -> bool:
     return all(args.get(k) == v for k, v in op_args.items() if k not in _LOCATORS)
 
 
-def reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) -> str | None:
+def reads_progress_of_a_watched_run(agent: DispatchAgent, name: str, args: dict) -> str | None:
     """The job_key whose output this call reads while a watcher holds it, else None.
 
     Allowed, but the result reminds the model to end its turn rather than poll.
@@ -208,7 +208,7 @@ def watched_progress_note(job_key: str) -> str:
     )
 
 
-def _waits_by_blocking_the_turn(agent: AgentPort, name: str, args: dict) -> bool:
+def _waits_by_blocking_the_turn(agent: DispatchAgent, name: str, args: dict) -> bool:
     """True when this call's command opens with ``sleep`` (leading segment only; fail-open)."""
     command_args = shell_command_args(name, agent.tool_caps)
     if command_args is None:

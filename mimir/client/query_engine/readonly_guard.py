@@ -19,7 +19,7 @@ from ..protocol.tool_call import as_dict
 from ..protocol.tool_result import json_error_payload
 from ..guardrails.policy.toollist import hidden_planning_tools
 from ..protocol.tool_call import normalize_arguments
-from ..core.ports import AgentPort
+from ..core.ports import ToolRegistry
 
 # Why a mode has no plan-writing tool, told to a model that called one anyway.
 _NO_PLANNING_REASON = {
@@ -50,7 +50,7 @@ def refusal_reply(tool_call: Any, error: str) -> dict:
 def filter_readonly_tool_calls(
     tool_calls: list[Any],
     *,
-    agent: AgentPort,
+    agent: ToolRegistry,
     messages: list[dict],
     mode_label: str,
 ) -> list[Any]:

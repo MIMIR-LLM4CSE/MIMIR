@@ -12,7 +12,7 @@ from ...protocol import human_pause
 from ...config.limits import AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS
 from ...tools.capabilities import timeout_for
 from ...context.execution_context import ExecutionContext
-from ...core.ports import AgentPort
+from ...core.ports import DispatchAgent
 from ...protocol.event_sink import emit
 from ....shared.jobs import job_key_of
 from ...protocol.tool_result import json_error_payload
@@ -62,7 +62,7 @@ async def _await_tool(coro, timeout: float):
 _DEAD_TRANSPORT = ("ClosedResourceError", "BrokenResourceError", "EndOfStream")
 
 
-def _dead_transport_hint(name: str, exc: BaseException, agent: AgentPort) -> str | None:
+def _dead_transport_hint(name: str, exc: BaseException, agent: DispatchAgent) -> str | None:
     """The hint for a tool whose server is gone (it never recovers), or None."""
     if type(exc).__name__ not in _DEAD_TRANSPORT:
         return None
@@ -123,7 +123,7 @@ def _read_text(path: str) -> str | None:
         return None
 
 
-def _snapshot(agent: AgentPort, targets: list[str]) -> dict[str, str | None]:
+def _snapshot(agent: DispatchAgent, targets: list[str]) -> dict[str, str | None]:
     """Each target's content just before this call.
 
     Two baselines: the batch keeps the FIRST content seen, for the approval card's
@@ -156,7 +156,7 @@ def _emit_diffs(before_by_path: dict[str, str | None]) -> None:
         emit(entry)
 
 
-async def _execute(agent: AgentPort, call: Call, execution_context: ExecutionContext,
+async def _execute(agent: DispatchAgent, call: Call, execution_context: ExecutionContext,
                    budget: float) -> str:
     """The call under its budget, its id stamped on the task so a card raised inside it
     names this call. Post-write validation has its own budget."""
@@ -170,7 +170,7 @@ async def _execute(agent: AgentPort, call: Call, execution_context: ExecutionCon
         CURRENT_CALL_ID.reset(token)
 
 
-async def _annotate(agent: AgentPort, call: Call, result: str,
+async def _annotate(agent: DispatchAgent, call: Call, result: str,
                     execution_context: ExecutionContext) -> str:
     """Advisory annotations, separately budgeted: a timeout or error drops them."""
     try:
@@ -182,7 +182,7 @@ async def _annotate(agent: AgentPort, call: Call, result: str,
         return result
 
 
-async def _follow_runs(agent: AgentPort, call: Call, result: str, ok: bool) -> str:
+async def _follow_runs(agent: DispatchAgent, call: Call, result: str, ok: bool) -> str:
     """What the result says about runs that outlive the call.
 
     A launched run is held by a watcher, else waited out in-turn. Runs reported as still
@@ -208,7 +208,7 @@ async def _follow_runs(agent: AgentPort, call: Call, result: str, ok: bool) -> s
     return result
 
 
-async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionContext) -> str:
+async def run_call(agent: DispatchAgent, call: Call, execution_context: ExecutionContext) -> str:
     """Run one call and return its result text, reporting its row as it goes.
 
     Never raises for the tool's own failure — a timeout, a crashed server, a payload
