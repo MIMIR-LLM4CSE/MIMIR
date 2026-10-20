@@ -156,5 +156,26 @@ class SkipSupportTests(unittest.TestCase):
         self.assertTrue(summary["results"][0]["skipped"])
 
 
+
+class _ModuleAdapter:
+    name = "test_module"
+
+    def load_tasks(self, limit=None):
+        return [BenchTask(id="needs_a_module", query="q", servers=(),
+                          modules=("no_such_module_mimir_test",))]
+
+    async def score(self, task, answer, ctx):
+        raise AssertionError("a task missing its module is never run")
+
+
+class MissingModuleTests(unittest.TestCase):
+    def test_a_task_missing_a_python_module_is_skipped_not_failed(self) -> None:
+        summary = asyncio.run(run_benchmark(_ModuleAdapter(), model="dummy",
+                                            get_backend_override=_scripted_override()))
+        result = summary["results"][0]
+        self.assertTrue(result["skipped"])
+        self.assertIn("no_such_module_mimir_test", result["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

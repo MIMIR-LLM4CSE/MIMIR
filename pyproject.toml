@@ -82,6 +82,7 @@ mimir = [
     "client/config/*.json",
     "examples/*.md",
     "examples/**/*.py",
+    "evals/scientific/tasks/**/*",
     "examples/**/*.md",
 ]
 
@@ -110,7 +111,7 @@ select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["mimir/client", "mimir/servers", "mimir/shared", "mimir/runner"]
+files = ["mimir/client", "mimir/servers", "mimir/shared", "mimir/runner", "mimir/evals"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 

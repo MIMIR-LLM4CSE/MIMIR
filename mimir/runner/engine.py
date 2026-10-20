@@ -7,6 +7,7 @@ failing task is recorded, not fatal; a task missing its toolchain is skipped.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import shutil
@@ -53,6 +54,7 @@ async def run_one(
     """Run *task* through a fresh agent and score it with *adapter*."""
     # Skip before spending an agent run when a required toolchain is absent.
     missing = [exe for exe in task.requires if shutil.which(exe) is None]
+    missing += [m for m in task.modules if importlib.util.find_spec(m) is None]
     if missing:
         return RunResult(
             task.id, False, f"skipped: missing {', '.join(missing)}", skipped=True,

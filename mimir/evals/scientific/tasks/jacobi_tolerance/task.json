@@ -1,0 +1,5 @@
+{
+  "query": "jacobi.solve returns before the residual is below the tolerance it is given, on our diagonally dominant systems. Make it meet the requested tolerance (relative residual ||Ax - b|| / ||b|| < tol), and raise an error when it cannot within maxiter.",
+  "modules": ["numpy"],
+  "max_steps": 30
+}

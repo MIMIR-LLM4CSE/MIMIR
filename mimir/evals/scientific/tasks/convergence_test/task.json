@@ -1,0 +1,5 @@
+{
+  "query": "schemes.py has `central_derivative`, a second-order finite-difference derivative. Write tests/test_convergence.py, a pytest test that checks it converges at second order: a first-order scheme put in its place must make the test fail.",
+  "modules": ["numpy", "pytest"],
+  "max_steps": 30
+}

@@ -1,0 +1,5 @@
+{
+  "query": "smooth.py's `smooth` is slow on long signals. Speed it up without changing its results (relative tolerance 1e-10), and tell me how much faster it is.",
+  "modules": ["numpy"],
+  "max_steps": 30
+}

@@ -1,0 +1,5 @@
+{
+  "query": "kernel.py's `potential` is too slow for the sizes we run. Vectorize it with numpy; its results must stay the same to rounding (relative tolerance 1e-10).",
+  "modules": ["numpy"],
+  "max_steps": 30
+}

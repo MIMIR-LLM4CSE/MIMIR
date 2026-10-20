@@ -1,0 +1,5 @@
+{
+  "query": "integrator.py is meant to be a velocity-Verlet integrator, but the energy of a harmonic oscillator drifts over long runs. Fix it so that the energy is conserved, without changing the functions' signatures.",
+  "modules": ["numpy"],
+  "max_steps": 30
+}

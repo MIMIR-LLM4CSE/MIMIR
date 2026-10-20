@@ -23,6 +23,9 @@ class BenchTask:
     # Executables that must be on PATH to evaluate this task; if any is missing the
     # harness records the task as *skipped* (not failed) without running the agent.
     requires: tuple[str, ...] = ()
+    # Python modules the scorer and the task's own code import (``numpy``): checked in
+    # this interpreter, and a missing one skips the task the same way.
+    modules: tuple[str, ...] = ()
     # Free-form per-task data the adapter's scorer may need (e.g. expected patch).
     meta: dict[str, Any] = field(default_factory=dict)
 

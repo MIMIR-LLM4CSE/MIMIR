@@ -1,0 +1,5 @@
+{
+  "query": "heat.py solves the 1D heat equation u_t = u_xx on [0, 1] with u = 0 at both ends, but starting from sin(pi x) its result does not match the analytic solution exp(-pi^2 t) sin(pi x). Find and fix the bug.",
+  "modules": ["numpy"],
+  "max_steps": 30
+}
