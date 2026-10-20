@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..guardrails.nudges import record_exercise_obstacle
+from ..guardrails.nudges import exercise_route
+from ..guardrails.verification.ladder import record_exercise_obstacle
 from ..protocol.messages import reconcile_tool_pairs
 from ..guardrails.verification.ledger import build_ledger, render_ledger
 from ..context.execution_context import ExecutionContext
@@ -30,7 +31,8 @@ async def finalize_answer(
     logger: Any,
 ) -> str:
     """Annotate the answer, save the carry context, record the turn; return the answer."""
-    record_exercise_obstacle(agent, execution_context)
+    # Asked where the ledger is built, for the case it reports: code written, nothing run.
+    record_exercise_obstacle(execution_context, lambda: exercise_route(agent, execution_context)[1])
     answer = _annotate_answer_with_changes(answer, execution_context)
     agent.carry.update(execution_context)
     record_turn(agent, messages)

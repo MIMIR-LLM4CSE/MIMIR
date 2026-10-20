@@ -58,6 +58,7 @@ from ..shared.skill_file import read_skills_dir
 from .config.toggles import Toggles
 from .context.carry import CarryContext
 from .extensions import all_server_descriptions, all_servers, load_plugins, resolve_skills_dir
+from .guardrails.observations import record_denial
 from .guardrails.policy.approval import ApprovalManager, denial_kind
 from .guardrails.policy.toollist import tools_for_readonly_mode
 from .guardrails.workflow import (
@@ -268,23 +269,11 @@ class MimirAgent:
         """
         if execution_context is None:
             return
-        fallback_tools = list(self.approvals.fallback_suggestions(tool_name))
-        scope = self.approval_scope(tool_name, arguments)
-        kind = denial_kind(note)
-        execution_context.denials.denied_tool_calls.append({
-            "tool": tool_name,
-            "path": self.normalize_workspace_path(arguments.get("path") or arguments.get("filepath")),
-            "fallback_tools": fallback_tools,
-            "scope": scope,
-            "kind": kind,
-            "reason": note,
-        })
-        execution_context.denials.denial_history.append({
-            "tool": tool_name,
-            "scope": scope,
-            "kind": kind,
-            "reason": note,
-        })
+        record_denial(
+            execution_context, tool=tool_name,
+            path=self.normalize_workspace_path(arguments.get("path") or arguments.get("filepath")),
+            fallback_tools=list(self.approvals.fallback_suggestions(tool_name)),
+            scope=self.approval_scope(tool_name, arguments), kind=denial_kind(note), reason=note)
 
     async def auto_validate_written_file(self, path: str, execution_context: ExecutionContext | None) -> str:
         return await auto_validate_written_file(

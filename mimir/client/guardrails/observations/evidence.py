@@ -1,11 +1,29 @@
 """Statements about evidence: verdicts on runs, and denials a later call clears."""
 from __future__ import annotations
 
-from __future__ import annotations
+from typing import Any
+
 from ...protocol.event_sink import emit
 from ..verification.verdict import apply_verdict
 from ...tools.capabilities import JUDGE, arg_role, has_cap
+from ...context.execution_context import ExecutionContext
 from .call import Call
+
+
+def record_denial(execution_context: ExecutionContext, *, tool: str, path: str,
+                  fallback_tools: list[str], scope: Any, kind: str, reason: str) -> None:
+    """Record a refusal in the open set (``denied_tool_calls``) and the scope history.
+
+    The open set clears when the action later succeeds (:func:`denial_clearing`); the
+    history does not, since the escalation ladder counts it.
+    """
+    execution_context.denials.denied_tool_calls.append({
+        "tool": tool, "path": path, "fallback_tools": fallback_tools,
+        "scope": scope, "kind": kind, "reason": reason,
+    })
+    execution_context.denials.denial_history.append({
+        "tool": tool, "scope": scope, "kind": kind, "reason": reason,
+    })
 
 
 def denial_clearing(call: Call) -> None:

@@ -6,7 +6,7 @@ read the ``execution_context`` blackboard and the ``guardrails.workflow`` state.
 """
 
 from .cascade import maybe_append_nudge, maybe_inject_env_resolution, nudge_pending
-from .exercise import exercise_route, record_exercise_obstacle
+from .exercise import exercise_route
 from .plugins import (
     NudgeRule,
     VALID_NUDGE_LAYERS,
@@ -24,7 +24,6 @@ __all__ = [
     "maybe_inject_env_resolution",
     "needs_incomplete_finalization",
     "nudge_pending",
-    "record_exercise_obstacle",
     "NudgeRule",
     "register_nudge",
     "rule_tier_enabled",

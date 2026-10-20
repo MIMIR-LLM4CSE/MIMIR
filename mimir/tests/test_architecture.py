@@ -124,6 +124,16 @@ class LayerTests(unittest.TestCase):
                      if target.startswith("mimir.servers")}
         self.assertEqual(sorted(offenders), [])
 
+    def test_the_execution_context_is_written_only_by_its_owners(self) -> None:
+        """``execution_context.WRITERS`` says who writes each record; the code agrees."""
+        from mimir.client.context.execution_context import WRITERS
+        offenders = sorted(
+            f"{path.relative_to(PACKAGE)}: {record}"
+            for path in _python_files(CLIENT) if (CLIENT / "context") not in path.parents
+            for record in _context_writes(path)
+            if _writer_unit(path) not in WRITERS[record])
+        self.assertEqual(offenders, [])
+
     def test_the_guardrails_name_no_server_domain(self) -> None:
         """What a server forbids reaches them as a seal or a capability, never by its name.
 
@@ -156,6 +166,56 @@ class LayerTests(unittest.TestCase):
                 if target.startswith("mimir.client") and domain not in SERVERS_USING_THE_CLIENT:
                     offenders.add(str(path.relative_to(PACKAGE)))
         self.assertEqual(sorted(offenders), [])
+
+
+_MUTATORS = frozenset({"add", "update", "append", "pop", "clear", "discard", "extend",
+                       "setdefault", "remove", "insert", "popitem", "difference_update",
+                       "intersection_update"})
+# How the code names an execution context it was handed.
+_CONTEXT_NAMES = frozenset({"execution_context", "ec", "ctx", "context"})
+
+
+def _context_writes(path: Path) -> set[str]:
+    """The records (and top-level fields) of an execution context this file writes.
+
+    A write is an assignment, an augmented assignment, an item store or delete, or a
+    mutating method call on ``<context>.<record>.<field>`` (or ``<context>.<field>``).
+    """
+    from mimir.client.context.execution_context import WRITERS
+    tree = ast.parse(path.read_text())
+    parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+    def written(node: ast.Attribute) -> bool:
+        up = parent.get(node)
+        return (isinstance(node.ctx, (ast.Store, ast.Del))
+                or (isinstance(up, ast.AugAssign) and up.target is node)
+                or (isinstance(up, ast.Subscript) and up.value is node
+                    and isinstance(up.ctx, (ast.Store, ast.Del)))
+                or (isinstance(up, ast.Attribute) and up.attr in _MUTATORS
+                    and isinstance(parent.get(up), ast.Call) and parent[up].func is up))
+
+    out = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and node.attr in WRITERS):
+            continue
+        base = node.value
+        if not ((isinstance(base, ast.Name) and base.id in _CONTEXT_NAMES)
+                or (isinstance(base, ast.Attribute) and base.attr in _CONTEXT_NAMES)):
+            continue
+        field_access = parent.get(node)
+        if isinstance(field_access, ast.Attribute) and field_access.value is node:
+            if written(field_access):
+                out.add(node.attr)
+        elif written(node):
+            out.add(node.attr)
+    return out
+
+
+def _writer_unit(path: Path) -> str:
+    parts = path.relative_to(CLIENT).parts
+    if parts[0] == "guardrails" and len(parts) > 2:
+        return f"guardrails/{parts[1]}"
+    return parts[0].removesuffix(".py")
 
 
 def _module_aliases(path: Path, tree: ast.Module) -> set[str]:

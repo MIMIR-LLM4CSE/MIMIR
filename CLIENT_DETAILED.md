@@ -323,20 +323,21 @@ lets a many-operations/few-files task still read as multi-step). `edits.edit_fai
 identical ones the hard block; the file stays in the read sets — a wrong anchor is not
 missing content).
 
-**Who writes what.** Most records have one writer; where there are several, they are named.
+**Who writes what.** `execution_context.WRITERS` declares the units that may write each record, and `test_architecture` holds the code to it; this table names the modules.
 
 | Record | Written by | Read by |
 |---|---|---|
 | `discovery` | `guardrails.observations` (discovery, files, shell), the carry merge | the policy engine, the nudges, the history budget |
 | `edits` | `guardrails.observations.files`; `steps_since_last_edit` also by `agent_loop` | the write policy, the nudges, the ledger |
 | `checks` | `verification.ladder`, `observations.files`, `builtin_check` | the state guards, the nudges, the ledger, the completion report |
-| `execution` | `verification.ladder` (`record_run`), `verification.verdict`, `observations.shell`, `observations.runs` | the ledger, the completion report, the exercise and stuck-repair nudges |
+| `execution` | `verification.ladder` (`record_run`, `record_exercise_obstacle`), `verification.verdict`, `observations.shell`, `observations.runs` | the ledger, the completion report, the exercise and stuck-repair nudges |
 | `env` | `observations.env`, `observations.shell` | the env nudges |
-| `denials` | the agent's approvals, `observations.evidence` | the denial ladder, the completion report |
+| `denials` | `observations.evidence` (`record_denial`, which the agent's approvals call; the clearing), `dispatch.inject` (`handback_told`) | the denial ladder, the completion report |
 | `plan` | `observations.plan`, `query_engine.turn`, `plan_loop`, `dispatch.inject` | the commitments check, the checklist reminders |
-| `nudges` | `nudges.cascade`, `dispatch.inject`, `nudges.reminders`, `ladder` (resets), `agent_loop` | the per-category caps, the injections |
-| `bookkeeping` | `query_engine.dispatch`, `turn`, `loop_base`, the skill gate | the history budget, the dispatch guards |
+| `nudges` | `nudges.cascade`, `nudges.reminders`, `observations`, `verification.ladder` (resets), `dispatch.inject`, `agent_loop` | the per-category caps, the injections |
+| `bookkeeping` | `query_engine.dispatch`, `turn`, `loop_base`, the skill gate (`policy.gates`) | the history budget, the dispatch guards |
 | `workflow_state` | `guardrails.workflow.set_workflow_state` | every state gate |
+| `action_op_count` | `observations.shell`, `observations.runs` | the todo nudge |
 
 ### `capabilities.py`
 

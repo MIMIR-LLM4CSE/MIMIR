@@ -186,6 +186,18 @@ class TablesTests(unittest.TestCase):
         documented = {getattr(execution_context, _ticked(r[0]), None) for r in rows}
         self.assertEqual(documented, set(execution_context.FIELD_TRAITS))
 
+    def test_the_writer_table_names_every_writing_unit(self) -> None:
+        """Each record of ``WRITERS`` has a row, and its row names each unit that writes it."""
+        from mimir.client.context.execution_context import WRITERS
+        query_engine = ("query_engine", "agent_loop", "dispatch", "turn", "plan_loop", "loop_base")
+        rows = {_ticked(r[0]): r[1] for r in _table("CLIENT_DETAILED.md",
+                                                    "| Record | Written by | Read by |")}
+        self.assertEqual(set(rows), set(WRITERS))
+        unnamed = [f"{record}: {unit}" for record, units in WRITERS.items() for unit in units
+                   if not any(word in rows[record] for word in
+                              (query_engine if unit == "query_engine" else (unit.split("/")[-1],)))]
+        self.assertEqual(unnamed, [])
+
     def test_the_layer_diagram_is_the_ranks_top_down(self) -> None:
         """Every unit is drawn or named as a foundation, and drawn units go down in rank."""
         from mimir.tests.test_architecture import RANKS

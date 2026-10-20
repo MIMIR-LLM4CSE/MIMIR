@@ -11,6 +11,7 @@ from ...context.execution_context import ExecutionContext
 from ...core.ports import AgentPort
 from ...protocol.tool_result import parse_tool_payload
 from . import discovery, env, evidence, files, plan, runs, shell
+from .evidence import record_denial
 from .call import Call, Observer
 
 # Every observer runs on every call, in this order. Where order matters:
@@ -75,4 +76,4 @@ def record_tool_observation(
         observe(call)
 
 
-__all__ = ["Call", "ORDER", "Observer", "record_tool_observation"]
+__all__ = ["Call", "ORDER", "Observer", "record_denial", "record_tool_observation"]

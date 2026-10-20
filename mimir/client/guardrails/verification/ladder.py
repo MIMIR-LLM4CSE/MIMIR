@@ -7,6 +7,8 @@ reported with its residual risk instead of looping.
 """
 from __future__ import annotations
 
+from typing import Callable
+
 from ....shared.shell_paths import EFFECT_BUILD, EFFECT_RUN
 from ...context import failed_runs, raise_validation_tier, record_run, run_ledger_key
 from ...context.execution_context import ExecutionContext
@@ -75,6 +77,15 @@ def record_run_outcome(
             execution_context.execution.exercise_advice_closed = True
         else:
             register_run_failure(execution_context, command, reason)
+
+
+def record_exercise_obstacle(execution_context: ExecutionContext, reason: Callable[[], str]) -> None:
+    """Note why the change could not be exercised, for the ledger: code written, nothing run.
+
+    *reason* is asked only then (``nudges.exercise_route``).
+    """
+    if execution_context.edits.dirty_written_files and not execution_context.execution.runs:
+        execution_context.execution.exercise_blocked_reason = reason()
 
 
 def register_run_failure(

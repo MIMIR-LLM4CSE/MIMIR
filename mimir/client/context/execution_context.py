@@ -325,6 +325,27 @@ class ExecutionContext:
         return value
 
 
+# Who may write each record (and each top-level field): client units, a guardrails
+# subpackage by its path. Everyone else only reads; ``test_architecture`` holds the code
+# to it. The carry restore (``carry.apply``) and ``ExecutionContext.take`` are the
+# generic writers of this module's own package, and are not listed.
+WRITERS: dict[str, frozenset[str]] = {
+    "discovery":      frozenset({"guardrails/observations"}),
+    "edits":          frozenset({"guardrails/observations", "query_engine"}),
+    "checks":         frozenset({"guardrails/observations", "guardrails/verification"}),
+    "execution":      frozenset({"guardrails/observations", "guardrails/verification"}),
+    "env":            frozenset({"guardrails/observations"}),
+    "denials":        frozenset({"guardrails/observations", "query_engine"}),
+    "plan":           frozenset({"guardrails/observations", "query_engine"}),
+    "nudges":         frozenset({"guardrails/nudges", "guardrails/observations",
+                                 "guardrails/verification", "query_engine"}),
+    # the skill gate reserves its slot in ``skills_loaded``
+    "bookkeeping":    frozenset({"query_engine", "guardrails/policy"}),
+    "workflow_state": frozenset({"guardrails/workflow"}),
+    "action_op_count": frozenset({"guardrails/observations"}),
+}
+
+
 def leaf_fields() -> list[tuple[str, Any]]:
     """``(record attribute, Field)`` for every field, sub-records first, in declaration
     order; the attribute is "" for a top-level field."""

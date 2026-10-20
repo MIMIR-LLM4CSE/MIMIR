@@ -894,9 +894,11 @@ class ExerciseRouteTests(unittest.TestCase):
 
     def test_the_obstacle_reaches_the_ledger_when_nothing_ran(self):
         from mimir.client.guardrails.nudges import exercise
+        from mimir.client.guardrails.verification.ladder import record_exercise_obstacle
 
         ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
-        exercise.record_exercise_obstacle(self._agent(), ec)
+        agent = self._agent()
+        record_exercise_obstacle(ec, lambda: exercise.exercise_route(agent, ec)[1])
         self.assertTrue(ec.execution.exercise_blocked_reason)
 
     def test_a_build_file_nobody_has_seen_is_not_a_route(self):

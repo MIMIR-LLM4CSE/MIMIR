@@ -66,7 +66,7 @@ def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tup
 
     A route is one invocation with something installed and a build file already seen;
     anything needing a step of its own is out of proportion. The obstacle goes to the
-    ledger (:func:`record_exercise_obstacle`). Pure: asked from a predicate.
+    ledger (``verification.ladder.record_exercise_obstacle``). Pure: asked from a predicate.
     """
     def _blocked(reason: str) -> tuple[str, str]:
         return "", reason
@@ -117,17 +117,6 @@ def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tup
 
 def exercise_hint(agent: AgentPort, execution_context: ExecutionContext) -> str:
     return exercise_route(agent, execution_context)[0]
-
-
-def record_exercise_obstacle(agent: AgentPort, execution_context: ExecutionContext) -> None:
-    """Note on the context why the change could not be exercised, for the ledger.
-
-    Asked where the ledger is built, for the case the ledger reports it in: code was
-    written and nothing was run.
-    """
-    if execution_context.edits.dirty_written_files and not execution_context.execution.runs:
-        execution_context.execution.exercise_blocked_reason = exercise_route(
-            agent, execution_context)[1]
 
 
 def should_nudge_regression(execution_context: ExecutionContext) -> bool:
