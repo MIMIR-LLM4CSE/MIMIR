@@ -30,6 +30,7 @@ from mimir.client.core.turn_state import TurnState
 from mimir.client.context.carry import CarryContext
 from mimir.tests.support.modules import spec_for
 from mimir.tests.support.agents import fake_agent, lent
+from mimir.tests.support.state import pin_state_dir
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
@@ -929,6 +930,44 @@ def _bash_descriptor(job_key: str = "k1") -> dict:
     from mimir.shared.jobs import shell_descriptor
     return shell_descriptor(job_key,
                             f"/state/sessions/parent/subagents/sub-1a2b3c4d/jobs/{job_key}")
+
+
+class AChildKeepsItsJournalTests(unittest.TestCase):
+    """A child's session has the journal a conversation's has, in the same format."""
+
+    def setUp(self) -> None:
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        pin_state_dir(self, state.name)
+
+    def _run(self, session: str) -> None:
+        async def _drive(*a, **kw):
+            on_event = a[6]
+            on_event({"type": "status", "text": "reading the parser"})
+            on_event({"type": "nudge_injected", "category": "todo"})
+            return {"answer": "the parser is fine", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with _patched_agent(_FakeAgent()), mock.patch.object(build, "drive_sub_agent", _drive):
+            asyncio.run(build.run_sub_agent("check the parser", "", [], {}, 4,
+                                            lambda ev: None, session=session))
+
+    def test_the_task_its_events_and_its_answer_are_journaled_in_order(self) -> None:
+        from mimir.client.session.journal import read_transcript
+        self._run("parent/subagents/sub-1")
+        events = read_transcript("parent/subagents/sub-1")
+        self.assertEqual([e["type"] for e in events],
+                         ["query", "status", "nudge_injected", "answer"])
+        self.assertEqual([e["seq"] for e in events], [1, 2, 3, 4])
+        self.assertEqual(events[0]["text"], "check the parser")
+        self.assertEqual(events[-1]["text"], "the parser is fine")
+
+    def test_its_nudges_count_with_its_conversation(self) -> None:
+        from mimir.client.session.jobs_on_disk import subagent_sessions
+        from mimir.client.session.journal import nudge_counts
+        self._run("parent/subagents/sub-1")
+        sessions = ["parent", *subagent_sessions("parent")]
+        self.assertEqual(nudge_counts(sessions), {"todo": 1})
 
 
 class AChildWatchesItsOwnRunsTests(unittest.TestCase):

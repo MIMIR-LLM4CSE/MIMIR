@@ -17,7 +17,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - **`/diag nudges`** counts the reminders that reached the model, in this conversation or
-  (`/diag nudges all`) in every conversation of the workspace.
+  (`/diag nudges all`) in every conversation of the workspace, sub-agents included.
+- **A sub-agent keeps its session journal** (`transcript.jsonl`) as a conversation does:
+  its task, every event of its run, its answer.
 
 ### Changed
 - **Sub-agents run longer**: up to an hour for reconnaissance and eight hours for a

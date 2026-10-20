@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from ....session.jobs_on_disk import subagent_sessions
 from ....session.journal import nudge_counts
 from ....session.commands import (
     COMMANDS,
@@ -98,13 +99,13 @@ class DiagCommand(Command[WsCommandHost]):
 
 def _nudge_report(host: WsCommandHost, *, everywhere: bool) -> CommandResult:
     """Reminders by category, read from the journals: what an audit of the guardrails
-    is decided on."""
+    is decided on. A conversation's sub-agents count with it."""
     screen = host.screen
     if everywhere:
         sessions = [meta.id for meta in screen.pool.conversations.store.list_sessions()]
     else:
         sessions = [screen.view.active_session_id] if screen.view.active_session_id else []
-    counts = nudge_counts(sessions)
+    counts = nudge_counts([s for sid in sessions for s in (sid, *subagent_sessions(sid))])
     if not counts:
         return CommandResult("No reminder has reached the model yet", tone="empty")
     rows = [Item(category, str(n)) for category, n in

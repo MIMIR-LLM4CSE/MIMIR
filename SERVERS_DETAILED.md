@@ -1282,7 +1282,7 @@ package:
 | `caller.py` | what a call says about its caller (approval mode, model, grantable tools, the user's rung) and what follows from it: the grant refused, the budget, the model |
 | `limits.py` | the budgets, the blocking wait, the step and token ceilings |
 | `run.py` | `ChildRun`: the thread and loop a child runs in, the wait, the budget guard, the reply |
-| `build.py` | the child agent built, configured and driven; its session card |
+| `build.py` | the child agent built, configured and driven; its session card, and its session journal (`transcript.jsonl`, written by the client's `session/journal.TranscriptLog` as a conversation's is: the task, every event, the answer) |
 | `brief.py` | what the child is told about its task |
 | `outcome.py` | what the end of a run says: finished, stopped on its budget, abandoned, and where it got to |
 | `jobs.py` | the table of detached children and the slots that cap how many run |

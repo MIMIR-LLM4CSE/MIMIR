@@ -13,6 +13,7 @@ from typing import Callable
 
 
 from mimir.client.core.ports import AgentHost
+from mimir.client.session.journal import TranscriptLog
 from . import caller, human, limits
 from .brief import COPY_BRIEF, EXPLORE_BRIEF, WORK_BRIEF
 from .outcome import final_state, human_budget, repo_relative
@@ -55,6 +56,16 @@ def new_sub_session() -> str:
     except Exception:
         parent = ""
     return f"{parent}/subagents/{child}" if parent else child
+
+def _journaled(sink: Callable[[dict], None] | None,
+               journal: TranscriptLog) -> Callable[[dict], None]:
+    """*sink*, with every event written to *journal* first (which never raises)."""
+    def _tee(event: dict) -> None:
+        journal.append(event)
+        if sink is not None:
+            sink(event)
+    return _tee
+
 
 async def run_sub_agent(
     task: str,
@@ -99,6 +110,12 @@ async def run_sub_agent(
             # optimisation sessions (keyed by proxy name) are separate.
             "MIMIR_PROXY_BENCH_DIR": os.path.join(worktree["repo"], "proxy_bench"),
         })
+    # Its journal, kept as a conversation's is (``session/journal``): the task, every
+    # event of its run, its answer. What audits a conversation reads a child too.
+    journal = TranscriptLog()
+    journal.bind(session or None)
+    journal.append({"type": "query", "text": task})
+    on_event = _journaled(on_event, journal)
     # Its own watcher, so a detached run it launches is held by something: without one
     # every backgroundable launch waits the run out in-turn, inside the child's budget,
     # and a run that outlives the budget outlives the only thing watching it. The child
@@ -138,6 +155,8 @@ async def run_sub_agent(
         handed_over = watcher.handover()
         if handed_over:
             result["background_jobs"] = handed_over
+        journal.append({"type": "answer", "text": result.get("answer") or "",
+                        "completed": bool(result.get("completed"))})
         return result
     finally:
         if worktree is not None:
