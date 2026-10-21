@@ -1,4 +1,4 @@
-"""One agent per conversation, built on its first query and released when idle.
+"""One agent per conversation, built on its first query or wake, released when idle.
 
 Lazy (built off the event loop, announced), capped (``MIMIR_MAX_LIVE_SESSIONS``,
 three; past it a turn queues visibly), released (never busy, parked, watching or on
@@ -67,6 +67,7 @@ class AgentPool:
         self._queue: deque[tuple[str, Callable[[AgentWorker], None]]] = deque()
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task[None] | None = None
+        self._admitting: asyncio.Task[None] | None = None
 
         # The one pump for this process. It drains every worker, journals what they
         # emit and fans it out to whatever sockets are attached — zero included, which
@@ -241,6 +242,27 @@ class AgentPool:
         self._queue = deque(
             entry for entry in self._queue if entry[0] != session_id)
 
+    def admit_soon(self) -> None:
+        """Admit the waiting line now rather than at the reaper's next sweep.
+
+        For a submission queued off the loop's own path (a wake for a conversation with
+        no agent). Without a running loop, the next sweep admits it.
+        """
+        if self._admitting is not None and not self._admitting.done():
+            return
+        try:
+            self._admitting = asyncio.get_running_loop().create_task(self._admit())
+        except RuntimeError:
+            self._admitting = None
+
+    async def _admit(self) -> None:
+        try:
+            await self.pump()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("pool: admitting the waiting line failed", exc_info=True)
+
     async def pump(self) -> list[str]:
         """Admit as many queued submissions as there are slots. Returns those admitted."""
         admitted: list[str] = []
@@ -303,9 +325,10 @@ class AgentPool:
 
     async def aclose_all(self) -> None:
         """Flush the pump, then close every agent together."""
-        if self._reaper is not None:
-            self._reaper.cancel()
-            self._reaper = None
+        for task in (self._reaper, self._admitting):
+            if task is not None:
+                task.cancel()
+        self._reaper = self._admitting = None
         # Flush before stopping: whatever a turn emitted in its last moments is still
         # on ``out_q``, and the journal is the only thing that will remember it.
         try:
@@ -401,6 +424,9 @@ class AgentPool:
             await asyncio.sleep(REAP_INTERVAL)
             try:
                 await self.release_idle()
+                # Before the admissions: what it finds for a conversation with no agent
+                # joins the waiting line this same pass admits from.
+                self.wakes.sweep()
                 await self.pump()
                 self.lifecycle.consider_stopping()
             except asyncio.CancelledError:

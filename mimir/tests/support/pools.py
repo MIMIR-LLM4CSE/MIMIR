@@ -141,6 +141,9 @@ class FakePool:
         self.queued.append((session_id, submit))
         return len(self.queued)
 
+    def admit_soon(self) -> None:
+        pass
+
     def drop_queued(self, session_id: str) -> None:
         self.queued = [e for e in self.queued if e[0] != session_id]
 

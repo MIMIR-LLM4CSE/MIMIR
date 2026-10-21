@@ -11,7 +11,6 @@ import os
 from ...process import registry as server_registry
 from .....config import paths
 from ...process.detach import detach as detach_process
-from .....session.jobs_on_disk import ended_event, needing_attention, scan_all_sessions
 from ...pool.lifecycle import idle_stop_reason
 from ...pool.pool import AgentPool
 from ..screen import Screen
@@ -32,20 +31,11 @@ class DetachHandlers(Handlers):
         self.store = pool.conversations.store
 
     async def report_ended_jobs(self) -> None:
-        """Announce every detached run that finished while nothing watched it, through the wake router.
+        """Announce every detached run that finished while nothing watched it (``WakeRouter.sweep``).
 
-        A task, off the handshake. Marked on disk as announced; a session never scanned gets a
-        baseline instead of a backlog.
+        A task, off the handshake. A session never scanned gets a baseline instead of a backlog.
         """
-        try:
-            found = scan_all_sessions()
-        except Exception:
-            logger.warning("job scan: the sessions could not be read", exc_info=True)
-            return
-        for job in needing_attention(found):
-            # A live run gets its watcher back when its conversation's worker is built.
-            if not job.live:
-                self.pool.wakes.consume(ended_event(job))
+        self.pool.wakes.sweep()
 
     async def restore_detached_autonomy(self) -> None:
         """Take back a run left going: drop the claims, restore each conversation's level.

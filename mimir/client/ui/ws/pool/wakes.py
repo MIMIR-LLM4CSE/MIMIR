@@ -1,7 +1,9 @@
 """How a conversation is told what happened while it was not looking.
 
 Finished runs, bulletins and unread steering each become a steer into the running
-turn or a turn of their own. Synchronous, run by the pump before any socket sees them.
+turn or a turn of their own. Synchronous, run by the pump before any socket sees them;
+a conversation with no agent is queued for one. Runs that ended with nothing watching
+are found on disk by :meth:`WakeRouter.sweep`, on every connection and every reap.
 """
 from __future__ import annotations
 
@@ -10,7 +12,13 @@ from typing import TYPE_CHECKING, Any
 
 from ....protocol.events import DURABLE_EVENTS
 from ....session.conversation import Conversation
-from ....session.jobs_on_disk import mark_wakes_reported, wake_reported
+from ....session.jobs_on_disk import (
+    ended_event,
+    mark_wakes_reported,
+    needing_attention,
+    scan_all_sessions,
+    wake_reported,
+)
 from ....query_engine.jobs.wakes import checkin_text, wake_text
 from ..worker.worker import AgentWorker
 
@@ -67,11 +75,9 @@ class WakeRouter:
         item = {"ev": ev, "told": False}
         conversation.pending_wakes.append(item)
         if worker is None:
-            # Kept, not lost: the next turn of this conversation carries it. An agent is
-            # never released while a wake of its is owed, so this is a conversation that
-            # has not had one yet.
-            logger.warning("wake for session %s held: it has no agent to run it",
-                           conversation.id)
+            # An agent is never released while a wake of its is owed, so this is a
+            # process that started after the run's watcher died with the last one.
+            self._summon(conversation)
             return False
         if self._occupied(conversation.id):
             self._record_wakes(conversation, [item])
@@ -109,6 +115,44 @@ class WakeRouter:
         self.pool.bus.record_client_event(
             conversation.id, {"type": "job_checkin", "text": text, "job": ev.get("job_key")})
         return True
+
+    def _summon(self, conversation: Conversation) -> None:
+        """Get this conversation an agent, and hand it what it is owed once it has one.
+
+        Through the waiting line, so the cap holds. A turn of its already waiting there
+        carries the wakes on landing (``after_turn``).
+        """
+        if self.pool.queued_position(conversation.id) is not None:
+            logger.info("wake for session %s waits on the turn already queued for it",
+                        conversation.id)
+            return
+        logger.info("wake for session %s: building it an agent to run it", conversation.id)
+        self.pool.enqueue(conversation.id, lambda worker: self.flush(conversation, worker))
+        self.pool.admit_soon()
+
+    # ── Runs nothing watches ──────────────────────────────────────────────────
+
+    def sweep(self) -> None:
+        """Wake the conversation of every run that ended on disk with no watcher holding it.
+
+        A run a live watcher holds is left to it: its wake carries the run's summary.
+        A run still going is left alone too, and swept up here once it ends: an agent
+        built only to watch would hold a slot for as long as the run lasts. Never raises.
+        """
+        try:
+            found = scan_all_sessions()
+        except Exception:
+            logger.warning("job sweep: the sessions could not be read", exc_info=True)
+            return
+        held: set[str] = set()
+        for _sid, worker in self.pool.items():
+            try:
+                held.update(worker.watched_job_keys())
+            except Exception:
+                logger.debug("sweep: a best-effort step failed and was skipped", exc_info=True)
+        for job in needing_attention(found):
+            if not job.live and job.job_key not in held:
+                self.consume(ended_event(job))
 
     # ── Delivering what is owed ───────────────────────────────────────────────
 

@@ -299,7 +299,7 @@ class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
 
 class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
     """No wake arrives for a closed agent: ``releasable`` refuses while a job is watched, a
-    wake owed or output undrained. Otherwise the wake waits for the next turn.
+    wake owed or output undrained.
     """
 
     def test_the_whole_handover_happens_while_the_agent_is_unreleasable(self):
@@ -316,18 +316,98 @@ class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
         pool.bus.pump_once()
         self.assertEqual(len(w.queries), 1)
 
-    def test_a_wake_for_a_closed_agent_leaves_the_run_owed(self):
-        # The unreachable case, kept honest rather than handled: nothing is invented,
-        # and the run stays unsettled so the next agent built announces it.
+
+class AWakeWithNoAgentGetsOneTests(_WakeCase):
+    """A wake for a conversation with no agent — a process started after the run's
+    watcher died — queues the conversation for one, and the admission delivers it.
+    """
+
+    def _admit(self, pool, session_id, worker) -> list[str]:
+        # The build is what the test stands in for: the agent exists by admission.
+        pool._workers[session_id] = worker
+        return asyncio.run(pool.pump())
+
+    def test_the_wake_queues_an_agent_and_starts_its_turn_on_admission(self):
         s = self._session()
         self._ended_job(s.id)
-        pool = self._pool()                   # no agent for this conversation
-        with self.assertLogs("mimir.client.ui.ws.pool.wakes", "WARNING") as caught:
-            pool.wakes.consume(self._complete(s.id))
-        self.assertIn("no agent", "".join(caught.output))
+        pool = self._pool()
+        pool.wakes.consume(self._complete(s.id))
+        self.assertEqual(pool.queued_position(s.id), 1)
+        # Owed until a turn has it.
         self.assertEqual([j.job_key for j in jobs_on_disk.scan_session(s.id)], ["j1"])
-        # Kept for the conversation's next turn, not dropped.
+
+        w = _Worker(s.id)
+        self.assertEqual(self._admit(pool, s.id, w), [s.id])
+        self.assertEqual(len(w.queries), 1)
+        self.assertIn("finished", w.queries[0]["text"])
+        self.assertEqual(jobs_on_disk.scan_session(s.id), [])
+
+    def test_a_run_announced_twice_queues_one_agent(self):
+        s = self._session()
+        pool = self._pool()
+        pool.wakes.consume(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
+        self.assertEqual(pool.waiting(), 1)
+
+    def test_runs_ending_together_arrive_as_one_turn(self):
+        s = self._session()
+        pool = self._pool()
+        pool.wakes.consume(self._complete(s.id, "j1"))
+        pool.wakes.consume(self._complete(s.id, "j2"))
+        self.assertEqual(pool.waiting(), 1)
+
+        w = _Worker(s.id)
+        self._admit(pool, s.id, w)
+        self.assertEqual(len(w.queries), 1)
+        self.assertIn("j1", w.queries[0]["text"])
+        self.assertIn("j2", w.queries[0]["text"])
+
+    def test_a_turn_already_waiting_for_a_slot_carries_it(self):
+        s = self._session()
+        pool = self._pool()
+        pool.enqueue(s.id, lambda w: w.submit_query("the user's words", []))
+        pool.wakes.consume(self._complete(s.id))
+        self.assertEqual(pool.waiting(), 1)
         self.assertEqual(len(pool.conversations.get(s.id).pending_wakes), 1)
+
+
+class TheSweepTests(_WakeCase):
+    """Runs that ended on disk with no watcher holding them are woken for, agent or not."""
+
+    def test_a_run_that_ended_unwatched_wakes_its_idle_agent(self):
+        s = self._session()
+        self._ended_job(s.id)
+        w = _Worker(s.id)
+        pool = self._pool({s.id: w})
+        pool.wakes.sweep()
+        self.assertEqual(len(w.queries), 1)
+
+    def test_a_run_that_ended_with_no_agent_queues_one(self):
+        s = self._session()
+        self._ended_job(s.id)
+        pool = self._pool()
+        pool.wakes.sweep()
+        self.assertEqual(pool.queued_position(s.id), 1)
+
+    def test_a_run_a_live_watcher_holds_is_left_to_it(self):
+        # Its wake carries the run's summary; the sweep's would not.
+        s = self._session()
+        self._ended_job(s.id)
+        w = _Worker(s.id)
+        w.watched = ["j1"]
+        pool = self._pool({s.id: w})
+        pool.wakes.sweep()
+        self.assertEqual(w.queries, [])
+        self.assertEqual(pool.waiting(), 0)
+
+    def test_a_delivered_run_is_not_swept_again(self):
+        s = self._session()
+        self._ended_job(s.id)
+        w = _Worker(s.id)
+        pool = self._pool({s.id: w})
+        pool.wakes.sweep()
+        pool.wakes.sweep()
+        self.assertEqual(len(w.queries), 1)
 
 
 class _NoWS:
