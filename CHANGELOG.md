@@ -18,6 +18,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.8.0] — 2026-10-20
 
 ### Added
+- **Stop a run from the scientific panel.** Open a run's badge and press Cancel: after a
+  confirmation, MIMIR stops it with the call its own server provides (`bash_job_stop`,
+  `slurm_cancel`, the proxy's `cancel`/`stop`), and the conversation is told at once
+  rather than at the next poll. A sub-agent, or a process MIMIR only watches, has no
+  button: nothing outside the conversation can stop it safely.
+- **A dependency map for contributors**: [docs/dependency-map](docs/dependency-map/README.md)
+  draws every unit of the code and every import between them, with the import
+  statements behind each edge and ARCHITECTURE.md's rules checked on the way. It is
+  generated from the code, and the test suite fails when it falls behind.
 - **Measure a wording before changing it.** `python -m mimir.evals` runs a benchmark under
   the code's prompt and under prose variants — JSON files rewording the prompt's sections
   and the constant reminders by id — and compares them with intervals, saying when a gap is
@@ -35,6 +44,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its task, every event of its run, its answer.
 
 ### Changed
+- **The first query says MIMIR is starting** (the model backend, then the MCP servers)
+  instead of looking like the model thinking.
+- **No message can be sent while a plan or a question waits for an answer.** The input
+  is hidden until the card is answered or expires; its "Other" field is the way to say
+  something else.
+- **The scientific panel shows only the sections that have something in them**, and
+  each one folds. An opened run reads better: its kind and state, a progress bar, the
+  whole command, where it runs and who launched it.
 - **Sub-agents run longer**: up to an hour for reconnaissance and eight hours for a
   sub-agent that builds and measures, a hard cap at which it stops and hands back where it
   got to. A call waits on its sub-agent for up to about 19 minutes; one still working
@@ -63,6 +80,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still applies to all of them.
 
 ### Fixed
+- **A run on no machine of the panel is shown.** A local shell run, with no scheduler
+  row to sit on, appeared nowhere in the scientific panel; such runs are now listed
+  under "Runs".
 - **A job started with `ssh <host> … srun` shows as a job on that host**, not as a
   process of the local machine.
 - **A window reopened while the server is stopping waits for the new one** instead of
