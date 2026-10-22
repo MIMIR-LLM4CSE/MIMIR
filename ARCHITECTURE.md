@@ -4,7 +4,8 @@
 
 The layering of `mimir/client/` and its relation to `mimir/servers/`. Every rule on
 this page is checked by `mimir/tests/test_architecture.py`; a change that breaks one
-fails the suite.
+fails the suite. The [dependency map](docs/dependency-map/index.html) draws every unit
+and every import between them, generated from the code and kept current by the suite.
 
 ## The client's layers
 
