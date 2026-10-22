@@ -1,17 +1,17 @@
 # MIMIR Plugin & Extension Guide
 
-> **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
+> **MIMIR docs** — [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
 The authoritative guide to **extending MIMIR without editing core code**. Every extension
 type is a drop-in file, auto-detected by directory scan under `.mimir/` in your workspace.
 
-A copy-to-customize example of each type ships in [`mimir/examples/`](mimir/examples/).
+A copy-to-customize example of each type ships in [`mimir/examples/`](../mimir/examples/).
 MIMIR **never writes into your workspace `.mimir/` on its own** — that directory is
 yours alone, and nothing is ever created there as a side effect. To add an extension,
 create the file yourself under `.mimir/` (or point the matching `MIMIR_*_DIR` env var
 elsewhere), using the examples as a template.
 
-**Or ask MIMIR for it.** The bundled [`mimir-api`](mimir/skills/mimir-api/SKILL.md)
+**Or ask MIMIR for it.** The bundled [`mimir-api`](../mimir/skills/mimir-api/SKILL.md)
 skill authors an extension with you, and reads this API out of the running build through
 the `mimir_api` tool — the capability vocabulary, the drop-in path *this* workspace
 resolves, the shipped template — rather than from what a model remembers of MIMIR. That
@@ -66,7 +66,7 @@ Triggered explicitly (`/check-units …`), which folds the body into the system 
 whole query, or loaded by the model itself with `load_skill(<name>)` when its own reading
 says the method applies — the index of names and descriptions is in the system prompt, the
 bodies are not. A user skill whose name matches a bundled one **overrides** it. Example:
-[`mimir/examples/skills/example-skill/SKILL.md`](mimir/examples/skills/example-skill/SKILL.md).
+[`mimir/examples/skills/example-skill/SKILL.md`](../mimir/examples/skills/example-skill/SKILL.md).
 
 ---
 
@@ -94,7 +94,7 @@ Declaring **capabilities** on your tools (see [Tool capabilities](#tool-capabili
 lets MIMIR's safety policies, caching, and nudges treat them correctly. A foreign server with
 no MIMIR metadata is still connected and classified from its standard MCP annotations
 (`readOnlyHint` / `destructiveHint`). Example:
-[`mimir/examples/servers/server_example.py`](mimir/examples/servers/server_example.py).
+[`mimir/examples/servers/server_example.py`](../mimir/examples/servers/server_example.py).
 
 ### Sealing a file the model must run only through your tools
 
@@ -234,8 +234,8 @@ A server still passing the older `sensitive=True` keeps its prompt (read as
 `RECOVERABLE`), but new tools should state a level: one fact about the effect, rather
 than two that can drift apart.
 
-The [`policy`](mimir/examples/plugins/policy_example.py) and
-[`nudge`](mimir/examples/plugins/nudge_example.py) examples show capabilities in use.
+The [`policy`](../mimir/examples/plugins/policy_example.py) and
+[`nudge`](../mimir/examples/plugins/nudge_example.py) examples show capabilities in use.
 
 ---
 
@@ -258,7 +258,7 @@ defined in [`POLICY.md`](POLICY.md) (with zoomable flowcharts). This guide cover
 ### A policy — block a call
 
 A policy check returns a JSON error string to block, or `None` to abstain. Example:
-[`mimir/examples/plugins/policy_example.py`](mimir/examples/plugins/policy_example.py).
+[`mimir/examples/plugins/policy_example.py`](../mimir/examples/plugins/policy_example.py).
 
 ```python
 import json, re
@@ -293,7 +293,7 @@ nothing). `run` may be sync or async. It cannot block — the call already happe
 the one seam that can turn a **machine observation** into blackboard state, which the
 turn-end gates then read: a recorded failure is what stops a conclusion, with no blocking
 mechanism of its own. Example:
-[`mimir/examples/plugins/post_tool_example.py`](mimir/examples/plugins/post_tool_example.py).
+[`mimir/examples/plugins/post_tool_example.py`](../mimir/examples/plugins/post_tool_example.py).
 
 ```python
 from mimir.client.extensions import PostToolRule, register_post_tool
@@ -323,7 +323,7 @@ cost the others their turn.
 
 A nudge fires at most once per step (subject to per-query caps and the enforcement tier). Its
 `predicate` decides when to fire; `render` returns the reminder text. Example:
-[`mimir/examples/plugins/nudge_example.py`](mimir/examples/plugins/nudge_example.py).
+[`mimir/examples/plugins/nudge_example.py`](../mimir/examples/plugins/nudge_example.py).
 
 ```python
 from mimir.client.extensions import NudgeRule, register_nudge
@@ -381,13 +381,13 @@ Practical consequence: write persona, codebase map, house rules and vocabulary. 
 restate validation tiers, approval handling, checklist rules or edit-tool mechanics — that
 duplicates text already in context, as a copy that goes stale. The dynamic memory / todo /
 plan sections are still appended on top as usual. Skeleton example:
-[`mimir/examples/system_prompt.md`](mimir/examples/system_prompt.md).
+[`mimir/examples/system_prompt.md`](../mimir/examples/system_prompt.md).
 
 ---
 
 ## Where examples live
 
-All examples live solely in [`mimir/examples/`](mimir/examples/) (the single source of
+All examples live solely in [`mimir/examples/`](../mimir/examples/) (the single source of
 truth), mirroring the `.mimir/` layout with a short `README.md` per extension type. Nothing
 is copied into your workspace `.mimir/` — create the drop-in files there yourself using the
 examples as templates.

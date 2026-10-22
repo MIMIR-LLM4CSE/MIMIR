@@ -56,7 +56,7 @@ async def _sync_checklist(
 ) -> str:
     """Rewrite messages[0] when the on-disk checklist has changed; return the system content.
 
-    STATE goes in messages[0], never in the last position (CLIENT_DETAILED.md, "The pin").
+    STATE goes in messages[0], never in the last position (docs/CLIENT_DETAILED.md, "The pin").
     Triggered by the file's mtime (it has several writers), then by a content comparison
     (the todo server re-saves unchanged text).
     """

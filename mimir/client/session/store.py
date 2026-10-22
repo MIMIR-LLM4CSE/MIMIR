@@ -1,6 +1,6 @@
 """The persistent session store: one JSON file per session under ``<STATE_DIR>/sessions/``.
 
-The schema is in CLIENT_DETAILED.md, "The session file".
+The schema is in docs/CLIENT_DETAILED.md, "The session file".
 """
 
 from __future__ import annotations

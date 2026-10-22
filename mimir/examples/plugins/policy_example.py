@@ -1,7 +1,7 @@
 """Example policy plugin: a locked guard against secrets in outbound calls (``EXTERNAL_FETCH``).
 
 Copy into ``.mimir/plugins/`` (or ``$MIMIR_PLUGINS_DIR``) without the ``.example`` suffix.
-See PLUGINS_DETAILED.md.
+See docs/PLUGINS_DETAILED.md.
 """
 from __future__ import annotations
 

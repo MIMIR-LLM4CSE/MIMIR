@@ -2,7 +2,7 @@
 
 Read-only ``proxy_get``, ``proxy_runs``, ``proxy_eval_status``; confirmed ``proxy_manage``,
 ``proxy_exec``, ``proxy_eval``; cluster ``proxy_slurm``. Templates, the metrics block,
-storage and the ratchet flow are in SERVERS_DETAILED.md, "proxy".
+storage and the ratchet flow are in docs/SERVERS_DETAILED.md, "proxy".
 """
 
 from __future__ import annotations

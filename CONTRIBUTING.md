@@ -25,7 +25,7 @@ python -m mypy                      # types (see pyproject [tool.mypy])
 
 All three must be clean before opening a pull request. `mimir/tests/test_architecture.py`,
 part of the suite, also checks the layering, the length of docstrings and the private
-accesses in tests (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+accesses in tests (see [ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 
 The ruff rule set is deliberately narrow: `E4`/`E7`/`E9`/`F`, i.e. the checks that
 catch a defect (an undefined name, a dead import, a file that would fail at import),
@@ -36,7 +36,7 @@ don't reformat code you are not otherwise touching.
 ## VS Code extension
 
 Needs Node.js ≥ 18 and npm (`node -v`, `npm -v`). If you don't have them,
-[SETUP.md §6a](SETUP.md#6a-get-nodejs-and-npm) covers the options — including
+[SETUP.md §6a](docs/SETUP.md#6a-get-nodejs-and-npm) covers the options — including
 [nvm](https://github.com/nvm-sh/nvm) when you have no root access.
 
 ```bash

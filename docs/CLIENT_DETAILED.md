@@ -1,6 +1,6 @@
 # MIMIR Client Detailed Reference
 
-> **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
+> **MIMIR docs** — [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
 Where each responsibility lives under `mimir/client/`, how a query runs, and what the
 headless engine does. Behavioural *rules* live in [`POLICY.md`](POLICY.md); this file is
@@ -245,7 +245,7 @@ primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME` / `*_DIR_ENV` 
 | `plugins.py` | `load_plugins()` / `resolve_plugins_dir()` — scans `.mimir/plugins/`, env `MIMIR_PLUGINS_DIR`, and imports each pack into an `ExtensionSet` (`core/extension_set.py`), loaded once per directory and shared by the agents of that workspace. A pack self-registers through `register_policy_check` / `register_nudge` / `register_post_tool` as an import side effect; registrations made outside a load (an embedding app) go to the ambient set every workspace set reads through |
 
 Nothing is auto-created in `.mimir/` — it is the user's alone. Copy-to-customize examples
-live in [`mimir/examples/`](mimir/examples/), one `README.md` per type.
+live in [`mimir/examples/`](../mimir/examples/), one `README.md` per type.
 
 ---
 

@@ -1,10 +1,10 @@
 # MIMIR Architecture — Dependency Graph
 
-> **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
+> **MIMIR docs** — [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
 The layering of `mimir/client/` and its relation to `mimir/servers/`. Every rule on
 this page is checked by `mimir/tests/test_architecture.py`; a change that breaks one
-fails the suite. The [dependency map](docs/dependency-map/index.html) draws every unit
+fails the suite. The [dependency map](dependency-map/index.html) draws every unit
 and every import between them, generated from the code and kept current by the suite.
 
 ## The client's layers
@@ -221,7 +221,7 @@ Both use the client's public names only; nothing in the client or the servers im
 - **No private name crosses a module.** A name another module imports or reads off a
   module (`store.read_json`) is public, in the client and the servers alike.
 - **Comments say what the code does now.** History belongs in the commits and
-  [CHANGELOG.md](CHANGELOG.md).
+  [CHANGELOG.md](../CHANGELOG.md).
 - **Docstrings are short.** A function's says what it does in a line, plus at most a
   few lines of why (6 in all); a module's says what it holds (8 in all). The longer
   reasoning lives in the `*_DETAILED.md` docs. An MCP tool's docstring is exempt: it is

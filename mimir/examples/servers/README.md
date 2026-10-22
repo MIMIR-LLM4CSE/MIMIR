@@ -12,4 +12,4 @@ Tool capabilities (which policies/nudges apply) come from each tool's declaratio
 [`server_example.py`](server_example.py) here and
 [`mimir/shared/capabilities.py`](../../shared/capabilities.py).
 
-See [`PLUGINS_DETAILED.md`](../../../PLUGINS_DETAILED.md) for the full authoring guide.
+See [`PLUGINS_DETAILED.md`](../../../docs/PLUGINS_DETAILED.md) for the full authoring guide.

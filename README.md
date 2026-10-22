@@ -1,6 +1,6 @@
 # MIMIR
 
-> **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
+> **MIMIR docs** — [Overview](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Setup](docs/SETUP.md) · [Policy](docs/POLICY.md) · [Client internals](docs/CLIENT_DETAILED.md) · [Servers](docs/SERVERS_DETAILED.md) · [Extension](docs/EXTENSION_DETAILED.md) · [Plugins](docs/PLUGINS_DETAILED.md)
 
 > **M**athematical **I**ntelligence: **M**odeling, **I**mplementation, **R**untime — *from math to HPC.*
 
@@ -62,13 +62,13 @@ The README is an overview; the authoritative detail lives in dedicated docs:
 
 | Doc | Covers |
 |-----|--------|
-| [`SETUP.md`](SETUP.md) | Full setup: install, LLM backends, environment, VS Code extension |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The client's internal dependency graph, layer by layer |
-| [`POLICY.md`](POLICY.md) | Policy behaviour, completion gating, enforcement levels |
-| [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) | Client architecture and execution flow |
-| [`SERVERS_DETAILED.md`](SERVERS_DETAILED.md) | Per-server tool catalog |
-| [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md) | VS Code extension frontend internals |
-| [`PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md) | Authoring skills, servers, policies, nudges, base prompt |
+| [`SETUP.md`](docs/SETUP.md) | Full setup: install, LLM backends, environment, VS Code extension |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The client's internal dependency graph, layer by layer |
+| [`POLICY.md`](docs/POLICY.md) | Policy behaviour, completion gating, enforcement levels |
+| [`CLIENT_DETAILED.md`](docs/CLIENT_DETAILED.md) | Client architecture and execution flow |
+| [`SERVERS_DETAILED.md`](docs/SERVERS_DETAILED.md) | Per-server tool catalog |
+| [`EXTENSION_DETAILED.md`](docs/EXTENSION_DETAILED.md) | VS Code extension frontend internals |
+| [`PLUGINS_DETAILED.md`](docs/PLUGINS_DETAILED.md) | Authoring skills, servers, policies, nudges, base prompt |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev environment, running the tests, opening a PR |
 
 Tunable thresholds (timeouts, history/compaction budgets, context sizes) are
@@ -87,7 +87,7 @@ git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git && cd MIMIR
 `install.sh` fetches a portable Python 3.10, creates `.venv-<os>-<arch>` (e.g.
 `.venv-linux-x86_64`), installs the package with a smoke test, and — when
 `npm` is available — builds and installs the VS Code extension.
-[SETUP.md §6a](SETUP.md#6a-get-nodejs-and-npm) explains how to get Node.js and npm if
+[SETUP.md §6a](docs/SETUP.md#6a-get-nodejs-and-npm) explains how to get Node.js and npm if
 it is missing; re-run `./install.sh` afterwards.
 
 Then reload the VS Code window, open the MIMIR panel, pick a backend, and type the
@@ -95,7 +95,7 @@ address of your server (`http://<host>:8000` for vLLM or Ray Serve,
 `http://<host>:11434` for Ollama). The model list fills itself from that address, and
 the panel starts the agent's server for you. Nothing goes in `.vscode/settings.json`.
 
-See [`SETUP.md`](SETUP.md) for backends, environment variables, and the extension.
+See [`SETUP.md`](docs/SETUP.md) for backends, environment variables, and the extension.
 
 ## The terminal, for development
 
@@ -137,7 +137,7 @@ export VLLM_BASE_URL=http://<node>:8000        # vLLM is the default backend
 
 `pip install -r mimir/requirements.txt` still installs the same core dependencies, but it
 does **not** register the `mimir` / `mimir-server` commands; from a bare repo checkout the
-CLI is then `python -m mimir.client.ui.cli.main`. See [`SETUP.md`](SETUP.md) §2.
+CLI is then `python -m mimir.client.ui.cli.main`. See [`SETUP.md`](docs/SETUP.md) §2.
 
 Optional extras: `sudo apt-get install gfortran` for Fortran compilation;
 `GITHUB_TOKEN` to raise GitHub API limits.
@@ -159,7 +159,7 @@ Optional extras: `sudo apt-get install gfortran` for Fortran compilation;
 | `MIMIR_MODULE_INDEX_BUDGET` | `600` | Seconds the background module-catalogue enrichment may spend (the name-level pass the user waits on is not affected) |
 | `MIMIR_SERVER_IDLE_TTL` | `7200` | Seconds a server a conversation asked to keep stays up with nothing needing it — no client, every conversation concluded, no background run, no wake owed — before stopping itself. One nobody asked to keep stops after `MIMIR_DETACH_GRACE` instead |
 | `MIMIR_DETACH_GRACE` | `30` | Seconds with no client attached before the window counts as gone: past it an unanswered card is set aside instead of waited on, and a server no conversation asked to be left running stops itself. Long enough that reloading the window does neither |
-| `MCP_FILES_ROOT` | current working dir | Workspace root (guardrail on paths tools name — [not a sandbox](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
+| `MCP_FILES_ROOT` | current working dir | Workspace root (guardrail on paths tools name — [not a sandbox](docs/SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limits |
 | `MIMIR_OLLAMA_NUM_CTX` | *(model's context length)* | Overrides the Ollama context window (`num_ctx`) |
 
@@ -171,7 +171,7 @@ vLLM templates read and others ignore, so an unlisted model still gets its think
 [`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) declares only the
 models steered another way (gpt-oss's `reasoning_effort`, Nemotron-Ultra's system-prompt
 directive) plus the per-model `enforcement` knob. Full backend and thinking-model setup
-is documented in [`SETUP.md`](SETUP.md).
+is documented in [`SETUP.md`](docs/SETUP.md).
 
 ## Architecture
 
@@ -219,7 +219,7 @@ precondition pipeline **plus** the soft nudges + shared workflow state), `llm/` 
 backends), `query_engine/` (the agentic loop), `tool_execution/` (arg normalization, caching, post-write
 validation), the `MimirAgent` core (`agent_core.py`, at the client root — the engine every
 frontend drives), and `ui/` (the CLI and WebSocket/VS Code frontends). See
-[`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) for the full module breakdown.
+[`CLIENT_DETAILED.md`](docs/CLIENT_DETAILED.md) for the full module breakdown.
 
 ### Agentic loop
 
@@ -274,7 +274,7 @@ flowchart TD
 
 The client registers 20 servers by default; the authoritative registry lives in
 [`servers.py`](mimir/client/config/servers.py). Per-server tool details are in
-[`SERVERS_DETAILED.md`](SERVERS_DETAILED.md).
+[`SERVERS_DETAILED.md`](docs/SERVERS_DETAILED.md).
 
 | Name | Main capabilities |
 |------|-------------------|
@@ -312,7 +312,7 @@ changes. A refusal is handed back as an instruction, not an error to retry: MIMI
 whether you meant "not this way" (reach the goal another way), "that's unnecessary" (drop the
 step and carry on, saying it was skipped) or "stop" (end the turn and report what is blocked) —
 and after repeated refusals of the same action it stops asking you at all. See
-[POLICY.md](POLICY.md#if-approval-is-refused).
+[POLICY.md](docs/POLICY.md#if-approval-is-refused).
 
 Sandboxing and hardening highlights:
 
@@ -330,12 +330,12 @@ Sandboxing and hardening highlights:
   approval-gated too, in the workspace as much as outside it — so nothing runs unasked.
   What that approval does *not* buy you is any constraint on the program once started
   (`python`/`make`/`gcc` run with the account's full privileges): see
-  [the scope note](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined).
+  [the scope note](docs/SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined).
   `proxy` keeps all state
   outside the workspace sandbox and run as detached subprocesses or Slurm jobs.
 
 The authoritative definition of policy, completion gating, and workflow-state rules is in
-[`POLICY.md`](POLICY.md).
+[`POLICY.md`](docs/POLICY.md).
 
 ## Client features
 
@@ -381,7 +381,7 @@ The authoritative definition of policy, completion gating, and workflow-state ru
   one. Only the names and one-line descriptions are in the prompt; a body is read on
   demand, at the step where what has been read says which method applies.
 
-See [`POLICY.md`](POLICY.md) and [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) for the full
+See [`POLICY.md`](docs/POLICY.md) and [`CLIENT_DETAILED.md`](docs/CLIENT_DETAILED.md) for the full
 behaviour and rationale.
 
 ## Skills
@@ -457,7 +457,7 @@ of `.mimir/` leaves the workspace directory the user's alone.
 and structured return, then restart. Tag each tool with **capabilities** via `tool_caps(...)`
 so MIMIR's policies, caching, and nudges apply — optional but recommended, and required for
 capability-based policies/nudges (see the
-[capability reference](PLUGINS_DETAILED.md#tool-capabilities)). A foreign server with no MIMIR
+[capability reference](docs/PLUGINS_DETAILED.md#tool-capabilities)). A foreign server with no MIMIR
 metadata is still connected.
 
 **Base prompt (general context)** — give MIMIR your own persona and domain knowledge:
@@ -467,13 +467,13 @@ doctrine. Your file replaces the **doctrine** half (identity, style, scope, work
 reasoning); the **core** half (non-negotiables, tool contracts, discovery, editing,
 validation, running, planning) is appended after it either way and cannot be overridden. The
 dynamic memory / todo / plan sections are still appended on top automatically. See
-[`SETUP.md`](SETUP.md) §4.
+[`SETUP.md`](docs/SETUP.md) §4.
 
 **Extension packs** — an application can plug in its own policies (which **block** a tool call)
 and nudges (which inject an advisory reminder) without editing core. Packs reference
 *capabilities*, never literal tool names, and can only **add** constraints. Ready-to-copy
 examples ship in [`mimir/examples/`](mimir/examples/); the full authoring guide (skills,
-servers, policies, nudges, base prompt) is [`PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md).
+servers, policies, nudges, base prompt) is [`PLUGINS_DETAILED.md`](docs/PLUGINS_DETAILED.md).
 
 ```python
 from mimir.client.extensions import PolicyCheck, register_policy_check
@@ -520,8 +520,8 @@ The panel is the only place you configure a connection — a working setup needs
 launcher in `~/.mimir/python` that starts the venv built for this machine's platform;
 `MIMIR_PYTHON` overrides it), and the remaining
 `mimir.*` settings just hold the defaults the form opens on. The full reference is in
-[`SETUP.md`](SETUP.md) §6; the WebSocket message protocol and frontend
-internals are in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
+[`SETUP.md`](docs/SETUP.md) §6; the WebSocket message protocol and frontend
+internals are in [`EXTENSION_DETAILED.md`](docs/EXTENSION_DETAILED.md).
 
 ## Testing & benchmarks
 

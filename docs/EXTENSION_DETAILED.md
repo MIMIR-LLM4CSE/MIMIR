@@ -1,11 +1,11 @@
 # MIMIR Extension Detailed Reference
 
-> **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
+> **MIMIR docs** — [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
 The authoritative reference for the **VS Code extension frontend** — its layers, the
 WebSocket message contract with the Python client, the React file map, and step-by-step
 recipes for extending the UI. For installing and configuring the extension as a user, see
-the [extension README](mimir/vscode-extension/README.md) and [`SETUP.md`](SETUP.md) §6; for
+the [extension README](../mimir/vscode-extension/README.md) and [`SETUP.md`](SETUP.md) §6; for
 the Python agent core it talks to, see [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md).
 
 ## Layers

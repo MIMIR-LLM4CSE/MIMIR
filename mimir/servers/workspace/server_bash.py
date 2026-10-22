@@ -3,7 +3,7 @@
 The approval prompt governs whether a command runs; this validation governs the
 command written (program, paths, redirections), not what it does once running. A short
 denylist, wrappers unwrapped, one segmenter shared with the client; each call starts at
-the workspace root. See SERVERS_DETAILED.md, "workspace/server_bash.py".
+the workspace root. See docs/SERVERS_DETAILED.md, "workspace/server_bash.py".
 """
 
 import os

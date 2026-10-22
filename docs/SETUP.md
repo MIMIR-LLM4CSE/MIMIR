@@ -1,6 +1,6 @@
 # MIMIR — Setup Guide
 
-> **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
+> **MIMIR docs** — [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
 Step-by-step instructions to go from a fresh clone to a running agent.
 
@@ -184,7 +184,7 @@ endpoint reports:
 1. it connects to the address you gave;
 2. it reads the served model name from `/v1/models`;
 3. it looks that name up in
-   [`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) and
+   [`vllm_model_profiles.json`](../mimir/client/config/vllm_model_profiles.json) and
    applies the reasoning mechanism of its **family**;
 4. it tells the panel which mechanism won, and the thinking-depth control adapts its
    rungs — no token budget where the family has none, no "off" where the family
@@ -265,7 +265,7 @@ Two things the router does not inherit from a vLLM server:
   it could not detect the context window.
 
 Reasoning works exactly as on vLLM: the per-family profiles in
-[`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) describe
+[`vllm_model_profiles.json`](../mimir/client/config/vllm_model_profiles.json) describe
 the engine, not the server in front of it.
 
 ### Ollama
@@ -351,7 +351,7 @@ domain). The first match wins:
    disk. Needs no `.mimir/` directory; best for ad-hoc use.
 2. **`.mimir/system_prompt.md`** in the workspace root. Nothing is auto-created —
    create this file yourself, using
-   [`mimir/examples/system_prompt.md`](mimir/examples/system_prompt.md) as a template.
+   [`mimir/examples/system_prompt.md`](../mimir/examples/system_prompt.md) as a template.
 3. Otherwise the built-in doctrine is used.
 
 The file replaces the **doctrine** half of the base prompt (identity, style, scope,

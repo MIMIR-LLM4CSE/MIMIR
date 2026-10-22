@@ -2,7 +2,7 @@
 
 ``--run-dir <dir> [--phase all|build|run]``: reads ``config.json``, runs the suite,
 evaluates requirements, writes ``metrics.json``; a split submission runs the two phases
-as two jobs. Its config and log lines: SERVERS_DETAILED.md, "proxy".
+as two jobs. Its config and log lines: docs/SERVERS_DETAILED.md, "proxy".
 """
 
 from __future__ import annotations

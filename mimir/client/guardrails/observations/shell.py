@@ -214,7 +214,7 @@ def bash_validation(call: Call) -> None:
 
     A checker validates the files it names (non-zero charges their budget); an execution
     validates no file and is recorded as a run owing a verdict. A green project-wide check
-    covers every pending file. See POLICY.md, "Checks and runs are two axes".
+    covers every pending file. See docs/POLICY.md, "Checks and runs are two axes".
     """
     execution_context = call.execution_context
     command_args = shell_command_args(call.tool_name, call.agent.tool_caps)

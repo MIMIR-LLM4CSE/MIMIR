@@ -1,7 +1,7 @@
 """Example nudge plugin: a toggleable reminder when a sensitive tool is connected.
 
 Copy into ``.mimir/plugins/`` (or ``$MIMIR_PLUGINS_DIR``) without the ``.example`` suffix.
-See PLUGINS_DETAILED.md.
+See docs/PLUGINS_DETAILED.md.
 """
 from __future__ import annotations
 

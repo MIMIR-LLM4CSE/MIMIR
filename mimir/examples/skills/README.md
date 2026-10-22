@@ -15,4 +15,4 @@ reading says the method applies. Write the `description` as *when this applies*,
 is the whole basis for that decision. Set `disable-model-invocation: true` to keep a skill
 for `/<skill-name>` only.
 
-See [`PLUGINS_DETAILED.md`](../../../PLUGINS_DETAILED.md) for the full authoring guide.
+See [`PLUGINS_DETAILED.md`](../../../docs/PLUGINS_DETAILED.md) for the full authoring guide.

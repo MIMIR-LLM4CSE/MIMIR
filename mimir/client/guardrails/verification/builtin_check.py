@@ -2,7 +2,7 @@
 
 A stdlib parser where one exists (tier ``syntax``), else a structural scan for a file
 written half-way (tier ``structural``). External checkers only raise the tier. When
-tokenization is ambiguous, pass (POLICY.md, "The built-in check").
+tokenization is ambiguous, pass (docs/POLICY.md, "The built-in check").
 """
 
 from __future__ import annotations

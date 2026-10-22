@@ -44,6 +44,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its task, every event of its run, its answer.
 
 ### Changed
+- **The reference docs live in `docs/`**: [ARCHITECTURE.md](docs/ARCHITECTURE.md),
+  [SETUP.md](docs/SETUP.md), [POLICY.md](docs/POLICY.md) and the four `*_DETAILED.md`.
+  README, CHANGELOG, CONTRIBUTING and LICENSE stay at the root.
 - **The first query says MIMIR is starting** (the model backend, then the MCP servers)
   instead of looking like the model thinking.
 - **No message can be sent while a plan or a question waits for an answer.** The input
@@ -63,7 +66,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   terminal.
 - **The client is reorganised** (`mimir/client/`): settings, commands and
   conversations each have one home shared by both front-ends, and the WebSocket server
-  no longer polls — an idle window costs nothing. See [ARCHITECTURE.md](ARCHITECTURE.md).
+  no longer polls — an idle window costs nothing. See [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The WebSocket server module moved.** Launching it by hand is now
   `python -m mimir.client.ui.ws.server.main` (it was `…ui.ws.ws_server`); the
   `mimir-server` command and the VS Code extension are unchanged for the user.

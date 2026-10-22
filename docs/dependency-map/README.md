@@ -5,7 +5,7 @@ An interactive map of MIMIR's Python units and the imports between them. Open
 
 - **Units**: a client package (one box per sub-package for `guardrails`, `query_engine`
   and `ui`), a server package, a module of `shared`, and `runner` / `evals`.
-- **Rows**: the client's ranks from [ARCHITECTURE.md](../../ARCHITECTURE.md), servers on
+- **Rows**: the client's ranks from [ARCHITECTURE.md](../ARCHITECTURE.md), servers on
   the right, `shared` below, split by reader as ARCHITECTURE.md lists them.
 - **Edges**: solid when the import runs at load time, dashed when it runs only inside a
   function. Imports under `TYPE_CHECKING` are not drawn. A red edge breaks one of

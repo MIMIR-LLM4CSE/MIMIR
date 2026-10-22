@@ -1,4 +1,4 @@
-"""Structural rules of the code, checked against the code itself (see ARCHITECTURE.md)."""
+"""Structural rules of the code, checked against the code itself (see docs/ARCHITECTURE.md)."""
 from __future__ import annotations
 
 import ast

@@ -14,4 +14,4 @@ Ready-to-copy templates in this folder:
 - [`post_tool_example.py`](post_tool_example.py) — the project's own tests, run after an edit
 - [`nudge_example.py`](nudge_example.py) — a toggleable authorization reminder
 
-See [`PLUGINS_DETAILED.md`](../../../PLUGINS_DETAILED.md) for the full authoring guide.
+See [`PLUGINS_DETAILED.md`](../../../docs/PLUGINS_DETAILED.md) for the full authoring guide.

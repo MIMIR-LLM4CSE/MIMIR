@@ -1,10 +1,10 @@
 # MIMIR Servers Reference
 
-> **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
+> **MIMIR docs** — [Overview](../README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
 The authoritative per-server tool catalog — every server under `mimir/servers/` and the
 tools it exposes via `@mcp.tool()`. For a one-line summary of each server, see the
-[Registered Servers table in the README](README.md#registered-servers).
+[Registered Servers table in the README](../README.md#registered-servers).
 
 Servers are organized into domain-based subdirectories:
 
@@ -395,7 +395,7 @@ Purpose: MIMIR's own extension API — what a user or a developer writes against
 add a skill, an MCP server, a policy, a post-tool hook, a nudge or a base prompt under
 the workspace `.mimir/` — plus the op that loads a skill's method on demand. Two tools,
 `mimir_api(topic)` and `load_skill(name)`, with the companion methodology for the first
-in the bundled [`mimir-api` skill](mimir/skills/mimir-api/SKILL.md).
+in the bundled [`mimir-api` skill](../mimir/skills/mimir-api/SKILL.md).
 
 Topics: `index` (every extension type, its drop-in path here, and the rules common to
 all of them), one per type (`skill`, `server`, `policy`, `post_tool`, `nudge`,
@@ -415,7 +415,7 @@ derived from the installed package at call time:
   says what a flag is *for*, which is what someone choosing between flags needs;
 - the templates are the shipped `mimir/examples/` files, **read verbatim**;
 - the drop-in paths come from the same
-  [`shared/extension_paths.py`](mimir/shared/extension_paths.py) the loaders
+  [`shared/extension_paths.py`](../mimir/shared/extension_paths.py) the loaders
   resolve, so the path a user is handed is the one that will actually be scanned — env
   overrides included, reported with the value they are set to;
 - the bundled skills are scanned off disk with their front-matter, and the reserved

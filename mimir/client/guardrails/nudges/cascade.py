@@ -81,7 +81,7 @@ def maybe_append_nudge(
     """Append at most one nudge: verification before guidance, core rows before packs.
 
     Verification checks reality and runs at every level; guidance is skipped at "off" and
-    filtered at "light" by ``tiers.GUIDANCE_BY_LEVEL_MODE`` (POLICY.md, "Nudge cascade").
+    filtered at "light" by ``tiers.GUIDANCE_BY_LEVEL_MODE`` (docs/POLICY.md, "Nudge cascade").
     """
     level = resolve_enforcement(agent)
     for layer in ("verification", "guidance"):

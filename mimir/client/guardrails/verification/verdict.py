@@ -2,7 +2,7 @@
 
 MIMIR never parses a program's output for pass/fail; the judging tool records the
 model's statement about it. A verdict can lower credit, never raise it past what the
-machine saw. Scopes and each verdict's reach: POLICY.md, "Verdicts".
+machine saw. Scopes and each verdict's reach: docs/POLICY.md, "Verdicts".
 """
 from __future__ import annotations
 

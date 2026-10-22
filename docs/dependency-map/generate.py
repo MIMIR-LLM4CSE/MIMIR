@@ -80,9 +80,9 @@ def first_line(doc: str | None) -> str:
 
 
 def architecture_ranks() -> dict[str, tuple[int, str]]:
-    """ARCHITECTURE.md's rank table: client unit -> (rank, what it is)."""
+    """docs/ARCHITECTURE.md's rank table: client unit -> (rank, what it is)."""
     out: dict[str, tuple[int, str]] = {}
-    for line in (REPO / "ARCHITECTURE.md").read_text().splitlines():
+    for line in (REPO / "docs/ARCHITECTURE.md").read_text().splitlines():
         match = re.match(r"\|\s*(\d+)\s*\|([^|]*)\|([^|]*)\|", line)
         if match:
             rank, units, what = int(match[1]), match[2], match[3].strip()
@@ -92,9 +92,9 @@ def architecture_ranks() -> dict[str, tuple[int, str]]:
 
 
 def shared_readers() -> dict[str, str]:
-    """ARCHITECTURE.md's two readers of shared: module -> "contract" or "servers"."""
+    """docs/ARCHITECTURE.md's two readers of shared: module -> "contract" or "servers"."""
     out: dict[str, str] = {}
-    for line in (REPO / "ARCHITECTURE.md").read_text().splitlines():
+    for line in (REPO / "docs/ARCHITECTURE.md").read_text().splitlines():
         if not line.startswith("| **The "):
             continue
         reader = "contract" if "client and the servers" in line else "servers"

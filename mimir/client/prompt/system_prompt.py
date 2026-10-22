@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Canonical, version-controlled examples for every extension type live in
 # `mimir/examples/` (the single source of truth). Nothing is written into the
-# workspace `.mimir/` — that directory is the user's alone; see PLUGINS_DETAILED.md.
+# workspace `.mimir/` — that directory is the user's alone; see docs/PLUGINS_DETAILED.md.
 
 
 # The base system prompt: _DEFAULT_DOCTRINE_CONTENT, which ``.mimir/system_prompt.md``

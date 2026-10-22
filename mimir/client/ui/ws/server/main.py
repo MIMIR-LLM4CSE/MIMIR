@@ -3,7 +3,7 @@
 Imports nothing of the client until ``--cwd`` is applied: ``config.paths`` resolves the
 workspace at import. ``server/`` serves, ``connection/`` handles a socket, ``pool/``
 holds a worker per conversation, ``worker/`` runs one agent. The wire protocol is in
-CLIENT_DETAILED.md, "The wire protocol".
+docs/CLIENT_DETAILED.md, "The wire protocol".
 """
 
 from __future__ import annotations

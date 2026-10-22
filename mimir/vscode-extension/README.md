@@ -22,7 +22,7 @@ cluster node, say — install [nvm](https://github.com/nvm-sh/nvm) and run `nvm
 install --lts`, which puts Node and npm under your home directory. Distribution
 packages are sometimes older than Node 20; check `node -v`. Full instructions,
 including the VS Code terminal caveat, are in
-[SETUP.md §6a](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/main/SETUP.md#6a-get-nodejs-and-npm).
+[SETUP.md §6a](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/main/docs/SETUP.md#6a-get-nodejs-and-npm).
 
 ```bash
 cd mimir/vscode-extension
@@ -140,6 +140,6 @@ output says so: run `install.sh` on this machine.
 
 ## More
 
-- [Setup Guide](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/main/SETUP.md), §6 for the extension
-- [Frontend internals](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/main/EXTENSION_DETAILED.md)
+- [Setup Guide](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/main/docs/SETUP.md), §6 for the extension
+- [Frontend internals](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/main/docs/EXTENSION_DETAILED.md)
 - [Issues](https://github.com/MIMIR-LLM4CSE/MIMIR/issues)

@@ -470,7 +470,7 @@ def known_existing_files(execution_context: ContextView) -> set[str]:
 
 
 # ── Who writes what ────────────────────────────────────────────────────────────
-# Each record's writers are listed in CLIENT_DETAILED.md, "Who writes what".
+# Each record's writers are listed in docs/CLIENT_DETAILED.md, "Who writes what".
 
 
 # ── Discovery evidence: what counts as the model's own exploration this query ──
@@ -572,7 +572,7 @@ def declared_edit_set_complete(execution_context: ExecutionContext) -> bool:
 # The checker ladder, weakest to strongest, for a file (a run is judged as a run, see
 # ``runs``). Report-only: the completion ledger reads it. ``structural`` is the built-in
 # floor every checked file starts at; ``measured`` only comes from a server that ran the
-# file and knows which. See CLIENT_DETAILED.md, "Two axes, never mixed".
+# file and knows which. See docs/CLIENT_DETAILED.md, "Two axes, never mixed".
 VALIDATION_TIERS: tuple[str, ...] = ("structural", "syntax", "static", "compiled", "measured")
 _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 

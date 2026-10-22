@@ -48,7 +48,7 @@ fi
 node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 if [ "$node_major" -lt 20 ]; then
   echo "error: packaging the extension needs Node.js >= 20 (found $(node -v 2>/dev/null || echo none))." >&2
-  echo "       Upgrade with nvm: nvm install --lts — see SETUP.md §6a." >&2
+  echo "       Upgrade with nvm: nvm install --lts — see docs/SETUP.md §6a." >&2
   exit 1
 fi
 # vsce is a devDependency, so npm install has already put it here; npx is the

@@ -17,7 +17,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 
-DOCS = sorted(p for p in REPO.glob("*.md") if p.name != "CHANGELOG.md") + [
+DOCS = sorted(p for p in [*REPO.glob("*.md"), *REPO.glob("docs/**/*.md")]
+              if p.name != "CHANGELOG.md") + [
     REPO / "mimir" / "vscode-extension" / "README.md"]
 
 # Not repository files: what MIMIR writes at run time (state, run directories, the
@@ -111,6 +112,24 @@ class CitedPathsTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
 
+_LINK = re.compile(r"\]\(([^)\s#]+)(?:#[^)\s]*)?\)")
+
+
+class LinkTargetsTests(unittest.TestCase):
+    def test_every_relative_link_reaches_a_file(self) -> None:
+        """A link is read from the doc's own directory, as GitHub and an editor read it; the
+        changelog counts too, since a moved doc breaks its links as well."""
+        broken = []
+        for doc in [*DOCS, REPO / "CHANGELOG.md"]:
+            for match in _LINK.finditer(doc.read_text(encoding="utf-8")):
+                target = match.group(1)
+                if re.match(r"^[a-z]+:", target):
+                    continue
+                if not (doc.parent / target).exists():
+                    broken.append(f"{doc.relative_to(REPO)}: {target}")
+        self.assertEqual(broken, [])
+
+
 class CitedSymbolsTests(unittest.TestCase):
     def test_every_cited_module_name_is_defined_there(self) -> None:
         """Only a module whose basename is unique, so the citation means one file."""
@@ -145,7 +164,7 @@ def _ticked(cell: str) -> str:
 class TablesTests(unittest.TestCase):
     def test_the_capability_table_is_the_vocabulary(self) -> None:
         from mimir.shared import capabilities
-        rows = _table("PLUGINS_DETAILED.md", "| Group | Capability | Meaning |")
+        rows = _table("docs/PLUGINS_DETAILED.md", "| Group | Capability | Meaning |")
         documented = {_ticked(r[1]) for r in rows}
         levels = {name for name in dir(capabilities)
                   if getattr(capabilities, name) in capabilities.REVERSIBILITY_LEVELS}
@@ -155,7 +174,7 @@ class TablesTests(unittest.TestCase):
 
     def test_the_reversibility_table_is_the_levels(self) -> None:
         from mimir.shared import capabilities
-        rows = _table("PLUGINS_DETAILED.md", "| Level | Declare it when… | Effect |")
+        rows = _table("docs/PLUGINS_DETAILED.md", "| Level | Declare it when… | Effect |")
         documented = [getattr(capabilities, _ticked(r[0])) for r in rows]
         self.assertEqual(tuple(documented), capabilities.REVERSIBILITY_LEVELS)
 
@@ -163,7 +182,7 @@ class TablesTests(unittest.TestCase):
         """Name, layer, and whether it fires at each level (in agent mode)."""
         from mimir.client.guardrails.nudges.cascade import CORE_NUDGES
         from mimir.client.guardrails.nudges.tiers import GUIDANCE_BY_LEVEL_MODE
-        rows = _table("POLICY.md", "| Nudge | Layer | Fires on |")
+        rows = _table("docs/POLICY.md", "| Nudge | Layer | Fires on |")
         documented = {_ticked(r[0]): (r[1], r[3], r[4], r[5]) for r in rows}
         expected = {}
         for nudge in CORE_NUDGES:
@@ -175,14 +194,14 @@ class TablesTests(unittest.TestCase):
 
     def test_the_constants_table_says_their_values(self) -> None:
         from mimir.client.config import limits
-        rows = _table("CLIENT_DETAILED.md", "| Constant | Value | Bounds |")
+        rows = _table("docs/CLIENT_DETAILED.md", "| Constant | Value | Bounds |")
         wrong = [f"{_ticked(r[0])}: doc {r[1]}, code {getattr(limits, _ticked(r[0]), None)}"
                  for r in rows if str(getattr(limits, _ticked(r[0]), None)) != r[1]]
         self.assertEqual(wrong, [])
 
     def test_the_trait_table_is_the_traits(self) -> None:
         from mimir.client.context import execution_context
-        rows = _table("POLICY.md", "| Trait | Meaning | Derived list |")
+        rows = _table("docs/POLICY.md", "| Trait | Meaning | Derived list |")
         documented = {getattr(execution_context, _ticked(r[0]), None) for r in rows}
         self.assertEqual(documented, set(execution_context.FIELD_TRAITS))
 
@@ -190,7 +209,7 @@ class TablesTests(unittest.TestCase):
         """Each record of ``WRITERS`` has a row, and its row names each unit that writes it."""
         from mimir.client.context.execution_context import WRITERS
         query_engine = ("query_engine", "agent_loop", "dispatch", "turn", "plan_loop", "loop_base")
-        rows = {_ticked(r[0]): r[1] for r in _table("CLIENT_DETAILED.md",
+        rows = {_ticked(r[0]): r[1] for r in _table("docs/CLIENT_DETAILED.md",
                                                     "| Record | Written by | Read by |")}
         self.assertEqual(set(rows), set(WRITERS))
         unnamed = [f"{record}: {unit}" for record, units in WRITERS.items() for unit in units
@@ -201,7 +220,7 @@ class TablesTests(unittest.TestCase):
     def test_the_layer_diagram_is_the_ranks_top_down(self) -> None:
         """Every unit is drawn or named as a foundation, and drawn units go down in rank."""
         from mimir.tests.test_architecture import RANKS
-        text = (REPO / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        text = (REPO / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
         start = text.index("```mermaid")
         diagram = text[start:text.index("```", start + 3)]
         drawn = [label.split("/")[0].removesuffix(".py")

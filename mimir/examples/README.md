@@ -20,4 +20,4 @@ file at the root) and is the **single source of truth** for every example.
 | `system_prompt.md` | Base system prompt | `.mimir/system_prompt.md` (or `$MIMIR_SYSTEM_PROMPT_FILE`) |
 
 Per-type notes live in the `README.md` inside each subfolder. See
-[`PLUGINS_DETAILED.md`](../../PLUGINS_DETAILED.md) for the full authoring guide.
+[`PLUGINS_DETAILED.md`](../../docs/PLUGINS_DETAILED.md) for the full authoring guide.

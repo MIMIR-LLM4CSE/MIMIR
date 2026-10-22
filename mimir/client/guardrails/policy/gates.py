@@ -257,7 +257,7 @@ def check_cluster_submit(
     """Hold a ``CLUSTER_SUBMIT`` call until something has been validated locally.
 
     Not one-shot: it holds until a file passes a check. A session that wrote nothing is
-    exempt. Returns a violation payload or ``None`` (POLICY.md, "Cluster-submission guard").
+    exempt. Returns a violation payload or ``None`` (docs/POLICY.md, "Cluster-submission guard").
     """
     if execution_context is None:
         return None
@@ -311,7 +311,7 @@ def check_sealed_exec(
     """Refuse running a file a server sealed for this conversation (fail-open).
 
     Only for tools with a ``command_prefix`` scope, and only a program in command position;
-    reading a sealed file never matches (POLICY.md, "Sealed-execution guard").
+    reading a sealed file never matches (docs/POLICY.md, "Sealed-execution guard").
     """
     if shell_command_args(tool_name, agent.tool_caps) is None:
         return None

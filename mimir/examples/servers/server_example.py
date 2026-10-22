@@ -2,7 +2,7 @@
 
 Copy into ``.mimir/servers/`` (or ``$MIMIR_SERVERS_DIR``) as ``server_<name>.py``; the
 namespace is ``<name>``, and a bundled name is ignored. Declaring ``tool_caps(...)`` is
-optional but recommended. See PLUGINS_DETAILED.md.
+optional but recommended. See docs/PLUGINS_DETAILED.md.
 """
 
 from mcp.server.fastmcp import FastMCP

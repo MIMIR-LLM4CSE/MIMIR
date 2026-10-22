@@ -1,6 +1,6 @@
 """The anti-thrashing stop: a file whose validation failed ``VALIDATION_RETRY_BUDGET`` times.
 
-The ``validate`` state blocks nothing (POLICY.md, "Workflow state machine").
+The ``validate`` state blocks nothing (docs/POLICY.md, "Workflow state machine").
 """
 from __future__ import annotations
 

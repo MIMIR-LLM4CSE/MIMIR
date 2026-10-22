@@ -169,7 +169,7 @@ elif ! command -v npm >/dev/null 2>&1; then
   echo "   Install Node.js >= 20 (it ships npm), then re-run ./install.sh."
   echo "   No root? curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
   echo "            exec \$SHELL -l && nvm install --lts"
-  echo "   Details: SETUP.md section 6a."
+  echo "   Details: docs/SETUP.md section 6a."
 elif [ ! -d "$ext_dir" ]; then
   echo "==> Skipping VS Code extension (not found at $ext_dir)"
 else
@@ -207,7 +207,7 @@ cat <<'EOF'
 
 MIMIR talks to an LLM server you already run (vLLM, Ray Serve, Ollama, or the
 Claude API).
-Its address is entered in the MIMIR panel — see SETUP.md.
+Its address is entered in the MIMIR panel — see docs/SETUP.md.
 EOF
 
 case ",$extras," in

@@ -1445,8 +1445,8 @@ class BashServerTests(unittest.TestCase):
         # stripped the quotes, so a backtick bash treats as data was indistinguishable
         # from one that executes, and extracting a fenced block was impossible.
         cwd = bash_validation.WORKSPACE_ROOT
-        for cmd in ("sed -n '/```mermaid/,/```/p' ARCHITECTURE.md",
-                    "grep -n '```mermaid' ARCHITECTURE.md",
+        for cmd in ("sed -n '/```mermaid/,/```/p' docs/ARCHITECTURE.md",
+                    "grep -n '```mermaid' docs/ARCHITECTURE.md",
                     "grep -n '${HOME}' notes.txt",
                     "grep -rn '$(x)' src"):
             self.assertEqual(bash_validation.validate_command(cmd, cwd)["status"], "ok", cmd)
@@ -1678,11 +1678,11 @@ class BashServerTests(unittest.TestCase):
             "project checkers absent from _VALIDATOR_TIER are unreachable")
 
     def test_the_documented_table_is_the_denylist(self) -> None:
-        """SERVERS_DETAILED.md's "What is refused" table is the denylist's readable form.
+        """docs/SERVERS_DETAILED.md's "What is refused" table is the denylist's readable form.
 
         A denied command missing from it reads as available; prose is not imported, so
         only this keeps it level."""
-        doc_path = Path(__file__).resolve().parents[2] / "SERVERS_DETAILED.md"
+        doc_path = Path(__file__).resolve().parents[2] / "docs/SERVERS_DETAILED.md"
         text = doc_path.read_text(encoding="utf-8")
         section = text.split("### What is refused, and why", 1)[1].split("\n### ", 1)[0]
         table = "\n".join(line for line in section.splitlines() if line.startswith("|"))

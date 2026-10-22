@@ -31,7 +31,7 @@ class DependencyMapTests(unittest.TestCase):
                          "run: python docs/dependency-map/generate.py")
 
     def test_every_client_unit_is_drawn_at_its_rank(self) -> None:
-        """The map reads its rows from ARCHITECTURE.md, which must agree with the enforced ranks."""
+        """The map reads its rows from docs/ARCHITECTURE.md, which must agree with the enforced ranks."""
         self.assertEqual({u: rank for u, (rank, _what) in self.gen.architecture_ranks().items()},
                          RANKS)
         unranked = [u["id"] for u in self.data["units"]

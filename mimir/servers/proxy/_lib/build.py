@@ -3,7 +3,7 @@
 A compiled proxy's edited sources are not the program that runs, so the server runs
 ``build_cmd`` (argv, never a shell line) before any case; a failed build ends the run
 without a verdict. Incrementality is the project's own build system's: see
-SERVERS_DETAILED.md, "proxy".
+docs/SERVERS_DETAILED.md, "proxy".
 """
 
 from __future__ import annotations
