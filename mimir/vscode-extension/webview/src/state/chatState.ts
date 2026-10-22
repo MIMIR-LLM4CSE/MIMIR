@@ -34,6 +34,9 @@ export interface ChatState {
    *  thinking. Frozen into a `kind:"tools"` message at each step boundary. */
   liveToolCalls: ToolActivity[];
   busy: boolean;
+  /** The turn waits on its agent being built (backend, MCP servers), not on the
+   *  model: set by `agent_starting`, cleared by the worker's `ready`. */
+  starting: boolean;
   /** True when tool calls / a thinking phase occurred since the last token, so
    *  the next token starts a new paragraph in the draft. */
   toolCallAfterToken: boolean;
@@ -55,6 +58,7 @@ export const initialChatState: ChatState = {
   liveThinkingBlocks: [],
   liveToolCalls: [],
   busy: false,
+  starting: false,
   toolCallAfterToken: false,
   pendingDiffs: [],
   pendingThinking: "",

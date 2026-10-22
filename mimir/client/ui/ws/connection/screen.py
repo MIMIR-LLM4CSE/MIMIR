@@ -220,11 +220,12 @@ class Screen:
         if existing is not None:
             return existing
 
+        # Its own type rather than a status: the panel drops statuses, and this one is
+        # what tells a first turn's wait apart from the model thinking.
         def _announce() -> None:
             self.out.schedule(self.out.send({
-                "type": "status",
+                "type": "agent_starting",
                 "session_id": session_id,
-                "text": "  ⏳ Starting an agent for this conversation…",
             }))
 
         try:

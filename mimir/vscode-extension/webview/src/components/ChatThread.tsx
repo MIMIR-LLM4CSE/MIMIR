@@ -17,6 +17,8 @@ const GROW_THRESHOLD_PX = 300;
 interface Props {
   messages: ChatMessage[];
   busy: boolean;
+  /** The turn waits on its agent being built, not on the model. */
+  starting?: boolean;
   /** Prose of the turn in flight. Rendered below the transcript, never in it:
    *  the loop may still send the model back to work, and a draft that lived in
    *  the transcript would then have to be deleted out of it. */
@@ -51,6 +53,7 @@ interface Props {
 export const ChatThread: React.FC<Props> = ({
   messages,
   busy,
+  starting = false,
   draft = "",
   draftSeq = null,
   liveToolCalls = [],
@@ -242,7 +245,9 @@ export const ChatThread: React.FC<Props> = ({
           {/* Animated status line — pinned to the bottom while the agent is busy */}
           {showStatusLine && (
             <div className="agent-thinking">
-              <StreamingStatus />
+              <StreamingStatus
+                label={starting ? "Starting MIMIR — model backend and MCP servers" : undefined}
+              />
             </div>
           )}
         </>

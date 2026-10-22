@@ -67,6 +67,24 @@ describe("chatReducer", () => {
     expect(texts.some((t) => t.includes("Waiting for a free agent slot"))).toBe(true);
   });
 
+  it("says the agent is starting until the worker's own ready", () => {
+    const building = run([
+      { type: "submit_query", text: "go" },
+      { type: "agent_starting", session_id: "s1" },
+      { type: "ready", model: "m", agent_ready: false },
+    ]);
+    expect(building.starting).toBe(true);
+    expect(building.busy).toBe(true);
+
+    const up = run([
+      { type: "submit_query", text: "go" },
+      { type: "agent_starting", session_id: "s1" },
+      { type: "ready", model: "m", agent_ready: true },
+    ]);
+    expect(up.starting).toBe(false);
+    expect(up.busy).toBe(true);
+  });
+
   it("does not answer a card twice when it is put back over its saved copy", () => {
     // Coming back to a session whose turn was set aside: the saved transcript still
     // holds the card, and the server sends it again with the same id.

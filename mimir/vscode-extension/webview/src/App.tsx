@@ -57,7 +57,7 @@ export const App: React.FC = () => {
   // there are no stale-closure refs and the logic is unit-testable.
   const chatReducer = useMemo(() => createChatReducer(makeId), []);
   const [chatState, dispatch] = useReducer(chatReducer, initialChatState);
-  const { messages, draft, draftSeq, busy, liveToolCalls, liveThinkingBlocks } = chatState;
+  const { messages, draft, draftSeq, busy, starting, liveToolCalls, liveThinkingBlocks } = chatState;
   // Mirror of reducer state for reads inside event callbacks (approval lookup,
   // session-load message preservation) without stale closures.
   const chatStateRef = useRef(chatState);
@@ -128,6 +128,8 @@ export const App: React.FC = () => {
 
     switch (msg.type) {
       case "ready":
+        // The worker's own greeting also ends the reducer's "agent starting".
+        dispatch(msg);
         handleReady();
         return;
 
@@ -392,6 +394,7 @@ export const App: React.FC = () => {
         <ChatThread
           messages={messages}
           busy={busy}
+          starting={starting}
           draft={draft}
           draftSeq={draftSeq}
           liveToolCalls={liveToolCalls}

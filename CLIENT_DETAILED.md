@@ -1974,6 +1974,11 @@ Every message is one JSON object per send.
                                                        # foreign-prompt strip. The turn
                                                        # is producing again — it went on
                                                        # with the option it recommended
+    {"type": "agent_starting", "session_id": "..."}
+                                                       # this conversation's agent is being
+                                                       # built (backend wait, MCP servers);
+                                                       # the status line says so until the
+                                                       # worker's `ready`
     {"type": "queued",         "session_id": "...", "position": 1, "text": "..."}
                                                        # every agent slot is taken; this
                                                        # conversation's turn starts when

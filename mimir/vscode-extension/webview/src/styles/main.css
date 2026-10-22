@@ -1187,6 +1187,12 @@ button.ctx-mention:focus-visible {
   50%      { filter: drop-shadow(0 0 3px rgba(240, 69, 42, 0.5)); }
 }
 
+/* The agent being built rather than the model at work: smaller and fainter, so
+   it reads as setup and not as reasoning. */
+.streaming-status--setup {
+  font-size: 0.85em;
+  opacity: 0.75;
+}
 .streaming-status__word {
   display: inline-flex;
   white-space: pre;

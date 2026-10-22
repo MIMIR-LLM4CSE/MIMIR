@@ -55,6 +55,12 @@ export interface CommandOutputMessage {
   transient?: boolean;
 }
 
+/** This conversation's agent is being built: the backend wait, then the MCP servers.
+ *  The turn is accepted but nothing is thinking yet, until the worker's `ready`. */
+export interface AgentStartingMessage extends Attributed {
+  type: "agent_starting";
+}
+
 /** Every agent slot is taken; this conversation's turn starts when one frees.
  *
  *  Rendered rather than dropped like other transient status: a queue nobody can see

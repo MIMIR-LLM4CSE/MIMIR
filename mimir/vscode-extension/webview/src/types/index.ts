@@ -19,7 +19,7 @@ import type { ApprovalMessage, ApprovalResponseMessage, BatchReviewAcceptFileMes
 import type { ClearTodosMessage, CreateSessionMessage, DeleteSessionMessage, RenameSessionMessage, ReplayMessage, SessionLoadedMessage, SessionsListMessage, SwitchSessionMessage, TodoMessage, TranscriptMessage, TranscriptResyncMessage } from "./session";
 import type { AgentModeMessage, ApprovalModeMessage, ContextModeMessage, EnforcementModeMessage, ListTogglesMessage, StreamingStateMessage, SubAgentLevelMessage, TemperatureMessage, ThinkingDepthMessage, ToggleServerMessage, ToggleSkillMessage, TogglesListMessage } from "./settings";
 import type { DiffMessage, DivertToBackgroundMessage, FileProgressMessage, SubAgentEventMessage, ToolBackgroundedMessage, ToolCallMessage, ToolProgressMessage, ToolResultMessage, VerdictMessage } from "./tools";
-import type { AnswerMessage, AssistantTextMessage, CommandMessage, CommandOutputMessage, ContextUsageMessage, ErrorMessage, NudgeInjectedMessage, OutputMessage, QueryMessage, QueuedMessage, StatusMessage, SteerInjectedMessage, SteerMessage, ThinkingEndMessage, ThinkingMessage, ThinkingStartMessage, TokenMessage } from "./turn";
+import type { AgentStartingMessage, AnswerMessage, AssistantTextMessage, CommandMessage, CommandOutputMessage, ContextUsageMessage, ErrorMessage, NudgeInjectedMessage, OutputMessage, QueryMessage, QueuedMessage, StatusMessage, SteerInjectedMessage, SteerMessage, ThinkingEndMessage, ThinkingMessage, ThinkingStartMessage, TokenMessage } from "./turn";
 
 export type ServerMessage =
   | ReadyMessage
@@ -78,7 +78,8 @@ export type ServerMessage =
   | AssistantTextMessage
   | DetachedMessage
   | TranscriptResyncMessage
-  | QueuedMessage;
+  | QueuedMessage
+  | AgentStartingMessage;
 
 export type ClientMessage =
   | QueryMessage

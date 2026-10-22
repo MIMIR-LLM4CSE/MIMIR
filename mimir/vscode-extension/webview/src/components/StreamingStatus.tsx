@@ -133,6 +133,9 @@ const MimirSpinner: React.FC = () => {
 interface StreamingStatusProps {
   /** Show the three trailing bouncing dots. Off when a spinner is already shown. */
   showDots?: boolean;
+  /** A fixed, quieter line in place of the cycling word: something other than the
+   *  model is being waited on. */
+  label?: string;
 }
 
 /**
@@ -142,7 +145,7 @@ interface StreamingStatusProps {
  * enters. Led by a morphing rune glyph, optionally trailed by three gently
  * bouncing dots.
  */
-export const StreamingStatus: React.FC<StreamingStatusProps> = ({ showDots = true }) => {
+export const StreamingStatus: React.FC<StreamingStatusProps> = ({ showDots = true, label }) => {
   const [idx, setIdx] = React.useState(() => Math.floor(Math.random() * STREAMING_PHASES.length));
   const [phase, setPhase] = React.useState<"in" | "out">("in");
 
@@ -172,6 +175,20 @@ export const StreamingStatus: React.FC<StreamingStatusProps> = ({ showDots = tru
     }, sweepDuration);
     return () => window.clearTimeout(t);
   }, [phase, idx, sweepDuration]);
+
+  if (label) {
+    return (
+      <span className="streaming-status streaming-status--setup" aria-live="polite">
+        <MimirSpinner />
+        <span>{label}</span>
+        {showDots && (
+          <span className="streaming-dots" aria-hidden="true">
+            <span /><span /><span />
+          </span>
+        )}
+      </span>
+    );
+  }
 
   return (
     <span className="streaming-status" aria-live="polite">

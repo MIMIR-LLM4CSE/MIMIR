@@ -26,6 +26,7 @@ export const SESSION_HANDLERS: ChatHandlers = {
       liveThinkingBlocks: [],
       liveToolCalls: [],
       busy: false,
+      starting: false,
       pendingDiffs: [],
       pendingThinking: "",
     };

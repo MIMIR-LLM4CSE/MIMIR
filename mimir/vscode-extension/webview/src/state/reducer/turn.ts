@@ -24,9 +24,18 @@ export const TURN_HANDLERS: ChatHandlers = {
       liveThinkingBlocks: [],
       liveToolCalls: [],
       busy: true,
+      starting: false,
       toolCallAfterToken: false,
     };
   },
+
+  // The first turn of a conversation builds its agent before anything thinks; the
+  // status line says so instead of reading as the model at work.
+  agent_starting: (state) => ({ ...state, starting: true }),
+
+  // The socket greeting of a conversation still building says false and changes nothing.
+  ready: (state, action) =>
+    action.agent_ready === false || !state.starting ? state : { ...state, starting: false },
 
   // A message typed while the agent is busy. Append it as a user bubble
   // tagged "queued" (awaiting injection) without disturbing the running
@@ -133,7 +142,7 @@ export const TURN_HANDLERS: ChatHandlers = {
     // the worker runs on, and a reconnect can still be handed the `answer` it
     // ends on, which must replace this partial rather than repeat under it.
     const s = commitDraft(state, makeId, true);
-    return { ...s, busy: false, liveThinkingBlocks: [], liveToolCalls: [] };
+    return { ...s, busy: false, starting: false, liveThinkingBlocks: [], liveToolCalls: [] };
   },
 
   // A turn of this session outlived the connection and is still producing, so
