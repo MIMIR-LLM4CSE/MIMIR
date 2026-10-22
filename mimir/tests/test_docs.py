@@ -48,9 +48,17 @@ _EXTENSIONS = frozenset({"py", "json", "jsonl", "md", "log", "ts", "tsx", "sh", 
 
 @cache
 def _tracked() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    """The repository's files, its directories (with a trailing slash), and its file names."""
-    files = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True,
-                           check=True).stdout.split()
+    """The repository's files, its directories (with a trailing slash), and its file names.
+
+    Outside a git checkout (a release's staged tree, no git on PATH) nothing says which
+    files are the repository's, so the test asking has no subject and is skipped."""
+    try:
+        listing = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise unittest.SkipTest("git not available")
+    if listing.returncode != 0:
+        raise unittest.SkipTest("not a git checkout")
+    files = listing.stdout.split()
     dirs = {"/".join(f.split("/")[:i]) + "/" for f in files for i in range(1, f.count("/") + 1)}
     return frozenset(files), frozenset(dirs), frozenset(f.rsplit("/", 1)[-1] for f in files)
 
