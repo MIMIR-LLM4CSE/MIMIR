@@ -461,6 +461,10 @@ export const App: React.FC = () => {
             onSubmit={question.answer}
           />
         )}
+        {/* Hidden while a plan or a question waits: the turn is parked on that card, and
+            a query sent beside it would start a second turn. The card's "Other" field
+            is the way to say something else. */}
+        {!question.userQuestion && (
         <div className="input-area">
           <BottomToolbar
             settings={settings}
@@ -482,6 +486,7 @@ export const App: React.FC = () => {
             onStop={() => send({ type: "command", text: "/cancel" })}
           />
         </div>
+        )}
         {/* Context usage bar — shown below the input box */}
         {workspace.contextUsage && (
           <ContextBar usage={workspace.contextUsage} contextMode={contextMode} />
