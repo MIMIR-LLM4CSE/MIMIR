@@ -7,7 +7,7 @@ import * as cp from "child_process";
 import * as fs from "fs";
 import { serverChannel } from "./serverChannel";
 import { findLiveServer, logPath, waitForServer } from "./serverRegistry";
-import { maxModelLenEnv, mimirServerEnv, noProxyFor, resolvePython } from "./serverEnv";
+import { mimirServerEnv, noProxyFor, resolvePython, settingsEnv } from "./serverEnv";
 import { workspaceRoot } from "./workspace";
 
 /** What a connect asks the server to run on. */
@@ -95,7 +95,6 @@ export class LocalServer {
    * *onExit* runs when the child exits while still the current one.
    */
   async spawn(req: SpawnRequest, onExit: () => void): Promise<SpawnOutcome> {
-    const cfg = vscode.workspace.getConfiguration("mimir");
     const pythonPath = resolvePython(this.extensionRoot);
     const cwd = workspaceRoot();
 
@@ -124,13 +123,6 @@ export class LocalServer {
     // never lands in the output channel.
     outputChannel.appendLine(`Starting server: ${spawnCmd}`);
 
-    // Internal HTTPS vLLM / Ray Serve routes are often served behind a private
-    // CA; when the user disables cert verification, propagate VLLM_VERIFY_SSL so
-    // /v1/models model-resolution and chat requests don't hit CERTIFICATE_VERIFY_FAILED.
-    const verifyEnv = cfg.get<boolean>("vllmVerifySsl", true) ? {} : { VLLM_VERIFY_SSL: "0" };
-    // A router in front of vLLM need not serve /tokenize; turning it off spares every
-    // process (sub-agents included) the request, and the retries when it times out.
-    const tokenizeEnv = cfg.get<boolean>("vllmTokenize", true) ? {} : { MIMIR_VLLM_TOKENIZE: "0" };
     // An HTTP proxy silently swallows requests to an on-prem endpoint, so
     // ws_server would hang on model resolution before ever binding its port.
     const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
@@ -148,8 +140,8 @@ export class LocalServer {
       // env is mimirServerEnv(): the user's PYTHONHOME/PYTHONPATH never reach
       // the server's interpreter (see there).
       env: {
-        ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv,
-        ...tokenizeEnv, ...maxModelLenEnv(), ...anthropicEnv,
+        ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...noProxyEnv, ...settingsEnv(),
+        ...anthropicEnv,
       },
       // Its own process session, from birth. Nothing about this window's teardown can
       // then reach it implicitly — not a process-group signal, not a SIGHUP, not the
@@ -227,8 +219,8 @@ export class LocalServer {
       cwd,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
       // root to the opened workspace, regardless of the process cwd. Same
-      // python-env isolation as the connect path (see mimirServerEnv).
-      env: { ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...maxModelLenEnv() },
+      // python-env isolation and settings as the connect path (see mimirServerEnv).
+      env: { ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...settingsEnv() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     this.child = child;

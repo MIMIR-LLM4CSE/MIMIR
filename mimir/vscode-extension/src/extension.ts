@@ -9,6 +9,7 @@ import { LocalServer } from "./localServer";
 import { stopPlanWatch } from "./planPreview";
 import { maybeSelfUpdate } from "./selfUpdate";
 import { disposeServerChannel } from "./serverChannel";
+import { affectsServerEnv } from "./serverEnv";
 
 /** The server this window is responsible for, reachable from `deactivate()`. */
 let localServer: LocalServer | undefined;
@@ -55,6 +56,22 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("mimir.startServer", () => server.startOnFixedPort(context)),
     vscode.commands.registerCommand("mimir.stopServer", () => server.stopFromCommand()),
+  );
+
+  // The server reads these settings once, at start: say so, once per burst of edits.
+  let noticeShown = false;
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (noticeShown || !affectsServerEnv(event)) return;
+      noticeShown = true;
+      const choice = await vscode.window.showInformationMessage(
+        "MIMIR passes this setting to its server when the server starts. " +
+        "A server already running keeps the old value until it is stopped.",
+        "Stop Server"
+      );
+      noticeShown = false;
+      if (choice === "Stop Server") await server.stopFromCommand();
+    })
   );
 }
 

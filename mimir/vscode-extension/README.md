@@ -108,20 +108,23 @@ free port, so several windows run side by side. No `.vscode/settings.json` is ne
 
 ## Settings
 
-Every setting has a working default. Most only set the value the Connect form starts on.
+Every setting has a working default. In *Settings → Extensions → MIMIR* they are
+grouped by section. The ones the server reads (each says which variable it sets) take
+effect when the server starts: a running server keeps the old value until it is
+stopped. A setting you leave at its default sets nothing, so a variable exported in
+your shell still applies.
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `mimir.backend` | `vllm` | Backend the form starts on |
-| `mimir.vllmBaseUrl` | `http://127.0.0.1:8000` | vLLM address the form starts on |
-| `mimir.rayBaseUrl` | `http://127.0.0.1:8000` | Ray Serve address the form starts on |
-| `mimir.ollamaUrl` | `http://127.0.0.1:11434` | Ollama address the form starts on |
-| `mimir.vllmVerifySsl` | `true` | Untick for an HTTPS vLLM or Ray endpoint signed by a private CA |
-| `mimir.maxModelLen` | `0` | Context window (tokens) when the endpoint does not report `max_model_len`. `0` keeps the reported window, else 200000 |
-| `mimir.anthropicAvailableModels` | current Claude models | Models offered for the Anthropic backend |
-| `mimir.pythonPath` | empty (auto) | Python that runs the server. See below |
-| `mimir.wsUrl` | empty (auto) | Attach to a server you started yourself; the extension then starts none |
-| `mimir.notifications.enabled` | `true` | Notify when a task ends off-screen |
+| Section | Settings |
+|---|---|
+| Connection | `mimir.backend`, `mimir.vllmBaseUrl`, `mimir.rayBaseUrl`, `mimir.ollamaUrl` (the values the Connect form starts on), `mimir.anthropicAvailableModels`, `mimir.vllmVerifySsl`, `mimir.wsUrl` |
+| Model | `mimir.maxModelLen`, `mimir.vllmTokenize`, `mimir.ollama.numCtx`, `mimir.anthropic.effort`, `mimir.anthropic.thinking`, `mimir.anthropic.maxTokens`, `mimir.anthropic.maxInputTokens` |
+| Embeddings | `mimir.embeddings.model` (required for semantic search on vLLM and Ray Serve), `mimir.embeddings.baseUrl`, `mimir.embeddings.timeout` |
+| Sessions and Server | `mimir.sessions.maxLive`, `mimir.sessions.idleTimeout`, `mimir.sessions.initTimeout`, `mimir.sessions.backendWaitTimeout`, `mimir.sessions.backendPollInterval`, `mimir.subagents.maxConcurrent`, `mimir.server.idleTimeout`, `mimir.server.detachGrace` |
+| Customization | `mimir.customization.systemPromptFile`, `mimir.customization.skillsDir`, `mimir.customization.pluginsDir`, `mimir.customization.serversDir`, `mimir.workspace.extraReadRoots` |
+| HPC | `mimir.hpc.moduleIndexBudget`, `mimir.hpc.slurmStaleAfter` |
+| Installation | `mimir.pythonPath` (see below), `mimir.releaseHome` |
+| Notifications | `mimir.notifications.enabled` |
+| Advanced | `mimir.server.env`: any other variable, as `{"NAME": "value"}`. It wins over the settings above, and only your user settings can set it, never a workspace |
 
 **Which Python runs the server.** The extension looks in this order:
 `mimir.pythonPath`, then the `MIMIR_PYTHON` environment variable, then

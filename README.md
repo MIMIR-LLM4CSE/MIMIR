@@ -133,6 +133,9 @@ export VLLM_BASE_URL=http://<node>:8000        # vLLM is the default backend
 
 # Ollama instead:
 #   pip install . && export LLM_BACKEND=ollama && ollama pull qwen3:8b
+
+# Claude API instead:
+#   pip install ".[anthropic]" && export LLM_BACKEND=anthropic ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 `pip install -r mimir/requirements.txt` still installs the same core dependencies, but it

@@ -9,8 +9,8 @@
 #   ./install.sh                 # portable Python 3.10, into ./.venv-<os>-<arch>
 #   PYTHON=python3.11 ./install.sh         # use this interpreter instead
 #   MIMIR_VENV=~/envs/mimir ./install.sh
-#   MIMIR_EXTRAS="vllm,dev" ./install.sh   # adds pytest + ruff
-#   MIMIR_EXTRAS="ray" ./install.sh        # same deps, for a Ray Serve endpoint
+#   MIMIR_EXTRAS="vllm,anthropic,dev" ./install.sh   # adds pytest + ruff
+#   MIMIR_EXTRAS="ray" ./install.sh        # Ray Serve only, without the Claude SDK
 #   MIMIR_SKIP_EXTENSION=1 ./install.sh    # Python only
 set -euo pipefail
 
@@ -24,7 +24,7 @@ mimir_platform() {
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 platform="$(mimir_platform)"
 venv="${MIMIR_VENV:-$here/.venv-$platform}"
-extras="${MIMIR_EXTRAS:-vllm}"
+extras="${MIMIR_EXTRAS:-vllm,anthropic}"
 state_home="${MIMIR_STATE_HOME:-$HOME/.mimir}"
 
 # --- Python -----------------------------------------------------------------
@@ -133,11 +133,11 @@ echo "==> Verifying installation"
 # terminal, so only check that the console script is on PATH.
 command -v mimir >/dev/null || { echo "error: the 'mimir' command was not installed." >&2; exit 1; }
 python - <<'PYEOF'
-import importlib, os
-import mimir.client.config.constants as c
-missing = [n for n, p in c.SERVERS.items() if not os.path.exists(p)]
+import os
+from mimir.client.config.servers import SERVERS
+missing = [n for n, p in SERVERS.items() if not os.path.exists(p)]
 assert not missing, f"missing server scripts: {missing}"
-print("   all %d MCP server scripts resolve" % len(c.SERVERS))
+print("   all %d MCP server scripts resolve" % len(SERVERS))
 PYEOF
 # What the extension will actually start: the launcher, not this venv directly.
 if [ -x "$launcher" ]; then
@@ -170,6 +170,11 @@ elif ! command -v npm >/dev/null 2>&1; then
   echo "   No root? curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
   echo "            exec \$SHELL -l && nvm install --lts"
   echo "   Details: docs/SETUP.md section 6a."
+elif [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt 20 ]; then
+  # Packaging needs Node 20; an older one builds, then fails at the last step.
+  echo "==> Skipping VS Code extension (Node.js >= 20 needed, found $(node -v 2>/dev/null || echo none))"
+  echo "   With nvm: nvm install --lts, then re-run ./install.sh."
+  echo "   Details: docs/SETUP.md section 6a."
 elif [ ! -d "$ext_dir" ]; then
   echo "==> Skipping VS Code extension (not found at $ext_dir)"
 else
@@ -194,7 +199,8 @@ EOF
 if [ "$ext_installed" = "1" ]; then
   cat <<'EOF'
   # or, in VS Code: reload the window, open the MIMIR panel, and enter the
-  # address of your running vLLM, Ray Serve or Ollama server (e.g. http://127.0.0.1:8000).
+  # address of your running vLLM, Ray Serve or Ollama server (e.g. http://127.0.0.1:8000),
+  # or a Claude API key. Everything else is under Settings > Extensions > MIMIR.
 EOF
 else
   cat <<'EOF'

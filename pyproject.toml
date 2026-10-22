@@ -44,6 +44,9 @@ vllm = ["openai>=1.0.0"]
 # name so `pip install .[ray]` reads as the setup it belongs to.
 ray = ["openai>=1.0.0"]
 
+# The hosted Claude API (`--backend anthropic`).
+anthropic = ["anthropic>=0.100.0"]
+
 # Development / test tooling.
 dev = [
     "pytest>=8.0.0",

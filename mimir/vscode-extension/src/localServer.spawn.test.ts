@@ -5,7 +5,12 @@ const spawned: { command: string; options: Record<string, unknown> }[] = [];
 const channels: string[] = [];
 
 vi.mock("vscode", () => ({
-  workspace: { getConfiguration: () => ({ get: (_key: string, fallback?: unknown) => fallback }) },
+  workspace: {
+    getConfiguration: () => ({
+      get: (_key: string, fallback?: unknown) => fallback,
+      inspect: (key: string) => ({ key }),
+    }),
+  },
   window: {
     createOutputChannel: (name: string) => {
       channels.push(name);

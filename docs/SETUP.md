@@ -25,9 +25,9 @@ MIMIR is a normal Python package. Installing it pulls in everything the agent
 
 ### 2a. Quick install (recommended)
 
-One script: it creates a virtualenv, installs the package with the `vllm` extra,
-runs a smoke test, and — when `npm` is available — builds and installs the VS Code
-extension too.
+One script: it creates a virtualenv, installs the package with the `vllm` and
+`anthropic` extras, runs a smoke test, and — when Node.js 20 or later is available —
+builds and installs the VS Code extension too.
 
 ```bash
 git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git
@@ -55,7 +55,7 @@ in the *MIMIR Server* output and exits with code 127.
 Override the target venv, the extras, or skip the extension:
 
 ```bash
-MIMIR_VENV=~/envs/mimir MIMIR_EXTRAS="vllm,dev" ./install.sh
+MIMIR_VENV=~/envs/mimir MIMIR_EXTRAS="vllm,anthropic,dev" ./install.sh
 MIMIR_SKIP_EXTENSION=1 ./install.sh          # Python only
 ```
 
@@ -67,7 +67,7 @@ its own, and the script prints the command to retry.
 ```bash
 cd /path/to/mimir            # repo root (contains pyproject.toml)
 python -m venv .venv && source .venv/bin/activate
-pip install .                # or:  pip install ".[vllm]"  /  ".[ray]"
+pip install .                # or:  pip install ".[vllm]"  /  ".[ray]"  /  ".[anthropic]"
 # editable dev install + test tooling:
 pip install -e ".[dev]"
 ```
@@ -82,6 +82,9 @@ What the base install covers:
 | Scientific / utility servers | `numpy`, `sympy`, `psutil` | `math`, `symbolic_math`, `platform`, `system` servers |
 
 Optional extras (declared in `pyproject.toml`):
+
+- **`anthropic`** — the `anthropic` SDK, needed only for the hosted Claude API
+  backend. `install.sh` adds it by default.
 
 - **`dev`** — `pytest` and `ruff`, the two checks CI runs:
   ```bash
@@ -299,8 +302,9 @@ environment to accept remote connections.
 
 ### Anthropic (hosted Claude API)
 
-No server to run. Export a key, or paste one into the Connect panel (it is passed to
-the server process in-memory and never written to disk):
+No server to run. It needs the `anthropic` extra, which `install.sh` installs by
+default (`pip install ".[anthropic]"` otherwise). Export a key, or paste one into the
+Connect panel (it is passed to the server process in-memory and never written to disk):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -312,7 +316,8 @@ mimir-server --backend anthropic --model claude-sonnet-5
 ## 4. Environment Variables
 
 Set these in your shell profile (`.bashrc`, `.zshrc`) or in the job script. The
-VS Code extension sets the backend and address ones itself from the Connect form.
+VS Code extension sets the backend and address ones itself from the Connect form, and
+most of the others from its settings ([6d](#6d-optional-settings)).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -490,21 +495,51 @@ That is the whole configuration: a working setup needs **no `.vscode/settings.js
 
 ### 6d. Optional Settings
 
-Everything below has a usable default; set one only to change the value the panel
-starts on, or when the WS server needs a specific interpreter.
+Everything has a usable default. *Settings → Extensions → MIMIR* groups the settings
+by section; each setting the server reads names the variable of
+[section 4](#4-environment-variables) it sets. The extension passes them to the server
+when it starts it, so a running server keeps the old values until it is stopped
+(*MIMIR: Stop Detached Server*). A setting left at its default sets nothing: a
+variable exported in your shell then still applies.
 
-| Setting | Default | Purpose |
+| Section | Setting | Variable |
 |---|---|---|
-| `mimir.backend` | `vllm` | Backend the Connect form opens on |
-| `mimir.vllmBaseUrl` | `http://127.0.0.1:8000` | Address the form opens on for vLLM |
-| `mimir.rayBaseUrl` | `http://127.0.0.1:8000` | Address the form opens on for Ray Serve |
-| `mimir.ollamaUrl` | `http://127.0.0.1:11434` | Address the form opens on for Ollama |
-| `mimir.vllmVerifySsl` | `true` | Uncheck for an HTTPS vLLM or Ray endpoint behind a private CA |
-| `mimir.maxModelLen` | `0` | Context window (tokens) to use when the endpoint does not report `max_model_len`. `0` keeps the reported window, falling back to 200000 |
-| `mimir.pythonPath` | *(empty → auto)* | Interpreter used to start the WS server. Leave empty — see below |
-| `mimir.wsUrl` | *(empty → auto)* | Leave empty: each window starts its own server on a free port. Set it only to attach to a server you run yourself |
-| `mimir.anthropicAvailableModels` | *(list of Claude ids)* | Models offered for the Anthropic backend |
-| `mimir.notifications.enabled` | `true` | Native notification when a task finishes off-screen |
+| Connection | `mimir.backend`, `mimir.vllmBaseUrl`, `mimir.rayBaseUrl`, `mimir.ollamaUrl` | — (the values the Connect form starts on) |
+| | `mimir.anthropicAvailableModels` | — (models offered for the Anthropic backend) |
+| | `mimir.vllmVerifySsl` | `VLLM_VERIFY_SSL=0` when unticked |
+| | `mimir.wsUrl` | — (attach to a server you run yourself) |
+| Model | `mimir.maxModelLen` | `MIMIR_VLLM_MAX_MODEL_LEN`, `MIMIR_RAY_MAX_MODEL_LEN` |
+| | `mimir.vllmTokenize` | `MIMIR_VLLM_TOKENIZE=0` when unticked |
+| | `mimir.ollama.numCtx` | `MIMIR_OLLAMA_NUM_CTX` |
+| | `mimir.anthropic.effort` | `MIMIR_ANTHROPIC_EFFORT` |
+| | `mimir.anthropic.thinking` | `MIMIR_ANTHROPIC_THINKING=off` when unticked |
+| | `mimir.anthropic.maxTokens` | `MIMIR_ANTHROPIC_MAX_TOKENS` |
+| | `mimir.anthropic.maxInputTokens` | `MIMIR_ANTHROPIC_MAX_INPUT_TOKENS` |
+| Embeddings | `mimir.embeddings.model` | `MIMIR_EMBED_MODEL` |
+| | `mimir.embeddings.baseUrl` | `MIMIR_EMBED_BASE_URL` |
+| | `mimir.embeddings.timeout` | `MIMIR_EMBED_TIMEOUT` |
+| Sessions and Server | `mimir.sessions.maxLive` | `MIMIR_MAX_LIVE_SESSIONS` |
+| | `mimir.sessions.idleTimeout` | `MIMIR_SESSION_IDLE_TTL` |
+| | `mimir.sessions.initTimeout` | `MIMIR_INIT_TIMEOUT` |
+| | `mimir.sessions.backendWaitTimeout` | `MIMIR_BACKEND_TIMEOUT` |
+| | `mimir.sessions.backendPollInterval` | `MIMIR_BACKEND_POLL_INTERVAL` |
+| | `mimir.subagents.maxConcurrent` | `MIMIR_SUBAGENT_MAX_CONCURRENT` |
+| | `mimir.server.idleTimeout` | `MIMIR_SERVER_IDLE_TTL` |
+| | `mimir.server.detachGrace` | `MIMIR_DETACH_GRACE` |
+| Customization | `mimir.customization.systemPromptFile` | `MIMIR_SYSTEM_PROMPT_FILE` |
+| | `mimir.customization.skillsDir` | `MIMIR_SKILLS_DIR` |
+| | `mimir.customization.pluginsDir` | `MIMIR_PLUGINS_DIR` |
+| | `mimir.customization.serversDir` | `MIMIR_SERVERS_DIR` |
+| | `mimir.workspace.extraReadRoots` | `MIMIR_EXTRA_FILE_ROOTS` |
+| HPC | `mimir.hpc.moduleIndexBudget` | `MIMIR_MODULE_INDEX_BUDGET` |
+| | `mimir.hpc.slurmStaleAfter` | `MIMIR_SLURM_STALE_AFTER` |
+| Installation | `mimir.pythonPath` | — (see below) |
+| | `mimir.releaseHome` | — (shared site release root) |
+| Notifications | `mimir.notifications.enabled` | — |
+| Advanced | `mimir.server.env` | any variable, as `{"NAME": "value"}`; wins over the settings above. User settings only, never a workspace |
+
+API keys have no setting, so they never sit in plain text in your VS Code settings: the
+Claude key goes through the Connect form, the others through your environment.
 
 **Which Python runs the server.** The extension starts it with `bash -c`, which is
 neither a login nor an interactive shell: it sources no `.bashrc`, no `.bash_profile`,

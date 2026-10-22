@@ -42,6 +42,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`/diag nudges all`) in every conversation of the workspace, sub-agents included.
 - **A sub-agent keeps its session journal** (`transcript.jsonl`) as a conversation does:
   its task, every event of its run, its answer.
+- **The server's environment variables are VS Code settings.** Embeddings, Claude
+  effort and thinking, Ollama's context window, session and server timeouts, sub-agent
+  concurrency, the customization directories, extra read roots and the HPC budgets each
+  have a setting that names the variable it sets, and `mimir.server.env` takes any
+  other. The settings are grouped in sections (Connection, Model, Embeddings, Sessions
+  and Server, Customization, HPC, Installation, Notifications, Advanced). A setting left
+  at its default sets nothing, so a variable exported in the shell still applies;
+  changing one offers to stop the running server, which keeps its old values.
+- **An `anthropic` extra** with the Claude SDK, which `install.sh` installs by default.
 
 ### Changed
 - **The reference docs live in `docs/`**: [ARCHITECTURE.md](docs/ARCHITECTURE.md),
@@ -83,6 +92,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still applies to all of them.
 
 ### Fixed
+- **`install.sh` no longer fails its smoke test** on a module that moved, and skips the
+  extension with a clear message when Node.js is older than 20 instead of failing
+  at the packaging step.
+- ***MIMIR: Start Server* passes the same settings as a connect from the panel**; it
+  dropped the TLS and `/tokenize` switches.
 - **A run on no machine of the panel is shown.** A local shell run, with no scheduler
   row to sit on, appeared nowhere in the scientific panel; such runs are now listed
   under "Runs".
