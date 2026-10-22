@@ -332,11 +332,12 @@ def run_state(run_dir: str) -> dict:
     return out
 
 
-def background_descriptor(run_dir: str, *, kind: str,
-                          status_op: dict, summary_op: dict) -> dict:
-    """The data-only handle a client watcher polls: kind, ``status_op``, ``summary_op``."""
+def background_descriptor(run_dir: str, *, kind: str, status_op: dict, summary_op: dict,
+                          cancel_op: dict | None = None) -> dict:
+    """The data-only handle a client watcher polls: kind, ``status_op``, ``summary_op``, ``cancel_op``."""
     descriptor = jobs.descriptor(server="proxy", kind=kind, job_key=os.path.basename(run_dir),
-                                 run_dir=run_dir, status_op=status_op, summary_op=summary_op)
+                                 run_dir=run_dir, status_op=status_op, summary_op=summary_op,
+                                 cancel_op=cancel_op)
     # Recorded beside the job id when this run is a Slurm job, so a window that closes
     # and comes back re-arms *this* watcher rather than a stock poll beside it: two
     # watchers on one run are two wakes for one result.

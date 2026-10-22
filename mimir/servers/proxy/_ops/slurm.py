@@ -51,7 +51,8 @@ def _run_background_descriptor(run_dir: str) -> dict:
         run_dir, kind="proxy-slurm-run",
         status_op={"tool": "proxy_runs", "args": {"op": "status", "run_id": run_dir}},
         summary_op={"tool": "proxy_runs",
-                    "args": {"op": "logs", "run_id": run_dir, "tail": 40}})
+                    "args": {"op": "logs", "run_id": run_dir, "tail": 40}},
+        cancel_op={"tool": "proxy_exec", "args": {"op": "cancel", "run_id": run_dir}})
 
 
 def submit_run(

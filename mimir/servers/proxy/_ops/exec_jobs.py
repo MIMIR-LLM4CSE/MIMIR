@@ -78,7 +78,9 @@ def status(job_dir: str) -> dict:
 def _descriptor(job_dir: str, op: str) -> dict:
     poll = {"tool": "proxy_runs", "args": {"op": "status", "run_id": job_dir}}
     return background_descriptor(job_dir, kind=f"proxy-{op}",
-                                 status_op=poll, summary_op=poll)
+                                 status_op=poll, summary_op=poll,
+                                 cancel_op={"tool": "proxy_exec",
+                                            "args": {"op": "cancel", "run_id": job_dir}})
 
 
 async def run_awaited(op: str, args: dict, background: bool = False,

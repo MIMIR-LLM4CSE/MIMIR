@@ -110,9 +110,12 @@ Every server that leaves a run going, and the client that watches it, speak thro
 module:
 
 - **the descriptor** a watcher polls: `descriptor(server, kind, job_key, status_op,
-  summary_op, run_dir)`, with the two stock shapes `shell_descriptor` (bash; its directory
-  rides in the op args, so a sub-agent's job resolves from the parent) and
-  `slurm_descriptor`. `job_key_of`, `is_rewatchable`.
+  summary_op, cancel_op, run_dir)`, with the two stock shapes `shell_descriptor` (bash; its
+  directory rides in the op args, so a sub-agent's job resolves from the parent) and
+  `slurm_descriptor`. `job_key_of`, `is_rewatchable`. `cancel_op` is the call that stops
+  the run, which the scientific panel offers as Cancel: `bash_job_stop` (none for an
+  adopted process, whose group is not the server's), `slurm_cancel`, `proxy_exec`
+  `op=cancel`, `proxy_eval` `op=stop`. A run without one (a sub-agent) has no button.
 - **the payload keys**: `launched(payload)` reads `background_job` (this call started it,
   honoured for a `BACKGROUNDABLE` tool), `handed_over(payload)` reads `background_jobs` (still
   going, from a status answer, an adoption or a sub-agent; no capability needed).

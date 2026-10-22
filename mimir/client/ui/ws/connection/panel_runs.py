@@ -55,6 +55,7 @@ def _badge(run: dict) -> dict:
         "kind": run.get("kind", ""),
         "state": run.get("state", ""),
         "origin": origin,
+        "cancellable": bool(run.get("cancellable")),
     }
     for key in ("phase", "percent", "command", "pid", "job_id", "elapsed_s", "scheduler"):
         if run.get(key) not in (None, "", []):

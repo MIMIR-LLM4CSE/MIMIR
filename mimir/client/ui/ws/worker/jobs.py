@@ -15,6 +15,8 @@ from ....session.jobs_on_disk import (
     subagent_sessions,
 )
 from ....query_engine.jobs import RunWatcher, Tick, Watch
+from ....tool_execution.direct import call_tool_directly
+from .....shared.responses import err
 
 if TYPE_CHECKING:
     from .worker import AgentWorker
@@ -92,6 +94,21 @@ class JobWatcher(RunWatcher):
                         "that had ended", session_id, len(rearmed), len(reported))
         return {"rearmed": rearmed, "reported": reported}
 
+    async def cancel(self, job_key: str) -> dict:
+        """Stop *job_key* with its descriptor's cancel op, then poll it at once; the op's answer.
+
+        The user's own action, so the call goes around the guardrails. The watch is not
+        dropped here: the next poll reads the run as ended and wakes the conversation
+        like any other ending, which is how the agent learns of it.
+        """
+        cancel_op = self.cancel_op(job_key)
+        if cancel_op is None:
+            return err("This run cannot be stopped from here.")
+        payload = await call_tool_directly(self.worker.agent, cancel_op["tool"],
+                                           dict(cancel_op.get("args") or {}))
+        self.poll_now(job_key)
+        return payload
+
     def watched_runs(self) -> list[dict]:
         """The runs held by watchers, for the panel: descriptor and last status, minus the local ``at``."""
         out = []
@@ -105,6 +122,7 @@ class JobWatcher(RunWatcher):
                 "kind": descriptor.get("kind", ""),
                 "server": descriptor.get("server", ""),
                 "origin": descriptor.get("origin") or {},
+                "cancellable": bool((descriptor.get("cancel_op") or {}).get("tool")),
                 **status,
             })
         return out

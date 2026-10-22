@@ -279,7 +279,7 @@ def bash_job(
     risk_note="kills a running background command",
     label="Stopping background job",
 ))
-def bash_job_stop(job_key: str) -> dict:
+def bash_job_stop(job_key: str, run_dir: str = "") -> dict:
     """Stop a running detached job (SIGTERM, then SIGKILL).
 
     The whole process group goes, not just the shell — otherwise the compiler it
@@ -291,10 +291,17 @@ def bash_job_stop(job_key: str) -> dict:
 
     Args:
         job_key: The handle bash_run returned.
+        run_dir: Where the job's files are, as for bash_job: a run a sub-agent of
+            this session launched. Comes from the descriptor; leave it out otherwise.
     """
     if not bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.")
-    return bash_jobs.answer(bash_jobs.stop(job_key))
+    resolved = ""
+    if run_dir:
+        resolved, refusal = bash_jobs.resolve_run_dir(run_dir, job_key)
+        if refusal is not None:
+            return refusal
+    return bash_jobs.answer(bash_jobs.stop(job_key, resolved))
 
 
 @mcp.tool(**tool_caps(kind="job", label="Watch process {pid}"))

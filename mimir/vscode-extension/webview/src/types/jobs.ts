@@ -36,6 +36,8 @@ export interface WatchedRun {
   job_id?: string;
   command?: string;
   elapsed_s?: number;
+  /** Its server named a call that stops it, so the panel may offer to. */
+  cancellable?: boolean;
 }
 
 export interface JobCompleteMessage {

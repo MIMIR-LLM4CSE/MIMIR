@@ -127,6 +127,12 @@ export interface ListPanelMessage {
   refresh?: boolean;
 }
 
+/** Stop a run the watcher holds, with the cancel op its own server named. */
+export interface CancelRunMessage {
+  type: "cancel_run";
+  job_key: string;
+}
+
 export interface ReadSubagentMessage {
   type: "read_subagent";
   id: string;

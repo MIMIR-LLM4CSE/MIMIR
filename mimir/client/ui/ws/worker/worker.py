@@ -585,6 +585,14 @@ class AgentWorker:
             call_tool_directly(self._agent, tool, args), self._loop)
 
 
+    def cancel_run(self, job_key: str) -> Any:
+        """Stop one of this conversation's runs (``JobWatcher.cancel``) on the worker's loop; a future of the payload."""
+        if self._agent is None or self._loop is None:
+            fut: Any = concurrent.futures.Future()
+            fut.set_result(err(NO_AGENT))
+            return fut
+        return asyncio.run_coroutine_threadsafe(self.jobs.cancel(job_key), self._loop)
+
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs this conversation still has in flight (``JobWatcher``)."""
         return self.jobs.watched_job_keys()

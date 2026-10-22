@@ -440,13 +440,13 @@ def listing() -> list[dict]:
     return [state(k) for k in keys]
 
 
-def stop(job_key: str) -> dict:
+def stop(job_key: str, run_dir: str = "") -> dict:
     """SIGTERM the job's process group, escalating to SIGKILL.
 
     The group, not the pid: the shell forks, and signalling only the shell leaves the
     compiler it launched running — the same reason ``proc_run`` kills groups on timeout.
     """
-    payload = state(job_key)
+    payload = state(job_key, run_dir)
     if payload.get("error"):
         return payload
     if payload["state"] != "running":
@@ -469,11 +469,11 @@ def stop(job_key: str) -> dict:
         while waited < deadline:
             time.sleep(0.2)
             waited += 0.2
-            if state(job_key)["state"] != "running":
-                out = state(job_key)
+            if state(job_key, run_dir)["state"] != "running":
+                out = state(job_key, run_dir)
                 out["stopped"] = "sigterm" if sig == signal.SIGTERM else "sigkill"
                 return out
-    out = state(job_key)
+    out = state(job_key, run_dir)
     out["stopped"] = "sigkill"
     return out
 

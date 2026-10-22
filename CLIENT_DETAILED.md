@@ -2109,6 +2109,13 @@ Every message is one JSON object per send.
                                                      # that form outlives a worker rebuild.
                                                      # ``enabled: false`` takes it back:
                                                      # the window owns the server again
+    {"type": "cancel_run",        "job_key": "..."}
+                                  # stop a run this conversation's watcher holds, with
+                                  # the descriptor's cancel_op, called directly (the
+                                  # user's own action). The watch then polls at once, so
+                                  # the ending wakes the conversation without waiting
+                                  # out its interval. A failure comes back as a warn
+                                  # command_output, never an error: a turn may be running
     {"type": "divert_to_background", "id": "..."}   # detach the run now blocking the
                                   # turn, keeping what it has already done. The id names
                                   # the row, whose tool name is the run channel its

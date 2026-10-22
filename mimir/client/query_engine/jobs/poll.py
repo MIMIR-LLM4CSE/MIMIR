@@ -100,12 +100,13 @@ async def poll_until_terminal(
     on_tick: Callable[[Tick], None] | None = None,
     label: str = "",
     cancel_flag: Any = None,
+    wake: asyncio.Event | None = None,
 ) -> tuple[str, str]:
     """Poll *status_op* until its run is terminal; ``(state, reason)``, *reason* for "unknown".
 
     Waits *interval* first, then 1.5× up to *max_interval*. *call_timeout*,
     *unreadable_limit* and *max_polls* bound it; *on_tick* sees each :class:`Tick`;
-    *cancel_flag* (the user's Stop) raises ``CancelledError``.
+    *cancel_flag* (the user's Stop) raises ``CancelledError``; *wake* cuts a wait short.
     """
     status_tool = (status_op or {}).get("tool")
     if not status_tool:
@@ -117,7 +118,7 @@ async def poll_until_terminal(
     polls = 0
     while max_polls is None or polls < max_polls:
         polls += 1
-        await asyncio.sleep(interval)
+        await _wait(interval, wake)
         if cancel_flag is not None and cancel_flag.is_set():
             raise asyncio.CancelledError("Cancelled by user")
         interval = min(interval * 1.5, max_interval)
@@ -168,6 +169,18 @@ async def poll_until_terminal(
         if unreadable_limit is not None and unreadable >= unreadable_limit:
             return "unknown", reason
     return state, f"'{status_tool}' never reached a terminal state"
+
+
+async def _wait(interval: float, wake: asyncio.Event | None) -> None:
+    """Sleep *interval*, or less when *wake* is set; *wake* is cleared for the next wait."""
+    if wake is None:
+        await asyncio.sleep(interval)
+        return
+    try:
+        await asyncio.wait_for(wake.wait(), timeout=interval)
+    except asyncio.TimeoutError:
+        pass
+    wake.clear()
 
 
 async def read_summary(

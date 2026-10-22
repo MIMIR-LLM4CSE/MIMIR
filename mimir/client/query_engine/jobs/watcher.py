@@ -57,6 +57,8 @@ class Watch:
     alerts: dict = field(default_factory=dict)
     # Last (phase, percent) announced, so a poll that learned nothing says nothing.
     progress: tuple = ("", None)
+    # Set to read the run's status now rather than at the end of the current wait.
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class RunWatcher:
@@ -170,6 +172,22 @@ class RunWatcher:
         """Descriptors of the runs a live watch holds (what the dispatch guards consult)."""
         with self._lock:
             return [w.descriptor for w in self.watches.values() if not w.task.done()]
+
+    def cancel_op(self, job_key: str) -> dict | None:
+        """The call that stops *job_key*, as its descriptor names it; None when it names none."""
+        with self._lock:
+            watch = self.watches.get(job_key)
+        if watch is None or watch.task.done():
+            return None
+        found = watch.descriptor.get("cancel_op")
+        return found if isinstance(found, dict) and found.get("tool") else None
+
+    def poll_now(self, job_key: str) -> None:
+        """Have *job_key*'s watch read its status at once. On the loop the watch runs on."""
+        with self._lock:
+            watch = self.watches.get(job_key)
+        if watch is not None:
+            watch.wake.set()
 
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs still in flight."""
@@ -293,6 +311,8 @@ class RunWatcher:
             return
         call_timeout = (self.call_timeout if self.call_timeout is not None
                         else poll.STATUS_CALL_TIMEOUT)
+        with self._lock:
+            held = self.watches.get(job_key)
 
         def _tick(tick: poll.Tick) -> None:
             with self._lock:
@@ -320,7 +340,8 @@ class RunWatcher:
             call_timeout=call_timeout,
             unreadable_limit=(self.unreadable_limit if self.unreadable_limit is not None
                               else poll.UNREADABLE_POLL_LIMIT),
-            on_tick=_tick, label=job_key, cancel_flag=self.cancel_flag())
+            on_tick=_tick, label=job_key, cancel_flag=self.cancel_flag(),
+            wake=held.wake if held is not None else None)
         summary = await poll.read_summary(run_tool, summary_op, call_timeout=call_timeout,
                                           label=job_key)
         logger.info("background job %r of session %s finished (%s)",

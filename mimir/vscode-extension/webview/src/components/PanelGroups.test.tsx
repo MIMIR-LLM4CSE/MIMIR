@@ -40,7 +40,10 @@ const host: PanelGroup = {
 
 const tree = (open: Record<string, boolean>, groups: PanelGroup[] = [host]) =>
   renderToStaticMarkup(
-    <PanelGroupList groups={groups} open={open} onToggle={() => {}} onPrompt={() => {}} />,
+    <PanelGroupList
+      groups={groups} open={open} onToggle={() => {}} onPrompt={() => {}}
+      onCancelRun={() => {}}
+    />,
   );
 
 describe("a closed tree", () => {
@@ -119,6 +122,16 @@ describe("the runs on a machine", () => {
     expect(html).toContain("pid 4242");
     expect(html).toContain("make -j64");
     expect(html).toContain("this conversation");
+  });
+
+  it("offers to stop it only when its server said how", () => {
+    const opened = { [badgeKey(run)]: true };
+    const without = tree(opened, [{ ...host, badges: [run] }]);
+    expect(without).not.toContain(">Cancel</button>");
+    const stoppable = tree(opened, [{ ...host, badges: [{ ...run, cancellable: true }] }]);
+    expect(stoppable).toContain(">Cancel</button>");
+    // Asked first: the click itself only opens the confirmation.
+    expect(stoppable).not.toContain("Stop it");
   });
 });
 

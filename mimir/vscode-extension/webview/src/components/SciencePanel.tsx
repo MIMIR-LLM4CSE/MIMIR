@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
-import type { PanelSection } from "../types";
-import { PanelGroupList } from "./PanelGroups";
+import type { PanelSection, WatchedRun } from "../types";
+import { PanelGroupList, RunBadge } from "./PanelGroups";
 import { PanelResizer, usePanelWidth } from "./PanelResizer";
-import { toggle } from "./panelGroupUtils";
+import { badgeKey, isFilled, toggle } from "./panelGroupUtils";
 
 /** While the drawer is open, ask again this often. */
 const PANEL_POLL_MS = 10000;
@@ -15,8 +15,15 @@ const SECTION_ACCENT: Record<string, string> = {
 };
 const FALLBACK_ACCENT = "var(--mimir-violet)";
 
+/** A section as the drawer draws it; the runs one carries its badges itself. */
+type ShownSection = PanelSection & { unplaced?: WatchedRun[] };
+
 interface Props {
   sections: PanelSection[];
+  /** Runs the watcher holds that no machine row claimed. */
+  runs: WatchedRun[];
+  /** Stop a run with the cancel op its server named. */
+  onCancelRun: (jobKey: string) => void;
   /** Ask again, serving whatever the servers have cached. The timer's call. */
   onRefresh: () => void;
   /** Read it all again, cache bypassed, building this conversation's agent if it has
@@ -40,6 +47,8 @@ interface Props {
  */
 export const SciencePanel: React.FC<Props> = ({
   sections,
+  runs,
+  onCancelRun,
   onRefresh,
   onReload,
   refreshing,
@@ -54,7 +63,22 @@ export const SciencePanel: React.FC<Props> = ({
     (key: string) => setOpenGroups((open) => toggle(open, key)),
     [],
   );
+  // Which sections are folded, keyed on the section's id. Everything starts open: a
+  // section is shown only once it has something in it, and that is what to read.
+  const [foldedSections, setFoldedSections] = useState<Record<string, boolean>>({});
+  const toggleSection = useCallback(
+    (key: string) => setFoldedSections((folded) => toggle(folded, key)),
+    [],
+  );
   const { width, panelRef, handleProps } = usePanelWidth("science");
+  // The runs no machine claimed, as a section of their own: a run the user cannot see
+  // is one they cannot stop either.
+  const shown = [
+    ...sections.filter(isFilled),
+    ...(runs.length > 0
+      ? [{ section: "runs", title: "Runs", lines: [], unplaced: runs }]
+      : []),
+  ] as ShownSection[];
 
   // Opening the drawer serves whatever the servers have cached, and starts this
   // conversation's agent if it has none. It is not a re-read: a drawer that probed
@@ -88,7 +112,7 @@ export const SciencePanel: React.FC<Props> = ({
       </div>
 
       <div className="sessions-list">
-        {!agentReady && sections.length === 0 && (
+        {!agentReady && shown.length === 0 && (
           <div>
             <div className="science-skeleton" aria-hidden="true">
               <span />
@@ -102,35 +126,69 @@ export const SciencePanel: React.FC<Props> = ({
           </div>
         )}
 
-        {sections.map((section) => {
+        {agentReady && shown.length === 0 && (
+          <div className="sessions-empty">Nothing to report for this workspace yet.</div>
+        )}
+
+        {shown.map((section) => {
           const accent = SECTION_ACCENT[section.section.toLowerCase()] ?? FALLBACK_ACCENT;
+          const isOpen = !foldedSections[section.section];
+          const bodyId = `ps-${section.section}`;
           return (
           <div
-            className="science-section"
+            className={`science-section${isOpen ? "" : " is-folded"}`}
             key={section.section}
             style={{ ["--section-accent" as any]: accent }}
           >
-            <div className="science-section-title">{section.title}</div>
-            {section.lines.map((line, i) => (
-              <div className="science-line" key={i}>
-                <span className="science-line-label" title={line.label}>{line.label}</span>
-                <span
-                  className={`science-line-value ${line.state ? `is-${line.state}` : ""}`}
-                  title={line.value}
-                >
-                  {line.value}
-                </span>
+            <button
+              className="science-section-title"
+              aria-expanded={isOpen}
+              aria-controls={bodyId}
+              onClick={() => toggleSection(section.section)}
+            >
+              <span className="science-section-label">{section.title}</span>
+              <span className="science-section-chevron" aria-hidden="true">
+                {isOpen ? "▾" : "▸"}
+              </span>
+            </button>
+            {isOpen && (
+              <div id={bodyId} role="group">
+                {section.lines.map((line, i) => (
+                  <div className="science-line" key={i}>
+                    <span className="science-line-label" title={line.label}>{line.label}</span>
+                    <span
+                      className={`science-line-value ${line.state ? `is-${line.state}` : ""}`}
+                      title={line.value}
+                    >
+                      {line.value}
+                    </span>
+                  </div>
+                ))}
+                {section.groups && section.groups.length > 0 && (
+                  <PanelGroupList
+                    groups={section.groups}
+                    open={openGroups}
+                    onToggle={toggleGroup}
+                    onPrompt={onPrompt}
+                    onCancelRun={onCancelRun}
+                  />
+                )}
+                {section.unplaced && (
+                  <div className="science-badges is-flat">
+                    {section.unplaced.map((run) => (
+                      <RunBadge
+                        key={run.job_key}
+                        run={run}
+                        open={!!openGroups[badgeKey(run)]}
+                        onToggle={() => toggleGroup(badgeKey(run))}
+                        onCancel={onCancelRun}
+                      />
+                    ))}
+                  </div>
+                )}
+                {section.detail && <div className="science-detail">{section.detail}</div>}
               </div>
-            ))}
-            {section.groups && section.groups.length > 0 && (
-              <PanelGroupList
-                groups={section.groups}
-                open={openGroups}
-                onToggle={toggleGroup}
-                onPrompt={onPrompt}
-              />
             )}
-            {section.detail && <div className="science-detail">{section.detail}</div>}
           </div>
           );
         })}

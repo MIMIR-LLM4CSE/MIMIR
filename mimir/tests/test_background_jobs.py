@@ -2332,3 +2332,94 @@ class RewatchDetectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Stopping a run from the panel ──────────────────────────────────────────────
+
+class CancelOpTests(unittest.TestCase):
+    """A run's own server names how to stop it; the panel's Cancel calls that, then has
+    the watch read the run again at once, so the ending wakes the conversation now."""
+
+    def test_a_shell_job_is_stopped_where_its_files_are(self) -> None:
+        desc = shared_jobs.shell_descriptor("k1", "/state/sessions/s1/jobs/k1")
+        self.assertEqual(desc["cancel_op"], {
+            "tool": "bash_job_stop",
+            "args": {"job_key": "k1", "run_dir": "/state/sessions/s1/jobs/k1"}})
+
+    def test_an_adopted_process_offers_no_stop(self) -> None:
+        # Its process group is not one the server made.
+        import tempfile
+        with tempfile.TemporaryDirectory() as job_dir:
+            with open(os.path.join(job_dir, shared_jobs.META), "w") as fh:
+                json.dump({"pid": 1, "adopted": True}, fh)
+            self.assertNotIn("cancel_op", shared_jobs.shell_descriptor("k1", job_dir))
+
+    def test_a_slurm_job_is_cancelled_confirmed(self) -> None:
+        desc = shared_jobs.slurm_descriptor("1234")
+        self.assertEqual(desc["cancel_op"], {
+            "tool": "slurm_cancel", "args": {"job_id": "1234", "confirm": True}})
+
+    def test_a_woken_poll_reads_again_without_waiting_its_interval(self) -> None:
+        agent = _ScriptedAgent(states=["running", "done"], summary={})
+        wake = asyncio.Event()
+
+        async def _drive():
+            # An hour between reads: only the wake can get this done inside the timeout.
+            wake.set()
+            first = asyncio.get_running_loop().create_task(job_poll.poll_until_terminal(
+                agent.run_tool, {"tool": "bash_job", "args": {"job_key": "k"}},
+                interval=3600.0, max_interval=3600.0, wake=wake,
+                on_tick=lambda _tick: wake.set()))
+            return await asyncio.wait_for(first, timeout=5)
+
+        state, _reason = asyncio.run(_drive())
+        self.assertEqual(state, "done")
+        self.assertEqual(agent.status_calls, 2)
+
+    def _worker(self):
+        from mimir.client.ui.ws.worker.worker import AgentWorker
+        worker = AgentWorker("test-model", start=False)
+        worker._agent = object()
+        return worker
+
+    def _with_watch(self, worker, descriptor, body):
+        async def _drive():
+            held = asyncio.get_running_loop().create_task(asyncio.Event().wait())
+            worker.jobs.watches["k1"] = _Watch(held, descriptor)
+            try:
+                return await body(worker.jobs.watches["k1"])
+            finally:
+                held.cancel()
+        return asyncio.run(_drive())
+
+    def test_cancel_calls_the_op_and_polls_at_once(self) -> None:
+        worker = self._worker()
+        desc = shared_jobs.shell_descriptor("k1", "/state/sessions/s1/jobs/k1")
+        called = mock.AsyncMock(return_value={"status": "ok", "state": "unknown"})
+
+        async def body(watch):
+            with mock.patch("mimir.client.ui.ws.worker.jobs.call_tool_directly", called):
+                payload = await worker.jobs.cancel("k1")
+            return payload, watch.wake.is_set(), worker.jobs.watched_runs()
+
+        payload, woken, runs = self._with_watch(worker, desc, body)
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(woken)
+        called.assert_awaited_once()
+        self.assertEqual(called.await_args.args[1:], ("bash_job_stop", desc["cancel_op"]["args"]))
+        self.assertTrue(runs[0]["cancellable"])
+
+    def test_a_run_naming_no_stop_is_refused_without_a_call(self) -> None:
+        worker = self._worker()
+        desc = shared_jobs.descriptor(server="agent", kind="sub-agent", job_key="k1",
+                                      status_op=shared_jobs.op("subagent_job", job_key="k1"))
+        called = mock.AsyncMock()
+
+        async def body(_watch):
+            with mock.patch("mimir.client.ui.ws.worker.jobs.call_tool_directly", called):
+                return await worker.jobs.cancel("k1"), worker.jobs.watched_runs()
+
+        payload, runs = self._with_watch(worker, desc, body)
+        self.assertEqual(payload["status"], "error")
+        called.assert_not_awaited()
+        self.assertFalse(runs[0]["cancellable"])

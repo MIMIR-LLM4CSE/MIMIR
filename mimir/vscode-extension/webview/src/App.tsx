@@ -315,6 +315,8 @@ export const App: React.FC = () => {
       {showSciencePanel && connection === "connected" && (
         <SciencePanel
           sections={panelSections}
+          runs={panels.panelRuns}
+          onCancelRun={panels.cancelRun}
           onRefresh={refreshPanel}
           onReload={reloadPanel}
           refreshing={panelPending}

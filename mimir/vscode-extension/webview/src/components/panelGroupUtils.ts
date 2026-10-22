@@ -1,4 +1,4 @@
-import type { PanelGroup, RunOrigin, WatchedRun } from "../types";
+import type { PanelGroup, PanelSection, RunOrigin, WatchedRun } from "../types";
 
 /**
  * The logic behind the panel's tree, kept out of the component so it can be read and
@@ -21,6 +21,14 @@ export function toggle(open: Record<string, boolean>, key: string): Record<strin
     next[key] = true;
   }
   return next;
+}
+
+/**
+ * Whether a section has anything to read: a line or a row. A detail alone is the server
+ * saying there is nothing here ("no optimisation session"), which is not worth a card.
+ */
+export function isFilled(section: PanelSection): boolean {
+  return section.lines.length > 0 || (section.groups?.length ?? 0) > 0;
 }
 
 /** Every group id in a tree, for a caller that wants to open or close all of them. */
@@ -71,8 +79,15 @@ export function elapsedLabel(run: WatchedRun): string {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }
 
+/** The run's kind as a heading: "slurm-batch" reads "Slurm batch". Read, not mapped. */
+export function kindLabel(run: WatchedRun): string {
+  const words = (run.kind || "run").replace(/[-_]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 /**
- * The rows inside an opened badge: what this run is, and whose.
+ * The rows inside an opened badge, under its heading, progress and command: where the
+ * run is, how long it has gone, and whose it is.
  *
  * Built here rather than in the markup so the order and the omissions are one decision
  * in one place: a field the status op did not report is a row that does not appear,
@@ -82,12 +97,11 @@ export function badgeDetailRows(run: WatchedRun): { label: string; value: string
   const rows: { label: string; value: string }[] = [];
   if (run.job_id) rows.push({ label: "job", value: run.job_id });
   else if (run.pid) rows.push({ label: "pid", value: String(run.pid) });
-  if (run.command) rows.push({ label: "command", value: run.command });
+  if (run.scheduler) rows.push({ label: "scheduler", value: run.scheduler });
   const nodes = run.nodes ?? [];
-  if (nodes.length > 1) rows.push({ label: "nodes", value: nodes.join(", ") });
-  if (run.state) rows.push({ label: "state", value: run.state });
-  const progress = progressLabel(run);
-  if (progress) rows.push({ label: "progress", value: progress });
+  if (nodes.length > 0) {
+    rows.push({ label: nodes.length > 1 ? "nodes" : "node", value: nodes.join(", ") });
+  }
   const elapsed = elapsedLabel(run);
   if (elapsed) rows.push({ label: "running for", value: elapsed });
   rows.push({ label: "launched by", value: originLabel(run.origin) });

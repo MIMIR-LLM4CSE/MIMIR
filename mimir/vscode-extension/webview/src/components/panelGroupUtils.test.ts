@@ -6,11 +6,13 @@ import {
   badgeLabel,
   elapsedLabel,
   groupKeys,
+  isFilled,
+  kindLabel,
   originLabel,
   progressLabel,
   toggle,
 } from "./panelGroupUtils";
-import type { PanelGroup, WatchedRun } from "../types";
+import type { PanelGroup, PanelSection, WatchedRun } from "../types";
 
 const run = (over: Partial<WatchedRun> = {}): WatchedRun =>
   ({ job_key: "k1", ...over }) as WatchedRun;
@@ -117,8 +119,31 @@ describe("the rows inside an opened badge", () => {
       }),
     );
     expect(rows.map((r) => r.label)).toEqual([
-      "job", "command", "nodes", "state", "progress", "running for", "launched by",
+      "job", "nodes", "running for", "launched by",
     ]);
     expect(rows[rows.length - 1].value).toBe("sub-agent: sweep the tile size");
+  });
+});
+
+describe("which sections the panel shows", () => {
+  const section = (over: Partial<PanelSection> = {}): PanelSection =>
+    ({ section: "s", title: "S", lines: [], ...over });
+
+  it("shows one with a line or a row", () => {
+    expect(isFilled(section({ lines: [{ label: "CPU", value: "8" }] }))).toBe(true);
+    expect(isFilled(section({ groups: [{ id: "g", label: "slurm" }] }))).toBe(true);
+  });
+
+  it("hides one that only says there is nothing", () => {
+    expect(isFilled(section())).toBe(false);
+    expect(isFilled(section({ detail: "No optimisation session in this workspace." }))).toBe(false);
+  });
+});
+
+describe("the heading of an opened badge", () => {
+  it("reads the kind the server gave, in words", () => {
+    expect(kindLabel(run({ kind: "slurm-batch" }))).toBe("Slurm batch");
+    expect(kindLabel(run({ kind: "proxy-optimization" }))).toBe("Proxy optimization");
+    expect(kindLabel(run())).toBe("Run");
   });
 });

@@ -35,6 +35,7 @@ class PanelHandlers(Handlers):
         "list_subagents": "on_list_subagents",
         "list_panel": "on_list_panel",
         "read_subagent": "on_read_subagent",
+        "cancel_run": "on_cancel_run",
     }
 
     def __init__(self, view: ViewState, out: Sender, pool: AgentPool, screen: Screen) -> None:
@@ -136,6 +137,27 @@ class PanelHandlers(Handlers):
             "runs": unplaced,
             "sections": sections,
         })
+
+    async def on_cancel_run(self, msg: dict) -> None:
+        """Stop a run the panel shows, by the cancel op its own server named.
+
+        Only what the conversation's watcher holds can be stopped, so a run is never
+        named by the panel alone. The conversation hears of it from the watcher, which
+        polls at once and reports the ending like any other.
+        """
+        job_key = str(msg.get("job_key") or "")
+        worker = self.pool.get(self.view.active_session_id)
+        if not job_key or worker is None:
+            await self.screen.command_reply("cancel", "No run of this conversation to stop.",
+                                            tone="warn")
+            return
+        payload = await asyncio.wrap_future(worker.cancel_run(job_key))
+        # A reply card, not an error: an error ends the turn on screen, and the agent
+        # may well be working beside the run.
+        if payload.get("status") == "error":
+            await self.screen.command_reply("cancel", f"Could not stop {job_key}",
+                                            note=str(payload.get("error") or ""), tone="warn")
+        self._request_panel()
 
     async def on_list_subagents(self, msg: dict) -> None:
         """Serve the sub-agents of the session in view.

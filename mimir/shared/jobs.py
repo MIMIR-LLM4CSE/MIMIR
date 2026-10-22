@@ -6,6 +6,7 @@ nothing here imports the client. Slurm's states are read in ``slurm_site``.
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -73,30 +74,54 @@ def op(tool: str, **args: Any) -> dict:
 
 
 def descriptor(*, server: str, kind: str, job_key: str, status_op: dict,
-               summary_op: dict | None = None, run_dir: str = "") -> dict:
-    """The handle a watcher polls: *status_op* until a terminal state, then *summary_op*."""
+               summary_op: dict | None = None, cancel_op: dict | None = None,
+               run_dir: str = "") -> dict:
+    """The handle a watcher polls: *status_op* until a terminal state, then *summary_op*.
+
+    *cancel_op* is the call that stops the run, offered to the user beside it; a run
+    without one cannot be stopped from outside the conversation.
+    """
     out: dict[str, Any] = {"server": server, "kind": kind, "job_key": job_key}
     if run_dir:
         out["run_dir"] = run_dir
     out["status_op"] = status_op
     if summary_op:
         out["summary_op"] = summary_op
+    if cancel_op:
+        out["cancel_op"] = cancel_op
     return out
+
+
+def _adopted(job_dir: str) -> bool:
+    """Whether the shell job in *job_dir* is a process this server did not start."""
+    try:
+        with open(os.path.join(job_dir, META)) as fh:
+            return bool(json.load(fh).get("adopted"))
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def shell_descriptor(job_key: str, job_dir: str) -> dict:
     """A detached shell job. Its directory travels in the op args, so a job of a
-    sub-agent's session still resolves from the parent."""
+    sub-agent's session still resolves from the parent.
+
+    An adopted process gets no cancel op: its process group is not one this server
+    made, and stopping the group could take the user's own shell with it.
+    """
+    cancel = (None if _adopted(job_dir)
+              else op("bash_job_stop", job_key=job_key, run_dir=job_dir))
     return descriptor(server="bash", kind="shell-command", job_key=job_key, run_dir=job_dir,
                       status_op=op("bash_job", job_key=job_key, run_dir=job_dir),
                       summary_op=op("bash_job", op="output", job_key=job_key,
-                                    run_dir=job_dir))
+                                    run_dir=job_dir),
+                      cancel_op=cancel)
 
 
 def slurm_descriptor(job_id: str) -> dict:
     """A Slurm job of this workspace, polled by the HPC server."""
     return descriptor(server="hpc", kind="slurm-batch", job_key=job_id,
-                      status_op=op("slurm_job_status", job_id=job_id))
+                      status_op=op("slurm_job_status", job_id=job_id),
+                      cancel_op=op("slurm_cancel", job_id=job_id, confirm=True))
 
 
 def job_key_of(desc: dict) -> str:

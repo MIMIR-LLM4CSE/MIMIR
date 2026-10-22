@@ -4347,13 +4347,35 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   display: flex;
   align-items: center;
   gap: 7px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg);
+  text-align: left;
+  cursor: pointer;
   margin-bottom: 6px;
 }
+
+/* Folded, the card is its title alone. */
+.science-section.is-folded { padding-bottom: 10px; }
+.science-section.is-folded .science-section-title { margin-bottom: 0; }
+
+.science-section-label { flex: 1 1 auto; }
+
+.science-section-chevron {
+  font-size: 1.1em;
+  opacity: 0.6;
+  flex-shrink: 0;
+  transition: opacity var(--motion-fast);
+}
+
+.science-section-title:hover .science-section-chevron { opacity: 1; }
 
 /* The section's accent, as a short bar ahead of its title. */
 .science-section-title::before {
@@ -4566,11 +4588,92 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   background: color-mix(in srgb, var(--vscode-charts-blue, #4aa3ff) 8%, transparent);
 }
 
-.science-badge-detail {
+/* An opened run: a card of its own under the badges, so what it is reads apart from
+   the machine rows around it. */
+.science-run {
   width: 100%;
-  padding-left: 4px;
-  border-left: 1px solid var(--border);
+  margin: 2px 0 4px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--section-accent, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--surface-2, var(--surface-1));
 }
+
+.science-run-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.science-run-kind { font-weight: 600; font-size: 12.5px; }
+
+.science-run-state {
+  margin-left: auto;
+  font-size: 10.5px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+
+.science-run-state.is-running {
+  color: var(--vscode-charts-blue, #4aa3ff);
+  border-color: color-mix(in srgb, var(--vscode-charts-blue, #4aa3ff) 50%, transparent);
+}
+
+.science-run-state.is-unreadable { color: var(--vscode-charts-yellow, #d7a441); }
+
+.science-run-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 6px;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+
+.science-run-bar {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg-dim) 18%, transparent);
+}
+
+.science-run-bar span {
+  display: block;
+  height: 100%;
+  background: var(--section-accent, var(--vscode-charts-blue, #4aa3ff));
+  transition: width var(--motion-fast);
+}
+
+.science-run-phase { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+/* The command whole, wrapped: it is what the reader opened the run to see. */
+.science-run-command {
+  display: block;
+  margin: 2px 0 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--fg-dim) 10%, transparent);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.science-run-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+
+.science-group-action.is-danger { color: var(--vscode-charts-red, #e06c6c); }
+.science-group-action.is-danger:hover {
+  border-color: color-mix(in srgb, var(--vscode-charts-red, #e06c6c) 60%, transparent);
+}
+
+/* Runs no machine claimed sit directly under their title, not indented as a row's. */
+.science-badges.is-flat { padding-left: 0; }
 
 .subagent-badge {
   font-size: 9px;

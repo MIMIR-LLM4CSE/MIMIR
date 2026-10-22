@@ -4,7 +4,7 @@
 // anything is still working.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, PanelSection, SubAgent, SubAgentLevel } from "../types";
+import type { ClientMessage, PanelSection, SubAgent, SubAgentLevel, WatchedRun } from "../types";
 import type { ServerHandlers } from "../state/serverMessages";
 
 /** How often the cards are re-read while a turn runs or a sub-agent works. */
@@ -26,6 +26,8 @@ export function usePanels(send: (msg: ClientMessage) => void,
   const [runningSubAgents, setRunningSubAgents] = useState(0);
   const [subAgentLevel, setSubAgentLevel] = useState<SubAgentLevel>("explore");
   const [panelSections, setPanelSections] = useState<PanelSection[]>([]);
+  // The runs no machine row claimed: shown on their own rather than not at all.
+  const [panelRuns, setPanelRuns] = useState<WatchedRun[]>([]);
   // A ⟳ in flight, so the button can say so: a re-read of the clusters takes seconds.
   const [panelPending, setPanelPending] = useState(false);
   // Whether the last report came from a conversation that has an agent: before one is
@@ -35,6 +37,11 @@ export function usePanels(send: (msg: ClientMessage) => void,
   const [showSubAgentsPanel, setShowSubAgentsPanel] = useState(false);
 
   const refreshSubAgents = useCallback(() => send({ type: "list_subagents" }), [send]);
+  // The server answers with a fresh report; the watcher wakes the conversation.
+  const cancelRun = useCallback(
+    (jobKey: string) => send({ type: "cancel_run", job_key: jobKey }),
+    [send],
+  );
   // One call fills the whole drawer from the servers' caches. `build`: before the
   // first query there is no agent holding the servers; a no-op once one is up.
   const refreshPanel = useCallback(() => send({ type: "list_panel", build: true }), [send]);
@@ -98,13 +105,15 @@ export function usePanels(send: (msg: ClientMessage) => void,
       // asks again on `ready`.
       if (msg.agent_ready !== false || (msg.sections?.length ?? 0) > 0) {
         setPanelSections(msg.sections ?? []);
+        setPanelRuns(msg.runs ?? []);
       }
     },
     subagent: (msg) => setOpenedSubAgent(msg.subagent ?? null),
   }), []);
 
   return {
-    subAgents, openedSubAgent, runningSubAgents, subAgentLevel, panelSections,
+    subAgents, openedSubAgent, runningSubAgents, subAgentLevel, panelSections, panelRuns,
+    cancelRun,
     panelPending, panelAgentReady, showSciencePanel, showSubAgentsPanel,
     setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
     refreshSubAgents, refreshPanel, reloadPanel, openSubAgent, changeSubAgentLevel,

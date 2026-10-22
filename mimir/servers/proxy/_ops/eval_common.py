@@ -45,4 +45,5 @@ def eval_background_descriptor(name: str, run_dir: str) -> dict:
         run_dir, kind="proxy-optimization",
         status_op={"tool": "proxy_eval_status", "args": {"proxy_name": name}},
         summary_op={"tool": "proxy_eval_status",
-                    "args": {"op": "results", "proxy_name": name}})
+                    "args": {"op": "results", "proxy_name": name}},
+        cancel_op={"tool": "proxy_eval", "args": {"op": "stop", "proxy_name": name}})
