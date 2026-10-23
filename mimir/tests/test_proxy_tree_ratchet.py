@@ -15,7 +15,6 @@ _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers
 from mimir.servers.proxy._lib import layout
 from mimir.servers.proxy._lib import ratchet, store, tree_snapshot
 from mimir.shared.atomic import write_json
-from mimir.tests.support.modules import spec_for
 
 
 class _Workspace(unittest.TestCase):
@@ -308,13 +307,10 @@ class ReplicateAggregationTests(unittest.TestCase):
     """Replicates collapse to their middle, never to their best."""
 
     def _runner(self):
-        import importlib.util
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "servers", "proxy", "_proxy_runner.py")
-        spec = spec_for(path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        # The module itself, not a fresh copy: its dataclasses resolve their annotations
+        # through sys.modules, where a copy loaded on the side is not.
+        from mimir.servers.proxy import _proxy_runner
+        return _proxy_runner
 
     def test_the_median_is_taken_not_the_minimum(self) -> None:
         runner = self._runner()
