@@ -4488,6 +4488,24 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 }
 .science-open:hover { background: var(--accent-hover); }
 
+/* A section's small map (the code's components): cards in bands by tier, the links drawn
+   over them in one SVG once the cards are placed. */
+.science-minimap { position: relative; display: grid; gap: 12px; margin-top: 8px; }
+.science-minimap-links { position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none; overflow: visible; }
+.science-minimap-links path { fill: none; stroke: var(--fg-dim); stroke-opacity: .45; stroke-width: 1; }
+.science-minimap-links path.is-break { stroke: var(--danger); stroke-opacity: 1; stroke-width: 1.5; }
+.science-minimap-band { display: flex; flex-wrap: wrap; gap: 6px; position: relative; z-index: 1; }
+.science-minimap-card { flex: 1 1 90px; min-width: 0; display: grid; gap: 1px; text-align: left;
+  padding: 4px 7px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg); color: var(--fg); font: inherit; cursor: pointer; }
+.science-minimap-card:hover { border-color: var(--accent); }
+.science-minimap-name { font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.science-minimap-sub { font-size: 11px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.science-minimap-sub .is-break { color: var(--danger); }
+.science-minimap-sub .is-cycle { color: var(--vscode-charts-purple, #b180d7); }
+
 /* While the agent comes up: placeholder bars rather than a bare sentence. */
 .science-skeleton {
   display: flex;

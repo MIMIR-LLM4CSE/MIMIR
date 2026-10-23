@@ -126,8 +126,10 @@ class Panel:
                     "lines": lines,
                     "groups": groups,
                     "detail": detail,
-                    # A view the section offers to open (the code map), by name.
+                    # A view the section offers to open (the code map), by name, and the
+                    # small map of it the drawer draws: passed through unread, as groups are.
                     "open": payload.get("open") or "",
+                    **({"map": payload["map"]} if isinstance(payload.get("map"), dict) else {}),
                 })
             return out
 

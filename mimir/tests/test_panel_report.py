@@ -729,6 +729,19 @@ def test_the_architecture_section_says_what_the_code_is_made_of(tmp_path):
     assert lines["code"]["value"] == "3 files · 1 modules"
     assert lines["languages"]["value"] == "python 3"
     assert lines["rule breaks"]["value"] == "none"
+    assert section["map"]["components"] == [
+        {"id": "pkg", "name": "pkg", "tier": 0, "files": 3, "breaks": 0, "cycles": 0}]
+
+
+def test_the_drawer_s_map_stacks_the_components_and_leaves_the_tests_out(tmp_path):
+    from mimir.servers.workspace import code_map_report
+    for rel, text in {"src/core/types.h": "", "src/mesh/mesh.h": '#include "types.h"\n',
+                      "tests/test_mesh.cc": '#include "mesh.h"\n'}.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    small = code_map_report.panel(str(tmp_path), refresh=True)["map"]
+    assert [c["name"] for c in small["components"]] == ["mesh", "core"]
+    assert small["links"] == [{"from": "src/mesh", "to": "src/core", "n": 1, "breaks": 0}]
 
 
 def test_a_workspace_without_code_says_so_in_its_detail(tmp_path):
@@ -751,6 +764,7 @@ def test_a_section_s_view_to_open_travels_to_the_drawer():
     sections = future.result(timeout=5)
     loop.close()
     assert sections[0]["open"] == "code_map"
+    assert "map" not in sections[0]
 
 
 def test_the_code_map_is_asked_whole_of_whoever_declares_it():

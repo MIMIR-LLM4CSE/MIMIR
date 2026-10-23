@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { PanelSection, WatchedRun } from "../types";
 import { PanelGroupList, RunBadge } from "./PanelGroups";
+import { PanelMiniMap } from "./PanelMiniMap";
 import { PanelResizer, usePanelWidth } from "./PanelResizer";
 import { badgeKey, isFilled, toggle } from "./panelGroupUtils";
 
@@ -191,6 +192,9 @@ export const SciencePanel: React.FC<Props> = ({
                   </div>
                 )}
                 {section.detail && <div className="science-detail">{section.detail}</div>}
+                {section.map && section.open && section.map.components.length > 0 && (
+                  <PanelMiniMap map={section.map} onOpen={() => onOpenView(section.open!)} />
+                )}
                 {section.open === "code_map" && (
                   <button className="science-open" onClick={() => onOpenView("code_map")}>
                     Open map

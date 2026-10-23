@@ -55,6 +55,14 @@ export interface PanelSection {
   detail?: string;
   /** A view the section offers to open, by name ("code_map"). */
   open?: string;
+  /** A small map of what the view shows, drawn in the section (the code's components). */
+  map?: PanelMiniMap;
+}
+
+/** Components stacked by tier, highest first, and the links between them. */
+export interface PanelMiniMap {
+  components: { id: string; name: string; tier: number; files: number; breaks: number; cycles: number }[];
+  links: { from: string; to: string; n: number; breaks: number }[];
 }
 
 export interface PanelReportMessage {

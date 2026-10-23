@@ -523,7 +523,10 @@ the answer survives a refresh; native `<details>` would lose it, since the drawe
 re-renders on every `panel_report`.
 
 **A section may offer a view.** A section answering `open: "code_map"` (the Architecture
-section) gets an "Open map" button: the drawer sends `code_map` over the socket, the
+section) may also send a small `map` of it — components and the links between them —
+which `PanelMiniMap` draws in the section: cards in bands by tier, highest first, the
+links traced over them once placed (red for one carrying a rule break), ✕ and ↻ counts on
+each card; a card opens the full map. The section gets an "Open map" button: the drawer sends `code_map` over the socket, the
 server answers the map whole, and the webview hands it to the host as `show_code_map`.
 `codeMapView.ts` draws it in one editor tab, its own bundle (`dist/codemap.js`, from
 `webview/src/codemap/`, plain TypeScript): the modules in bands, one per component
