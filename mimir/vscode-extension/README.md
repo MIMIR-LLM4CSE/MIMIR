@@ -123,7 +123,7 @@ your shell still applies.
 | Customization | `mimir.customization.systemPromptFile`, `mimir.customization.skillsDir`, `mimir.customization.pluginsDir`, `mimir.customization.serversDir`, `mimir.workspace.extraReadRoots` |
 | HPC | `mimir.hpc.moduleIndexBudget`, `mimir.hpc.slurmStaleAfter` |
 | Installation | `mimir.pythonPath` (see below), `mimir.releaseHome` |
-| Notifications | `mimir.notifications.enabled` |
+| Notifications | `mimir.notifications.enabled`, `mimir.notifications.duration` |
 | Advanced | `mimir.server.env`: any other variable, as `{"NAME": "value"}`. It wins over the settings above, and only your user settings can set it, never a workspace |
 
 **Which Python runs the server.** The extension looks in this order:

@@ -28,9 +28,10 @@ reconnect and holds the others:
 | `localServer.ts` | `LocalServer`: the server this window is responsible for (spawned child, attached pid, detached flag), its log mirror, the start and stop commands |
 | `serverEnv.ts`, `selfUpdate.ts` | the interpreter and environment the server runs with; the shared site release |
 | `serverRegistry.ts` | the server a workspace already has, read from its registry entry |
+| `diskFull.ts` | telling a start that died of an exceeded quota or a full disk, from its log or a probe write |
 | `modelProbe.ts`, `modelList.ts`, `directHttp.ts` | the model list of an endpoint, fetched past the editor's proxy |
 | `workspaceFiles.ts`, `fileIndex.ts` | the "@" autocomplete's file list and its ranking |
-| `notifications.ts` | native notifications while the chat is not in front of the user |
+| `notifications.ts` | native notifications while the chat is not in front of the user; `showToast`, which every MIMIR notification goes through, hides them after `mimir.notifications.duration` |
 | `editors.ts`, `patch.ts`, `planPreview.ts` | opening files, diffs and patches; the plan panel |
 | `endpoints.ts` | the endpoint remembered for unattended reconnects |
 

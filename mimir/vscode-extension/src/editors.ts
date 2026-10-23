@@ -10,6 +10,7 @@ import { reversePatch } from "./patch";
 import { showPlanPreview } from "./planPreview";
 import type { HostMessageOf } from "./shared/hostMessages";
 import { workspacePath } from "./workspace";
+import { showToast } from "./notifications";
 
 /** The contents of the `mimir-diff:` documents, keyed by URI path. */
 const virtualContent = new Map<string, string>();
@@ -45,7 +46,7 @@ export function openFile(m: HostMessageOf<"open_file">): void {
         editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       });
     },
-    () => vscode.window.showWarningMessage(`MIMIR: cannot open ${m.file}`)
+    () => showToast("warn", `MIMIR: cannot open ${m.file}`)
   );
 }
 
@@ -59,7 +60,7 @@ export function openPreview(m: HostMessageOf<"open_preview">): void {
   }
   vscode.workspace.openTextDocument(vscode.Uri.file(abs)).then(
     (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-    () => vscode.window.showWarningMessage(`MIMIR: cannot open ${m.file}`)
+    () => showToast("warn", `MIMIR: cannot open ${m.file}`)
   );
 }
 
@@ -80,7 +81,7 @@ export function openDiff(m: HostMessageOf<"open_diff">): void {
       // A new file: the proposed content alone, not an empty-vs-new diff.
       vscode.workspace.openTextDocument(proposedUri).then(
         (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-        () => vscode.window.showWarningMessage(`MIMIR: cannot preview new file ${rel}`)
+        () => showToast("warn", `MIMIR: cannot preview new file ${rel}`)
       );
     }
     return;
@@ -97,7 +98,7 @@ export function openDiff(m: HostMessageOf<"open_diff">): void {
   }
   vscode.workspace.openTextDocument(currentUri).then(
     (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-    () => vscode.window.showWarningMessage(`MIMIR: cannot open ${rel}`)
+    () => showToast("warn", `MIMIR: cannot open ${rel}`)
   );
 }
 
@@ -109,6 +110,6 @@ export function openPatch(m: HostMessageOf<"open_patch">): void {
   const patchUri = vscode.Uri.from({ scheme: "mimir-diff", path: patchKey });
   vscode.workspace.openTextDocument(patchUri).then(
     (doc) => vscode.window.showTextDocument(doc, { preview: true }),
-    () => vscode.window.showWarningMessage(`MIMIR: cannot open patch for ${m.file}`)
+    () => showToast("warn", `MIMIR: cannot open patch for ${m.file}`)
   );
 }

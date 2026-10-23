@@ -15,6 +15,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **MIMIR's notifications leave the screen after 5 seconds** of the window having
+  focus, instead of staying until closed. They move to the notification centre (the
+  bell), buttons included. `mimir.notifications.duration` sets the time; 0 keeps the
+  old behaviour.
+
+### Fixed
+- **A server that cannot start because the disk quota is exceeded, or the disk is
+  full, now says so.** An error notification, also written to the "MIMIR Server"
+  output, names the directory it could not write to. Before, the server exited with
+  an empty log and only its exit code was shown.
+
 ## [1.9.0] — 2026-10-23
 
 ### Added

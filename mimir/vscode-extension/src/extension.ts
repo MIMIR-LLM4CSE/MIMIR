@@ -10,6 +10,7 @@ import { stopPlanWatch } from "./planPreview";
 import { maybeSelfUpdate } from "./selfUpdate";
 import { disposeServerChannel } from "./serverChannel";
 import { affectsServerEnv } from "./serverEnv";
+import { showToast } from "./notifications";
 
 /** The server this window is responsible for, reachable from `deactivate()`. */
 let localServer: LocalServer | undefined;
@@ -64,7 +65,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (noticeShown || !affectsServerEnv(event)) return;
       noticeShown = true;
-      const choice = await vscode.window.showInformationMessage(
+      const choice = await showToast(
+        "info",
         "MIMIR passes this setting to its server when the server starts. " +
         "A server already running keeps the old value until it is stopped.",
         "Stop Server"

@@ -5,10 +5,12 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as fs from "fs";
+import { describeDiskFull, diagnoseDiskFull } from "./diskFull";
 import { serverChannel } from "./serverChannel";
-import { findLiveServer, logPath, waitForServer } from "./serverRegistry";
+import { findLiveServer, logPath, stateDir, waitForServer } from "./serverRegistry";
 import { mimirServerEnv, noProxyFor, resolvePython, settingsEnv } from "./serverEnv";
 import { workspaceRoot } from "./workspace";
+import { showToast } from "./notifications";
 
 /** What a connect asks the server to run on. */
 export interface SpawnRequest {
@@ -133,16 +135,17 @@ export class LocalServer {
       backend === "anthropic" && req.anthropicApiKey ? { ANTHROPIC_API_KEY: req.anthropicApiKey } : {};
     // Our own child supersedes any attached pid.
     this.attachedPid = undefined;
+    // Anchor the agent's per-workspace state dir (.mimir) and the file-server root to
+    // the opened workspace, regardless of the process cwd. The base env is
+    // mimirServerEnv(): the user's PYTHONHOME/PYTHONPATH never reach the server's
+    // interpreter (see there).
+    const env = {
+      ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...noProxyEnv, ...settingsEnv(),
+      ...anthropicEnv,
+    };
     const spawned = cp.spawn("bash", ["-c", spawnCmd], {
       cwd,
-      // Anchor the agent's per-workspace state dir (.mimir) and the file-server
-      // root to the opened workspace, regardless of the process cwd. The base
-      // env is mimirServerEnv(): the user's PYTHONHOME/PYTHONPATH never reach
-      // the server's interpreter (see there).
-      env: {
-        ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...noProxyEnv, ...settingsEnv(),
-        ...anthropicEnv,
-      },
+      env,
       // Its own process session, from birth. Nothing about this window's teardown can
       // then reach it implicitly — not a process-group signal, not a SIGHUP, not the
       // editor tidying up its tree — so the only thing that ends it is the explicit
@@ -160,9 +163,21 @@ export class LocalServer {
     outputChannel.appendLine(`Output: ${serverLog}`);
     this.tailLog(outputChannel, serverLog);
 
+    let listening = false;
     spawned.on("exit", (code) => {
       if (this.child !== spawned) return;
       outputChannel.appendLine(`\nServer exited (code ${code}) — see ${serverLog}`);
+      // A full disk is named outright: its log is usually empty, and nothing else says why.
+      // Where the server writes is the user's choice, so each place is tried: its log,
+      // its state dir as its own environment sets it, and the workspace.
+      const full = !listening && code !== 0
+        ? diagnoseDiskFull(serverLog, [stateDir(cwd, env), cwd])
+        : undefined;
+      if (full) {
+        const message = describeDiskFull(full);
+        outputChannel.appendLine(message);
+        void showToast("error", message);
+      }
       this.child = undefined;
       onExit();
     });
@@ -172,6 +187,7 @@ export class LocalServer {
     // its socket is bound. Everything before that — MCP handshakes, model resolution —
     // can take a while on a cold start.
     const entry = await waitForServer(cwd, spawned.pid);
+    listening = entry !== undefined;
     if (this.child !== spawned && entry === undefined) return { kind: "superseded" };
     if (!entry) {
       outputChannel.appendLine(
@@ -201,7 +217,7 @@ export class LocalServer {
     const pythonPath = resolvePython(this.extensionRoot);
 
     if (this.childRunning) {
-      vscode.window.showInformationMessage("MIMIR WS server is already running.");
+      showToast("info", "MIMIR WS server is already running.");
       return;
     }
 
@@ -232,7 +248,7 @@ export class LocalServer {
       this.child = undefined;
     });
 
-    vscode.window.showInformationMessage("MIMIR WS server started.");
+    showToast("info", "MIMIR WS server started.");
     // Not left running on window close: ended through the one path out, like every
     // other departure.
     context.subscriptions.push({ dispose: () => this.endUnlessKeptRunning() });
@@ -246,7 +262,8 @@ export class LocalServer {
   async stopFromCommand(): Promise<void> {
     const entry = await findLiveServer(workspaceRoot());
     if (!entry) {
-      vscode.window.showInformationMessage(
+      showToast(
+        "info",
         "No MIMIR server is running for this workspace."
       );
       return;
@@ -264,7 +281,8 @@ export class LocalServer {
     try {
       process.kill(entry.pid, "SIGTERM");
     } catch (err) {
-      vscode.window.showErrorMessage(
+      showToast(
+        "error",
         `Could not stop pid ${entry.pid}: ${(err as Error).message}`
       );
       return;
@@ -272,7 +290,7 @@ export class LocalServer {
     this.detached = false;
     this.child = undefined;
     this.attachedPid = undefined;
-    vscode.window.showInformationMessage(`Asked pid ${entry.pid} to stop.`);
+    showToast("info", `Asked pid ${entry.pid} to stop.`);
   }
 
   /**

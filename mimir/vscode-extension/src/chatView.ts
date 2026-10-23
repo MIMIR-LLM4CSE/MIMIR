@@ -20,6 +20,7 @@ import type { HostMessage, HostMessageOf } from "./shared/hostMessages";
 import { getWebviewHtml } from "./webviewHtml";
 import { workspaceRoot } from "./workspace";
 import { WorkspaceFiles } from "./workspaceFiles";
+import { showToast } from "./notifications";
 
 export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
@@ -452,7 +453,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     const anthropicApiKey = m.anthropicApiKey ?? "";
     // The addressed endpoints resolve the served model themselves.
     if (!model && backend === "anthropic") {
-      vscode.window.showErrorMessage("MIMIR: select a model before connecting.");
+      showToast("error", "MIMIR: select a model before connecting.");
       return;
     }
     // "Remember this address": the endpoint (never the key), for the next window.

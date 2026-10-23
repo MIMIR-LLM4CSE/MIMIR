@@ -48,11 +48,14 @@ export function workspaceId(root: string): string {
   return `${base}-${digest}`;
 }
 
-/** Where this workspace's state lives, resolved the way the Python side resolves it. */
-export function stateDir(workspaceRoot: string): string {
-  const explicit = process.env.MIMIR_STATE_DIR;
+/**
+ * Where this workspace's state lives, resolved the way the Python side resolves it from
+ * *env* (this process's by default; a server's own when it is given one).
+ */
+export function stateDir(workspaceRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.MIMIR_STATE_DIR;
   if (explicit) return path.resolve(explicit);
-  const home = process.env.MIMIR_STATE_HOME || path.join(os.homedir(), ".mimir");
+  const home = env.MIMIR_STATE_HOME || path.join(os.homedir(), ".mimir");
   return path.resolve(path.join(home, workspaceId(workspaceRoot)));
 }
 

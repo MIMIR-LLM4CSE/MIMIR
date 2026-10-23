@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { loadSiteConfig, compareVersions, resolveReleaseRoot } from "./release";
+import { showToast } from "./notifications";
 
 /**
  * Root of this site's shared release tree, or "" on machines without one (the
@@ -53,7 +54,8 @@ export function maybeSelfUpdate(context: vscode.ExtensionContext): void {
   if (!marker || compareVersions(marker, installed) <= 0) return;
   const vsix = path.join(root, "current", "vsix", `mimir-${marker}.vsix`);
   if (!fs.existsSync(vsix)) {
-    void vscode.window.showInformationMessage(
+    void showToast(
+      "info",
       `MIMIR ${marker} is available — install it manually (Extensions → Install from VSIX…):\n${vsix}`
     );
     return;
@@ -69,8 +71,7 @@ export function maybeSelfUpdate(context: vscode.ExtensionContext): void {
     .then(
       () => {
         const reload = "Reload Window";
-        void vscode.window
-          .showInformationMessage(`MIMIR extension updated to ${marker}.`, reload)
+        void showToast("info", `MIMIR extension updated to ${marker}.`, reload)
           .then((choice) => {
             if (choice === reload) {
               void vscode.commands.executeCommand("workbench.action.reloadWindow");

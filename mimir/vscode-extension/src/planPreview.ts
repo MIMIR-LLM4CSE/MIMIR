@@ -9,6 +9,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { showToast } from "./notifications";
 
 /** The plan panel, while it is open. */
 let planPanel: vscode.WebviewPanel | undefined;
@@ -73,7 +74,7 @@ function openPlanLink(href: string): void {
   if (!planAbs) return;
   const abs = /^file:/i.test(href) ? vscode.Uri.parse(href).fsPath : resolveFromPlan(href, planAbs);
   if (!fs.existsSync(abs)) {
-    void vscode.window.showWarningMessage(`MIMIR: ${abs} not found`);
+    void showToast("warn", `MIMIR: ${abs} not found`);
     return;
   }
   if (fs.statSync(abs).isDirectory()) {

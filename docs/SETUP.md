@@ -537,7 +537,7 @@ variable exported in your shell then still applies.
 | | `mimir.hpc.slurmStaleAfter` | `MIMIR_SLURM_STALE_AFTER` |
 | Installation | `mimir.pythonPath` | — (see below) |
 | | `mimir.releaseHome` | — (shared site release root) |
-| Notifications | `mimir.notifications.enabled` | — |
+| Notifications | `mimir.notifications.enabled`, `mimir.notifications.duration` | — |
 | Advanced | `mimir.server.env` | any variable, as `{"NAME": "value"}`; wins over the settings above. User settings only, never a workspace |
 
 API keys have no setting, so they never sit in plain text in your VS Code settings: the

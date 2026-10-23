@@ -380,6 +380,13 @@
             "default": true,
             "description": "Show a VS Code notification when a task finishes or MIMIR needs your answer while the chat panel is hidden or out of focus.",
             "order": 1
+          },
+          "mimir.notifications.duration": {
+            "type": "number",
+            "default": 5,
+            "minimum": 0,
+            "description": "Seconds a MIMIR notification stays on screen once the window has focus. It then moves to the notification centre (the bell), buttons included. 0 leaves it to VS Code, which keeps errors and notifications with buttons until they are closed.",
+            "order": 2
           }
         }
       },

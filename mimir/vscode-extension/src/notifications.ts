@@ -5,6 +5,59 @@
  */
 import * as vscode from "vscode";
 
+/** How long a MIMIR toast stays up, in seconds, when `mimir.notifications.duration` is unset. */
+const DEFAULT_TOAST_SECONDS = 5;
+
+let hideTimer: ReturnType<typeof setTimeout> | undefined;
+let focusWait: vscode.Disposable | undefined;
+
+/**
+ * Show a notification that leaves the screen after `mimir.notifications.duration`
+ * seconds; 0 leaves it to VS Code, which keeps an error or one with buttons up for good.
+ *
+ * VS Code gives a notification no lifetime of its own, so the toasts are hidden with
+ * `notifications.hideToasts`: hidden, not dismissed, they stay in the notification
+ * centre with their buttons. That hides every toast on screen, so the countdown restarts
+ * with each one MIMIR shows, and it only runs while the window has focus: a toast
+ * raised while the user is away is still there when they come back.
+ */
+export function showToast(
+  kind: "info" | "warn" | "error", message: string, ...items: string[]
+): Thenable<string | undefined> {
+  const show = kind === "error" ? vscode.window.showErrorMessage
+    : kind === "warn" ? vscode.window.showWarningMessage
+    : vscode.window.showInformationMessage;
+  const shown = show(message, ...items);
+  scheduleHide();
+  return shown;
+}
+
+function scheduleHide(): void {
+  const seconds = vscode.workspace.getConfiguration("mimir")
+    .get<number>("notifications.duration") ?? DEFAULT_TOAST_SECONDS;
+  if (hideTimer !== undefined) clearTimeout(hideTimer);
+  hideTimer = undefined;
+  focusWait?.dispose();
+  focusWait = undefined;
+  if (!(seconds > 0)) return;
+  const start = () => {
+    hideTimer = setTimeout(() => {
+      hideTimer = undefined;
+      void vscode.commands.executeCommand("notifications.hideToasts");
+    }, seconds * 1000);
+  };
+  if (vscode.window.state.focused) {
+    start();
+    return;
+  }
+  focusWait = vscode.window.onDidChangeWindowState((state) => {
+    if (!state.focused) return;
+    focusWait?.dispose();
+    focusWait = undefined;
+    start();
+  });
+}
+
 interface ServerEvent {
   type?: string; text?: string; cancelled?: boolean; summary?: string;
   job_key?: string; state?: string; id?: string;
@@ -125,10 +178,7 @@ export class Notifier {
     const open = "Ouvrir le chat";
     const goThere = "Ouvrir la conversation";
     const actions = isPrompt && msg.session_id ? [goThere, open] : [open];
-    const show = kind === "warn"
-      ? vscode.window.showWarningMessage
-      : vscode.window.showInformationMessage;
-    show(title, ...actions).then((choice) => {
+    showToast(kind, title, ...actions).then((choice) => {
       if (choice === goThere && msg.session_id) {
         this.openConversation(msg.session_id);
       }
