@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -28,12 +29,12 @@ from ._eval_validate import (
     check_reference_requirements,
     check_requirements,
 )
-from ....shared import run_channel
-from .._lib import tree_snapshot
+from ....shared import build_progress, run_channel
+from .._lib import proc_run, tree_snapshot
 from ....shared.atomic import write_json
 from .._lib.store import (
     opt_git_dir, workspace_root, entry_or_err, load_suite, load_opt_config, save_opt_config,
-    opt_ledger_file, opt_best_file, write_active_session, clear_active_session,
+    opt_ledger_file, opt_best_file, write_active_session, clear_active_session, run_dir_names,
 )
 from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name, read_json
 from .eval_common import (
@@ -321,6 +322,7 @@ def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
 def prepare_run(
     proxy_name: str,
     axis: str = "",
+    profile: bool = False,
 ) -> tuple[dict, dict | None, str, str]:
     """The shared preamble of local and Slurm eval runs: ``(cfg, err, run_dir, notice)``.
 
@@ -382,6 +384,9 @@ def prepare_run(
         # supply, and without it a session's runs are a list of numbers with no account
         # of which ideas produced them.
         "axis":              (axis or "").strip()[:80],
+        # Profiled after its verdict even if it is not kept (the baseline and kept runs
+        # always are): where its time went, by workspace file.
+        "profile":           bool(profile),
         "started_at":        datetime.now(timezone.utc).isoformat(),
     })
     # Freeze what is about to run. The accepted state must be the code that PRODUCED
@@ -403,12 +408,12 @@ def prepare_run(
     return cfg, None, run_dir, notice
 
 
-def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
+def run(proxy_name: str = "", background: bool = False, axis: str = "", profile: bool = False) -> dict:
     """Launch an optimization run without waiting; *axis* names the idea it tries (ledger).
 
     ``background=True`` attaches a ``background_job`` descriptor.
     """
-    cfg, error, run_dir, resume_notice = prepare_run(proxy_name, axis)
+    cfg, error, run_dir, resume_notice = prepare_run(proxy_name, axis, profile)
     if error:
         return error
     name       = cfg["proxy_name"]
@@ -483,13 +488,13 @@ async def await_terminal_state(
 
 async def run_awaited(
     proxy_name: str = "", background: bool = False,
-    wait_s: float = RUN_WAIT_BUDGET_S, axis: str = "",
+    wait_s: float = RUN_WAIT_BUDGET_S, axis: str = "", profile: bool = False,
 ) -> dict:
     """Launch a run and wait for its verdict (op='run'): the results inline.
 
     ``background=True``, or a run outlasting *wait_s*, detaches it to the client watcher.
     """
-    launched = run(proxy_name, background=background, axis=axis)
+    launched = run(proxy_name, background=background, axis=axis, profile=profile)
     if background or launched.get("status") != "ok":
         return launched
 
@@ -720,3 +725,54 @@ def end(proxy_name: str = "") -> dict:
         "note": "Optimization session ended; source/snapshots/ledger kept for history. "
                 "The proxy can be run directly again. Re-init to optimize further.",
     }, "proxy_eval(op='init', ...) to start a new session, or you are done."))
+
+
+async def profile_now(proxy_name: str = "", wait_s: float = RUN_WAIT_BUDGET_S) -> dict:
+    """Profile the code as it stands, without measuring it (op='profile').
+
+    Built and run in a directory of its own, so no run's files are touched; filed with the
+    run whose launch tree is this tree, when there is one, for the code map to show.
+    """
+    from .._lib import profiling
+    cfg = load_opt_config(proxy_name)
+    name = cfg.get("proxy_name", "") if cfg else ""
+    if not name:
+        return err("No optimization session found.", hint="Call proxy_eval(op='init', ...) first.")
+    active = opt_active_run_dir(name)
+    if active and run_state(active)["state"] in ("running", "pending"):
+        return err("A run is active; a profile beside it would skew its timing.",
+                   hint="Wait for the run to finish, then profile.")
+    root = workspace_root()
+    fp = tree_snapshot.fingerprint(root, list(cfg.get("optimize_paths") or []))
+    runs = opt_session_runs_dir(name)
+    match = next((os.path.join(runs, d) for d in run_dir_names(runs)
+                  if (read_json(os.path.join(runs, d, "tree_at_launch.json")) or {}).get("fingerprint") == fp), "")
+    work = os.path.join(cache_dir(), "profiles", name, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    os.makedirs(work, exist_ok=True)
+    base = read_json(os.path.join(match, "config.json")) if match else None
+    write_run_config(work, {**(base or {}), "proxy_name": name, "benchmark_name": cfg.get("benchmark_name", ""),
+                            "primary_metric": cfg.get("primary_metric", "time_s"), "fingerprint": fp})
+    if match and os.path.isfile(os.path.join(match, "metrics.json")):
+        # The run's own measurements say which case is the longest: profile that one.
+        shutil.copy2(os.path.join(match, "metrics.json"), os.path.join(work, "metrics.json"))
+    python_exe = cfg.get("python_executable") or sys.executable
+    argv = [python_exe, *launch_argv(_OPT_RUNNER, "--run-dir", work, "--phase", "profile")]
+    try:
+        with open(os.path.join(work, "runner.log"), "w") as log:
+            await asyncio.to_thread(proc_run.run, argv, stdout=log, stderr=subprocess.STDOUT, timeout=wait_s)
+    except subprocess.TimeoutExpired:
+        return err(f"Profiling took longer than {int(wait_s)}s and was stopped.", log=os.path.join(work, "runner.log"))
+    result = read_json(profiling.profile_path(work)) or {}
+    if not result:
+        log_path = os.path.join(work, "runner.log")
+        return err("Profiling did not run to the end: no profile was written.", log=log_path,
+                   log_tail=build_progress.read_tail(log_path, 4096))
+    if match:
+        target = os.path.dirname(profiling.profile_path(match))
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(os.path.dirname(profiling.profile_path(work)), target)
+    return ok(with_next({
+        "profiled": os.path.basename(match) if match else "the current tree (no run measured it)",
+        "where_time_goes": profiling.top(result),
+        "log": os.path.join(work, "runner.log"),
+    }, "read where_time_goes; the code map shows it per module"))

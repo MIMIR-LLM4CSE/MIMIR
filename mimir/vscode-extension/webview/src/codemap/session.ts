@@ -3,15 +3,48 @@
 // changed comes from the proxy's own snapshots; the map itself is today's code.
 
 export interface StepEdge { from: string; to: string; line: number; kind: string; via: string; sure: string; breaks: string }
+/** Where a run's time went, per workspace file, in fractions of the baseline's metric. */
+export interface Profile {
+  tool: string; samples?: number; case?: string;
+  files?: Record<string, number>; outside?: number; unavailable?: string; note?: string;
+}
 export interface Step {
   n: number; run_id: string; axis: string; verdict: string;
   value: number | null; incumbent_value: number | null; delta: number | null;
   changed: string[]; added: StepEdge[]; removed: StepEdge[];
+  profile?: Profile | null;
 }
 export interface Session {
   proxy: string; metric: string; goal: string;
-  baseline: { run_id: string; value: number | null };
+  baseline: { run_id: string; value: number | null; profile?: Profile | null };
   steps: Step[];
+}
+
+/** The time the map shows at a step: whose profile, and the one it is compared with. */
+export interface TimeView {
+  files: Record<string, number>;
+  before: Record<string, number> | null;
+  from: string;
+  tool: string;
+  note?: string;
+}
+
+const usable = (p?: Profile | null): p is Profile & { files: Record<string, number> } =>
+  !!p && !p.unavailable && !!p.files;
+
+/** The profile of step *k* if it has one, else of the last kept step before it, else of
+ *  the baseline; with "This step" and a kept step, also the profile it improved on. */
+export function timeAt(session: Session, k: number, scope: Scope): TimeView | null {
+  const chain: { label: string; p: Profile | null | undefined; kept: boolean; n: number }[] = [
+    { label: "the baseline", p: session.baseline.profile, kept: true, n: 0 },
+    ...session.steps.map((st) => ({ label: "#" + st.n, p: st.profile, kept: st.verdict === "accept", n: st.n })),
+  ];
+  const own = chain.find((c) => c.n === k && usable(c.p));
+  const prior = chain.filter((c) => c.n < k && c.kept && usable(c.p)).pop();
+  const shown = own ?? prior;
+  if (!shown || !usable(shown.p)) return null;
+  const before = scope === "step" && own && own.kept && k > 0 && prior && usable(prior.p) ? prior.p.files : null;
+  return { files: shown.p.files, before, from: shown.label, tool: shown.p.tool, note: shown.p.note };
 }
 export type Scope = "step" | "all";
 
@@ -110,6 +143,32 @@ export function strip(session: Session, k: number, scope: Scope): string {
 }
 
 /** The card of step *k* in the side pane, for when nothing on the map is selected. */
+const PROFILE_PROMPT = "Profile the optimisation session's code as it stands now with "
+  + "proxy_eval(op='profile', confirm=True), then tell me where its time goes.";
+
+/** What a step's card says of its time: its costliest files, why it has no profile, or
+ *  (the latest step only: the code as it is now) a button that asks for one. */
+function timeBlock(session: Session, s: Step, fileRow: (id: string, right: string) => string): string {
+  const p = s.profile;
+  if (usable(p)) {
+    const top = Object.entries(p.files).slice(0, 5);
+    return '<div class="cap">Where its time goes (' + esc(p.tool) + ")</div>"
+      + '<div class="list">' + top.map(([f, v]) => fileRow(f, pctOf(v))).join("") + "</div>"
+      + (p.outside ? '<div class="empty">' + pctOf(p.outside) + " outside the workspace</div>" : "")
+      + (p.note ? '<div class="empty">' + esc(p.note) + "</div>" : "");
+  }
+  if (p && p.unavailable) return '<div class="cap">Not profiled</div><div class="empty">' + esc(p.unavailable) + "</div>";
+  if (s.n === session.steps.length) {
+    return '<button class="open" data-prompt="' + esc(PROFILE_PROMPT) + '">Profile the code as it is now</button>';
+  }
+  return '<div class="empty">Not profiled. Only the code as it is now can be profiled.</div>';
+}
+
+/** A share of the baseline's time, as the map writes it. */
+export function pctOf(v: number): string {
+  return v >= 0.0995 ? (v * 100).toFixed(0) + "%" : v >= 0.001 ? (v * 100).toFixed(1) + "%" : v > 0 ? "<0.1%" : "–";
+}
+
 export function stepCard(session: Session, k: number, fileRow: (id: string, right: string) => string): string {
   const s = session.steps.find((x) => x.n === k);
   if (!s) return "";
@@ -122,5 +181,6 @@ export function stepCard(session: Session, k: number, fileRow: (id: string, righ
       + (s.delta === null ? "" : " (" + signed(s.delta) + ")"), better(session, s.delta) ? "is-ok" : "")
     + line("dependencies", '<span class="is-ok">+' + s.added.length + '</span> / <span class="is-danger">−' + s.removed.length + "</span>")
     + '<div class="cap">Files it changed (' + s.changed.length + ")</div>"
-    + '<div class="list">' + (s.changed.map((f) => fileRow(f, "")).join("") || '<span class="empty">none</span>') + "</div></div>";
+    + '<div class="list">' + (s.changed.map((f) => fileRow(f, "")).join("") || '<span class="empty">none</span>') + "</div>"
+    + timeBlock(session, s, fileRow) + "</div>";
 }

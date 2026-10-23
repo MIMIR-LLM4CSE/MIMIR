@@ -150,6 +150,13 @@ export interface CodeMapMessage {
   session?: unknown;
 }
 
+/** A request the code map tab puts to the agent (its Profile button), sent as the
+ *  user's own message: from the extension host, not the server. */
+export interface MapPromptMessage {
+  type: "map_prompt";
+  text: string;
+}
+
 /** Stop a run the watcher holds, with the cancel op its own server named. */
 export interface CancelRunMessage {
   type: "cancel_run";

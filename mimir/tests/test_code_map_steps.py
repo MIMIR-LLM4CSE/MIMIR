@@ -77,6 +77,12 @@ class SessionTests(unittest.TestCase):
         with open(ledger, "w") as fh:
             fh.write("".join(json.dumps(r) + "\n" for r in rows))
         cfg = {"baseline_id": base, "baseline_run_id": "r0", "primary_metric": "time_s", "primary_goal": "min"}
+        runs = os.path.join(ws.tmp.name, "runs")
+        # The baseline and the kept run were profiled after their verdict; the ruled-out one was not.
+        for run_id, files in {"r0": {"pkg/a.py": 0.5, "pkg/b.py": 0.25}, "r1": {"pkg/a.py": 0.75}}.items():
+            os.makedirs(os.path.join(runs, run_id, "profile"))
+            with open(os.path.join(runs, run_id, "profile", "profile.json"), "w") as fh:
+                json.dump({"tool": "py-spy", "samples": 400, "files": files, "outside": {"numpy": 0.25}}, fh)
         code_map_steps._CACHE.update({"key": None, "value": {}})
         patches = [
             mock.patch.object(code_map_steps, "resolve_proxy_name", return_value="solver"),
@@ -85,6 +91,7 @@ class SessionTests(unittest.TestCase):
             mock.patch.object(code_map_steps, "read_ledger", return_value=rows),
             mock.patch.object(code_map_steps, "workspace_root", return_value=ws.root),
             mock.patch.object(code_map_steps, "opt_git_dir", return_value=ws.git),
+            mock.patch.object(code_map_steps, "opt_session_runs_dir", return_value=runs),
         ]
         for p in patches:
             p.start()
@@ -92,7 +99,8 @@ class SessionTests(unittest.TestCase):
         self.session = code_map_steps.session()
 
     def test_the_baseline_is_not_a_step(self) -> None:
-        self.assertEqual(self.session["baseline"], {"run_id": "r0", "value": 10.0})
+        self.assertEqual({k: self.session["baseline"][k] for k in ("run_id", "value")},
+                         {"run_id": "r0", "value": 10.0})
         self.assertEqual([s["run_id"] for s in self.session["steps"]], ["r1", "r2"])
 
     def test_a_kept_step_says_what_it_added_against_the_baseline(self) -> None:
@@ -108,6 +116,15 @@ class SessionTests(unittest.TestCase):
         self.assertAlmostEqual(step["delta"], 0.125)
         self.assertEqual([(e["from"], e["to"]) for e in step["removed"]], [("pkg/a.py", "pkg/b.py")])
         self.assertEqual(step["added"], [])
+
+    def test_profiles_ride_in_fractions_of_the_baseline_s_time(self) -> None:
+        """The kept run took 8 s against the baseline's 10: its shares count for 0.8 of the
+        baseline's time, so the two runs' bars compare."""
+        base = self.session["baseline"]["profile"]
+        self.assertEqual((base["files"], base["outside"]), ({"pkg/a.py": 0.5, "pkg/b.py": 0.25}, 0.25))
+        kept = self.session["steps"][0]["profile"]
+        self.assertEqual((kept["files"], kept["outside"]), ({"pkg/a.py": 0.6}, 0.2))
+        self.assertIsNone(self.session["steps"][1]["profile"])
 
     def test_no_session_is_no_steps(self) -> None:
         with mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=""):

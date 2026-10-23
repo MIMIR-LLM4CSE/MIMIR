@@ -43,6 +43,18 @@ def _this_machine() -> dict:
 _STEPS: dict = {"key": None, "value": []}
 
 
+def _hottest(proxy_name: str, run_id: str) -> dict | None:
+    """The costliest workspace file of the best run's profile, when it was profiled."""
+    from .._lib import profiling
+    from .._lib.layout import opt_session_runs_dir, read_json
+    prof = read_json(profiling.profile_path(os.path.join(opt_session_runs_dir(proxy_name), run_id))) if run_id else None
+    files = (prof or {}).get("files") or {}
+    if not files:
+        return None
+    path, share = next(iter(files.items()))
+    return {"label": "hottest", "value": f"{os.path.basename(path)} · {share:.0%} of the best run"}
+
+
 def _steps_lines(proxy_name: str, cfg: dict) -> list[dict]:
     """How many steps the session took and kept, and where the best stands against the
     baseline; what each step was is the code map's to show, so the line opens it."""
@@ -69,6 +81,9 @@ def _steps_lines(proxy_name: str, cfg: dict) -> list[dict]:
         if isinstance(base, (int, float)) and isinstance(best, (int, float)) and base:
             value += f" · {(best - base) / abs(base):+.0%} since baseline"
         lines.append({"label": "steps", "value": value})
+    hottest = _hottest(proxy_name, (load_best(proxy_name) or {}).get("run_id") or baseline_run)
+    if hottest:
+        lines.append(hottest)
     _STEPS.update({"key": key, "value": lines})
     return lines
 

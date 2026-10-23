@@ -3,7 +3,7 @@
 // what the server answered (`shared.code_map`) and reads nothing else.
 
 import { STYLE } from "./style";
-import { edgeKey, overlay, stepCard, strip, type Overlay, type Scope, type Session } from "./session";
+import { edgeKey, overlay, pctOf, stepCard, strip, timeAt, type Overlay, type Scope, type Session, type TimeView } from "./session";
 
 interface Component { id: string; name: string; tier: number; declared: string[]; external: Record<string, number>; tests: boolean }
 interface Module { id: string; component: string }
@@ -166,11 +166,21 @@ function selectedModule(v: View): string | null {
   return sel.kind === "module" ? sel.id : v.byId.get(sel.id)?.module ?? null;
 }
 
-function renderMap(v: View, ov: Overlay | null): void {
+/** A module's share of the baseline's time in *files*: the sum of its files'. */
+function moduleTime(v: View, id: string, files: Record<string, number>): number {
+  return (v.modFiles.get(id) ?? []).reduce((n, f) => n + (files[f.id] ?? 0), 0);
+}
+
+function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   const root = document.getElementById("map")!;
   root.innerHTML = "";
   const s = svg("svg", { viewBox: `0 0 ${v.width} ${v.height}`, role: "img", "aria-label": "Modules by component, with the dependencies between them" }, root);
   s.style.cssText = `width:100%;min-width:720px;max-width:${v.width * 1.15}px;height:auto`;
+  const pat = svg("pattern", { id: "hatch", width: 4, height: 4, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, svg("defs", {}, s));
+  svg("rect", { class: "hatch", width: 2, height: 4 }, pat);
+  // One scale for every step: the costliest module of whichever profile is drawn.
+  const scale = time ? Math.max(1e-9, ...[...v.modFiles.keys()].map((id) =>
+    Math.max(moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : 0))) : 1;
   for (const b of v.bands) {
     svg("rect", { class: "band-bg", x: 0, y: b.y, width: v.width, height: b.h, rx: 6 }, s);
     svg("rect", { class: "band-bar", x: 12, y: b.y + 15, width: 3, height: 11, rx: 1.5 }, s);
@@ -206,7 +216,15 @@ function renderMap(v: View, ov: Overlay | null): void {
     while (nm.getComputedTextLength() > BW - 30 && (nm.textContent ?? "").length > 4) nm.textContent = "…" + nm.textContent!.slice(2);
     const lines = files.reduce((n, f) => n + f.lines, 0);
     const langs = [...new Set(files.map((f) => LANG[f.lang] ?? f.lang))].join(" ");
-    svg("text", { class: "msub", x: 9, y: 35 }, g).textContent = `${files.length} files · ${(lines / 1000).toFixed(1)}k · ${langs}`;
+    svg("text", { class: "msub", x: 9, y: 33 }, g).textContent = `${files.length} files · ${(lines / 1000).toFixed(1)}k · ${langs}`;
+    if (time) {
+      const now = moduleTime(v, id, time.files), was = time.before ? moduleTime(v, id, time.before) : now;
+      const tw = BW - 52;
+      svg("rect", { class: "track", x: 9, y: 40, width: tw, height: 4, rx: 2 }, g);
+      if (now > 0) svg("rect", { class: "fill", x: 9, y: 40, width: Math.max(2, (now / scale) * tw), height: 4, rx: 2 }, g);
+      if (was - now > 1e-6) svg("rect", { x: 9 + (now / scale) * tw, y: 39, width: ((was - now) / scale) * tw, height: 6, fill: "url(#hatch)" }, g);
+      svg("text", { class: "pct", x: BW - 8, y: 45, "text-anchor": "end" }, g).textContent = pctOf(now);
+    }
     let dx = BW - 9;
     if (map!.edges.some((e) => e.breaks && v.byId.get(e.from)!.module === id)) { svg("circle", { class: "dot-break", cx: dx, cy: 12, r: 4 }, g); dx -= 11; }
     if (v.cycleOf.has(id)) svg("circle", { class: "dot-cycle", cx: dx, cy: 12, r: 4 }, g);
@@ -302,8 +320,23 @@ function overview(m: CodeMap): string {
   return section("sel", "Code", code) + section("flags", "To look at", look) + section("bind", "Across languages", across);
 }
 
+/** The time of the session's step shown, or null without a session or a profile. */
+function time(): TimeView | null {
+  return session ? timeAt(session, step, scope) : null;
+}
+
+/** Where the time goes over the whole code, from the profile shown. */
+function timeSection(t: TimeView): string {
+  const top = Object.entries(t.files).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  return section("time", "Where time goes", list(top.map(([f, v]) => fileRow(f, pctOf(v))))
+    + '<div class="empty">Share of the baseline\'s time, from the profile of ' + esc(t.from)
+    + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>");
+}
+
 function moduleDetail(m: CodeMap, v: View, id: string): string {
-  const files = [...(v.modFiles.get(id) ?? [])].sort((a, b) => b.lines - a.lines);
+  const t = time();
+  const files = [...(v.modFiles.get(id) ?? [])].sort((a, b) =>
+    (t ? (t.files[b.id] ?? 0) - (t.files[a.id] ?? 0) : 0) || b.lines - a.lines);
   const ids = new Set(files.map((f) => f.id));
   const out = new Map<string, number>(), inn = new Map<string, number>();
   for (const e of m.edges) {
@@ -315,7 +348,8 @@ function moduleDetail(m: CodeMap, v: View, id: string): string {
   const cycle = v.cycleOf.has(id)
     ? line("cycle", "with " + (m.cycles[v.cycleOf.get(id)!].length - 1) + " modules", "is-cycle") : "";
   return BACK + section("sel", base(id), '<div class="path">' + esc(id) + "</div>" + cycle
-    + '<div class="cap">Files</div>' + list(files.map((f) => fileRow(f.id, f.lines + " l")))
+    + (t ? line("time", pctOf(moduleTime(v, id, t.files)) + " of the baseline's, profile of " + esc(t.from)) : "")
+    + '<div class="cap">Files</div>' + list(files.map((f) => fileRow(f.id, t && t.files[f.id] ? pctOf(t.files[f.id]) : f.lines + " l")))
     + '<div class="cap">Depends on</div>' + list(rows(out))
     + '<div class="cap">Used by</div>' + list(rows(inn)));
 }
@@ -326,6 +360,7 @@ function fileDetail(m: CodeMap, v: View, id: string): string {
   return BACK + section("sel", base(f.id), '<div class="path">' + esc(f.id) + "</div>"
     + line("module", '<button class="link" data-module="' + esc(f.module) + '">' + esc(f.module) + "</button>")
     + line("language", esc(f.lang)) + line("lines", f.lines.toLocaleString("en"))
+    + (time()?.files[f.id] ? line("time", pctOf(time()!.files[f.id]) + " of the baseline's") : "")
     + '<div class="cap">Depends on (' + out.length + ")</div>" + list(out.map((e) => fileRow(e.to, edgeRight(e))))
     + '<div class="cap">Used by (' + inn.length + ")</div>" + list(inn.map((e) => fileRow(e.from, edgeRight(e), e.line)))
     + '<button class="open" data-open="' + esc(f.id) + '" data-line="">Open ' + esc(base(f.id)) + "</button>");
@@ -334,11 +369,18 @@ function fileDetail(m: CodeMap, v: View, id: string): string {
 function renderSide(v: View): void {
   const m = map!, side = document.getElementById("side")!;
   const card = session && step ? stepCard(session, step, fileRow) : "";
-  const html = !sel ? card + overview(m) : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id);
+  const t = time();
+  const html = !sel ? card + (t ? timeSection(t) : "") + overview(m)
+    : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id);
   side.innerHTML = html;
   document.getElementById("back")?.addEventListener("click", () => { sel = null; render(); });
   side.querySelectorAll<HTMLElement>("[data-module]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "module", id: b.dataset.module! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-file]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "file", id: b.dataset.file! }; render(); }));
+  side.querySelectorAll<HTMLElement>("[data-prompt]").forEach((b) => b.addEventListener("click", () => {
+    vscode.postMessage({ type: "prompt", text: b.dataset.prompt! });
+    b.setAttribute("disabled", "");
+    b.textContent = "Asked the agent to profile";
+  }));
   side.querySelectorAll<HTMLElement>("[data-open]").forEach((b) => b.addEventListener("click", () => {
     const line = b.dataset.line ? Number(b.dataset.line) : undefined;
     const rel = b.dataset.open!;
@@ -358,7 +400,14 @@ function renderLegend(): void {
     <span><i class="sw" style="border-color:var(--e-cycle)"></i>inside a module cycle</span>
     <span><i class="dot" style="background:var(--e-break)"></i>has a break</span>
     <span><i class="dot" style="background:var(--e-cycle)"></i>in a cycle</span>`
-    + (session && step ? stepLegend() : "");
+    + (session && step ? stepLegend() : "") + timeLegend();
+}
+
+function timeLegend(): string {
+  const t = time();
+  if (!t) return "";
+  return '<span><i class="sw bar"></i>share of the baseline\'s time, profile of ' + esc(t.from) + " (" + esc(t.tool) + ")"
+    + (t.before ? ", hatched where this step saved it" : "") + "</span>";
 }
 
 function stepLegend(): string {
@@ -406,7 +455,7 @@ function render(): void {
     return;
   }
   renderSession();
-  renderMap(view, session && step ? overlay(session, step, scope) : null);
+  renderMap(view, session && step ? overlay(session, step, scope) : null, time());
   renderLegend();
   renderSide(view);
 }

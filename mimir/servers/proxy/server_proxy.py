@@ -517,7 +517,7 @@ async def proxy_exec(
     return _missing_args(op, run_id=run_id) or runs.cancel(run_id)
 
 
-_EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best",
+_EVAL_OPS = ("init", "configure", "run", "profile", "stop", "reset", "reset_to_best",
              "rebaseline", "end")
 
 # op='run' waits for the run it launched, so the default 120 s tool wall would cut it
@@ -550,6 +550,7 @@ async def proxy_eval(
     repeat: int = 0,
     background: bool = False,
     axis: str = "",
+    profile: bool = False,
     confirm: bool = False,
 ) -> dict:
     """Drive an iterative proxy-optimization session as a monotone ratchet (sensitive).
@@ -590,6 +591,11 @@ async def proxy_eval(
                        after the wait budget detaches itself, and background=True
                        detaches up front: both hand it to a watcher that resumes you
                        with the results — end your turn when told to.
+      profile       -> build the tree as it stands and run one case under a profiler,
+                       without measuring it: where the time goes, per workspace file
+                       (`where_time_goes`). The baseline and every accepted run are
+                       profiled on their own after their verdict; use this for the code
+                       as it is now, or before choosing the next axis.
       stop          -> stop the active run (SIGTERM local / scancel Slurm)
       reset         -> restore every optimize_paths file to the baseline tree
       reset_to_best -> restore every optimize_paths file to the tree of the best
@@ -657,6 +663,9 @@ async def proxy_eval(
             about an attempt that cannot be measured, and without it the session's
             history is a column of timings with no account of which ideas made them:
             a later run cannot tell what has already been tried and rejected.
+        profile: For op='run': profile the run after its verdict even if it is not
+            accepted (the baseline and accepted runs always are). The profile is a
+            separate execution of the longest case and never part of the measurement.
         confirm: Must be True to apply any operation.
     """
     if op not in _EVAL_OPS:
@@ -681,7 +690,9 @@ async def proxy_eval(
                                       python_executable, max_hours)
     if op == "run":
         return await eval_session.run_awaited(proxy_name, background=background,
-                                              axis=axis)
+                                              axis=axis, profile=profile)
+    if op == "profile":
+        return await eval_session.profile_now(proxy_name)
     if op == "stop":
         return eval_session.stop(proxy_name)
     if op == "reset":

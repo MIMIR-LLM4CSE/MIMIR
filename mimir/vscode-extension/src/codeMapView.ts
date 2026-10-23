@@ -19,12 +19,19 @@ let last: { map: unknown; session?: unknown } = { map: undefined };
 type TabMessage =
   | { type: "ready" }
   | { type: "refresh" }
-  | { type: "open_file"; file: string; rel?: string; line?: number };
+  | { type: "open_file"; file: string; rel?: string; line?: number }
+  | { type: "prompt"; text: string };
+
+/** What the tab can ask of the chat: the map again, or a request put to the agent. */
+export interface MapActions {
+  refresh: () => void;
+  prompt: (text: string) => void;
+}
 
 /** Show *map* (and the session's steps) in the tab, opening it if needed; *refresh* asks
  *  the server again. */
 export function showCodeMap(map: unknown, session: unknown, extensionUri: vscode.Uri,
-                            refresh: () => void): void {
+                            actions: MapActions): void {
   last = { map, session };
   if (!mapPanel) {
     mapPanel = vscode.window.createWebviewPanel(
@@ -37,7 +44,8 @@ export function showCodeMap(map: unknown, session: unknown, extensionUri: vscode
     mapPanel.webview.html = pageHtml(mapPanel.webview, extensionUri);
     mapPanel.webview.onDidReceiveMessage((m: TabMessage) => {
       if (m?.type === "ready") void mapPanel?.webview.postMessage({ type: "map", ...last });
-      else if (m?.type === "refresh") refresh();
+      else if (m?.type === "refresh") actions.refresh();
+      else if (m?.type === "prompt" && typeof m.text === "string") actions.prompt(m.text);
       else if (m?.type === "open_file" && typeof m.file === "string") {
         // The server's absolute path when it exists on this machine, else the path
         // relative to the map's root, resolved against the open folder.

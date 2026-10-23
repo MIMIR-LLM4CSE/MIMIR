@@ -18,6 +18,7 @@ to — and a speedup quoted against your own first parallel attempt is not a spe
 Then find where the time actually goes. The loop that looks expensive and the loop that
 is expensive are different loops often enough that guessing costs more than measuring.
 If a proxy is registered for this code, run the loop through `proxy-optimize` instead:
+it profiles the baseline and every kept run (`where_time_goes`, by source file), and
 the ratchet already owns the baseline, the accept/reject margin and the snapshotting,
 and doing that bookkeeping by hand is how an unreproducible 2% gain gets accepted.
 

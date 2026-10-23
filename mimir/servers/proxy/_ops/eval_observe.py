@@ -17,7 +17,7 @@ from .._lib.ratchet import load_best
 from .._lib.report import diff_run_pair, parse_runner_log
 from ._eval_ratchet import ratchet_state
 from ....shared import build_progress
-from .._lib import build, procs
+from .._lib import build, procs, profiling
 from .._lib.store import load_registry, load_opt_config, opt_ledger_file, run_dir_names
 from .._lib.layout import opt_session_runs_dir, resolve_proxy_name, read_json
 from .eval_common import (
@@ -345,6 +345,7 @@ def results(proxy_name: str = "") -> dict:
     recommendation += _long_build_note(build_s)
 
     tried = axes_tried(proxy_name)
+    prof = read_json(profiling.profile_path(run_dir))
 
     return ok(with_next({
         "run_dir":        run_dir,
@@ -364,6 +365,8 @@ def results(proxy_name: str = "") -> dict:
         # Attached rather than asked for: the moment the next edit is chosen is right
         # here, and a call the agent has to remember to make is one it will not make.
         **({"axes_tried": tried} if tried else {}),
+        # Same reason: where this code spends its time is what picks the next axis.
+        **({"where_time_goes": profiling.top(prof)} if prof else {}),
         **({"timing_warning": r["timing_warning"]} if r.get("timing_warning") else {}),
     }, next_step))
 

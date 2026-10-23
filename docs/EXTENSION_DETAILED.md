@@ -545,7 +545,12 @@ ruled out, its axis, its metric against the incumbent, how many files it changed
 modules in green (paler for earlier kept steps), a pill names the step and its delta,
 the dependencies it added are green and the ones it removed long grey dashes. The
 dependencies drawn are today's code; the marks are what the step's own snapshot changed.
-← → move through the steps. Its MIMIR skin follows the VS Code
+← → move through the steps. When the runs were profiled, each module carries a coral bar,
+its share of the baseline's time from the profile of the step shown (else of the last
+kept step before it, else of the baseline, always named), hatched where a kept step saved
+time against the profile it improved on; the card lists where the step's time goes, or
+offers **Profile the code as it is now** on the latest step, which sends the request to
+the agent as the user's own message (`map_prompt`, through the host to the chat). Its MIMIR skin follows the VS Code
 theme, the Light one is fixed, and the choice is kept in the tab's state.
 
 **Badges are the runs, on the machines they are running on.** The client joins them in

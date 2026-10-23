@@ -170,13 +170,20 @@ the node. A baseline measured on the login node describes the login node.
    `recommendation` — and follow `next_step`. (`proxy_eval_status(op='results')`
    re-reads it later if you need it again):
    - **accept** → new best. Read the source and try a further improvement, then run again.
+   - `where_time_goes` — the baseline and every accepted run are profiled after their
+     verdict: the workspace files that take the time, and the share spent outside the
+     workspace. Choose the next edit there, not where the code looks expensive. When it
+     says `unavailable`, it says why (perf blocked by the kernel, no profiler for this
+     command); work from the timings and say the profile is missing.
    - **reject** → this edit regressed. `proxy_eval(op='reset_to_best', confirm=True)`,
      then try a *different* edit and run.
    - **converged** → `proxy_eval(op='reset_to_best', confirm=True)`, then summarize.
    - no verdict yet (constraints not met, no best) → edit the source and run again.
 3. Editing: read the files in `optimize_paths`, understand what is slow or
    inaccurate, apply a targeted `replace_in_file(...)` to one of them, then go to
-   step 1. Never edit the harness at `proxy_source_path` — it is the measuring
+   step 1. To see where the time goes in the code as it stands now — before a first
+   edit, or after reverting — `proxy_eval(op='profile', confirm=True)`: one profiled
+   execution, never a measurement, so it moves nothing in the ratchet. Never edit the harness at `proxy_source_path` — it is the measuring
    instrument, not the subject.
 4. **Compare runs**: `proxy_eval_status(op='diff')` or `(op='runs')` (note `is_best`).
 

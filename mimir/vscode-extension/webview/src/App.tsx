@@ -119,6 +119,9 @@ export const App: React.FC = () => {
   // The parts that hold their own state answer through these tables; what is left is
   // the reducer's.
   const tablesRef = useRef<ServerHandlers[]>([]);
+  // The chat's own send, for a request that comes from the host (the code map's
+  // Profile button); set below once it exists.
+  const sendPromptRef = useRef<(text: string) => void>(() => undefined);
 
   const handleServerMessage = useCallback((msg: ServerMessage) => {
     noteSeq(msg);
@@ -131,6 +134,11 @@ export const App: React.FC = () => {
         // The worker's own greeting also ends the reducer's "agent starting".
         dispatch(msg);
         handleReady();
+        return;
+
+      case "map_prompt":
+        // The code map tab's Profile button: the request goes out as the user's own.
+        if (msg.text) sendPromptRef.current(msg.text);
         return;
 
       case "open_editor":
@@ -267,6 +275,7 @@ export const App: React.FC = () => {
     send({ type: "query", text });
     anchorNewQuery();
   }, [busy, send, anchorNewQuery]);
+  sendPromptRef.current = sendPrompt;
 
   const composer = useComposer({
     skillToggles: workspace.skillToggles,

@@ -11,7 +11,10 @@ asked: a located change needs the code it touches, not a tour of the project.
 
 ## Order of work
 
-1. Identify the project type, language, and structure.
+1. Identify the project type, language, and structure. For a code of more than a few
+   files, `code_map()` answers it in one call: the components and how they stack, the
+   links between languages (Python ↔ C/C++ ↔ Fortran), the module cycles and the
+   includes that break a rule.
 2. Locate the entry points, configuration files, and modules the task **actually**
    touches.
 3. Read the documentation that covers those, not the documentation set at large.

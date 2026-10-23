@@ -31,6 +31,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every kept step since the baseline. Each step is read back from the proxy's own
   snapshots, so a run that was ruled out still shows what it tried.
 
+- **Where the time goes.** The baseline and every kept run of an optimisation session
+  are profiled after their verdict (py-spy or cProfile for Python, perf for compiled
+  code), and the time is given to the workspace's files: the code map shows a time bar
+  per module, a step's card lists where its time went, the drawer names the hottest file,
+  and the agent reads `where_time_goes` in its results. `proxy_eval(op="profile")`
+  profiles the code as it stands, and the map's **Profile** button asks for it. A profile
+  is never part of the measurement. When no profiler can run (perf blocked by the
+  kernel's settings, say), the profile says why.
+
 ### Changed
 - **The Optimisation section of the drawer** says the session in one line (steps tried,
   kept, change since baseline) and opens the code map for the rest, instead of listing

@@ -10,8 +10,8 @@ from __future__ import annotations
 import os
 
 from ....shared import code_map
-from .._lib import tree_snapshot
-from .._lib.layout import resolve_proxy_name
+from .._lib import profiling, tree_snapshot
+from .._lib.layout import opt_session_runs_dir, read_json, resolve_proxy_name
 from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
 from .eval_observe import read_ledger
 
@@ -30,6 +30,21 @@ def _edges_at(root: str, snapshot_id: str, memo: dict[str, dict]) -> dict:
                                            if code_map.language_of(rel) and t is not None})
         memo[snapshot_id] = {(e["from"], e["to"], e["kind"]): e for e in m["edges"]}
     return memo[snapshot_id]
+
+
+def _profile(name: str, run_id: str, value, baseline) -> dict | None:
+    """A run's profile with its shares in fractions of the baseline's metric, so two runs'
+    bars compare; None when the run was not profiled."""
+    prof = read_json(profiling.profile_path(os.path.join(opt_session_runs_dir(name), run_id))) if run_id else None
+    if not prof:
+        return None
+    if prof.get("unavailable"):
+        return {"unavailable": prof["unavailable"], "tool": prof.get("tool", "")}
+    scale = value / baseline if isinstance(value, (int, float)) and isinstance(baseline, (int, float)) and baseline else 1.0
+    return {"tool": prof.get("tool", ""), "samples": prof.get("samples", 0), "case": prof.get("case", ""),
+            "files": {f: round(v * scale, 5) for f, v in (prof.get("files") or {}).items()},
+            "outside": round(sum((prof.get("outside") or {}).values()) * scale, 5),
+            **({"note": prof["note"]} if prof.get("note") else {})}
 
 
 def _delta(value, incumbent) -> float | None:
@@ -59,6 +74,7 @@ def session(proxy_name: str = "") -> dict:
     baseline_run = cfg.get("baseline_run_id", "")
     steps: list[dict] = []
     incumbent = by_run.get(baseline_run)
+    base_value = (incumbent or {}).get("primary_value")
     for i, row in enumerate(rows):
         if row.get("run_id") == baseline_run:
             continue
@@ -80,13 +96,14 @@ def session(proxy_name: str = "") -> dict:
             "changed": changed or [],
             "added": [{k: now[e][k] for k in _EDGE_FIELDS} for e in sorted(set(now) - set(then))],
             "removed": [{k: then[e][k] for k in _EDGE_FIELDS} for e in sorted(set(then) - set(now))],
+            "profile": _profile(name, row.get("run_id", ""), row.get("primary_value"), base_value),
         })
     value = {
         "proxy": name,
         "metric": cfg.get("primary_metric", "time_s"),
         "goal": cfg.get("primary_goal", "min"),
-        "baseline": {"run_id": baseline_run,
-                     "value": (by_run.get(baseline_run) or {}).get("primary_value")},
+        "baseline": {"run_id": baseline_run, "value": base_value,
+                     "profile": _profile(name, baseline_run, base_value, base_value)},
         "steps": steps,
     }
     _CACHE.update({"key": key, "value": value})

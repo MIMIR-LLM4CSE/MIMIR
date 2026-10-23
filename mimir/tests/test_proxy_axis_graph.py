@@ -264,6 +264,15 @@ class PanelLinesTests(unittest.TestCase):
         lines = self._lines(self.ROWS, {"primary_value": 8.0})
         self.assertEqual(lines, [{"label": "steps", "value": "2 tried, 1 kept · -20% since baseline"}])
 
+    def test_the_best_run_s_profile_names_the_hottest_file(self):
+        runs = tempfile.mkdtemp()
+        os.makedirs(os.path.join(runs, "r1", "profile"))
+        with open(os.path.join(runs, "r1", "profile", "profile.json"), "w") as fh:
+            json.dump({"tool": "py-spy", "files": {"src/solver/kernel.cpp": 0.41, "src/io.py": 0.1}}, fh)
+        with mock.patch("mimir.servers.proxy._lib.layout.opt_session_runs_dir", return_value=runs):
+            lines = self._lines(self.ROWS, {"primary_value": 8.0, "run_id": "r1"})
+        self.assertEqual(lines[-1], {"label": "hottest", "value": "kernel.cpp · 41% of the best run"})
+
     def test_a_session_that_has_run_only_its_baseline_adds_no_lines(self):
         self.assertEqual(self._lines(self.ROWS[:1], {"primary_value": 10.0}), [])
 

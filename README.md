@@ -13,7 +13,8 @@ servers and reasons over them using a selectable LLM backend: [Ollama](https://o
 vLLM, or Ray Serve (OpenAI-compatible API).
 
 **MIMIR is used from VS Code**: a panel streams the agent's work, raises its approval
-cards and its questions, shows its runs on the cluster, and keeps its conversations. The
+cards and its questions, shows its runs on the cluster, maps the workspace's code and
+where an optimisation session spends its time, and keeps its conversations. The
 terminal client is the development harness — to try a model, debug a server or replay a
 turn — see [The terminal, for development](#the-terminal-for-development).
 
@@ -294,13 +295,13 @@ The client registers 20 servers by default; the authoritative registry lives in
 | `platform` | Profiling of the host MIMIR runs on: CPU/NUMA/caches/`-march`/OS/memory/GPU/Slurm/toolchains/Python environments, where it sits (no scheduler, login node, inside an allocation), plus a searchable index of the site's environment modules (`platform_search`) |
 | `env` | Mutating Python-environment management (pip install/uninstall, create/delete) |
 | `system` | Read-only OS/CPU/memory/disk/uptime inspection |
-| `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |
+| `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover; and the workspace's code map — components stacked by the links the build declares, Python/C/C++/Fortran dependencies and the bindings between languages, module cycles, rule breaks — drawn in the panel's Architecture section and an editor tab |
 | `bash` | Workspace shell: search, compile, run, validate, test, `git`, file management — any command but a short denylist, approval-gated and path-confined |
 | `todo` | Agent task checklist: create, read, update an ordered per-session todo list |
 | `mimir_api` | MIMIR's own extension API: the capability vocabulary, the drop-in paths this workspace resolves, and the shipped template per extension type — read from the running build, not remembered |
 | `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question (five minutes to answer, then it closes and the agent goes with the option it recommended) |
 | `agent` | `spawn_agent` — fan work out to a fresh agent: `role="explore"` (read-only recon, answers with a cited conclusion) or `role="task"` (full toolkit) |
-| `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop (7 op-dispatched tools) |
+| `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop, whose baseline and kept runs are profiled by source file (7 op-dispatched tools) |
 
 Most tools return structured payloads (`status`, `result`, `error`, `hint`, `stdout`,
 `stderr`), carry rich docstrings, and provide recovery hints on failure — this improves tool

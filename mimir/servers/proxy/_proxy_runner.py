@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import NoReturn
 
 from ._lib import build as build_mod
-from ._lib import execute, metrics, ratchet, store, tree_snapshot
+from ._lib import command, execute, metrics, profiling, ratchet, store, tree_snapshot
 
 
 def _log(msg: str) -> None:
@@ -140,6 +140,21 @@ def _build_phase(reg: dict, suite: dict, proxy_name: str, entry: dict, run_dir: 
     return True
 
 
+def _profile_only(cfg: dict, reg: dict, suite: dict, proxy_name: str, entry: dict,
+                  run_dir: str, cases: list[dict]) -> None:
+    """The 'profile' phase: build the tree as it stands, then profile the longest case a
+    run of it measured (its metrics.json, when there is one), else the first case."""
+    if not _build_phase(reg, suite, proxy_name, entry, run_dir, cfg):
+        sys.exit(2)
+    plan = _Plan.from_config(cfg, cases)
+    measured = (layout.read_json(os.path.join(run_dir, "metrics.json"), {}) or {}).get("results") or []
+    first = cases[0] if cases else {}
+    tally = _Tally(results=[r for r in measured if isinstance(r.get("metrics"), dict)] or [
+        {"case_id": first.get("case_id", "?"), "sweep": (first.get("param_sweeps") or [{}])[0],
+         "metrics": {}}])
+    _profile_phase(plan, reg, entry, run_dir, tally)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proxy optimization runner")
     parser.add_argument(
@@ -147,12 +162,12 @@ def _parse_args() -> argparse.Namespace:
         help="Run directory (must contain config.json; receives metrics.json).",
     )
     parser.add_argument(
-        "--phase", choices=("all", "build", "run"), default="all",
+        "--phase", choices=("all", "build", "run", "profile"), default="all",
         help="Which half of the run to do. 'all' (the default) builds then measures "
              "in one process, which is what a local run does. 'build' and 'run' split "
              "that across two Slurm jobs sharing this run directory, so a build can go "
              "to a machine made for compiling and the measurement to the machine being "
-             "measured.",
+             "measured. 'profile' builds, then profiles one case without measuring.",
     )
     return parser.parse_args()
 
@@ -372,9 +387,9 @@ def _write_metrics(run_dir: str, output: dict) -> None:
         _log(f"[proxy_runner] WARNING: could not write metrics.json: {exc}")
 
 
-def _settle_ratchet(proxy_name: str, run_dir: str, output: dict) -> None:
+def _settle_ratchet(proxy_name: str, run_dir: str, output: dict) -> str:
     """Settle the ledger and best now, so they never depend on the agent calling
-    ``results()`` (which replays the frozen outcome). Never fatal."""
+    ``results()`` (which replays the frozen outcome); the verdict, "" if none. Never fatal."""
     try:
         from ._ops._eval_ratchet import ratchet_state
         opt_cfg = store.load_opt_config(proxy_name)
@@ -384,8 +399,39 @@ def _settle_ratchet(proxy_name: str, run_dir: str, output: dict) -> None:
                  f"feasible={outcome.get('feasible')} stall={outcome.get('stall')}")
             if outcome.get("timing_warning"):
                 _log(f"[proxy_runner] WARNING: {outcome['timing_warning']}")
+            return str(outcome.get("verdict") or "")
     except Exception as exc:
         _log(f"[proxy_runner] WARNING: ratchet settle failed: {exc}")
+    return ""
+
+
+def _profile_phase(plan: _Plan, reg: dict, entry: dict, run_dir: str, tally: _Tally) -> None:
+    """Run the run's longest case once more under a profiler, after the verdict: where
+    its time goes, by workspace file. Not a measurement, and never fatal."""
+    timed = [r for r in tally.results if isinstance(r.get("metrics"), dict)]
+    if not timed:
+        return
+    longest = max(timed, key=lambda r: r["metrics"].get("time_s") or 0)
+    case = next((c for c in plan.cases if c.get("case_id") == longest["case_id"]), None)
+    if case is None:
+        return
+    case_entry = reg.get(case.get("proxy_name", plan.proxy_name), entry)
+    out_dir = os.path.dirname(profiling.profile_path(run_dir))
+    try:
+        from ...shared import code_map
+        os.makedirs(out_dir, exist_ok=True)
+        argv = command.build_run_cmd(case_entry, out_dir, case.get("extra_params", ""), longest.get("sweep") or {})
+        _write_phase(run_dir, "profile", f"profiling case {longest['case_id']}")
+        root = store.workspace_root()
+        spent = longest["metrics"].get("time_s") or 600.0
+        result = profiling.profile(argv, out_dir, root, code_map.walk(root),
+                                   timeout=max(120.0, 5 * float(spent)), case=str(longest["case_id"]))
+        top = profiling.top(result)
+        _log(f"[proxy_runner] profile tool={result.get('tool') or 'none'} "
+             + (f"unavailable={top['unavailable']}" if "unavailable" in top
+                else " ".join(f"{f}={s:.0%}" for f, s in top["files"].items())))
+    except Exception as exc:
+        _log(f"[proxy_runner] WARNING: profile failed: {exc}")
 
 
 def main() -> None:
@@ -402,6 +448,10 @@ def main() -> None:
     reg, entry, suite = _load_target(proxy_name, benchmark_name)
     cases = suite.get("cases", [])
     _log(f"[proxy_runner] suite_cases={len(cases)}")
+
+    if args.phase == "profile":
+        _profile_only(cfg, reg, suite, proxy_name, entry, run_dir, cases)
+        return
 
     # Built once per run, before any case.
     if args.phase in ("all", "build"):
@@ -443,7 +493,11 @@ def main() -> None:
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
     _write_metrics(run_dir, output)
-    _settle_ratchet(proxy_name, run_dir, output)
+    verdict = _settle_ratchet(proxy_name, run_dir, output)
+    # The baseline and every kept run, or a run asked to: the map's time bars stay current
+    # where the code moved, and a ruled-out attempt costs no extra execution.
+    if verdict == "accept" or cfg.get("profile"):
+        _profile_phase(plan, reg, entry, run_dir, tally)
 
     if all_passed:
         _log("[proxy_runner] All requirements satisfied.")

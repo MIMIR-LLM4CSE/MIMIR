@@ -105,6 +105,12 @@ Optional extras (declared in `pyproject.toml`):
   (`cmake`/`ctest`) for C/C++/CUDA projects. These are system/CLI tools, not Python
   packages, and all of them are optional: the agent names an optional check as unrun when
   its tool is absent, and the required one never depends on them.
+- **Profilers (optional).** An optimisation session profiles its baseline and kept runs
+  with what it finds where the run runs: `py-spy` (`pip install py-spy`; it also sees the
+  C/C++ frames of a Python process) or the built-in `cProfile` for a Python command, and
+  `perf` for a compiled one. `perf` needs `kernel.perf_event_paranoid` at 2 or below
+  (`sudo sysctl kernel.perf_event_paranoid=1`); many desktop distributions set 4, and
+  the profile then says it was blocked rather than failing the run.
 
 > **Requirements file.** `pip install -r mimir/requirements.txt` installs
 > the same core dependencies, but it does **not** register the `mimir` /

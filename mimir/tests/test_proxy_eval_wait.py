@@ -89,7 +89,7 @@ class RunAwaitedTests(unittest.TestCase):
             res = asyncio.run(eval_session.run_awaited("tiny", background=True))
 
         self.assertEqual(states.calls, 0)  # never even looked
-        run.assert_called_once_with("tiny", background=True, axis="")
+        run.assert_called_once_with("tiny", background=True, axis="", profile=False)
         self.assertIn("background_job", res)
 
     def test_a_failed_launch_is_not_waited_on(self) -> None:
@@ -211,7 +211,7 @@ class DivertedWaitTests(unittest.TestCase):
 class ToolDispatchTests(unittest.TestCase):
     def test_the_tool_awaits_the_run(self) -> None:
         """``proxy_eval`` is a coroutine function, and op='run' awaits the wait."""
-        async def _fake(proxy_name="", background=False, axis=""):
+        async def _fake(proxy_name="", background=False, axis="", profile=False):
             return {"status": "ok", "verdict": "accept"}
 
         with patch.object(eval_session, "run_awaited", _fake):
