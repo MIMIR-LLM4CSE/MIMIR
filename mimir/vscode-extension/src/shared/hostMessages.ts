@@ -13,6 +13,6 @@ export type HostMessage =
   | { type: "connect"; model?: string; backend?: string; baseUrl?: string;
       anthropicApiKey?: string; remember?: boolean }
   | { type: "ws_send"; payload: string }
-  | { type: "show_code_map"; map: unknown; session?: unknown };
+  | { type: "show_code_map"; map: unknown; session?: unknown; focus?: string };
 
 export type HostMessageOf<T extends HostMessage["type"]> = Extract<HostMessage, { type: T }>;

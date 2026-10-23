@@ -37,8 +37,9 @@ interface Props {
   agentReady: boolean;
   /** Put a request to the model, as the user's own turn. */
   onPrompt: (text: string) => void;
-  /** Open a view a section offers, by the name the section gave it ("code_map"). */
-  onOpenView: (view: string) => void;
+  /** Open a view a section offers, by the name the section gave it ("code_map"), on
+   *  *focus* when given (a component of the map). */
+  onOpenView: (view: string, focus?: string) => void;
 }
 
 /**
@@ -193,7 +194,7 @@ export const SciencePanel: React.FC<Props> = ({
                 )}
                 {section.detail && <div className="science-detail">{section.detail}</div>}
                 {section.map && section.open && section.map.components.length > 0 && (
-                  <PanelMiniMap map={section.map} onOpen={() => onOpenView(section.open!)} />
+                  <PanelMiniMap map={section.map} onOpen={(id) => onOpenView(section.open!, id)} />
                 )}
                 {section.open === "code_map" && (
                   <button className="science-open" onClick={() => onOpenView("code_map")}>

@@ -526,7 +526,11 @@ re-renders on every `panel_report`.
 section) may also send a small `map` of it — components and the links between them —
 which `PanelMiniMap` draws in the section: cards in bands by tier, highest first, the
 links traced over them once placed (red for one carrying a rule break), ✕ and ↻ counts on
-each card; a card opens the full map. The section gets an "Open map" button: the drawer sends `code_map` over the socket, the
+each card; a card opens the full map on its component (`focus`, carried from the click
+through `show_code_map` to the tab), which the tab selects as it does a band clicked on
+the map: its modules and their neighbours stand out, and the side pane shows the
+component — tier, build links, time, rule breaks, cycles, modules, the components it
+depends on and is used by. The section gets an "Open map" button: the drawer sends `code_map` over the socket, the
 server answers the map whole, and the webview hands it to the host as `show_code_map`.
 `codeMapView.ts` draws it in one editor tab, its own bundle (`dist/codemap.js`, from
 `webview/src/codemap/`, plain TypeScript): the modules in bands, one per component

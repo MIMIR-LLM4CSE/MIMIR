@@ -59,7 +59,8 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .lmap { overflow-x: auto; }
 .lmap svg { display: block; }
 
-.band-bg { fill: var(--side); }
+.band-bg { fill: var(--side); cursor: pointer; }
+.band-bg.is-sel { stroke: var(--accent); stroke-width: 1.5; }
 .band-name { font: 600 11px var(--font); letter-spacing: .06em; text-transform: uppercase; fill: var(--fg); }
 .band-sub { font: 10.5px var(--font); fill: var(--fg-dim); }
 .band-bar { fill: var(--band-bar); }

@@ -422,7 +422,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     fetch_models: (m) => void this.models.probe(m.backend ?? DEFAULT_BACKEND, m.baseUrl ?? ""),
     connect: (m) => this.connect(m),
     ws_send: (m) => this.forwardToServer(m.payload),
-    show_code_map: (m) => showCodeMap(m.map, m.session, this.extensionUri, {
+    show_code_map: (m) => showCodeMap(m.map, m.session, m.focus, this.extensionUri, {
       refresh: () => this.forwardToServer(JSON.stringify({ type: "code_map" })),
       prompt: (text) => this.post({ type: "map_prompt", text }),
     }),

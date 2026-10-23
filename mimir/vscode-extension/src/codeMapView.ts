@@ -13,7 +13,7 @@ import { getNonce } from "./webviewHtml";
 let mapPanel: vscode.WebviewPanel | undefined;
 
 /** The last answer, for a page that loads after it arrived. */
-let last: { map: unknown; session?: unknown } = { map: undefined };
+let last: { map: unknown; session?: unknown; focus?: string } = { map: undefined };
 
 /** What the tab can ask of the host. */
 type TabMessage =
@@ -28,11 +28,11 @@ export interface MapActions {
   prompt: (text: string) => void;
 }
 
-/** Show *map* (and the session's steps) in the tab, opening it if needed; *refresh* asks
- *  the server again. */
-export function showCodeMap(map: unknown, session: unknown, extensionUri: vscode.Uri,
-                            actions: MapActions): void {
-  last = { map, session };
+/** Show *map* (and the session's steps) in the tab, opening it if needed, on the
+ *  component *focus* when given; *actions* ask the server again or put a request to the agent. */
+export function showCodeMap(map: unknown, session: unknown, focus: string | undefined,
+                            extensionUri: vscode.Uri, actions: MapActions): void {
+  last = { map, session, focus };
   if (!mapPanel) {
     mapPanel = vscode.window.createWebviewPanel(
       "mimir.codeMap",

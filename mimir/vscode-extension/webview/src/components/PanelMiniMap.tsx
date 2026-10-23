@@ -3,8 +3,8 @@ import type { PanelMiniMap as MiniMap } from "../types";
 
 interface Props {
   map: MiniMap;
-  /** Open the full view the section offers. */
-  onOpen: () => void;
+  /** Open the full view the section offers, on the component *id*. */
+  onOpen: (id: string) => void;
 }
 
 interface Line { d: string; breaks: boolean; key: string }
@@ -12,7 +12,8 @@ interface Line { d: string; breaks: boolean; key: string }
 /**
  * A section's small map: its components as cards in bands, one band per tier with the
  * highest on top, and the links between them drawn once the cards have their places.
- * The server chose what to put in it; this draws it and opens the full view on a click.
+ * The server chose what to put in it; this draws it, and a card opens the full view on
+ * its component.
  */
 export const PanelMiniMap: React.FC<Props> = ({ map, onOpen }) => {
   const root = useRef<HTMLDivElement>(null);
@@ -58,7 +59,7 @@ export const PanelMiniMap: React.FC<Props> = ({ map, onOpen }) => {
               className="science-minimap-card"
               data-comp={c.id}
               title={`${c.id} · tier ${c.tier} · ${c.files} files`}
-              onClick={onOpen}
+              onClick={() => onOpen(c.id)}
             >
               <span className="science-minimap-name">{c.name}</span>
               <span className="science-minimap-sub">

@@ -52,9 +52,12 @@ export function usePanels(send: (msg: ClientMessage) => void,
     send({ type: "list_panel", build: true, refresh: true });
   }, [send]);
   // A view a section offers ("code_map"): asked of the server, drawn in an editor tab
-  // by the extension once the answer comes back.
-  const openView = useCallback((view: string) => {
-    if (view === "code_map") send({ type: "code_map" });
+  // by the extension once the answer comes back, on the component asked for if any.
+  const mapFocus = useRef<string | undefined>(undefined);
+  const openView = useCallback((view: string, focus?: string) => {
+    if (view !== "code_map") return;
+    mapFocus.current = focus;
+    send({ type: "code_map" });
   }, [send]);
   const openSubAgent = useCallback((id: string) => {
     setOpenedSubAgent(null);
@@ -116,7 +119,9 @@ export function usePanels(send: (msg: ClientMessage) => void,
     },
     subagent: (msg) => setOpenedSubAgent(msg.subagent ?? null),
     code_map: (msg) => {
-      if (msg.map) vscodePostMessage({ type: "show_code_map", map: msg.map, session: msg.session });
+      if (msg.map) vscodePostMessage({ type: "show_code_map", map: msg.map, session: msg.session,
+                                       focus: mapFocus.current });
+      mapFocus.current = undefined;
     },
   }), []);
 

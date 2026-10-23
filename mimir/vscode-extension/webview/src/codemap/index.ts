@@ -16,7 +16,7 @@ interface CodeMap {
   root: string; source_root: string; components: Component[]; modules: Module[]; files: File[];
   edges: Edge[]; cycles: string[][]; unresolved: Record<string, number>; truncated: boolean;
 }
-type Selection = { kind: "module" | "file"; id: string } | null;
+type Selection = { kind: "comp" | "module" | "file"; id: string } | null;
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: unknown): void;
@@ -162,9 +162,25 @@ function edgeClass(me: ModEdge): string {
 }
 
 function selectedModule(v: View): string | null {
-  if (!sel) return null;
+  if (!sel || sel.kind === "comp") return null;
   return sel.kind === "module" ? sel.id : v.byId.get(sel.id)?.module ?? null;
 }
+
+/** The modules a selection stands for: a component's all, else the one module. */
+function selectedModules(v: View): Set<string> {
+  if (sel?.kind === "comp") return new Set(map!.modules.filter((x) => x.component === sel!.id).map((x) => x.id));
+  const one = selectedModule(v);
+  return new Set(one ? [one] : []);
+}
+
+/** Whether a selection still names something on the map drawn. */
+function stillThere(v: View, s: Selection): boolean {
+  if (!s) return true;
+  return s.kind === "comp" ? v.compOf.has(s.id) : s.kind === "module" ? v.modFiles.has(s.id) : v.byId.has(s.id);
+}
+
+// Set when a component arrives from the drawer: the map scrolls to its band once drawn.
+let scrollToBand = false;
 
 /** A module's share of the baseline's time in *files*: the sum of its files'. */
 function moduleTime(v: View, id: string, files: Record<string, number>): number {
@@ -182,7 +198,13 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   const scale = time ? Math.max(1e-9, ...[...v.modFiles.keys()].map((id) =>
     Math.max(moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : 0))) : 1;
   for (const b of v.bands) {
-    svg("rect", { class: "band-bg", x: 0, y: b.y, width: v.width, height: b.h, rx: 6 }, s);
+    const band = svg("rect", { class: "band-bg" + (sel?.kind === "comp" && sel.id === b.c.id ? " is-sel" : ""),
+      x: 0, y: b.y, width: v.width, height: b.h, rx: 6 }, s);
+    band.dataset.comp = b.c.id;
+    band.addEventListener("click", () => {
+      sel = sel?.kind === "comp" && sel.id === b.c.id ? null : { kind: "comp", id: b.c.id };
+      render();
+    });
     svg("rect", { class: "band-bar", x: 12, y: b.y + 15, width: 3, height: 11, rx: 1.5 }, s);
     svg("text", { class: "band-name", x: 21, y: b.y + 25 }, s).textContent = b.c.name;
     svg("text", { class: "band-sub", x: 12, y: b.y + 42 }, s).textContent = `tier ${b.c.tier}`;
@@ -244,23 +266,30 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     const pick = () => { sel = sel?.kind === "module" && sel.id === id ? null : { kind: "module", id }; render(); };
     g.addEventListener("click", pick);
     g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } });
-    g.addEventListener("mouseenter", () => highlight(id));
-    g.addEventListener("mouseleave", () => highlight(selectedModule(v)));
+    g.addEventListener("mouseenter", () => highlight(new Set([id])));
+    g.addEventListener("mouseleave", () => highlight(selectedModules(v)));
   }
-  function highlight(id: string | null): void {
-    const near = new Set(id ? [id] : []);
+  /** *core* and the modules linked to it stand out, with the links between them. */
+  function highlight(core: Set<string>): void {
+    const any = core.size > 0;
+    const near = new Set(core);
     for (const p of paths) {
-      const on = !!id && (p.dataset.from === id || p.dataset.to === id);
+      const on = any && (core.has(p.dataset.from!) || core.has(p.dataset.to!));
       p.classList.toggle("is-hot", on && !/is-(break|cycle)/.test(p.getAttribute("class") ?? ""));
-      p.classList.toggle("is-faded", !!id && !on);
+      p.classList.toggle("is-faded", any && !on);
       if (on) { near.add(p.dataset.from!); near.add(p.dataset.to!); }
     }
+    const chosen = selectedModules(v);
     for (const [mid, g] of boxes) {
-      g.classList.toggle("is-dim", !!id && !near.has(mid));
-      g.classList.toggle("is-sel", selectedModule(v) === mid);
+      g.classList.toggle("is-dim", any && !near.has(mid));
+      g.classList.toggle("is-sel", chosen.has(mid));
     }
   }
-  highlight(selectedModule(v));
+  highlight(selectedModules(v));
+  if (scrollToBand && sel?.kind === "comp") {
+    scrollToBand = false;
+    s.querySelector(`[data-comp="${CSS.escape(sel.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
 }
 
 /** A file in a list: its name selects it in the map, ↗ opens it at *line*. */
@@ -272,9 +301,9 @@ function fileRow(id: string, right: string, line?: number): string {
     + '" aria-label="Open ' + esc(base(id)) + '">↗</button></div>';
 }
 /** A module in a list, selecting it in the map. */
-function moduleRow(id: string, right: string | number = ""): string {
+function moduleRow(id: string, right: string | number = "", label = id): string {
   return '<div class="row"><button class="go" data-module="' + esc(id) + '" title="' + esc(id) + '">'
-    + esc(id) + "</button><span>" + esc(right) + "</span></div>";
+    + esc(label) + "</button><span>" + esc(right) + "</span></div>";
 }
 function line(label: string, value: string, cls = ""): string {
   return '<div class="line"><span>' + esc(label) + '</span><span class="' + cls + '">' + value + "</span></div>";
@@ -333,6 +362,43 @@ function timeSection(t: TimeView): string {
     + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>");
 }
 
+/** A component: where it stacks, what the build says it links, its modules, and the
+ *  components it depends on and is used by. */
+function componentDetail(m: CodeMap, v: View, id: string): string {
+  const c = v.compOf.get(id)!;
+  const t = time();
+  const files = m.files.filter((f) => f.component === id);
+  const mods = m.modules.filter((x) => x.component === id).map((x) => x.id);
+  const of = (f: string) => v.byId.get(f)!.component;
+  const out = new Map<string, number>(), inn = new Map<string, number>();
+  for (const e of m.edges) {
+    const a = of(e.from), b = of(e.to);
+    if (a === id && b !== id) out.set(b, (out.get(b) ?? 0) + 1);
+    if (b === id && a !== id) inn.set(a, (inn.get(a) ?? 0) + 1);
+  }
+  const ids = new Set(files.map((f) => f.id));
+  const breaks = m.edges.filter((e) => e.breaks && ids.has(e.from));
+  const cycles = m.cycles.filter((cy) => cy.some((x) => mods.includes(x)));
+  const compRows = (mm: Map<string, number>) => [...mm].sort((a, b) => b[1] - a[1]).map(([k, n]) =>
+    '<div class="row"><button class="go" data-comp="' + esc(k) + '" title="' + esc(k) + '">' + esc(base(k))
+    + "</button><span>" + n + "</span></div>");
+  const modTime = (x: string) => (t ? moduleTime(v, x, t.files) : 0);
+  const modRows = [...mods].sort((a, b) => modTime(b) - modTime(a) || a.localeCompare(b)).map((x) =>
+    moduleRow(x, t && modTime(x) ? pctOf(modTime(x)) : (v.modFiles.get(x) ?? []).length + " files",
+              x === id ? base(x) : x.slice(id.length + 1)));
+  return BACK + section("sel", c.name, '<div class="path">' + esc(id) + "</div>"
+    + line("tier", String(c.tier))
+    + line("files", files.length + " · " + files.reduce((n, f) => n + f.lines, 0).toLocaleString("en") + " lines")
+    + (c.declared.length ? line("build links", esc(c.declared.map(base).join(", "))) : "")
+    + (t ? line("time", pctOf(mods.reduce((n, x) => n + modTime(x), 0)) + " of the baseline's") : "")
+    + (breaks.length ? line("rule breaks", String(breaks.length), "is-danger") : "")
+    + (cycles.length ? line("module cycles", String(cycles.length), "is-cycle") : "")
+    + '<div class="cap">Modules (' + mods.length + ")</div>" + list(modRows)
+    + '<div class="cap">Depends on</div>' + list(compRows(out))
+    + '<div class="cap">Used by</div>' + list(compRows(inn))
+    + breaks.map(breakFlag).join(""));
+}
+
 function moduleDetail(m: CodeMap, v: View, id: string): string {
   const t = time();
   const files = [...(v.modFiles.get(id) ?? [])].sort((a, b) =>
@@ -371,10 +437,12 @@ function renderSide(v: View): void {
   const card = session && step ? stepCard(session, step, fileRow) : "";
   const t = time();
   const html = !sel ? card + (t ? timeSection(t) : "") + overview(m)
+    : sel.kind === "comp" ? componentDetail(m, v, sel.id)
     : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id);
   side.innerHTML = html;
   document.getElementById("back")?.addEventListener("click", () => { sel = null; render(); });
   side.querySelectorAll<HTMLElement>("[data-module]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "module", id: b.dataset.module! }; render(); }));
+  side.querySelectorAll<HTMLElement>("[data-comp]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "comp", id: b.dataset.comp! }; scrollToBand = true; render(); }));
   side.querySelectorAll<HTMLElement>("[data-file]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "file", id: b.dataset.file! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-prompt]").forEach((b) => b.addEventListener("click", () => {
     vscode.postMessage({ type: "prompt", text: b.dataset.prompt! });
@@ -487,7 +555,7 @@ function mount(): void {
     showTests = !showTests;
     remember();
     if (raw) { map = visible(raw); view = derive(map); }
-    if (sel && view && !(sel.kind === "module" ? view.modFiles.has(sel.id) : view.byId.has(sel.id))) sel = null;
+    if (view && !stillThere(view, sel)) sel = null;
     render();
   });
   window.addEventListener("keydown", (e) => {
@@ -496,7 +564,7 @@ function mount(): void {
     else if (session && e.key === "ArrowLeft" && step > 0) { step--; render(); }
   });
   window.addEventListener("message", (ev: MessageEvent) => {
-    const msg = ev.data as { type?: string; map?: CodeMap; session?: Session };
+    const msg = ev.data as { type?: string; map?: CodeMap; session?: Session; focus?: string };
     if (msg?.type !== "map" || !msg.map) return;
     // A new answer opens on the session's latest step; one that adds no step keeps the one shown.
     const steps = msg.session?.steps?.length ?? 0;
@@ -505,7 +573,12 @@ function mount(): void {
     raw = msg.map;
     map = visible(raw);
     view = derive(map);
-    if (sel && !(sel.kind === "module" ? view.modFiles.has(sel.id) : view.byId.has(sel.id))) sel = null;
+    if (!stillThere(view, sel)) sel = null;
+    // A component clicked in the drawer: the map opens on it.
+    if (msg.focus && view.compOf.has(msg.focus)) {
+      sel = { kind: "comp", id: msg.focus };
+      scrollToBand = true;
+    }
     render();
   });
   render();
