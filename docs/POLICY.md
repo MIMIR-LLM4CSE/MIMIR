@@ -331,10 +331,16 @@ A few notes worth keeping:
   project.
 - **What a sub-agent may never be given is declared, not listed.** `MAIN_ONLY` marks a
   tool as the orchestrating run's own: the plan the user approved, the questions asked of
-  them, writing the memory every session shares. With `DELEGATE` (no recursion) and
-  `CLUSTER_SUBMIT` (allocation hours are spent in front of the user), it is what
-  `reserved_for_main` subtracts from what the caller can grant. A new server reserves its
-  own tool by declaring the capability, with no client edit.
+  them, writing the memory every session shares. With `DELEGATE` (no recursion), it is
+  what `reserved_for_main` subtracts from what the caller can grant. A new server reserves
+  its own tool by declaring the capability, with no client edit.
+- **Cluster submission is granted at `build`, never at `explore`.** A `CLUSTER_SUBMIT`
+  tool spends allocation hours, so the grant table drops it below `build` by that
+  capability, whatever else the tool declares. A child that has one still submits in
+  front of the user: its approval card is relayed with the child's badge, its
+  local-validation hold reads its own session, and a job still running when it ends is
+  handed to the caller. Its jobs run from its copy, which is therefore kept while one of
+  them is unsettled, and placed where compute nodes see it (`$SCRATCH` by default).
 
 ### One injection path
 

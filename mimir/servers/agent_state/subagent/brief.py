@@ -18,17 +18,32 @@ EXPLORE_BRIEF = (
 # Said to a child working in a copy of its own. Three facts it cannot infer: where it
 # is, that its starting point is the last commit rather than the caller's current files,
 # and that its work is kept by the commit MIMIR makes for it — not by the directory,
-# which goes when the axis ends.
+# which is reclaimed once newer copies need the room.
 COPY_BRIEF = (
     "\n\nYou work in your OWN copy of the repository at {path}, on branch {branch}. It "
     "starts from the last commit, so uncommitted changes elsewhere are not here. Other "
     "sub-agents work on other copies at the same time: what you build, run and measure "
     "is yours alone, and nothing you do touches their files. When you finish, your "
-    "changes are committed to your branch for you and this directory is removed — so "
-    "leave the work in the files, and say in your answer what you changed and what it "
-    "measured. If this task involves a measurement proxy, register one of your own "
+    "changes are committed to your branch for you and this directory is later reclaimed "
+    "— so leave the work in the files, and say in your answer what you changed and what "
+    "it measured. If this task involves a measurement proxy, register one of your own "
     "pointing at THIS copy; the sealed reference and the benchmark suite are shared, so "
     "do not seal them again."
+)
+
+# Added for a child that may submit to the cluster. Its jobs run from its copy, so it
+# must know whether the compute nodes can see that copy at all.
+SLURM_BRIEF = (
+    "\n\nYou may submit Slurm jobs; each submission is put to the user first. Run them "
+    "from THIS copy, with their output in it, so they cannot touch another sub-agent's "
+    "files; the copy is kept while a job of yours is still running. A job you leave "
+    "running when you finish is handed to your caller, so name it in your handoff."
+)
+SLURM_LOCAL_COPY_BRIEF = (
+    " Your copy is on this machine's local disk ({path}), which compute nodes usually "
+    "cannot read: a job that needs its files there will fail. Say so in your handoff "
+    "rather than submitting one; the user can set `mimir.subagents.copiesDir` to a "
+    "shared directory."
 )
 
 # What a working child owes back. It has its own todo list and its own scratchpad, and

@@ -14,6 +14,7 @@ from typing import Any
 from ...config.settings import subagent_level_allows
 from ...config.models import READONLY_MODES
 from ...tools.capabilities import (
+    CLUSTER_SUBMIT,
     PLAN_BLOCKED,
     PLAN_READONLY,
     TASK_PLANNING,
@@ -97,8 +98,8 @@ def grantable_tools(agent: PolicyAgent) -> dict[str, str]:
     """What the orchestrator may hand a sub-agent now: ``{tool: server}``.
 
     Filtered by the user's toggles, the orchestrator's mode, the sub-agent rung (writing
-    tools only at "build", always in a worktree) and :func:`reserved_for_main`. The server
-    travels with each name: the child connects servers, not tools.
+    tools and cluster submission only at "build", always in a worktree) and
+    :func:`reserved_for_main`. Each name carries its server: the child connects servers.
     """
     hidden = reserved_for_main(agent.tool_caps)
     tools = agent.advertised_tools()
@@ -107,6 +108,9 @@ def grantable_tools(agent: PolicyAgent) -> dict[str, str]:
     if mode in READONLY_MODES or not subagent_level_allows(level, "build"):
         tools = tools_for_readonly_mode(
             tools, agent.tool_caps, mode=mode if mode in READONLY_MODES else "ask")
+        # By its own capability too: a submitter that forgot PLAN_BLOCKED still spends
+        # allocation hours, and an exploring child spends none.
+        hidden = hidden | names_with_cap(CLUSTER_SUBMIT, agent.tool_caps)
     granted: dict[str, str] = {}
     for tool in tools:
         name = tool.get("function", {}).get("name", "")

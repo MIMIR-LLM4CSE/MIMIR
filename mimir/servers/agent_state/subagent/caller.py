@@ -121,8 +121,8 @@ def grant_refusal(requested: list[str], grantable: dict[str, str]) -> str | None
         return None
     offer = ", ".join(sorted(grantable)) if grantable else "(none)"
     return (f"cannot grant {', '.join(unavailable)}: not available to you right now, or "
-            f"reserved to you (planning, delegation, asking the user, writing memory, "
-            f"cluster submission). What you may grant: {offer}. Leave `tools` empty for a "
+            f"reserved to you (planning, delegation, asking the user, writing memory; "
+            f"cluster submission below the build rung). What you may grant: {offer}. Leave `tools` empty for a "
             f"read-only exploration.")
 
 

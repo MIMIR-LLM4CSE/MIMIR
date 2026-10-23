@@ -15,6 +15,22 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Sub-agents can submit Slurm jobs** at the "build & run" level. The orchestrator may
+  grant them `sbatch_submit`, `salloc_submit` and the proxy's cluster runs. Each
+  submission is still an approval card, badged with the sub-agent it comes from, and a
+  job still running when the sub-agent ends is handed to the conversation. At
+  "explore", no submitter is ever granted.
+- **`mimir.subagents.copiesDir`** (`MIMIR_SUBAGENT_COPIES_DIR`) chooses where working
+  sub-agents get their copy of the repository. One copy per sub-agent, each on its own
+  `sub-xxxxxxxx` branch.
+
+### Changed
+- **Sub-agent copies go under `$SCRATCH` when it is set**, instead of `/tmp`, so the
+  compute nodes see them. Without it, they stay in the local temp dir, and a sub-agent
+  allowed to submit is told its jobs cannot read its copy. A copy is no longer
+  reclaimed while a Slurm job submitted from it may still be running.
+
 ## [1.8.0] — 2026-10-20
 
 ### Added

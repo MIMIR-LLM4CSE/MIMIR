@@ -262,19 +262,25 @@
             "markdownDescription": "How many sub-agents one conversation may run at once. Sets `MIMIR_SUBAGENT_MAX_CONCURRENT` for the server.",
             "order": 6
           },
+          "mimir.subagents.copiesDir": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Directory holding the copies of the repository that working sub-agents build and run in, one per sub-agent. Pick one the compute nodes see, so a sub-agent's Slurm jobs can read their copy. Empty uses `$SCRATCH`, else the local temp directory. Sets `MIMIR_SUBAGENT_COPIES_DIR` for the server.",
+            "order": 7
+          },
           "mimir.server.idleTimeout": {
             "type": "number",
             "default": 7200,
             "minimum": 60,
             "markdownDescription": "Seconds a detached server must have nothing to do — no turn in flight, no run to watch — before it stops on its own (minimum 60). Sets `MIMIR_SERVER_IDLE_TTL` for the server.",
-            "order": 7
+            "order": 8
           },
           "mimir.server.detachGrace": {
             "type": "number",
             "default": 30,
             "minimum": 1,
             "markdownDescription": "Seconds the chat panel may be disconnected before its window counts as gone. A reload stays within it. Sets `MIMIR_DETACH_GRACE` for the server.",
-            "order": 8
+            "order": 9
           }
         }
       },

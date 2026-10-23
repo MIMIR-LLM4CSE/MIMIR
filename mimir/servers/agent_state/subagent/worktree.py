@@ -7,16 +7,30 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from ....shared.atomic import write_json
+from ....shared.jobs import SLURM_JOB_ID, recorded_terminal_state
 
-# On the local disk, not in the state dir: a home under quota cannot hold a checkout
-# plus everything a build writes. Deliberately NOT under the scratchpad either — that
-# path is writable without approval (state_paths.standing_roots), and a copy placed
-# there would take every edit the child makes out of the approval layer.
-WORKTREE_BASE = os.path.join(
-    os.path.abspath(os.environ.get("TMPDIR") or "/tmp"),
-    f"mimir-worktrees-{os.getuid()}",
-)
+
+def _copies_root() -> tuple[str, bool]:
+    """Where copies go, and whether the compute nodes see it.
+
+    The user's choice, else the site's ``$SCRATCH`` (large, and seen by the nodes a
+    child's Slurm job runs on), else the local temp dir, which such a job cannot read.
+    """
+    # Not the workspace or the state dir: a root under quota cannot hold a checkout plus
+    # everything a build writes. Deliberately NOT under the scratchpad either — that path
+    # is writable without approval (state_paths.standing_roots), and a copy placed there
+    # would take every edit the child makes out of the approval layer.
+    for name in ("MIMIR_SUBAGENT_COPIES_DIR", "SCRATCH"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return os.path.abspath(os.path.expanduser(value)), True
+    return os.path.abspath(os.environ.get("TMPDIR") or "/tmp"), False
+
+
+_ROOT, WORKTREE_BASE_SHARED = _copies_root()
+WORKTREE_BASE = os.path.join(_ROOT, f"mimir-worktrees-{os.getuid()}")
 
 
 GIT_TIMEOUT_SECS = 120
@@ -74,6 +88,37 @@ def sibling_cards(session: str) -> tuple[str, list[dict]]:
             continue
     rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
     return base, [row[2] for row in rows]
+
+
+def runs_slurm_jobs(session: str) -> bool:
+    """Whether a Slurm job this child submitted may still be running: one not settled.
+
+    Its job reads and writes its copy, so the copy must outlive the child. A submission
+    with no terminal state recorded counts, up to the horizon past which the client
+    stops counting it too (``MIMIR_SLURM_STALE_AFTER``).
+    """
+    if not session:
+        return False
+    try:
+        from ....shared.state_paths import session_dir
+        root = os.path.join(session_dir(session), "hpc_jobs")
+        names = os.listdir(root)
+    except Exception:
+        return False
+    try:
+        horizon = max(3600.0, float(os.environ.get("MIMIR_SLURM_STALE_AFTER") or 7 * 24 * 3600))
+    except ValueError:
+        horizon = 7 * 24 * 3600.0
+    now = time.time()
+    for name in names:
+        job_dir = os.path.join(root, name)
+        try:
+            submitted = os.path.getmtime(os.path.join(job_dir, SLURM_JOB_ID))
+        except OSError:
+            continue
+        if not recorded_terminal_state(job_dir) and now - submitted < horizon:
+            return True
+    return False
 
 
 def card_is_live(card: dict) -> bool:
@@ -186,6 +231,8 @@ def sweep_orphan_copies(repo: str) -> None:
             continue
         if card_is_live({"state": "running", "pid": owner.get("pid")}):
             continue
+        if runs_slurm_jobs(owner.get("session", "")):
+            continue
         if os.path.isdir(os.path.join(sessions, owner.get("session", ""))):
             continue          # its session still holds its card; the per-session rule owns it
         drop_copy(owner, name)
@@ -194,10 +241,12 @@ def sweep_orphan_copies(repo: str) -> None:
 def reclaim_worktrees(session: str, keep: int) -> None:
     """Drop this session's finished copies on disk beyond the *keep* most recent.
 
-    Running children (by the pid on their card) are never counted or removed.
+    Running children (by the pid on their card) and copies a Slurm job of theirs may
+    still be using are never counted or removed.
     """
     _, cards = sibling_cards(session)
-    copies = [w for w in (c.get("workspace") or {} for c in cards if not card_is_live(c))
+    copies = [w for w in (c.get("workspace") or {} for c in cards
+                          if not card_is_live(c) and not runs_slurm_jobs(c.get("session", "")))
               if w.get("path") and w.get("repo") and os.path.isdir(w["path"])]
     for wt in copies[keep:]:
         drop_copy(wt)

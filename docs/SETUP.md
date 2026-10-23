@@ -524,6 +524,7 @@ variable exported in your shell then still applies.
 | | `mimir.sessions.backendWaitTimeout` | `MIMIR_BACKEND_TIMEOUT` |
 | | `mimir.sessions.backendPollInterval` | `MIMIR_BACKEND_POLL_INTERVAL` |
 | | `mimir.subagents.maxConcurrent` | `MIMIR_SUBAGENT_MAX_CONCURRENT` |
+| | `mimir.subagents.copiesDir` | `MIMIR_SUBAGENT_COPIES_DIR` |
 | | `mimir.server.idleTimeout` | `MIMIR_SERVER_IDLE_TTL` |
 | | `mimir.server.detachGrace` | `MIMIR_DETACH_GRACE` |
 | Customization | `mimir.customization.systemPromptFile` | `MIMIR_SYSTEM_PROMPT_FILE` |
@@ -594,6 +595,20 @@ through the shell, but not toolchains or Python environments.
 A `srun` that MIMIR runs from a login node counts as a job submission. It asks for
 approval, and waits until a local check has passed if MIMIR edited code this session.
 Inside an allocation, `srun` only starts a step and asks nothing more.
+
+### Sub-agents on the cluster
+
+At the "build & run" level, a sub-agent may be given the Slurm submitters too. It
+works in a copy of the repository of its own, `sub-xxxxxxxx` on branch
+`mimir/sub-xxxxxxxx`, so two sub-agents never share a build tree or a job's output.
+Each of its submissions asks for approval like yours.
+
+Its jobs run from that copy, so the compute nodes must see it. Copies go in
+`mimir.subagents.copiesDir` when set, else under `$SCRATCH`, else in the local temp
+directory. A site whose scratch has another name (`$CCCSCRATCHDIR`, `$SCRATCHDIR`)
+needs the setting; without it, the copy lands on the login node's disk, and the
+sub-agent is told its jobs cannot read it. A copy is kept while a job submitted from
+it may still be running.
 
 ---
 

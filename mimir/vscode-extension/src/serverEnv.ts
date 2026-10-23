@@ -98,6 +98,7 @@ export const SERVER_ENV_SETTINGS: readonly EnvSetting[] = [
   { key: "sessions.backendWaitTimeout", env: positive("MIMIR_BACKEND_TIMEOUT") },
   { key: "sessions.backendPollInterval", env: positive("MIMIR_BACKEND_POLL_INTERVAL") },
   { key: "subagents.maxConcurrent", env: positive("MIMIR_SUBAGENT_MAX_CONCURRENT") },
+  { key: "subagents.copiesDir", env: text("MIMIR_SUBAGENT_COPIES_DIR") },
   { key: "server.idleTimeout", env: positive("MIMIR_SERVER_IDLE_TTL") },
   { key: "server.detachGrace", env: positive("MIMIR_DETACH_GRACE") },
   { key: "customization.systemPromptFile", env: text("MIMIR_SYSTEM_PROMPT_FILE") },

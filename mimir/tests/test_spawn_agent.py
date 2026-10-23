@@ -1671,6 +1671,54 @@ class WorktreeTests(unittest.TestCase):
             worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
         self.assertFalse(os.path.exists(wt["path"]))
 
+    def test_copies_go_where_compute_nodes_see_them(self):
+        """The setting, else the site's scratch; the temp dir is the fallback that
+        compute nodes usually cannot read, and is said to be."""
+        cases = [
+            ({"MIMIR_SUBAGENT_COPIES_DIR": "/shared/copies", "SCRATCH": "/scratch/u"},
+             ("/shared/copies", True)),
+            ({"SCRATCH": "/scratch/u"}, ("/scratch/u", True)),
+            ({"TMPDIR": "/local/tmp"}, ("/local/tmp", False)),
+        ]
+        for env, expected in cases:
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(worktree._copies_root(), expected)
+
+    def _slurm_submission(self, state_dir, name, settled: str = ""):
+        job_dir = Path(state_dir, "sessions", "parent-session", "subagents", name,
+                       "hpc_jobs", "1")
+        job_dir.mkdir(parents=True, exist_ok=True)
+        (job_dir / "slurm_job_id").write_text("4242", encoding="utf-8")
+        if settled:
+            (job_dir / "slurm_state").write_text(settled, encoding="utf-8")
+
+    def test_a_copy_a_slurm_job_may_still_use_is_never_reclaimed(self):
+        # The job reads and writes its copy after the child that submitted it ended.
+        state = tempfile.mkdtemp(prefix="mimir-state-")
+        self.addCleanup(shutil.rmtree, state, ignore_errors=True)
+        wt, _ = worktree.create_worktree("sub-queued")
+        self._card(state, "sub-queued", {
+            "state": "done", "started_at": "2000-01-01T00:00:00", "workspace": wt,
+            "session": "parent-session/subagents/sub-queued",
+        })
+        self._slurm_submission(state, "sub-queued")
+        with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
+            worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
+        self.assertTrue(os.path.isdir(wt["path"]))
+
+    def test_a_copy_whose_jobs_all_settled_is_reclaimed(self):
+        state = tempfile.mkdtemp(prefix="mimir-state-")
+        self.addCleanup(shutil.rmtree, state, ignore_errors=True)
+        wt, _ = worktree.create_worktree("sub-settled")
+        self._card(state, "sub-settled", {
+            "state": "done", "started_at": "2000-01-01T00:00:00", "workspace": wt,
+            "session": "parent-session/subagents/sub-settled",
+        })
+        self._slurm_submission(state, "sub-settled", settled="done")
+        with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
+            worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
+        self.assertFalse(os.path.exists(wt["path"]))
+
     def test_reclaiming_a_copy_commits_what_it_had_not_committed(self):
         # The copy most worth reclaiming is the one a failed run left, and that is
         # exactly the one whose work exists nowhere else. --force would take it silently.

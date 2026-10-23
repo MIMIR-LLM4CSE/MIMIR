@@ -47,11 +47,14 @@ def _agent(mode: str = "agent", disabled: set[str] | None = None,
 
 
 class TestReservedForMain:
-    def test_the_three_reasons_are_read_off_the_declarations(self):
+    def test_the_reasons_are_read_off_the_declarations(self):
         reserved = reserved_for_main(_agent().tool_caps)
         assert "todo_set_plan" in reserved      # main_only
         assert "spawn_agent" in reserved        # delegate: no recursion
-        assert "sbatch_submit" in reserved      # cluster_submit: allocation hours
+
+    def test_cluster_submission_is_not_reserved(self):
+        """The rung decides it (TestSubAgentLevels), not the reservation."""
+        assert "sbatch_submit" not in reserved_for_main(_agent().tool_caps)
 
     def test_a_working_checklist_is_not_reserved(self):
         """A sub-agent working one axis keeps a checklist — in its own session, so the
@@ -104,6 +107,19 @@ class TestSubAgentLevels:
 
     def test_parallel_may_give_the_writing_tools(self):
         assert "write_file" in grantable_tools(_agent(level="build"))
+
+    def test_build_may_give_cluster_submission(self):
+        assert "sbatch_submit" in grantable_tools(_agent(level="build"))
+
+    def test_explore_never_gives_cluster_submission(self):
+        assert "sbatch_submit" not in grantable_tools(_agent(level="explore"))
+
+    def test_a_submitter_not_declared_plan_blocked_is_still_withheld_at_explore(self):
+        """Allocation hours are read off CLUSTER_SUBMIT itself, not off the write cap."""
+        agent = _agent(level="explore")
+        agent.tool_caps["sbatch_submit"] = ToolCaps(
+            name="sbatch_submit", capabilities=frozenset({"cluster_submit"}))
+        assert "sbatch_submit" not in grantable_tools(agent)
 
     def test_an_agent_with_no_rung_is_treated_as_explore(self):
         """The absence of a choice is the cautious answer, not the permissive one."""

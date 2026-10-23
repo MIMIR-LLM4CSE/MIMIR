@@ -368,7 +368,10 @@ _SECTION_SUBAGENTS_AXES = (
     "what they measured, say plainly which one you would keep and why, and integrate the "
     "one the user settles on.\n"
     "- A line of work too long for one run is not restarted: ask for the state (what is "
-    "established, what is left, where), then send a fresh sub-agent on from there."
+    "established, what is left, where), then send a fresh sub-agent on from there.\n"
+    "- A sub-agent may be given the Slurm submitters too: it submits from its own copy, "
+    "each submission is put to the user, and a job still running when it finishes is "
+    "handed to you."
 )
 
 # Conditional: only when the memory server is connected, ahead of the index. The only

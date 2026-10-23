@@ -736,9 +736,9 @@ tools). Four filters, in this order: the user's server toggles, already applied 
 `agent.advertised_tools()`; the orchestrator's own mode, so a read-only mode has no write
 surface to give away and delegation cannot be the way around plan mode; the **sub-agent
 rung** the user set (`agent.subagent_level`, persisted in `preferences.json`), which at
-`explore` leaves nothing that writes; and `tools.capabilities.reserved_for_main`, the
-tools a child is never granted — `MAIN_ONLY` (the plan the user approved, writing the
-shared memory), `DELEGATE` (no recursion), `CLUSTER_SUBMIT` (allocation hours).
+`explore` leaves nothing that writes and no `CLUSTER_SUBMIT` tool (allocation hours); and
+`tools.capabilities.reserved_for_main`, the tools a child is never granted — `MAIN_ONLY`
+(the plan the user approved, writing the shared memory) and `DELEGATE` (no recursion).
 `grantable_writers()` says which of the granted tools would change the tree, because the
 spawning server holds names and has no registry until it connects the servers; a child
 granted one of those works in a copy of the repository. All of it travels with the

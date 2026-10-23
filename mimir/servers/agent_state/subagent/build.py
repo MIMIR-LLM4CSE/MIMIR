@@ -15,10 +15,10 @@ from typing import Callable
 from mimir.client.core.ports import AgentHost
 from mimir.client.session.journal import TranscriptLog
 from . import caller, human, limits
-from .brief import COPY_BRIEF, EXPLORE_BRIEF, WORK_BRIEF
+from .brief import COPY_BRIEF, EXPLORE_BRIEF, SLURM_BRIEF, SLURM_LOCAL_COPY_BRIEF, WORK_BRIEF
 from .outcome import final_state, human_budget, repo_relative
 from .watcher import ChildWatcher
-from .worktree import finish_worktree
+from .worktree import WORKTREE_BASE_SHARED, finish_worktree
 from ....shared.approved_roots import approved_roots
 from ....shared.atomic import write_json
 
@@ -217,6 +217,7 @@ async def drive_sub_agent(
     """Configure the child agent, run it, and report what it did."""
     from mimir.client.extensions import all_servers
     from mimir.client.tools.capabilities import (
+        CLUSTER_SUBMIT,
         PLAN_BLOCKED,
         PLAN_READONLY,
         explorer_servers,
@@ -295,6 +296,10 @@ async def drive_sub_agent(
     )
     if worktree:
         brief += COPY_BRIEF.format(path=worktree["path"], branch=worktree["branch"])
+        if any(has_cap(name, CLUSTER_SUBMIT, agent.tool_caps) for name in requested):
+            brief += SLURM_BRIEF
+            if not WORKTREE_BASE_SHARED:
+                brief += SLURM_LOCAL_COPY_BRIEF.format(path=worktree["path"])
     query = "\n\n---\n\n".join(p for p in (brief, context.rstrip(), task) if p)
 
     print(f"⟳ sub-agent starting ({mode}): {task[:80]}{'…' if len(task) > 80 else ''}",

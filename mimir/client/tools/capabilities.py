@@ -319,15 +319,16 @@ def panel_sections(registry: dict[str, ToolCaps] | None = None) -> list[tuple[st
 
 
 def reserved_for_main(registry: dict[str, ToolCaps] | None = None) -> set[str]:
-    """Tools a sub-agent is never granted: ``MAIN_ONLY``, ``DELEGATE``, ``CLUSTER_SUBMIT``.
+    """Tools a sub-agent is never granted: ``MAIN_ONLY`` and ``DELEGATE``.
 
-    The user's plan, questions and memory; a delegation tree nobody budgeted; allocation
-    hours. ``TASK_PLANNING`` is not here: a sub-agent keeps its own checklist.
+    The user's plan, questions and memory; a delegation tree nobody budgeted.
+    ``TASK_PLANNING`` is not here: a sub-agent keeps its own checklist. ``CLUSTER_SUBMIT``
+    is not either: it is granted at the "build" rung (``toollist.grantable_tools``).
     """
     reg = _registry(registry)
     return {
         name for name, c in reg.items()
-        if c.capabilities & {MAIN_ONLY, DELEGATE, CLUSTER_SUBMIT}
+        if c.capabilities & {MAIN_ONLY, DELEGATE}
     }
 
 

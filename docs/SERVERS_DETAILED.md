@@ -1316,10 +1316,15 @@ Tools:
     shared tree overwrite each other in silence, so a child that writes gets a copy of
     the repository or it does not write.
   - **A child granted a writing or running tool works in a git worktree of its own**,
-    created before it starts, on branch `mimir/<child>`, under `/tmp/mimir-worktrees-*`
-    — the local disk, not the state dir (a home under quota cannot hold a checkout plus
-    what a build writes), and deliberately not the scratchpad (writable without
-    approval, which would take the child's edits out of the approval layer). On a clean
+    created before it starts, on branch `mimir/<child>`, under
+    `<root>/mimir-worktrees-<uid>/<repo>/<child>`. The root is `MIMIR_SUBAGENT_COPIES_DIR`
+    (`mimir.subagents.copiesDir`), else `$SCRATCH`, else `$TMPDIR` or `/tmp`: a disk the
+    compute nodes see, so a child's Slurm jobs can read their copy, and not the
+    workspace or the state dir (a root under quota cannot hold a checkout plus what a
+    build writes). Deliberately not the scratchpad either (writable without approval,
+    which would take the child's edits out of the approval layer). A child granted a
+    `CLUSTER_SUBMIT` tool is told to submit from its copy, and, when the copy fell back
+    to the local temp dir, that its jobs cannot read it. On a clean
     run MIMIR commits the work to the branch and **keeps the copy**: the branch carries
     the code, the copy carries the build tree, which git never had and which the axis
     paid its compile for. Git refuses to check out a branch a copy holds, so the result
@@ -1341,6 +1346,9 @@ Tools:
         still on disk take a place, and "still running" is read off the **pid** on the
         card — a server killed mid-run leaves a card saying "running" for ever, and
         taking that at face value would exempt its copy from reclamation.
+        Nor does a copy whose child has a Slurm submission still unsettled among
+        its session's Slurm records (no terminal state, younger than `MIMIR_SLURM_STALE_AFTER`):
+        the job reads and writes that copy after the child has ended.
       - *Orphan sweep, also at creation.* The cards live with the session, so deleting a
         conversation takes the registry and leaves the copies. Each copy therefore also
         carries a **marker** beside it (never inside: `git add -A` would commit it),
@@ -1455,8 +1463,9 @@ Capabilities and gating:
   plan and ask — that is where a sweep is the whole of the work.
 - What a child is never granted is declared by the tools themselves, and read by
   `tools.capabilities.reserved_for_main`: `MAIN_ONLY` (the plan the user approved, the
-  questions asked of them, writing the shared memory), `DELEGATE` (no recursion) and
-  `CLUSTER_SUBMIT` (allocation hours are spent where the user can see it). `TASK_PLANNING`
+  questions asked of them, writing the shared memory) and `DELEGATE` (no recursion).
+  `CLUSTER_SUBMIT` is granted at the `build` rung only (allocation hours), and each
+  submission still reaches the user as a relayed approval card. `TASK_PLANNING`
   is deliberately *not* reserved — it covers the working checklist too, which a child keeps
   in its own session.
 - Declared `reversibility="reversible"`, hence **not** approval-gated: a card in front of
