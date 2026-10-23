@@ -138,6 +138,8 @@ export interface CodeMapRequestMessage {
 export interface CodeMapMessage {
   type: "code_map";
   map?: unknown;
+  /** The optimisation session's steps, when a server answers them (``CODE_MAP_STEPS``). */
+  session?: unknown;
 }
 
 /** Stop a run the watcher holds, with the cancel op its own server named. */

@@ -1676,6 +1676,8 @@ Tool bodies live in `proxy/_ops/` as plain functions (no `@mcp.tool` decorators 
 | `_eval_ratchet.py` | the session-level settle: one run's verdict, written once under flock and frozen to `ratchet.json`. Called both by the ops layer and by the detached runner, which never share a process |
 | `slurm.py` | the three sbatch submission ops (single / per-case suite / eval). `eval` is the one that can submit **two** chained jobs — build then run — when a build partition is resolved |
 | `scaffold.py` | component-harness scaffolding + the four template generators |
+| `panel.py` | the drawer's Optimisation section: the session's state, metric, best, machine comparability, and one `steps` line (tried, kept, change since baseline) that opens the code map |
+| `code_map_steps.py` | the session as the code map draws it (`proxy_code_map_steps`, `CODE_MAP_STEPS`): for each settled run after the baseline, the files its launch snapshot changed against its incumbent's (the `best_run_id` of the row before it), the dependencies those changes add or drop (each snapshot mapped by `shared/code_map` with its tracked files read through `tree_snapshot.read`), its verdict, axis and metric beside the incumbent's. Cached on the ledger's mtime |
 
 Tools (read-only):
 - `proxy_get(op, name, run_timestamp)` — ops: `proxies`, `proxy` (registration + readme + last-5-runs), `references`, `suites`, `suite` (definition + validation), `report` (suite results table)

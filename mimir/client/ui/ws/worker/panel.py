@@ -9,7 +9,7 @@ import logging
 from typing import Any, Callable
 
 from .....shared.code_map import FULL_ARGS
-from ....tools.capabilities import code_map_tools, panel_sections
+from ....tools.capabilities import CODE_MAP, CODE_MAP_STEPS, code_map_tools, panel_sections
 from ....protocol.tool_result import normalize_tool_content
 from ..runtime import (
     augment_query_with_resources,
@@ -134,8 +134,9 @@ class Panel:
         return asyncio.run_coroutine_threadsafe(_run(), loop)
 
     def code_map(self) -> Any:
-        """The workspace's code map from the first server that answers ``CODE_MAP``, as a
-        future of ``{"map": …}``; ``{}`` while there is no agent or no answer.
+        """The workspace's code map from the first server that answers ``CODE_MAP``, and the
+        session's steps from the first that answers ``CODE_MAP_STEPS``, as a future of
+        ``{"map": …, "session": …}``; ``{}`` while there is no agent or no map.
         """
         agent, loop = self._agent(), self._loop()
         if agent is None or loop is None:
@@ -143,20 +144,28 @@ class Panel:
             fut.set_result({})
             return fut
 
-        async def _run() -> dict:
-            for tool in code_map_tools(agent.tool_caps):
+        async def _first(cap: str, args: dict, key: str) -> dict | None:
+            for tool in code_map_tools(agent.tool_caps, cap):
                 owner = agent.tool_owner.get(tool)
                 if owner is None:
                     continue
                 try:
-                    raw = await agent.sessions[owner].call_tool(tool, dict(FULL_ARGS))
+                    raw = await agent.sessions[owner].call_tool(tool, args)
                     text = normalize_tool_content(raw)
                     payload = json.loads(text) if isinstance(text, str) else (text or {})
                 except Exception as exc:
                     logger.debug("code map %r failed: %s", tool, exc)
                     continue
-                if isinstance(payload, dict) and payload.get("files") is not None:
-                    return {"map": payload}
-            return {}
+                if isinstance(payload, dict) and payload.get(key) is not None:
+                    return payload
+            return None
+
+        async def _run() -> dict:
+            # Asked together: the map is a walk of the tree, the steps a read of snapshots.
+            found, steps = await asyncio.gather(
+                _first(CODE_MAP, dict(FULL_ARGS), "files"), _first(CODE_MAP_STEPS, {}, "steps"))
+            if found is None:
+                return {}
+            return {"map": found, **({"session": steps} if steps else {})}
 
         return asyncio.run_coroutine_threadsafe(_run(), loop)

@@ -63,6 +63,8 @@ PANEL_REPORT = "panel_report"          # fills one section of the scientific-com
                                        # with a `panel` spec {"section", "order", "args", "refresh_arg"?}
 CODE_MAP = "code_map"                  # answers the workspace's code map: shared.code_map's dict
                                        # when called with shared.code_map.FULL_ARGS, for the map tab
+CODE_MAP_STEPS = "code_map_steps"      # answers the optimisation session's steps for the map tab:
+                                       # each run's verdict, metric and the files and edges it changed
 
 # --- Reversibility: how much of an action can be taken back ----------------
 # One ordered dimension, the *declared* one, from which SENSITIVE below is derived
@@ -372,5 +374,5 @@ __all__ = [
     "REVERSIBLE", "RECOVERABLE", "IRREVERSIBLE", "REVERSIBILITY_LEVELS",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
     "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
-    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP",
+    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "CODE_MAP_STEPS",
 ]

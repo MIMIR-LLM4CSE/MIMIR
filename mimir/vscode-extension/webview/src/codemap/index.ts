@@ -3,6 +3,7 @@
 // what the server answered (`shared.code_map`) and reads nothing else.
 
 import { STYLE } from "./style";
+import { edgeKey, overlay, stepCard, strip, type Overlay, type Scope, type Session } from "./session";
 
 interface Component { id: string; name: string; tier: number; declared: string[]; external: Record<string, number>; tests: boolean }
 interface Module { id: string; component: string }
@@ -30,6 +31,11 @@ const LANG: Record<string, string> = { python: "py", cython: "pyx", cpp: "c++", 
 
 let map: CodeMap | null = null;
 let sel: Selection = null;
+// The optimisation session, when the workspace has one: the step shown, and whether the
+// map marks that step's changes alone or every kept step's since the baseline.
+let session: Session | null = null;
+let step = 0;
+let scope: Scope = "step";
 let skin = vscode.getState()?.skin === "light" ? "light" : "mimir";
 // The tests are folded away unless asked for: they depend on everything and would bury
 // the code's own architecture under their edges.
@@ -74,7 +80,10 @@ interface View {
   width: number; height: number;
   modEdges: ModEdge[];
 }
-interface ModEdge { from: string; to: string; edges: Edge[]; breaks: number; binding: number; byName: number; cycle: boolean; deferred: boolean }
+interface ModEdge {
+  from: string; to: string; edges: Edge[]; breaks: number; binding: number; byName: number;
+  cycle: boolean; deferred: boolean; added: number; removed: boolean;
+}
 
 function derive(m: CodeMap): View {
   const byId = new Map(m.files.map((f) => [f.id, f]));
@@ -101,7 +110,7 @@ function derive(m: CodeMap): View {
     const a = byId.get(e.from)!.module, b = byId.get(e.to)!.module;
     if (a === b) continue;
     let me = agg.get(key(a, b));
-    if (!me) agg.set(key(a, b), me = { from: a, to: b, edges: [], breaks: 0, binding: 0, byName: 0, cycle: false, deferred: true });
+    if (!me) agg.set(key(a, b), me = { from: a, to: b, edges: [], breaks: 0, binding: 0, byName: 0, cycle: false, deferred: true, added: 0, removed: false });
     me.edges.push(e);
     if (e.breaks) me.breaks++;
     if (e.kind === "binding") me.binding++;
@@ -125,7 +134,27 @@ function path(v: View, a: string, b: string): string {
   return `M${ax},${pa.y} C${ax},${pa.y - lift} ${bx},${pb.y - lift} ${bx},${pb.y}`;
 }
 
+/** The map's module edges with a step's marks: its added dependencies counted on the
+ *  edges that hold them, its removed ones drawn where both modules still are. */
+function marked(v: View, ov: Overlay | null): ModEdge[] {
+  if (!ov) return v.modEdges;
+  const out = v.modEdges.map((me) => ({ ...me, added: me.edges.filter((e) => ov.added.has(edgeKey(e))).length }));
+  const gone = new Map<string, ModEdge>();
+  for (const e of ov.removed) {
+    const a = v.byId.get(e.from)?.module, b = v.byId.get(e.to)?.module;
+    if (!a || !b || a === b || !v.pos.has(a) || !v.pos.has(b)) continue;
+    const k = key(a, b);
+    const me = gone.get(k) ?? { from: a, to: b, edges: [], breaks: 0, binding: 0, byName: 0, cycle: false,
+      deferred: false, added: 0, removed: true };
+    me.edges.push({ ...e, sure: e.sure === "by_name" ? "by_name" : "exact", deferred: false });
+    gone.set(k, me);
+  }
+  return out.concat([...gone.values()]);
+}
+
 function edgeClass(me: ModEdge): string {
+  if (me.removed) return "edge is-removed";
+  if (me.added && me.added === me.edges.length) return "edge is-added";
   if (me.breaks) return "edge is-break";
   if (me.cycle) return "edge is-cycle";
   if (me.binding === me.edges.length) return me.byName === me.edges.length ? "edge is-binding is-byname" : "edge is-binding";
@@ -137,7 +166,7 @@ function selectedModule(v: View): string | null {
   return sel.kind === "module" ? sel.id : v.byId.get(sel.id)?.module ?? null;
 }
 
-function renderMap(v: View): void {
+function renderMap(v: View, ov: Overlay | null): void {
   const root = document.getElementById("map")!;
   root.innerHTML = "";
   const s = svg("svg", { viewBox: `0 0 ${v.width} ${v.height}`, role: "img", "aria-label": "Modules by component, with the dependencies between them" }, root);
@@ -153,11 +182,11 @@ function renderMap(v: View): void {
     if (dl.length > 2) svg("title", {}, t).textContent = dl.join(", ");
   }
   const gE = svg("g", {}, s), gX = svg("g", {}, s), gM = svg("g", {}, s);
-  const rank = (e: ModEdge) => (e.breaks ? 3 : e.cycle ? 2 : e.binding ? 1 : 0);
+  const rank = (e: ModEdge) => (e.removed || e.added ? 4 : e.breaks ? 3 : e.cycle ? 2 : e.binding ? 1 : 0);
   const paths: SVGPathElement[] = [];
-  for (const me of [...v.modEdges].sort((a, b) => rank(a) - rank(b))) {
+  for (const me of marked(v, ov).sort((a, b) => rank(a) - rank(b))) {
     const p = svg("path", { d: path(v, me.from, me.to), class: edgeClass(me),
-      "stroke-width": (me.breaks ? 2.5 : 1.2) + Math.log2(me.edges.length) * 0.6 }, gE);
+      "stroke-width": (me.breaks || me.removed || me.added ? 2.5 : 1.2) + Math.log2(me.edges.length) * 0.6 }, gE);
     p.dataset.from = me.from; p.dataset.to = me.to;
     paths.push(p);
     if (me.breaks) {
@@ -181,6 +210,17 @@ function renderMap(v: View): void {
     let dx = BW - 9;
     if (map!.edges.some((e) => e.breaks && v.byId.get(e.from)!.module === id)) { svg("circle", { class: "dot-break", cx: dx, cy: 12, r: 4 }, g); dx -= 11; }
     if (v.cycleOf.has(id)) svg("circle", { class: "dot-cycle", cx: dx, cy: 12, r: 4 }, g);
+    if (ov) {
+      if (files.some((f) => ov.touchedNow.has(f.id))) g.classList.add("is-touched");
+      else if (files.some((f) => ov.touched.has(f.id))) g.classList.add("is-touched-old");
+      const ids = new Set(files.map((f) => f.id));
+      ov.steps.filter((st) => st.changed.some((f) => ids.has(f))).slice(-2).forEach((st, i) => {
+        const pl = svg("g", { class: "pill", transform: `translate(${BW - 52 - i * 54},-8)` }, g);
+        svg("rect", { class: st.verdict === "accept" ? "ok" : "no", width: 48, height: 15, rx: 7.5 }, pl);
+        svg("text", { x: 24, y: 11, "text-anchor": "middle" }, pl).textContent = "#" + st.n + " " + (st.delta === null ? "" : signedShort(st.delta));
+        svg("title", {}, pl).textContent = "#" + st.n + " " + st.axis;
+      });
+    }
     svg("title", {}, g).textContent = id;
     boxes.set(id, g);
     const pick = () => { sel = sel?.kind === "module" && sel.id === id ? null : { kind: "module", id }; render(); };
@@ -293,7 +333,8 @@ function fileDetail(m: CodeMap, v: View, id: string): string {
 
 function renderSide(v: View): void {
   const m = map!, side = document.getElementById("side")!;
-  const html = !sel ? overview(m) : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id);
+  const card = session && step ? stepCard(session, step, fileRow) : "";
+  const html = !sel ? card + overview(m) : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id);
   side.innerHTML = html;
   document.getElementById("back")?.addEventListener("click", () => { sel = null; render(); });
   side.querySelectorAll<HTMLElement>("[data-module]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "module", id: b.dataset.module! }; render(); }));
@@ -312,7 +353,34 @@ function renderLegend(): void {
     <span><i class="sw" style="border-color:var(--e-break);border-top-width:3px"></i>breaks a rule ✕</span>
     <span><i class="sw" style="border-color:var(--e-cycle)"></i>inside a module cycle</span>
     <span><i class="dot" style="background:var(--e-break)"></i>has a break</span>
-    <span><i class="dot" style="background:var(--e-cycle)"></i>in a cycle</span>`;
+    <span><i class="dot" style="background:var(--e-cycle)"></i>in a cycle</span>`
+    + (session && step ? stepLegend() : "");
+}
+
+function stepLegend(): string {
+  const who = scope === "step" ? "this step" : "the kept steps";
+  return '<span><i class="sw" style="border-color:var(--e-added);border-top-width:3px"></i>added by ' + who + "</span>"
+    + '<span><i class="sw dash" style="border-color:var(--edge);border-top-width:3px"></i>removed by ' + who + "</span>"
+    + "<span>green outline: the files " + who + " changed</span>"
+    + "<span>the dependencies drawn are today's code</span>";
+}
+
+/** ±12% in the width of a pill. */
+function signedShort(d: number): string {
+  return (d > 0 ? "+" : d < 0 ? "−" : "±") + Math.abs(d * 100).toFixed(0) + "%";
+}
+
+function renderSession(): void {
+  const el = document.getElementById("session")!;
+  el.hidden = !session || !session.steps.length;
+  if (el.hidden || !session) return;
+  el.innerHTML = strip(session, step, scope);
+  el.querySelectorAll<HTMLElement>("[data-step]").forEach((b) => b.addEventListener("click", () => {
+    step = Number(b.dataset.step); render();
+  }));
+  el.querySelectorAll<HTMLElement>("[data-scope]").forEach((b) => b.addEventListener("click", () => {
+    scope = b.dataset.scope === "all" ? "all" : "step"; render();
+  }));
 }
 
 let view: View | null = null;
@@ -333,7 +401,8 @@ function render(): void {
     document.getElementById("side")!.innerHTML = "";
     return;
   }
-  renderMap(view);
+  renderSession();
+  renderMap(view, session && step ? overlay(session, step, scope) : null);
   renderLegend();
   renderSide(view);
 }
@@ -352,6 +421,7 @@ function mount(): void {
       <button class="icon" id="reload" title="Map the code again" aria-label="Map the code again">⟳</button>
     </header>
     <div class="ribbon" aria-hidden="true"></div>
+    <section class="session" id="session" aria-label="Optimisation session" hidden></section>
     <div class="tab"><div class="tab-map"><div class="lmap" id="map"></div><div class="legend" id="legend"></div></div>
       <div class="tab-side" id="side"></div></div>`;
   document.querySelectorAll<HTMLButtonElement>("button[data-skin]").forEach((b) => b.addEventListener("click", () => {
@@ -367,10 +437,18 @@ function mount(): void {
     if (sel && view && !(sel.kind === "module" ? view.modFiles.has(sel.id) : view.byId.has(sel.id))) sel = null;
     render();
   });
-  window.addEventListener("keydown", (e) => { if (e.key === "Escape" && sel) { sel = null; render(); } });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && sel) { sel = null; render(); }
+    else if (session && e.key === "ArrowRight" && step < session.steps.length) { step++; render(); }
+    else if (session && e.key === "ArrowLeft" && step > 0) { step--; render(); }
+  });
   window.addEventListener("message", (ev: MessageEvent) => {
-    const msg = ev.data as { type?: string; map?: CodeMap };
+    const msg = ev.data as { type?: string; map?: CodeMap; session?: Session };
     if (msg?.type !== "map" || !msg.map) return;
+    // A new answer opens on the session's latest step; one that adds no step keeps the one shown.
+    const steps = msg.session?.steps?.length ?? 0;
+    if (!session || steps !== session.steps.length) step = steps;
+    session = steps ? msg.session! : null;
     raw = msg.map;
     map = visible(raw);
     view = derive(map);

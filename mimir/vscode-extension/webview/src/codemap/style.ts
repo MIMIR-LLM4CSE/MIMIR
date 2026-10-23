@@ -18,7 +18,8 @@ export const STYLE = `
   --focus: var(--vscode-focusBorder, #0078d4);
   --warn: var(--vscode-editorWarning-foreground, #cca700);
   --edge: #8b8b8b; --e-break: var(--vscode-errorForeground, #f85149); --e-cycle: #b180d7;
-  --e-binding: #33d6f2;
+  --e-binding: #33d6f2; --e-added: #3fb950; --ok: var(--vscode-testing-iconPassed, #3fb950);
+  --time: #f2663a; --pill-fg: #111111;
   --band-bar: #7a2c9e;
   --mimir-gradient: linear-gradient(90deg, #33d6f2, #1a5fd8 30%, #7a2c9e 52%, #d8203c 72%, #f2663a);
   --font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
@@ -29,6 +30,7 @@ export const STYLE = `
   --fg: #3b3b3b; --fg-dim: #6a6a6a; --border: #d6d6d6; --border-soft: #e5e5e5;
   --accent: #005fb8; --accent-fg: #ffffff; --focus: #005fb8; --warn: #9a6700;
   --edge: #8c8c8c; --e-break: #cf222e; --e-cycle: #8250df; --e-binding: #0598bc; --band-bar: #8250df;
+  --e-added: #1a7f37; --ok: #1a7f37; --time: #e0531f; --pill-fg: #ffffff;
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -109,5 +111,39 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .empty { font-size: 12px; color: var(--fg-dim); }
 .back, .link { all: unset; cursor: pointer; font-size: 12px; color: var(--accent); }
 .open { margin-top: 8px; font: 12px var(--font); padding: 4px 10px; background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 3px; cursor: pointer; }
+/* the session: the best value as it went, one stop per step */
+.session { background: var(--bg); border: 1px solid var(--border-soft); border-radius: 6px; padding: 10px 14px 12px; display: grid; gap: 8px; min-width: 0; }
+.session[hidden] { display: none; }
+.session-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+.session-head .title { margin: 0; }
+.session .title::before { background: #f2663a; }
+.sum { font-size: 12px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.sum b { color: var(--fg); font-weight: 600; }
+.steps-scroll { overflow-x: auto; }
+.steps { display: grid; grid-template-rows: 40px auto; min-width: 760px; }
+.spark { grid-row: 1; grid-column: 1 / -1; width: 100%; height: 40px; }
+.spark .line { fill: none; stroke: var(--time); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.pts { grid-row: 1; grid-column: 1 / -1; position: relative; }
+.pt { position: absolute; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--time); background: var(--bg); transform: translate(-50%, -50%); }
+.pt.is-cur { background: var(--time); }
+.pt.is-rej { border-color: var(--fg-dim); }
+.stop { all: unset; grid-row: 2; cursor: pointer; display: grid; gap: 2px; padding: 6px 8px 4px; border-radius: 4px; border-top: 2px solid transparent; min-width: 0; }
+.stop:hover { background: var(--hover); }
+.stop[aria-current="true"] { background: var(--surface-2); border-top-color: var(--accent); }
+.stop:focus-visible { outline: 1px solid var(--focus); }
+.stop .n { font: 600 11px var(--font); letter-spacing: .04em; }
+.stop .v { font-weight: 400; } .stop .v.ok { color: var(--ok); } .stop .v.no { color: var(--e-break); }
+.stop .ax { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stop .t { font: 11px var(--mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stop.is-after .ax, .stop.is-after .t, .stop.is-after .n { opacity: .45; }
+.edge.is-added { stroke: var(--e-added); stroke-opacity: 1; }
+.edge.is-removed { stroke: var(--edge); stroke-opacity: .9; stroke-dasharray: 10 6; }
+.m.is-touched rect.box { stroke: var(--ok); stroke-width: 2.2; }
+.m.is-touched-old rect.box { stroke: color-mix(in srgb, var(--ok) 45%, var(--border)); stroke-width: 1.6; }
+.pill rect.ok { fill: var(--ok); } .pill rect.no { fill: var(--e-break); }
+.pill text { font: 600 10px var(--font); fill: var(--pill-fg); }
+.section.step .title::before { background: #f2663a; }
+.is-ok { color: var(--ok); } .is-danger { color: var(--e-break); }
+.sw.dash { border-top-style: dashed; }
 @media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } }
 `;

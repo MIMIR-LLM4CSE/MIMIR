@@ -23,12 +23,14 @@ from ...shared.capabilities import (
     IRREVERSIBLE,
     RECOVERABLE,
     PANEL_REPORT,
+    CODE_MAP_STEPS,
 )
-from ...shared.responses import err
+from ...shared.responses import err, ok
 from ._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT
 from ._lib.procs import validate_slurm_args, validate_slurm_comment, validate_slurm_token
 from ...shared.slurm_script import validate_target
 from ._ops import (
+    code_map_steps,
     eval_observe,
     eval_session,
     exec_jobs,
@@ -905,6 +907,21 @@ def proxy_panel_report() -> dict:
     about proxies, which is what lets another server add a section of its own.
     """
     return panel.report()
+
+
+@mcp.tool(**tool_caps(kind="proxy",
+    caps=[CODE_MAP_STEPS],
+    read_only=True,
+    label="Optimisation steps on the code map",
+))
+def proxy_code_map_steps() -> dict:
+    """The optimisation session's runs as the code map draws them.
+
+    For each settled run after the baseline: its axis, its verdict, its metric beside the
+    incumbent it was measured against, the files it changed, and the dependencies those
+    changes add or drop. Empty when no session is open in this workspace.
+    """
+    return ok(code_map_steps.session())
 
 
 if __name__ == "__main__":

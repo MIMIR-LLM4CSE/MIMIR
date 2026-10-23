@@ -256,6 +256,55 @@ def diff(git_dir: str, work_tree: str, a: str, b: str) -> str:
     return _git_diff(git_dir, work_tree, a, b)
 
 
+def _copy_dir(git_dir: str, snapshot_id: str) -> str | None:
+    """The directory of a copy-backed snapshot, or None for a git one."""
+    d = os.path.join(_copy_root(git_dir), snapshot_id) if snapshot_id else ""
+    return d if d and os.path.isdir(d) else None
+
+
+def listing(git_dir: str, work_tree: str, snapshot_id: str) -> list[str] | None:
+    """The paths a snapshot holds, relative to the work tree; None when it cannot be read."""
+    copy = _copy_dir(git_dir, snapshot_id)
+    if copy:
+        out = []
+        for d, _dirs, names in os.walk(copy):
+            out += [os.path.relpath(os.path.join(d, n), copy).replace(os.sep, "/")
+                    for n in names if n != ".message"]
+        return sorted(out)
+    if not snapshot_id or not git_available():
+        return None
+    r = _git(git_dir, work_tree, "ls-tree", "-r", "--name-only", "-z", snapshot_id)
+    return sorted(p for p in r.stdout.split("\0") if p) if r.returncode == 0 else None
+
+
+def read(git_dir: str, work_tree: str, snapshot_id: str, rel: str) -> str | None:
+    """One file's text as *snapshot_id* holds it; None when it does not hold it."""
+    copy = _copy_dir(git_dir, snapshot_id)
+    if copy:
+        try:
+            with open(os.path.join(copy, rel), encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return None
+    if not snapshot_id or not git_available():
+        return None
+    r = _git(git_dir, work_tree, "show", f"{snapshot_id}:{rel}")
+    return r.stdout if r.returncode == 0 else None
+
+
+def changed(git_dir: str, work_tree: str, a: str, b: str) -> list[str] | None:
+    """The paths whose content differs between two snapshots, added and removed ones
+    included; None when either cannot be read."""
+    if not _copy_dir(git_dir, a) and not _copy_dir(git_dir, b) and a and b and git_available():
+        r = _git(git_dir, work_tree, "diff", "--name-only", "-z", a, b)
+        return sorted(p for p in r.stdout.split("\0") if p) if r.returncode == 0 else None
+    la, lb = listing(git_dir, work_tree, a), listing(git_dir, work_tree, b)
+    if la is None or lb is None:
+        return None
+    return sorted(rel for rel in set(la) | set(lb)
+                  if read(git_dir, work_tree, a, rel) != read(git_dir, work_tree, b, rel))
+
+
 def fingerprint(work_tree: str, paths: list[str]) -> str:
     """Content hash of the tracked paths, independent of the snapshot backend.
 

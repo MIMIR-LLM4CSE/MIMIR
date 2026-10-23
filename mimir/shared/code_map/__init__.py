@@ -179,16 +179,22 @@ def _build(root: str, rels: list[str], read: Callable[[str], str | None]) -> bui
 
 
 def scan(root: str, *, read: Callable[[str], str | None] | None = None,
-         files: Iterable[str] | None = None) -> dict:
+         files: Iterable[str] | None = None, overrides: dict[str, str | None] | None = None) -> dict:
     """The map of the code under *root*: from the disk, or through *read* over *files*
-    (relative paths) for a tree that is not on disk as it was."""
+    (relative paths) for a tree that is not on disk as it was. *overrides* replaces some
+    files' text over the disk (None: the file is absent), as a snapshot of them holds it."""
     cached = read is None
-    reader = read or _disk_reader(root)
-    rels = sorted(files) if files is not None else walk(root)
+    disk = read or _disk_reader(root)
+    over = overrides or {}
+
+    def reader(rel: str) -> str | None:
+        return over[rel] if rel in over else disk(rel)
+    rels = sorted((set(files) if files is not None else set(walk(root)))
+                  - {r for r, t in over.items() if t is None} | {r for r, t in over.items() if t is not None})
     facts: dict[str, Facts] = {}
     for rel in rels:
         if language_of(rel):
-            f = _facts(root, rel, reader, cached)
+            f = _facts(root, rel, reader, cached and rel not in over)
             if f is not None:
                 facts[rel] = f
     build = _build(root, rels, reader)

@@ -24,6 +24,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   too (pybind11, nanobind, Cython, f2py, f90wrap, ctypes/cffi, `bind(c)`, embedded
   Python), each marked exact or by name only. The agent can ask for the same map with the
   `code_map` tool.
+- **The optimisation session on the code map.** With a session open, the map tab shows
+  its steps across the top (the best value as it went, each run kept or ruled out with
+  its axis and its metric against the incumbent) and marks on the map what a step
+  changed: the files it touched, the dependencies it added or removed, alone or for
+  every kept step since the baseline. Each step is read back from the proxy's own
+  snapshots, so a run that was ruled out still shows what it tried.
+
+### Changed
+- **The Optimisation section of the drawer** says the session in one line (steps tried,
+  kept, change since baseline) and opens the code map for the rest, instead of listing
+  the axes tried, ruled out and independent.
 
 ## [1.10.0] — 2026-10-23
 

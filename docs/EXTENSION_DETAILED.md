@@ -532,7 +532,16 @@ languages in cyan, paler when only by name, a rule break red with ✕, a module 
 purple), the selection beside. A name in a list selects it on the map; ↗ opens the file at
 the line through `openFile`; ⟳ asks the server again. The components the map flags as
 tests are folded away until **Tests** is pressed: they depend on everything, and their
-edges would bury the code's own architecture. Its MIMIR skin follows the VS Code
+edges would bury the code's own architecture.
+
+When the workspace has an optimisation session, the tab opens with it across the top
+(`codemap/session.ts`): the best value as the session went, one stop per run (kept or
+ruled out, its axis, its metric against the incumbent, how many files it changed), and
+**This step / Since baseline**. On the map, the files a step changed outline their
+modules in green (paler for earlier kept steps), a pill names the step and its delta,
+the dependencies it added are green and the ones it removed long grey dashes. The
+dependencies drawn are today's code; the marks are what the step's own snapshot changed.
+← → move through the steps. Its MIMIR skin follows the VS Code
 theme, the Light one is fixed, and the choice is kept in the tab's state.
 
 **Badges are the runs, on the machines they are running on.** The client joins them in

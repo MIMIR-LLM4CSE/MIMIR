@@ -34,7 +34,7 @@ from .eval_common import (
 # against), not `launch_tree` (a node's own identity, the state a restore returns to).
 
 
-def _read_ledger(proxy_name: str) -> list[dict]:
+def read_ledger(proxy_name: str) -> list[dict]:
     """Every settled run of *proxy_name*, oldest first.
 
     One JSON object per line, appended as runs settle. A line that does not parse is
@@ -66,7 +66,7 @@ def graph(proxy_name: str = "") -> dict:
     axes, nodes, edges = [], [], []
     for name in names:
         cfg = load_opt_config(name) or {}
-        ledger = _read_ledger(name)
+        ledger = read_ledger(name)
         if not cfg and not ledger:
             continue
         best = load_best(name) or {}
@@ -135,7 +135,7 @@ _AXES_SHOWN = 8
 def axes_tried(proxy_name: str = "") -> dict:
     """A compact account of this session's attempts, attached to results; {} on any failure."""
     try:
-        rows = _read_ledger(resolve_proxy_name(proxy_name) or "")
+        rows = read_ledger(resolve_proxy_name(proxy_name) or "")
     except Exception:
         return {}
     if not rows:

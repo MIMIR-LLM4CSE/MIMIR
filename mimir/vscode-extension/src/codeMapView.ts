@@ -11,8 +11,8 @@ import { getNonce } from "./webviewHtml";
 /** The tab, while it is open. */
 let mapPanel: vscode.WebviewPanel | undefined;
 
-/** The last map the server answered, for a page that loads after it arrived. */
-let lastMap: unknown;
+/** The last answer, for a page that loads after it arrived. */
+let last: { map: unknown; session?: unknown } = { map: undefined };
 
 /** What the tab can ask of the host. */
 type TabMessage =
@@ -20,9 +20,11 @@ type TabMessage =
   | { type: "refresh" }
   | { type: "open_file"; file: string; line?: number };
 
-/** Show *map* in the tab, opening it if needed; *refresh* asks the server again. */
-export function showCodeMap(map: unknown, extensionUri: vscode.Uri, refresh: () => void): void {
-  lastMap = map;
+/** Show *map* (and the session's steps) in the tab, opening it if needed; *refresh* asks
+ *  the server again. */
+export function showCodeMap(map: unknown, session: unknown, extensionUri: vscode.Uri,
+                            refresh: () => void): void {
+  last = { map, session };
   if (!mapPanel) {
     mapPanel = vscode.window.createWebviewPanel(
       "mimir.codeMap",
@@ -33,14 +35,14 @@ export function showCodeMap(map: unknown, extensionUri: vscode.Uri, refresh: () 
     );
     mapPanel.webview.html = pageHtml(mapPanel.webview, extensionUri);
     mapPanel.webview.onDidReceiveMessage((m: TabMessage) => {
-      if (m?.type === "ready") void mapPanel?.webview.postMessage({ type: "map", map: lastMap });
+      if (m?.type === "ready") void mapPanel?.webview.postMessage({ type: "map", ...last });
       else if (m?.type === "refresh") refresh();
       else if (m?.type === "open_file" && typeof m.file === "string") openFile(m);
     });
     mapPanel.onDidDispose(() => { mapPanel = undefined; });
   } else {
     mapPanel.reveal(undefined, false);
-    void mapPanel.webview.postMessage({ type: "map", map });
+    void mapPanel.webview.postMessage({ type: "map", ...last });
   }
 }
 

@@ -116,7 +116,7 @@ export function usePanels(send: (msg: ClientMessage) => void,
     },
     subagent: (msg) => setOpenedSubAgent(msg.subagent ?? null),
     code_map: (msg) => {
-      if (msg.map) vscodePostMessage({ type: "show_code_map", map: msg.map });
+      if (msg.map) vscodePostMessage({ type: "show_code_map", map: msg.map, session: msg.session });
     },
   }), []);
 

@@ -26,7 +26,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 </style>
 <rect class="bg" width="1155" height="958"/>
 <text class="head" x="14" y="26">MIMIR dependency map</text>
-<text class="meta" x="14" y="44">61 units · 276 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
+<text class="meta" x="14" y="44">61 units · 277 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
 <rect class="band" x="8" y="60" width="966" height="48" rx="4"/>
 <text class="label" x="14" y="82">rank 11</text>
 <text class="label" x="14" y="96">front-ends</text>
@@ -314,6 +314,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,494 C1082.5,624 180.5,624 180.5,754" stroke-width="4.2"><title>servers.proxy → shared.atomic · 8 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 339,678 339,862" stroke-width="2.6"><title>servers.proxy → shared.build_progress · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 275,624 275,754" stroke-width="2"><title>servers.proxy → shared.capabilities · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 376.5,624 376.5,754" stroke-width="2"><title>servers.proxy → shared.code_map · 1 import(s)</title></path>
 <path class="edge deferred" d="M1082.5,494 C1082.5,678 517,678 517,862" stroke-width="2.6"><title>servers.proxy → shared.cpu_facts · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 536.5,624 536.5,754" stroke-width="2"><title>servers.proxy → shared.exec_seals · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 757,624 757,754" stroke-width="2.6"><title>servers.proxy → shared.jobs · 2 import(s)</title></path>

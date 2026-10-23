@@ -778,3 +778,32 @@ def test_the_code_map_is_asked_whole_of_whoever_declares_it():
     _drain(loop, future)
     assert future.result(timeout=5) == {}
     loop.close()
+
+
+def test_the_session_s_steps_ride_with_the_map_when_a_server_answers_them():
+    """The map and the steps are asked together; a workspace without a session gets the map alone."""
+    from mimir.client.tools.capabilities import CODE_MAP, CODE_MAP_STEPS
+
+    class Connection:
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def call_tool(self, tool, args):
+            return _mcp(self.payload)
+
+    caps = {"code_map": ToolCaps(name="code_map", capabilities=frozenset({CODE_MAP})),
+            "steps": ToolCaps(name="steps", capabilities=frozenset({CODE_MAP_STEPS}))}
+    session = {"status": "ok", "proxy": "solver", "steps": [{"n": 1, "axis": "tiling"}]}
+    agent = fake_agent(tool_caps=caps, tool_owner={"code_map": "code", "steps": "proxy"},
+                       sessions={"code": Connection({"files": [], "edges": []}),
+                                 "proxy": Connection(session)}, turn=TurnState())
+    worker, loop = _worker_with(agent)
+    future = worker.panel.code_map()
+    _drain(loop, future)
+    assert future.result(timeout=5)["session"]["steps"] == [{"n": 1, "axis": "tiling"}]
+
+    agent.sessions["proxy"] = Connection({"status": "ok"})
+    future = worker.panel.code_map()
+    _drain(loop, future)
+    assert "session" not in future.result(timeout=5)
+    loop.close()

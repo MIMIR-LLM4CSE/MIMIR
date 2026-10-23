@@ -36,41 +36,40 @@ def _this_machine() -> dict:
     return dict(_MACHINE["value"])
 
 
-# The ledger parsed for the drawer, keyed on the file's own mtime. The panel refreshes
+# The ledger summed up for the drawer, keyed on the file's own mtime. The panel refreshes
 # on a timer while a turn runs; the ledger changes only when a run settles, which is
 # minutes apart at best. Keyed on mtime rather than on a clock so there is no staleness
 # to reason about: the moment the file changes, the next refresh re-reads it.
-_AXES: dict = {"key": None, "value": []}
+_STEPS: dict = {"key": None, "value": []}
 
 
-def _axes_lines(proxy_name: str) -> list[dict]:
-    """What has been tried on this session, for the drawer.
-
-    Built from the ledger, so the user sees the shape of the search without the agent
-    having to report it — and without anyone having to ask for it.
-    """
+def _steps_lines(proxy_name: str, cfg: dict) -> list[dict]:
+    """How many steps the session took and kept, and where the best stands against the
+    baseline; what each step was is the code map's to show, so the line opens it."""
     from .._lib.store import opt_ledger_file
+    from .._lib.ratchet import load_best
     try:
         key = (proxy_name, os.path.getmtime(opt_ledger_file(proxy_name)))
     except OSError:
-        key = None                      # no ledger yet; nothing to cache or to show
-    if key is not None and key == _AXES["key"]:
-        return _AXES["value"]
+        return []                       # no ledger yet: nothing tried
+    if key == _STEPS["key"]:
+        return _STEPS["value"]
+    baseline_run = cfg.get("baseline_run_id", "")
     try:
-        axes = eval_observe.axes_tried(proxy_name)
+        ledger = eval_observe.read_ledger(proxy_name)
+        best = (load_best(proxy_name) or {}).get("primary_value")
     except Exception:
-        return []
-    if not axes.get("tried"):
-        return []
-    lines: list[dict] = [{"label": "axes tried",
-              "value": f"{axes['tried']}, {len(axes.get('accepted') or [])} accepted"}]
-    rejected = [a for a in (axes.get("rejected") or []) if a]
-    if rejected:
-        lines.append({"label": "ruled out", "value": ", ".join(rejected[-4:])})
-    for pair in (axes.get("independent") or [])[-2:]:
-        lines.append({"label": "independent", "value": " + ".join(pair)})
-    if key is not None:
-        _AXES.update({"key": key, "value": lines})
+        return []                       # one section's store costs its lines, never the drawer
+    rows = [r for r in ledger if r.get("run_id") != baseline_run]
+    base = next((r.get("primary_value") for r in ledger if r.get("run_id") == baseline_run), None)
+    lines: list[dict] = []
+    if rows:
+        kept = sum(1 for r in rows if r.get("verdict") == "accept")
+        value = f"{len(rows)} tried, {kept} kept"
+        if isinstance(base, (int, float)) and isinstance(best, (int, float)) and base:
+            value += f" · {(best - base) / abs(base):+.0%} since baseline"
+        lines.append({"label": "steps", "value": value})
+    _STEPS.update({"key": key, "value": lines})
     return lines
 
 
@@ -127,9 +126,10 @@ def report() -> dict:
     if cfg.get("benchmark_name"):
         lines.append({"label": "benchmark", "value": cfg["benchmark_name"]})
     lines.extend(comparability_lines(cfg, metric))
-    lines.extend(_axes_lines(name))
+    steps = _steps_lines(name, cfg)
+    lines.extend(steps)
     registry_names = sorted(load_registry().keys())
     if len(registry_names) > 1:
         lines.append({"label": "other proxies",
                       "value": ", ".join(n for n in registry_names if n != name)})
-    return ok({"title": "Optimisation", "lines": lines})
+    return ok({"title": "Optimisation", "lines": lines, **({"open": "code_map"} if steps else {})})

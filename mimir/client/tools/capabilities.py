@@ -22,6 +22,7 @@ from ...shared.capabilities import (  # noqa: F401  (re-exported)
     CLUSTER_SUBMIT,
     CODE_EXEC,
     CODE_MAP,
+    CODE_MAP_STEPS,
     CODE_NAV,
     CONTENT_WRITE,
     DELEGATE,
@@ -319,9 +320,9 @@ def panel_sections(registry: dict[str, ToolCaps] | None = None) -> list[tuple[st
     return sorted(found, key=lambda item: (item[1].get("order", 100), item[0]))
 
 
-def code_map_tools(registry: dict[str, ToolCaps] | None = None) -> list[str]:
-    """The tools that answer the code map, by capability, in name order."""
-    return sorted(name for name, c in _registry(registry).items() if CODE_MAP in c.capabilities)
+def code_map_tools(registry: dict[str, ToolCaps] | None = None, cap: str = CODE_MAP) -> list[str]:
+    """The tools that answer the code map (or, with *cap*, its session's steps), in name order."""
+    return sorted(name for name, c in _registry(registry).items() if cap in c.capabilities)
 
 
 def reserved_for_main(registry: dict[str, ToolCaps] | None = None) -> set[str]:
@@ -623,6 +624,6 @@ __all__ = [
     "PLAN_BLOCKED", "PLAN_READONLY", "SENSITIVE", "NON_BATCH",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
     "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
-    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "reserved_for_main", "panel_sections",
-    "code_map_tools",
+    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "CODE_MAP_STEPS", "reserved_for_main",
+    "panel_sections", "code_map_tools",
 ]
