@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-10-23
+
 ### Changed
 - **MIMIR's notifications leave the screen after 5 seconds** of the window having
   focus, instead of staying until closed. They move to the notification centre (the
