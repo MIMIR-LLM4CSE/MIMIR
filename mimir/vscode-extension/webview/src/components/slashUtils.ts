@@ -75,15 +75,23 @@ export function detectSlashQuery(text: string, caret: number): SlashQuery | null
   return { start, query };
 }
 
+/** A row of the "/" dropdown: a session command or a skill, which the dropdown groups. */
+export interface SlashItem extends ToggleItem {
+  kind: "command" | "skill";
+}
+
 /**
  * Case-insensitive filter over BOTH kinds of slash: session commands first, then skills.
  *
  * Session commands lead because they act on the session immediately, while a skill only
  * steers the next query — and because they are the half with no other way to be found.
  */
-export function filterSlashItems(skills: ToggleItem[], query: string): ToggleItem[] {
+export function filterSlashItems(skills: ToggleItem[], query: string): SlashItem[] {
   const q = query.trim().toLowerCase();
-  const all = [...SESSION_COMMANDS, ...skills];
+  const all: SlashItem[] = [
+    ...SESSION_COMMANDS.map((c) => ({ ...c, kind: "command" as const })),
+    ...skills.map((s) => ({ ...s, kind: "skill" as const })),
+  ];
   if (!q) return all;
   return all.filter(
     (s) =>

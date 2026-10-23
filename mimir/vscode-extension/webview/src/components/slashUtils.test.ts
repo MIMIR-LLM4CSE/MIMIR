@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectSlashQuery, filterSkills, applySlash } from "./slashUtils";
+import { detectSlashQuery, filterSkills, filterSlashItems, applySlash, SESSION_COMMANDS } from "./slashUtils";
 import type { ToggleItem } from "../types";
 
 const SKILLS: ToggleItem[] = [
@@ -64,5 +64,16 @@ describe("applySlash", () => {
     const { text, caret } = applySlash("  /w rest", 2, 4, "write-tests");
     expect(text).toBe("  /write-tests  rest");
     expect(caret).toBe(15);
+  });
+});
+
+describe("filterSlashItems", () => {
+  it("tags each row with its kind, session commands first", () => {
+    const items = filterSlashItems(SKILLS, "");
+    const kinds = items.map((i) => i.kind);
+    expect(kinds.indexOf("skill")).toBe(SESSION_COMMANDS.length);
+    expect(kinds.lastIndexOf("command")).toBe(SESSION_COMMANDS.length - 1);
+    expect(items.find((i) => i.name === "fix-bug")?.kind).toBe("skill");
+    expect(items.find((i) => i.name === "mode")?.kind).toBe("command");
   });
 });

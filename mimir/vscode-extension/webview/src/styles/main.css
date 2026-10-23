@@ -2198,6 +2198,43 @@ button.ctx-mention:focus-visible {
   font-size: 0.85em;
 }
 
+/* "/" dropdown: a heading per kind, and a tag on each row naming it. */
+.slash-group {
+  padding: 6px 8px 2px;
+  color: var(--fg-dim);
+  font-size: 0.75em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.slash-group:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.slash-kind {
+  justify-self: start;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.75em;
+  line-height: 1.5;
+}
+
+.slash-kind-command {
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+
+.slash-kind-skill {
+  background: var(--vscode-badge-background, var(--accent));
+  color: var(--vscode-badge-foreground, var(--accent-fg));
+}
+
+.mention-item.disabled .mention-name {
+  opacity: 0.6;
+}
+
 .mention-hint {
   padding: 5px 10px;
   border-top: 1px solid var(--border);

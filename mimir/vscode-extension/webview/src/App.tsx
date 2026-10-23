@@ -237,9 +237,14 @@ export const App: React.FC = () => {
     endpoint.on, settings.on, panels.on, workspace.on, conversations.on, transcript.on,
     question.on, departure.on,
   ];
-  // On every "ready", the attachable MCP resources for the @-mention autocomplete.
+  // On every "ready", the attachable MCP resources for the @-mention autocomplete and
+  // the skills for the "/" one. The connect-time push precedes the agent and lists no
+  // skill; the worker's own "ready" is the first moment it has them.
   useEffect(() => {
-    if (readyCount > 0) send({ type: "list_resources" });
+    if (readyCount > 0) {
+      send({ type: "list_resources" });
+      send({ type: "list_toggles" });
+    }
   }, [readyCount, send]);
 
   // ── User actions ──────────────────────────────────────────────────────────

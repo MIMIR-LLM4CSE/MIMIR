@@ -28,6 +28,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   full, now says so.** An error notification, also written to the "MIMIR Server"
   output, names the directory it could not write to. Before, the server exited with
   an empty log and only its exit code was shown.
+- **Skills can be run from the "/" menu again.** The menu listed only the session
+  commands until the "Servers & skills" panel had been opened once. It now shows
+  both kinds under their own headings, each row tagged `command` or `skill`, a
+  switched-off skill dimmed.
 
 ## [1.9.0] — 2026-10-23
 
