@@ -329,6 +329,12 @@ class BindingTests(unittest.TestCase):
 
 
 class ScanTests(unittest.TestCase):
+    def test_the_map_says_the_root_its_paths_are_relative_to(self) -> None:
+        with _tree({"a.py": ""}) as root:
+            m = code_map.scan(root)
+        self.assertEqual(m["root"], os.path.abspath(root))
+        self.assertEqual([f["id"] for f in m["files"]], ["a.py"])
+
     def test_a_snapshot_reads_through_the_callable_it_is_given(self) -> None:
         texts = {"p/a.py": "from . import b\n", "p/b.py": "", "p/__init__.py": ""}
         m = code_map.scan("/nowhere", read=texts.get, files=texts)

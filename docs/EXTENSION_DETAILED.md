@@ -530,7 +530,8 @@ server answers the map whole, and the webview hands it to the host as `show_code
 stacked by tier, every dependency between them coloured by kind (grey, a binding across
 languages in cyan, paler when only by name, a rule break red with ✕, a module cycle
 purple), the selection beside. A name in a list selects it on the map; ↗ opens the file at
-the line through `openFile`; ⟳ asks the server again. The components the map flags as
+the line through `openFile` (by the map's absolute `root` when that path exists here,
+relative to the open folder otherwise); ⟳ asks the server again. The components the map flags as
 tests are folded away until **Tests** is pressed: they depend on everything, and their
 edges would bury the code's own architecture.
 

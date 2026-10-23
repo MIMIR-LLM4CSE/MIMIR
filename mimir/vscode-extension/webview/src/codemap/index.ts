@@ -13,7 +13,7 @@ interface Edge {
   sure: "exact" | "by_name"; deferred: boolean; breaks: string;
 }
 interface CodeMap {
-  source_root: string; components: Component[]; modules: Module[]; files: File[];
+  root: string; source_root: string; components: Component[]; modules: Module[]; files: File[];
   edges: Edge[]; cycles: string[][]; unresolved: Record<string, number>; truncated: boolean;
 }
 type Selection = { kind: "module" | "file"; id: string } | null;
@@ -341,7 +341,11 @@ function renderSide(v: View): void {
   side.querySelectorAll<HTMLElement>("[data-file]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "file", id: b.dataset.file! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-open]").forEach((b) => b.addEventListener("click", () => {
     const line = b.dataset.line ? Number(b.dataset.line) : undefined;
-    vscode.postMessage({ type: "open_file", file: b.dataset.open!, line });
+    const rel = b.dataset.open!;
+    // The map's paths are relative to the server's root, which need not be the folder
+    // VS Code has open: the host is given both and opens whichever exists here.
+    const file = m.root ? m.root.replace(/[\\/]+$/, "") + "/" + rel : rel;
+    vscode.postMessage({ type: "open_file", file, rel, line });
   }));
 }
 

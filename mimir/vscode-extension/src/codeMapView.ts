@@ -5,6 +5,7 @@
  * server again on its ⟳.
  */
 import * as vscode from "vscode";
+import * as fs from "fs";
 import { openFile } from "./editors";
 import { getNonce } from "./webviewHtml";
 
@@ -18,7 +19,7 @@ let last: { map: unknown; session?: unknown } = { map: undefined };
 type TabMessage =
   | { type: "ready" }
   | { type: "refresh" }
-  | { type: "open_file"; file: string; line?: number };
+  | { type: "open_file"; file: string; rel?: string; line?: number };
 
 /** Show *map* (and the session's steps) in the tab, opening it if needed; *refresh* asks
  *  the server again. */
@@ -37,7 +38,12 @@ export function showCodeMap(map: unknown, session: unknown, extensionUri: vscode
     mapPanel.webview.onDidReceiveMessage((m: TabMessage) => {
       if (m?.type === "ready") void mapPanel?.webview.postMessage({ type: "map", ...last });
       else if (m?.type === "refresh") refresh();
-      else if (m?.type === "open_file" && typeof m.file === "string") openFile(m);
+      else if (m?.type === "open_file" && typeof m.file === "string") {
+        // The server's absolute path when it exists on this machine, else the path
+        // relative to the map's root, resolved against the open folder.
+        const file = fs.existsSync(m.file) || !m.rel ? m.file : m.rel;
+        openFile({ type: "open_file", file, line: m.line });
+      }
     });
     mapPanel.onDidDispose(() => { mapPanel = undefined; });
   } else {

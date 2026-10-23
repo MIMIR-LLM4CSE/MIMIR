@@ -230,6 +230,8 @@ def scan(root: str, *, read: Callable[[str], str | None] | None = None,
     for path, names in links.external.items():
         external[comp_of[path]].update(names)
     return {
+        # Every path below is relative to this one, which a reader needs to open them.
+        "root": os.path.abspath(root),
         "source_root": src_root,
         "components": [{"id": c, "name": posixpath.basename(c) if c != "." else "(root)",
                         "tier": tier[c], "declared": sorted(declared.get(c, ())),
