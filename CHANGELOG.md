@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-10-23
+
 ### Added
 - **Sub-agents can submit Slurm jobs** at the "build & run" level. The orchestrator may
   grant them `sbatch_submit`, `salloc_submit` and the proxy's cluster runs. Each
