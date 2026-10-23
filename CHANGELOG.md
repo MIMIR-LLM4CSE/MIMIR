@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.11.1] — 2026-10-23
+
 ### Fixed
 - **A component clicked in the drawer's Architecture map opens the code map on it.**
   The map tab used to open on the whole code; it now selects the component, brings out
