@@ -34,6 +34,7 @@ class PanelHandlers(Handlers):
         "set_model": "on_set_model",
         "list_subagents": "on_list_subagents",
         "list_panel": "on_list_panel",
+        "code_map": "on_code_map",
         "read_subagent": "on_read_subagent",
         "cancel_run": "on_cancel_run",
     }
@@ -90,6 +91,11 @@ class PanelHandlers(Handlers):
         if msg.get("build") and self.pool.get(self.view.active_session_id) is None:
             self.out.schedule(self._report_panel_once_built(self.screen.ensure_worker()))
         self._request_panel(refresh=bool(msg.get("refresh")))
+
+    async def on_code_map(self, msg: dict) -> None:
+        """Serve the code map the servers answer, for the editor's map tab."""
+        result = await asyncio.wrap_future(self.screen.worker.panel.code_map())
+        await self.out.send({"type": "code_map", **result})
 
     def _request_panel(self, *, refresh: bool = False) -> None:
         """Have a panel report sent, without waiting for it."""

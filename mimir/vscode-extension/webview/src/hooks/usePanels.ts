@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientMessage, PanelSection, SubAgent, SubAgentLevel, WatchedRun } from "../types";
 import type { ServerHandlers } from "../state/serverMessages";
+import { vscodePostMessage } from "./useWebSocket";
 
 /** How often the cards are re-read while a turn runs or a sub-agent works. */
 const SUBAGENT_POLL_MS = 2000;
@@ -49,6 +50,11 @@ export function usePanels(send: (msg: ClientMessage) => void,
   const reloadPanel = useCallback(() => {
     setPanelPending(true);
     send({ type: "list_panel", build: true, refresh: true });
+  }, [send]);
+  // A view a section offers ("code_map"): asked of the server, drawn in an editor tab
+  // by the extension once the answer comes back.
+  const openView = useCallback((view: string) => {
+    if (view === "code_map") send({ type: "code_map" });
   }, [send]);
   const openSubAgent = useCallback((id: string) => {
     setOpenedSubAgent(null);
@@ -109,6 +115,9 @@ export function usePanels(send: (msg: ClientMessage) => void,
       }
     },
     subagent: (msg) => setOpenedSubAgent(msg.subagent ?? null),
+    code_map: (msg) => {
+      if (msg.map) vscodePostMessage({ type: "show_code_map", map: msg.map });
+    },
   }), []);
 
   return {
@@ -116,7 +125,7 @@ export function usePanels(send: (msg: ClientMessage) => void,
     cancelRun,
     panelPending, panelAgentReady, showSciencePanel, showSubAgentsPanel,
     setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
-    refreshSubAgents, refreshPanel, reloadPanel, openSubAgent, changeSubAgentLevel,
+    refreshSubAgents, refreshPanel, reloadPanel, openSubAgent, changeSubAgentLevel, openView,
     on,
   };
 }

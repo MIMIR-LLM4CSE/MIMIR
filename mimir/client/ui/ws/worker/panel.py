@@ -8,7 +8,8 @@ import json
 import logging
 from typing import Any, Callable
 
-from ....tools.capabilities import panel_sections
+from .....shared.code_map import FULL_ARGS
+from ....tools.capabilities import code_map_tools, panel_sections
 from ....protocol.tool_result import normalize_tool_content
 from ..runtime import (
     augment_query_with_resources,
@@ -125,7 +126,37 @@ class Panel:
                     "lines": lines,
                     "groups": groups,
                     "detail": detail,
+                    # A view the section offers to open (the code map), by name.
+                    "open": payload.get("open") or "",
                 })
             return out
+
+        return asyncio.run_coroutine_threadsafe(_run(), loop)
+
+    def code_map(self) -> Any:
+        """The workspace's code map from the first server that answers ``CODE_MAP``, as a
+        future of ``{"map": …}``; ``{}`` while there is no agent or no answer.
+        """
+        agent, loop = self._agent(), self._loop()
+        if agent is None or loop is None:
+            fut: Any = concurrent.futures.Future()
+            fut.set_result({})
+            return fut
+
+        async def _run() -> dict:
+            for tool in code_map_tools(agent.tool_caps):
+                owner = agent.tool_owner.get(tool)
+                if owner is None:
+                    continue
+                try:
+                    raw = await agent.sessions[owner].call_tool(tool, dict(FULL_ARGS))
+                    text = normalize_tool_content(raw)
+                    payload = json.loads(text) if isinstance(text, str) else (text or {})
+                except Exception as exc:
+                    logger.debug("code map %r failed: %s", tool, exc)
+                    continue
+                if isinstance(payload, dict) and payload.get("files") is not None:
+                    return {"map": payload}
+            return {}
 
         return asyncio.run_coroutine_threadsafe(_run(), loop)

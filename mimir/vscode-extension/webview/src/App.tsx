@@ -327,6 +327,7 @@ export const App: React.FC = () => {
           refreshing={panelPending}
           agentReady={panelAgentReady}
           onPrompt={sendPrompt}
+          onOpenView={panels.openView}
         />
       )}
 

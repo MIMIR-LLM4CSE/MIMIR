@@ -37,7 +37,7 @@ below with the arguments and the behaviour.
 | Server | Tools |
 |---|---|
 | `workspace/server_bash.py` | `bash_run`, `bash_job`, `bash_watch`, `bash_job_stop`, `report_verdict` |
-| `workspace/server_code_intel.py` | `find_definition`, `find_references`, `symbol_outline`, `hover` |
+| `workspace/server_code_intel.py` | `find_definition`, `find_references`, `symbol_outline`, `hover`, `code_map`, `code_map_panel_report` |
 | `workspace/server_files.py` | `write_file`, `append_file`, `delete_file`, `replace_in_file`, `replace_lines`, `replace_all_in_file` |
 | `workspace/server_search.py` | `read_file_lines`, `list_directory`, `tree_summary` |
 | `agent_state/server_memory.py` | `memory_add`, `memory_search`, `memory_list_all`, `memory_update`, `memory_delete`, `memory_clear` |
@@ -522,7 +522,7 @@ Tools:
 
 ## workspace/server_code_intel.py
 
-Purpose: backend-abstracted code **navigation** — one tool per task, with the server
+Purpose: backend-abstracted code **navigation**, and the workspace's **code map** — one tool per task, with the server
 picking the best available backend internally so the model never has to choose between
 redundant tools.
 
@@ -549,6 +549,36 @@ Tools (all read-only, cacheable, none approval-gated):
 The `CODE_NAV` capability exists so the client locates these navigation tools by
 capability rather than by literal name. `_out_path` returns **absolute** paths for every
 result (see *The round-trip* above), and the ctags `by_file` index is keyed the same way.
+
+
+### The code map
+
+`code_map(detail)` (`CODE_MAP`) answers the architecture of the workspace's Python, C/C++
+and Fortran code, read by `shared/code_map`: by default a summary the model can use
+(components and their tiers, rule breaks, module cycles, bindings by kind, the most coupled
+modules); with `detail="full"` (`code_map.FULL_ARGS`) every file and edge, which the
+editor's map tab draws. `code_map_panel_report` fills the drawer's **Architecture**
+section and offers the map (`open: "code_map"`); `workspace/code_map_report` keeps the
+last scan 30 s, and per-file parses are kept on mtime and size, so a refresh costs a walk.
+
+- **Edges within a language**: `#include` (through compile_commands.json and CMake
+  include directories, else by a unique basename; an ambiguous name is counted, not
+  guessed), Python imports (absolute and relative; `TYPE_CHECKING` left out; an import
+  inside a function marked `deferred` and left out of the cycles, as in
+  `docs/dependency-map`), Fortran `use`, `submodule` and `include`.
+- **Edges across languages** (`kind: "binding"`), from what the code and the build
+  declare: extension modules (pybind11, nanobind, Boost.Python, CPython, Meson,
+  setup.py), Cython `cimport`/`cdef extern`, f2py (`.pyf`, `f2py -m`), f90wrap,
+  `ctypes`/`cffi` calls on `bind(c)`/`extern "C"` symbols, embedded Python (C API,
+  pybind11, forpy), Fortran ↔ C through `bind(c)`. Each says `exact` or `by_name` (a
+  trailing-underscore call, a library loaded by name). A standard-library name never
+  matches an extension module, and a package prefix counts only when the build names it.
+- **Grouping**: components are the children of the directory holding at least 80 % of
+  the code (tests, examples, docs and scripts aside), plus the top directories outside
+  it; modules are cut as deep as keeps a component at 15 or fewer.
+- **Rules**: an include from the code into a component its CMake target does not link
+  (aliases and executables read), a file under api/ reaching its own impl/. Tiers stack on
+  the declared links plus the observed ones that break no rule.
 
 ## external/server_web.py
 

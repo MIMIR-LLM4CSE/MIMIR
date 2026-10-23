@@ -12,6 +12,7 @@ const SECTION_ACCENT: Record<string, string> = {
   machine: "var(--mimir-cyan)",
   cluster: "var(--mimir-blue)",
   optimisation: "var(--mimir-coral)",
+  architecture: "var(--mimir-violet)",
 };
 const FALLBACK_ACCENT = "var(--mimir-violet)";
 
@@ -35,6 +36,8 @@ interface Props {
   agentReady: boolean;
   /** Put a request to the model, as the user's own turn. */
   onPrompt: (text: string) => void;
+  /** Open a view a section offers, by the name the section gave it ("code_map"). */
+  onOpenView: (view: string) => void;
 }
 
 /**
@@ -54,6 +57,7 @@ export const SciencePanel: React.FC<Props> = ({
   refreshing,
   agentReady,
   onPrompt,
+  onOpenView,
 }) => {
   // Which rows are open, keyed on the servers' own ids so the answer survives a
   // refresh. Everything starts closed: a workspace that reaches three clusters would
@@ -187,6 +191,11 @@ export const SciencePanel: React.FC<Props> = ({
                   </div>
                 )}
                 {section.detail && <div className="science-detail">{section.detail}</div>}
+                {section.open === "code_map" && (
+                  <button className="science-open" onClick={() => onOpenView("code_map")}>
+                    Open map
+                  </button>
+                )}
               </div>
             )}
           </div>

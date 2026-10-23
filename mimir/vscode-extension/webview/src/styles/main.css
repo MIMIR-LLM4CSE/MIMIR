@@ -4474,6 +4474,20 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   margin-top: 6px;
 }
 
+/* A view the section opens in an editor tab (the code map). */
+.science-open {
+  margin-top: 6px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.science-open:hover { background: var(--accent-hover); }
+
 /* While the agent comes up: placeholder bars rather than a bare sentence. */
 .science-skeleton {
   display: flex;

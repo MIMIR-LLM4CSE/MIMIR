@@ -177,7 +177,7 @@ readers:
 
 | Reader | Modules |
 |---|---|
-| **The client and the servers**: the contract between them, and what both run | `state_paths` (the on-disk layout), `exec_seals` (the files a server seals for a conversation, which the guardrails refuse to run directly), `jobs` (the run contract), `run_channel` (the divert channel), `capabilities` (the vocabulary a server declares with), `responses` (the shape of a tool answer), `shell_paths`, `trusted_read_roots`, `extension_paths`, `skill_file`, `launcher`, `atomic`, `processes`, `embed` |
+| **The client and the servers**: the contract between them, and what both run | `state_paths` (the on-disk layout), `exec_seals` (the files a server seals for a conversation, which the guardrails refuse to run directly), `jobs` (the run contract), `run_channel` (the divert channel), `capabilities` (the vocabulary a server declares with), `responses` (the shape of a tool answer), `shell_paths`, `trusted_read_roots`, `extension_paths`, `skill_file`, `launcher`, `atomic`, `processes`, `embed`, `code_map` (a workspace's code read as a map, and the arguments a `CODE_MAP` tool answers it whole to) |
 | **The servers only**: what two domains or more share | `slurm_site`, `slurm_script`, `shell_activity`, `cpu_facts`, `build_progress`, `approved_roots`, `module_env`, `clock` |
 
 ## The servers

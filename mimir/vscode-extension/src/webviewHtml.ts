@@ -47,7 +47,8 @@ export function getWebviewHtml(
 </html>`;
 }
 
-function getNonce(): string {
+/** A random token for a page's script-src nonce. */
+export function getNonce(): string {
   let text = "";
   const possible =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

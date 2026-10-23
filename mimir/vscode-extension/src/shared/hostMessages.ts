@@ -12,6 +12,7 @@ export type HostMessage =
   | { type: "fetch_models"; backend?: string; baseUrl?: string }
   | { type: "connect"; model?: string; backend?: string; baseUrl?: string;
       anthropicApiKey?: string; remember?: boolean }
-  | { type: "ws_send"; payload: string };
+  | { type: "ws_send"; payload: string }
+  | { type: "show_code_map"; map: unknown };
 
 export type HostMessageOf<T extends HostMessage["type"]> = Extract<HostMessage, { type: T }>;

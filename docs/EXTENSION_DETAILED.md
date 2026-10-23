@@ -522,6 +522,19 @@ machines. Which rows are open lives in `SciencePanel`, keyed on the servers' own
 the answer survives a refresh; native `<details>` would lose it, since the drawer
 re-renders on every `panel_report`.
 
+**A section may offer a view.** A section answering `open: "code_map"` (the Architecture
+section) gets an "Open map" button: the drawer sends `code_map` over the socket, the
+server answers the map whole, and the webview hands it to the host as `show_code_map`.
+`codeMapView.ts` draws it in one editor tab, its own bundle (`dist/codemap.js`, from
+`webview/src/codemap/`, plain TypeScript): the modules in bands, one per component
+stacked by tier, every dependency between them coloured by kind (grey, a binding across
+languages in cyan, paler when only by name, a rule break red with ✕, a module cycle
+purple), the selection beside. A name in a list selects it on the map; ↗ opens the file at
+the line through `openFile`; ⟳ asks the server again. The components the map flags as
+tests are folded away until **Tests** is pressed: they depend on everything, and their
+edges would bury the code's own architecture. Its MIMIR skin follows the VS Code
+theme, the Light one is fixed, and the choice is kept in the tab's state.
+
 **Badges are the runs, on the machines they are running on.** The client joins them in
 `connection/panel_runs.attach_runs` before the message goes out, because that is the one place both
 halves exist. A badge names the node, and opens as a row *inside* the tree showing the

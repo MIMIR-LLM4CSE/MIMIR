@@ -1,7 +1,8 @@
 """MCP Code-Intelligence Server: code navigation through the best backend available.
 
 LSP, then universal-ctags, then a whole-word scan; without them a structured error.
-Tools: find_definition, find_references, symbol_outline, hover (LSP only), all ``CODE_NAV``.
+Tools: find_definition, find_references, symbol_outline, hover (LSP only), all ``CODE_NAV``;
+code_map, the workspace's architecture, and its section of the drawer.
 """
 
 import json
@@ -16,7 +17,9 @@ from ...shared.capabilities import (
     tool_caps,
     CACHEABLE,
     CANDIDATE_SEARCH,
+    CODE_MAP,
     CODE_NAV,
+    PANEL_REPORT,
     READ,
     SEARCH,
     SEARCH_WITH_PATH,
@@ -26,6 +29,8 @@ from .root_paths import require_absolute, resolve_path_in_root
 from ...shared.approved_roots import approved_roots
 from ...shared.state_paths import standing_roots
 from .lsp_client import LSPPool, path_for
+from . import code_map_report
+from ...shared.code_map import FULL_ARGS, summary
 
 SEARCH_ROOT = os.environ.get(
     "SEARCH_ROOT",
@@ -550,6 +555,45 @@ def hover(path: str, line: int, symbol: str = "") -> dict:
         return ok({"path": _out_path(abs_path), "line": line, "hover": "", "backend": "lsp",
                    "note": "No hover information at this position."})
     return ok({"path": _out_path(abs_path), "line": line, "hover": text[:2000], "backend": "lsp"})
+
+
+@mcp.tool(**tool_caps(kind="outline",
+    caps=[CODE_MAP, CACHEABLE],
+    read_only=True,
+    label="Mapping the workspace's code",
+))
+def code_map(detail: str = "summary") -> dict:
+    """The architecture of the workspace's Python, C/C++ and Fortran code.
+
+    Components (stacked in tiers by the links the build declares and the code makes),
+    the includes / imports / `use`s between files, the bindings across languages
+    (pybind11, Cython, f2py, f90wrap, ctypes, bind(c), embedded Python), module cycles
+    and the includes that break a rule (a link the build does not declare, an api/
+    reaching its impl/).
+
+    Args:
+        detail: "summary" (default) for counts, tiers, rule breaks, cycles and the most
+            coupled modules; "full" for every file and edge (large: for tooling).
+    """
+    m = code_map_report.current(SEARCH_ROOT)
+    return ok(m if detail == FULL_ARGS["detail"] else summary(m))
+
+
+@mcp.tool(**tool_caps(kind="outline",
+    caps=[PANEL_REPORT],
+    read_only=True,
+    panel={"section": "Architecture", "order": 40, "refresh_arg": "refresh"},
+    label="Architecture status",
+))
+def code_map_panel_report(refresh: bool = False) -> dict:
+    """What the workspace's code is made of, in a form a panel can show.
+
+    Read-only and cheap: the scan is cached and per-file parses are kept between calls.
+
+    Args:
+        refresh: map the code again now rather than serve the last map (kept 30 s).
+    """
+    return code_map_report.panel(SEARCH_ROOT, refresh=refresh)
 
 
 if __name__ == "__main__":

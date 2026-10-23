@@ -15,6 +15,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **A code map of the workspace.** The Scientific computing drawer has an
+  **Architecture** section (files, languages, rule breaks, module cycles, bindings across
+  languages) and an **Open map** button that draws the code in an editor tab: its modules
+  in bands by component, stacked by the links the build declares, every dependency
+  coloured by kind. Python, C/C++ and Fortran are read alike, and the edges between them
+  too (pybind11, nanobind, Cython, f2py, f90wrap, ctypes/cffi, `bind(c)`, embedded
+  Python), each marked exact or by name only. The agent can ask for the same map with the
+  `code_map` tool.
+
 ## [1.10.0] — 2026-10-23
 
 ### Changed

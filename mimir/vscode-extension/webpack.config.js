@@ -57,4 +57,25 @@ module.exports = [
     },
     performance: { hints: false },
   },
+  // ── Code map tab (plain TypeScript, no React) ──────────────────────────────
+  {
+    name: "codemap",
+    target: "web",
+    mode: "none",
+    entry: "./webview/src/codemap/index.ts",
+    output: {
+      path: path.resolve(__dirname, "dist"),
+      filename: "codemap.js",
+    },
+    resolve: { extensions: [".ts", ".js"] },
+    module: {
+      rules: [{
+        test: /\.ts$/,
+        loader: "ts-loader",
+        exclude: /node_modules/,
+        options: { configFile: path.resolve(__dirname, "webview/tsconfig.json") },
+      }],
+    },
+    performance: { hints: false },
+  },
 ];

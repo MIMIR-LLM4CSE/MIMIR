@@ -53,6 +53,8 @@ export interface PanelSection {
   /** The nested half, for a server whose answer is a tree rather than a list. */
   groups?: PanelGroup[];
   detail?: string;
+  /** A view the section offers to open, by name ("code_map"). */
+  open?: string;
 }
 
 export interface PanelReportMessage {
@@ -125,6 +127,17 @@ export interface ListPanelMessage {
   type: "list_panel";
   build?: boolean;
   refresh?: boolean;
+}
+
+/** Ask for the workspace's code map, for the editor's map tab. */
+export interface CodeMapRequestMessage {
+  type: "code_map";
+}
+
+/** The code map the servers answer (``shared.code_map``'s dict); no ``map`` when none does. */
+export interface CodeMapMessage {
+  type: "code_map";
+  map?: unknown;
 }
 
 /** Stop a run the watcher holds, with the cancel op its own server named. */

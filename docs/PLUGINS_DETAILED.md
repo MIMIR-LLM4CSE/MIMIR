@@ -170,6 +170,7 @@ def read_note(path: str) -> str:
 | | `CLUSTER_SUBMIT` | Expensive cluster launch (Slurm submit / batch run); held until local validation. |
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
 | **Panel** | `PANEL_REPORT` | Fills one section of the scientific-computing panel, declared with a `panel` spec (`section`, `order`, `args`, and an optional `refresh_arg`). |
+| **Panel** | `CODE_MAP` | Answers the workspace's code map: a summary by default, the whole map (`shared/code_map`'s dict, which the editor's map tab draws) when called with `code_map.FULL_ARGS`. |
 
 The vocabulary is defined once in `mimir/shared/capabilities.py` (the client re-exports
 it from `mimir/client/tools/capabilities.py`), and the other docs point here rather than

@@ -606,7 +606,7 @@ def test_the_worker_reports_what_its_poll_learned():
 
 
 def test_the_sections_read_from_the_machine_outwards():
-    """This host, then the clusters it reaches, then what is being optimised on them.
+    """This host, the clusters it reaches, the code, then what is being optimised in it.
 
     Nearest first. The machine section is the one that is always there and always cheap,
     so the drawer says something true before any scheduler has been asked anything; the
@@ -615,7 +615,7 @@ def test_the_sections_read_from_the_machine_outwards():
     from mimir.tests.support import golden_caps as golden
     declared = panel_sections(golden.build_declared_registry())
     assert [spec["section"] for _, spec in declared] == [
-        "Machine", "Cluster", "Optimisation"]
+        "Machine", "Cluster", "Architecture", "Optimisation"]
 
 
 def test_a_host_without_a_scheduler_reports_no_cluster_at_all():
@@ -704,3 +704,77 @@ def test_a_metric_that_does_not_depend_on_the_machine_is_never_pinned():
 def test_nothing_is_said_until_a_baseline_has_pinned_a_machine():
     proxy = _proxy()
     assert proxy.comparability_lines({}, "time_s") == []
+
+
+def _worker_with(agent):
+    import asyncio
+    from mimir.client.ui.ws.worker.worker import AgentWorker
+    loop = asyncio.new_event_loop()
+    worker = AgentWorker("test-model", start=False)
+    worker._agent = agent
+    worker._loop = loop
+    return worker, loop
+
+
+def test_the_architecture_section_says_what_the_code_is_made_of(tmp_path):
+    """Files, languages, the rule breaks and the cycles, and a way to the map."""
+    from mimir.servers.workspace import code_map_report
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "a.py").write_text("from . import b\n")
+    (tmp_path / "pkg" / "b.py").write_text("from . import a\n")
+    section = code_map_report.panel(str(tmp_path), refresh=True)
+    lines = {line["label"]: line for line in section["lines"]}
+    assert section["open"] == "code_map"
+    assert lines["code"]["value"] == "3 files · 1 modules"
+    assert lines["languages"]["value"] == "python 3"
+    assert lines["rule breaks"]["value"] == "none"
+
+
+def test_a_workspace_without_code_says_so_in_its_detail(tmp_path):
+    from mimir.servers.workspace import code_map_report
+    section = code_map_report.panel(str(tmp_path), refresh=True)
+    assert section["lines"] == [] and "No Python, C/C++ or Fortran" in section["detail"]
+
+
+def test_a_section_s_view_to_open_travels_to_the_drawer():
+    class Connection:
+        async def call_tool(self, tool, args):
+            return _mcp({"title": "Architecture", "lines": [{"label": "code", "value": "3 files"}],
+                         "open": "code_map"})
+
+    worker, loop = _worker_with(fake_agent(
+        tool_caps=_caps(arch={"section": "Architecture", "order": 40}),
+        tool_owner={"arch": "code"}, sessions={"code": Connection()}, turn=TurnState()))
+    future = worker.panel.sections()
+    _drain(loop, future)
+    sections = future.result(timeout=5)
+    loop.close()
+    assert sections[0]["open"] == "code_map"
+
+
+def test_the_code_map_is_asked_whole_of_whoever_declares_it():
+    """By capability, with the arguments the contract names; nothing when nobody answers."""
+    from mimir.client.tools.capabilities import CODE_MAP
+    from mimir.shared.code_map import FULL_ARGS
+    asked = []
+
+    class Connection:
+        async def call_tool(self, tool, args):
+            asked.append((tool, args))
+            return _mcp({"status": "ok", "files": [], "edges": []})
+
+    agent = fake_agent(
+        tool_caps={"code_map": ToolCaps(name="code_map", capabilities=frozenset({CODE_MAP}))},
+        tool_owner={"code_map": "code"}, sessions={"code": Connection()}, turn=TurnState())
+    worker, loop = _worker_with(agent)
+    future = worker.panel.code_map()
+    _drain(loop, future)
+    assert future.result(timeout=5)["map"]["files"] == []
+    assert asked == [("code_map", FULL_ARGS)]
+
+    agent.tool_caps = {}
+    future = worker.panel.code_map()
+    _drain(loop, future)
+    assert future.result(timeout=5) == {}
+    loop.close()

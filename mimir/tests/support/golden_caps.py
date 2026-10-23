@@ -139,6 +139,9 @@ CODE_NAV_TOOLS = {"find_definition", "symbol_outline"}
 _CODE_INTEL_NAV = {"find_definition", "find_references", "symbol_outline", "hover"}
 READ_TOOLS = READ_TOOLS | _CODE_INTEL_NAV
 CACHEABLE_TOOLS = CACHEABLE_TOOLS | _CODE_INTEL_NAV
+# The code map reads the workspace's structure, not the contents an edit stands on: no READ.
+CODE_MAP_TOOLS = {"code_map"}
+CACHEABLE_TOOLS = CACHEABLE_TOOLS | CODE_MAP_TOOLS
 SEARCH_TOOLS = SEARCH_TOOLS | {"find_definition", "find_references"}
 SEARCH_WITH_PATH_TOOLS = SEARCH_WITH_PATH_TOOLS | {"find_definition", "find_references"}
 CANDIDATE_SEARCH_TOOLS = CANDIDATE_SEARCH_TOOLS | {"find_definition"}
@@ -253,6 +256,7 @@ GOLDEN = {
     "judge": JUDGE_TOOLS,
     "delegate": DELEGATE_TOOLS,
     "main_only": MAIN_ONLY_TOOLS,
+    "code_map": CODE_MAP_TOOLS,
 }
 
 

@@ -765,6 +765,11 @@ probes. Each server answers with render-ready content (`{title, lines, groups?, 
 the panel renders what it is given and interprets nothing, which is what lets a plugin
 server add a section with no client edit.
 
+A section may name a view it offers (`open`, passed through like the rest).
+`Panel.code_map()` is the one such view the client serves: it calls the tools declaring
+`CODE_MAP` (`tools.capabilities.code_map_tools()`) with `shared.code_map.FULL_ARGS` and
+returns the first map that comes back, for the `code_map` message.
+
 `groups` is the nested half, for a server whose answer is a tree rather than a list — the
 schedulers this workspace reaches, the kinds of machine on each, what a probe found on
 one. Recursive, and passed through unread exactly as `lines` are. A section is dropped
