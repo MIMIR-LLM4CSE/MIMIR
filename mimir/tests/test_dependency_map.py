@@ -30,6 +30,11 @@ class DependencyMapTests(unittest.TestCase):
                          "docs/dependency-map/index.html is out of date; "
                          "run: python docs/dependency-map/generate.py")
 
+    def test_the_image_matches_the_code(self) -> None:
+        self.assertEqual(self.gen.IMAGE.read_text(), self.gen.draw(self.data),
+                         "docs/dependency-map/map.svg is out of date; "
+                         "run: python docs/dependency-map/generate.py")
+
     def test_every_client_unit_is_drawn_at_its_rank(self) -> None:
         """The map reads its rows from docs/ARCHITECTURE.md, which must agree with the enforced ranks."""
         self.assertEqual({u: rank for u, (rank, _what) in self.gen.architecture_ranks().items()},
