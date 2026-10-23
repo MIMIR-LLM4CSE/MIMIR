@@ -10,23 +10,20 @@ import subprocess
 import time
 from ....shared.atomic import write_json
 from ....shared.jobs import SLURM_JOB_ID, recorded_terminal_state
+from ....shared.state_paths import ensure_private_dir, scratch_home, site_scratch
 
 
 def _copies_root() -> tuple[str, bool]:
-    """Where copies go, and whether the compute nodes see it.
-
-    The user's choice, else the site's ``$SCRATCH`` (large, and seen by the nodes a
-    child's Slurm job runs on), else the local temp dir, which such a job cannot read.
-    """
+    """Where copies go, and whether the compute nodes see it: the user's choice, else
+    the site's scratch (``state_paths.site_scratch``)."""
     # Not the workspace or the state dir: a root under quota cannot hold a checkout plus
     # everything a build writes. Deliberately NOT under the scratchpad either — that path
     # is writable without approval (state_paths.standing_roots), and a copy placed there
     # would take every edit the child makes out of the approval layer.
-    for name in ("MIMIR_SUBAGENT_COPIES_DIR", "SCRATCH"):
-        value = os.environ.get(name, "").strip()
-        if value:
-            return os.path.abspath(os.path.expanduser(value)), True
-    return os.path.abspath(os.environ.get("TMPDIR") or "/tmp"), False
+    chosen = os.environ.get("MIMIR_SUBAGENT_COPIES_DIR", "").strip()
+    if chosen:
+        return os.path.abspath(os.path.expanduser(chosen)), True
+    return site_scratch()
 
 
 _ROOT, WORKTREE_BASE_SHARED = _copies_root()
@@ -252,6 +249,11 @@ def reclaim_worktrees(session: str, keep: int) -> None:
         drop_copy(wt)
 
 
+def _within(path: str, root: str) -> bool:
+    path, root = os.path.realpath(path), os.path.realpath(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def create_worktree(child_key: str, session: str = "") -> tuple[dict | None, str]:
     """Add a worktree for this child. Returns (descriptor, error message)."""
     repo = repo_root()
@@ -263,6 +265,20 @@ def create_worktree(child_key: str, session: str = "") -> tuple[dict | None, str
         )
     branch = f"mimir/{child_key}"
     path = os.path.join(WORKTREE_BASE, os.path.basename(repo), child_key)
+    if _within(path, scratch_home()):
+        return None, (
+            f"the copies directory ({WORKTREE_BASE}) is inside the scratchpad, which is "
+            f"writable without approval, so a copy there would take the sub-agent's edits "
+            f"out of the approval layer. Ask the user to point mimir.subagents.copiesDir "
+            f"elsewhere.")
+    # The per-user directory is what others cannot enter; the repository's under it
+    # inherits that.
+    if not ensure_private_dir(WORKTREE_BASE):
+        return None, (
+            f"the copies directory {WORKTREE_BASE} is not safely this user's (another "
+            f"owner, a symlink, or not a directory), so a copy there could be read or "
+            f"changed by someone else. Ask the user to remove it or to point "
+            f"mimir.subagents.copiesDir elsewhere.")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # Before adding one, not after: the copies this session is done with are what makes
     # room for this one, and reclaiming them later would mean nothing ever did.

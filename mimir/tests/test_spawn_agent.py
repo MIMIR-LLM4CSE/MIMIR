@@ -1684,6 +1684,33 @@ class WorktreeTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 self.assertEqual(worktree._copies_root(), expected)
 
+    def test_the_copies_directory_is_made_private(self):
+        # Under /tmp or a project's scratch, others could otherwise read or change a copy.
+        wt, _ = worktree.create_worktree("sub-private")
+        self.assertIsNotNone(wt)
+        self.assertEqual(os.stat(self.base).st_mode & 0o777, 0o700)
+
+    def test_no_copy_is_made_under_a_symlinked_copies_directory(self):
+        # A directory at our name that is not ours — here a symlink to elsewhere — is
+        # refused rather than written into.
+        elsewhere = tempfile.mkdtemp(prefix="mimir-elsewhere-")
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        link = os.path.join(tempfile.mkdtemp(prefix="mimir-link-"), "copies")
+        self.addCleanup(shutil.rmtree, os.path.dirname(link), ignore_errors=True)
+        os.symlink(elsewhere, link)
+        with mock.patch.object(worktree, "WORKTREE_BASE", link):
+            wt, refusal = worktree.create_worktree("sub-squatted")
+        self.assertIsNone(wt)
+        self.assertIn("not safely this user's", refusal)
+        self.assertEqual(os.listdir(elsewhere), [])
+
+    def test_no_copy_is_made_inside_the_scratchpad(self):
+        # Written there without approval, a copy's edits would escape the approval layer.
+        with mock.patch.dict(os.environ, {"MIMIR_SCRATCH_DIR": self.base}):
+            wt, refusal = worktree.create_worktree("sub-escape")
+        self.assertIsNone(wt)
+        self.assertIn("scratchpad", refusal)
+
     def _slurm_submission(self, state_dir, name, settled: str = ""):
         job_dir = Path(state_dir, "sessions", "parent-session", "subagents", name,
                        "hpc_jobs", "1")

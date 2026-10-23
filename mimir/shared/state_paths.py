@@ -132,14 +132,25 @@ def session_file(filename: str, session_id: str | None, base: str | None = None)
     return os.path.join(session_state_dir(base, session_id or ""), filename)
 
 
+def site_scratch() -> tuple[str, bool]:
+    """``$SCRATCH`` when the site sets it, else the local temp dir; and whether it is the former.
+
+    A cluster's scratch is large and seen by the compute nodes, so a file written there
+    can be read by a Slurm job; a login node's ``/tmp`` is small, shared, and its own.
+    """
+    scratch = os.environ.get("SCRATCH", "").strip()
+    if scratch:
+        return os.path.abspath(os.path.expanduser(scratch)), True
+    return os.path.abspath(os.environ.get("TMPDIR") or "/tmp"), False
+
+
 def scratch_home() -> str:
-    """The scratchpad root: ``MIMIR_SCRATCH_DIR``, else ``<TMPDIR>/mimir-<uid>-<workspace-id>``."""
+    """The scratchpad root: ``MIMIR_SCRATCH_DIR``, else ``<site scratch>/mimir-<uid>-<workspace-id>``."""
     env = os.environ.get("MIMIR_SCRATCH_DIR")
     if env:
-        return os.path.abspath(env)
-    tmp = os.environ.get("TMPDIR") or "/tmp"
+        return os.path.abspath(os.path.expanduser(env))
     root = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd())
-    return os.path.join(os.path.abspath(tmp), f"mimir-{os.getuid()}-{workspace_id(root)}")
+    return os.path.join(site_scratch()[0], f"mimir-{os.getuid()}-{workspace_id(root)}")
 
 
 def scratch_dir(base: str | None = None, session_id: str | None = None) -> str:
@@ -161,27 +172,36 @@ def standing_roots(base: str | None = None) -> list[str]:
     return [scratch_home()]
 
 
+def ensure_private_dir(path: str) -> bool:
+    """Create *path* ``0700``, or vet the one there: ours, a real directory, private.
+
+    For a directory under a root others can write (``/tmp``, a project's scratch): one
+    made first at our name by someone else would hand them what we put in it.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        try:
+            os.makedirs(path, mode=0o700)
+        except OSError:
+            return False
+        return True
+    except OSError:
+        return False
+
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return False
+    if info.st_uid != os.getuid():
+        return False
+    if info.st_mode & 0o077:
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            return False
+    return True
+
+
 def ensure_scratch_home() -> str:
     """Create the scratchpad home ``0700`` and vet it; "" when the path is not safely ours."""
     home = scratch_home()
-    try:
-        info = os.lstat(home)
-    except FileNotFoundError:
-        try:
-            os.makedirs(home, mode=0o700)
-        except OSError:
-            return ""
-        return home
-    except OSError:
-        return ""
-
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        return ""
-    if info.st_uid != os.getuid():
-        return ""
-    if info.st_mode & 0o077:
-        try:
-            os.chmod(home, 0o700)
-        except OSError:
-            return ""
-    return home
+    return home if ensure_private_dir(home) else ""

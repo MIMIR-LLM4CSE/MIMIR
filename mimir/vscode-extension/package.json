@@ -321,6 +321,12 @@
             "default": [],
             "markdownDescription": "Directories outside the workspace that the agent may read without asking. Sets `MIMIR_EXTRA_FILE_ROOTS` for the server.",
             "order": 5
+          },
+          "mimir.workspace.scratchDir": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "The agent's scratchpad, where it writes throwaway scripts and test files without asking. Empty uses `$SCRATCH/mimir-<uid>-<workspace>`, else the same under the local temp directory. On a cluster, pick a directory the compute nodes see, so a job can run what the agent wrote there. Give it a directory of its own, such as `$SCRATCH/mimir-scratch`: everything under it is writable without approval. Sets `MIMIR_SCRATCH_DIR` for the server.",
+            "order": 6
           }
         }
       },

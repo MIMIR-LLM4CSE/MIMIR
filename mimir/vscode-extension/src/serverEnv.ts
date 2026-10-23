@@ -106,6 +106,7 @@ export const SERVER_ENV_SETTINGS: readonly EnvSetting[] = [
   { key: "customization.pluginsDir", env: text("MIMIR_PLUGINS_DIR") },
   { key: "customization.serversDir", env: text("MIMIR_SERVERS_DIR") },
   { key: "workspace.extraReadRoots", env: pathList("MIMIR_EXTRA_FILE_ROOTS") },
+  { key: "workspace.scratchDir", env: text("MIMIR_SCRATCH_DIR") },
   { key: "hpc.moduleIndexBudget", env: positive("MIMIR_MODULE_INDEX_BUDGET") },
   { key: "hpc.slurmStaleAfter", env: positive("MIMIR_SLURM_STALE_AFTER") },
 ];

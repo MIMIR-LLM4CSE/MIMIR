@@ -532,6 +532,7 @@ variable exported in your shell then still applies.
 | | `mimir.customization.pluginsDir` | `MIMIR_PLUGINS_DIR` |
 | | `mimir.customization.serversDir` | `MIMIR_SERVERS_DIR` |
 | | `mimir.workspace.extraReadRoots` | `MIMIR_EXTRA_FILE_ROOTS` |
+| | `mimir.workspace.scratchDir` | `MIMIR_SCRATCH_DIR` |
 | HPC | `mimir.hpc.moduleIndexBudget` | `MIMIR_MODULE_INDEX_BUDGET` |
 | | `mimir.hpc.slurmStaleAfter` | `MIMIR_SLURM_STALE_AFTER` |
 | Installation | `mimir.pythonPath` | — (see below) |
@@ -609,6 +610,13 @@ directory. A site whose scratch has another name (`$CCCSCRATCHDIR`, `$SCRATCHDIR
 needs the setting; without it, the copy lands on the login node's disk, and the
 sub-agent is told its jobs cannot read it. A copy is kept while a job submitted from
 it may still be running.
+
+The agent's scratchpad, where it writes throwaway scripts and test files without
+asking, follows the same rule: `mimir.workspace.scratchDir` when set, else
+`$SCRATCH/mimir-<uid>-<workspace>`, else the same under the temp directory. A job can
+therefore run a test script the agent wrote there. Give the setting a directory of its
+own (`$SCRATCH/mimir-scratch`, not `$SCRATCH`): everything under it is writable without
+approval. For the same reason MIMIR refuses to put a sub-agent's copy inside it.
 
 ---
 

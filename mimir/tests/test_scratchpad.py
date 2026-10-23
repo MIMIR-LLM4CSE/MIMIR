@@ -35,10 +35,19 @@ class ScratchHomeResolutionTests(unittest.TestCase):
             os.environ, {"TMPDIR": tmp, "MCP_FILES_ROOT": "/w/proj"}, clear=False
         ):
             os.environ.pop("MIMIR_SCRATCH_DIR", None)
+            os.environ.pop("SCRATCH", None)
             home = scratch_home()
         self.assertEqual(os.path.dirname(home), tmp)
         # Two users, and two checkouts sharing a basename, must not collide.
         self.assertTrue(os.path.basename(home).startswith(f"mimir-{os.getuid()}-proj-"))
+
+    def test_the_site_scratch_wins_over_the_temp_dir(self):
+        """A Slurm job must be able to run what the agent wrote there."""
+        with patch.dict(os.environ, {"SCRATCH": "/scratch/u", "TMPDIR": "/local/tmp",
+                                     "MCP_FILES_ROOT": "/w/proj"}):
+            os.environ.pop("MIMIR_SCRATCH_DIR", None)
+            home = scratch_home()
+        self.assertEqual(os.path.dirname(home), "/scratch/u")
 
     def test_resolution_does_not_create_directories(self):
         # A sandbox check runs on every call; it must not materialise state.

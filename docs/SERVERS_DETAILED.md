@@ -345,9 +345,11 @@ developer's real global memory. Collapsing the tier inside the workspace state d
 hermetic, and a harmless degradation — with one workspace, global and workspace mean the
 same thing.
 
-The same module owns the agent **scratchpad**, which lives under the temp dir rather than
-the state dir: `scratch_home()` → `MIMIR_SCRATCH_DIR` if set, else
-`<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`; `scratch_dir()` appends the session id
+The same module owns the agent **scratchpad**, which lives under the site's scratch rather
+than the state dir: `scratch_home()` → `MIMIR_SCRATCH_DIR` if set, else
+`<site_scratch()>/mimir-<uid>-<workspace-id>`, where `site_scratch()` is `$SCRATCH` when set
+(seen by the compute nodes) and `TMPDIR` or `/tmp` otherwise — the root sub-agent copies
+fall back to as well; `scratch_dir()` appends the session id
 (from `MIMIR_SESSION_ID`, or the sidecar for a single-session end, or the caller's own
 answer — the client process runs several conversations in one `os.environ`, so there the id
 can only come from the agent that is acting), falling back to the home outside a session. `standing_roots()` exposes the **home** as a
@@ -1321,7 +1323,10 @@ Tools:
     (`mimir.subagents.copiesDir`), else `$SCRATCH`, else `$TMPDIR` or `/tmp`: a disk the
     compute nodes see, so a child's Slurm jobs can read their copy, and not the
     workspace or the state dir (a root under quota cannot hold a checkout plus what a
-    build writes). Deliberately not the scratchpad either (writable without approval,
+    build writes). The per-user directory is made `0700` and refused when it is a symlink
+    or someone else's (`state_paths.ensure_private_dir`, the scratchpad's own check): under
+    `/tmp` or a project's scratch, one made first at our name would hand its owner the
+    child's code. Deliberately not the scratchpad either (writable without approval,
     which would take the child's edits out of the approval layer). A child granted a
     `CLUSTER_SUBMIT` tool is told to submit from its copy, and, when the copy fell back
     to the local temp dir, that its jobs cannot read it. On a clean

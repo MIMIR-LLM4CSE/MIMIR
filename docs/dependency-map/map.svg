@@ -289,7 +289,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,98 C1082.5,426 670,426 670,754" stroke-width="2.6"><title>servers.agent_state → shared.jobs · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,98 C1082.5,426 931,426 931,754" stroke-width="3.6"><title>servers.agent_state → shared.responses · 5 import(s)</title></path>
 <path class="edge" d="M1082.5,98 C1082.5,446 303.5,446 303.5,794" stroke-width="2"><title>servers.agent_state → shared.skill_file · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,98 C1082.5,446 408.5,446 408.5,794" stroke-width="4.3"><title>servers.agent_state → shared.state_paths · 9 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,446 408.5,446 408.5,794" stroke-width="4.5"><title>servers.agent_state → shared.state_paths · 10 import(s)</title></path>
 <path class="edge" d="M1082.5,197 C1082.5,475.5 275,475.5 275,754" stroke-width="3"><title>servers.external → shared.capabilities · 3 import(s)</title></path>
 <path class="edge deferred" d="M1082.5,197 C1082.5,475.5 366,475.5 366,754" stroke-width="2"><title>servers.external → shared.embed · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,197 C1082.5,475.5 931,475.5 931,754" stroke-width="3"><title>servers.external → shared.responses · 3 import(s)</title></path>

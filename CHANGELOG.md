@@ -30,6 +30,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   compute nodes see them. Without it, they stay in the local temp dir, and a sub-agent
   allowed to submit is told its jobs cannot read its copy. A copy is no longer
   reclaimed while a Slurm job submitted from it may still be running.
+- **Sub-agent copies are private to their user.** Their directory is made `0700`, and
+  one already there that is a symlink or someone else's is refused, as the scratchpad's
+  already was. On a shared `/tmp` or project scratch, another user could otherwise read
+  a copy or change the code it builds.
+- **The agent's scratchpad goes under `$SCRATCH` when it is set**, instead of `/tmp`,
+  so a Slurm job can run a test script the agent wrote there. Without it, it stays in
+  the temp dir. **`mimir.workspace.scratchDir`** (`MIMIR_SCRATCH_DIR`) chooses another
+  place.
 
 ## [1.8.0] — 2026-10-20
 

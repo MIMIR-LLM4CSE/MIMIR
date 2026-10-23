@@ -1151,8 +1151,10 @@ the CLI prompts on the terminal (EOF = deny).
 
 ### The scratchpad
 
-`<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<sid>/` is writable **without approval** and
-never prompts. It is where throwaway probe scripts, intermediate data and working files go.
+`<site scratch>/mimir-<uid>-<workspace-id>/<sid>/` is writable **without approval** and
+never prompts. The site scratch is `$SCRATCH` when set — seen by the compute nodes, so a
+Slurm job can run what the agent wrote there — else `TMPDIR` or `/tmp`
+(`state_paths.site_scratch`). It is where throwaway probe scripts, intermediate data and working files go.
 
 Without one, the only writable place is the user's workspace, so every temporary file is
 indistinguishable from produced work: it lands in the repo *and* in the change ledger, and
@@ -1160,9 +1162,9 @@ then demands validation before the run can conclude. So `record_code_edit` **exc
 scratch paths from `dirty_written_files` — which is what makes the scratchpad useful rather
 than a new source of validation noise.
 
-The temp dir is where throwaway work belongs and where the OS reclaims it. The price is
-that `/tmp` is world-writable, so an existing directory at our name is not necessarily
-ours. `ensure_scratch_home()` creates the home `0700` and **declines** — returning `""` —
+Scratch space is where throwaway work belongs and where the site or the OS reclaims it.
+The price is that `/tmp`, and a scratch shared by a project, is writable by others, so an
+existing directory at our name is not necessarily ours. `ensure_scratch_home()` creates the home `0700` and **declines** — returning `""` —
 on a symlink, a non-directory, or a foreign owner. The client calls it once at startup and
 falls back to `<state_dir>/scratch`: degraded, never absent. The resolved path is published
 in `MIMIR_SCRATCH_DIR` for the client and the servers alike, so vetting happens in exactly

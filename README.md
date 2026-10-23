@@ -449,11 +449,13 @@ tier above it, `~/.mimir/global/` (override `MIMIR_GLOBAL_STATE_DIR`) holds what
 *you* rather than to one repository — today the **global memory**, shared by every workspace
 on the machine, so a preference or a correction is stored once instead of once per project.
 The agent's **scratchpad** sits
-under the temp dir instead — `<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<session-id>/`,
-override `MIMIR_SCRATCH_DIR`. It is writable without approval and is where throwaway scripts,
+under the site's scratch instead — `<$SCRATCH, else TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<session-id>/`,
+override `mimir.workspace.scratchDir` (`MIMIR_SCRATCH_DIR`). On a cluster, `$SCRATCH` is
+seen by the compute nodes, so a job can run a script the agent wrote there. It is writable
+without approval and is where throwaway scripts,
 probes, intermediate data and diagnostic plots belong; nothing written there is reported as
 produced work or asked to be validated, so that is also where to look for a run's working
-files afterwards (MIMIR never deletes them — the OS reclaims the temp dir). Keeping both out
+files afterwards (MIMIR never deletes them — the site's purge or the OS reclaims them). Keeping both out
 of `.mimir/` leaves the workspace directory the user's alone.
 
 **Custom servers** — drop a `FastMCP` `server_<name>.py`; give each tool a precise docstring
