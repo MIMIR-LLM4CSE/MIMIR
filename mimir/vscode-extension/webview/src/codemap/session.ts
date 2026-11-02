@@ -1,6 +1,8 @@
 // The optimisation session on the code map: its steps across the top, and what one step
 // (or every kept step since the baseline) changed, as the map marks it. What each step
-// changed comes from the proxy's own snapshots; the map itself is today's code.
+// changed comes from the proxy's own snapshots; the map itself is today's code. One proxy's
+// session, or every proxy's at once: their steps in the order they settled, each value as a
+// multiple of its own proxy's baseline (lower is better), since their metrics differ.
 
 export interface StepEdge { from: string; to: string; line: number; kind: string; via: string; sure: string; breaks: string }
 /** Where a run's time went, per workspace file, in fractions of the baseline's metric. */
@@ -23,6 +25,8 @@ export interface Profile {
 }
 export interface Step {
   n: number; run_id: string; axis: string; verdict: string;
+  /** The proxy it ran on, and (every proxy at once) that proxy's metric. */
+  proxy?: string; metric?: string;
   value: number | null; incumbent_value: number | null; delta: number | null;
   changed: string[]; added: StepEdge[]; removed: StepEdge[];
   profile?: Profile | null;
@@ -34,6 +38,8 @@ export interface Session {
   proxy: string; metric: string; goal: string;
   baseline: { run_id: string; value: number | null; profile?: Profile | null; peak_rss_mb?: number | null };
   steps: Step[];
+  /** The proxies with a session, the active one, and whether these are all of theirs. */
+  proxies?: string[]; active?: string; combined?: boolean;
 }
 
 /** The time the map shows at a step: whose profile, and the one it is compared with. */
@@ -85,6 +91,8 @@ export interface Overlay {
   touchedNow: Set<string>;
   touched: Set<string>;
   steps: Step[];
+  /** The proxies with a session, the active one, and whether these are all of theirs. */
+  proxies?: string[]; active?: string; combined?: boolean;
 }
 
 export const edgeKey = (e: { from: string; to: string; kind: string }) => `${e.from}|${e.to}|${e.kind}`;
@@ -122,6 +130,14 @@ function better(session: Session, d: number | null): boolean {
   return d !== null && (session.goal === "max" ? d > 0 : d < 0);
 }
 
+/** Each proxy's last kept value against its baseline, for every proxy at once. */
+function perProxy(session: Session): string {
+  const last = new Map<string, number>();
+  for (const s of session.steps) if (s.proxy && !last.has(s.proxy)) last.set(s.proxy, 1);
+  for (const s of session.steps) if (s.proxy && kept(s) && s.value !== null) last.set(s.proxy, s.value);
+  return [...last].map(([p, v]) => esc(p) + " <b>" + signed(v - 1) + "</b>").join(" · ");
+}
+
 /** The best value after each stop (baseline first): what the session kept as it went. */
 function bestSoFar(session: Session): (number | null)[] {
   const out: (number | null)[] = [session.baseline.value];
@@ -143,7 +159,8 @@ export function strip(session: Session, k: number, scope: Scope): string {
   const H = 40;
   const sx = (i: number) => ((i + 0.5) / n) * 100;
   const sy = (v: number) => 6 + ((hi - v) / span) * (H - 12);
-  const pts = best.map((v, i) => (v === null ? null : sx(i) + "," + sy(v))).filter(Boolean);
+  // Every proxy at once has no single best to follow: the dots alone.
+  const pts = session.combined ? [] : best.map((v, i) => (v === null ? null : sx(i) + "," + sy(v))).filter(Boolean);
   const dots = session.steps.map((s, i) => s.value === null ? ""
     : '<i class="pt' + (s.n === k ? " is-cur" : "") + (kept(s) ? "" : " is-rej") + '" style="left:'
       + sx(i + 1) + "%;top:" + sy(s.value) + 'px" title="#' + s.n + " " + esc(session.metric) + " " + value(s.value) + '"></i>').join("");
@@ -156,25 +173,32 @@ export function strip(session: Session, k: number, scope: Scope): string {
       + '" aria-current="' + (s.n === k) + '"><span class="n">#' + s.n + ' <span class="v '
       + (kept(s) ? "ok" : "no") + '">' + (kept(s) ? "✓ kept" : "✕ " + esc(s.verdict.replace("reject", "ruled out"))) + "</span></span>"
       + '<span class="ax" title="' + esc(s.axis) + '">' + esc(s.axis || "(no axis given)") + "</span>"
-      + '<span class="t">' + (s.delta === null ? "–" : signed(s.delta)) + " · " + s.changed.length + " files</span></button>"));
+      + '<span class="t">' + (session.combined && s.proxy ? esc(s.proxy) + " · " : "")
+      + (s.delta === null ? "–" : signed(s.delta)) + " · " + s.changed.length + " files</span></button>"));
   const keptCount = session.steps.filter(kept).length;
   const last = best[best.length - 1], base = session.baseline.value;
   const total = last !== null && base ? (last - base) / Math.abs(base) : null;
-  return '<div class="session-head"><div class="title">Optimisation session</div><span class="sum">'
-    + session.steps.length + " steps tried · <b>" + keptCount + "</b> kept · " + esc(session.metric) + " <b>"
-    + signed(total) + "</b> since baseline</span>"
+  const since = session.combined ? perProxy(session) + " since their baselines"
+    : esc(session.metric) + " <b>" + signed(total) + "</b> since baseline";
+  return '<div class="session-head"><div class="title">' + (session.combined ? "Every proxy" : "Optimisation session")
+    + '</div><span class="sum">' + session.steps.length + " steps tried · <b>" + keptCount + "</b> kept · " + since + "</span>"
     + '<div class="seg push" role="group" aria-label="Which changes to show">'
     + '<button data-scope="step" aria-pressed="' + (scope === "step") + '">This step</button>'
     + '<button data-scope="all" aria-pressed="' + (scope === "all") + '">Since baseline</button></div></div>'
     + '<div class="steps-scroll"><div class="steps" style="grid-template-columns:repeat(' + n + ',minmax(118px,1fr))">'
     + '<svg class="spark" viewBox="0 0 100 ' + H + '" preserveAspectRatio="none" aria-hidden="true">'
-    + '<path class="line" d="M' + pts.join(" L") + '"/></svg><div class="pts">' + first + dots + "</div>"
+    + (pts.length ? '<path class="line" d="M' + pts.join(" L") + '"/>' : "") + '</svg><div class="pts">' + first + dots + "</div>"
     + stops.join("") + "</div></div>";
 }
 
 /** The card of step *k* in the side pane, for when nothing on the map is selected. */
-const PROFILE_PROMPT = "Profile the optimisation session's code as it stands now with "
-  + "proxy_eval(op='profile', confirm=True), then tell me where its time goes.";
+const profilePrompt = (proxy?: string) => "Profile the optimisation session's code as it stands now with "
+  + "proxy_eval(op='profile'" + (proxy ? ", proxy_name='" + proxy + "'" : "") + ", confirm=True), then tell me where its time goes.";
+
+/** Whether *s* is the last step of its session: of its own proxy, for every proxy at once. */
+function latest(session: Session, s: Step): boolean {
+  return !session.steps.some((x) => x.n > s.n && x.proxy === s.proxy);
+}
 
 /** What a step's card says of its time: its costliest files, why it has no profile, or
  *  (the latest step only: the code as it is now) a button that asks for one. */
@@ -189,8 +213,9 @@ function timeBlock(session: Session, s: Step, fileRow: (id: string, right: strin
       + gpuBlock(p.gpu) + memoryBlock(p.memory, fileRow);
   }
   if (p && p.unavailable) return '<div class="cap">Not profiled</div><div class="empty">' + esc(p.unavailable) + "</div>";
-  if (s.n === session.steps.length) {
-    return '<button class="open" data-prompt="' + esc(PROFILE_PROMPT) + '">Profile the code as it is now</button>';
+  if (latest(session, s)) {
+    return '<button class="open" data-prompt="' + esc(profilePrompt(session.combined ? s.proxy : undefined))
+      + '">Profile the code as it is now</button>';
   }
   return '<div class="empty">Not profiled. Only the code as it is now can be profiled.</div>';
 }
@@ -262,8 +287,10 @@ export function stepCard(session: Session, k: number, fileRow: (id: string, righ
     '<div class="line"><span>' + esc(l) + '</span><span class="' + cls + '">' + v + "</span></div>";
   return '<div class="section step"><div class="title">Step #' + s.n + "</div>"
     + '<div class="path">' + esc(s.axis || "(no axis given)") + "</div>"
+    + (session.combined && s.proxy ? line("proxy", esc(s.proxy)) : "")
     + line("verdict", kept(s) ? "✓ kept" : "✕ " + esc(s.verdict.replace("reject", "ruled out")), kept(s) ? "is-ok" : "is-danger")
-    + line(session.metric, value(s.value) + " against " + value(s.incumbent_value)
+    + line(session.combined ? (s.metric ?? "metric") + " × baseline" : session.metric,
+      value(s.value) + " against " + value(s.incumbent_value)
       + (s.delta === null ? "" : " (" + signed(s.delta) + ")"), better(session, s.delta) ? "is-ok" : "")
     + (memory ? line("peak memory", memory.text, memory.grew ? "is-danger" : "") : "")
     + line("dependencies", '<span class="is-ok">+' + s.added.length + '</span> / <span class="is-danger">−' + s.removed.length + "</span>")

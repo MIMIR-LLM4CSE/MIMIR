@@ -3,7 +3,7 @@ against the incumbent it was measured on (files, and the dependencies those file
 drop), its verdict, its axis, and its metric beside the incumbent's.
 
 Rebuilt from the tree snapshots the ledger names, so a run ruled out still shows what it
-tried. Cached on the ledger's mtime: it only moves when a run settles.
+tried. Cached on the ledger's mtime. Any proxy's session can be drawn, or all at once.
 """
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ import os
 
 from ....shared import code_map
 from .._lib import profiling, tree_snapshot
-from .._lib.layout import opt_session_runs_dir, read_json, resolve_proxy_name
+from .._lib.layout import opt_runs_dir, opt_session_runs_dir, read_json, resolve_proxy_name
 from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
 from .eval_observe import read_ledger
 
-_CACHE: dict = {"key": None, "value": {}}
+_CACHE: dict[str, tuple[float, dict]] = {}
 _EDGE_FIELDS = ("from", "to", "line", "kind", "via", "sure", "breaks")
 
 
@@ -73,17 +73,40 @@ def _delta(value, incumbent) -> float | None:
     return (value - incumbent) / abs(incumbent)
 
 
+def proxies() -> list[str]:
+    """The proxies with a session in this workspace: those whose ledger exists."""
+    try:
+        names = sorted(os.listdir(opt_runs_dir()))
+    except OSError:
+        return []
+    return [n for n in names if os.path.isfile(opt_ledger_file(n))]
+
+
+def answer(proxy_name: str = "", combined: bool = False) -> dict:
+    """What the map tab is sent: the steps of *proxy_name* (else the active session's), or of
+    every proxy at once when *combined*; with the proxies it can switch between."""
+    known = proxies()
+    if not known:
+        return {}
+    # A name the tab sends is one it was given; any other reads as the active session.
+    value = merged(known) if combined else session(proxy_name if proxy_name in known else "")
+    # Always a list of steps, even empty: the tab still offers the other proxies.
+    return {"steps": [], **value, "proxies": known, "active": resolve_proxy_name("") or "",
+            "combined": bool(combined and value)}
+
+
 def session(proxy_name: str = "") -> dict:
-    """The current session's steps, or {} when there is none."""
+    """The session's steps of *proxy_name* (else the active one's), or {} when there is none."""
     name = resolve_proxy_name(proxy_name)
     if not name:
         return {}
     try:
-        key = (name, os.path.getmtime(opt_ledger_file(name)))
+        mtime = os.path.getmtime(opt_ledger_file(name))
     except OSError:
         return {}
-    if key == _CACHE["key"]:
-        return _CACHE["value"]
+    cached = _CACHE.get(name)
+    if cached and cached[0] == mtime:
+        return cached[1]
     cfg = load_opt_config(name) or {}
     rows = read_ledger(name)
     root = workspace_root()
@@ -105,6 +128,8 @@ def session(proxy_name: str = "") -> dict:
         now, then = (_edges_at(root, tree, memo), _edges_at(root, inc_tree, memo)) if tree else ({}, {})
         steps.append({
             "n": len(steps) + 1,
+            "proxy": name,
+            "ts": row.get("ts", ""),
             "run_id": row.get("run_id", ""),
             "axis": row.get("axis", ""),
             "verdict": row.get("verdict", ""),
@@ -130,5 +155,41 @@ def session(proxy_name: str = "") -> dict:
                      "profile": _profile(name, baseline_run, base_value, base_value)},
         "steps": steps,
     }
-    _CACHE.update({"key": key, "value": value})
+    _CACHE[name] = (mtime, value)
     return value
+
+
+def _relative(value, base, goal: str) -> float | None:
+    """*value* against its proxy's baseline, lower is better whatever the goal: 0.8 is a fifth
+    better, for a time or a throughput alike."""
+    if not isinstance(value, (int, float)) or not isinstance(base, (int, float)) or not base or not value:
+        return None
+    return round(value / base if goal != "max" else base / value, 6)
+
+
+def merged(names: list[str]) -> dict:
+    """Every proxy's steps as one session, in the order they settled. Values are each proxy's
+    metric against its own baseline (1.0), so the strip draws one line across metrics; what a
+    step changed is still against its own proxy's incumbent, and "every kept step" marks all
+    the proxies' kept changes together. No baseline profile: each proxy has its own."""
+    sessions = [s for s in (session(n) for n in names) if s.get("steps")]
+    steps: list[dict] = []
+    for s in sessions:
+        base, goal = s["baseline"]["value"], s["goal"]
+        for st in s["steps"]:
+            now = _relative(st["value"], base, goal)
+            then = _relative(st["incumbent_value"], base, goal)
+            steps.append({**st, "value": now, "incumbent_value": then, "delta": _delta(now, then),
+                          "metric": s["metric"]})
+    steps.sort(key=lambda st: st.get("ts") or "")
+    for i, st in enumerate(steps):
+        st["n"] = i + 1
+    if not steps:
+        return {}
+    return {
+        "proxy": ", ".join(s["proxy"] for s in sessions),
+        "metric": "vs baseline",
+        "goal": "min",
+        "baseline": {"run_id": "", "value": 1.0, "profile": None},
+        "steps": steps,
+    }

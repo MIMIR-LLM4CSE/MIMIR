@@ -93,8 +93,14 @@ class PanelHandlers(Handlers):
         self._request_panel(refresh=bool(msg.get("refresh")))
 
     async def on_code_map(self, msg: dict) -> None:
-        """Serve the code map the servers answer, for the editor's map tab."""
-        result = await asyncio.wrap_future(self.screen.worker.panel.code_map())
+        """Serve the code map the servers answer, for the editor's map tab: the steps of the
+        proxy the tab picked (``proxy``), or of every proxy (``combined``)."""
+        steps_args: dict = {}
+        if isinstance(msg.get("proxy"), str) and msg["proxy"]:
+            steps_args["proxy_name"] = msg["proxy"]
+        if msg.get("combined"):
+            steps_args["combined"] = True
+        result = await asyncio.wrap_future(self.screen.worker.panel.code_map(steps_args))
         await self.out.send({"type": "code_map", **result})
 
     def _request_panel(self, *, refresh: bool = False) -> None:

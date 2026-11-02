@@ -23,6 +23,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   since (edit tools and shell commands alike; a file someone else changed since is left
   and named), stops the runs it started since, restores its checklist and carried context,
   and sends the edited message. A note in the conversation says what was done.
+- **The code map switches between proxies, or shows them all.** With sessions on more
+  than one proxy, the map tab's header has a picker: the active session, any other
+  proxy's, or **Every proxy (cumulative)**, which lays every proxy's steps out in the
+  order they settled, each value as a multiple of its own proxy's baseline, with a total
+  per proxy; **Since baseline** then marks every proxy's kept changes together. The
+  choice stays with the tab, and choosing never changes the agent's active session.
 
 ## [1.11.1] — 2026-10-23
 

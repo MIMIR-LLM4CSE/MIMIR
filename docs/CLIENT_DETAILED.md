@@ -829,7 +829,8 @@ A section may name a view it offers (`open`, passed through like the rest).
 `Panel.code_map()` is the one such view the client serves: it calls the tools declaring
 `CODE_MAP` (`tools.capabilities.code_map_tools()`) with `shared.code_map.FULL_ARGS` and
 returns the first map that comes back, for the `code_map` message; the tools declaring
-`CODE_MAP_STEPS` are asked at the same time, and their answer rides along as `session`.
+`CODE_MAP_STEPS` are asked at the same time, with the message's `proxy` and `combined`
+as `proxy_name` and `combined`, and their answer rides along as `session`.
 
 `groups` is the nested half, for a server whose answer is a tree rather than a list — the
 schedulers this workspace reaches, the kinds of machine on each, what a probe found on

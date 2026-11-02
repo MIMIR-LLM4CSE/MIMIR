@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gpuBlock, kernelName, megabytes, memoryBlock, stepCard, timeAt, type Session } from "./session";
+import { gpuBlock, kernelName, megabytes, memoryBlock, stepCard, strip, timeAt, type Session } from "./session";
 
 const step = (n: number, verdict: string, profile: Session["steps"][number]["profile"]) => ({
   n, run_id: "r" + n, axis: "", verdict, value: 1, incumbent_value: 1, delta: 0,
@@ -73,5 +73,36 @@ describe("memory in a step's card", () => {
   it("shows the GPU's peak memory and what was copied", () => {
     const html = gpuBlock({ tool: "nsys", busy: 0.5, peak_device_mb: 3072, memcpy_mb: { HtoD: 2048 } });
     expect(html).toContain("peak device memory 3.0 GB · copied HtoD 2.0 GB");
+  });
+});
+
+describe("every proxy at once", () => {
+  const all: Session = {
+    proxy: "solver, mesh", metric: "vs baseline", goal: "min", combined: true,
+    baseline: { run_id: "", value: 1, profile: null },
+    steps: [
+      { ...step(1, "accept", null), proxy: "solver", metric: "time_s", value: 0.8, incumbent_value: 1, delta: -0.2 },
+      { ...step(2, "accept", null), proxy: "mesh", metric: "gflops", value: 0.5, incumbent_value: 1, delta: -0.5 },
+      { ...step(3, "reject", null), proxy: "solver", metric: "time_s", value: 0.9, incumbent_value: 0.8, delta: 0.125 },
+    ],
+  };
+
+  it("sums up each proxy against its own baseline, and draws no single best line", () => {
+    const html = strip(all, 3, "step");
+    expect(html).toContain("solver <b>−20%</b> · mesh <b>−50%</b> since their baselines");
+    expect(html).not.toContain('class="line"');
+    expect(html).toContain("mesh · −50%");
+  });
+
+  it("names a step's proxy and its metric, and profiles the proxy it ran on", () => {
+    const card = stepCard(all, 2, (f, r) => f + " " + r);
+    expect(card).toContain("<span>proxy</span>");
+    expect(card).toContain("gflops × baseline");
+    expect(card).toContain("proxy_name='mesh'");
+  });
+
+  it("offers a profile on each proxy's latest step only", () => {
+    expect(stepCard(all, 1, (f, r) => f + " " + r)).not.toContain("data-prompt");
+    expect(stepCard(all, 3, (f, r) => f + " " + r)).toContain("proxy_name='solver'");
   });
 });

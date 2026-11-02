@@ -945,14 +945,20 @@ def proxy_panel_report() -> dict:
     read_only=True,
     label="Optimisation steps on the code map",
 ))
-def proxy_code_map_steps() -> dict:
+def proxy_code_map_steps(proxy_name: str = "", combined: bool = False) -> dict:
     """The optimisation session's runs as the code map draws them.
 
     For each settled run after the baseline: its axis, its verdict, its metric beside the
     incumbent it was measured against, the files it changed, and the dependencies those
-    changes add or drop. Empty when no session is open in this workspace.
+    changes add or drop. Also the proxies with a session (`proxies`) and the active one
+    (`active`). No steps when no session is open in this workspace.
+
+    Args:
+        proxy_name: A proxy with a session, to draw its steps; empty for the active one's.
+        combined: Every proxy's steps together, in the order they settled, each value a
+            multiple of its own proxy's baseline (lower is better).
     """
-    return ok(code_map_steps.session())
+    return ok(code_map_steps.answer(proxy_name, combined))
 
 
 if __name__ == "__main__":

@@ -20,8 +20,8 @@ type Selection = { kind: "comp" | "module" | "file"; id: string } | null;
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: unknown): void;
-  getState(): { skin?: string; tests?: boolean } | undefined;
-  setState(state: { skin?: string; tests?: boolean }): void;
+  getState(): { skin?: string; tests?: boolean; pick?: string } | undefined;
+  setState(state: { skin?: string; tests?: boolean; pick?: string }): void;
 };
 const vscode = acquireVsCodeApi();
 
@@ -40,8 +40,46 @@ let skin = vscode.getState()?.skin === "light" ? "light" : "mimir";
 // The tests are folded away unless asked for: they depend on everything and would bury
 // the code's own architecture under their edges.
 let showTests = vscode.getState()?.tests === true;
+// Whose steps the map shows: "" the active session's, a proxy's name, or ALL for every proxy.
+const ALL = "*";
+let pick = vscode.getState()?.pick ?? "";
 
-function remember(): void { vscode.setState({ skin, tests: showTests }); }
+function remember(): void { vscode.setState({ skin, tests: showTests, pick }); }
+
+/** Ask the server again, for the steps *pick* names. */
+function ask(): void {
+  vscode.postMessage({ type: "refresh", ...(pick === ALL ? { combined: true } : pick ? { proxy: pick } : {}) });
+}
+
+/** The pick last asked again for an answer that did not hold it, until one does. */
+let reasked: string | null = null;
+
+/** The proxies the server offered, and the active one: from the last answer. */
+let proxies: string[] = [];
+let active = "";
+
+/** Whose steps an answer holds, written as *pick* writes it. */
+function picked(s: Session | undefined): string {
+  if (s?.combined) return ALL;
+  return !s?.proxy || s.proxy === s.active ? "" : s.proxy;
+}
+
+/** The pick as the server can answer it: the active proxy named is the active session. */
+function reachable(p: string): string {
+  if (p === ALL) return proxies.length > 1 ? ALL : "";
+  return p && p !== active && proxies.includes(p) ? p : "";
+}
+
+function renderPicker(): void {
+  const el = document.getElementById("proxy") as HTMLSelectElement;
+  el.hidden = proxies.length < 2;
+  if (el.hidden) return;
+  el.innerHTML = proxies.map((p) => '<option value="' + esc(p === active ? "" : p) + '">' + esc(p)
+      + (p === active ? " (active)" : "") + "</option>").join("")
+    + (active && proxies.includes(active) ? "" : '<option value="">active session</option>')
+    + '<option value="' + ALL + '">Every proxy (cumulative)</option>';
+  el.value = reachable(pick);
+}
 
 /** The map as drawn: without its tests unless they are shown. */
 function visible(m: CodeMap): CodeMap {
@@ -543,6 +581,7 @@ function render(): void {
     document.getElementById("side")!.innerHTML = "";
     return;
   }
+  renderPicker();
   renderSession();
   renderMap(view, session && step ? overlay(session, step, scope) : null, time());
   renderLegend();
@@ -556,7 +595,8 @@ function mount(): void {
   document.getElementById("root")!.innerHTML = `
     <header>
       <h1>Code map</h1><span class="meta" id="meta">waiting for the server…</span>
-      <button class="toggle push" id="tests" aria-pressed="false" title="Show the tests and what they depend on">Tests</button>
+      <select class="push" id="proxy" title="Whose optimisation steps the map shows" aria-label="Proxy" hidden></select>
+      <button class="toggle" id="tests" aria-pressed="false" title="Show the tests and what they depend on">Tests</button>
       <div class="seg" role="group" aria-label="Theme">
         <button data-skin="mimir">MIMIR</button><button data-skin="light">Light</button>
       </div>
@@ -571,7 +611,12 @@ function mount(): void {
     remember();
     render();
   }));
-  document.getElementById("reload")!.addEventListener("click", () => vscode.postMessage({ type: "refresh" }));
+  document.getElementById("reload")!.addEventListener("click", ask);
+  document.getElementById("proxy")!.addEventListener("change", (e) => {
+    pick = (e.target as HTMLSelectElement).value;
+    remember();
+    ask();
+  });
   document.getElementById("tests")!.addEventListener("click", () => {
     showTests = !showTests;
     remember();
@@ -587,9 +632,19 @@ function mount(): void {
   window.addEventListener("message", (ev: MessageEvent) => {
     const msg = ev.data as { type?: string; map?: CodeMap; session?: Session; focus?: string };
     if (msg?.type !== "map" || !msg.map) return;
-    // A new answer opens on the session's latest step; one that adds no step keeps the one shown.
+    proxies = msg.session?.proxies ?? [];
+    active = msg.session?.active ?? "";
+    // An answer for other steps than the ones picked (the drawer opens the active session's):
+    // asked again for those, as long as the server still has them.
+    // Once: an answer that still differs is what the server can give, and is drawn.
+    const want = reachable(pick), got = picked(msg.session);
+    if (want !== got && reasked !== want) { pick = reasked = want; ask(); return; }
+    reasked = null;
+    if (pick !== got) { pick = got; remember(); }
+    // A new answer opens on the session's latest step; one that adds no step, of the same
+    // proxy, keeps the one shown.
     const steps = msg.session?.steps?.length ?? 0;
-    if (!session || steps !== session.steps.length) step = steps;
+    if (!session || steps !== session.steps.length || picked(session) !== picked(msg.session)) step = steps;
     session = steps ? msg.session! : null;
     raw = msg.map;
     map = visible(raw);

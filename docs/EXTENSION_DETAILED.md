@@ -581,6 +581,16 @@ offers **Profile the code as it is now** on the latest step, which sends the req
 the agent as the user's own message (`map_prompt`, through the host to the chat). Its MIMIR skin follows the VS Code
 theme, the Light one is fixed, and the choice is kept in the tab's state.
 
+With sessions on more than one proxy, a picker in the header chooses whose steps are
+drawn: the active session, another proxy's, or every proxy at once. The pick is kept in
+the tab's state and sent with its `refresh` (`proxy` or `combined`), which the host
+forwards on the `code_map` message; it never moves the agent's active session. An answer
+that holds other steps than the pick (the drawer's **Open map** asks for the active
+session's) is asked again once with the pick. Every proxy at once lays the steps out in
+the order they settled, each named with its proxy and valued as a multiple of its
+proxy's baseline: the strip draws the dots without a best-so-far line and sums up each
+proxy apart, and **Since baseline** marks every proxy's kept changes together.
+
 **Badges are the runs, on the machines they are running on.** The client joins them in
 `connection/panel_runs.attach_runs` before the message goes out, because that is the one place both
 halves exist. A badge names the node, and opens as a row *inside* the tree showing the

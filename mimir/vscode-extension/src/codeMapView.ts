@@ -2,7 +2,7 @@
  * The code map: one editor tab drawing the workspace's architecture, from the map the
  * server answers (`shared.code_map`). The page is its own bundle (`dist/codemap.js`); it
  * asks for the map once loaded, opens files at a line through the host, and asks the
- * server again on its ⟳.
+ * server again on its ⟳ or for another proxy's steps (or every proxy's).
  */
 import * as vscode from "vscode";
 import * as fs from "fs";
@@ -18,13 +18,16 @@ let last: { map: unknown; session?: unknown; focus?: string } = { map: undefined
 /** What the tab can ask of the host. */
 type TabMessage =
   | { type: "ready" }
-  | { type: "refresh" }
+  | { type: "refresh"; proxy?: string; combined?: boolean }
   | { type: "open_file"; file: string; rel?: string; line?: number }
   | { type: "prompt"; text: string };
 
+/** Whose steps the tab asks for: a proxy's, or every proxy's; the active session's without. */
+export interface StepsPick { proxy?: string; combined?: boolean }
+
 /** What the tab can ask of the chat: the map again, or a request put to the agent. */
 export interface MapActions {
-  refresh: () => void;
+  refresh: (pick: StepsPick) => void;
   prompt: (text: string) => void;
 }
 
@@ -44,7 +47,12 @@ export function showCodeMap(map: unknown, session: unknown, focus: string | unde
     mapPanel.webview.html = pageHtml(mapPanel.webview, extensionUri);
     mapPanel.webview.onDidReceiveMessage((m: TabMessage) => {
       if (m?.type === "ready") void mapPanel?.webview.postMessage({ type: "map", ...last });
-      else if (m?.type === "refresh") actions.refresh();
+      else if (m?.type === "refresh") {
+        actions.refresh({
+          ...(typeof m.proxy === "string" && m.proxy ? { proxy: m.proxy } : {}),
+          ...(m.combined === true ? { combined: true } : {}),
+        });
+      }
       else if (m?.type === "prompt" && typeof m.text === "string") actions.prompt(m.text);
       else if (m?.type === "open_file" && typeof m.file === "string") {
         // The server's absolute path when it exists on this machine, else the path

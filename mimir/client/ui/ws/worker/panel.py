@@ -135,10 +135,11 @@ class Panel:
 
         return asyncio.run_coroutine_threadsafe(_run(), loop)
 
-    def code_map(self) -> Any:
+    def code_map(self, steps_args: dict | None = None) -> Any:
         """The workspace's code map from the first server that answers ``CODE_MAP``, and the
         session's steps from the first that answers ``CODE_MAP_STEPS``, as a future of
-        ``{"map": …, "session": …}``; ``{}`` while there is no agent or no map.
+        ``{"map": …, "session": …}``; ``{}`` while there is no agent or no map. *steps_args*
+        (which proxy's steps) are passed through unread.
         """
         agent, loop = self._agent(), self._loop()
         if agent is None or loop is None:
@@ -165,7 +166,7 @@ class Panel:
         async def _run() -> dict:
             # Asked together: the map is a walk of the tree, the steps a read of snapshots.
             found, steps = await asyncio.gather(
-                _first(CODE_MAP, dict(FULL_ARGS), "files"), _first(CODE_MAP_STEPS, {}, "steps"))
+                _first(CODE_MAP, dict(FULL_ARGS), "files"), _first(CODE_MAP_STEPS, dict(steps_args or {}), "steps"))
             if found is None:
                 return {}
             return {"map": found, **({"session": steps} if steps else {})}

@@ -88,7 +88,7 @@ class SessionTests(unittest.TestCase):
             with open(os.path.join(runs, run_id, "profile", "profile.json"), "w") as fh:
                 json.dump({"tool": "py-spy", "samples": 400, "files": files, "outside": {"numpy": 0.25},
                            **({"gpu": gpu, "memory": memory} if run_id == "r1" else {})}, fh)
-        code_map_steps._CACHE.update({"key": None, "value": {}})
+        code_map_steps._CACHE.clear()
         patches = [
             mock.patch.object(code_map_steps, "resolve_proxy_name", return_value="solver"),
             mock.patch.object(code_map_steps, "opt_ledger_file", return_value=ledger),
@@ -145,6 +145,55 @@ class SessionTests(unittest.TestCase):
     def test_no_session_is_no_steps(self) -> None:
         with mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=""):
             self.assertEqual(code_map_steps.session(), {})
+
+
+class PickTests(unittest.TestCase):
+    """The proxies the tab can switch between, and every proxy's steps together."""
+
+    def setUp(self) -> None:
+        def one(name: str, metric: str, goal: str, base: float, values: list[tuple[str, float, str]]) -> dict:
+            steps, inc = [], base
+            for i, (ts, v, verdict) in enumerate(values):
+                steps.append({"n": i + 1, "proxy": name, "ts": ts, "run_id": f"{name}{i}", "axis": "", "verdict": verdict,
+                              "value": v, "incumbent_value": inc, "changed": [], "added": [], "removed": []})
+                inc = v if verdict == "accept" else inc
+            return {"proxy": name, "metric": metric, "goal": goal, "baseline": {"run_id": "b", "value": base}, "steps": steps}
+
+        self.sessions = {
+            "solver": one("solver", "time_s", "min", 10.0, [("2026-01-01T00:00:00", 8.0, "accept"),
+                                                            ("2026-01-03T00:00:00", 9.0, "reject")]),
+            "mesh": one("mesh", "gflops", "max", 50.0, [("2026-01-02T00:00:00", 100.0, "accept")]),
+        }
+        for p in (mock.patch.object(code_map_steps, "proxies", return_value=["mesh", "solver"]),
+                  mock.patch.object(code_map_steps, "resolve_proxy_name", side_effect=lambda n: n or "solver"),
+                  mock.patch.object(code_map_steps, "session", side_effect=lambda n="": self.sessions[n or "solver"])):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_the_tab_is_told_the_proxies_and_the_active_one(self) -> None:
+        out = code_map_steps.answer()
+        self.assertEqual((out["proxy"], out["proxies"], out["active"], out["combined"]),
+                         ("solver", ["mesh", "solver"], "solver", False))
+
+    def test_another_proxy_s_steps_and_never_an_unknown_name(self) -> None:
+        self.assertEqual(code_map_steps.answer("mesh")["proxy"], "mesh")
+        self.assertEqual(code_map_steps.answer("../elsewhere")["proxy"], "solver")
+
+    def test_every_proxy_in_the_order_they_settled_against_their_own_baseline(self) -> None:
+        out = code_map_steps.answer(combined=True)
+        self.assertTrue(out["combined"])
+        self.assertEqual([(s["n"], s["proxy"]) for s in out["steps"]], [(1, "solver"), (2, "mesh"), (3, "solver")])
+        # Lower is better for both: 8 s of 10 is 0.8, 100 GFLOP/s of 50 is 0.5.
+        self.assertEqual([s["value"] for s in out["steps"]], [0.8, 0.5, 0.9])
+        self.assertAlmostEqual(out["steps"][2]["delta"], 0.125)
+        self.assertEqual(out["steps"][1]["metric"], "gflops")
+        self.assertEqual(out["baseline"]["value"], 1.0)
+        # The sessions themselves are left as they were cached.
+        self.assertEqual(self.sessions["mesh"]["steps"][0]["n"], 1)
+
+    def test_no_proxy_is_no_answer(self) -> None:
+        with mock.patch.object(code_map_steps, "proxies", return_value=[]):
+            self.assertEqual(code_map_steps.answer(combined=True), {})
 
 
 if __name__ == "__main__":
