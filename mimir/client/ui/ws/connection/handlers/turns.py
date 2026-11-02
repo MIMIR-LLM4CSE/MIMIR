@@ -12,7 +12,8 @@ from .....protocol.messages import reconcile_tool_pairs
 from .....session.conversation import trim_front
 from .....config import paths
 from ......shared import run_channel
-from ...runtime import get_backend
+from .....context.todo import load_todo_deps, load_todo_items
+from ...runtime import get_backend, todo_file_for_session
 from ...worker.worker import AgentWorker
 from .base import Handlers
 
@@ -74,6 +75,7 @@ class TurnHandlers(Handlers):
         # Slicing across a turn boundary can strand an assistant tool call or its
         # result; strict backends reject that outright.
         history[:] = reconcile_tool_pairs(history)
+        self.screen.conv.window_rewritten()
         self.pool.bus.record_client_event(self.screen.session_id, {
             "type": "context_compact",
             "dropped": len(middle),
@@ -117,6 +119,7 @@ class TurnHandlers(Handlers):
             await self.out.send({"type": "output",
                 "text": "  ⚡ Context budget reached — trimming oldest history…\n"})
             dropped = trim_front(history, counts, usable_tokens)
+            self.screen.conv.window_rewritten()
             # `history_full` is deliberately untouched above — this records what the
             # window lost, so the log stays the one complete account of the session.
             self.pool.bus.record_client_event(self.screen.session_id, {
@@ -169,7 +172,19 @@ class TurnHandlers(Handlers):
                 "text": "📎 Attached: " + ", ".join(attached_uris) + "\n",
             })
 
-        self.screen.conv.add_user_message(text, show=True)
+        # The client's id for the bubble: a later edit of this message rewinds to here.
+        message_id = str(msg.get("message_id") or "")
+        if message_id:
+            live = self.pool.get(self.screen.session_id)
+            carry = (live.export_agent_state().get("carry_context")
+                     if live is not None else self.screen.conv.record.carry_context)
+            # The checklist as the agent left it, which is on disk, not in the record.
+            todo_file = todo_file_for_session(self.screen.session_id)
+            record = self.screen.conv.record
+            record.todos, record.todo_deps = (load_todo_items(todo_file),
+                                              load_todo_deps(todo_file))
+            self.screen.conv.open_checkpoint(message_id, carry)
+        self.screen.conv.add_user_message(text, show=True, message_id=message_id or None)
         self.pool.bus.record_client_event(
             self.screen.session_id, {"type": "query", "text": text})
         # Save on arrival so a reconnect mid-turn (e.g. while waiting for an edit

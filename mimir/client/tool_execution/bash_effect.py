@@ -14,6 +14,8 @@ import subprocess
 from dataclasses import dataclass, field
 
 from ..config.limits import (
+    CHECKPOINT_MAX_FILE_BYTES,
+    CHECKPOINT_SHELL_DIRTY_MAX_FILES,
     BASH_EFFECT_DIFF_MAX_LINES,
     BASH_EFFECT_DUP_MAX_LINES,
     BASH_EFFECT_DUP_MIN_BLOCK,
@@ -23,6 +25,7 @@ from ..config.limits import (
 )
 from ..tools.bash_classify import bash_command_is_readonly, classify_bash_command
 from ..tools.capabilities import shell_command_of
+from ..context.checkpoints import Checkpoints
 from ..context.execution_context import ExecutionContext
 from ..context.signals import SOURCE_FILE_EXTENSIONS
 from ..core.ports import ExecutorAgent
@@ -46,6 +49,30 @@ def _git(root: str, *args: str) -> str | None:
         logger.debug("_git: a best-effort step failed and was skipped", exc_info=True)
         return None
     return proc.stdout if proc.returncode == 0 else None
+
+
+def _git_bytes(root: str, *args: str) -> bytes | None:
+    """A git command's raw output in *root*, or None when git cannot answer."""
+    try:
+        proc = subprocess.run(
+            ("git", *args), cwd=root, capture_output=True,
+            timeout=_GIT_TIMEOUT_SECS, stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        logger.debug("_git_bytes: a best-effort step failed and was skipped", exc_info=True)
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _read_bytes(path: str) -> bytes | None:
+    """*path*'s bytes, or None when it is missing, unreadable or past the checkpoint ceiling."""
+    try:
+        if os.path.getsize(path) > CHECKPOINT_MAX_FILE_BYTES:
+            return None
+        with open(path, "rb") as handle:
+            return handle.read()
+    except Exception:
+        return None
 
 
 def _git_state(root: str) -> tuple[dict[str, str], dict[str, tuple[int, int]]] | None:
@@ -109,6 +136,9 @@ class _Probe:
     root: str
     git: tuple[dict[str, str], dict[str, tuple[int, int]]] | None = None
     snapshots: dict[str, list[str] | None] = field(default_factory=dict)
+    # Bytes before the command, for a rewind to put back: the repository's dirty and
+    # untracked files (by relative path), or the scanned files outside one (absolute).
+    originals: dict[str, bytes | None] = field(default_factory=dict)
 
 
 def _candidate_dirs(
@@ -164,6 +194,13 @@ def capture(
         probe.git = _git_state(root)
         if probe.git is None:
             probe.snapshots = _scan(_candidate_dirs(agent, command, root, execution_context))
+            probe.originals = {path: _read_bytes(path) for path in probe.snapshots}
+        else:
+            # A clean file's original is in the index; only what differs from it is read.
+            for relpath in list(probe.git[0])[:CHECKPOINT_SHELL_DIRTY_MAX_FILES]:
+                full = os.path.join(root, relpath)
+                if os.path.isfile(full):
+                    probe.originals[relpath] = _read_bytes(full)
         return probe
     except Exception:
         logger.debug("capture: a best-effort step failed and was skipped", exc_info=True)
@@ -325,3 +362,50 @@ def created_paths(probe: _Probe | None) -> list[str]:
     except Exception:
         logger.debug("created_paths: a best-effort step failed and was skipped", exc_info=True)
         return []
+
+
+def keep_originals(probe: _Probe | None, checkpoints: Checkpoints) -> None:
+    """Hand *checkpoints* what each file this command changed held before it. Never raises.
+
+    A file whose earlier content is not known is named as one a rewind cannot restore.
+    """
+    if probe is None:
+        return
+    try:
+        if probe.git is not None:
+            before_status, _ = probe.git
+            after = _git_state(probe.root)
+            after_status = after[0] if after is not None else {}
+            changes = _git_changes(probe)
+            seen = {relpath for relpath, *_ in changes}
+            # A dirty file can change without its status or counts moving: its bytes say.
+            for relpath, before in probe.originals.items():
+                full = os.path.join(probe.root, relpath)
+                if relpath not in seen and before is not None and _read_bytes(full) != before:
+                    checkpoints.note_before(full, before)
+                    checkpoints.note_written(full)
+            for relpath, _added, _removed, was_clean in changes:
+                full = os.path.join(probe.root, relpath)
+                if was_clean:
+                    content = (None if after_status.get(relpath, "").strip() == "??"
+                               else _git_bytes(probe.root, "show", f":{relpath}"))
+                    if content is None and after_status.get(relpath, "").strip() != "??":
+                        checkpoints.note_unknown(full)
+                    else:
+                        checkpoints.note_before(full, content)
+                elif probe.originals.get(relpath) is not None:
+                    checkpoints.note_before(full, probe.originals[relpath])
+                elif "D" in before_status.get(relpath, ""):
+                    checkpoints.note_before(full, None)   # already deleted before it
+                else:
+                    checkpoints.note_unknown(full)
+                checkpoints.note_written(full)
+        else:
+            for path, before in probe.originals.items():
+                if before is None:
+                    continue    # too big or unreadable before: nothing to compare or keep
+                if _read_bytes(path) != before:
+                    checkpoints.note_before(path, before)
+                    checkpoints.note_written(path)
+    except Exception:
+        logger.debug("keep_originals: a best-effort step failed and was skipped", exc_info=True)

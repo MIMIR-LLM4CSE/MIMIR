@@ -8,8 +8,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ....context.checkpoints import Checkpoints
 from ....session.jobs_on_disk import (
     ended_event,
+    mark_job_reported,
     needing_attention,
     scan_session,
     subagent_sessions,
@@ -45,6 +47,11 @@ class JobWatcher(RunWatcher):
         # after the child. setdefault, never an assignment: a descriptor that arrived
         # with an origin arrived with the only end that knew it.
         descriptor.setdefault("origin", {"kind": "main", "label": "", "session": session_id})
+        # Started by a turn: a rewind past the message that opened it stops it. A run
+        # re-armed after a restart is no turn's, and stays.
+        checkpoints = Checkpoints.of(session_id)
+        if checkpoints is not None and self.worker.is_busy():
+            checkpoints.note_run(descriptor)
 
     def on_tick(self, job_key: str, watch: Watch, tick: Tick, session_id: str | None) -> None:
         # Starts at ("", None), so a run that never reports is never sent, while one
@@ -108,6 +115,24 @@ class JobWatcher(RunWatcher):
                                            dict(cancel_op.get("args") or {}))
         self.poll_now(job_key)
         return payload
+
+    async def withdraw(self, job_key: str) -> dict:
+        """Stop *job_key* and drop its watch without waking anyone; the cancel op's answer.
+
+        For a rewind: the turns that started the run are gone, and its ending must not
+        come back as a wake of the conversation that no longer holds them.
+        """
+        cancel_op = self.cancel_op(job_key)
+        with self._lock:
+            watch = self.watches.pop(job_key, None)
+        if watch is not None and not watch.task.done():
+            watch.task.cancel()
+        server = watch.descriptor.get("server") if watch is not None else None
+        mark_job_reported(self.session_for(None), job_key, server)
+        if cancel_op is None:
+            return err("This run cannot be stopped from here.")
+        return await call_tool_directly(self.worker.agent, cancel_op["tool"],
+                                        dict(cancel_op.get("args") or {}))
 
     def watched_runs(self) -> list[dict]:
         """The runs held by watchers, for the panel: descriptor and last status, minus the local ``at``."""

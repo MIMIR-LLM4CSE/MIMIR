@@ -22,6 +22,7 @@ from .handlers.cards import CardHandlers
 from .handlers.conversations import ConversationHandlers
 from .handlers.detach import DetachHandlers
 from .handlers.panel import PanelHandlers
+from .handlers.rewind import RewindHandlers
 from .handlers.turns import TurnHandlers
 from .router import EventRouter
 from .screen import Screen
@@ -59,10 +60,12 @@ class Connection:
         self.cards = CardHandlers(*parts)
         self.detach = DetachHandlers(*parts)
         self.panel = PanelHandlers(*parts)
+        self.rewind = RewindHandlers(*parts)
         # Inbound message type -> the group and the method that serve it.
         self._handlers: dict[str, tuple[Handlers, str]] = {
             kind: (group, method)
-            for group in (self.conversations, self.turns, self.cards, self.detach, self.panel)
+            for group in (self.conversations, self.turns, self.cards, self.detach, self.panel,
+                          self.rewind)
             for kind, method in group.MESSAGES.items()
         }
 

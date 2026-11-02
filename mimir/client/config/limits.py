@@ -197,6 +197,14 @@ BASH_EFFECT_SNAPSHOT_MAX_BYTES: int = 512_000
 BASH_EFFECT_SNAPSHOT_MAX_FILES: int = 200
 
 
+# ── Rewinding to an earlier message (context.checkpoints) ─────────────────────
+# Largest file whose content a checkpoint keeps to put back; past it the file is
+# named as one a rewind cannot restore.
+CHECKPOINT_MAX_FILE_BYTES: int = 8_000_000
+# Dirty or untracked files of a repository read before a shell write, so the ones it
+# changes can be put back; past this count the rest are named as not restorable.
+CHECKPOINT_SHELL_DIRTY_MAX_FILES: int = 200
+
 # ── Context-window budget ──────────────────────────────────────────────────────
 # Shared by both front-ends (CLI chat_session + the WebSocket server) so the
 # token-usage bar and history trimming stay in agreement. How the window is resolved

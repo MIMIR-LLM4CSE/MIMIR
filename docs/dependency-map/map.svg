@@ -26,7 +26,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 </style>
 <rect class="bg" width="1155" height="958"/>
 <text class="head" x="14" y="26">MIMIR dependency map</text>
-<text class="meta" x="14" y="44">61 units · 276 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
+<text class="meta" x="14" y="44">61 units · 279 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
 <rect class="band" x="8" y="60" width="966" height="48" rx="4"/>
 <text class="label" x="14" y="82">rank 11</text>
 <text class="label" x="14" y="96">front-ends</text>
@@ -86,9 +86,10 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M518.5,692 C518.5,723 180.5,723 180.5,754" stroke-width="2"><title>client.config → shared.atomic · 1 import(s)</title></path>
 <path class="edge" d="M518.5,692 C518.5,723 655.5,723 655.5,754" stroke-width="2"><title>client.config → shared.extension_paths · 1 import(s)</title></path>
 <path class="edge" d="M518.5,692 C518.5,743 517.5,743 517.5,794" stroke-width="2"><title>client.config → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M562,584 C562,625 518.5,625 518.5,666" stroke-width="3"><title>client.context → client.config · 3 import(s)</title></path>
+<path class="edge" d="M562,584 C562,625 518.5,625 518.5,666" stroke-width="3.6"><title>client.context → client.config · 5 import(s)</title></path>
 <path class="edge" d="M562,584 C562,598 595,598 595,612" stroke-width="2"><title>client.context → client.tools · 1 import(s)</title></path>
-<path class="edge" d="M562,584 C562,689 517.5,689 517.5,794" stroke-width="2"><title>client.context → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M562,584 C562,669 180.5,669 180.5,754" stroke-width="2"><title>client.context → shared.atomic · 1 import(s)</title></path>
+<path class="edge" d="M562,584 C562,689 517.5,689 517.5,794" stroke-width="2.6"><title>client.context → shared.state_paths · 2 import(s)</title></path>
 <path class="edge" d="M562,530 C562,598 518.5,598 518.5,666" stroke-width="3.3"><title>client.core → client.config · 4 import(s)</title></path>
 <path class="edge" d="M562,530 C562,544 562,544 562,558" stroke-width="2.6"><title>client.core → client.context · 2 import(s)</title></path>
 <path class="edge" d="M562,530 C562,571 529,571 529,612" stroke-width="2"><title>client.core → client.llm · 1 import(s)</title></path>
@@ -178,6 +179,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M663.5,260 C663.5,436 595,436 595,612" stroke-width="2"><title>client.query_engine.jobs → client.tools · 1 import(s)</title></path>
 <path class="edge" d="M663.5,260 C663.5,507 757,507 757,754" stroke-width="3.3"><title>client.query_engine.jobs → shared.jobs · 4 import(s)</title></path>
 <path class="edge" d="M562,152 C562,409 518.5,409 518.5,666" stroke-width="4"><title>client.session → client.config · 7 import(s)</title></path>
+<path class="edge" d="M562,152 C562,355 562,355 562,558" stroke-width="2"><title>client.session → client.context · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,328 562,328 562,504" stroke-width="2"><title>client.session → client.core · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,382 529,382 529,612" stroke-width="2.6"><title>client.session → client.llm · 2 import(s)</title></path>
 <path class="edge" d="M562,152 C562,409 598.5,409 598.5,666" stroke-width="2"><title>client.session → client.protocol · 1 import(s)</title></path>
@@ -188,7 +190,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M562,152 C562,453 924,453 924,754" stroke-width="2"><title>client.session → shared.processes · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,473 517.5,473 517.5,794" stroke-width="3"><title>client.session → shared.state_paths · 3 import(s)</title></path>
 <path class="edge" d="M562,422 C562,544 518.5,544 518.5,666" stroke-width="3"><title>client.tool_execution → client.config · 3 import(s)</title></path>
-<path class="edge" d="M562,422 C562,490 562,490 562,558" stroke-width="3.8"><title>client.tool_execution → client.context · 6 import(s)</title></path>
+<path class="edge" d="M562,422 C562,490 562,490 562,558" stroke-width="4.2"><title>client.tool_execution → client.context · 8 import(s)</title></path>
 <path class="edge" d="M562,422 C562,463 562,463 562,504" stroke-width="3.3"><title>client.tool_execution → client.core · 4 import(s)</title></path>
 <path class="edge" d="M562,422 C562,436 511,436 511,450" stroke-width="2"><title>client.tool_execution → client.guardrails.observations · 1 import(s)</title></path>
 <path class="edge" d="M562,422 C562,436 605.5,436 605.5,450" stroke-width="3"><title>client.tool_execution → client.guardrails.policy · 3 import(s)</title></path>
@@ -221,10 +223,11 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M316,98 C316,166 485.5,166 485.5,234" stroke-width="2"><title>client.ui.ws → client.query_engine · 1 import(s)</title></path>
 <path class="edge" d="M316,98 C316,446 517.5,446 517.5,794" stroke-width="2"><title>client.ui.ws → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,382 518.5,382 518.5,666" stroke-width="3.3"><title>client.ui.ws.connection → client.config · 4 import(s)</title></path>
+<path class="edge" d="M410.5,98 C410.5,328 562,328 562,558" stroke-width="3.3"><title>client.ui.ws.connection → client.context · 4 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,382 598.5,382 598.5,666" stroke-width="2.6"><title>client.ui.ws.connection → client.protocol · 2 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,166 485.5,166 485.5,234" stroke-width="2"><title>client.ui.ws.connection → client.query_engine · 1 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,112 562,112 562,126" stroke-width="4.5"><title>client.ui.ws.connection → client.session · 13 import(s)</title></path>
-<path class="edge" d="M410.5,72 C410.5,52 316,52 316,72" stroke-width="3.3"><title>client.ui.ws.connection → client.ui.ws · 4 import(s)</title></path>
+<path class="edge" d="M410.5,72 C410.5,52 316,52 316,72" stroke-width="3.6"><title>client.ui.ws.connection → client.ui.ws · 5 import(s)</title></path>
 <path class="edge" d="M410.5,72 C410.5,52 512,52 512,72" stroke-width="4.2"><title>client.ui.ws.connection → client.ui.ws.pool · 8 import(s)</title></path>
 <path class="edge" d="M410.5,72 C410.5,52 602.5,52 602.5,72" stroke-width="2.6"><title>client.ui.ws.connection → client.ui.ws.process · 2 import(s)</title></path>
 <path class="edge" d="M410.5,72 C410.5,52 794,52 794,72" stroke-width="3.3"><title>client.ui.ws.connection → client.ui.ws.worker · 4 import(s)</title></path>
@@ -248,7 +251,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M700,72 C700,52 602.5,52 602.5,72" stroke-width="2"><title>client.ui.ws.server → client.ui.ws.process · 1 import(s)</title></path>
 <path class="edge" d="M794,98 C794,139 562,139 562,180" stroke-width="2"><title>client.ui.ws.worker → client.agent_core · 1 import(s)</title></path>
 <path class="edge" d="M794,98 C794,382 518.5,382 518.5,666" stroke-width="3"><title>client.ui.ws.worker → client.config · 3 import(s)</title></path>
-<path class="edge" d="M794,98 C794,328 562,328 562,558" stroke-width="2"><title>client.ui.ws.worker → client.context · 1 import(s)</title></path>
+<path class="edge" d="M794,98 C794,328 562,328 562,558" stroke-width="2.6"><title>client.ui.ws.worker → client.context · 2 import(s)</title></path>
 <path class="edge" d="M794,98 C794,301 562,301 562,504" stroke-width="2.6"><title>client.ui.ws.worker → client.core · 2 import(s)</title></path>
 <path class="edge" d="M794,98 C794,220 507.5,220 507.5,342" stroke-width="2"><title>client.ui.ws.worker → client.extensions · 1 import(s)</title></path>
 <path class="edge" d="M794,98 C794,355 529,355 529,612" stroke-width="3.3"><title>client.ui.ws.worker → client.llm · 4 import(s)</title></path>

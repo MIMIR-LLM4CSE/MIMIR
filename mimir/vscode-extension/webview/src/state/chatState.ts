@@ -69,7 +69,7 @@ export const initialChatState: ChatState = {
 // The server messages the reducer acts on, and the actions the panel dispatches itself.
 export type ChatAction =
   | ServerMessage
-  | { type: "submit_query"; text: string }
+  | { type: "submit_query"; text: string; id?: string }
   | { type: "steer_query"; text: string }
   | { type: "reset" }
   | { type: "connection_lost" }

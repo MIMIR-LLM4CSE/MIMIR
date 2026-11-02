@@ -1,7 +1,9 @@
 // A turn as it streams: prose, reasoning, status, the command replies, the answer or error
 // that ends it, and what the user sends into it.
 
+import type { ChatMessage } from "./chat";
 import type { Attributed } from "./prompts";
+import type { TodoItem } from "./session";
 
 export interface OutputMessage {
   type: "output";
@@ -157,6 +159,57 @@ export interface ContextUsageMessage {
 export interface QueryMessage {
   type: "query";
   text: string;
+  /** The id of the bubble it opens: editing that bubble later rewinds to here. */
+  message_id?: string;
+}
+
+/** Ask what editing the message *message_id* would undo. */
+export interface RewindPreviewMessage {
+  type: "rewind_preview";
+  session_id: string | null;
+  message_id: string;
+}
+
+/** Go back to just before the message *message_id*; the server answers `rewound`. */
+export interface RewindMessage {
+  type: "rewind";
+  session_id: string | null;
+  message_id: string;
+  text: string;
+}
+
+/** What editing a message would undo, worked out before anything is touched. */
+export interface RewindPlanMessage {
+  type: "rewind_plan";
+  session_id?: string | null;
+  message_id: string;
+  /** False when the message has no checkpoint to go back to, or the rewind was refused. */
+  available: boolean;
+  /** Why a rewind was refused once asked for; absent when there is no checkpoint. */
+  reason?: string;
+  turn_running?: boolean;
+  files?: { path: string; action: "restore" | "delete" }[];
+  /** Changed since by someone other than the agent: left as they are. */
+  conflicts?: string[];
+  /** Written by the agent, with no copy of what came before. */
+  unrestorable?: string[];
+  runs?: { job_key: string; kind: string; cancellable: boolean }[];
+}
+
+/** The conversation went back to just before *message_id*; *text* is to be sent. */
+export interface RewoundMessage {
+  type: "rewound";
+  session_id: string;
+  message_id: string;
+  text: string;
+  display_messages: ChatMessage[];
+  todos?: TodoItem[];
+  restored: string[];
+  failed: string[];
+  conflicts: string[];
+  unrestorable: string[];
+  unstopped: string[];
+  stopping: string[];
 }
 
 /** A message typed while the agent is busy — injected into the running turn. */

@@ -74,6 +74,7 @@ free port, so several windows run side by side. No `.vscode/settings.json` is ne
 | Batch review | Collects the file changes of a turn into one review bar, with inline diffs, instead of one card per write. |
 | Questions from the agent | When a choice is yours to make, the agent asks it as a short form in the chat. |
 | Steering | Type while the agent works. The message reaches it at the next step. |
+| Editing a sent message | The pencil on a message you sent reopens it. Sending the edit first shows what going back undoes, then removes everything after that message, puts back the files the agent wrote since (a file someone else changed since is left alone), stops the runs it started since, and sends the edited message. |
 | Message history | `↑` on the first line of the input recalls a message you sent. |
 | Reconnect | A turn keeps running if the panel loses its connection. The work it did comes back when the panel reconnects. |
 | `@` mentions | Attach a workspace file, a line range, or a server resource to your message. |

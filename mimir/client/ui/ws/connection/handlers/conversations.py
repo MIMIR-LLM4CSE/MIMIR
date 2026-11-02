@@ -6,12 +6,12 @@ and the shared ``Screen``. ``MESSAGES`` names the inbound message types it answe
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from datetime import datetime
 
 from ...runtime import todo_file_for_session, write_active_session
+from .....context.todo import write_todo_items
 from .....session.jobs_on_disk import scan_session
 from .....session.summary import PROVISIONAL_VERSION, SUMMARY_VERSION, generate_summary
 from ...pool.pool import AgentPool
@@ -179,23 +179,7 @@ class ConversationHandlers(Handlers):
             todo_file = todo_file_for_session(self.view.active_session_id)
             if not self._snapshot_is_current(todo_file, snapshot_at):
                 return False
-            os.makedirs(os.path.dirname(todo_file), exist_ok=True)
-            lines = []
-            for item in todos:
-                check = "[x]" if item.get("done") else "[ ]"
-                lines.append(f"- {check} {item.get('text', '')}")
-            with open(todo_file, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
-            # Restore deps sidecar.
-            deps_file = os.path.join(os.path.dirname(todo_file), "todo_deps.json")
-            if todo_deps:
-                with open(deps_file, "w", encoding="utf-8") as f:
-                    json.dump(todo_deps, f)
-            else:
-                try:
-                    os.remove(deps_file)
-                except OSError:
-                    pass
+            write_todo_items(todo_file, todos, todo_deps)
             return True
         except Exception:
             logger.debug("_restore_todos: a best-effort step failed and was skipped", exc_info=True)

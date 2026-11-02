@@ -11,16 +11,22 @@ import { splitAnswerCompletion } from "./completionUtils";
 import { splitAnswerLedger } from "./ledgerUtils";
 import { vscodePostMessage } from "../hooks/useWebSocket";
 import { MentionText } from "./MentionText";
+import { MessageEditor } from "./MessageEditor";
+import type { Rewind } from "../hooks/useRewind";
 
 interface Props {
   message: IChatMessage;
   onApprovalResponse: (id: string, choice: "y" | "n" | "a", approvedFiles?: string[]) => void;
   /** When provided, an error card shows a "Retry" button that re-runs the turn. */
   onRetry?: () => void;
+  /** Reopen this message for editing; offered on the user messages that opened a turn. */
+  onEdit?: (id: string) => void;
+  /** Set on the one message being edited only, so every other bubble stays memoized. */
+  edit?: Rewind;
 }
 
 
-const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetry }) => {
+const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetry, onEdit, edit }) => {
   // Per-file disclosure state of the editing card, keyed by file path (stable
   // across file_progress merges). Declared before any early return — hooks
   // must run unconditionally.
@@ -166,14 +172,24 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
             )}
           </>
         ) : (
-          <div className="user-text">
-            <MentionText text={message.text ?? ""} />
-            {message.queued && (
-              <span className="steer-badge" title="Queued — will reach MIMIR at its next step">
-                ↯ queued
-              </span>
-            )}
-          </div>
+          edit ? (
+            <MessageEditor initialText={message.text ?? ""} rewind={edit} />
+          ) : (
+            <div className="user-text">
+              <MentionText text={message.text ?? ""} />
+              {message.queued && (
+                <span className="steer-badge" title="Queued — will reach MIMIR at its next step">
+                  ↯ queued
+                </span>
+              )}
+              {onEdit && message.opensTurn && !message.queued && (
+                <button className="user-edit-btn" title="Edit — go back to this message"
+                        aria-label="Edit message" onClick={() => onEdit(message.id)}>
+                  ✎
+                </button>
+              )}
+            </div>
+          )
         )}
       </div>
     </div>

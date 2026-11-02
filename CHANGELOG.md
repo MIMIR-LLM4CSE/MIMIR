@@ -15,6 +15,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **A sent message can be edited, and the conversation goes back to it.** The pencil on
+  a message you sent reopens it; sending the edit shows what going back undoes and, once
+  confirmed, removes everything after that message, puts back the files the agent wrote
+  since (edit tools and shell commands alike; a file someone else changed since is left
+  and named), stops the runs it started since, restores its checklist and carried context,
+  and sends the edited message. A note in the conversation says what was done.
+
 ## [1.11.1] — 2026-10-23
 
 ### Fixed

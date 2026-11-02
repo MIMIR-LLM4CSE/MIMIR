@@ -937,6 +937,45 @@ body.is-resizing * { transition: none !important; }
 
 .user-text { white-space: pre-wrap; overflow-wrap: break-word; }
 
+/* ── Editing a sent message ───────────────────────────────────────────────────
+   The pencil shows on hover only: the bubble reads as what was said, and going back
+   to it is the exception. The editor and its confirm card replace the bubble's text. */
+.user-text { position: relative; }
+.user-edit-btn {
+  position: absolute; top: calc(-1 * var(--sp-3)); right: calc(-1 * var(--sp-4));
+  opacity: 0; transition: opacity 120ms ease;
+  background: var(--bg-hover); color: var(--fg-dim);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 11px; line-height: 1; padding: 3px 5px; cursor: pointer;
+}
+.chat-message.user:hover .user-edit-btn,
+.user-edit-btn:focus-visible { opacity: 1; }
+.user-edit-btn:hover { color: var(--accent); }
+
+.message-editor { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 260px; }
+.message-editor__input {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font: inherit; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-3);
+}
+.message-editor__input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+.rewind-card { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 260px; font-size: 12px; }
+.rewind-card--busy { color: var(--fg-dim); font-style: italic; }
+.rewind-card__title { font-weight: 600; font-size: 13px; }
+.rewind-card__note, .rewind-card__row { color: var(--fg-dim); }
+.rewind-card__section-title { font-weight: 600; margin-top: var(--sp-2); }
+.rewind-card__section--warn .rewind-card__section-title { color: var(--warn, #d29922); }
+.rewind-card__section ul { margin: var(--sp-1) 0 0; padding-left: var(--sp-5); }
+.rewind-card__section li { font-family: var(--font-mono, monospace); overflow-wrap: anywhere; }
+.rewind-card__actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-2); }
+.rewind-btn {
+  background: var(--bg-hover); color: var(--fg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 3px 10px; cursor: pointer; font-size: 12px;
+}
+.rewind-btn--primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.rewind-btn:disabled { opacity: 0.5; cursor: default; }
+
 /* ── Attached context inside a sent message ───────────────────────────────────
    An "@"-mention is the part of a message the user comes back to, so it is drawn
    as a chip rather than left in the prose. A file one is a button that opens the

@@ -23,9 +23,11 @@ from ..tools.capabilities import (
     EDIT,
     JUDGE,
     has_cap,
+    is_write,
     names_with_cap,
     target_path_arg,
 )
+from ..context.checkpoints import Checkpoints
 from ..context.execution_context import ExecutionContext, failed_runs, unsettled_runs
 from ..context.paths import absolute_workspace_path, is_scratch_path
 from ..core.ports import ExecutorAgent
@@ -420,6 +422,14 @@ async def execute_tool_call(
             target_path_arg(tool_name, arguments, agent.tool_caps))
         if path:
             agent.approvals.batch.record_snapshot(path)
+    # Whatever the mode, a write is kept for a rewind to the message that led to it.
+    checkpoints = Checkpoints.of(agent.session_id) if record_observations else None
+    written_target = ""
+    if checkpoints is not None and is_write(tool_name, agent.tool_caps):
+        written_target = agent.normalize_workspace_path(
+            target_path_arg(tool_name, arguments, agent.tool_caps))
+        if written_target:
+            checkpoints.note_before(written_target)
 
     if tool_name not in agent.tool_owner:
         available = sorted(agent.tool_owner.keys())
@@ -453,6 +463,9 @@ async def execute_tool_call(
         meta=call_meta)
     normalized = normalize_tool_content(result)
 
+    if written_target and checkpoints is not None:
+        checkpoints.note_written(written_target)
+
     runs_before = set(unsettled_runs(execution_context)) if execution_context else set()
     failed_before = set(failed_runs(execution_context)) if execution_context else set()
     if record_observations:
@@ -482,6 +495,8 @@ async def execute_tool_call(
     # started and would report the disk halfway through a build. An effect that has
     # not finished happening is not an effect to annotate.
     if not launched(payload_dict):
+        if checkpoints is not None:
+            bash_effect.keep_originals(effect_probe, checkpoints)
         normalized += bash_effect.report(effect_probe)
         # A file created by the shell is a fork candidate exactly like one created by
         # the edit tool — `cp solver.py solver.py.bak` was the observed case. The probe

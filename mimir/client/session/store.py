@@ -210,6 +210,9 @@ class FullSession:
     # is what a re-attach replays *from*. Stored rather than kept per connection: a
     # fresh window, or another machine, has to be able to resume too.
     rendered_seq: int = 0
+    # Bumped whenever the working window is rewritten from the front (compacted, trimmed):
+    # a checkpoint's window length is only a place to cut while this has not moved.
+    window_epoch: int = 0
 
     def meta(self) -> SessionMeta:
         return SessionMeta(
@@ -249,6 +252,7 @@ class FullSession:
             context_mode=data.get("context_mode") or "full",
             rev=int(data.get("rev") or 0),
             rendered_seq=int(data.get("rendered_seq") or 0),
+            window_epoch=int(data.get("window_epoch") or 0),
         )
 
 

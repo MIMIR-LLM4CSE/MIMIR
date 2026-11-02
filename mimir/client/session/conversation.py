@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from ..context.checkpoints import Checkpoints
 from ..protocol.messages import reconcile_tool_pairs
 from ..query_engine.history import carries_compaction_summary
 from .store import FullSession, SessionMeta, SessionStore
@@ -132,14 +133,71 @@ class Conversation:
 
     # ── Changing it ───────────────────────────────────────────────────────────
 
-    def add_user_message(self, text: str, *, show: bool = False) -> None:
+    @property
+    def window_epoch(self) -> int:
+        return self.record.window_epoch
+
+    def window_rewritten(self) -> None:
+        """The window was rewritten from the front: its old lengths no longer cut it."""
+        self.record.window_epoch += 1
+
+    @property
+    def checkpoints(self) -> Checkpoints | None:
+        return Checkpoints.of(self.id)
+
+    def open_checkpoint(self, message_id: str, carry_context: dict | None) -> None:
+        """Remember the conversation as it stands, for a rewind to the message *message_id* opens."""
+        checkpoints = self.checkpoints
+        if checkpoints is None or not message_id:
+            return
+        checkpoints.open(
+            message_id, full_len=len(self.history_full), history_len=len(self.history),
+            window_epoch=self.window_epoch, carry_context=carry_context,
+            todos=self.record.todos, todo_deps=self.record.todo_deps)
+
+    def add_user_message(self, text: str, *, show: bool = False,
+                         message_id: str | None = None) -> None:
         """A turn's opening message: to the window and the record, and — when *show* —
-        as a bubble. A wake or a check-in is addressed to the model, not to a reader;
-        the bubble that announces it is the caller's to write."""
+        as a bubble, under the client's *message_id* when it gave one. A wake or a
+        check-in is addressed to the model, not to a reader; the bubble that announces
+        it is the caller's to write."""
         self.history.append({"role": "user", "content": text})
         self.history_full.append({"role": "user", "content": text})
         if show:
-            self.display.append({"role": "user", "kind": "text", "text": text})
+            bubble = {"role": "user", "kind": "text", "text": text}
+            if message_id:
+                bubble.update(id=message_id, opensTurn=True)
+            self.display.append(bubble)
+        self.submitted_len = len(self.history)
+
+    def rewind(self, checkpoint: dict) -> None:
+        """Go back to just before the message *checkpoint* was opened for.
+
+        The record is cut at its length then; the window too while nothing rewrote it
+        from the front since, else it is rebuilt from the record and the next query's
+        budget fits it again. Everything owed to the turns that are gone goes with them.
+        """
+        full_len = int(checkpoint.get("full_len") or 0)
+        history_len = int(checkpoint.get("history_len") or 0)
+        del self.history_full[full_len:]
+        if (checkpoint.get("window_epoch") == self.window_epoch
+                and len(self.history) >= history_len):
+            del self.history[history_len:]
+        else:
+            self.history = reconcile_tool_pairs([dict(m) for m in self.history_full])
+            self.window_rewritten()
+        message_id = checkpoint.get("id")
+        cut = next((i for i, m in enumerate(self.display) if m.get("id") == message_id),
+                   None)
+        if cut is not None:
+            self.display = self.display[:cut]
+        self.pending_interaction = None
+        self.pending_wakes = []
+        self.held_checkin = None
+        self.live_steer = []
+        self.record.todos = list(checkpoint.get("todos") or [])
+        self.record.todo_deps = list(checkpoint.get("todo_deps") or [])
+        self.record.carry_context = dict(checkpoint.get("carry_context") or {})
         self.submitted_len = len(self.history)
 
     def add_steer(self, text: str) -> None:
@@ -183,6 +241,11 @@ class Conversation:
             submitted = self.submitted_len
         if full is not None and context_mode == "full":
             added = turn_messages(full, submitted, start=extras.get("_turn_start"))
+            # The user's message itself may come back with its attachments resolved;
+            # everything before it must be as it was, or the turn compacted the window.
+            kept = max(0, submitted - 1)
+            if full[:kept] != self.history[:kept]:
+                self.window_rewritten()
             self.history_full.extend(dict(m) for m in added)
             self.history = list(full)
             wrote_full = True

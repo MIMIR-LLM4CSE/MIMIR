@@ -18,7 +18,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `config/` | the vocabulary: `paths`, `limits`, `settings` (the closed sets of each user setting), `servers`, `models` and the model catalogue, the `preferences` store |
 | `protocol/` | the shapes that cross a boundary: `events` (event types, the private answer extras), `messages` (chat-message invariants, `reconcile_tool_pairs`), `tool_call`, `tool_result`; `event_sink` (`emit()`: structured events to a bound callback (WS) or JSON on stdout (CLI)); `human_pause` (time spent waiting on a person, not charged to a tool's timeout) |
 | `tools/` | what the client knows about tools: `capabilities` (the registry each server declares into), `bash_classify` (what a shell command does), `display` and the previews (how a call and its result read on screen) |
-| `context/` | the `ExecutionContext` dataclass and its read-only `ContextView`, query signals, `@`-mention attach, the checklist file |
+| `context/` | the `ExecutionContext` dataclass and its read-only `ContextView`, query signals, `@`-mention attach, the checklist file, the checkpoints a rewind reads |
 | `core/` | the contracts: `ports` (`AgentPort`, `HumanIO`), `settings` (`apply_setting` / `read_setting`), `human` (`TerminalHuman`, `Unattended`) |
 | `prompt/` | system-prompt construction |
 | `extensions/` | everything the user drops in the workspace `.mimir/` — servers, skills, plugin packs |
@@ -229,6 +229,7 @@ loop.
 | `pending_interaction` | the card a deferred turn waits on (`query_engine.deferral`), or null |
 | `context_mode` | `full` or `compact`, so a resume budgets the window before its agent exists |
 | `rendered_seq` | how far the client has rendered the journal |
+| `window_epoch` | bumped each time the window is rewritten from the front (compacted, trimmed): a checkpoint's window length cuts it only while this has not moved |
 
 ---
 
@@ -246,6 +247,62 @@ primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME` / `*_DIR_ENV` 
 
 Nothing is auto-created in `.mimir/` — it is the user's alone. Copy-to-customize examples
 live in [`mimir/examples/`](../mimir/examples/), one `README.md` per type.
+
+
+### Rewinding to a message
+
+Any message that opened a turn can be edited in the chat. Sending the edit goes back to
+just before that message: everything after it leaves the conversation, the files the
+agent wrote since are put back, the runs it started since are stopped, and the edited
+text is sent as a new query.
+
+**Checkpoints** (`context/checkpoints.py`). `on_query` opens one per message, keyed by the
+id of the bubble the client sent it under (`message_id`), before the message is added. It
+holds the lengths of `history_full` and `history`, the `window_epoch`, the agent's carried
+context and the checklist. Until the next message it collects, from every turn (wake turns
+included), the first content of each file the agent writes and the runs it starts. Kept
+in the conversation's directory, under `checkpoints`: one small JSON file per checkpoint,
+so a write rewrites only the current one, and the contents in a content-addressed `blobs`
+directory. `Checkpoints.of(session_id)` hands every writer in the process the same object.
+
+| What wrote | How its original is kept |
+|---|---|
+| an edit tool (`is_write`) | the executor reads the target before the call (`note_before`) and digests it after (`note_written`), whatever the approval mode |
+| a shell command that is not read-only | `bash_effect.capture` also reads the repository's dirty and untracked files; after the call `keep_originals` takes a clean file's original from the index (`git show :path`), a dirty one's from those bytes, and a new file's as absent. Outside a repository, the scanned files' bytes. A file changed in the background after the call returned is not seen |
+| a run (`JobWatcher.adopt` during a turn) | its descriptor, for its cancel op |
+
+A file past `CHECKPOINT_MAX_FILE_BYTES`, or a dirty file past
+`CHECKPOINT_SHELL_DIRTY_MAX_FILES`, is recorded as one whose original is not known.
+The global memory, the proxy server's own state and anything that left the machine are
+not covered.
+
+**The plan** (`Checkpoints.plan`). Going back to message *k* needs, per file, the content
+it had before *k*: the earliest of the checkpoints from *k* on that saw it. A file whose
+content now differs from what the agent last left in it was changed by someone else (the
+user, another conversation) and is left as it is, the same rule as the batch review's
+revert. A file already at its original is skipped.
+
+**The rewind** (`ui/ws/connection/handlers/rewind.py`), on the server's loop:
+
+1. the pending wakes and the held check-in are dropped, so nothing starts a turn;
+2. the turn in flight is cancelled and waited for, its answer committed by one
+   `pump_once`, and what it queued for this client dropped. A turn still running after
+   5 s refuses the rewind (`rewind_plan` with `available: false` and a `reason`) before
+   anything is touched: its answer would otherwise land after the cut;
+3. the plan is worked out again; the runs are withdrawn all at once
+   (`JobWatcher.withdraw`: the watch is dropped and the run marked reported before its
+   cancel op is called, so its ending never wakes the conversation), waiting at most 2 s
+   for their cancel ops;
+4. the files are put back (`Checkpoints.restore`, a temporary file renamed into place) and
+   the batch review forgets them;
+5. `Conversation.rewind` cuts the record at its old length, and the window too while
+   `window_epoch` has not moved (else rebuilds it from the record, and the next query's
+   budget fits it again); cuts the transcript before the bubble; restores the carried
+   context and the checklist, which are written back to the agent and the todo file;
+6. the checkpoints from *k* on are dropped, a `rewind` line is journaled, and the rendered
+   watermark moves past it, so a replay never brings back what was cut;
+7. a note of what was done joins the transcript, and `rewound` carries the cut
+   transcript to the client, which sends the edited text as a new query.
 
 ---
 
@@ -1161,7 +1218,7 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 | `server/main.py` | the entry point: the command line, `--cwd`, then `serving` |
 | `server/serving.py` | `serve`: model resolution, bind, the shutdown path |
 | `process/registry.py`, `process/detach.py` | this process as others see it: the registry of live servers other windows find it by; detaching from the terminal. Apart from `server/`, which builds the pool and the connections, since both of those read it |
-| `connection/connection.py` | `Connection`, one connection: the handshake, the dispatch, the replay. Its handler groups in `connection/handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel` — share its `ViewState`, `Sender` and `Screen` |
+| `connection/connection.py` | `Connection`, one connection: the handshake, the dispatch, the replay. Its handler groups in `connection/handlers/` — `conversations`, `turns`, `cards`, `detach`, `panel`, `rewind` — share its `ViewState`, `Sender` and `Screen` |
 | `connection/router.py` | `EventRouter`: the connection's share of the stream, sent to its client, one handler per event type |
 | `connection/commands.py`, `connection/panel_runs.py` | the socket's side of the slash commands (`WsCommandHost`, `/cancel`, `/diag`); the runs the panel shows |
 | `pool/bus.py` | the pump: drains every worker, journals, hands answers and finished runs to the pool, fans out to subscriptions |
@@ -1171,7 +1228,7 @@ in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 | `worker/worker.py` | `AgentWorker`: the agent's thread and loop, the query loop; `NoAgentWorker`, the worker of a conversation before its first query |
 | `worker/outbox.py`, `worker/backend_wait.py`, `worker/review.py`, `worker/panel.py`, `worker/usage.py` | the outbox that wakes the pump; the wait for the backend; the review bar and checklist; the panel sections and resources; the context overhead and compaction |
 | `worker/human.py` | `HumanBridge`: the worker's `HumanIO` — cards, answers, expiry, deferral |
-| `worker/jobs.py` | `JobWatcher` (a `RunWatcher`): a conversation's detached runs and check-ins, delivered to the pool; their progress; the re-arming after a restart |
+| `worker/jobs.py` | `JobWatcher` (a `RunWatcher`): a conversation's detached runs and check-ins, delivered to the pool; their progress; the re-arming after a restart; `withdraw`, which stops a run without waking anyone (a rewind) |
 | `worker/file_preview.py`, `runtime.py` | the diff a write would make; what the parts share (stdout router, todo file, context budget) |
 
 What belongs here are the invariants that are not obvious from the protocol:
@@ -2032,6 +2089,23 @@ Every message is one JSON object per send.
                                                    # in flight — the detach case
     {"type": "session_loaded", "session_id": "...", "title": "...",
                                "display_messages": [...], "todos": [...]}
+    {"type": "rewind_plan",    "session_id": "...", "message_id": "...",
+                               "available": bool, "reason": "...",
+                               "turn_running": bool,
+                               "files": [{"path": "...", "action": "restore"|"delete"}],
+                               "conflicts": [...], "unrestorable": [...],
+                               "runs": [{"job_key": "...", "kind": "...",
+                                         "cancellable": bool}]}
+                                                   # what editing that message would undo;
+                                                   # available false with a reason: a
+                                                   # rewind asked for was refused
+    {"type": "rewound",        "session_id": "...", "message_id": "...", "text": "...",
+                               "display_messages": [...], "todos": [...],
+                               "restored": [...], "failed": [...], "conflicts": [...],
+                               "unrestorable": [...], "unstopped": [...],
+                               "stopping": [...]}
+                                                   # the conversation went back; the client
+                                                   # sends "text" as a new query
     {"type": "shutting_down",  "forced": false, "reasons": [...]}
                                                        # the server is going. ``reasons``
                                                        # is what was still running, which
@@ -2082,7 +2156,13 @@ Every message is one JSON object per send.
                                "description": "...", "mimeType": "..."}]}  # attachable resources
 
   Client → Server
-    {"type": "query",             "text": "..."}   # @<uri> mentions are read & injected
+    {"type": "query",             "text": "...", "message_id": "..."}
+                                  # @<uri> mentions are read & injected; message_id is
+                                  # the bubble's id, under which a checkpoint is opened
+    {"type": "rewind_preview",    "session_id": "...", "message_id": "..."}
+    {"type": "rewind",            "session_id": "...", "message_id": "...", "text": "..."}
+                                  # go back to just before that message (see "Rewinding
+                                  # to a message")
     {"type": "transcript",        "session_id": "...", "messages": [...],
                                   "epoch": "...", "rev": 0}
                                   # the client's rendered chat, stored verbatim as the

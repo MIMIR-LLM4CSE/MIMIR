@@ -9,6 +9,7 @@ import React, {
 import type {
   ClientMessage,
   ServerMessage,
+  TodoItem,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { routeServerMessage, type ServerHandlers, type ServerMessageOf } from "./state/serverMessages";
@@ -23,6 +24,7 @@ import { useTranscriptSync } from "./hooks/useTranscriptSync";
 import { useUserQuestion } from "./hooks/useUserQuestion";
 import { useDisconnect } from "./hooks/useDisconnect";
 import { useApprovals } from "./hooks/useApprovals";
+import { useRewind } from "./hooks/useRewind";
 import { makeId } from "./state/ids";
 import { ChatThread } from "./components/ChatThread";
 import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
@@ -262,6 +264,15 @@ export const App: React.FC = () => {
    * requests go through here too, so whatever tool the model reaches for still asks
    * for approval.
    */
+  // A new turn, under the id of the bubble it opens: editing that bubble rewinds to it.
+  const startQuery = useCallback((text: string) => {
+    lastQueryRef.current = text;
+    const id = makeId();
+    dispatch({ type: "submit_query", text, id });
+    send({ type: "query", text, message_id: id });
+    anchorNewQuery();
+  }, [send, anchorNewQuery]);
+
   const sendPrompt = useCallback((text: string) => {
     // Chat-while-busy: a message sent during a run is a "steer" — queued and
     // injected into the agent's current turn at its next step, not a new query.
@@ -270,11 +281,8 @@ export const App: React.FC = () => {
       send({ type: "steer", text });
       return;
     }
-    lastQueryRef.current = text;
-    dispatch({ type: "submit_query", text });
-    send({ type: "query", text });
-    anchorNewQuery();
-  }, [busy, send, anchorNewQuery]);
+    startQuery(text);
+  }, [busy, send, startQuery]);
   sendPromptRef.current = sendPrompt;
 
   const composer = useComposer({
@@ -284,14 +292,19 @@ export const App: React.FC = () => {
   });
   tablesRef.current = [...tablesRef.current, composer.on];
 
+  const onRewoundTodos = useCallback((todos: TodoItem[]) => workspaceLoaded(todos, false),
+                                      [workspaceLoaded]);
+  const rewind = useRewind({
+    send: sendVia, dispatch, activeSessionIdRef, startQuery, onTodos: onRewoundTodos,
+  });
+  tablesRef.current = [...tablesRef.current, rewind.on];
+
   // Re-run the most recent query — surfaced as Retry on the latest error card.
   const retryLastQuery = useCallback(() => {
     const text = lastQueryRef.current;
     if (!text || busy) return;
-    dispatch({ type: "submit_query", text });
-    send({ type: "query", text });
-    anchorNewQuery();
-  }, [busy, send, anchorNewQuery]);
+    startQuery(text);
+  }, [busy, startQuery]);
 
   // The click travels to the shell server through the session's state dir, not
   // through the model: the agent is parked awaiting this very tool call, so an
@@ -424,6 +437,7 @@ export const App: React.FC = () => {
           onApprovalResponse={approvals.respond}
           onRetry={retryLastQuery}
           onDivert={handleDivert}
+          rewind={rewind}
           emptyState={
             <EmptyState
               connection={connection}

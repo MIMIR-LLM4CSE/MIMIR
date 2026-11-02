@@ -13,7 +13,11 @@ export const TURN_HANDLERS: ChatHandlers = {
     // after reattaching to a run that has not answered yet — would otherwise be
     // erased by the next thing typed, leaving the question where the work was.
     const flushed = flushLive(state, makeId);
-    const userMsg: ChatMessage = { id: makeId(), role: "user", kind: "text", text: action.text };
+    // Under the id the query was sent with: editing this bubble rewinds to it.
+    const userMsg: ChatMessage = {
+      id: action.id ?? makeId(), role: "user", kind: "text", text: action.text,
+      opensTurn: action.id !== undefined,
+    };
     return {
       ...flushed,
       // Whatever a previous turn left provisional is settled by a new question

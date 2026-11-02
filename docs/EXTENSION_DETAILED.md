@@ -173,6 +173,8 @@ webview/src/
 │   ├── useWorkspaceState.ts  ← the checklist, the batch review, the toggles, the context
 │   │                           usage
 │   ├── useUserQuestion.ts    ← the question a turn parks on, answered or expired
+│   ├── useRewind.ts          ← editing a sent message: the bubble open, what going back
+│   │                           undoes, the rewind and the query sent after it
 │   ├── useApprovals.ts       ← answering approval cards, and the mode switch that answers
 │   │                           the standing one
 │   ├── useDisconnect.ts      ← leaving the server, asked first when work would end;
@@ -201,6 +203,8 @@ webview/src/
     ├── Composer.tsx           ← the message box and the controls beside it
     ├── ChatThread.tsx         ← the scrolling transcript
     ├── ChatMessage.tsx        ← one message (text / thinking / approval / tools / error)
+    ├── MessageEditor.tsx      ← a sent message reopened for editing, and the card saying
+    │                            what going back to it undoes (RewindConfirm)
     ├── MarkdownContent.tsx    ← markdown renderer used inside a message
     ├── mathDelimiters.ts      ← normalises LaTeX delimiters for remark-math
     ├── ThinkingPanel.tsx      ← collapsible reasoning block
@@ -339,6 +343,7 @@ goes to the chat reducer, whose handlers are grouped by family in `state/reducer
 | `useTranscriptSync` | what the server was last sent of the transcript |
 | `useWorkspaceState` | `todos`, `batchFiles`, the server and skill toggles, `contextUsage` |
 | `useUserQuestion` | the question card the turn on screen is parked on |
+| `useRewind` | the message being edited, the plan of what going back undoes, the edited text awaiting confirmation |
 | `useDisconnect` | `detached`, the disconnect held while the user is asked |
 | `useThreadScroll` | whether the pane follows the bottom, and the runs in the dock |
 
@@ -387,6 +392,22 @@ Loading a session advances the reducer's `seq` counter past every stamp the stor
 messages carry. Restarted at 1 after a window reload, new live rows were stamped below
 the last stored message, which then sorted as part of the step in flight and stuck
 below it.
+
+
+## Editing a sent message
+
+A user bubble that opened a turn carries `opensTurn` and the id its query was sent under
+(`startQuery` in `App.tsx` makes the id, the reducer's `submit_query` puts it on the
+bubble). Its pencil, shown on hover, opens `MessageEditor` in place of the text, and
+`useRewind` asks for `rewind_preview` at that moment, so the plan is usually there by the
+time the edit is. Sending the edit shows `RewindConfirm`: the files put back or removed,
+the runs stopped, the turn in flight stopped, and the files left because someone else
+changed them or no copy was kept. With nothing of that to show, the rewind goes without
+asking. A refused rewind (the turn in flight did not stop) comes back as a `rewind_plan`
+with a `reason`, shown on the card; nothing was changed. On `rewound` the panel replaces its transcript with the one the message carries
+(a `session_loaded` of the same conversation would keep the longer copy on screen),
+updates the checklist, and starts the edited query whatever it thought was running. The
+server side is in docs/CLIENT_DETAILED.md, "Rewinding to a message".
 
 ---
 

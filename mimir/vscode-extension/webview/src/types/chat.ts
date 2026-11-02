@@ -110,6 +110,8 @@ export interface ChatMessage {
   /** A user steer message queued mid-run, awaiting injection (shows a "queued" tag
    *  until the server confirms with steer_injected). */
   queued?: boolean;
+  /** A user message that opened a turn: it can be edited, which rewinds to it. */
+  opensTurn?: boolean;
   /** Prose committed out of `draft` before the turn that wrote it was accepted —
    *  because the turn parked on a question, or the connection dropped under it.
    *  Kept so an interruption cannot lose the only copy, and dropped again by the

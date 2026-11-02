@@ -19,7 +19,7 @@ import type { ApprovalMessage, ApprovalResponseMessage, BatchReviewAcceptFileMes
 import type { ClearTodosMessage, CreateSessionMessage, DeleteSessionMessage, RenameSessionMessage, ReplayMessage, SessionLoadedMessage, SessionsListMessage, SwitchSessionMessage, TodoMessage, TranscriptMessage, TranscriptResyncMessage } from "./session";
 import type { AgentModeMessage, ApprovalModeMessage, ContextModeMessage, EnforcementModeMessage, ListTogglesMessage, StreamingStateMessage, SubAgentLevelMessage, TemperatureMessage, ThinkingDepthMessage, ToggleServerMessage, ToggleSkillMessage, TogglesListMessage } from "./settings";
 import type { DiffMessage, DivertToBackgroundMessage, FileProgressMessage, SubAgentEventMessage, ToolBackgroundedMessage, ToolCallMessage, ToolProgressMessage, ToolResultMessage, VerdictMessage } from "./tools";
-import type { AgentStartingMessage, AnswerMessage, AssistantTextMessage, CommandMessage, CommandOutputMessage, ContextUsageMessage, ErrorMessage, NudgeInjectedMessage, OutputMessage, QueryMessage, QueuedMessage, StatusMessage, SteerInjectedMessage, SteerMessage, ThinkingEndMessage, ThinkingMessage, ThinkingStartMessage, TokenMessage } from "./turn";
+import type { AgentStartingMessage, AnswerMessage, AssistantTextMessage, CommandMessage, CommandOutputMessage, ContextUsageMessage, ErrorMessage, NudgeInjectedMessage, OutputMessage, QueryMessage, QueuedMessage, RewindMessage, RewindPlanMessage, RewindPreviewMessage, RewoundMessage, StatusMessage, SteerInjectedMessage, SteerMessage, ThinkingEndMessage, ThinkingMessage, ThinkingStartMessage, TokenMessage } from "./turn";
 
 export type ServerMessage =
   | ReadyMessage
@@ -81,7 +81,9 @@ export type ServerMessage =
   | DetachedMessage
   | TranscriptResyncMessage
   | QueuedMessage
-  | AgentStartingMessage;
+  | AgentStartingMessage
+  | RewindPlanMessage
+  | RewoundMessage;
 
 export type ClientMessage =
   | QueryMessage
@@ -111,4 +113,6 @@ export type ClientMessage =
   | ToggleServerMessage
   | ToggleSkillMessage
   | SetModelMessage
-  | ShutdownMessage;
+  | ShutdownMessage
+  | RewindPreviewMessage
+  | RewindMessage;

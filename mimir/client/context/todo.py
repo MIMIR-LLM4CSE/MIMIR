@@ -73,3 +73,32 @@ def load_todo_deps(todo_file: str) -> list[list[int]]:
     except (OSError, ValueError):
         return []
     return deps if isinstance(deps, list) else []
+
+
+def write_todo_items(todo_file: str, todos: list[dict[str, Any]],
+                     todo_deps: list | None = None) -> None:
+    """Write *todos* and their deps sidecar as the checklist in *todo_file*; none removes both.
+
+    Raises on failure.
+    """
+    deps_file = os.path.join(os.path.dirname(todo_file), "todo_deps.json")
+    if not todos:
+        for path in (todo_file, deps_file):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        return
+    os.makedirs(os.path.dirname(todo_file), exist_ok=True)
+    lines = [f"- {'[x]' if item.get('done') else '[ ]'} {item.get('text', '')}"
+             for item in todos]
+    with open(todo_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    if todo_deps:
+        with open(deps_file, "w", encoding="utf-8") as f:
+            json.dump(todo_deps, f)
+    else:
+        try:
+            os.remove(deps_file)
+        except OSError:
+            pass

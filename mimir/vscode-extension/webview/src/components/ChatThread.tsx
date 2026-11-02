@@ -8,6 +8,7 @@ import { ThinkingPanel } from "./ThinkingPanel";
 import { GlobalApprovalBar } from "./GlobalApprovalBar";
 import { StreamingStatus } from "./StreamingStatus";
 import { orderLiveStream } from "./liveStreamUtils";
+import type { Rewind } from "../hooks/useRewind";
 
 /** Messages rendered at first, and added each time the reader reaches the top. */
 export const THREAD_WINDOW_STEP = 120;
@@ -44,6 +45,8 @@ interface Props {
   /** Detach a still-running tool call. Offered on live rows only — a frozen row
    *  has already ended, and there is nothing left to move. */
   onDivert?: (id: string) => void;
+  /** Editing a sent message: which one is open, and the means to rewind to it. */
+  rewind?: Rewind;
 }
 
 /**
@@ -67,6 +70,7 @@ export const ChatThread: React.FC<Props> = ({
   onApprovalResponse,
   onRetry,
   onDivert,
+  rewind,
 }) => {
   // All message kinds render via renderMessage; thinking blocks (frozen) and
   // tool lists each have their own render branch in ChatMessage.
@@ -173,6 +177,8 @@ export const ChatThread: React.FC<Props> = ({
           message={msg}
           onApprovalResponse={onApprovalResponse}
           onRetry={isLatestError ? onRetry : undefined}
+          onEdit={rewind?.start}
+          edit={rewind && rewind.editingId === msg.id ? rewind : undefined}
         />
       </div>
     );
