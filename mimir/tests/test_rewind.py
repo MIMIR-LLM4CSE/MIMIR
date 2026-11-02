@@ -5,12 +5,16 @@ before the message that led to its first write, across every later turn; it leav
 file someone else changed since; the conversation goes back to its length before the
 message; and a shell write's original is recovered from git or from the scan.
 """
+import asyncio
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 
 from mimir.client.context.checkpoints import ABSENT, Checkpoints
+from mimir.client.core.turn_state import TurnState
+from mimir.client.ui.ws.worker.worker import AgentWorker
 from mimir.client.session.conversation import Conversations
 from mimir.client.session.store import SessionStore
 from mimir.client.tool_execution import bash_effect
@@ -197,6 +201,83 @@ class ShellWriteTests(_Case):
         path, digest = self.cps.plan("m1").restore[0]
         self.cps.restore(path, digest)
         self.assertEqual(_read(src), "x = 1\n")
+
+
+class _StuckAgent:
+    """A turn that works until it is cancelled."""
+
+    def __init__(self) -> None:
+        self.turn = TurnState()
+        self.turn.cancel_flag = threading.Event()
+        self.turn.deferred_prompts = []
+        self.turn.deferred_turn = None
+        self.turn.last_full_messages = None
+        self.turn.last_turn_start = None
+        self.context_mode = "flat"
+        self.streaming = False
+        self.thinking = False
+
+    async def run(self, **_kw) -> str:
+        await asyncio.Event().wait()
+        return "never"
+
+
+def _stuck_worker() -> AgentWorker:
+    w = AgentWorker("test-model", start=False)
+    w.session_id = "s1"
+    w._agent = _StuckAgent()
+    w.human._defer = set()
+    w.review.todos = lambda: []
+    w.usage.count_tokens = lambda _text: 0
+    return w
+
+
+class StoppingTheTurnTests(unittest.TestCase):
+    """What a rewind waits on: the cancelled turn's answer written, the loop alive."""
+
+    async def _until(self, predicate) -> None:
+        for _ in range(500):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        self.fail("never happened")
+
+    def test_the_turn_is_open_until_its_answer_is_on_the_outbox(self):
+        async def scenario():
+            w = _stuck_worker()
+            w._loop = asyncio.get_running_loop()
+            loop_task = asyncio.create_task(w._query_loop())
+            await asyncio.sleep(0)
+            w._query_q.put({"text": "go", "history": [], "session_id": "s1"})
+            w._query_wake.set()
+            await self._until(lambda: w._current_task not in (None, w._loop_task))
+            self.assertTrue(w.turn_open())
+            w.cancel()
+            await self._until(lambda: not w.turn_open())
+            answers = [ev for ev in list(w.out_q.queue) if ev.get("type") == "answer"]
+            self.assertEqual(len(answers), 1)
+            self.assertTrue(answers[0]["cancelled"])
+            self.assertFalse(loop_task.done())
+            w._query_q.put(None)
+            w._query_wake.set()
+            await loop_task
+        asyncio.run(scenario())
+
+    def test_a_cancel_while_a_turn_is_set_up_leaves_the_loop_running(self):
+        async def scenario():
+            w = _stuck_worker()
+            w._loop = asyncio.get_running_loop()
+            loop_task = asyncio.create_task(w._query_loop())
+            await asyncio.sleep(0)
+            w._current_task = w._loop_task      # the moment before the agent's task exists
+            self.assertFalse(w.cancel())
+            await asyncio.sleep(0.01)
+            self.assertFalse(loop_task.done())
+            w._current_task = None
+            w._query_q.put(None)
+            w._query_wake.set()
+            await loop_task
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

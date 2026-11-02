@@ -112,6 +112,11 @@ class AgentWorker:
         self._query_wake: asyncio.Event | None = None
 
         self._current_task: asyncio.Task | None = None
+        # The query loop's own task, never the one ``cancel`` stops: that would end the loop.
+        self._loop_task: asyncio.Task | None = None
+        # True from the moment a turn is taken off the queue until its answer is on the
+        # outbox; ``_current_task`` is cleared before the answer is written.
+        self._turn_open = False
         # Session a running query belongs to, captured when it starts. Events carry the
         # session they were produced for, so a turn running in a conversation that is not
         # on screen can be told apart from the one that is — and routed to its own
@@ -213,6 +218,7 @@ class AgentWorker:
         # Bound to this loop, which is the one it is awaited on. A turn queued before
         # it exists is found by the first look below.
         self._query_wake = asyncio.Event()
+        self._loop_task = asyncio.current_task()
         while True:
             # Cleared before the look, not after the wait: an item queued between the
             # two then wakes the next wait instead of being missed by it.
@@ -234,7 +240,11 @@ class AgentWorker:
             # per socket: a turn can outlive the socket that submitted it, and a
             # boundary held there is one nobody has when the answer lands.
             self._turn_submitted_len = len(item.get("history") or [])
-            await self._run_query(item)
+            self._turn_open = True
+            try:
+                await self._run_query(item)
+            finally:
+                self._turn_open = False
             self._current_task = None
             self.query_session_id = None
 
@@ -469,6 +479,10 @@ class AgentWorker:
         """True while a query task is in flight (used to route steer vs. new query)."""
         return self._current_task is not None
 
+    def turn_open(self) -> bool:
+        """True until the running turn's answer is on the outbox: what a rewind waits for."""
+        return self._turn_open
+
     def has_work_pending(self) -> bool:
         """True while a turn runs here or is queued to run: what eviction reads."""
         return self._current_task is not None or not self._query_q.empty()
@@ -621,7 +635,8 @@ class AgentWorker:
         if self._agent is not None:
             self._agent.turn.cancel_flag.set()
         task = self._current_task
-        if task is not None and not task.done() and self._loop is not None:
+        if (task is not None and task is not self._loop_task and not task.done()
+                and self._loop is not None):
             self._loop.call_soon_threadsafe(task.cancel)
             return True
         return False

@@ -285,8 +285,11 @@ revert. A file already at its original is skipped.
 **The rewind** (`ui/ws/connection/handlers/rewind.py`), on the server's loop:
 
 1. the pending wakes and the held check-in are dropped, so nothing starts a turn;
-2. the turn in flight is cancelled and waited for, its answer committed by one
-   `pump_once`, and what it queued for this client dropped. A turn still running after
+2. the turn in flight is cancelled and waited for: until `AgentWorker.turn_open` is
+   false, which is once its answer is on the outbox (`is_busy` goes false before the
+   answer is written). The cancel is sent again every 0.25 s, for a turn still being set
+   up; `cancel` never stops the query loop's own task. The answer is then committed by one
+   `pump_once`, and what the turn queued for this client dropped. A turn still running after
    5 s refuses the rewind (`rewind_plan` with `available: false` and a `reason`) before
    anything is touched: its answer would otherwise land after the cut;
 3. the plan is worked out again; the runs are withdrawn all at once

@@ -18,9 +18,11 @@ from .base import Handlers
 
 logger = logging.getLogger(__name__)
 
-# How long a rewind waits for the turn it cancelled to end, in steps of _TURN_POLL_SECS.
+# How long a rewind waits for the turn it cancelled to end, in steps of _TURN_POLL_SECS;
+# the cancel is sent again every _TURN_RECANCEL_SECS, for a turn still being set up.
 _TURN_STOP_SECS = 5.0
 _TURN_POLL_SECS = 0.02
+_TURN_RECANCEL_SECS = 0.25
 # How long the rewind waits on the runs' cancel ops, all at once. Their watches are
 # dropped at the start, so one that answers later finishes on its own.
 _RUN_STOP_SECS = 2.0
@@ -147,13 +149,14 @@ class RewindHandlers(Handlers):
         worker = self.pool.get(session_id)
         if worker is None:
             return True
-        if worker.is_busy():
-            worker.cancel()
-        waited = 0.0
-        while worker.is_busy() and waited < _TURN_STOP_SECS:
+        waited, next_cancel = 0.0, 0.0
+        while worker.turn_open() and waited < _TURN_STOP_SECS:
+            if waited >= next_cancel:
+                worker.cancel()
+                next_cancel += _TURN_RECANCEL_SECS
             await asyncio.sleep(_TURN_POLL_SECS)
             waited += _TURN_POLL_SECS
-        if worker.is_busy():
+        if worker.turn_open():
             logger.warning("rewind: the turn of %s did not stop in %.0fs", session_id,
                            _TURN_STOP_SECS)
             return False

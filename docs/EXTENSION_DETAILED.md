@@ -398,9 +398,12 @@ below it.
 
 A user bubble that opened a turn carries `opensTurn` and the id its query was sent under
 (`startQuery` in `App.tsx` makes the id, the reducer's `submit_query` puts it on the
-bubble). Its pencil, shown on hover, opens `MessageEditor` in place of the text, and
-`useRewind` asks for `rewind_preview` at that moment, so the plan is usually there by the
-time the edit is. Sending the edit shows `RewindConfirm`: the files put back or removed,
+bubble). A double-click on it (or Enter once it has focus) opens `MessageEditor` in place
+of the text; a deeper tint on hover is what says it can be, and the right edge keeps the
+colour of the mode the turn was asked in. Selecting a word on the double-click is
+prevented, since the editor replaces the text at once. `useRewind` asks for
+`rewind_preview` as the editor opens, so the plan is usually there by the time the edit
+is. Sending the edit shows `RewindConfirm`: the files put back or removed,
 the runs stopped, the turn in flight stopped, and the files left because someone else
 changed them or no copy was kept. With nothing of that to show, the rewind goes without
 asking. A refused rewind (the turn in flight did not stop) comes back as a `rewind_plan`

@@ -19,7 +19,7 @@ interface Props {
   onApprovalResponse: (id: string, choice: "y" | "n" | "a", approvedFiles?: string[]) => void;
   /** When provided, an error card shows a "Retry" button that re-runs the turn. */
   onRetry?: () => void;
-  /** Reopen this message for editing; offered on the user messages that opened a turn. */
+  /** Reopen this message for editing (a double-click); offered on the user messages that opened a turn. */
   onEdit?: (id: string) => void;
   /** Set on the one message being edited only, so every other bubble stays memoized. */
   edit?: Rewind;
@@ -140,9 +140,25 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
   const { body: withReport } = splitAnswerLedger(message.text ?? "");
   const { body: answerBody, report } = splitAnswerCompletion(withReport);
 
+  // A message that opened a turn is edited by double-clicking it; its tint on hover
+  // says so. Editing it goes back to it.
+  const editable = isUser && !edit && !!onEdit && !!message.opensTurn && !message.queued
+    && message.kind === "text";
+  const editProps = editable ? {
+    className: "message-body message-body--editable",
+    title: "Double-click to edit — goes back to this message",
+    tabIndex: 0,
+    onDoubleClick: () => onEdit!(message.id),
+    // A double-click would otherwise select a word before the editor replaces it.
+    onMouseDown: (e: React.MouseEvent) => { if (e.detail > 1) e.preventDefault(); },
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" && e.target === e.currentTarget) { e.preventDefault(); onEdit!(message.id); }
+    },
+  } : { className: "message-body" };
+
   return (
     <div className={`chat-message ${isUser ? "user" : "agent"}`}>
-      <div className="message-body">
+      <div {...editProps}>
         {/* Main content */}
         {message.kind === "error" ? (
           <div className="error-card" role="alert">
@@ -181,12 +197,6 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
                 <span className="steer-badge" title="Queued — will reach MIMIR at its next step">
                   ↯ queued
                 </span>
-              )}
-              {onEdit && message.opensTurn && !message.queued && (
-                <button className="user-edit-btn" title="Edit — go back to this message"
-                        aria-label="Edit message" onClick={() => onEdit(message.id)}>
-                  ✎
-                </button>
               )}
             </div>
           )

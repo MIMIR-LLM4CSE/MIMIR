@@ -26,13 +26,14 @@ const plan = (extra: Partial<RewindPlanMessage> = {}): RewindPlanMessage =>
   ({ type: "rewind_plan", message_id: "m1", available: true, ...extra });
 
 describe("editing a sent message", () => {
-  it("is offered on a message that opened a turn, not on a steer or an answer", () => {
+  it("is offered, by a double-click, on a message that opened a turn, not on a steer or an answer", () => {
     const html = thread([
       { id: "m1", role: "user", kind: "text", text: "first", opensTurn: true },
       { id: "a1", role: "assistant", kind: "text", text: "answer" },
       { id: "s1", role: "user", kind: "text", text: "steer" },
     ] as ChatMessage[]);
-    expect(html.match(/user-edit-btn/g)?.length).toBe(1);
+    expect(html.match(/message-body--editable/g)?.length).toBe(1);
+    expect(html).toContain("Double-click to edit");
   });
 
   it("opens the editor in place of the bubble being edited", () => {
@@ -41,7 +42,7 @@ describe("editing a sent message", () => {
       { editingId: "m1", plan: null, pendingText: null, working: false },
     );
     expect(html).toContain("message-editor__input");
-    expect(html).not.toContain("user-edit-btn");
+    expect(html).not.toContain("message-body--editable");
   });
 
   it("the bubble a query opens carries the query's id", () => {

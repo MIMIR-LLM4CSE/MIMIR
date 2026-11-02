@@ -938,19 +938,26 @@ body.is-resizing * { transition: none !important; }
 .user-text { white-space: pre-wrap; overflow-wrap: break-word; }
 
 /* ── Editing a sent message ───────────────────────────────────────────────────
-   The pencil shows on hover only: the bubble reads as what was said, and going back
-   to it is the exception. The editor and its confirm card replace the bubble's text. */
-.user-text { position: relative; }
-.user-edit-btn {
-  position: absolute; top: calc(-1 * var(--sp-3)); right: calc(-1 * var(--sp-4));
-  opacity: 0; transition: opacity 120ms ease;
-  background: var(--bg-hover); color: var(--fg-dim);
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  font-size: 11px; line-height: 1; padding: 3px 5px; cursor: pointer;
+   A message that opened a turn is edited by double-clicking it. The bubble takes a
+   deeper tint on hover and on keyboard focus, which is all that says so: the bubble
+   reads as what was said, and going back to it is the exception. The editor and its
+   confirm card replace the bubble's text. */
+.chat-message.user .message-body--editable {
+  cursor: text;
+  transition: background 120ms ease, border-color 120ms ease;
 }
-.chat-message.user:hover .user-edit-btn,
-.user-edit-btn:focus-visible { opacity: 1; }
-.user-edit-btn:hover { color: var(--accent); }
+.chat-message.user .message-body--editable:hover,
+.chat-message.user .message-body--editable:focus-visible {
+  outline: none;
+  /* Not the right edge: it carries the mode the turn was asked in. */
+  border-top-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-bottom-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-left-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background:
+    linear-gradient(color-mix(in srgb, var(--accent) 12%, transparent),
+                    color-mix(in srgb, var(--accent) 12%, transparent)),
+    linear-gradient(var(--mode-tint), var(--mode-tint)), var(--user-bubble);
+}
 
 .message-editor { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 260px; }
 .message-editor__input {
