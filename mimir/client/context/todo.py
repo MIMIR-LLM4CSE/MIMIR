@@ -76,7 +76,7 @@ def load_todo_deps(todo_file: str) -> list[list[int]]:
 
 
 def write_todo_items(todo_file: str, todos: list[dict[str, Any]],
-                     todo_deps: list | None = None) -> None:
+                     todo_deps: list[list[int]] | None = None) -> None:
     """Write *todos* and their deps sidecar as the checklist in *todo_file*; none removes both.
 
     Raises on failure.

@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import threading
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Callable, TextIO
 
 from .....shared import code_map
@@ -132,7 +132,7 @@ def _kernel_table(rows: list[dict[str, str]]) -> dict[str, tuple[float, int]]:
 def _copy_table(rows: list[dict[str, str]]) -> dict[str, float]:
     op = _column(rows, r"Operation", r"Name")
     ns = _column(rows, r"Total ?Time \(ns\)", r"TotalDurationNs", r"Total Time")
-    out: Counter = Counter()
+    out: defaultdict[str, float] = defaultdict(float)
     for r in rows:
         out[_direction(r[op])] += _number(r[ns])
     return dict(out)
@@ -148,7 +148,7 @@ def _size_table(rows: list[dict[str, str]]) -> dict[str, float]:
     size = _column(rows, r"Total(?: \(\w+\))?", r"Bytes", r"Size(?: \(\w+\))?")
     unit = re.search(r"\((\w+)\)", size)
     scale = _SIZE_UNITS.get(unit.group(1).lower(), 1) if unit else (2**10 if size == "Total" else 1)
-    out: Counter = Counter()
+    out: defaultdict[str, float] = defaultdict(float)
     for r in rows:
         out[_direction(r[op])] += _number(r[size]) * scale
     return {k: v for k, v in out.items() if k != "memset"}
@@ -369,7 +369,8 @@ class DeviceMemory:
     INTERVAL_S = 0.2
 
     def __init__(self, vendor: str) -> None:
-        self.vendor, self.samples, self.note = vendor, [], ""
+        self.vendor, self.note = vendor, ""
+        self.samples: list[dict[str, float]] = []
         self.peak_mb: float | None = None
         self._stop = threading.Event()
 
@@ -406,7 +407,7 @@ def sample_device(vendor: str) -> dict[str, float] | None:
         if vendor == "nvidia":
             out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory",
                                   "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
-            used: Counter = Counter()
+            used: defaultdict[str, float] = defaultdict(float)
             for line in out.splitlines():
                 pid, _, mb = line.partition(",")
                 if mb.strip().replace(".", "", 1).isdigit():
@@ -439,7 +440,7 @@ def ncu_detail(csv_path: str, name: str) -> dict:
 
 def rocprof_detail(out_dir: str, name: str) -> dict:
     """rocprofv3 ``--pmc`` counter CSVs: each counter's mean over the kernel's dispatches."""
-    sums: Counter = Counter()
+    sums: defaultdict[str, float] = defaultdict(float)
     counts: Counter = Counter()
     kernel = name
     for path in glob.glob(os.path.join(out_dir, "**", "*counter_collection.csv"), recursive=True):

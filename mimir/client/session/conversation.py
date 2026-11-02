@@ -166,7 +166,7 @@ class Conversation:
         if show:
             bubble = {"role": "user", "kind": "text", "text": text}
             if message_id:
-                bubble.update(id=message_id, opensTurn=True)
+                bubble.update(id=message_id, opensTurn=True)  # type: ignore[call-overload]
             self.display.append(bubble)
         self.submitted_len = len(self.history)
 

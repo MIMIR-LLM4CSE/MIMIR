@@ -117,7 +117,8 @@ class SlurmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as run_dir:
             code = measure.main([run_dir, sys.executable, "-c", _ALLOC + "; raise SystemExit(3)"])
             self.assertEqual(code, 3)
-            read = lambda name: procs.read_int_file(os.path.join(run_dir, name))
+            def read(name: str) -> int | None:
+                return procs.read_int_file(os.path.join(run_dir, name))
             self.assertEqual(read("returncode"), 3)
             self.assertIsNotNone(read("wall_time_ms"))
             self.assertGreater(read("peak_rss_kb"), 60 * 1024)
@@ -196,7 +197,8 @@ class RanksTests(unittest.TestCase):
              mock.patch.dict(os.environ, {"SLURM_JOB_ID": "123"}), \
              mock.patch.object(measure, "slurm_steps", return_value=(9 * 1024**2, 16)):
             measure.main([run_dir, sys.executable, "-c", "pass"])
-            read = lambda name: procs.read_int_file(os.path.join(run_dir, name))
+            def read(name: str) -> int | None:
+                return procs.read_int_file(os.path.join(run_dir, name))
             self.assertEqual((read("peak_rss_total_kb"), read("processes")), (9 * 1024**2, 16))
 
 

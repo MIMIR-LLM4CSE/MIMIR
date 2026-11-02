@@ -58,16 +58,16 @@ class RewindPlan:
     """What rewinding to one message would do, worked out before anything is touched."""
 
     message_id: str
-    checkpoint: dict
+    checkpoint: dict[str, Any]
     # (path, blob digest or ABSENT): the content to put back, ABSENT meaning delete.
     restore: list[tuple[str, str]] = field(default_factory=list)
     # Changed since the agent last wrote them: left as they are.
     conflicts: list[str] = field(default_factory=list)
     # Written by the agent, but no copy of what came before was kept.
     unrestorable: list[str] = field(default_factory=list)
-    runs: list[dict] = field(default_factory=list)
+    runs: list[dict[str, Any]] = field(default_factory=list)
 
-    def preview(self) -> dict:
+    def preview(self) -> dict[str, Any]:
         """The plan as the client shows it."""
         return {
             "message_id": self.message_id,
@@ -103,11 +103,11 @@ class Checkpoints:
     def __init__(self, directory: str) -> None:
         self.directory = directory
         self._lock = threading.RLock()
-        self._entries: list[dict] | None = None
+        self._entries: list[dict[str, Any]] | None = None
 
     # ── On disk ───────────────────────────────────────────────────────────────
 
-    def _load(self) -> list[dict]:
+    def _load(self) -> list[dict[str, Any]]:
         """Every checkpoint, oldest first: one small file each, so a write rewrites one."""
         if self._entries is None:
             entries = []
@@ -126,10 +126,10 @@ class Checkpoints:
             self._entries = entries
         return self._entries
 
-    def _file(self, entry: dict) -> str:
+    def _file(self, entry: dict[str, Any]) -> str:
         return os.path.join(self.directory, f"{int(entry.get('seq') or 0):08d}.json")
 
-    def _save(self, entry: dict | None = None) -> None:
+    def _save(self, entry: dict[str, Any] | None = None) -> None:
         """Write *entry* (the current checkpoint by default) down."""
         entry = entry if entry is not None else self._current()
         if entry is None:
@@ -139,7 +139,7 @@ class Checkpoints:
         except Exception:
             logger.warning("checkpoints in %s would not save", self.directory, exc_info=True)
 
-    def _remove(self, entries: list[dict]) -> None:
+    def _remove(self, entries: list[dict[str, Any]]) -> None:
         for entry in entries:
             try:
                 os.remove(self._file(entry))
@@ -164,8 +164,8 @@ class Checkpoints:
     # ── Recording ─────────────────────────────────────────────────────────────
 
     def open(self, message_id: str, *, full_len: int, history_len: int,
-             window_epoch: int, carry_context: dict | None = None,
-             todos: list | None = None, todo_deps: list | None = None) -> None:
+             window_epoch: int, carry_context: dict[str, Any] | None = None,
+             todos: list[dict[str, Any]] | None = None, todo_deps: list[list[int]] | None = None) -> None:
         """Start the checkpoint of *message_id*: the conversation as it stands before it."""
         with self._lock:
             entries = self._load()
@@ -183,7 +183,7 @@ class Checkpoints:
             })
             self._save()
 
-    def _current(self) -> dict | None:
+    def _current(self) -> dict[str, Any] | None:
         entries = self._load()
         return entries[-1] if entries else None
 
@@ -242,7 +242,7 @@ class Checkpoints:
         except Exception:
             logger.debug("note_written: %s could not be read", path, exc_info=True)
 
-    def note_run(self, descriptor: dict) -> None:
+    def note_run(self, descriptor: dict[str, Any]) -> None:
         """A run started during the current checkpoint's turns."""
         if not isinstance(descriptor, dict):
             return

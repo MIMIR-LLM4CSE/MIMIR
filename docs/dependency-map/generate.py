@@ -230,7 +230,9 @@ def cycles(data: dict) -> tuple[list[list[str]], list[list[str]]]:
         if v not in index:
             visit(v)
     found.sort()
-    arch_unit = lambda u: ".".join(u.split(".")[:2]) if u.startswith("client.") else u
+    def arch_unit(u: str) -> str:
+        return ".".join(u.split(".")[:2]) if u.startswith("client.") else u
+
     across = [c for c in found if len({arch_unit(u) for u in c}) > 1]
     return across, [c for c in found if c not in across]
 
@@ -358,7 +360,6 @@ def _num(x: float) -> str:
 
 def draw(data: dict) -> str:
     """The map as a standalone SVG: boxes, edges, rule breaks in red, cycles outlined."""
-    units = {u["id"]: u for u in data["units"]}
     ranked = [u for u in data["units"] if u["area"] in ("client", "measure")]
     rows = [(r, [u["id"] for u in ranked if u["rank"] == r])
             for r in sorted({u["rank"] for u in ranked}, reverse=True)]

@@ -104,7 +104,7 @@ def _run_measured(argv: list[str], timeout: float | None, kwargs: dict):
             proc.returncode = os.waitstatus_to_exitcode(reaped["status"]) if reaped else -signal.SIGKILL
         if timed_out:
             raise subprocess.TimeoutExpired(argv, timeout or 0)
-        done = subprocess.CompletedProcess(argv, proc.returncode, None, None)
+        done: subprocess.CompletedProcess[bytes] = subprocess.CompletedProcess(argv, proc.returncode, None, None)
         maxrss = reaped["usage"].ru_maxrss
         maxrss = maxrss // 1024 if sys.platform == "darwin" else maxrss
         sampled = max(tree.peaks.values(), default=0)
