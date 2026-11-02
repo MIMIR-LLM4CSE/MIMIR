@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-11-02
+
 ### Added
 - **A sent message can be edited, and the conversation goes back to it.** Double-clicking
   a message you sent reopens it (it takes a deeper tint on hover), also while the agent
