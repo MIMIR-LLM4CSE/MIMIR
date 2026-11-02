@@ -19,7 +19,7 @@ export const STYLE = `
   --warn: var(--vscode-editorWarning-foreground, #cca700);
   --edge: #8b8b8b; --e-break: var(--vscode-errorForeground, #f85149); --e-cycle: #b180d7;
   --e-binding: #33d6f2; --e-added: #3fb950; --ok: var(--vscode-testing-iconPassed, #3fb950);
-  --time: #f2663a; --pill-fg: #111111; --track: #3a3a3a;
+  --time: #f2663a; --gpu: #4c9aff; --pill-fg: #111111; --track: #3a3a3a;
   --band-bar: #7a2c9e;
   --mimir-gradient: linear-gradient(90deg, #33d6f2, #1a5fd8 30%, #7a2c9e 52%, #d8203c 72%, #f2663a);
   --font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
@@ -30,7 +30,7 @@ export const STYLE = `
   --fg: #3b3b3b; --fg-dim: #6a6a6a; --border: #d6d6d6; --border-soft: #e5e5e5;
   --accent: #005fb8; --accent-fg: #ffffff; --focus: #005fb8; --warn: #9a6700;
   --edge: #8c8c8c; --e-break: #cf222e; --e-cycle: #8250df; --e-binding: #0598bc; --band-bar: #8250df;
-  --e-added: #1a7f37; --ok: #1a7f37; --time: #e0531f; --pill-fg: #ffffff; --track: #e3e3e3;
+  --e-added: #1a7f37; --ok: #1a7f37; --time: #e0531f; --gpu: #0969da; --pill-fg: #ffffff; --track: #e3e3e3;
   color-scheme: light;
 }
 * { box-sizing: border-box; }
@@ -151,6 +151,9 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .m .fill { fill: var(--time); }
 .m .pct { font: 10.5px var(--font); fill: var(--fg); }
 .hatch { fill: var(--time); }
+.m .fill.gpu, .hatch.gpu { fill: var(--gpu); }
+.m .pct.gpu { font-size: 9.5px; fill: var(--fg-dim); }
+.sw.bar.gpu { border-color: var(--gpu); }
 .section.time .title::before { background: #f2663a; }
 .open[disabled] { opacity: .6; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } }

@@ -173,18 +173,26 @@ def build_sbatch(
         comment=comment,
         **(target or {}),
     )
-    # Capture wall time + exit code around the solver so the post-run step can
-    # apply the same time_s plausibility guard as local runs.
+    # Exit code, wall time and peak memory are measured around the solver, as for a
+    # local run, so the post-run step applies the same guards. The measuring launcher
+    # needs a MIMIR Python on the node; without one, the shell times it (no memory).
     rc_path   = os.path.join(run_dir, "returncode")
     wall_path = os.path.join(run_dir, "wall_time_ms")
+    # The post-run step runs on the node too, so the Python is chosen there, not here
+    # (see slurm_script.node_python_lines).
+    lines += [""] + node_python_lines(explicit=python_exe)
+    load = f"import sys; sys.path.insert(0, {PACKAGE_PARENT!r}); from mimir.servers.proxy._lib.measure import main"
     lines += [
-        "",
-        "_PROXY_T0=$(date +%s%N)",
-        cmd_str,
-        "_PROXY_RC=$?",
-        "_PROXY_T1=$(date +%s%N)",
-        f'echo "$_PROXY_RC" > {shlex.quote(rc_path)}',
-        f'echo "$(( (_PROXY_T1 - _PROXY_T0) / 1000000 ))" > {shlex.quote(wall_path)}',
+        f'if [ -n "$_MIMIR_PY" ] && "$_MIMIR_PY" -c {shlex.quote(load)} >/dev/null 2>&1; then',
+        f'  "$_MIMIR_PY" -c {shlex.quote(load + "; sys.exit(main(sys.argv[1:]))")} {shlex.quote(run_dir)} {cmd_str}',
+        "else",
+        "  _PROXY_T0=$(date +%s%N)",
+        f"  {cmd_str}",
+        "  _PROXY_RC=$?",
+        "  _PROXY_T1=$(date +%s%N)",
+        f'  echo "$_PROXY_RC" > {shlex.quote(rc_path)}',
+        f'  echo "$(( (_PROXY_T1 - _PROXY_T0) / 1000000 ))" > {shlex.quote(wall_path)}',
+        "fi",
         "",
     ]
     proxy_name = entry.get("name", "")
@@ -204,9 +212,6 @@ def build_sbatch(
     postrun_path = os.path.join(run_dir, "postrun.py")
     with open(postrun_path, "w") as _pfh:
         _pfh.write(postrun_script)
-    # The post-run step runs on the node, so it needs a Python the node can run —
-    # chosen there, not here (see slurm_script.node_python_lines).
     lines += ["# --- MCP post-run parsing step ---"]
-    lines += node_python_lines(explicit=python_exe)
     lines += [f'"$_MIMIR_PY" {shlex.quote(postrun_path)}']
     return "\n".join(lines) + "\n"

@@ -110,7 +110,21 @@ Optional extras (declared in `pyproject.toml`):
   C/C++ frames of a Python process) or the built-in `cProfile` for a Python command, and
   `perf` for a compiled one. `perf` needs `kernel.perf_event_paranoid` at 2 or below
   (`sudo sysctl kernel.perf_event_paranoid=1`); many desktop distributions set 4, and
-  the profile then says it was blocked rather than failing the run.
+  the profile then says it was blocked rather than failing the run. `perf stat` gives the
+  hardware counters `proxy_eval(op='profile', level='counters')` reads. A run that uses a
+  GPU is also traced: NVIDIA's Nsight Systems (`nsys`) and, for one kernel on request,
+  Nsight Compute (`ncu`), both shipped with the CUDA toolkit; AMD's `rocprofv3`, shipped
+  with ROCm 6.2 and later. On a cluster, load the module that provides them in the job's
+  environment. `ncu` reads GPU performance counters, which the NVIDIA driver keeps to
+  administrators unless `NVreg_RestrictProfilingToAdminUsers=0` is set; on AMD, the user
+  needs the `video` and `render` groups. A tool that is missing or refused is named in
+  the profile, with how to allow it. Where the memory goes (`level='memory'`) uses
+  `memray` for Python (`pip install memray`; the built-in `tracemalloc` otherwise),
+  and `heaptrack` (your distribution's package) or else `valgrind` for compiled code;
+  massif, valgrind's tool, is many times slower. The memory controllers' traffic in
+  `level='counters'` needs `kernel.perf_event_paranoid` at 0 or below (or root);
+  otherwise it is estimated from cache misses. Compile with `-g` (and
+  `-fno-omit-frame-pointer`) for profiles by file, function and line.
 
 > **Requirements file.** `pip install -r mimir/requirements.txt` installs
 > the same core dependencies, but it does **not** register the `mimir` /

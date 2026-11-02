@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -41,6 +42,16 @@ class TimeoutKillsTheTreeTests(unittest.TestCase):
         time.sleep(0.5)  # comfortably several of the grandchild's 0.05s ticks
         self.assertEqual(self._size(), settled,
                          "the grandchild kept writing after the timeout returned")
+
+    def test_a_measured_run_stops_the_grandchild_too(self) -> None:
+        with self.assertRaises(subprocess.TimeoutExpired):
+            proc_run.run(
+                ["bash", "--noprofile", "--norc", "-c", _forking_script(self.marker)],
+                timeout=0.6, rusage=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        settled = self._size()
+        time.sleep(0.5)
+        self.assertEqual(self._size(), settled, "the grandchild kept writing after the timeout returned")
 
     def test_subprocess_run_is_what_this_replaces(self) -> None:
         """The same script through subprocess.run leaks — this is the defect, pinned.
@@ -85,6 +96,38 @@ class NormalOperationTests(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired) as caught:
             proc_run.run(["sleep", "5"], timeout=0.3)
         self.assertIn("sleep", str(caught.exception.cmd))
+
+
+# Holds its peak a moment, as a real run does: a peak in a process's last tenth of a
+# second, below the spawner's own, is between two samples.
+_ALLOC = ("import sys, time; b = bytearray(int(sys.argv[1]) * 2**20); b[::4096] = b'x' * len(b[::4096]); "
+          "time.sleep(0.3); sys.exit(int(sys.argv[2]))")
+
+
+class MeasuredRunTests(unittest.TestCase):
+    """A measured run reports the peak resident memory of its tree, reaped by wait4."""
+
+    def _run(self, *args: str, timeout: float = 30, shell: bool = False):
+        argv = (["bash", "-c", f"{sys.executable} -c \"{_ALLOC}\" {' '.join(args)}; exit $?"] if shell
+                else [sys.executable, "-c", _ALLOC, *args])
+        return proc_run.run(argv, timeout=timeout, rusage=True,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_the_peak_covers_what_the_child_touched(self) -> None:
+        out = self._run("200", "0")
+        self.assertEqual(out.returncode, 0)
+        self.assertGreater(out.peak_rss_kb, 200 * 1024)
+        self.assertLess(out.peak_rss_kb, 400 * 1024)
+
+    def test_a_grandchild_s_peak_is_the_tree_s(self) -> None:
+        """bash reaps the Python it ran, so its peak reaches the measured child."""
+        out = self._run("150", "4", shell=True)
+        self.assertEqual(out.returncode, 4)
+        self.assertGreater(out.peak_rss_kb, 150 * 1024)
+
+    def test_a_pipe_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            proc_run.run(["echo"], rusage=True, stdout=subprocess.PIPE)
 
 
 if __name__ == "__main__":

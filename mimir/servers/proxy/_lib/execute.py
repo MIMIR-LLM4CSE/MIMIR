@@ -25,7 +25,9 @@ REF_RUN_TIMEOUT       = 3600         # seconds
 
 # ── shared metrics settling ───────────────────────────────────────────────────
 
-def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None) -> dict:
+def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None,
+                    peak_rss_kb: int | None = None, peak_rss_total_kb: int | None = None,
+                    processes: int | None = None) -> dict:
     """Parse a run's metrics block and apply the purge + timing guard.
 
     Every launch path funnels through here so a forged reserved metric or an
@@ -37,9 +39,20 @@ def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None) -
         run_metrics["reserved_metrics_ignored"] = forged
     if wall_s is not None:
         metrics_mod.normalize_time_metrics(run_metrics, wall_s)
+    if peak_rss_kb:
+        run_metrics["peak_rss_mb"] = round(peak_rss_kb / 1024, 1)
+    if peak_rss_total_kb:
+        run_metrics["peak_rss_total_mb"] = round(peak_rss_total_kb / 1024, 1)
+        run_metrics["processes"] = processes or 1
     if returncode is not None:
         run_metrics["returncode"] = returncode
     return run_metrics
+
+
+def _memory(proc) -> tuple:
+    """A measured run's memory: its largest process's peak, every process's summed, and
+    how many processes there were."""
+    return tuple(getattr(proc, k, None) for k in ("peak_rss_kb", "peak_rss_total_kb", "processes"))
 
 
 def _binary_fingerprint(path: str) -> dict:
@@ -173,7 +186,7 @@ def run_benchmark_case(
             # the very next timing this ratchet takes.
             proc = proc_run.run(
                 argv, stdout=log_fh, stderr=subprocess.STDOUT,
-                timeout=cap,
+                timeout=cap, rusage=True,
             )
     except subprocess.TimeoutExpired:
         return run_dir, {"error": f"timed out after {cap:.0f}s"}
@@ -190,7 +203,7 @@ def run_benchmark_case(
 
     stdout = procs.read_log(run_dir)
 
-    run_metrics = _settle_metrics(stdout, elapsed, proc.returncode)
+    run_metrics = _settle_metrics(stdout, elapsed, proc.returncode, *_memory(proc))
 
     proxy_out_key = run_metrics.pop("output_file", None)
     ext = command.output_ext(entry.get("output_format", "npz"))
@@ -262,7 +275,7 @@ def seal_reference(
     try:
         with open(log_file, "w") as log_fh:
             proc = proc_run.run(argv, stdout=log_fh, stderr=subprocess.STDOUT,
-                                timeout=timeout_s)
+                                timeout=timeout_s, rusage=True)
     except subprocess.TimeoutExpired:
         return {}, err(f"Solver timed out after {timeout_s}s.",
                          hint="Increase timeout_s or use a smaller problem size "
@@ -278,7 +291,7 @@ def seal_reference(
                          hint=f"Check stdout.log at {log_file}. Last output:\n"
                               + stdout[-500:])
 
-    ref_metrics = _settle_metrics(stdout, elapsed, proc.returncode)
+    ref_metrics = _settle_metrics(stdout, elapsed, proc.returncode, *_memory(proc))
     ref_metrics["proxy_name"] = proxy_name
 
     output_stored: str | None = None
@@ -348,7 +361,9 @@ def _post_run_finalize(
             wall_s = round(wall_ms / 1000.0, 3)
 
     stdout = procs.read_log(run_dir)
-    run_metrics = _settle_metrics(stdout, wall_s, returncode)
+    run_metrics = _settle_metrics(stdout, wall_s, returncode,
+                                  *(procs.read_int_file(os.path.join(run_dir, name))
+                                    for name in ("peak_rss_kb", "peak_rss_total_kb", "processes")))
 
     # The registry entry only carries conserved_metric here; a missing or
     # unreadable registry just means no conservation residual, not a failure.

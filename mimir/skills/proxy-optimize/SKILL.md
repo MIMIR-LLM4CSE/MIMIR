@@ -125,6 +125,15 @@ accepted:
   accepted `time_s` improvement whose wall time regressed raises a
   `timing_warning` — never silence it by editing the timer; fix the code or
   optimize `primary_metric='wall_time_s'`.
+- `peak_rss_mb` and `peak_rss_total_mb` — server-measured peak memory: of the case's
+  largest process, and of all its processes summed, each at its own peak, over
+  `processes` of them. For MPI, the total is the ranks' memory: on one node from the
+  processes the run starts, across nodes from Slurm's accounting (`sacct`) for ranks
+  `srun` started. The run's is its largest case's. Use either as a ceiling
+  (`{"metric": "peak_rss_total_mb", "operator": "lt", "threshold": 64000}`) or as the
+  objective. An accepted run whose memory grew by more than a quarter (the total when
+  both runs have it) raises a `memory_warning`: say so to the user, who may want a
+  ceiling.
 
 These metric names are **reserved**: only the server computes them, and any value
 the proxy itself prints for them is discarded (`reserved_metrics_ignored` lists the
@@ -172,9 +181,35 @@ the node. A baseline measured on the login node describes the login node.
    - **accept** → new best. Read the source and try a further improvement, then run again.
    - `where_time_goes` — the baseline and every accepted run are profiled after their
      verdict: the workspace files that take the time, and the share spent outside the
-     workspace. Choose the next edit there, not where the code looks expensive. When it
-     says `unavailable`, it says why (perf blocked by the kernel, no profiler for this
-     command); work from the timings and say the profile is missing.
+     workspace. Choose the next edit there, not where the code looks expensive. To go
+     deeper into the costliest file, `proxy_eval(op='profile', level='function',
+     focus=<that file>, confirm=True)`, then `level='line'`: both are read from the
+     profile already taken, so they run nothing. For compiled code, `level='counters'`
+     says why it is slow: a low `ipc` with a high `cache_miss_rate` is memory-bound, a
+     high `ipc` compute-bound. When a view says `unavailable`, it says why (perf blocked
+     by the kernel, no profiler for this command, cProfile keeping no lines); work from
+     what there is and say what is missing.
+   - `where_time_goes.gpu` — when the run uses a GPU: `busy` (kernels), `memcpy` and
+     `idle` as shares of the run's time, and the costliest kernels. A high `idle` is the
+     CPU and GPU waiting on each other (synchronisation, no overlap): fix that first. High
+     `memcpy` is data moving between host and device: keep it on the device before tuning
+     a kernel. Otherwise work on the costliest kernel; `op='profile', level='kernel',
+     focus=<its name>` says whether it is `memory`, `compute` or `latency` bound. That run
+     replays the kernel, so it is slow: ask for it once per kernel, not per step.
+     `memcpy_mb` and `peak_device_mb` say how much the run moves and holds on the GPU.
+   - Memory: `proxy_eval(op='profile', level='memory', confirm=True)` says which files
+     allocate what is live at the heap's peak, then `focus=<file>` its functions and
+     lines. It runs the case under memray, heaptrack or valgrind (2 to 100 times
+     slower): ask for it when `peak_rss_mb` nears a ceiling or after a
+     `memory_warning`, not every step. `level` also takes a list, e.g.
+     `level=['file', 'memory']` for time and memory in one call: each is its own
+     execution (an allocation profiler distorts time), and `where_time_goes` has one
+     view per level. In `level='counters'`, a `bandwidth_fraction`
+     above 0.7 says the DRAM is the limit: move fewer bytes (data layout, loop fusion,
+     smaller types), not fewer operations.
+   - Compiled code (C, C++, Fortran) needs `-g` in its build for files and lines, and
+     `-fno-omit-frame-pointer` for a function's total time; neither changes the
+     generated code. When a profile's note asks for them, add them to the build.
    - **reject** → this edit regressed. `proxy_eval(op='reset_to_best', confirm=True)`,
      then try a *different* edit and run.
    - **converged** → `proxy_eval(op='reset_to_best', confirm=True)`, then summarize.

@@ -67,9 +67,10 @@ class SessionTests(unittest.TestCase):
         ws.write("a.py", "from . import c\n")
         ruled_out = ws.snap("r2")
         rows = [
-            {"run_id": "r0", "launch_tree": base, "verdict": "accept", "primary_value": 10.0, "best_run_id": "r0"},
+            {"run_id": "r0", "launch_tree": base, "verdict": "accept", "primary_value": 10.0, "best_run_id": "r0",
+             "peak_rss_mb": 600.0},
             {"run_id": "r1", "launch_tree": kept, "verdict": "accept", "primary_value": 8.0,
-             "best_run_id": "r1", "axis": "import c"},
+             "best_run_id": "r1", "axis": "import c", "peak_rss_mb": 900.0},
             {"run_id": "r2", "launch_tree": ruled_out, "verdict": "reject", "primary_value": 9.0,
              "best_run_id": "r1", "axis": "drop b"},
         ]
@@ -81,8 +82,12 @@ class SessionTests(unittest.TestCase):
         # The baseline and the kept run were profiled after their verdict; the ruled-out one was not.
         for run_id, files in {"r0": {"pkg/a.py": 0.5, "pkg/b.py": 0.25}, "r1": {"pkg/a.py": 0.75}}.items():
             os.makedirs(os.path.join(runs, run_id, "profile"))
+            gpu = {"tool": "nsys", "busy": 0.5, "idle": 0.25, "memcpy": {"HtoD": 0.25},
+                   "files": {"pkg/a.py": 0.5}, "kernels": {"k": {"share": 0.5, "calls": 4, "file": "pkg/a.py"}}}
+            memory = {"tool": "massif", "peak_mb": 900.0, "files": {"pkg/a.py": 0.9}, "lines": {"pkg/a.py:3": 0.9}}
             with open(os.path.join(runs, run_id, "profile", "profile.json"), "w") as fh:
-                json.dump({"tool": "py-spy", "samples": 400, "files": files, "outside": {"numpy": 0.25}}, fh)
+                json.dump({"tool": "py-spy", "samples": 400, "files": files, "outside": {"numpy": 0.25},
+                           **({"gpu": gpu, "memory": memory} if run_id == "r1" else {})}, fh)
         code_map_steps._CACHE.update({"key": None, "value": {}})
         patches = [
             mock.patch.object(code_map_steps, "resolve_proxy_name", return_value="solver"),
@@ -124,7 +129,18 @@ class SessionTests(unittest.TestCase):
         self.assertEqual((base["files"], base["outside"]), ({"pkg/a.py": 0.5, "pkg/b.py": 0.25}, 0.25))
         kept = self.session["steps"][0]["profile"]
         self.assertEqual((kept["files"], kept["outside"]), ({"pkg/a.py": 0.6}, 0.2))
+        self.assertNotIn("gpu", base)
+        self.assertEqual(kept["gpu"], {"tool": "nsys", "busy": 0.4, "idle": 0.2, "memcpy": {"HtoD": 0.2},
+                                       "files": {"pkg/a.py": 0.4},
+                                       "kernels": {"k": {"share": 0.4, "calls": 4, "file": "pkg/a.py"}}})
+        self.assertEqual(kept["memory"], {"tool": "massif", "peak_mb": 900.0, "files": {"pkg/a.py": 0.9}})
         self.assertIsNone(self.session["steps"][1]["profile"])
+
+    def test_a_step_carries_its_peak_memory_beside_its_incumbent_s(self) -> None:
+        step = self.session["steps"][0]
+        self.assertEqual((step["peak_rss_mb"], step["incumbent_peak_rss_mb"]), (900.0, 600.0))
+        self.assertEqual(self.session["baseline"]["peak_rss_mb"], 600.0)
+        self.assertIsNone(self.session["steps"][1]["peak_rss_mb"])
 
     def test_no_session_is_no_steps(self) -> None:
         with mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=""):

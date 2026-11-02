@@ -301,7 +301,7 @@ The client registers 20 servers by default; the authoritative registry lives in
 | `mimir_api` | MIMIR's own extension API: the capability vocabulary, the drop-in paths this workspace resolves, and the shipped template per extension type — read from the running build, not remembered |
 | `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question (five minutes to answer, then it closes and the agent goes with the option it recommended) |
 | `agent` | `spawn_agent` — fan work out to a fresh agent: `role="explore"` (read-only recon, answers with a cited conclusion) or `role="task"` (full toolkit) |
-| `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop, whose baseline and kept runs are profiled by source file (7 op-dispatched tools) |
+| `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop, whose runs are measured for time and peak memory, the baseline and kept runs profiled by source file, function and line and their GPU kernels traced, with allocation and bandwidth profiles on request (7 op-dispatched tools) |
 
 Most tools return structured payloads (`status`, `result`, `error`, `hint`, `stdout`,
 `stderr`), carry rich docstrings, and provide recovery hints on failure — this improves tool

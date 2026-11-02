@@ -727,13 +727,16 @@ def end(proxy_name: str = "") -> dict:
     }, "proxy_eval(op='init', ...) to start a new session, or you are done."))
 
 
-async def profile_now(proxy_name: str = "", wait_s: float = RUN_WAIT_BUDGET_S) -> dict:
-    """Profile the code as it stands, without measuring it (op='profile').
-
-    Built and run in a directory of its own, so no run's files are touched; filed with the
-    run whose launch tree is this tree, when there is one, for the code map to show.
-    """
+async def profile_now(proxy_name: str = "", wait_s: float = RUN_WAIT_BUDGET_S,
+                      level: str | list[str] = "file", focus: str = "") -> dict:
+    """Profile the code as it stands, without measuring it (op='profile'), at each *level*:
+    read from the profile of a run of this tree when it has that view, else built and run
+    in a directory of its own and filed with that run, for the code map to show."""
     from .._lib import profiling
+    levels = list(dict.fromkeys([level] if isinstance(level, str) else level))
+    unknown = [lv for lv in levels if lv not in profiling.LEVELS]
+    if unknown or not levels:
+        return err(f"Unknown profile level {unknown or levels!r}.", hint=f"One or more of: {', '.join(profiling.LEVELS)}.")
     cfg = load_opt_config(proxy_name)
     name = cfg.get("proxy_name", "") if cfg else ""
     if not name:
@@ -747,32 +750,102 @@ async def profile_now(proxy_name: str = "", wait_s: float = RUN_WAIT_BUDGET_S) -
     runs = opt_session_runs_dir(name)
     match = next((os.path.join(runs, d) for d in run_dir_names(runs)
                   if (read_json(os.path.join(runs, d, "tree_at_launch.json")) or {}).get("fingerprint") == fp), "")
-    work = os.path.join(cache_dir(), "profiles", name, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    known = read_json(profiling.profile_path(match)) if match else None
+    views: dict[str, dict] = {}
+    logs: list[str] = []
+    ran = False
+    # In LEVELS' order: the sampled views first, so one run serves file, function and line.
+    for lv in sorted(levels, key=profiling.LEVELS.index):
+        shown = 5 if lv == "file" else 10
+        if _held(profiling, known, lv):
+            views[lv] = profiling.top(known, shown, lv, focus)
+            continue
+        found, log, failure = await _profile_run(profiling, name, cfg, fp, match, known, lv, focus, wait_s)
+        logs.append(log)
+        ran = True
+        if failure:
+            views[lv] = {"unavailable": failure, "log": log}
+            continue
+        known = found
+        views[lv] = profiling.top(found, shown, lv, focus)
+    profiled = os.path.basename(match) if match else "the current tree (no run measured it)"
+    if len(levels) == 1:
+        view = views[levels[0]]
+        if view.get("log") and set(view) == {"unavailable", "log"}:
+            return err(view["unavailable"], log=view["log"], log_tail=build_progress.read_tail(view["log"], 4096))
+        return ok(with_next({
+            "profiled": profiled, **({} if ran else {"from_profile_of": profiled}),
+            "where_time_goes": view, **({"log": logs[0]} if logs else {}),
+        }, _PROFILE_NEXT[levels[0]]))
+    return ok(with_next({
+        "profiled": profiled, "where_time_goes": views, **({"logs": logs} if logs else {}),
+    }, "read where_time_goes, one view per level: " + " / ".join(f"{lv}: {_PROFILE_NEXT[lv]}" for lv in views)))
+
+
+def _held(profiling, known: dict | None, level: str) -> bool:
+    """Whether the profile of this tree already answers *level*, so no run is needed."""
+    if level in profiling.SAMPLED:
+        return profiling.has(known, level)
+    held = (known or {}).get("memory") or {}
+    return level == "memory" and bool(held) and not held.get("unavailable")
+
+
+async def _profile_run(profiling, name: str, cfg: dict, fp: str, match: str, known: dict | None,
+                       level: str, focus: str, wait_s: float) -> tuple[dict, str, str]:
+    """One profiled execution of the tree at *level*: the profile it leaves (filed with
+    *match* when there is one, beside what that run's profile already held), its log,
+    and why it failed, or ""."""
+    work = os.path.join(cache_dir(), "profiles", name,
+                        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "-" + level)
     os.makedirs(work, exist_ok=True)
+    log_path = os.path.join(work, "runner.log")
     base = read_json(os.path.join(match, "config.json")) if match else None
     write_run_config(work, {**(base or {}), "proxy_name": name, "benchmark_name": cfg.get("benchmark_name", ""),
-                            "primary_metric": cfg.get("primary_metric", "time_s"), "fingerprint": fp})
+                            "primary_metric": cfg.get("primary_metric", "time_s"), "fingerprint": fp,
+                            "profile_level": level, "profile_focus": focus})
+    if known and level in profiling.SECTION:
+        # What the tree's profile already knows (its GPU, its kernels) guides this one.
+        os.makedirs(os.path.dirname(profiling.profile_path(work)), exist_ok=True)
+        write_json(profiling.profile_path(work), known, indent=2)
     if match and os.path.isfile(os.path.join(match, "metrics.json")):
         # The run's own measurements say which case is the longest: profile that one.
         shutil.copy2(os.path.join(match, "metrics.json"), os.path.join(work, "metrics.json"))
     python_exe = cfg.get("python_executable") or sys.executable
     argv = [python_exe, *launch_argv(_OPT_RUNNER, "--run-dir", work, "--phase", "profile")]
     try:
-        with open(os.path.join(work, "runner.log"), "w") as log:
+        with open(log_path, "w") as log:
             await asyncio.to_thread(proc_run.run, argv, stdout=log, stderr=subprocess.STDOUT, timeout=wait_s)
     except subprocess.TimeoutExpired:
-        return err(f"Profiling took longer than {int(wait_s)}s and was stopped.", log=os.path.join(work, "runner.log"))
+        return {}, log_path, f"Profiling took longer than {int(wait_s)}s and was stopped."
     result = read_json(profiling.profile_path(work)) or {}
     if not result:
-        log_path = os.path.join(work, "runner.log")
-        return err("Profiling did not run to the end: no profile was written.", log=log_path,
-                   log_tail=build_progress.read_tail(log_path, 4096))
+        return {}, log_path, "Profiling did not run to the end: no profile was written."
+    if level in profiling.SAMPLED:
+        # A new sampled profile replaces the old one, but not the sections taken apart.
+        result = {**{k: v for k, v in (known or {}).items() if k in profiling.SECTION.values()}, **result}
+    else:
+        section = profiling.SECTION[level]
+        result = {**(known or {}), section: result.get(section)}
     if match:
         target = os.path.dirname(profiling.profile_path(match))
-        shutil.rmtree(target, ignore_errors=True)
-        shutil.copytree(os.path.dirname(profiling.profile_path(work)), target)
-    return ok(with_next({
-        "profiled": os.path.basename(match) if match else "the current tree (no run measured it)",
-        "where_time_goes": profiling.top(result),
-        "log": os.path.join(work, "runner.log"),
-    }, "read where_time_goes; the code map shows it per module"))
+        if level in profiling.SAMPLED:
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(os.path.dirname(profiling.profile_path(work)), target)
+        os.makedirs(target, exist_ok=True)
+        write_json(profiling.profile_path(match), result, indent=2)
+    return result, log_path, ""
+
+
+_PROFILE_NEXT = {
+    "file": "read where_time_goes; the code map shows it per module. For the functions of the "
+            "costliest file: op='profile', level='function', focus=<that file>",
+    "function": "read where_time_goes; for the lines of a file: op='profile', level='line', focus=<file>",
+    "line": "read where_time_goes: edit there, then op='run'",
+    "counters": "read where_time_goes: a low ipc with a high cache_miss_rate says memory-bound, "
+                "a high ipc compute-bound; a bandwidth_fraction above 0.7 says the DRAM is the "
+                "limit: move fewer bytes (data layout, loop fusion), not fewer operations",
+    "kernel": "read where_time_goes: `bound` says whether the kernel waits on memory, on "
+              "compute, or on neither (latency: too little parallel work or occupancy)",
+    "memory": "read where_time_goes: the files whose allocations are live at the peak; for "
+              "the functions and lines of one, op='profile', level='memory', focus=<file>",
+}

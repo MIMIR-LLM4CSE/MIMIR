@@ -81,7 +81,22 @@ be the caller's own group, so killing it cannot reach MIMIR. Used where MIMIR ru
 it did not write: `bash_exec.run_blocking` and both proxy execution paths in
 `proxy/_lib/execute.py` (a solver may fork MPI ranks; left running past a timeout they
 compete with the very next timing the ratchet takes). Fixed-argv callers
-(`module avail`, `squeue`, the LSP) are unchanged.
+(`module avail`, `squeue`, the LSP) are unchanged. With `rusage=True` (output to files,
+never pipes), the child is reaped by `os.wait4` in a waiting thread, and the result's
+`peak_rss_kb` is its `ru_maxrss`: on Linux the child's and every descendant's it reaped,
+so the largest process of the tree, not their sum. The sum is `peak_rss_total_kb`: each
+process of the child's session (its pid, since it leads one; MPI ranks `mpirun` starts
+carry it) has its own peak (`VmHWM`) read from `/proc` every 0.1 s, and those peaks are
+added, over `processes` of them, never below `peak_rss_kb`. Linux carries the spawner's
+own peak into a child's `ru_maxrss` across `exec`, so `wait4`'s figure is kept only above
+the spawner's `VmHWM`; below it the samples stand, and a process smaller than the runner
+that peaks in its last tenth of a second is read low. The proxy's measured runs
+use it; a Slurm job gets the same through `proxy/_lib/measure.py`, which the job script
+runs the solver under and which writes `returncode`, `wall_time_ms`, `peak_rss_kb`,
+`peak_rss_total_kb` and `processes` beside its output (a node with no MIMIR Python falls
+back to the shell's timing, without memory). Ranks `srun` starts are Slurm's step
+daemons' children, on any node, so `measure.py` also reads Slurm's accounting (`sacct`:
+each srun step's AveRSS times its NTasks, summed) and keeps it when larger.
 
 **No child reads a server's stdin.** Every spawn redirects it from `/dev/null`:
 `proc_run.run` by default (a caller that needs to feed one still passes its own), the bash
@@ -368,7 +383,9 @@ both the state dir and the scratchpad name are built from it.
 ### Numerical invariants (`proxy/_lib/numerics.py`)
 
 `NUMERICAL_INVARIANT_METRICS` (`l2_rel`, `linf_rel`, `l2_abs`, `linf_abs`,
-`convergence_order`, `conservation_residual`, `finite`) plus `wall_time_s` form
+`convergence_order`, `conservation_residual`, `finite`) plus `wall_time_s` and
+`peak_rss_mb`, `peak_rss_total_mb` and `processes` (the server's own measurements of the
+run) form
 `RESERVED_METRICS`, which the **proxy** server strips from anything the code under
 optimization prints — a solver must not be able to satisfy its own acceptance
 constraints. Hoisted here from `proxy/_lib/metrics.py`, which re-imports
@@ -1651,6 +1668,7 @@ Helper package (not an MCP server) imported by `proxy/server_proxy.py`, the `pro
 | `ratchet.py` | Optimization ratchet: `ratchet_verdict` / `_is_improvement` / `run_primary_value` / `select_best_case`, best-so-far persistence (`load_best`/`save_best` incl. `wall_value` for the timing audit), `append_ledger`., plus the measurement policy under them (`effective_repeat`, `effective_min_improvement`) — how many times a case is measured and what margin an improvement must clear are decisions about measurement, not about one session |
 | `build.py` | Building a registered proxy before it is measured: `spec`/`check_cmd`/`check_env` (argv, never a shell line), `run_build`, `builds_for` (deduplicated on the work, not the name), and the build report. Owns the three things that decide whether an incremental build stays incremental — the argv shape, `build_cwd` kept as spelled and exported as `PWD`, and the pinned `build_env` recorded in the log |
 | `tree_snapshot.py` | Atomic snapshots of the `optimize_paths` set: a shadow git repository, a copy-directory fallback, `fingerprint`, and a `restore` that writes only the files whose content actually differs |
+| `measure.py` | What the server measures of a run no MIMIR process waits for (a Slurm job): the solver runs under it, and it writes the exit code, wall time and peak resident memory beside the output for `_post_run_finalize` |
 | `placement.py` | Where each phase of a Slurm eval run is sent: resolves the build's partition and resources from the call, then the registration, then the run phase — returning None when nothing names a build partition, which is what keeps the single-job path intact |
 
 ---
@@ -1677,7 +1695,7 @@ Tool bodies live in `proxy/_ops/` as plain functions (no `@mcp.tool` decorators 
 | `slurm.py` | the three sbatch submission ops (single / per-case suite / eval). `eval` is the one that can submit **two** chained jobs — build then run — when a build partition is resolved |
 | `scaffold.py` | component-harness scaffolding + the four template generators |
 | `panel.py` | the drawer's Optimisation section: the session's state, metric, best, machine comparability, and one `steps` line (tried, kept, change since baseline) that opens the code map |
-| `_lib/profiling.py` | where a run's time goes, per workspace file: one execution of the run's longest case under the profiler that fits (py-spy `--native` or cProfile for a Python command, perf for a compiled one; when none can run, a profile that says why, e.g. perf blocked by `kernel.perf_event_paranoid`), each sample given to the deepest workspace frame of its stack, the rest per outside package or library. Taken by the runner after the verdict for the baseline, every accepted run, and a run launched with `profile=True`; `op='profile'` profiles the tree as it stands in a directory of its own and files it with the run whose launch tree matches. `results` carries `where_time_goes`. GPU time is not seen |
+| `_lib/profiling/` | where a run's time goes, per workspace file, function and line: one execution of the run's longest case under the profiler that fits (`_lib/profiling/cpu.py`: py-spy `--native` or cProfile for a Python command, perf for a compiled one; when none can run, a profile that says why, e.g. perf blocked by `kernel.perf_event_paranoid`), each sample given to the deepest workspace frame of its stack (`_lib/profiling/frames.py`), its function's self and total time and its line kept beside the file, the rest per outside package or library. A run that uses a GPU (the libraries it links or its CPU profile ran into, else the job's `*_VISIBLE_DEVICES`) is traced once more (`_lib/profiling/gpu.py`: Nsight Systems or rocprofv3), its kernels and copies read as shares of the run's measured time with the idle rest, each kernel given to the workspace file that defines it as `__global__`; the tools' CSV columns are found by header name, so a version whose headers moved says which one is missing. Taken by the runner after the verdict for the baseline, every accepted run, and a run launched with `profile=True`; `op='profile'` profiles the tree as it stands in a directory of its own and files it with the run whose launch tree matches. Its `level` reads the function and line views from that run's profile without a run; `counters` (perf stat: ipc and miss rates) and `kernel` (one kernel under Nsight Compute or rocprofv3 `--pmc`: compute, memory or latency bound) take a run each and add their section to the profile. `level='memory'` (`_lib/profiling/memory.py`: memray or tracemalloc for Python, heaptrack else valgrind's massif for compiled code, heaptrack read through its massif export) gives the allocations live at the heap's peak by file, function and line. Fortran symbols read as the source names them (`module::procedure`), and a GPU kernel's file is found for CUDA and HIP (`__global__`), CUDA Fortran (`attributes(global)`) and the kernels OpenACC and OpenMP offload compilers make of a loop (their names carry the procedure and line). The GPU trace adds the bytes copied and the device's peak memory, sampled while it runs; `counters` adds DRAM traffic (the memory controllers when perf may count the machine, else last-level cache misses) and its share of the registration's `peak_bandwidth_gbytes_per_s`. `level` may be a list: the views come back one per level, in `LEVELS`' order, so a single sampled run serves file, function and line and each other level takes its own execution (an allocation or kernel profiler distorts time); a new sampled profile keeps the sections the run's profile already had. `results` carries `where_time_goes` |
 | `code_map_steps.py` | the session as the code map draws it (`proxy_code_map_steps`, `CODE_MAP_STEPS`): for each settled run after the baseline, the files its launch snapshot changed against its incumbent's (the `best_run_id` of the row before it), the dependencies those changes add or drop (each snapshot mapped by `shared/code_map` with its tracked files read through `tree_snapshot.read`), its verdict, axis and metric beside the incumbent's, and its profile scaled to the baseline's metric so two runs' bars compare. Cached on the ledger's mtime |
 
 Tools (read-only):

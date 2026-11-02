@@ -1,0 +1,333 @@
+"""The CPU side of a profile: py-spy (``--native``: the C/C++ frames of a Python process
+too) or cProfile for a Python command, perf for a compiled one, each sample given to the
+deepest workspace frame of its stack, by file, function and line; and perf's hardware
+counters for a compiled command, on request."""
+from __future__ import annotations
+
+import os
+import pstats
+import re
+import shutil
+import subprocess
+import time
+from collections import Counter
+from typing import Callable, TextIO
+
+from .. import proc_run
+from .frames import Frame, fortran_name, outside
+
+FUNCTIONS_KEPT, LINES_KEPT = 50, 200
+
+_PYTHON_RE = re.compile(r"^(python|pypy)[\d.]*$")
+_PYSPY_FRAME_RE = re.compile(r"^(?P<name>.*?) \((?P<where>[^()]*)\)$")
+_HEX_RE = re.compile(r"^\s*([0-9a-f]+)\s+(?P<sym>\S.*?)?\s*\((?P<dso>[^()]*)\)\s*$")
+_SRCLINE_RE = re.compile(r"^\s+(?P<file>[^\s:][^:]*):(?P<line>\d+|\?\?)\s*$")
+_PERF_EVENTS = ("cycles", "instructions", "cache-references", "cache-misses", "branches", "branch-misses")
+_LLC_EVENTS = ("LLC-loads", "LLC-load-misses")
+
+
+def is_python(argv: list[str]) -> bool:
+    """Whether a command runs Python: an interpreter, or a script it runs."""
+    return bool(argv) and (bool(_PYTHON_RE.match(os.path.basename(argv[0]))) or argv[0].endswith(".py"))
+
+
+def perf_allowed() -> tuple[bool, str]:
+    """Whether perf may profile here, and why not when it may not."""
+    if not shutil.which("perf"):
+        return False, "perf is not installed"
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True, ""
+    try:
+        with open("/proc/sys/kernel/perf_event_paranoid") as fh:
+            level = int(fh.read().strip())
+    except (OSError, ValueError):
+        return True, ""
+    if level > 2:
+        return False, (f"perf is blocked here (kernel.perf_event_paranoid = {level}); an admin can "
+                       "allow it with `sudo sysctl kernel.perf_event_paranoid=1`")
+    return True, ""
+
+
+def choose(argv: list[str]) -> tuple[str, str]:
+    """The profiler for *argv* here, or "" with the reason none fits."""
+    if is_python(argv):
+        if shutil.which("py-spy"):
+            return "py-spy", ""
+        if len(argv) > 1 and argv[1] != "-c":
+            return "cprofile", ""
+        return "", "py-spy is not installed and cProfile cannot run a `-c` command"
+    ok, why = perf_allowed()
+    return ("perf", "") if ok else ("", why)
+
+
+# ── reading what a profiler wrote ────────────────────────────────────────────
+
+def pyspy_stacks(text: str) -> list[tuple[list[Frame], int]]:
+    """py-spy raw output: each stack root first, as its frames, and its count."""
+    out = []
+    for line in text.splitlines():
+        stack, _, count = line.rpartition(" ")
+        if not stack or not count.isdigit():
+            continue
+        frames = []
+        for frame in stack.split(";"):
+            m = _PYSPY_FRAME_RE.match(frame.strip())
+            name, where = (m.group("name"), m.group("where")) if m else ("", "")
+            path, sep, lineno = where.rpartition(":")
+            if not (sep and lineno.isdigit()):
+                path, lineno = where, "0"
+            frames.append(Frame(path, "" if name.startswith("0x") else fortran_name(name, path), int(lineno)))
+        out.append((frames, int(count)))
+    return out
+
+
+def perf_stacks(text: str) -> list[tuple[list[Frame], int]]:
+    """``perf script -F ip,sym,dso,srcline`` output: each sample's frames root first, each
+    its source file and line when perf knew them, else its library."""
+    out: list[tuple[list[Frame], int]] = []
+    frames: list[Frame] = []
+    for line in text.splitlines() + [""]:
+        if not line.strip():
+            if frames:
+                out.append(([f._replace(func=fortran_name(f.func, f.where)) for f in reversed(frames)], 1))
+                frames = []
+            continue
+        src = _SRCLINE_RE.match(line)
+        if src and frames and not _HEX_RE.match(line):
+            if "??" not in (src.group("file"), src.group("line")):
+                frames[-1] = frames[-1]._replace(where=src.group("file"), line=int(src.group("line")))
+            continue
+        hexed = _HEX_RE.match(line)
+        if hexed:
+            sym = re.sub(r"\+0x[0-9a-f]+$", "", hexed.group("sym") or "")
+            frames.append(Frame(hexed.group("dso"), "" if sym == "[unknown]" else sym))
+    return out
+
+
+def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], str | None]) -> dict:
+    """Shares of the samples per workspace file, function and line (the deepest workspace
+    frame of each stack; a function's total counts every stack it is on, once) and, for
+    stacks with none, per outside package or library."""
+    files: Counter = Counter()
+    own: Counter = Counter()
+    under: Counter = Counter()
+    lines: Counter = Counter()
+    out: Counter = Counter()
+    total = 0
+    for frames, count in stacks:
+        total += count
+        homes = [(home, f) for f in frames if (home := resolve(f.where))]
+        if not homes:
+            out[outside(frames[-1].where if frames else "")] += count
+            continue
+        home, deepest = homes[-1]
+        files[home] += count
+        if deepest.func:
+            own[f"{home}::{deepest.func}"] += count
+        if deepest.line:
+            lines[f"{home}:{deepest.line}"] += count
+        for key in {f"{h}::{f.func}" for h, f in homes if f.func}:
+            under[key] += count
+    if not total:
+        return {"samples": 0, "files": {}, "outside": {}}
+    return {"samples": total,
+            "files": {f: round(n / total, 4) for f, n in files.most_common()},
+            "functions": _functions(own, under, total),
+            "lines": {k: round(n / total, 4) for k, n in lines.most_common(LINES_KEPT)},
+            "outside": {k: round(n / total, 4) for k, n in out.most_common(12)}}
+
+
+def cprofile_files(path: str, resolve: Callable[[str], str | None]) -> dict:
+    """A cProfile dump's self time per workspace file and function (with its cumulative
+    time), the rest per outside package."""
+    stats = pstats.Stats(path).stats  # type: ignore[attr-defined]
+    files: Counter = Counter()
+    own: Counter = Counter()
+    under: Counter = Counter()
+    out: Counter = Counter()
+    for (filename, _line, func), (_cc, _nc, tottime, cumtime, _callers) in stats.items():
+        home = resolve(filename) if filename and filename[0] not in "<~" else None
+        if home:
+            files[home] += tottime
+            own[f"{home}::{func}"] += tottime
+            under[f"{home}::{func}"] += cumtime
+        else:
+            out["built-ins" if filename == "~" else "python" if filename.startswith("<") else outside(filename)] += tottime
+    total = sum(files.values()) + sum(out.values())
+    if not total:
+        return {"samples": 0, "files": {}, "outside": {}}
+    return {"samples": len(stats),
+            "files": {f: round(t / total, 4) for f, t in files.most_common() if t / total >= 5e-5},
+            "functions": _functions(own, under, total),
+            "outside": {k: round(t / total, 4) for k, t in out.most_common(12) if t / total >= 5e-5},
+            "note": "cProfile: self time per file and function, without the native code it "
+                    "calls, and no time per line"}
+
+
+def _functions(own: Counter, under: Counter, total: float) -> dict:
+    """The costliest functions by self time and by total time, each with both."""
+    keep = dict.fromkeys([k for k, _ in own.most_common(FUNCTIONS_KEPT)]
+                         + [k for k, _ in under.most_common(FUNCTIONS_KEPT)])
+    rows = {k: {"self": round(own[k] / total, 4), "total": round(under[k] / total, 4)} for k in keep}
+    return {k: v for k, v in sorted(rows.items(), key=lambda kv: (-kv[1]["self"], -kv[1]["total"]))
+            if v["self"] >= 5e-5 or v["total"] >= 5e-5}
+
+
+def perf_counts(text: str) -> dict[str, tuple[float, str]]:
+    """``perf stat -x,`` output: each event's count and unit, summed over the PMUs an
+    uncore event spans; what perf could not count is left out."""
+    seen: dict[str, tuple[float, str]] = {}
+    for line in text.splitlines():
+        cols = line.split(",")
+        if len(cols) < 3:
+            continue
+        try:
+            value = float(cols[0])
+        except ValueError:
+            continue                    # <not supported>, <not counted>, comments
+        name = re.sub(r"^(uncore_imc)_\d+/", r"\1/", cols[2].split(":")[0])
+        seen[name] = (seen.get(name, (0.0, ""))[0] + value, cols[1])
+    return seen
+
+
+def perf_stat(text: str) -> dict:
+    """``perf stat -x,`` output read into instructions per cycle and miss rates."""
+    seen = {k: v for k, (v, _unit) in perf_counts(text).items()}
+
+    def ratio(a: str, b: str) -> float | None:
+        return round(seen[a] / seen[b], 4) if seen.get(a) is not None and seen.get(b) else None
+    counters = {"ipc": ratio("instructions", "cycles"),
+                "cache_miss_rate": ratio("cache-misses", "cache-references"),
+                "branch_miss_rate": ratio("branch-misses", "branches"),
+                "llc_miss_rate": ratio("LLC-load-misses", "LLC-loads")}
+    return {k: v for k, v in counters.items() if v is not None}
+
+
+def bandwidth(core: str, uncore: str, elapsed_s: float, peak_gbytes_per_s: float | None) -> dict:
+    """DRAM traffic per second: the memory controllers' bytes when *uncore* counted them
+    (machine-wide), else last-level cache load misses times a 64-byte line, a lower
+    bound; and its share of the declared peak."""
+    ctrl = perf_counts(uncore)
+    moved = sum(v * (2**20 if unit == "MiB" else 64) for name, (v, unit) in ctrl.items()
+                if re.search(r"cas_count_(read|write)|data_(reads|writes)", name))
+    if moved:
+        how = "memory controllers, whole machine"
+    else:
+        misses = perf_counts(core).get("LLC-load-misses")
+        if not misses or elapsed_s <= 0:
+            return {}
+        moved, how = misses[0] * 64, "last-level cache load misses x 64 B: a lower bound, without writes or prefetches"
+    rate = moved / elapsed_s / 1e9
+    return {"dram_gbytes_per_s": round(rate, 2), "dram_source": how,
+            **({"bandwidth_fraction": round(rate / peak_gbytes_per_s, 3)} if peak_gbytes_per_s else {})}
+
+
+def _uncore_events() -> tuple[str, ...]:
+    """The memory controllers' read and write events, when perf may count the whole
+    machine here (root, or kernel.perf_event_paranoid at 0 or below) and knows them."""
+    try:
+        with open("/proc/sys/kernel/perf_event_paranoid") as fh:
+            allowed = int(fh.read().strip()) <= 0
+    except (OSError, ValueError):
+        allowed = False
+    if not (allowed or (hasattr(os, "geteuid") and os.geteuid() == 0)):
+        return ()
+    try:
+        listing = subprocess.run(["perf", "list"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    for reads, writes in (("cas_count_read", "cas_count_write"), ("data_reads", "data_writes")):
+        if reads in listing:
+            return f"uncore_imc/{reads}/", f"uncore_imc/{writes}/"
+    return ()
+
+
+# ── taking one ───────────────────────────────────────────────────────────────
+
+def sample(tool: str, argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
+           log: TextIO, timeout: float | None) -> dict:
+    """Run *argv* once under *tool* and attribute its samples."""
+    if tool == "py-spy":
+        raw = os.path.join(out_dir, "profile.raw")
+        cmd = ["py-spy", "record", "--native", "--format", "raw", "--rate", "250", "-o", raw, "--", *argv]
+        proc_run.run(cmd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+        if not os.path.isfile(raw):      # --native is not supported everywhere
+            proc_run.run([c for c in cmd if c != "--native"], stdout=log,
+                         stderr=subprocess.STDOUT, timeout=timeout)
+        with open(raw, encoding="utf-8", errors="replace") as rf:
+            return attribute(pyspy_stacks(rf.read()), resolve)
+    if tool == "cprofile":
+        dump = os.path.join(out_dir, "profile.pstats")
+        proc_run.run([argv[0], "-m", "cProfile", "-o", dump, *argv[1:]], stdout=log,
+                     stderr=subprocess.STDOUT, timeout=timeout)
+        return cprofile_files(dump, resolve)
+    stacks = _perf(argv, out_dir, log, timeout, "fp")
+    if stacks and shallow(stacks) > SHALLOW:
+        # No frame pointers (an optimised build): unwind from the stack's own copy instead.
+        deeper = _perf(argv, out_dir, log, timeout, "dwarf")
+        if deeper and shallow(deeper) < shallow(stacks):
+            stacks = deeper
+    result = attribute(stacks, resolve)
+    notes = []
+    if stacks and shallow(stacks) > SHALLOW:
+        notes.append("stacks are cut short, so a function's total time is understated: build with "
+                     "-fno-omit-frame-pointer")
+    binary = os.path.basename(argv[0])
+    if (result.get("outside") or {}).get(binary, 0) > 0.3:
+        notes.append(f"{binary} has no debug information, so its time is not on its source files: "
+                     "add -g to the build (it does not change the generated code)")
+    if notes:
+        result["note"] = "; ".join(notes)
+    return result
+
+
+# A profile whose stacks are mostly a single frame was unwound without frame pointers.
+SHALLOW = 0.8
+
+
+def shallow(stacks: list[tuple[list[Frame], int]]) -> float:
+    """The share of samples whose stack is a single frame."""
+    total = sum(n for _, n in stacks)
+    return sum(n for frames, n in stacks if len(frames) <= 1) / total if total else 0.0
+
+
+def _perf(argv: list[str], out_dir: str, log: TextIO, timeout: float | None, unwind: str) -> list:
+    """perf's stacks of one run of *argv*, unwound by frame pointer ("fp") or DWARF."""
+    data = os.path.join(out_dir, "perf.data")
+    graph = ["-g"] if unwind == "fp" else ["--call-graph", "dwarf,16384"]
+    proc_run.run(["perf", "record", *graph, "-F", "499", "-o", data, "--", *argv],
+                 stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+    script = proc_run.run(["perf", "script", "-i", data, "-F", "ip,sym,dso,srcline"],
+                          stdout=subprocess.PIPE, stderr=log, text=True, timeout=timeout)
+    return perf_stacks(script.stdout or "")
+
+
+def counters(argv: list[str], out_dir: str, log: TextIO, timeout: float | None,
+             peak_gbytes_per_s: float | None = None) -> dict:
+    """The hardware counters of one run of a compiled *argv*, its DRAM traffic against
+    *peak_gbytes_per_s*, or why there are none."""
+    if is_python(argv):
+        return {"unavailable": "counters are for compiled code; this command runs Python"}
+    ok, why = perf_allowed()
+    if not ok:
+        return {"unavailable": why}
+    stat, ustat = os.path.join(out_dir, "perf.stat"), os.path.join(out_dir, "perf.uncore")
+    cmd = ["perf", "stat", "-x,", "-o", stat, "-e", ",".join(_PERF_EVENTS + _LLC_EVENTS), "--", *argv]
+    uncore = _uncore_events()
+    if uncore:
+        # The memory controllers belong to the machine, not the process: an outer,
+        # machine-wide perf around the per-process one, over the same single run.
+        cmd = ["perf", "stat", "-a", "-x,", "-o", ustat, "-e", ",".join(uncore), "--", *cmd]
+    start = time.monotonic()
+    proc_run.run(cmd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+    elapsed = time.monotonic() - start
+    with open(stat, encoding="utf-8", errors="replace") as fh:
+        core = fh.read()
+    found = perf_stat(core)
+    if not found:
+        return {"unavailable": "perf stat counted nothing here (no hardware counters on this machine?)"}
+    controllers = ""
+    if uncore and os.path.isfile(ustat):
+        with open(ustat, encoding="utf-8", errors="replace") as fh:
+            controllers = fh.read()
+    return {"tool": "perf stat", **found, **bandwidth(core, controllers, elapsed, peak_gbytes_per_s)}

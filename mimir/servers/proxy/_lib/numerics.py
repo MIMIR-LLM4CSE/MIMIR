@@ -20,7 +20,10 @@ NUMERICAL_INVARIANT_METRICS = frozenset({
 })
 
 # ``wall_time_s`` is the server's own wall-clock measurement — the tamper-proof twin of
-# a self-reported ``time_s``. Reserved, but a *timing* invariant rather than a
-# correctness one, hence absent from NUMERICAL_INVARIANT_METRICS: a run that reports
-# only a duration has proved nothing about the answer.
-RESERVED_METRICS = NUMERICAL_INVARIANT_METRICS | {"wall_time_s"}
+# a self-reported ``time_s`` — and ``peak_rss_mb`` / ``peak_rss_total_mb`` its memory
+# high-water marks (the largest process's; every process's summed, as MPI counts ranks),
+# with ``processes``, how many there were. Reserved,
+# but measurements rather than correctness invariants, hence absent from
+# NUMERICAL_INVARIANT_METRICS: a run that reports only a cost has proved nothing about
+# the answer.
+RESERVED_METRICS = NUMERICAL_INVARIANT_METRICS | {"wall_time_s", "peak_rss_mb", "peak_rss_total_mb", "processes"}

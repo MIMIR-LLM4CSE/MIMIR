@@ -95,7 +95,8 @@ def load_best(proxy_name: str) -> dict | None:
 
 
 def save_best(proxy_name: str, run_id: str, primary_value: float | None,
-               tree_snapshot_id: str, wall_value: float | None = None) -> str | None:
+               tree_snapshot_id: str, wall_value: float | None = None,
+               memory: dict | None = None) -> str | None:
     """Record *run_id* as best, pointing at the tree snapshot taken at its launch.
 
     One snapshot for the whole set, so a restore is a measured combination.
@@ -105,6 +106,7 @@ def save_best(proxy_name: str, run_id: str, primary_value: float | None,
         "run_id":        run_id,
         "primary_value": primary_value,
         "wall_value":    wall_value,
+        **(memory or {}),
         "tree_snapshot": snapped,
         "updated_at":    datetime.now(timezone.utc).isoformat(),
     }

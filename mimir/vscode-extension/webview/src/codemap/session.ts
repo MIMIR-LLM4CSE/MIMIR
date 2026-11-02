@@ -4,19 +4,35 @@
 
 export interface StepEdge { from: string; to: string; line: number; kind: string; via: string; sure: string; breaks: string }
 /** Where a run's time went, per workspace file, in fractions of the baseline's metric. */
+/** A profile's GPU side: kernels, copies and idle time as shares of the baseline's time. */
+export interface GpuProfile {
+  tool: string; busy?: number; idle?: number; memcpy?: Record<string, number>;
+  files?: Record<string, number>; kernels?: Record<string, { share: number; calls?: number; file?: string; line?: number }>;
+  memcpy_mb?: Record<string, number>; peak_device_mb?: number;
+  unavailable?: string; note?: string;
+}
+/** Where the memory live at the heap's peak was allocated: shares of that peak per file. */
+export interface MemoryProfile {
+  tool: string; peak_mb?: number; files?: Record<string, number>; unavailable?: string; note?: string;
+}
 export interface Profile {
   tool: string; samples?: number; case?: string;
   files?: Record<string, number>; outside?: number; unavailable?: string; note?: string;
+  gpu?: GpuProfile;
+  memory?: MemoryProfile;
 }
 export interface Step {
   n: number; run_id: string; axis: string; verdict: string;
   value: number | null; incumbent_value: number | null; delta: number | null;
   changed: string[]; added: StepEdge[]; removed: StepEdge[];
   profile?: Profile | null;
+  peak_rss_mb?: number | null; incumbent_peak_rss_mb?: number | null;
+  /** Every process's peak summed (an MPI run's ranks), and its incumbent's. */
+  peak_rss_total_mb?: number | null; incumbent_peak_rss_total_mb?: number | null;
 }
 export interface Session {
   proxy: string; metric: string; goal: string;
-  baseline: { run_id: string; value: number | null; profile?: Profile | null };
+  baseline: { run_id: string; value: number | null; profile?: Profile | null; peak_rss_mb?: number | null };
   steps: Step[];
 }
 
@@ -24,6 +40,12 @@ export interface Session {
 export interface TimeView {
   files: Record<string, number>;
   before: Record<string, number> | null;
+  /** The GPU's time per file, when the profile shown traced one; and the one before it. */
+  gpuFiles: Record<string, number> | null;
+  gpuBefore: Record<string, number> | null;
+  gpu: GpuProfile | null;
+  /** The allocations at the heap's peak, when the profile shown has them. */
+  memory: MemoryProfile | null;
   from: string;
   tool: string;
   note?: string;
@@ -31,6 +53,7 @@ export interface TimeView {
 
 const usable = (p?: Profile | null): p is Profile & { files: Record<string, number> } =>
   !!p && !p.unavailable && !!p.files;
+const traced = (g?: GpuProfile | null): g is GpuProfile => !!g && !g.unavailable;
 
 /** The profile of step *k* if it has one, else of the last kept step before it, else of
  *  the baseline; with "This step" and a kept step, also the profile it improved on. */
@@ -43,8 +66,15 @@ export function timeAt(session: Session, k: number, scope: Scope): TimeView | nu
   const prior = chain.filter((c) => c.n < k && c.kept && usable(c.p)).pop();
   const shown = own ?? prior;
   if (!shown || !usable(shown.p)) return null;
-  const before = scope === "step" && own && own.kept && k > 0 && prior && usable(prior.p) ? prior.p.files : null;
-  return { files: shown.p.files, before, from: shown.label, tool: shown.p.tool, note: shown.p.note };
+  const compared = scope === "step" && own && own.kept && k > 0 && prior && usable(prior.p) ? prior.p : null;
+  const gpu = traced(shown.p.gpu) ? shown.p.gpu : null;
+  return {
+    files: shown.p.files, before: compared ? compared.files : null,
+    gpuFiles: gpu ? gpu.files ?? {} : null,
+    gpuBefore: gpu && compared && traced(compared.gpu) ? compared.gpu.files ?? {} : null,
+    gpu, memory: shown.p.memory && !shown.p.memory.unavailable ? shown.p.memory : null,
+    from: shown.label, tool: shown.p.tool, note: shown.p.note,
+  };
 }
 export type Scope = "step" | "all";
 
@@ -155,7 +185,8 @@ function timeBlock(session: Session, s: Step, fileRow: (id: string, right: strin
     return '<div class="cap">Where its time goes (' + esc(p.tool) + ")</div>"
       + '<div class="list">' + top.map(([f, v]) => fileRow(f, pctOf(v))).join("") + "</div>"
       + (p.outside ? '<div class="empty">' + pctOf(p.outside) + " outside the workspace</div>" : "")
-      + (p.note ? '<div class="empty">' + esc(p.note) + "</div>" : "");
+      + (p.note ? '<div class="empty">' + esc(p.note) + "</div>" : "")
+      + gpuBlock(p.gpu) + memoryBlock(p.memory, fileRow);
   }
   if (p && p.unavailable) return '<div class="cap">Not profiled</div><div class="empty">' + esc(p.unavailable) + "</div>";
   if (s.n === session.steps.length) {
@@ -164,14 +195,69 @@ function timeBlock(session: Session, s: Step, fileRow: (id: string, right: strin
   return '<div class="empty">Not profiled. Only the code as it is now can be profiled.</div>';
 }
 
+/** What a step's card says of its GPU: the costliest kernels, copies and idle time, or
+ *  why the GPU could not be traced. */
+export function gpuBlock(g?: GpuProfile | null): string {
+  if (!g) return "";
+  if (g.unavailable) return '<div class="cap">GPU not traced</div><div class="empty">' + esc(g.unavailable) + "</div>";
+  const kernels = Object.entries(g.kernels ?? {}).slice(0, 5);
+  const copies = Object.values(g.memcpy ?? {}).reduce((n, v) => n + v, 0);
+  const moved = Object.entries(g.memcpy_mb ?? {}).map(([dir, v]) => dir + " " + megabytes(v)).join(", ");
+  return '<div class="cap">On the GPU (' + esc(g.tool) + ")</div>"
+    + '<div class="empty">kernels ' + pctOf(g.busy ?? 0) + " · copies " + pctOf(copies) + " · idle " + pctOf(g.idle ?? 0) + "</div>"
+    + (g.peak_device_mb !== undefined || moved ? '<div class="empty">'
+      + (g.peak_device_mb !== undefined ? "peak device memory " + megabytes(g.peak_device_mb) : "")
+      + (g.peak_device_mb !== undefined && moved ? " · " : "") + (moved ? "copied " + esc(moved) : "") + "</div>" : "")
+    + '<div class="list">' + kernels.map(([name, k]) => '<div class="row"><span title="' + esc(name) + '">'
+      + esc(kernelName(name)) + "</span><span>" + pctOf(k.share) + "</span></div>").join("") + "</div>"
+    + (g.note ? '<div class="empty">' + esc(g.note) + "</div>" : "");
+}
+
+/** Where the heap's peak was allocated, or why it could not be profiled. */
+export function memoryBlock(m: MemoryProfile | null | undefined, fileRow: (id: string, right: string) => string): string {
+  if (!m) return "";
+  if (m.unavailable) return '<div class="cap">Memory not profiled</div><div class="empty">' + esc(m.unavailable) + "</div>";
+  const top = Object.entries(m.files ?? {}).slice(0, 5);
+  return '<div class="cap">Where memory goes (' + esc(m.tool) + (m.peak_mb !== undefined ? ", heap peak " + megabytes(m.peak_mb) : "") + ")</div>"
+    + '<div class="list">' + top.map(([f, v]) => fileRow(f, pctOf(v))).join("") + "</div>"
+    + (m.note ? '<div class="empty">' + esc(m.note) + "</div>" : "");
+}
+
+/** A size in MB, as the pane writes it. */
+export function megabytes(mb: number): string {
+  return mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : mb >= 10 ? mb.toFixed(0) + " MB" : mb.toFixed(1) + " MB";
+}
+
+/** A kernel's name without its parameters, as short as the pane needs it. */
+export function kernelName(name: string): string {
+  const bare = name.replace(/^void\s+/, "").split("(")[0];
+  return bare.length > 48 ? bare.slice(0, 47) + "…" : bare;
+}
+
 /** A share of the baseline's time, as the map writes it. */
 export function pctOf(v: number): string {
   return v >= 0.0995 ? (v * 100).toFixed(0) + "%" : v >= 0.001 ? (v * 100).toFixed(1) + "%" : v > 0 ? "<0.1%" : "–";
 }
 
+/** A step's memory as the card writes it: summed over its processes when there were
+ *  several (an MPI run), with the largest one; its move against the incumbent's; and
+ *  whether it grew. */
+function memoryLine(s: Step): { text: string; grew: boolean } | null {
+  const summed = !!s.peak_rss_total_mb && !!s.peak_rss_mb && s.peak_rss_total_mb > s.peak_rss_mb * 1.05;
+  const now = summed ? s.peak_rss_total_mb! : s.peak_rss_mb;
+  if (!now) return null;
+  const was = summed ? s.incumbent_peak_rss_total_mb : s.incumbent_peak_rss_mb;
+  return {
+    text: megabytes(now) + (summed ? " summed, largest process " + megabytes(s.peak_rss_mb!) : "")
+      + (was ? " (" + signed((now - was) / was) + ")" : ""),
+    grew: !!was && now > was * 1.05,
+  };
+}
+
 export function stepCard(session: Session, k: number, fileRow: (id: string, right: string) => string): string {
   const s = session.steps.find((x) => x.n === k);
   if (!s) return "";
+  const memory = memoryLine(s);
   const line = (l: string, v: string, cls = "") =>
     '<div class="line"><span>' + esc(l) + '</span><span class="' + cls + '">' + v + "</span></div>";
   return '<div class="section step"><div class="title">Step #' + s.n + "</div>"
@@ -179,6 +265,7 @@ export function stepCard(session: Session, k: number, fileRow: (id: string, righ
     + line("verdict", kept(s) ? "✓ kept" : "✕ " + esc(s.verdict.replace("reject", "ruled out")), kept(s) ? "is-ok" : "is-danger")
     + line(session.metric, value(s.value) + " against " + value(s.incumbent_value)
       + (s.delta === null ? "" : " (" + signed(s.delta) + ")"), better(session, s.delta) ? "is-ok" : "")
+    + (memory ? line("peak memory", memory.text, memory.grew ? "is-danger" : "") : "")
     + line("dependencies", '<span class="is-ok">+' + s.added.length + '</span> / <span class="is-danger">−' + s.removed.length + "</span>")
     + '<div class="cap">Files it changed (' + s.changed.length + ")</div>"
     + '<div class="list">' + (s.changed.map((f) => fileRow(f, "")).join("") || '<span class="empty">none</span>') + "</div>"

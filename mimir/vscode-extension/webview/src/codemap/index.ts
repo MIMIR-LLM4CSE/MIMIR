@@ -3,7 +3,7 @@
 // what the server answered (`shared.code_map`) and reads nothing else.
 
 import { STYLE } from "./style";
-import { edgeKey, overlay, pctOf, stepCard, strip, timeAt, type Overlay, type Scope, type Session, type TimeView } from "./session";
+import { edgeKey, gpuBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, type Overlay, type Scope, type Session, type TimeView } from "./session";
 
 interface Component { id: string; name: string; tier: number; declared: string[]; external: Record<string, number>; tests: boolean }
 interface Module { id: string; component: string }
@@ -182,6 +182,17 @@ function stillThere(v: View, s: Selection): boolean {
 // Set when a component arrives from the drawer: the map scrolls to its band once drawn.
 let scrollToBand = false;
 
+/** One time bar in a module's box: its share now, hatched where it was larger before. */
+function timeBar(g: SVGElement, now: number, was: number | null, scale: number, y: number, cls: string): void {
+  const tw = BW - 52;
+  svg("rect", { class: "track", x: 9, y, width: tw, height: 4, rx: 2 }, g);
+  if (now > 0) svg("rect", { class: ("fill " + cls).trim(), x: 9, y, width: Math.max(2, (now / scale) * tw), height: 4, rx: 2 }, g);
+  if (was !== null && was - now > 1e-6) {
+    svg("rect", { x: 9 + (now / scale) * tw, y: y - 1, width: ((was - now) / scale) * tw, height: 6, fill: cls ? "url(#hatch-gpu)" : "url(#hatch)" }, g);
+  }
+  svg("text", { class: ("pct " + cls).trim(), x: BW - 8, y: y + 5, "text-anchor": "end" }, g).textContent = (cls ? "GPU " : "") + pctOf(now);
+}
+
 /** A module's share of the baseline's time in *files*: the sum of its files'. */
 function moduleTime(v: View, id: string, files: Record<string, number>): number {
   return (v.modFiles.get(id) ?? []).reduce((n, f) => n + (files[f.id] ?? 0), 0);
@@ -192,11 +203,14 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   root.innerHTML = "";
   const s = svg("svg", { viewBox: `0 0 ${v.width} ${v.height}`, role: "img", "aria-label": "Modules by component, with the dependencies between them" }, root);
   s.style.cssText = `width:100%;min-width:720px;max-width:${v.width * 1.15}px;height:auto`;
-  const pat = svg("pattern", { id: "hatch", width: 4, height: 4, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, svg("defs", {}, s));
-  svg("rect", { class: "hatch", width: 2, height: 4 }, pat);
-  // One scale for every step: the costliest module of whichever profile is drawn.
-  const scale = time ? Math.max(1e-9, ...[...v.modFiles.keys()].map((id) =>
-    Math.max(moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : 0))) : 1;
+  const defs = svg("defs", {}, s);
+  for (const [id, cls] of [["hatch", "hatch"], ["hatch-gpu", "hatch gpu"]]) {
+    const pat = svg("pattern", { id, width: 4, height: 4, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, defs);
+    svg("rect", { class: cls, width: 2, height: 4 }, pat);
+  }
+  // One scale for every step and both sides: the costliest module of whichever profile is drawn.
+  const tables = time ? [time.files, time.before, time.gpuFiles, time.gpuBefore].filter((x): x is Record<string, number> => !!x) : [];
+  const scale = Math.max(1e-9, ...[...v.modFiles.keys()].flatMap((id) => tables.map((t) => moduleTime(v, id, t))));
   for (const b of v.bands) {
     const band = svg("rect", { class: "band-bg" + (sel?.kind === "comp" && sel.id === b.c.id ? " is-sel" : ""),
       x: 0, y: b.y, width: v.width, height: b.h, rx: 6 }, s);
@@ -240,12 +254,11 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     const langs = [...new Set(files.map((f) => LANG[f.lang] ?? f.lang))].join(" ");
     svg("text", { class: "msub", x: 9, y: 33 }, g).textContent = `${files.length} files · ${(lines / 1000).toFixed(1)}k · ${langs}`;
     if (time) {
-      const now = moduleTime(v, id, time.files), was = time.before ? moduleTime(v, id, time.before) : now;
-      const tw = BW - 52;
-      svg("rect", { class: "track", x: 9, y: 40, width: tw, height: 4, rx: 2 }, g);
-      if (now > 0) svg("rect", { class: "fill", x: 9, y: 40, width: Math.max(2, (now / scale) * tw), height: 4, rx: 2 }, g);
-      if (was - now > 1e-6) svg("rect", { x: 9 + (now / scale) * tw, y: 39, width: ((was - now) / scale) * tw, height: 6, fill: "url(#hatch)" }, g);
-      svg("text", { class: "pct", x: BW - 8, y: 45, "text-anchor": "end" }, g).textContent = pctOf(now);
+      // With a GPU traced, its bar sits under the CPU's, on the same scale.
+      const gpuNow = time.gpuFiles ? moduleTime(v, id, time.gpuFiles) : 0;
+      const both = !!time.gpuFiles;
+      timeBar(g, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 37 : 40, "");
+      if (both) timeBar(g, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, 45, "gpu");
     }
     let dx = BW - 9;
     if (map!.edges.some((e) => e.breaks && v.byId.get(e.from)!.module === id)) { svg("circle", { class: "dot-break", cx: dx, cy: 12, r: 4 }, g); dx -= 11; }
@@ -359,7 +372,8 @@ function timeSection(t: TimeView): string {
   const top = Object.entries(t.files).sort((a, b) => b[1] - a[1]).slice(0, 6);
   return section("time", "Where time goes", list(top.map(([f, v]) => fileRow(f, pctOf(v))))
     + '<div class="empty">Share of the baseline\'s time, from the profile of ' + esc(t.from)
-    + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>");
+    + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>"
+    + gpuBlock(t.gpu) + memoryBlock(t.memory, fileRow));
 }
 
 /** A component: where it stacks, what the build says it links, its modules, and the
@@ -391,6 +405,8 @@ function componentDetail(m: CodeMap, v: View, id: string): string {
     + line("files", files.length + " · " + files.reduce((n, f) => n + f.lines, 0).toLocaleString("en") + " lines")
     + (c.declared.length ? line("build links", esc(c.declared.map(base).join(", "))) : "")
     + (t ? line("time", pctOf(mods.reduce((n, x) => n + modTime(x), 0)) + " of the baseline's") : "")
+    + (t?.gpuFiles ? line("GPU time", pctOf(mods.reduce((n, x) => n + moduleTime(v, x, t.gpuFiles!), 0)) + " of the baseline's") : "")
+    + (t?.memory?.files ? line("memory", pctOf(mods.reduce((n, x) => n + moduleTime(v, x, t.memory!.files!), 0)) + " of the heap's peak") : "")
     + (breaks.length ? line("rule breaks", String(breaks.length), "is-danger") : "")
     + (cycles.length ? line("module cycles", String(cycles.length), "is-cycle") : "")
     + '<div class="cap">Modules (' + mods.length + ")</div>" + list(modRows)
@@ -415,6 +431,8 @@ function moduleDetail(m: CodeMap, v: View, id: string): string {
     ? line("cycle", "with " + (m.cycles[v.cycleOf.get(id)!].length - 1) + " modules", "is-cycle") : "";
   return BACK + section("sel", base(id), '<div class="path">' + esc(id) + "</div>" + cycle
     + (t ? line("time", pctOf(moduleTime(v, id, t.files)) + " of the baseline's, profile of " + esc(t.from)) : "")
+    + (t?.gpuFiles ? line("GPU time", pctOf(moduleTime(v, id, t.gpuFiles)) + " of the baseline's") : "")
+    + (t?.memory?.files ? line("memory", pctOf(moduleTime(v, id, t.memory.files)) + " of the heap's peak") : "")
     + '<div class="cap">Files</div>' + list(files.map((f) => fileRow(f.id, t && t.files[f.id] ? pctOf(t.files[f.id]) : f.lines + " l")))
     + '<div class="cap">Depends on</div>' + list(rows(out))
     + '<div class="cap">Used by</div>' + list(rows(inn)));
@@ -427,6 +445,8 @@ function fileDetail(m: CodeMap, v: View, id: string): string {
     + line("module", '<button class="link" data-module="' + esc(f.module) + '">' + esc(f.module) + "</button>")
     + line("language", esc(f.lang)) + line("lines", f.lines.toLocaleString("en"))
     + (time()?.files[f.id] ? line("time", pctOf(time()!.files[f.id]) + " of the baseline's") : "")
+    + (time()?.gpuFiles?.[f.id] ? line("GPU time", pctOf(time()!.gpuFiles![f.id]) + " of the baseline's") : "")
+    + (time()?.memory?.files?.[f.id] ? line("memory", pctOf(time()!.memory!.files![f.id]) + " of the heap's peak") : "")
     + '<div class="cap">Depends on (' + out.length + ")</div>" + list(out.map((e) => fileRow(e.to, edgeRight(e))))
     + '<div class="cap">Used by (' + inn.length + ")</div>" + list(inn.map((e) => fileRow(e.from, edgeRight(e), e.line)))
     + '<button class="open" data-open="' + esc(f.id) + '" data-line="">Open ' + esc(base(f.id)) + "</button>");
@@ -475,7 +495,8 @@ function timeLegend(): string {
   const t = time();
   if (!t) return "";
   return '<span><i class="sw bar"></i>share of the baseline\'s time, profile of ' + esc(t.from) + " (" + esc(t.tool) + ")"
-    + (t.before ? ", hatched where this step saved it" : "") + "</span>";
+    + (t.before ? ", hatched where this step saved it" : "") + "</span>"
+    + (t.gpu ? '<span><i class="sw bar gpu"></i>its GPU kernels (' + esc(t.gpu.tool) + ")</span>" : "");
 }
 
 function stepLegend(): string {

@@ -70,6 +70,27 @@ def _timing_warning(verdict: str | None, primary_metric: str, best: dict | None,
             "or optimize primary_metric='wall_time_s' instead.")
 
 
+# How much more memory an accepted run may take than the best it replaces before the
+# reply says so: allocators and page rounding move a peak by a few percent on their own.
+MEMORY_GROWTH_WARNED = 0.25
+
+
+def _memory_warning(verdict: str | None, primary_metric: str, best: dict | None, memory: dict) -> str | None:
+    """Why an accepted gain may have a cost the objective does not see: a peak memory
+    well above the best's it replaces; every process's summed (an MPI run's ranks) when
+    both runs have it, else the largest process's."""
+    key = "peak_rss_total_mb" if (best or {}).get("peak_rss_total_mb") and memory.get("peak_rss_total_mb") \
+        else "peak_rss_mb"
+    peak, before = memory.get(key), (best or {}).get(key)
+    if (verdict != "accept" or primary_metric in ("peak_rss_mb", "peak_rss_total_mb")
+            or not isinstance(peak, (int, float)) or not isinstance(before, (int, float)) or before <= 0
+            or peak <= before * (1 + MEMORY_GROWTH_WARNED)):
+        return None
+    return (f"Accepted, but its {key} grew {peak / before - 1:+.0%} ({before:.0f} -> {peak:.0f} MB). "
+            f"If memory matters here, add a requirement on {key}; "
+            "proxy_eval(op='profile', level='memory') shows what allocates it.")
+
+
 def _run_axis(run_dir: str) -> str:
     """What the run in *run_dir* said it was trying, or "".
 
@@ -120,6 +141,8 @@ def _ratchet_settle_locked(
     verdict = ratchet_verdict(feasible, primary_value, best, goal, min_improvement)
 
     timing_warning = _timing_warning(verdict, primary_metric, best, wall_value)
+    memory = {k: final_metrics[k] for k in ("peak_rss_mb", "peak_rss_total_mb") if final_metrics.get(k) is not None}
+    memory_warning = _memory_warning(verdict, primary_metric, best, memory)
 
     # The launch gate in prepare_run guarantees the first run measured the untouched
     # tree; this records which run that was, so the gate opens exactly once.
@@ -131,7 +154,7 @@ def _ratchet_settle_locked(
 
     stall = int(cfg.get("stall", 0))
     if verdict == "accept":
-        save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value)
+        save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value, memory=memory)
         best  = load_best(name)
         stall = 0
     elif feasible:
@@ -159,7 +182,9 @@ def _ratchet_settle_locked(
         "primary_spread": spread,
         "min_improvement": min_improvement,
         "best_run_id":   best.get("run_id") if best else None,
+        **memory,
         **({"timing_warning": timing_warning} if timing_warning else {}),
+        **({"memory_warning": memory_warning} if memory_warning else {}),
     })
 
     outcome = {
@@ -180,6 +205,8 @@ def _ratchet_settle_locked(
         "primary_spread":  spread,
         "noise_floor":     cfg.get("noise_floor"),
         "timing_warning": timing_warning,
+        **memory,
+        "memory_warning": memory_warning,
     }
     # Frozen to disk so a later results() replays this verdict instead of
     # recomputing one against a tree that has moved on since. Best-effort on

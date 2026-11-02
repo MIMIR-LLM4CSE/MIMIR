@@ -44,7 +44,26 @@ def _profile(name: str, run_id: str, value, baseline) -> dict | None:
     return {"tool": prof.get("tool", ""), "samples": prof.get("samples", 0), "case": prof.get("case", ""),
             "files": {f: round(v * scale, 5) for f, v in (prof.get("files") or {}).items()},
             "outside": round(sum((prof.get("outside") or {}).values()) * scale, 5),
+            **({"gpu": _gpu(prof["gpu"], scale)} if prof.get("gpu") else {}),
+            # Shares of the heap's peak, not of time: never scaled.
+            **({"memory": {k: prof["memory"][k] for k in ("tool", "peak_mb", "files", "unavailable", "note")
+                           if k in prof["memory"]}} if prof.get("memory") else {}),
             **({"note": prof["note"]} if prof.get("note") else {})}
+
+
+def _gpu(g: dict, scale: float) -> dict:
+    """A profile's GPU side in fractions of the baseline's time, its costliest kernels."""
+    if g.get("unavailable"):
+        return {"unavailable": g["unavailable"], "tool": g.get("tool", "")}
+    return {"tool": g.get("tool", ""),
+            "busy": round((g.get("busy") or 0) * scale, 5), "idle": round((g.get("idle") or 0) * scale, 5),
+            "memcpy": {k: round(v * scale, 5) for k, v in (g.get("memcpy") or {}).items()},
+            "files": {f: round(v * scale, 5) for f, v in (g.get("files") or {}).items()},
+            "kernels": {k: {**v, "share": round((v.get("share") or 0) * scale, 5)}
+                        for k, v in list((g.get("kernels") or {}).items())[:8]},
+            # Sizes, not shares of time: never scaled.
+            **{k: g[k] for k in ("memcpy_mb", "peak_device_mb") if g.get(k) is not None},
+            **({"note": g["note"]} if g.get("note") else {})}
 
 
 def _delta(value, incumbent) -> float | None:
@@ -93,6 +112,10 @@ def session(proxy_name: str = "") -> dict:
             "incumbent_run_id": (inc or {}).get("run_id", ""),
             "incumbent_value": (inc or {}).get("primary_value"),
             "delta": _delta(row.get("primary_value"), (inc or {}).get("primary_value")),
+            "peak_rss_mb": row.get("peak_rss_mb"),
+            "incumbent_peak_rss_mb": (inc or {}).get("peak_rss_mb"),
+            "peak_rss_total_mb": row.get("peak_rss_total_mb"),
+            "incumbent_peak_rss_total_mb": (inc or {}).get("peak_rss_total_mb"),
             "changed": changed or [],
             "added": [{k: now[e][k] for k in _EDGE_FIELDS} for e in sorted(set(now) - set(then))],
             "removed": [{k: then[e][k] for k in _EDGE_FIELDS} for e in sorted(set(then) - set(now))],
@@ -103,6 +126,7 @@ def session(proxy_name: str = "") -> dict:
         "metric": cfg.get("primary_metric", "time_s"),
         "goal": cfg.get("primary_goal", "min"),
         "baseline": {"run_id": baseline_run, "value": base_value,
+                     "peak_rss_mb": (incumbent or {}).get("peak_rss_mb"),
                      "profile": _profile(name, baseline_run, base_value, base_value)},
         "steps": steps,
     }

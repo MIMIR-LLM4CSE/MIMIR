@@ -551,6 +551,8 @@ async def proxy_eval(
     background: bool = False,
     axis: str = "",
     profile: bool = False,
+    level: str | list[str] = "file",
+    focus: str = "",
     confirm: bool = False,
 ) -> dict:
     """Drive an iterative proxy-optimization session as a monotone ratchet (sensitive).
@@ -595,7 +597,16 @@ async def proxy_eval(
                        without measuring it: where the time goes, per workspace file
                        (`where_time_goes`). The baseline and every accepted run are
                        profiled on their own after their verdict; use this for the code
-                       as it is now, or before choosing the next axis.
+                       as it is now, or before choosing the next axis. `level` goes
+                       deeper: 'function' and 'line' (read from a profile of the same
+                       tree when there is one, so no run), 'counters' (hardware
+                       counters of a compiled run: one more run), 'kernel' (one GPU
+                       kernel's throughput and what bounds it, under Nsight Compute
+                       or rocprofv3: a slow run, as each launch is replayed),
+                       'memory' (where the heap's peak was allocated: a slow run). A
+                       list of levels profiles them all in one call, e.g. ['file',
+                       'memory'] for time and memory. A run that uses a GPU also has
+                       its kernels, copies and idle time traced (`where_time_goes.gpu`).
       stop          -> stop the active run (SIGTERM local / scancel Slurm)
       reset         -> restore every optimize_paths file to the baseline tree
       reset_to_best -> restore every optimize_paths file to the tree of the best
@@ -666,6 +677,15 @@ async def proxy_eval(
         profile: For op='run': profile the run after its verdict even if it is not
             accepted (the baseline and accepted runs always are). The profile is a
             separate execution of the longest case and never part of the measurement.
+        level: For op='profile': 'file' (default), 'function', 'line', 'counters',
+            'kernel' or 'memory', or a list of them (e.g. ['file', 'memory']): each is
+            its own execution where it needs one (a memory or kernel profiler distorts
+            time), one sampled run serves file, function and line, and
+            `where_time_goes` then has one view per level.
+        focus: For op='profile': at level 'function', 'line' or 'memory', the
+            workspace file whose functions or lines to show, as `where_time_goes`
+            names it; at level 'kernel', the kernel's name, as `where_time_goes.gpu`
+            names it. With a list of levels, it applies to each that takes one.
         confirm: Must be True to apply any operation.
     """
     if op not in _EVAL_OPS:
@@ -692,7 +712,7 @@ async def proxy_eval(
         return await eval_session.run_awaited(proxy_name, background=background,
                                               axis=axis, profile=profile)
     if op == "profile":
-        return await eval_session.profile_now(proxy_name)
+        return await eval_session.profile_now(proxy_name, level=level, focus=focus)
     if op == "stop":
         return eval_session.stop(proxy_name)
     if op == "reset":

@@ -44,15 +44,21 @@ _STEPS: dict = {"key": None, "value": []}
 
 
 def _hottest(proxy_name: str, run_id: str) -> dict | None:
-    """The costliest workspace file of the best run's profile, when it was profiled."""
+    """The costliest workspace file of the best run's profile, and its costliest GPU
+    kernel when it ran any, when it was profiled."""
     from .._lib import profiling
     from .._lib.layout import opt_session_runs_dir, read_json
     prof = read_json(profiling.profile_path(os.path.join(opt_session_runs_dir(proxy_name), run_id))) if run_id else None
     files = (prof or {}).get("files") or {}
-    if not files:
-        return None
-    path, share = next(iter(files.items()))
-    return {"label": "hottest", "value": f"{os.path.basename(path)} · {share:.0%} of the best run"}
+    kernels = ((prof or {}).get("gpu") or {}).get("kernels") or {}
+    parts = []
+    if files:
+        path, share = next(iter(files.items()))
+        parts.append(f"{os.path.basename(path)} · {share:.0%} of the best run")
+    if kernels:
+        name, row = next(iter(kernels.items()))
+        parts.append(f"GPU {profiling.gpu.kernel_base(name) or name} · {row.get('share', 0):.0%}")
+    return {"label": "hottest", "value": " · ".join(parts)} if parts else None
 
 
 def _steps_lines(proxy_name: str, cfg: dict) -> list[dict]:

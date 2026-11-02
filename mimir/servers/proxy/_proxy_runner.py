@@ -152,7 +152,8 @@ def _profile_only(cfg: dict, reg: dict, suite: dict, proxy_name: str, entry: dic
     tally = _Tally(results=[r for r in measured if isinstance(r.get("metrics"), dict)] or [
         {"case_id": first.get("case_id", "?"), "sweep": (first.get("param_sweeps") or [{}])[0],
          "metrics": {}}])
-    _profile_phase(plan, reg, entry, run_dir, tally)
+    _profile_phase(plan, reg, entry, run_dir, tally, level=cfg.get("profile_level") or "file",
+                   focus=cfg.get("profile_focus") or "")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -405,9 +406,10 @@ def _settle_ratchet(proxy_name: str, run_dir: str, output: dict) -> str:
     return ""
 
 
-def _profile_phase(plan: _Plan, reg: dict, entry: dict, run_dir: str, tally: _Tally) -> None:
+def _profile_phase(plan: _Plan, reg: dict, entry: dict, run_dir: str, tally: _Tally,
+                   level: str = "file", focus: str = "") -> None:
     """Run the run's longest case once more under a profiler, after the verdict: where
-    its time goes, by workspace file. Not a measurement, and never fatal."""
+    its time goes at *level* (see ``profiling.LEVELS``). Not a measurement, and never fatal."""
     timed = [r for r in tally.results if isinstance(r.get("metrics"), dict)]
     if not timed:
         return
@@ -421,15 +423,22 @@ def _profile_phase(plan: _Plan, reg: dict, entry: dict, run_dir: str, tally: _Ta
         from ...shared import code_map
         os.makedirs(out_dir, exist_ok=True)
         argv = command.build_run_cmd(case_entry, out_dir, case.get("extra_params", ""), longest.get("sweep") or {})
-        _write_phase(run_dir, "profile", f"profiling case {longest['case_id']}")
+        _write_phase(run_dir, "profile", f"profiling case {longest['case_id']} ({level})")
         root = store.workspace_root()
-        spent = longest["metrics"].get("time_s") or 600.0
-        result = profiling.profile(argv, out_dir, root, code_map.walk(root),
-                                   timeout=max(120.0, 5 * float(spent)), case=str(longest["case_id"]))
-        top = profiling.top(result)
+        measured = longest["metrics"].get("time_s")
+        spent = float(measured or 600.0)
+        # A kernel profiler replays each launch, massif simulates the CPU: far slower than the run.
+        slower = {"kernel": 20, "memory": 60}.get(level)
+        timeout = max(300.0, slower * spent) if slower else max(120.0, 5 * spent)
+        result = profiling.profile(argv, out_dir, root, code_map.walk(root), timeout=timeout,
+                                   case=str(longest["case_id"]), level=level, focus=focus,
+                                   wall_s=float(measured) if measured else None,
+                                   peak_mb=longest["metrics"].get("peak_rss_mb"),
+                                   peak_gbytes_per_s=case_entry.get("peak_bandwidth_gbytes_per_s"))
+        top = profiling.top(result, level=level)
         _log(f"[proxy_runner] profile tool={result.get('tool') or 'none'} "
              + (f"unavailable={top['unavailable']}" if "unavailable" in top
-                else " ".join(f"{f}={s:.0%}" for f, s in top["files"].items())))
+                else " ".join(f"{f}={s:.0%}" for f, s in (top.get("files") or {}).items())))
     except Exception as exc:
         _log(f"[proxy_runner] WARNING: profile failed: {exc}")
 
@@ -478,6 +487,9 @@ def main() -> None:
          f"best_time_s={best_time if best_time is not None else 'n/a'}")
 
     build_report = build_mod.read_report(run_dir) or {}
+    # The run's memory is its largest case's: a constraint on it is a ceiling, not a mean.
+    peaks = {k: [r["metrics"][k] for r in tally.results if isinstance((r.get("metrics") or {}).get(k), (int, float))]
+             for k in ("peak_rss_mb", "peak_rss_total_mb")}
     output = {
         "proxy_name": proxy_name,
         "benchmark_name": benchmark_name,
@@ -489,6 +501,7 @@ def main() -> None:
         "convergence_order": convergence_order,
         # Run-level, so no requirement can gate on how long a compiler took.
         "build_s": build_report.get("total_duration_s", 0.0),
+        **{k: max(v) for k, v in peaks.items() if v},
         "results": tally.results,
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }

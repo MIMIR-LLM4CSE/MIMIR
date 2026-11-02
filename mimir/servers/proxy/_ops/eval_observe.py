@@ -337,6 +337,8 @@ def results(proxy_name: str = "") -> dict:
 
     if r.get("timing_warning"):
         recommendation += " WARNING: " + r["timing_warning"]
+    if r.get("memory_warning"):
+        recommendation += " WARNING: " + r["memory_warning"]
 
     # Said only once the run has measured how long its own build takes: a constant
     # cannot know whether this project compiles in two seconds or half an hour, and
@@ -368,6 +370,7 @@ def results(proxy_name: str = "") -> dict:
         # Same reason: where this code spends its time is what picks the next axis.
         **({"where_time_goes": profiling.top(prof)} if prof else {}),
         **({"timing_warning": r["timing_warning"]} if r.get("timing_warning") else {}),
+        **({"memory_warning": r["memory_warning"]} if r.get("memory_warning") else {}),
     }, next_step))
 
 
