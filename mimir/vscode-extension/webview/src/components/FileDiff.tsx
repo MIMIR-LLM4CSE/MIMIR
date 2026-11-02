@@ -17,8 +17,10 @@ function handleOpenFile(diff: DiffEntry, e: React.MouseEvent) {
     // Pre-write approval: open VS Code diff editor (current ↔ proposed).
     vscodePostMessage({ type: "open_diff", file: diff.file, new_content: diff.new_content });
   } else {
-    // Post-write: reconstruct original from patch and open a VS Code diff editor.
-    vscodePostMessage({ type: "open_diff", file: diff.file, patch: diff.patch });
+    // Post-write: reconstruct original from patch and open a VS Code diff editor —
+    // unless the patch was clipped, which no longer reverses to it: then the file.
+    vscodePostMessage({ type: "open_diff", file: diff.file,
+                        patch: diff.truncated ? undefined : diff.patch });
   }
 }
 

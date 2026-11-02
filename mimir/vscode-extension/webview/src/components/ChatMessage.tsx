@@ -99,7 +99,9 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
                     if (d.new_content !== undefined) {
                       vscodePostMessage({ type: "open_diff", file: d.file, new_content: d.new_content });
                     } else {
-                      vscodePostMessage({ type: "open_diff", file: d.file, patch: d.patch });
+                      // A clipped patch no longer reverses to the original: open the file.
+                      vscodePostMessage({ type: "open_diff", file: d.file,
+                                          patch: d.truncated ? undefined : d.patch });
                     }
                   }}
                 >

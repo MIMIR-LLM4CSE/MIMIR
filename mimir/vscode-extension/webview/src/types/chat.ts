@@ -77,6 +77,8 @@ export interface DiffEntry {
   is_new?: boolean;
   /** True when this operation deletes the file (all-red preview). */
   is_delete?: boolean;
+  /** True when the patch was clipped for storage: it no longer reverses to the original. */
+  truncated?: boolean;
 }
 
 export interface ChatMessage {

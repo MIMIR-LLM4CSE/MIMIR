@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  EXEC_CLIP_CHARS, chooseRestoredMessages, planTranscript, pruneForStorage, textBubbleCount,
+  DIFF_CLIP_CHARS, DIFF_CLIP_NOTE, ERROR_CLIP_CHARS, EXEC_CLIP_CHARS, storedSize, chooseRestoredMessages, planTranscript, pruneForStorage, textBubbleCount,
 } from "./transcriptUtils";
 import type { ChatMessage, ToolActivity } from "../types";
 
@@ -156,6 +156,43 @@ describe("pruneForStorage", () => {
     ]);
     expect(out.tools![0].exec).toEqual(exec);
   });
+
+  it("keeps a compiler-sized error whole and clips a runaway one", () => {
+    const long = "e".repeat(EXEC_CLIP_CHARS * 4);
+    const [kept] = pruneForStorage([
+      { id: "m1", role: "agent", kind: "tools", tools: [tool({ status: "error", error: long })] },
+    ]);
+    expect(kept.tools![0].error).toBe(long);
+    const [out] = pruneForStorage([
+      { id: "m1", role: "agent", kind: "tools",
+        tools: [tool({ status: "error", error: "e".repeat(ERROR_CLIP_CHARS + 500) })] },
+    ]);
+    expect(out.tools![0].error!.length).toBeLessThan(ERROR_CLIP_CHARS + 100);
+  });
+
+  it("cuts a large patch at a line, marks it, and drops the proposed content", () => {
+    const line = "+" + "d".repeat(99) + "\n";
+    const patch = "--- a/big.dat\n+++ b/big.dat\n@@ -0,0 +1 @@\n" + line.repeat(Math.ceil(DIFF_CLIP_CHARS / line.length) + 10);
+    const [out] = pruneForStorage([
+      { id: "m1", role: "agent", kind: "editing",
+        diffs: [{ file: "big.dat", patch, new_content: "x", is_new: true }] },
+    ]);
+    const d = out.diffs![0];
+    expect(d.patch.length).toBeLessThanOrEqual(DIFF_CLIP_CHARS + DIFF_CLIP_NOTE.length + 1);
+    expect(d.patch.endsWith("\n" + DIFF_CLIP_NOTE)).toBe(true);
+    expect(d.patch.split("\n").slice(3, -1).every((l) => l === line.trimEnd())).toBe(true);
+    expect(d.truncated).toBe(true);
+    expect(d.new_content).toBeUndefined();
+    expect(d.is_new).toBe(true);
+  });
+
+  it("leaves a small patch exactly as it was", () => {
+    const diff = { file: "a.py", patch: "@@ -1 +1 @@\n-a\n+b" };
+    const [out] = pruneForStorage([
+      { id: "m1", role: "agent", kind: "editing", diffs: [diff] },
+    ]);
+    expect(out.diffs![0]).toEqual(diff);
+  });
 });
 
 describe("pruneForStorage and provisional prose", () => {
@@ -214,5 +251,23 @@ describe("chooseRestoredMessages", () => {
   it("takes the stored copy into a window that has nothing on screen", () => {
     // A reloaded webview reconnecting to the session it had open: same id, empty view.
     expect(chooseRestoredMessages(stored, [], true)).toEqual({ messages: stored, push: false });
+  });
+});
+
+describe("storedSize", () => {
+  it("weighs what would be stored, and nothing that would not", () => {
+    const text: ChatMessage = { id: "m1", role: "agent", kind: "text", text: "x".repeat(1000) };
+    const card: ChatMessage = {
+      id: "m2", role: "agent", kind: "command",
+      command: { type: "command_output", command: "detach", title: "y".repeat(5000) },
+    } as ChatMessage;
+    expect(storedSize([text])).toBe(JSON.stringify(text).length);
+    expect(storedSize([text, card])).toBe(storedSize([text]));
+  });
+
+  it("weighs a large patch as stored, clipped", () => {
+    const patch = "@@ -0,0 +1 @@\n" + ("+" + "d".repeat(99) + "\n").repeat(30_000);
+    const edit: ChatMessage = { id: "m1", role: "agent", kind: "editing", diffs: [{ file: "a", patch }] };
+    expect(storedSize([edit])).toBeLessThan(patch.length);
   });
 });

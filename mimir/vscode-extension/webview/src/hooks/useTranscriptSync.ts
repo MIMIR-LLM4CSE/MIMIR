@@ -3,23 +3,31 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage, ClientMessage } from "../types";
-import type { ChatState } from "../state/chatReducer";
+import type { ChatAction, ChatState } from "../state/chatReducer";
 import type { ServerHandlers } from "../state/serverMessages";
 import { makeId } from "../state/ids";
-import { planTranscript, type TranscriptSync } from "../components/transcriptUtils";
+import { MAX_FRAME_BYTES } from "../../../src/shared/limits";
+import {
+  SESSION_SIZE_WARN_BYTES, planTranscript, storedSize, type TranscriptSync,
+} from "../components/transcriptUtils";
 
 /** How often the rendered transcript is checkpointed to the server mid-turn. */
 const TRANSCRIPT_CHECKPOINT_MS = 5000;
 
 interface Deps {
   send: (msg: ClientMessage) => void;
+  dispatch: React.Dispatch<ChatAction>;
   busy: boolean;
   chatStateRef: React.MutableRefObject<ChatState>;
   activeSessionIdRef: React.MutableRefObject<string | null>;
   renderedSeqRef: React.MutableRefObject<Record<string, number>>;
 }
 
-export function useTranscriptSync({ send, busy, chatStateRef, activeSessionIdRef, renderedSeqRef }: Deps) {
+const MIB = 1024 * 1024;
+
+export function useTranscriptSync({
+  send, dispatch, busy, chatStateRef, activeSessionIdRef, renderedSeqRef,
+}: Deps) {
   // The list last sent: skipped when unchanged, so a checkpoint costs nothing on a
   // quiet turn. The reducer never mutates, so identity is the whole test.
   const lastSentMessagesRef = useRef<ChatMessage[] | null>(null);
@@ -28,6 +36,27 @@ export function useTranscriptSync({ send, busy, chatStateRef, activeSessionIdRef
   // Bumped when the transcript must reach the server now rather than at the next end
   // of turn: a reconnect that kept the richer copy.
   const [pushes, setPushes] = useState(0);
+  // Sessions already warned of their size: once each, not at every checkpoint.
+  const warnedRef = useRef(new Set<string>());
+
+  // Past the frame ceiling the transcript can no longer reach the server, so a reload
+  // would show the conversation as it was before. Said while there is room to act.
+  const warnIfLarge = useCallback((sessionId: string, messages: ChatMessage[]) => {
+    if (warnedRef.current.has(sessionId)) return;
+    const size = storedSize(messages);
+    if (size < SESSION_SIZE_WARN_BYTES) return;
+    warnedRef.current.add(sessionId);
+    dispatch({
+      type: "command_output",
+      command: "session size",
+      title: `This conversation is getting large (about ${Math.round(size / MIB)} MiB)`,
+      note: `Past ${MAX_FRAME_BYTES / MIB} MiB it can no longer be saved, and a reload `
+        + "would show it as it was then. Start a new conversation to carry on; this "
+        + "one stays in the session list.",
+      tone: "warn",
+      transient: true,
+    });
+  }, [dispatch]);
 
   const sendTranscript = useCallback((force = false) => {
     const sessionId = activeSessionIdRef.current;
@@ -35,6 +64,7 @@ export function useTranscriptSync({ send, busy, chatStateRef, activeSessionIdRef
     if (!sessionId || messages.length === 0) return;
     if (!force && messages === lastSentMessagesRef.current) return;
     lastSentMessagesRef.current = messages;
+    warnIfLarge(sessionId, messages);
     const { body, next } = planTranscript(
       messages, sessionId, transcriptSyncRef.current, force, makeId);
     transcriptSyncRef.current = next;
@@ -46,7 +76,7 @@ export function useTranscriptSync({ send, busy, chatStateRef, activeSessionIdRef
       // rendered everything is sent nothing on its next attach.
       through_seq: renderedSeqRef.current[sessionId] ?? 0,
     });
-  }, [send, chatStateRef, activeSessionIdRef, renderedSeqRef]);
+  }, [send, warnIfLarge, chatStateRef, activeSessionIdRef, renderedSeqRef]);
 
   const requestPush = useCallback(() => setPushes((n) => n + 1), []);
 

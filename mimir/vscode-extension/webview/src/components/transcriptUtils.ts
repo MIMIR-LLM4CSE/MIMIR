@@ -3,21 +3,35 @@
  *
  * The transcript is stored so a reload can show the conversation as it was, which is a
  * narrower job than holding it live: anything that only means something *during* a turn
- * is dropped, and the one field with no ceiling — a command's captured output — is
- * clipped, so a long session's transcript stays a message rather than a payload.
+ * is dropped, and the fields with no ceiling — a command's captured output, a failed
+ * call's error, a written file's patch — are clipped, so a long session's transcript
+ * stays a message rather than a payload: past the server's frame ceiling, sending it
+ * would close the connection.
  */
-import type { ChatMessage, ToolActivity } from "../types";
+import type { ChatMessage, DiffEntry, ToolActivity } from "../types";
+import { MAX_FRAME_BYTES } from "../../../src/shared/limits";
 
 /** Per-stream ceiling on captured command output kept in a stored transcript. */
 export const EXEC_CLIP_CHARS = 4096;
+/** Ceiling on a failed call's error: a whole compiler log fits, a runaway dump does not. */
+export const ERROR_CLIP_CHARS = 64 * 1024;
+/** Ceiling on a patch kept in a stored transcript: far past what anyone reads in the
+ *  chat, so only a generated or data file's patch, megabytes long, is cut. */
+export const DIFF_CLIP_CHARS = 1024 * 1024;
+/** Closes a clipped patch. A `\` line is meta to the diff parser, drawn as written. */
+export const DIFF_CLIP_NOTE = "\\ … (clipped in the stored transcript)";
 
-function clip(text: string | undefined): { text: string | undefined; clipped: boolean } {
-  if (!text || text.length <= EXEC_CLIP_CHARS) return { text, clipped: false };
-  return { text: text.slice(0, EXEC_CLIP_CHARS) + "\n… (clipped)", clipped: true };
+function clip(
+  text: string | undefined, limit = EXEC_CLIP_CHARS,
+): { text: string | undefined; clipped: boolean } {
+  if (!text || text.length <= limit) return { text, clipped: false };
+  return { text: text.slice(0, limit) + "\n… (clipped)", clipped: true };
 }
 
-/** Clip a row's terminal panel; rows without one are returned untouched. */
+/** Clip a row's terminal panel and error text; rows with neither too long are returned untouched. */
 function pruneTool(tool: ToolActivity): ToolActivity {
+  const error = clip(tool.error, ERROR_CLIP_CHARS);
+  if (error.clipped) tool = { ...tool, error: error.text };
   if (!tool.exec) return tool;
   const out = clip(tool.exec.stdout);
   const err = clip(tool.exec.stderr);
@@ -32,6 +46,25 @@ function pruneTool(tool: ToolActivity): ToolActivity {
       stderr: err.text ?? "",
       truncated: true,
     },
+  };
+}
+
+/**
+ * *diff* as it should be stored: the patch cut at a line within the ceiling, and no
+ * proposed content (that belongs to an approval, which is not stored).
+ *
+ * A clipped patch is `truncated`: reversed against the file it no longer describes in
+ * full, it would give a wrong "before", so opening it opens the file instead.
+ */
+function pruneDiff(diff: DiffEntry): DiffEntry {
+  const { new_content, ...rest } = diff;
+  const patch = rest.patch ?? "";
+  if (patch.length <= DIFF_CLIP_CHARS) return new_content === undefined ? diff : rest;
+  const cut = patch.lastIndexOf("\n", DIFF_CLIP_CHARS);
+  return {
+    ...rest,
+    patch: patch.slice(0, cut > 0 ? cut : DIFF_CLIP_CHARS) + "\n" + DIFF_CLIP_NOTE,
+    truncated: true,
   };
 }
 
@@ -62,7 +95,34 @@ function keepForStorage(m: ChatMessage): boolean {
 function pruneMessage(m: ChatMessage): ChatMessage {
   const { approval, streaming, live, queued, ...rest } = m;
   const tools = rest.tools?.map(pruneTool);
-  return tools ? { ...rest, tools } : rest;
+  const diffs = rest.diffs?.map(pruneDiff);
+  return { ...rest, ...(tools && { tools }), ...(diffs && { diffs }) };
+}
+
+/** Stored size at which the user is told the conversation is getting large: half the
+ *  frame ceiling a whole transcript must fit in, which leaves room to move on. */
+export const SESSION_SIZE_WARN_BYTES = MAX_FRAME_BYTES / 2;
+
+// A message's stored size, kept per message: the reducer never mutates one, so a
+// growing session costs only its new messages to measure.
+const storedSizes = new WeakMap<ChatMessage, number>();
+
+/**
+ * Roughly how many bytes *messages* weigh as a stored transcript: its JSON length,
+ * which counts characters rather than UTF-8 bytes — close enough for a warning.
+ */
+export function storedSize(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const m of messages) {
+    if (!keepForStorage(m)) continue;
+    let size = storedSizes.get(m);
+    if (size === undefined) {
+      size = JSON.stringify(pruneMessage(m)).length;
+      storedSizes.set(m, size);
+    }
+    total += size;
+  }
+  return total;
 }
 
 /** What this window last told the server, for sending only what changed since. */

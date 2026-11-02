@@ -106,7 +106,7 @@ export const App: React.FC = () => {
     forgetForeign, noteSeq,
   } = conversations;
   const transcript = useTranscriptSync({
-    send: sendVia, busy, chatStateRef, activeSessionIdRef,
+    send: sendVia, dispatch, busy, chatStateRef, activeSessionIdRef,
     renderedSeqRef: conversations.renderedSeqRef,
   });
   pushTranscriptRef.current = transcript.requestPush;

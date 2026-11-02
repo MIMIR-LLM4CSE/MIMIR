@@ -34,7 +34,9 @@ __all__ = ["serve"]
 
 
 # Ceiling on an inbound frame. Sized for the client transcript, the only message that
-# can get large: a long session's tool rows, diffs and clipped command output.
+# can get large: a long session's tool rows, diffs and clipped command output. The
+# extension holds back any frame past it (MAX_FRAME_BYTES in
+# vscode-extension/src/shared/limits.ts).
 _MAX_FRAME_BYTES = 32 * 1024 * 1024
 # How long a starting server waits for the lock of one that is stopping: closing every
 # agent's MCP servers takes seconds, and a minute covers a slow one.

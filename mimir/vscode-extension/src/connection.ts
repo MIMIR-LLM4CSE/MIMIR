@@ -1,6 +1,8 @@
 /** The socket to the MIMIR server: connecting with retries, and what is sent before it opens. */
 import * as vscode from "vscode";
 import WebSocket = require("ws");
+import { showToast } from "./notifications";
+import { MAX_FRAME_BYTES } from "./shared/limits";
 
 export interface ConnectionHooks {
   /** A message for the webview. */
@@ -60,6 +62,12 @@ export class ServerConnection {
 
   /** Send *payload* now, or once the socket opens. */
   send(payload: string): void {
+    // Dropping the one message costs that message; sending it costs the connection,
+    // and a transcript resent on reconnect would cost the next one too.
+    if (Buffer.byteLength(payload, "utf8") > MAX_FRAME_BYTES) {
+      showToast("warn", "MIMIR: a message to the server was too large to send and was dropped.");
+      return;
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(payload);
     } else {
