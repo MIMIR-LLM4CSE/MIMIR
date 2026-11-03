@@ -158,6 +158,14 @@ export interface CodeMapStaleMessage {
   type: "code_map_stale";
 }
 
+/** The map tab asks to show a request's conversation and the agent's answer to it: from
+ *  the extension host, not the server. */
+export interface RevealRequestMessage {
+  type: "reveal_request";
+  token: string;
+  session?: string;
+}
+
 export interface MapPromptMessage {
   type: "map_prompt";
   text: string;

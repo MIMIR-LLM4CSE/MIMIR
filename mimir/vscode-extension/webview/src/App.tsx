@@ -81,8 +81,15 @@ export const App: React.FC = () => {
   const lastQueryRef = useRef<string>("");
   const {
     chatThreadRef, bottomRef, lastUserMsgRef, onScroll: handleChatScroll,
-    scrollToBottom, scrollToApproval, anchorNewQuery, dockedRuns, focusRun,
+    scrollToBottom, scrollToApproval, anchorNewQuery, dockedRuns, focusRun, focusMessage,
   } = useThreadScroll(chatState);
+  // What the handlers below read at the time a message arrives, not when they were made.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  // The map tab asked to see a request in the chat: the request's token and its
+  // conversation, until that conversation is on screen and the answer found.
+  const revealRef = useRef<{ token: string; session?: string } | null>(null);
+  const switchSessionRef = useRef<(id: string) => void>(() => undefined);
 
   // A `replay` frame is a bundle of ordinary events, so it goes through the panel's
   // own handler — one reducer for what happened live and while nobody was attached.
@@ -125,6 +132,27 @@ export const App: React.FC = () => {
   // Profile button); set below once it exists.
   const sendPromptRef = useRef<(text: string) => void>(() => undefined);
 
+  /** A request asked for by the map tab, once its conversation is the one on screen: the
+   *  turn its message opened, scrolled to the agent's last answer in it (the study), else
+   *  to the message itself. Given up when the conversation holds no such message. */
+  const revealPending = useCallback(() => {
+    const want = revealRef.current;
+    if (!want || (want.session && want.session !== activeSessionIdRef.current)) return;
+    const msgs = chatStateRef.current.messages;
+    if (sessionLoadingRef.current || !msgs.length) return;
+    revealRef.current = null;
+    const at = msgs.findIndex((m) => m.role === "user" && (m.text ?? "").includes("(token " + want.token + ")"));
+    if (at < 0) return;
+    const next = msgs.findIndex((m, i) => i > at && m.role === "user");
+    const turn = msgs.slice(at + 1, next < 0 ? undefined : next);
+    const answer = [...turn].reverse().find((m) => m.role === "agent" && m.kind === "text");
+    focusMessage((answer ?? msgs[at]).id);
+  }, [activeSessionIdRef, focusMessage]);
+  const sessionLoadingRef = useRef(sessionLoading);
+  sessionLoadingRef.current = sessionLoading;
+  // A conversation switched to for a reveal: its messages arrive, then the answer is shown.
+  useEffect(() => { revealPending(); }, [chatState.messages, activeSessionId, sessionLoading, revealPending]);
+
   const handleServerMessage = useCallback((msg: ServerMessage) => {
     noteSeq(msg);
 
@@ -144,8 +172,19 @@ export const App: React.FC = () => {
         return;
 
       case "map_prompt":
-        // The code map tab's Profile button: the request goes out as the user's own.
-        if (msg.text) sendPromptRef.current(msg.text);
+        // The code map tab's buttons: the request goes out as the user's own, in agent
+        // mode whatever the chat was in — a study profiles and measures too.
+        if (msg.text) {
+          if (settingsRef.current.agentMode !== "agent") settingsRef.current.changeMode("agent");
+          sendPromptRef.current(msg.text);
+        }
+        return;
+
+      case "reveal_request":
+        // The map tab's "See it in the chat": its conversation first, then the answer.
+        revealRef.current = { token: msg.token, session: msg.session };
+        if (msg.session && msg.session !== activeSessionIdRef.current) switchSessionRef.current(msg.session);
+        else revealPending();
         return;
 
       case "open_editor":
@@ -184,7 +223,7 @@ export const App: React.FC = () => {
     ) {
       scrollToBottom();
     }
-  }, [noteSeq, isForeign, rememberForeign, scrollToBottom, scrollToApproval]);
+  }, [noteSeq, isForeign, rememberForeign, scrollToBottom, scrollToApproval, activeSessionIdRef, revealPending]);
 
   // Kept in a ref so a replay can run each bundled event through this handler.
   useEffect(() => {
@@ -289,6 +328,7 @@ export const App: React.FC = () => {
     startQuery(text);
   }, [busy, send, startQuery]);
   sendPromptRef.current = sendPrompt;
+  switchSessionRef.current = switchSession;
 
   const composer = useComposer({
     skillToggles: workspace.skillToggles,

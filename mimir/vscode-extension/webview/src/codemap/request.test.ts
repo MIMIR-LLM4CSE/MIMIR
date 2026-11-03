@@ -82,6 +82,15 @@ describe("a recorded request", () => {
     expect(html).toContain("data-ask=");
   });
 
+  it("points to the chat for what the agent found, rather than repeating it", () => {
+    const study: Request = { ...request, mode: "study", status: "proposed", token: "tok9", session: "s-42",
+      summary: "a long analysis", conclusion: "an outcome", steps: [] };
+    const html = requestDetail(study, (t) => targetLabel(t), () => null);
+    expect(html).toContain('data-reveal="tok9" data-session="s-42">See the study in the chat</button>');
+    expect(html).not.toContain("a long analysis");
+    expect(html).not.toContain("an outcome");
+  });
+
   it("lists the ones sent before the recorded ones", () => {
     const html = requestsSection([request], [{ token: "t", idea: "fft", mode: "study", targets: [] }]);
     expect(html.indexOf("fft")).toBeLessThan(html.indexOf("R3"));

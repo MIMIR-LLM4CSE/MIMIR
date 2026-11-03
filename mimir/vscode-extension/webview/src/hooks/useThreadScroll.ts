@@ -93,9 +93,21 @@ export function useThreadScroll({ messages, draft, liveToolCalls, liveThinkingBl
     el.scrollIntoView({ behavior: "auto", block: "center" });
   }, [chatThreadRef, releaseFollowBottom]);
 
+  /** Bring message *id* to the middle of the thread and mark it a moment, as for a run. */
+  const focusMessage = useCallback((id: string) => {
+    const el = chatThreadRef.current?.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(id)}"]`);
+    if (!el) return false;
+    releaseFollowBottom();
+    el.scrollIntoView({ behavior: "auto", block: "center" });
+    el.classList.remove("is-revealed");
+    void el.offsetWidth;
+    el.classList.add("is-revealed");
+    return true;
+  }, [chatThreadRef, releaseFollowBottom]);
+
   return {
     chatThreadRef, bottomRef, lastUserMsgRef, onScroll,
     scrollToBottom, scrollToApproval, anchorNewQuery,
-    dockedRuns, focusRun,
+    dockedRuns, focusRun, focusMessage,
   };
 }

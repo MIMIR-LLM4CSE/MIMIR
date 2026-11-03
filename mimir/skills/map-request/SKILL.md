@@ -27,12 +27,20 @@ The same message opened twice is one request (the token).
 3. Weigh the idea against the code as it is: what the method or algorithm changes, its
    cost and accuracy (order, stability, conditioning), what it needs from the rest of
    the code (interfaces, data layout, dependencies), the risks.
-4. `proxy_request(op='update', request_id='R3', status='proposed', summary=...)`: the
-   analysis, the plan (the variants worth trying, in order), and what would decide
-   between them. The map shows it on the request.
+4. **Answer in the chat**: the analysis, the plan (the variants worth trying, in
+   order), and what would decide between them. That answer is the study — the map's
+   request links back to it, so write it whole there, not in the request.
+5. `proxy_request(op='update', request_id='R3', status='proposed', summary=<one line>)`.
 
-No file is changed in a study. When the user then asks to try it, the same request
-goes on: `status='trying'`, and the protocol below.
+No file is changed in a study.
+
+## Continued from the chat
+
+The user may go on in the chat rather than with the map's buttons — "go ahead",
+"implement the second variant". That is the same request: `status='trying'`, the
+protocol below, every run's axis tagged `[R3.k]`. A run already launched without the
+tag is attached with `proxy_request(op='update', request_id='R3', run_id=...)`; a run's
+answer lists the open requests when its axis names none.
 
 ## Try: each variant from the start, one run each
 
@@ -62,7 +70,7 @@ modules most depended on and most dependent.
   shared state), and propose the target structure: what moves where, which interface
   breaks a cycle, which dependency is inverted, which module splits. Give the steps in
   an order where each one leaves the code working, and what each changes on the map
-  (the cycles and breaks it removes). Nothing is edited.
+  (the cycles and breaks it removes) — as the answer in the chat. Nothing is edited.
 - **Try**: one step per run, as for any variant: `reset_to_request` only between
   alternative designs, not between successive steps of one design — those build on
   each other. Each run is tagged `[R3.k]`. A refactor run is kept when it is
@@ -86,14 +94,14 @@ order, measure it (`convergence=` on the session) rather than asserting it.
 - A local path can be read freely.
 - Installing a package or cloning a repository goes through the tools that do it, and
   their approval: say what will be installed, and where, before asking for it.
-- Record the version used (package version, commit) in `summary`: a result on a
+- Say the version used (package version, commit) in the answer: a result on a
   library is only reproducible with its version.
 - Keep the integration behind the targets' interface where the request asks to keep
   the API.
 
 ## Closing
 
-The conclusion says, in a few lines: the variant kept (or none), its gain on the
-metric and its accuracy against the start, what each other variant gave and why it
-lost, what it cost to integrate, and what to try next. A request abandoned on the
+The outcome is said in the chat: the variant kept (or none), its gain on the metric
+and its accuracy against the start, what each other variant gave and why it lost, what
+it cost to integrate, and what to try next. `conclusion` is its one line. A request abandoned on the
 user's word is `status='dropped'`, with why in `summary`.

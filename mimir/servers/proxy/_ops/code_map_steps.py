@@ -108,18 +108,20 @@ def requests_view() -> list[dict]:
     for row in requests.load():
         start = row.get("start") or {}
         mine = []
+        attached = set(row.get("runs") or [])
         for st in session(start["proxy"]).get("steps", []) if start.get("proxy") else []:
             tag = requests.axis_of(st.get("axis", ""))
-            if not tag or tag[0] != row.get("id"):
+            # By its axis tag, or attached to the request after the fact.
+            if not (tag and tag[0] == row.get("id")) and st.get("run_id") not in attached:
                 continue
-            mine.append({"run_id": st["run_id"], "variant": tag[1], "axis": st["axis"],
+            mine.append({"run_id": st["run_id"], "variant": tag[1] if tag else None, "axis": st["axis"],
                          "verdict": st["verdict"], "value": st["value"],
                          "delta": _delta(st["value"], start.get("value"))})
         status = row.get("status", "open")
         if mine and not row.get("conclusion") and status in ("open", "studying", "proposed"):
             status = "trying"
         out.append({**{k: row.get(k) for k in ("id", "token", "ts", "mode", "kind", "targets", "idea", "variants",
-                                                "source", "constraints", "summary", "conclusion")},
+                                                "source", "constraints", "summary", "conclusion", "session")},
                     "status": status, "proxy": start.get("proxy", ""), "metric": start.get("metric", ""),
                     "start_value": start.get("value"), "steps": mine})
     return out

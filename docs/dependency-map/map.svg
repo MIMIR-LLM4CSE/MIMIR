@@ -324,7 +324,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,494 C1082.5,624 1018,624 1018,754" stroke-width="3.8"><title>servers.proxy → shared.responses · 6 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 853,678 853,862" stroke-width="3"><title>servers.proxy → shared.slurm_script · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 961.5,678 961.5,862" stroke-width="2.6"><title>servers.proxy → shared.slurm_site · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,644 517.5,644 517.5,794" stroke-width="2.6"><title>servers.proxy → shared.state_paths · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,644 517.5,644 517.5,794" stroke-width="3"><title>servers.proxy → shared.state_paths · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,593 C1082.5,673.5 275,673.5 275,754" stroke-width="3.3"><title>servers.utilities → shared.capabilities · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,593 C1082.5,673.5 1018,673.5 1018,754" stroke-width="3.3"><title>servers.utilities → shared.responses · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 209,777 209,862" stroke-width="3.3"><title>servers.workspace → shared.approved_roots · 4 import(s)</title></path>

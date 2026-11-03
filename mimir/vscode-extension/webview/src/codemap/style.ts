@@ -205,7 +205,6 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .row > span.st { color: var(--pill-fg); } .row > span.st-dropped { color: var(--fg-dim); }
 .rq-row .go b { color: var(--accent); font-weight: 600; }
 .section.rq .idea { font-size: 12.5px; margin: 6px 0 2px; overflow-wrap: anywhere; }
-.note { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border-left: 2px solid var(--accent); padding: 4px 6px; border-radius: 0 3px 3px 0; }
 .vt { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
 .vt td:first-child { width: 52%; overflow-wrap: anywhere; }
 .vt td { padding: 3px 4px; border-bottom: 1px solid var(--border-soft); }

@@ -788,6 +788,9 @@ function renderSide(v: View): void {
   }));
   side.querySelectorAll<HTMLElement>("[data-request]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "request", id: b.dataset.request! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-step-n]").forEach((b) => b.addEventListener("click", () => { step = Number(b.dataset.stepN); render(); }));
+  side.querySelectorAll<HTMLElement>("[data-reveal]").forEach((b) => b.addEventListener("click", () => {
+    vscode.postMessage({ type: "reveal_in_chat", token: b.dataset.reveal!, session: b.dataset.session || undefined });
+  }));
   side.querySelectorAll<HTMLElement>("[data-ask]").forEach((b) => b.addEventListener("click", () => {
     vscode.postMessage({ type: "prompt", text: b.dataset.ask! });
     b.setAttribute("disabled", "");

@@ -425,6 +425,11 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     show_code_map: (m) => showCodeMap(m.map, m.session, m.focus, this.extensionUri, {
       refresh: (pick) => this.forwardToServer(JSON.stringify({ type: "code_map", ...pick })),
       prompt: (text) => this.post({ type: "map_prompt", text }),
+      reveal: (token, session) => {
+        // The chat is brought forward first, so the answer it scrolls to is in sight.
+        this.view?.show?.(true);
+        this.post({ type: "reveal_request", token, ...(session ? { session } : {}) });
+      },
     }),
     code_map_unavailable: (m) => codeMapUnavailable(m.reason),
     code_map_stale: () => codeMapStale(),

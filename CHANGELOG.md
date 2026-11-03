@@ -34,6 +34,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sits under the map), so the button looked dead. The form is now scrolled into view
   when it is not, pulses once, and takes the cursor; the header's button stays pressed
   while the analysis is open, and pressing it again goes back to it.
+- **A request's study is read in the chat.** The map no longer repeats the agent's
+  summary: a request links to its conversation (**See the study in the chat**), which the
+  chat switches to and scrolls to the agent's answer, marked a moment. A message from the
+  map always goes out in agent mode, a study included. A request continued in the chat
+  ("go ahead with the second variant") still shows its runs on the map: the agent tags
+  them, can attach one launched without the tag, and is reminded of the open requests
+  when a run names none.
 - **The code map follows the optimisation session on its own.** A run that settles, a
   background run's results read, a request recorded: the map tab, when open, maps the
   code again by itself, without taking the focus, its header saying so as for ⟳. It goes

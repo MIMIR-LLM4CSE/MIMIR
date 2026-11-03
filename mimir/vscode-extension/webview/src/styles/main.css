@@ -4851,3 +4851,11 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
     white-space: normal;
   }
 }
+
+/* A message the code map pointed to ("See it in the chat"): marked a moment, then left. */
+[data-msg-id].is-revealed > * { animation: msg-revealed 2.4s ease-out; border-radius: 6px; }
+@keyframes msg-revealed {
+  0%, 35% { box-shadow: 0 0 0 2px var(--vscode-focusBorder, #0078d4); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { [data-msg-id].is-revealed > * { animation: none; } }

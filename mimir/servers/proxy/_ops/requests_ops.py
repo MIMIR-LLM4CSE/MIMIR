@@ -4,6 +4,7 @@ Opening one records where the session stands, so its variants all start from the
 from __future__ import annotations
 
 from . import err, ok, with_next
+from ....shared.state_paths import active_session_id
 from .._lib import requests
 from .._lib.layout import resolve_proxy_name
 from .._lib.ratchet import load_best
@@ -69,16 +70,21 @@ def open_(proxy_name: str, token: str, mode: str, kind: str, targets: list | Non
         "token": token, "mode": mode, "kind": kind, "targets": _clean_targets(targets),
         "idea": idea.strip(), "variants": kept, "source": source.strip(),
         "constraints": constraints.strip(), "start": start,
+        # The conversation the request was put in: its study is the agent's answer there,
+        # and the map's link goes back to it.
+        "session": active_session_id(),
         "status": "studying" if mode == "study" else "open",
     })
     rid = row["id"]
+    # A study is delivered as the answer in the chat, where the map's link leads; the
+    # request keeps only its status and a line.
     if mode == "study" and kind == "refactor":
-        nxt = ("read the map's findings in the message and the targets' code, then "
-               f"proxy_request(op='update', request_id='{rid}', status='proposed', summary=<the target "
-               "architecture and the steps to reach it>). Edit no code.")
+        nxt = ("read the map's findings in the message and the targets' code; answer in the chat with the "
+               "target architecture and the steps to reach it; then "
+               f"proxy_request(op='update', request_id='{rid}', status='proposed', summary=<one line>). Edit no code.")
     elif mode == "study":
-        nxt = (f"read the targets and their profile, then proxy_request(op='update', request_id='{rid}', "
-               "status='proposed', summary=<the analysis and the plan>). Edit no code.")
+        nxt = ("read the targets and their profile; answer in the chat with the analysis and the plan; then "
+               f"proxy_request(op='update', request_id='{rid}', status='proposed', summary=<one line>). Edit no code.")
     elif not start:
         nxt = ("no optimisation session is open: set one up as the proxy-optimize skill says, "
                f"then proxy_request(op='update', request_id='{rid}', status='trying') and " + _try_steps(rid, kept))
@@ -88,17 +94,41 @@ def open_(proxy_name: str, token: str, mode: str, kind: str, targets: list | Non
                         nxt))
 
 
-def update(request_id: str, status: str, summary: str, conclusion: str) -> dict:
+def update(request_id: str, status: str, summary: str, conclusion: str, run_id: str = "") -> dict:
     if status and status not in requests.STATUSES:
         return err(f"status must be one of {', '.join(requests.STATUSES)}.")
-    changes = {k: v.strip() for k, v in (("status", status), ("summary", summary), ("conclusion", conclusion)) if v}
+    changes: dict = {k: v.strip() for k, v in (("status", status), ("summary", summary), ("conclusion", conclusion)) if v}
+    if run_id.strip():
+        # A run launched without the request's axis tag, attached after the fact.
+        known = (requests.get(request_id) or {}).get("runs") or []
+        changes["runs"] = known + [run_id.strip()] if run_id.strip() not in known else known
     if not changes:
-        return err("Nothing to update: give status, summary or conclusion.")
+        return err("Nothing to update: give status, summary, conclusion or run_id.")
     row = requests.update(request_id, changes)
     if row is None:
         return err(f"No request {requests.normalise(request_id)}.",
                    hint="proxy_request(op='list') names them.")
     return ok({"request": row})
+
+
+def untagged_hint(proxy_name: str, axis: str, run_id: str) -> dict:
+    """For a run whose axis names no request while some are still open on this proxy: the
+    open ones and the call that attaches the run, so a request continued from the chat
+    rather than from the map still shows its runs. {} otherwise."""
+    if requests.axis_of(axis):
+        return {}
+    open_ = [r for r in requests.load()
+             if r.get("status") not in ("done", "dropped")
+             and (r.get("start") or {}).get("proxy", proxy_name) in (proxy_name, "")]
+    if not open_:
+        return {}
+    return {
+        "open_requests": [{k: r.get(k) for k in ("id", "status", "idea")} for r in open_],
+        "requests_note": (
+            "This run names no request, and some are open. If it tries one of them, attach it: "
+            f"proxy_request(op='update', request_id='R…', run_id='{run_id}', status='trying'), "
+            "and tag the next runs' axis [R….k] so the code map shows them on the request."),
+    }
 
 
 def list_() -> dict:

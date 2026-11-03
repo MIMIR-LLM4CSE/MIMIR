@@ -612,9 +612,15 @@ map-request skill, every tool with its own approval. The tab writes nothing itse
 
 The requests come back with the session's steps (`session.requests`). A **Requests**
 section heads the pane (those sent and not yet recorded marked *sent*, by their token);
-a request opens on its status, the agent's summary and conclusion, and its variants side
-by side against the start, a row selecting its step; **Try it** (a proposed study) and
-**Drop** ask the agent. Each module a request targets carries an `R3` pill coloured by
+a request opens on its status and its variants side by side against the start, a row
+selecting its step. What the agent found is its answer in the chat, not a copy in the map:
+**See the study in the chat** posts `reveal_in_chat` to the host, which brings the chat
+forward and sends it `reveal_request` with the request's token and conversation (recorded
+when it was opened); the chat switches to that conversation if needed and scrolls to the
+agent's last answer in the turn the request's message opened, marking it a moment.
+**Try it** (a proposed study) and **Drop** ask the agent. A message from the map always
+goes out in agent mode — a study profiles and measures too — the chat's mode switching
+to it first. Each module a request targets carries an `R3` pill coloured by
 status, and the strip's chips name a step's request (`R3.2`).
 
 **The tab follows the session on its own.** A tool that may change what the map draws

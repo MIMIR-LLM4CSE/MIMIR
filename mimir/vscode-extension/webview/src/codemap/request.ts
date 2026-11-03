@@ -28,6 +28,8 @@ export interface Request {
   id: string; token?: string; ts?: string; mode: Mode; kind: string; targets: Target[];
   idea: string; variants: string[]; source?: string; constraints?: string;
   summary?: string; conclusion?: string; status: string;
+  /** The conversation it was put in: its study and outcome are the agent's answers there. */
+  session?: string;
   proxy?: string; metric?: string; start_value?: number | null; steps: RequestStep[];
 }
 

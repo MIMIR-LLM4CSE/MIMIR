@@ -84,7 +84,6 @@ export function requestDetail(r: Request, targetRow: (t: Target) => string, step
           : '<span class="empty">not run</span>')
         + "</td><td>" + (step ? delta(step.delta) : "") + "</td></tr>";
     }).join("") + "</table>" : "";
-  const text = (cap: string, v?: string) => (v ? '<div class="cap">' + cap + '</div><div class="note">' + esc(v) + "</div>" : "");
   const asks = (r.mode === "study" && r.status === "proposed" ? '<button class="open" data-ask="' + esc(tryPrompt(r)) + '">Try it</button> ' : "")
     + (live(r.status) || r.status === "proposed" ? '<button class="open ghost" data-ask="' + esc(dropPrompt(r)) + '">Drop</button>' : "");
   return '<div class="section sel rq"><div class="title">' + esc(r.id) + " · " + (r.mode === "study" ? "Study" : "Try") + " · "
@@ -93,6 +92,10 @@ export function requestDetail(r: Request, targetRow: (t: Target) => string, step
     + '<div class="cap">Targets</div><div class="list">' + r.targets.map(targetRow).join("") + "</div>"
     + (r.source ? '<div class="line"><span>source</span><span>' + esc(r.source) + "</span></div>" : "")
     + (r.constraints ? '<div class="line"><span>constraints</span><span>' + esc(r.constraints) + "</span></div>" : "")
-    + table + text("The agent's summary", r.summary) + text("Conclusion", r.conclusion)
+    + table
+    // What the agent found is its answer in the chat; the request only points there.
+    + (r.token ? '<div class="actions"><button class="open ghost" data-reveal="' + esc(r.token) + '" data-session="'
+      + esc(r.session ?? "") + '">' + (r.mode === "study" ? "See the study in the chat" : "See it in the chat")
+      + "</button></div>" : "")
     + (asks ? '<div class="actions">' + asks + "</div>" : "") + "</div>";
 }

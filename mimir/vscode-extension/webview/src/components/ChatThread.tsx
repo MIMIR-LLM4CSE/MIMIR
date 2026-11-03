@@ -172,7 +172,7 @@ export const ChatThread: React.FC<Props> = ({
     const isLatestError = msg.kind === "error" && idx === lastIdx;
 
     return (
-      <div key={msg.id} ref={isLastUser ? lastUserMsgRef : undefined}>
+      <div key={msg.id} data-msg-id={msg.id} ref={isLastUser ? lastUserMsgRef : undefined}>
         <ChatMessageView
           message={msg}
           onApprovalResponse={onApprovalResponse}

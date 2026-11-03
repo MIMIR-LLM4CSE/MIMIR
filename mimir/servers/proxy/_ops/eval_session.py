@@ -522,6 +522,7 @@ async def run_awaited(
         return ok(with_next(detached, NEXT_DETACHED))
 
     settled = results(name)
+    settled.update(requests_ops.untagged_hint(name, axis, os.path.basename(run_dir)))
     # Keep the launch identity on the answer: which run this was, and where its log
     # is, are what a crash diagnosis needs and `results` does not carry; and the
     # `resume_notice`, which this reply, rebuilt from `results()`, would otherwise drop.

@@ -23,7 +23,8 @@ type TabMessage =
   | { type: "ready" }
   | { type: "refresh"; proxy?: string; combined?: boolean }
   | { type: "open_file"; file: string; rel?: string; line?: number }
-  | { type: "prompt"; text: string };
+  | { type: "prompt"; text: string }
+  | { type: "reveal_in_chat"; token: string; session?: string };
 
 /** Whose steps the tab asks for: a proxy's, or every proxy's; the active session's without. */
 export interface StepsPick { proxy?: string; combined?: boolean }
@@ -32,6 +33,8 @@ export interface StepsPick { proxy?: string; combined?: boolean }
 export interface MapActions {
   refresh: (pick: StepsPick) => void;
   prompt: (text: string) => void;
+  /** Show, in the chat, the conversation of a request and the agent's answer to it. */
+  reveal: (token: string, session?: string) => void;
 }
 
 /** Show *map* (and the session's steps) in the tab, opening it if needed, on the
@@ -60,6 +63,9 @@ export function showCodeMap(map: unknown, session: unknown, focus: string | unde
         });
       }
       else if (m?.type === "prompt" && typeof m.text === "string") actions.prompt(m.text);
+      else if (m?.type === "reveal_in_chat" && typeof m.token === "string") {
+        actions.reveal(m.token, typeof m.session === "string" && m.session ? m.session : undefined);
+      }
       else if (m?.type === "open_file" && typeof m.file === "string") {
         // The server's absolute path when it exists on this machine, else the path
         // relative to the map's root, resolved against the open folder.

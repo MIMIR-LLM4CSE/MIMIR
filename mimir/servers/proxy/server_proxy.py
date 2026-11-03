@@ -970,6 +970,7 @@ def proxy_request(
     status: str = "",
     summary: str = "",
     conclusion: str = "",
+    run_id: str = "",
     proxy_name: str = "",
 ) -> dict:
     """Record and follow an R&D request put from the code map: a numerical method, an
@@ -982,8 +983,9 @@ def proxy_request(
       open   -> number the request (R1, R2…) and record where the optimisation session
                 stands, the start every variant is measured from (requires: mode, kind,
                 idea). The message from the map gives `token` and the fields.
-      update -> set `status`, `summary` (a study's analysis and plan, what a variant
-                needed) or `conclusion` (the winner, its accuracy and cost, what next)
+      update -> set `status`, `summary` or `conclusion`, one line each: the study and the
+                outcome themselves are the answer in the chat, where the map links. `run_id`
+                attaches a run launched without the request's axis tag
       list   -> every request, briefly
       get    -> one request whole
 
@@ -1001,8 +1003,9 @@ def proxy_request(
         source: For open: the external code to bring in (package, path, repository).
         constraints: For open: what must hold besides the session's requirements.
         status: For update: 'studying', 'proposed', 'trying', 'done' or 'dropped'.
-        summary: For update: what was found or done so far.
-        conclusion: For update: the outcome, once done.
+        summary: For update: one line on what was found or done so far.
+        conclusion: For update: one line on the outcome, once done.
+        run_id: For update: a run of the request launched without its axis tag.
         proxy_name: For open: the proxy whose session it starts from; the active one's
             when empty.
     """
@@ -1013,7 +1016,8 @@ def proxy_request(
                 or requests_ops.open_(proxy_name, token, mode, kind, targets, idea, variants,
                                       source, constraints))
     if op == "update":
-        return _missing_args(op, request_id=request_id) or requests_ops.update(request_id, status, summary, conclusion)
+        return (_missing_args(op, request_id=request_id)
+                or requests_ops.update(request_id, status, summary, conclusion, run_id))
     if op == "get":
         return _missing_args(op, request_id=request_id) or requests_ops.get(request_id)
     return requests_ops.list_()

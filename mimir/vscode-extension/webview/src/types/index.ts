@@ -14,7 +14,7 @@ export * from "./chat";
 import type { AutoConnectMessage, ConfigMessage, DetachMessage, DetachedMessage, ModelChangedMessage, ModelsMessage, ReadyMessage, ServedModelsMessage, SetModelMessage, ShutdownMessage } from "./connection";
 import type { ActiveEditorMessage, FileResultsMessage, ListResourcesMessage, OpenEditorMessage, ResourcesMessage } from "./editor";
 import type { JobCheckinMessage, JobCompleteMessage, JobProgressMessage } from "./jobs";
-import type { CancelRunMessage, CodeMapMessage, CodeMapRequestMessage, CodeMapStaleMessage, MapPromptMessage, ListPanelMessage, ListSubagentsMessage, PanelReportMessage, ReadSubagentMessage, SubAgentMessage, SubAgentsListMessage } from "./panels";
+import type { CancelRunMessage, CodeMapMessage, CodeMapRequestMessage, CodeMapStaleMessage, MapPromptMessage, RevealRequestMessage, ListPanelMessage, ListSubagentsMessage, PanelReportMessage, ReadSubagentMessage, SubAgentMessage, SubAgentsListMessage } from "./panels";
 import type { ApprovalMessage, ApprovalResponseMessage, BatchReviewAcceptFileMessage, BatchReviewAcceptMessage, BatchReviewRevertFileMessage, BatchReviewRevertMessage, BatchStatusMessage, PromptExpiredMessage, UserQuestionMessage, UserQuestionResponseMessage } from "./prompts";
 import type { ClearTodosMessage, CreateSessionMessage, DeleteSessionMessage, RenameSessionMessage, ReplayMessage, SessionLoadedMessage, SessionsListMessage, SwitchSessionMessage, TodoMessage, TranscriptMessage, TranscriptResyncMessage } from "./session";
 import type { AgentModeMessage, ApprovalModeMessage, ContextModeMessage, EnforcementModeMessage, ListTogglesMessage, StreamingStateMessage, SubAgentLevelMessage, TemperatureMessage, ThinkingDepthMessage, ToggleServerMessage, ToggleSkillMessage, TogglesListMessage } from "./settings";
@@ -59,6 +59,7 @@ export type ServerMessage =
   | CodeMapMessage
   | MapPromptMessage
   | CodeMapStaleMessage
+  | RevealRequestMessage
   | SessionLoadedMessage
   | ContextModeMessage
   | EnforcementModeMessage

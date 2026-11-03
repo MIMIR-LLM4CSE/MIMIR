@@ -91,6 +91,37 @@ class OpenTests(_Store):
         self.assertIn("error", requests_ops.update("R1", "finished", "", ""))
 
 
+class FollowUpTests(_Store):
+    """A request continued from the chat rather than from the map still shows its runs."""
+
+    def test_a_request_remembers_the_conversation_it_was_put_in(self) -> None:
+        with mock.patch.object(requests_ops, "start_of", return_value={}), \
+             mock.patch.object(requests_ops, "active_session_id", return_value="s-42"):
+            row = requests_ops.open_("", "t", "study", "method", [{"file": "a.py"}], "x", [], "", "")["request"]
+        self.assertEqual(row["session"], "s-42")
+
+    def test_a_run_without_the_tag_is_attached_after_the_fact(self) -> None:
+        requests.add({"mode": "study", "status": "proposed", "idea": "x",
+                      "start": {"proxy": "solver", "value": 10.0}})
+        self.assertEqual(requests_ops.update("R1", "trying", "", "", run_id="r9")["request"]["runs"], ["r9"])
+        self.assertEqual(requests_ops.update("R1", "", "", "", run_id="r9")["request"]["runs"], ["r9"])
+        steps = [{"run_id": "r9", "axis": "multigrid", "verdict": "accept", "value": 8.0}]
+        with mock.patch.object(code_map_steps, "session", return_value={"steps": steps}):
+            (row,) = code_map_steps.requests_view()
+        self.assertEqual([(s["run_id"], s["variant"]) for s in row["steps"]], [("r9", None)])
+        self.assertEqual(row["status"], "trying")
+
+    def test_an_untagged_run_is_reminded_of_the_open_requests(self) -> None:
+        requests.add({"status": "proposed", "idea": "multigrid", "start": {"proxy": "solver"}})
+        requests.add({"status": "done", "idea": "old", "start": {"proxy": "solver"}})
+        requests.add({"status": "open", "idea": "elsewhere", "start": {"proxy": "mesh"}})
+        hint = requests_ops.untagged_hint("solver", "multigrid V-cycle", "r9")
+        self.assertEqual([r["id"] for r in hint["open_requests"]], ["R1"])
+        self.assertIn("run_id='r9'", hint["requests_note"])
+        self.assertEqual(requests_ops.untagged_hint("solver", "[R1.1] V-cycle", "r9"), {})
+        self.assertEqual(requests_ops.untagged_hint("mesh2", "x", "r9"), {})
+
+
 class RestoreTests(_Store):
     def test_each_variant_starts_from_the_request_s_tree_not_the_best(self) -> None:
         root = os.path.join(self.tmp.name, "ws")
