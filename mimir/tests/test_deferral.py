@@ -17,8 +17,8 @@ from unittest.mock import patch
 
 from mimir.client.query_engine import agent_loop as agent_loop_module
 from mimir.client.query_engine import streaming as streaming_module
+from mimir.client.context.current_call import CURRENT_CALL_ID
 from mimir.client.query_engine.deferral import (
-    CURRENT_CALL_ID,
     DEFERRED_RESULT,
     KIND_CALLS,
     KIND_PLAN_DECISION,
@@ -103,7 +103,7 @@ class LoopDeferralTests(unittest.TestCase):
         agent = RunAgentQueryNonInteractiveTests._query_agent(self)
         agent.turn.deferred_prompts = []
 
-        async def _defer(tool_calls, agent, messages, execution_context):
+        async def _defer(tool_calls, agent, messages, execution_context, *, bound):
             for tc in tool_calls:
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "denied"})
             agent.turn.deferred_prompts = [{"call_id": "a", "prompt": _PROMPT}]
@@ -124,7 +124,7 @@ class LoopDeferralTests(unittest.TestCase):
         agent.turn.deferred_turn = None
         ran = []
 
-        async def _run_it(tool_calls, agent, messages, execution_context):
+        async def _run_it(tool_calls, agent, messages, execution_context, *, bound):
             for tc in tool_calls:
                 ran.append(tc["id"])
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "done"})

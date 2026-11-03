@@ -1264,7 +1264,7 @@ class ClientHelperTests(unittest.TestCase):
                             [{"id": f"c{i}", "function": {
                                 "name": "write_file",
                                 "arguments": {"path": path, "content": content}}}],
-                            agent, [], build_execution_context(),
+                            agent, [], build_execution_context(), bound=list,
                         ))
             finally:
                 os.chdir(cwd)
@@ -1368,7 +1368,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(
                 dispatch_module.dispatch_tool_calls(
-                    tool_calls, agent, messages, execution_context
+                    tool_calls, agent, messages, execution_context, bound=list
                 )
             )
 
@@ -1438,7 +1438,7 @@ class ClientHelperTests(unittest.TestCase):
              capture_events(events.append), \
              patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(dispatch_module.dispatch_tool_calls(
-                tool_calls, _SlowApprovalAgent(), [], build_execution_context()))
+                tool_calls, _SlowApprovalAgent(), [], build_execution_context(), bound=list))
 
         results = [e for e in events if e.get("type") == "tool_result"]
         self.assertEqual(len(results), 1)

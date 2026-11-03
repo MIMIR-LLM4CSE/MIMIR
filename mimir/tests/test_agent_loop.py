@@ -452,7 +452,7 @@ class RunPlanModeTests(unittest.TestCase):
             {"content": "Here is the plan."},
         ])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -487,7 +487,7 @@ class RunPlanModeTests(unittest.TestCase):
         context = build_execution_context()
         dispatches = []
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
             dispatches.append(1)
             if len(dispatches) == 1:
@@ -532,7 +532,7 @@ class RunPlanModeTests(unittest.TestCase):
             parrot, parrot, parrot, parrot, parrot,
         ])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -574,7 +574,7 @@ class RunPlanModeTests(unittest.TestCase):
         ])
         dispatched: list = []
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             dispatched.extend(
                 as_dict(as_dict(tc).get("function", {})).get("name", "") for tc in tool_calls
             )
@@ -615,7 +615,7 @@ class RunPlanModeTests(unittest.TestCase):
         prose = {"content": "", "tool_calls": [_tool_call("todo_set_plan")]}
         backend = ScriptedBackend([prose, prose, prose, prose, prose, prose])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -658,7 +658,7 @@ class RunPlanModeTests(unittest.TestCase):
             parrot, parrot, parrot, parrot, parrot,
         ])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -696,7 +696,7 @@ class RunPlanModeTests(unittest.TestCase):
             {"content": "Here is the plan."},
         ])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -730,7 +730,7 @@ class RunPlanModeTests(unittest.TestCase):
             {"content": "Here is the plan."},
         ])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         captured: dict = {}
@@ -783,7 +783,7 @@ class RunPlanModeTests(unittest.TestCase):
             {"content": "Here is plan v2."},   # review #2 → accept
         ])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _fake_agent_loop(**kwargs):
@@ -841,7 +841,7 @@ class RunPlanModeTests(unittest.TestCase):
         ])
         dispatched: list[dict] = []
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             for tc in tool_calls:
                 fn = as_dict(as_dict(tc).get("function", {}))
                 dispatched.append(dict(normalize_arguments(fn.get("arguments") or {})))
@@ -891,7 +891,7 @@ class RunPlanModeTests(unittest.TestCase):
             {"content": "Here is plan v1."},   # review → reject
         ])
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
@@ -939,7 +939,7 @@ class RunPlanModeTests(unittest.TestCase):
             seen_exploring.append(bool(kw.get("exploring")))
             return []
 
-        async def _plan_dispatch(tool_calls, agent_, messages_, execution_context):
+        async def _plan_dispatch(tool_calls, agent_, messages_, execution_context, *, bound):
             if reads and not execution_context.discovery.read_files:
                 execution_context.discovery.read_files = set(reads)
                 execution_context.discovery.searched = True
@@ -1459,7 +1459,7 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
         backend = ScriptedBackend(script)
         dispatched: list[list[dict]] = []
 
-        async def _dispatch(tool_calls, agent_, messages, execution_context):
+        async def _dispatch(tool_calls, agent_, messages, execution_context, *, bound):
             dispatched.append(list(tool_calls))
 
         async def _noop_async(*a, **k):
@@ -1538,7 +1538,7 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
         backend = ScriptedBackend(script)
         emitted: list[dict] = []
 
-        async def _dispatch(tool_calls, agent_, messages, execution_context):
+        async def _dispatch(tool_calls, agent_, messages, execution_context, *, bound):
             # The user flips the mode while this step's tool call is in flight.
             agent.mode = switch_to
 
@@ -1808,7 +1808,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
     def _dispatch(self, agent, ec):
         msgs: list[dict] = []
         tc = [_tool_call("code_check_file", '{"filepath": "a.py"}')]
-        asyncio.run(dispatch_module.dispatch_tool_calls(tc, agent, msgs, ec))
+        asyncio.run(dispatch_module.dispatch_tool_calls(tc, agent, msgs, ec, bound=list))
         return msgs
 
     def test_warns_then_blocks_repeated_failure(self) -> None:
@@ -1922,7 +1922,7 @@ class WriteDiffEmitTests(unittest.TestCase):
         ec = build_execution_context()
         tc = [_tool_call("replace_in_file", json.dumps({"path": path}))]
         with event_sink_module.event_sink(events.append):
-            asyncio.run(dispatch_module.dispatch_tool_calls(tc, agent, [], ec))
+            asyncio.run(dispatch_module.dispatch_tool_calls(tc, agent, [], ec, bound=list))
         return events
 
     def test_failed_edit_on_prechanged_file_emits_no_diff(self) -> None:
@@ -2103,7 +2103,7 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
     def _dispatch(self, agent, messages, ec, name="bash_run", args=None):
         call = {"id": f"c{len(messages)}", "function": {
             "name": name, "arguments": args if args is not None else {"command": "find . -name '*.x'"}}}
-        asyncio.run(dispatch_module.dispatch_tool_calls([call], agent, messages, ec))
+        asyncio.run(dispatch_module.dispatch_tool_calls([call], agent, messages, ec, bound=list))
         return messages[-1]["content"]
 
     def test_the_third_identical_result_is_annotated(self) -> None:

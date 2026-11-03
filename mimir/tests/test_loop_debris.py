@@ -182,7 +182,7 @@ class InterruptedTurnRecordTests(unittest.TestCase):
         agent.turn.last_turn_start = 7
         backend = _CancelsOnSecondCall([{"tool_calls": [_tool_call("read_file")]}])
 
-        async def _dispatch(tool_calls, agent, messages, execution_context):
+        async def _dispatch(tool_calls, agent, messages, execution_context, *, bound):
             messages.append({"role": "tool", "tool_call_id": "1", "content": "{}"})
 
         m = agent_loop_module
@@ -221,7 +221,7 @@ class InterleavedReasoningTests(unittest.TestCase):
             {"content": "done", "thinking": "wrap up"},
         ])
 
-        async def _dispatch(tool_calls, agent, messages, execution_context):
+        async def _dispatch(tool_calls, agent, messages, execution_context, *, bound):
             for tc in tool_calls:
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "{}"})
 
@@ -331,7 +331,7 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
 
         backend = ScriptedBackend(script)
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context, *, bound):
             _record_plan_flags(tool_calls, agent, execution_context)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):

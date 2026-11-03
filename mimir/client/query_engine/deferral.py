@@ -7,13 +7,8 @@ calls with no model call between. ``kind``: ``"calls"`` or ``"plan_decision"``.
 from __future__ import annotations
 
 import json
-from contextvars import ContextVar
 from ..context.execution_context import ExecutionContext
 from ..core.ports import TurnHost
-
-# The tool call whose execution is running in this context. Set around each call's
-# task, so a prompt raised from inside the call can say which call it holds up.
-CURRENT_CALL_ID: ContextVar[str | None] = ContextVar("mimir_current_call_id", default=None)
 
 KIND_CALLS = "calls"
 KIND_PLAN_DECISION = "plan_decision"

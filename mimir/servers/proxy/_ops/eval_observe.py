@@ -17,7 +17,7 @@ from .._lib.ratchet import load_best
 from .._lib.report import diff_run_pair, parse_runner_log
 from ._eval_ratchet import ratchet_state
 from ....shared import build_progress
-from .._lib import build, procs, profiling
+from .._lib import build, build_files, profiling
 from .._lib.store import load_registry, load_opt_config, opt_ledger_file, run_dir_names
 from .._lib.layout import opt_session_runs_dir, resolve_proxy_name, read_json
 from .eval_common import (
@@ -299,9 +299,9 @@ def results(proxy_name: str = "") -> dict:
     # A run stopped by its build has no metrics.json, which without this would be
     # reported as "may still be in progress" — the one answer that hides the cause
     # and invites a wait for a run that is already over.
-    bld = build.read_report(run_dir)
+    bld = build_files.read_report(run_dir)
     if not complete and bld and bld.get("status") not in (None, "ok"):
-        log_path = procs.build_log_path(run_dir)
+        log_path = build_files.build_log_path(run_dir)
         return err(
             build.failure_summary(bld) + " — no measurement was taken.",
             hint="Fix the build and run again; nothing was accepted or recorded. "

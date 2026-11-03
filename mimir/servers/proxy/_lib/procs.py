@@ -40,6 +40,7 @@ from ....shared.state_paths import active_session_id, session_owns
 from ....shared.atomic import replace_symlink
 from ....shared.processes import is_running, proc_starttime
 from . import store
+from .build_files import build_log_path, read_report
 
 _MAX_LOG = 256 * 1024   # bytes
 
@@ -66,9 +67,6 @@ def _build_slurm_id_path(run_dir: str) -> str:
     only when the build was sent somewhere of its own.
     """
     return os.path.join(run_dir, "build_slurm_job_id")
-
-def build_log_path(run_dir: str) -> str:
-    return os.path.join(run_dir, "build.log")
 
 def _phase_path(run_dir: str) -> str:
     return os.path.join(run_dir, "phase.json")
@@ -256,8 +254,7 @@ def _build_job_failed(run_dir: str) -> bool:
     its verdict there before exiting, and a status a caller can act on ("which proxy,
     and how") only exists in the report.
     """
-    from . import build as build_mod
-    report = build_mod.read_report(run_dir)
+    report = read_report(run_dir)
     if not report:
         return False
     return report.get("status") not in ("ok", "skipped")

@@ -786,7 +786,7 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
                           watched=lambda: [])
         asyncio.run(dispatch_module.dispatch_tool_calls(
             [{"id": "1", "function": {"name": "spawn_agent", "arguments": "{}"}}],
-            agent, [], build_execution_context()))
+            agent, [], build_execution_context(), bound=list))
         return agent.registered
 
     def test_a_failed_handoff_still_has_its_live_runs_adopted(self) -> None:

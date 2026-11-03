@@ -8,7 +8,6 @@ docs/SERVERS_DETAILED.md, "proxy".
 
 from __future__ import annotations
 
-from . import layout
 import json
 import os
 import re
@@ -18,8 +17,7 @@ import subprocess
 import time
 
 from . import proc_run
-
-from . import procs
+from .build_files import build_log_path, report_path
 
 # Long enough for a real project's first build, bounded so a wedged build cannot
 # hold a run for the whole 24 h measurement budget. Half an hour was not: a GPU
@@ -183,7 +181,7 @@ def run_build(entry: dict, run_dir: str, proxy: str = "") -> dict:
         return _record(proxy, "invalid", cmd=sp["cmd"], error=bad_env, duration_s=0.0)
 
     argv = shlex.split(sp["cmd"])
-    log_path = procs.build_log_path(run_dir)
+    log_path = build_log_path(run_dir)
     started = time.monotonic()
     # PWD carries the declared spelling of the build directory (the child's getcwd() comes
     # back resolved); otherwise it would name the server's directory.
@@ -243,10 +241,6 @@ def builds_for(reg: dict, suite: dict, proxy_name: str,
     return out
 
 
-def report_path(run_dir: str) -> str:
-    return os.path.join(run_dir, "build.json")
-
-
 def write_report(run_dir: str, records: list[dict]) -> dict:
     """Persist the run's build records; returns the payload written."""
     status = "ok"
@@ -266,12 +260,6 @@ def write_report(run_dir: str, records: list[dict]) -> dict:
     except OSError:
         pass
     return payload
-
-
-def read_report(run_dir: str) -> dict | None:
-    """Read a run's build.json, or None when the run declared no build."""
-    data = layout.read_json(report_path(run_dir))
-    return data if isinstance(data, dict) else None
 
 
 def failure_summary(report: dict) -> str:

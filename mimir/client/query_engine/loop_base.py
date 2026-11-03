@@ -6,6 +6,7 @@ mode does with the answer. A mode change returns a :class:`ModeSwitch` to the dr
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,11 +20,13 @@ from ..guardrails.nudges.messages import empty_turn_retry_message
 from .deferral import end_deferred_calls, end_deferred_turn
 from .dispatch import dispatch_tool_calls, post_dispatch_inject
 from .finalize import finalize_answer
-from .history import enforce_context_budget
+from .history import bound_step_results, enforce_context_budget
 from .readonly_guard import filter_readonly_tool_calls
 from .streaming import DraftHold, note_truncated_turn, process_response, stream_chat
 from ..context.execution_context import ExecutionContext
 from ..core.ports import AgentPort
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -298,6 +301,27 @@ class StepLoop:
             options["temperature"] = temperature
         return options
 
+    def bound_results(self, results: list[str]) -> list[str]:
+        """Apply the per-result and per-step context budgets, and say so when they bite.
+
+        Best effort: a backend that cannot count tokens, or a budget that cannot be
+        resolved, must not cost the step its results. The history's own passes still run
+        afterwards, so a failure here degrades to the behaviour that came before it.
+        """
+        try:
+            bounded, cut = bound_step_results(
+                results, model=self.turn.model, context_mode=self.context_mode,
+                token_counter=self.turn.count_tokens, context_ceiling=self.context_ceiling)
+        except Exception:  # noqa: BLE001 — a budget failure must not drop the evidence
+            logger.debug("bound_results: a best-effort step failed and was skipped", exc_info=True)
+            return results
+        for before, after in cut:
+            emit({"type": "status", "text": (
+                f"  \u2702 Context: a tool result of {before:,} tokens was cut to "
+                f"{after:,} to fit the step budget."
+            )})
+        return bounded
+
     def enforce_budget(self, tools: list[dict]) -> None:
         """Fit the history to the window the next call will be measured against."""
         enforce_context_budget(
@@ -385,7 +409,7 @@ class StepLoop:
         """
         self.empty_turns = 0
         tool_calls = self.prepare_calls(tool_calls)
-        await dispatch_tool_calls(tool_calls, self.agent, self.messages, self.ec)
+        await dispatch_tool_calls(tool_calls, self.agent, self.messages, self.ec, bound=self.bound_results)
         if end_deferred_calls(self.agent, self.messages, tool_calls,
                               query=self.turn.query, mode=self.mode):
             return end_deferred_turn(self.agent, self.ec)

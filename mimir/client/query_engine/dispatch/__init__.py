@@ -10,8 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
-from typing import Any
+from typing import Any, Callable
 
 from ...config.limits import IDENTICAL_REPEAT_THRESHOLD, SOFT_REPEAT_THRESHOLD
 from ...config.servers import SKILL_LOAD_TOOL
@@ -27,13 +26,10 @@ from ...tools.display import (
     tool_arg_preview,
     tool_status_message,
 )
-from .. import streaming as _streaming
-from ..history import bound_step_results
 from .admission import Call, admit, is_write
 from .execution import run_call
 from .inject import post_dispatch_inject
 
-logger = logging.getLogger(__name__)
 
 __all__ = ["ToolDispatcher", "dispatch_tool_calls", "post_dispatch_inject"]
 
@@ -41,10 +37,13 @@ __all__ = ["ToolDispatcher", "dispatch_tool_calls", "post_dispatch_inject"]
 class ToolDispatcher:
     """One step's calls, from what the model issued to the tool messages in history."""
 
-    def __init__(self, agent: DispatchAgent, messages: list[dict], execution_context: ExecutionContext) -> None:
+    def __init__(self, agent: DispatchAgent, messages: list[dict], execution_context: ExecutionContext,
+                 bound: Callable[[list[str]], list[str]]) -> None:
         self.agent = agent
         self.messages = messages
         self.ec = execution_context
+        # What the history can hold of the step's results: the loop's, which owns the history.
+        self.bound = bound
 
     async def run(self, tool_calls: list) -> None:
         admission = admit(tool_calls, self.agent, self.ec)
@@ -146,7 +145,7 @@ class ToolDispatcher:
         tool_msg_files: dict = self.ec.bookkeeping.tool_msg_files
         # Bounded BEFORE it is appended: the trim pass exempts the current step, so
         # afterwards only the force-fit backstop could touch it, once already over.
-        results = _bound_results(results, self.agent)
+        results = self.bound(results)
         for call, result in zip(admission.calls, results):
             try:
                 tool_msg_files[call.call_id] = self.agent.get_tool_file_targets(call.name, call.args)
@@ -161,9 +160,11 @@ class ToolDispatcher:
 
 
 async def dispatch_tool_calls(tool_calls: list, agent: DispatchAgent, messages: list[dict],
-                               execution_context: ExecutionContext) -> None:
-    """Run one step's calls (see :class:`ToolDispatcher`)."""
-    await ToolDispatcher(agent, messages, execution_context).run(tool_calls)
+                               execution_context: ExecutionContext, *,
+                               bound: Callable[[list[str]], list[str]]) -> None:
+    """Run one step's calls (see :class:`ToolDispatcher`); *bound* clamps their results
+    to what the history can hold, before they are appended."""
+    await ToolDispatcher(agent, messages, execution_context, bound).run(tool_calls)
 
 
 def _pin_loaded_skill(
@@ -193,30 +194,3 @@ def _pin_loaded_skill(
     loaded[skill] = call_id
     execution_context.bookkeeping.pinned_call_ids.add(call_id)
     emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
-
-
-def _bound_results(results: list[str], agent: DispatchAgent) -> list[str]:
-    """Apply the per-result and per-step context budgets, and say so when they bite.
-
-    Best effort: a backend that cannot count tokens, or a budget that cannot be
-    resolved, must not cost the step its results. The history's own passes still run
-    afterwards, so a failure here degrades to the behaviour that came before it.
-    """
-    try:
-        backend = _streaming.get_backend()
-        bounded, cut = bound_step_results(
-            results,
-            model=agent.model,
-            context_mode=agent.context_mode,
-            token_counter=lambda text: backend.count_text_tokens(agent.model, text),
-            context_ceiling=int(agent.max_context_tokens or 0) or None,
-        )
-    except Exception:  # noqa: BLE001 — a budget failure must not drop the evidence
-        logger.debug("_bound_results: a best-effort step failed and was skipped", exc_info=True)
-        return results
-    for before, after in cut:
-        emit({"type": "status", "text": (
-            f"  \u2702 Context: a tool result of {before:,} tokens was cut to "
-            f"{after:,} to fit the step budget."
-        )})
-    return bounded

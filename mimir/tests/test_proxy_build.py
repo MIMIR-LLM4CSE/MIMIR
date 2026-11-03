@@ -4,7 +4,7 @@ It happens once per run before any case; a failed build gives no verdict and no 
 entry; a restore leaves sources the build system notices.
 """
 
-from mimir.servers.proxy._lib import layout
+from mimir.servers.proxy._lib import build_files, layout
 from mimir.shared.launcher import launch_argv
 import json
 import os
@@ -32,8 +32,8 @@ class SpecTests(_TmpStorageTest):
         self.assertIsNone(build.spec({"build_cmd": "   "}))
         rec = build.run_build({}, self.root, proxy="tiny")
         self.assertEqual(rec["status"], "skipped")
-        self.assertFalse(os.path.exists(procs.build_log_path(self.root)))
-        self.assertFalse(os.path.exists(build.report_path(self.root)))
+        self.assertFalse(os.path.exists(build_files.build_log_path(self.root)))
+        self.assertFalse(os.path.exists(build_files.report_path(self.root)))
 
     def test_defaults_are_filled_and_the_timeout_is_bounded(self) -> None:
         sp = build.spec({"build_cmd": "make"})
@@ -71,7 +71,7 @@ class BuildCwdSpellingTests(_TmpStorageTest):
                               self.root, proxy="tiny")
         self.assertEqual(rec["status"], "ok")
         self.assertEqual(rec["cwd"], link)
-        log = open(procs.build_log_path(self.root)).read()
+        log = open(build_files.build_log_path(self.root)).read()
         self.assertIn(f"at={link}", log)
         self.assertNotIn(f"at={real}", log)
 
@@ -95,7 +95,7 @@ class BuildEnvTests(_TmpStorageTest):
             {"build_cmd": sh, "build_env": {"CC": "my-special-gcc"}},
             self.root, proxy="tiny")
         self.assertEqual(rec["status"], "ok")
-        self.assertIn("CC=my-special-gcc", open(procs.build_log_path(self.root)).read())
+        self.assertIn("CC=my-special-gcc", open(build_files.build_log_path(self.root)).read())
         self.assertEqual(rec["env_declared"], {"CC": "my-special-gcc"})
 
     def test_nothing_pinned_means_the_process_is_launched_as_before(self) -> None:
@@ -109,7 +109,7 @@ class BuildEnvTests(_TmpStorageTest):
         sh = _script(os.path.join(self.root, "b.sh"), "true\n")
         build.run_build({"build_cmd": sh, "build_env": {"PATH": "/nonexistent"}},
                         self.root, proxy="tiny")
-        log = open(procs.build_log_path(self.root)).read()
+        log = open(build_files.build_log_path(self.root)).read()
         self.assertIn("ccache: not on PATH", log)
 
     def test_a_malformed_variable_name_is_refused_at_registration(self) -> None:
@@ -159,7 +159,7 @@ class RunBuildTests(_TmpStorageTest):
         self.assertEqual(rec["status"], "failed")
         self.assertEqual(rec["returncode"], 3)
         self.assertIsInstance(rec["duration_s"], float)
-        log = open(procs.build_log_path(self.root)).read()
+        log = open(build_files.build_log_path(self.root)).read()
         self.assertIn("out", log)
         self.assertIn("err", log)
 
@@ -236,7 +236,7 @@ class ReportTests(_TmpStorageTest):
         self.assertEqual(payload["status"], "failed")
         self.assertEqual(payload["total_duration_s"], 3.5)
         self.assertIn("b", build.failure_summary(payload))
-        self.assertEqual(build.read_report(self.root)["status"], "failed")
+        self.assertEqual(build_files.read_report(self.root)["status"], "failed")
 
     def test_an_all_ok_report_is_ok(self) -> None:
         payload = build.write_report(self.root, [{"proxy": "a", "status": "ok",
@@ -296,7 +296,7 @@ class FailedBuildTests(_TmpStorageTest):
         build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                       "returncode": 2, "duration_s": 4.0,
                                       "error": "build exited 2"}])
-        with open(procs.build_log_path(run_dir), "w") as fh:
+        with open(build_files.build_log_path(run_dir), "w") as fh:
             fh.write("solver.cpp:12:5: error: expected ';'\n")
         procs.update_opt_active_link("tiny", run_dir)
         return run_dir
@@ -486,7 +486,7 @@ class RunnerPhaseTests(_TmpStorageTest):
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
         ok = runner._build_phase(reg, suite, "tiny", reg["tiny"], self.root, {})
         self.assertFalse(ok)
-        self.assertEqual(build.read_report(self.root)["status"], "failed")
+        self.assertEqual(build_files.read_report(self.root)["status"], "failed")
 
     def test_a_build_that_leaves_no_executable_fails_the_run(self) -> None:
         runner = self._runner()
@@ -496,7 +496,7 @@ class RunnerPhaseTests(_TmpStorageTest):
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
         ok = runner._build_phase(reg, suite, "tiny", reg["tiny"], self.root, {})
         self.assertFalse(ok)
-        rec = build.read_report(self.root)["builds"][-1]
+        rec = build_files.read_report(self.root)["builds"][-1]
         self.assertIn("still missing", rec["error"])
 
     def test_a_build_that_rewrites_a_tracked_source_fails_the_run(self) -> None:
@@ -516,7 +516,7 @@ class RunnerPhaseTests(_TmpStorageTest):
                                  reg["tiny"], run_dir, {"optimize_paths": [tracked]})
         self.assertFalse(ok)
         self.assertIn("optimize_paths",
-                      build.read_report(run_dir)["builds"][-1]["error"])
+                      build_files.read_report(run_dir)["builds"][-1]["error"])
 
     def test_a_clean_build_lets_the_run_proceed(self) -> None:
         runner = self._runner()
@@ -526,7 +526,7 @@ class RunnerPhaseTests(_TmpStorageTest):
         suite = {"cases": [{"case_id": "c0", "proxy_name": "tiny"}]}
         ok = runner._build_phase(reg, suite, "tiny", reg["tiny"], self.root, {})
         self.assertTrue(ok)
-        self.assertEqual(build.read_report(self.root)["status"], "ok")
+        self.assertEqual(build_files.read_report(self.root)["status"], "ok")
 
 
 class SplitPhaseTests(_TmpStorageTest):
@@ -571,7 +571,7 @@ class SplitPhaseTests(_TmpStorageTest):
         res = self._run_phase(run_dir, "build")
         self.assertEqual(res.returncode, 0, msg=res.stdout + res.stderr)
         self.assertEqual(self._builds_ran(), 1)
-        self.assertEqual(build.read_report(run_dir)["status"], "ok")
+        self.assertEqual(build_files.read_report(run_dir)["status"], "ok")
         # metrics.json is what makes a run read as finished, and this half measured
         # nothing — writing one here would report a run that never ran.
         self.assertFalse(os.path.isfile(os.path.join(run_dir, "metrics.json")))
@@ -617,7 +617,7 @@ class RunProgressTests(_TmpStorageTest):
             json.dump(fields, fh)
 
     def _write_build_log(self, text: str) -> None:
-        with open(procs.build_log_path(self.run_dir), "w") as fh:
+        with open(build_files.build_log_path(self.run_dir), "w") as fh:
             fh.write(text)
 
     # ── the build's own percentage ────────────────────────────────────────────

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import NoReturn
 
 from ._lib import build as build_mod
+from ._lib.build_files import read_report
 from ._lib import command, execute, metrics, profiling, ratchet, store, tree_snapshot
 
 
@@ -213,7 +214,7 @@ def _check_split_build(reg: dict, suite: dict, proxy_name: str, entry: dict,
                        run_dir: str) -> None:
     """The run half of a split run: the build job must have succeeded, or nothing is
     measured (a hand-edited dependency would otherwise measure a stale binary)."""
-    report = build_mod.read_report(run_dir)
+    report = read_report(run_dir)
     if report is not None and report.get("status") not in ("ok", "skipped"):
         _fail(build_mod.failure_summary(report), 2)
     if report is None and build_mod.builds_for(reg, suite, proxy_name, entry):
@@ -486,7 +487,7 @@ def main() -> None:
          f"all_passed={all_passed} best_case={best_case or 'none'} "
          f"best_time_s={best_time if best_time is not None else 'n/a'}")
 
-    build_report = build_mod.read_report(run_dir) or {}
+    build_report = read_report(run_dir) or {}
     # The run's memory is its largest case's: a constraint on it is a ceiling, not a mean.
     peaks = {k: [r["metrics"][k] for r in tally.results if isinstance((r.get("metrics") or {}).get(k), (int, float))]
              for k in ("peak_rss_mb", "peak_rss_total_mb")}

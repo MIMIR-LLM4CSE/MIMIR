@@ -25,7 +25,7 @@ from ....tools.capabilities import (
     preview_spec,
     reversibility_of,
 )
-from ....query_engine.deferral import CURRENT_CALL_ID
+from ....context.current_call import CURRENT_CALL_ID
 from ....tools.display import shorten_display_args
 from .file_preview import build_preview_diffs
 

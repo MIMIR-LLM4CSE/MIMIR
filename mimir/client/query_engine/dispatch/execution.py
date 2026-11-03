@@ -28,7 +28,7 @@ from ..jobs.background import (
     maybe_register_background_job,
     maybe_rewatch_background_jobs,
 )
-from ..deferral import CURRENT_CALL_ID
+from ...context.current_call import CURRENT_CALL_ID
 from .admission import Call, reads_progress_of_a_watched_run, watched_progress_note
 
 logger = logging.getLogger(__name__)

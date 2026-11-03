@@ -18,7 +18,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `config/` | the vocabulary: `paths`, `limits`, `settings` (the closed sets of each user setting), `servers`, `models` and the model catalogue, the `preferences` store |
 | `protocol/` | the shapes that cross a boundary: `events` (event types, the private answer extras), `messages` (chat-message invariants, `reconcile_tool_pairs`), `tool_call`, `tool_result`; `event_sink` (`emit()`: structured events to a bound callback (WS) or JSON on stdout (CLI)); `human_pause` (time spent waiting on a person, not charged to a tool's timeout) |
 | `tools/` | what the client knows about tools: `capabilities` (the registry each server declares into), `bash_classify` (what a shell command does), `display` and the previews (how a call and its result read on screen) |
-| `context/` | the `ExecutionContext` dataclass and its read-only `ContextView`, query signals, `@`-mention attach, the checklist file, the checkpoints a rewind reads |
+| `context/` | the `ExecutionContext` dataclass and its read-only `ContextView`, query signals, `@`-mention attach, the checklist file, the checkpoints a rewind reads, `current_call` (the tool call running in this context, which a card raised inside it names) |
 | `core/` | the contracts: `ports` (`AgentPort`, `HumanIO`), `settings` (`apply_setting` / `read_setting`), `human` (`TerminalHuman`, `Unattended`) |
 | `prompt/` | system-prompt construction |
 | `extensions/` | everything the user drops in the workspace `.mimir/` — servers, skills, plugin packs |
@@ -1033,8 +1033,9 @@ A second compaction feeds the previous summary back through the summariser, so t
 always `[system, task, exactly one summary, last two exchanges]` and never a stack of them.
 
 **A step is bounded before it is appended, not after.** `bound_step_results()` clamps one
-step's tool results — per result, and per step together — and `query_engine/dispatch/` calls it in the
-loop that appends them. Everything else here runs too late to help: `_trim_tool_history`
+step's tool results — per result, and per step together. The step loop owns the history, so it
+owns this too (`StepLoop.bound_results`) and hands it to `query_engine/dispatch/`, which applies it
+just before it appends the results: the dispatch runs calls and knows no token budget. Everything else here runs too late to help: `_trim_tool_history`
 deliberately exempts the current step from eviction (a sub-agent's whole answer is one of
 those results), so the only thing that could touch them was the force-fit backstop, and only
 once the window was already over. That is how four parallel fetches took a 200k window to

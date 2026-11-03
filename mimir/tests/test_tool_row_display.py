@@ -567,7 +567,7 @@ class DispatchRowFieldsTests(unittest.TestCase):
              patch.object(dispatch_execution, "run_post_tool_annotations", lambda *a, **k: None):
             asyncio.run(d.dispatch_tool_calls(
                 tool_calls, agent, [] if messages is None else messages,
-                build_execution_context()))
+                build_execution_context(), bound=list))
         return agent, [e for e in events if e.get("type") == "tool_call"]
 
     @staticmethod
