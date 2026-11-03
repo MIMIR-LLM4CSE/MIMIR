@@ -599,7 +599,9 @@ measure), the kind, the targets (Shift+click a module on the map, or a file or f
 in the pane, to add one; the targets' costliest functions are offered), the idea, the
 variants (each measured from the same start), a source for external code, constraints.
 A refactor's form lists what the map finds in its scope: module cycles, rule breaks, the
-most coupled modules. The draft is kept in the tab's state. **Send to the agent** puts a
+most coupled modules. Opening the form brings it into view when it is out of sight (a narrow tab stacks the
+pane under the map), pulses it once and puts the cursor in its idea; the header's button
+stays pressed while the whole code's analysis is open. The draft is kept in the tab's state. **Send to the agent** puts a
 message into the chat as the user's own, through the same `prompt` path as the profile
 button: the agent records it with `proxy_request(op='open', token=…)` and follows the
 map-request skill, every tool with its own approval. The tab writes nothing itself.

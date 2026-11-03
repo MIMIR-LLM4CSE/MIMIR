@@ -625,6 +625,28 @@ function suggestions(v: View, d: Draft): string {
   return rows.length ? '<div class="cap">Their costliest functions</div><div class="list">' + rows.join("") + "</div>" : "";
 }
 
+/** Whether *d* is the analysis of the whole code's architecture the header's button opens. */
+function wholeCodeAnalysis(d: Draft): boolean {
+  return d.kind === "refactor" && d.targets.length === 1 && !!d.targets[0].all;
+}
+
+/** Open *d* in the form and bring it to the user: the form may sit below the map (a narrow
+ *  tab stacks the pane under it) or above what they were reading, and a click that changes
+ *  something out of sight reads as a button that does nothing. */
+function openDraft(d: Draft): void {
+  draft = d;
+  remember();
+  render();
+  const form = document.querySelector<HTMLElement>(".req-form");
+  if (!form) return;
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Moved to only when out of sight, its title first: a form already in view stays put.
+  const r = form.getBoundingClientRect();
+  if (r.top < 0 || r.top > innerHeight - 120) form.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" });
+  form.classList.add("is-new");
+  form.querySelector<HTMLElement>("#rq-idea")?.focus({ preventScroll: true });
+}
+
 /** *t* added to the draft's targets. */
 function addTarget(t: Target): void {
   if (!draft) return;
@@ -700,11 +722,9 @@ function renderSide(v: View): void {
   side.innerHTML = html;
   bindForm(side, v);
   side.querySelectorAll<HTMLElement>("[data-new]").forEach((b) => b.addEventListener("click", () => {
-    draft = newDraft([JSON.parse(b.dataset.new!)]);
-    if (b.dataset.kind) draft.kind = b.dataset.kind;
-    remember(); render();
-    side.scrollTop = 0;
-    side.querySelector<HTMLElement>("#rq-idea")?.focus();
+    const d = newDraft([JSON.parse(b.dataset.new!)]);
+    if (b.dataset.kind) d.kind = b.dataset.kind;
+    openDraft(d);
   }));
   side.querySelectorAll<HTMLElement>("[data-request]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "request", id: b.dataset.request! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-step-n]").forEach((b) => b.addEventListener("click", () => { step = Number(b.dataset.stepN); render(); }));
@@ -816,6 +836,8 @@ function render(): void {
   document.documentElement.dataset.skin = skin;
   document.querySelectorAll<HTMLButtonElement>("button[data-skin]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.skin === skin)));
   document.getElementById("tests")?.setAttribute("aria-pressed", String(showTests));
+  // Pressed while the analysis of the whole code is being written.
+  document.getElementById("analyse")?.setAttribute("aria-pressed", String(!!draft && wholeCodeAnalysis(draft)));
   const fnsButton = document.getElementById("fns");
   if (fnsButton) {
     // Offered when the profile shown kept its functions.
@@ -874,11 +896,10 @@ function mount(): void {
   });
   document.getElementById("side")!.addEventListener("click", onSideClick);
   document.getElementById("analyse")!.addEventListener("click", () => {
-    draft = { ...newDraft([{ all: true }]), kind: "refactor" };
+    // Pressed again while open: back to the form already written, not a blank one.
+    if (draft && wholeCodeAnalysis(draft)) { openDraft(draft); return; }
     sel = null;
-    remember();
-    render();
-    document.getElementById("side")!.scrollTop = 0;
+    openDraft({ ...newDraft([{ all: true }]), kind: "refactor" });
   });
   // While the agent is at a request, the tab asks the server again now and then, so its
   // status and runs show without a ⟳. Only while the tab is seen.

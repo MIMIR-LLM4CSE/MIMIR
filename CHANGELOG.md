@@ -29,6 +29,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a function, a refactor's findings) widened the whole form past the side pane; a target
   is now cut at its start, keeping the file and function that tell it apart, and paths
   wrap.
+- **"Analyse the architecture" and "New request…" show what they opened.** The form
+  opened at the top of the side pane, out of sight when the tab is narrow (the pane then
+  sits under the map), so the button looked dead. The form is now scrolled into view
+  when it is not, pulses once, and takes the cursor; the header's button stays pressed
+  while the analysis is open, and pressing it again goes back to it.
 
 ### Added
 - **R&D requests from the code map.** A module, file, function, component or the whole

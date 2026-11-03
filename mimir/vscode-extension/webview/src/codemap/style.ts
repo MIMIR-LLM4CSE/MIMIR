@@ -170,6 +170,9 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 /* One track that cannot grow past the pane: a long path wraps or is cut, never widens it. */
 .section.req-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; border-color: var(--accent); }
 .section.req-form > * { min-width: 0; }
+/* Just opened: one pulse of the accent, so the eye finds it. */
+.section.req-form.is-new { animation: rq-open 1.4s ease-out; scroll-margin: 12px; }
+@keyframes rq-open { 0% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 55%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
 .section.req-form .title { margin-bottom: 2px; }
 .hint { font-size: 11.5px; color: var(--fg-dim); font-style: normal; }
 .cap .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
@@ -210,5 +213,5 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .rq-pill.st-studying rect { fill: var(--gpu); } .rq-pill.st-proposed rect { fill: var(--e-cycle); }
 .rq-pill.st-trying rect { fill: var(--time); } .rq-pill.st-done rect { fill: var(--ok); }
 .chip .rq { font: 600 10px var(--font); color: var(--accent); }
-@media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } .section.req-form.is-new { animation: none; } }
 `;
