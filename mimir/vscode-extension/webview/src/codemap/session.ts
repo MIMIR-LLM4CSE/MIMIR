@@ -17,9 +17,13 @@ export interface GpuProfile {
 export interface MemoryProfile {
   tool: string; peak_mb?: number; files?: Record<string, number>; unavailable?: string; note?: string;
 }
+/** A function's time: its own, and with what it calls; the line to open it at, when known. */
+export interface FnTime { self: number; total: number; line?: number }
 export interface Profile {
   tool: string; samples?: number; case?: string;
   files?: Record<string, number>; outside?: number; unavailable?: string; note?: string;
+  /** Keyed `file::function`, costliest self time first. */
+  functions?: Record<string, FnTime>;
   gpu?: GpuProfile;
   memory?: MemoryProfile;
 }
@@ -46,6 +50,9 @@ export interface Session {
 export interface TimeView {
   files: Record<string, number>;
   before: Record<string, number> | null;
+  /** Where it went per function, when the profile shown kept them; and the one before it. */
+  functions: Record<string, FnTime> | null;
+  functionsBefore: Record<string, FnTime> | null;
   /** The GPU's time per file, when the profile shown traced one; and the one before it. */
   gpuFiles: Record<string, number> | null;
   gpuBefore: Record<string, number> | null;
@@ -76,6 +83,7 @@ export function timeAt(session: Session, k: number, scope: Scope): TimeView | nu
   const gpu = traced(shown.p.gpu) ? shown.p.gpu : null;
   return {
     files: shown.p.files, before: compared ? compared.files : null,
+    functions: shown.p.functions ?? null, functionsBefore: compared ? compared.functions ?? null : null,
     gpuFiles: gpu ? gpu.files ?? {} : null,
     gpuBefore: gpu && compared && traced(compared.gpu) ? compared.gpu.files ?? {} : null,
     gpu, memory: shown.p.memory && !shown.p.memory.unavailable ? shown.p.memory : null,
@@ -149,34 +157,61 @@ function bestSoFar(session: Session): (number | null)[] {
   return out;
 }
 
-/** The strip: the best value as the session went, and one stop per step. */
-export function strip(session: Session, k: number, scope: Scope): string {
-  const n = session.steps.length + 1;
+/** The strip: a chart of the session (the baseline, the best as it went, one dot per step)
+ *  *width* pixels wide, and one chip per step to pick it by. */
+export function strip(session: Session, k: number, scope: Scope, width = 760): string {
+  const W = Math.max(360, Math.round(width)), H = 132, L = 54, R = 18, T = 12, B = 22;
   const best = bestSoFar(session);
+  const base = session.baseline.value;
   const nums = best.filter((x): x is number => x !== null).concat(
     session.steps.map((s) => s.value).filter((x): x is number => x !== null));
-  const lo = Math.min(...nums), hi = Math.max(...nums), span = hi - lo || 1;
-  const H = 40;
-  const sx = (i: number) => ((i + 0.5) / n) * 100;
-  const sy = (v: number) => 6 + ((hi - v) / span) * (H - 12);
+  const lo0 = nums.length ? Math.min(...nums) : 0, hi0 = nums.length ? Math.max(...nums) : 1;
+  const pad = (hi0 - lo0 || Math.abs(hi0) || 1) * 0.1;
+  const lo = lo0 - pad, hi = hi0 + pad, span = hi - lo;
+  const n = session.steps.length + 1;
+  const sx = (i: number) => (n === 1 ? (L + W - R) / 2 : L + (i / (n - 1)) * (W - L - R));
+  const sy = (v: number) => T + ((hi - v) / span) * (H - T - B);
+  const f1 = (x: number) => x.toFixed(1);
+  const ticks = [hi0, (lo0 + hi0) / 2, lo0].filter((v, i, all) => all.indexOf(v) === i);
+  const grid = ticks.map((v) => '<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + f1(sy(v)) + '" y2="' + f1(sy(v)) + '"/>'
+    + '<text class="tick" x="' + (L - 8) + '" y="' + f1(sy(v) + 3.5) + '" text-anchor="end">' + value(v) + "</text>").join("");
+  const baseLine = base === null ? "" : '<line class="base-line" x1="' + L + '" x2="' + (W - R) + '" y1="' + f1(sy(base)) + '" y2="' + f1(sy(base)) + '"/>'
+    + '<text class="base-label" x="' + (W - R) + '" y="' + f1(sy(base) - 4) + '" text-anchor="end">baseline</text>';
   // Every proxy at once has no single best to follow: the dots alone.
-  const pts = session.combined ? [] : best.map((v, i) => (v === null ? null : sx(i) + "," + sy(v))).filter(Boolean);
-  const dots = session.steps.map((s, i) => s.value === null ? ""
-    : '<i class="pt' + (s.n === k ? " is-cur" : "") + (kept(s) ? "" : " is-rej") + '" style="left:'
-      + sx(i + 1) + "%;top:" + sy(s.value) + 'px" title="#' + s.n + " " + esc(session.metric) + " " + value(s.value) + '"></i>').join("");
-  const first = best[0] === null ? "" : '<i class="pt' + (k === 0 ? " is-cur" : "") + '" style="left:' + sx(0)
-    + "%;top:" + sy(best[0]) + 'px" title="baseline ' + value(best[0]) + '"></i>';
-  const stops = ['<button class="stop" data-step="0" aria-current="' + (k === 0) + '"><span class="n">Baseline</span>'
-    + '<span class="ax">' + esc(session.metric) + " " + value(session.baseline.value) + "</span>"
-    + '<span class="t">' + esc(session.baseline.run_id) + "</span></button>"]
-    .concat(session.steps.map((s) => '<button class="stop' + (s.n > k ? " is-after" : "") + '" data-step="' + s.n
-      + '" aria-current="' + (s.n === k) + '"><span class="n">#' + s.n + ' <span class="v '
-      + (kept(s) ? "ok" : "no") + '">' + (kept(s) ? "✓ kept" : "✕ " + esc(s.verdict.replace("reject", "ruled out"))) + "</span></span>"
-      + '<span class="ax" title="' + esc(s.axis) + '">' + esc(s.axis || "(no axis given)") + "</span>"
-      + '<span class="t">' + (session.combined && s.proxy ? esc(s.proxy) + " · " : "")
-      + (s.delta === null ? "–" : signed(s.delta)) + " · " + s.changed.length + " files</span></button>"));
+  let line = "";
+  if (!session.combined) {
+    const pts = best.map((v, i) => (v === null ? null : [sx(i), sy(v)] as const)).filter((p): p is readonly [number, number] => !!p);
+    line = pts.length > 1 ? '<path class="best" d="M' + pts.map(([x, y], i) => (i ? "H" + f1(x) + " V" + f1(y) : f1(x) + "," + f1(y))).join(" ") + '"/>' : "";
+  }
+  const showN = (W - L - R) / Math.max(1, n - 1) >= 26;
+  const dot = (i: number, n_: number, v: number | null, cls: string, tip: string) => {
+    if (v === null) return "";
+    const x = f1(sx(i)), y = f1(sy(v)), cur = n_ === k;
+    return '<g class="dot ' + cls + (cur ? " is-cur" : "") + (n_ > k ? " is-after" : "") + '" data-step="' + n_ + '">'
+      + "<title>" + esc(tip) + "</title>"
+      + '<circle class="hit" cx="' + x + '" cy="' + y + '" r="11"/>'
+      + (cur ? '<circle class="ring" cx="' + x + '" cy="' + y + '" r="9"/>' : "")
+      + '<circle class="mark" cx="' + x + '" cy="' + y + '" r="' + (cur ? 5.5 : 4.5) + '"/></g>';
+  };
+  const dots = dot(0, 0, base, "base", "Baseline · " + session.metric + " " + value(base))
+    + session.steps.map((s, i) => dot(i + 1, s.n, s.value, kept(s) ? "kept" : "rej",
+      "#" + s.n + " " + (kept(s) ? "kept" : s.verdict.replace("reject", "ruled out")) + " · "
+      + (session.combined && s.proxy ? s.proxy + " · " : "") + (s.delta === null ? "–" : signed(s.delta))
+      + " · " + (session.combined ? (s.metric ?? "") + " × baseline " : session.metric + " ") + value(s.value)
+      + (s.axis ? " · " + s.axis : ""))).join("");
+  const labels = showN ? ['<text class="xl" x="' + f1(sx(0)) + '" y="' + (H - 6) + '" text-anchor="middle">base</text>']
+    .concat(session.steps.map((s, i) => '<text class="xl" x="' + f1(sx(i + 1)) + '" y="' + (H - 6) + '" text-anchor="middle">#' + s.n + "</text>")).join("") : "";
+  const chart = '<svg class="chart" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H
+    + '" role="img" aria-label="' + esc(session.metric) + ' at each step">' + grid + baseLine + line + dots + labels + "</svg>";
+  const chip = (n_: number, cls: string, body: string, tip: string) => '<button class="chip ' + cls + (n_ > k ? " is-after" : "")
+    + '" data-step="' + n_ + '" aria-current="' + (n_ === k) + '" title="' + esc(tip) + '">' + body + "</button>";
+  const chips = chip(0, "base", "Baseline <b>" + value(base) + "</b>", session.metric + " " + value(base) + " · " + session.baseline.run_id)
+    + session.steps.map((s) => chip(s.n, kept(s) ? "kept" : "rej",
+      "#" + s.n + (kept(s) ? "" : " ✕") + (session.combined && s.proxy ? " " + esc(s.proxy) : "")
+      + " <b>" + (s.delta === null ? "–" : signed(s.delta)) + "</b>",
+      (s.axis || "(no axis given)") + " · " + s.changed.length + " files")).join("");
   const keptCount = session.steps.filter(kept).length;
-  const last = best[best.length - 1], base = session.baseline.value;
+  const last = best[best.length - 1];
   const total = last !== null && base ? (last - base) / Math.abs(base) : null;
   const since = session.combined ? perProxy(session) + " since their baselines"
     : esc(session.metric) + " <b>" + signed(total) + "</b> since baseline";
@@ -185,10 +220,8 @@ export function strip(session: Session, k: number, scope: Scope): string {
     + '<div class="seg push" role="group" aria-label="Which changes to show">'
     + '<button data-scope="step" aria-pressed="' + (scope === "step") + '">This step</button>'
     + '<button data-scope="all" aria-pressed="' + (scope === "all") + '">Since baseline</button></div></div>'
-    + '<div class="steps-scroll"><div class="steps" style="grid-template-columns:repeat(' + n + ',minmax(118px,1fr))">'
-    + '<svg class="spark" viewBox="0 0 100 ' + H + '" preserveAspectRatio="none" aria-hidden="true">'
-    + (pts.length ? '<path class="line" d="M' + pts.join(" L") + '"/>' : "") + '</svg><div class="pts">' + first + dots + "</div>"
-    + stops.join("") + "</div></div>";
+    + '<div class="chart-wrap">' + chart + "</div>"
+    + '<div class="chips" role="group" aria-label="Steps">' + chips + "</div>";
 }
 
 /** The card of step *k* in the side pane, for when nothing on the map is selected. */
@@ -202,7 +235,7 @@ function latest(session: Session, s: Step): boolean {
 
 /** What a step's card says of its time: its costliest files, why it has no profile, or
  *  (the latest step only: the code as it is now) a button that asks for one. */
-function timeBlock(session: Session, s: Step, fileRow: (id: string, right: string) => string): string {
+function timeBlock(session: Session, s: Step, fileRow: Row): string {
   const p = s.profile;
   if (usable(p)) {
     const top = Object.entries(p.files).slice(0, 5);
@@ -210,6 +243,7 @@ function timeBlock(session: Session, s: Step, fileRow: (id: string, right: strin
       + '<div class="list">' + top.map(([f, v]) => fileRow(f, pctOf(v))).join("") + "</div>"
       + (p.outside ? '<div class="empty">' + pctOf(p.outside) + " outside the workspace</div>" : "")
       + (p.note ? '<div class="empty">' + esc(p.note) + "</div>" : "")
+      + functionsBlock(p.functions, fileRow, 5)
       + gpuBlock(p.gpu) + memoryBlock(p.memory, fileRow);
   }
   if (p && p.unavailable) return '<div class="cap">Not profiled</div><div class="empty">' + esc(p.unavailable) + "</div>";
@@ -218,6 +252,34 @@ function timeBlock(session: Session, s: Step, fileRow: (id: string, right: strin
       + '">Profile the code as it is now</button>';
   }
   return '<div class="empty">Not profiled. Only the code as it is now can be profiled.</div>';
+}
+
+/** A file in a list: *label* (else the file's name), *right* beside it, opened at *line*. */
+export type Row = (id: string, right: string, line?: number, label?: string, tip?: string) => string;
+
+/** A function's key split at its first `::`: no path has one, a Fortran name keeps its own. */
+export function fnParts(key: string): { file: string; name: string } {
+  const at = key.indexOf("::");
+  return at < 0 ? { file: key, name: key } : { file: key.slice(0, at), name: key.slice(at + 2) };
+}
+
+/** The *n* costliest functions by self time, of the files *within* when given. */
+export function topFunctions(fns: Record<string, FnTime> | null | undefined, n: number,
+                             within?: (file: string) => boolean): [string, FnTime][] {
+  return Object.entries(fns ?? {}).filter(([k]) => !within || within(fnParts(k).file))
+    .sort((a, b) => b[1].self - a[1].self || b[1].total - a[1].total).slice(0, n);
+}
+
+/** The costliest functions as rows: self time beside them, the total in their tooltip. */
+export function functionsBlock(fns: Record<string, FnTime> | null | undefined, row: Row, n: number,
+                               within?: (file: string) => boolean): string {
+  const top = topFunctions(fns, n, within).filter(([, v]) => v.self > 0 || v.total > 0);
+  if (!top.length) return "";
+  return '<div class="cap">Functions, own time</div><div class="list">' + top.map(([k, v]) => {
+    const { file, name } = fnParts(k);
+    return row(file, pctOf(v.self), v.line, name, name + " in " + file + ": " + pctOf(v.self) + " own, "
+      + pctOf(v.total) + " with what it calls");
+  }).join("") + "</div>";
 }
 
 /** What a step's card says of its GPU: the costliest kernels, copies and idle time, or
@@ -239,7 +301,7 @@ export function gpuBlock(g?: GpuProfile | null): string {
 }
 
 /** Where the heap's peak was allocated, or why it could not be profiled. */
-export function memoryBlock(m: MemoryProfile | null | undefined, fileRow: (id: string, right: string) => string): string {
+export function memoryBlock(m: MemoryProfile | null | undefined, fileRow: Row): string {
   if (!m) return "";
   if (m.unavailable) return '<div class="cap">Memory not profiled</div><div class="empty">' + esc(m.unavailable) + "</div>";
   const top = Object.entries(m.files ?? {}).slice(0, 5);
@@ -279,7 +341,7 @@ function memoryLine(s: Step): { text: string; grew: boolean } | null {
   };
 }
 
-export function stepCard(session: Session, k: number, fileRow: (id: string, right: string) => string): string {
+export function stepCard(session: Session, k: number, fileRow: Row): string {
   const s = session.steps.find((x) => x.n === k);
   if (!s) return "";
   const memory = memoryLine(s);

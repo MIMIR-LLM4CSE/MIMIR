@@ -44,6 +44,10 @@ def _profile(name: str, run_id: str, value, baseline) -> dict | None:
     return {"tool": prof.get("tool", ""), "samples": prof.get("samples", 0), "case": prof.get("case", ""),
             "files": {f: round(v * scale, 5) for f, v in (prof.get("files") or {}).items()},
             "outside": round(sum((prof.get("outside") or {}).values()) * scale, 5),
+            **({"functions": {k: {"self": round((v.get("self") or 0) * scale, 5),
+                                  "total": round((v.get("total") or 0) * scale, 5),
+                                  **({"line": v["line"]} if v.get("line") else {})}
+                              for k, v in prof["functions"].items()}} if prof.get("functions") else {}),
             **({"gpu": _gpu(prof["gpu"], scale)} if prof.get("gpu") else {}),
             # Shares of the heap's peak, not of time: never scaled.
             **({"memory": {k: prof["memory"][k] for k in ("tool", "peak_mb", "files", "unavailable", "note")

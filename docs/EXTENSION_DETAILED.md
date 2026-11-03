@@ -560,23 +560,31 @@ server answers the map whole, and the webview hands it to the host as `show_code
 `webview/src/codemap/`, plain TypeScript): the modules in bands, one per component
 stacked by tier, every dependency between them coloured by kind (grey, a binding across
 languages in cyan, paler when only by name, a rule break red with ✕, a module cycle
-purple), the selection beside. A name in a list selects it on the map; ↗ opens the file at
-the line through `openFile` (by the map's absolute `root` when that path exists here,
+purple), the selection beside. The columns follow the tab's width, each box widening to fill
+what is left, so the map reaches the side pane at any size. A name in a list selects it on
+the map after a short wait; a double-click (or a Ctrl/Cmd-click) opens the file at the line
+through `openFile` (by the map's absolute `root` when that path exists here,
 relative to the open folder otherwise); ⟳ asks the server again. The components the map flags as
 tests are folded away until **Tests** is pressed: they depend on everything, and their
 edges would bury the code's own architecture.
 
 When the workspace has an optimisation session, the tab opens with it across the top
-(`codemap/session.ts`): the best value as the session went, one stop per run (kept or
-ruled out, its axis, its metric against the incumbent, how many files it changed), and
-**This step / Since baseline**. On the map, the files a step changed outline their
+(`codemap/session.ts`): a chart drawn to the strip's width, with the metric's axis, the
+baseline dashed, the best value as the session went, and a dot per run (filled green when
+kept, hollow when ruled out, ringed when shown, its axis and metric in its tooltip); under
+it a chip per run with its change against the incumbent; and **This step / Since baseline**.
+A dot or a chip shows that step. On the map, the files a step changed outline their
 modules in green (paler for earlier kept steps), a pill names the step and its delta,
 the dependencies it added are green and the ones it removed long grey dashes. The
 dependencies drawn are today's code; the marks are what the step's own snapshot changed.
 ← → move through the steps. When the runs were profiled, each module carries a coral bar,
 its share of the baseline's time from the profile of the step shown (else of the last
 kept step before it, else of the baseline, always named), hatched where a kept step saved
-time against the profile it improved on; the card lists where the step's time goes, or
+time against the profile it improved on. When the profile kept its functions, the header's
+**Functions** toggle (kept in the tab's state) lists each module's three costliest under its
+bars, by their own time, the boxes growing to hold them; the side pane lists them always —
+over the whole code, and for the module or file selected — a double-click opening one at
+its line. The card lists where the step's time goes, its costliest functions too, or
 offers **Profile the code as it is now** on the latest step, which sends the request to
 the agent as the user's own message (`map_prompt`, through the host to the chat). Its MIMIR skin follows the VS Code
 theme, the Light one is fixed, and the choice is kept in the tab's state.

@@ -112,6 +112,7 @@ def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], st
     own: Counter = Counter()
     under: Counter = Counter()
     lines: Counter = Counter()
+    at: Counter = Counter()
     out: Counter = Counter()
     total = 0
     for frames, count in stacks:
@@ -124,6 +125,8 @@ def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], st
         files[home] += count
         if deepest.func:
             own[f"{home}::{deepest.func}"] += count
+            if deepest.line:
+                at[(f"{home}::{deepest.func}", deepest.line)] += count
         if deepest.line:
             lines[f"{home}:{deepest.line}"] += count
         for key in {f"{h}::{f.func}" for h, f in homes if f.func}:
@@ -132,7 +135,7 @@ def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], st
         return {"samples": 0, "files": {}, "outside": {}}
     return {"samples": total,
             "files": {f: round(n / total, 4) for f, n in files.most_common()},
-            "functions": _functions(own, under, total),
+            "functions": _functions(own, under, total, _costliest_lines(at)),
             "lines": {k: round(n / total, 4) for k, n in lines.most_common(LINES_KEPT)},
             "outside": {k: round(n / total, 4) for k, n in out.most_common(12)}}
 
@@ -145,12 +148,15 @@ def cprofile_files(path: str, resolve: Callable[[str], str | None]) -> dict:
     own: Counter = Counter()
     under: Counter = Counter()
     out: Counter = Counter()
-    for (filename, _line, func), (_cc, _nc, tottime, cumtime, _callers) in stats.items():
+    defs: dict[str, int] = {}
+    for (filename, line, func), (_cc, _nc, tottime, cumtime, _callers) in stats.items():
         home = resolve(filename) if filename and filename[0] not in "<~" else None
         if home:
             files[home] += tottime
             own[f"{home}::{func}"] += tottime
             under[f"{home}::{func}"] += cumtime
+            if line:
+                defs[f"{home}::{func}"] = line
         else:
             out["built-ins" if filename == "~" else "python" if filename.startswith("<") else outside(filename)] += tottime
     total = sum(files.values()) + sum(out.values())
@@ -158,17 +164,27 @@ def cprofile_files(path: str, resolve: Callable[[str], str | None]) -> dict:
         return {"samples": 0, "files": {}, "outside": {}}
     return {"samples": len(stats),
             "files": {f: round(t / total, 4) for f, t in files.most_common() if t / total >= 5e-5},
-            "functions": _functions(own, under, total),
+            "functions": _functions(own, under, total, defs),
             "outside": {k: round(t / total, 4) for k, t in out.most_common(12) if t / total >= 5e-5},
             "note": "cProfile: self time per file and function, without the native code it "
                     "calls, and no time per line"}
 
 
-def _functions(own: Counter, under: Counter, total: float) -> dict:
-    """The costliest functions by self time and by total time, each with both."""
+def _costliest_lines(at: Counter) -> dict[str, int]:
+    """Each function's line that took the most samples."""
+    best: dict[str, int] = {}
+    for (fn, line), _n in sorted(at.items(), key=lambda kv: kv[1]):
+        best[fn] = line
+    return best
+
+
+def _functions(own: Counter, under: Counter, total: float, lines: dict[str, int] | None = None) -> dict:
+    """The costliest functions by self time and by total time, each with both, and the
+    line to open it at when known."""
     keep = dict.fromkeys([k for k, _ in own.most_common(FUNCTIONS_KEPT)]
                          + [k for k, _ in under.most_common(FUNCTIONS_KEPT)])
-    rows = {k: {"self": round(own[k] / total, 4), "total": round(under[k] / total, 4)} for k in keep}
+    rows = {k: {"self": round(own[k] / total, 4), "total": round(under[k] / total, 4),
+                **({"line": lines[k]} if lines and k in lines else {})} for k in keep}
     return {k: v for k, v in sorted(rows.items(), key=lambda kv: (-kv[1]["self"], -kv[1]["total"]))
             if v["self"] >= 5e-5 or v["total"] >= 5e-5}
 

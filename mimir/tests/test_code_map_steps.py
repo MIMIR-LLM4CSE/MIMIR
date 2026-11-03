@@ -84,10 +84,11 @@ class SessionTests(unittest.TestCase):
             os.makedirs(os.path.join(runs, run_id, "profile"))
             gpu = {"tool": "nsys", "busy": 0.5, "idle": 0.25, "memcpy": {"HtoD": 0.25},
                    "files": {"pkg/a.py": 0.5}, "kernels": {"k": {"share": 0.5, "calls": 4, "file": "pkg/a.py"}}}
+            functions = {"pkg/a.py::solve": {"self": 0.5, "total": 0.75, "line": 3}}
             memory = {"tool": "massif", "peak_mb": 900.0, "files": {"pkg/a.py": 0.9}, "lines": {"pkg/a.py:3": 0.9}}
             with open(os.path.join(runs, run_id, "profile", "profile.json"), "w") as fh:
                 json.dump({"tool": "py-spy", "samples": 400, "files": files, "outside": {"numpy": 0.25},
-                           **({"gpu": gpu, "memory": memory} if run_id == "r1" else {})}, fh)
+                           **({"gpu": gpu, "memory": memory, "functions": functions} if run_id == "r1" else {})}, fh)
         code_map_steps._CACHE.clear()
         patches = [
             mock.patch.object(code_map_steps, "resolve_proxy_name", return_value="solver"),
@@ -130,6 +131,8 @@ class SessionTests(unittest.TestCase):
         kept = self.session["steps"][0]["profile"]
         self.assertEqual((kept["files"], kept["outside"]), ({"pkg/a.py": 0.6}, 0.2))
         self.assertNotIn("gpu", base)
+        self.assertNotIn("functions", base)
+        self.assertEqual(kept["functions"], {"pkg/a.py::solve": {"self": 0.4, "total": 0.6, "line": 3}})
         self.assertEqual(kept["gpu"], {"tool": "nsys", "busy": 0.4, "idle": 0.2, "memcpy": {"HtoD": 0.2},
                                        "files": {"pkg/a.py": 0.4},
                                        "kernels": {"k": {"share": 0.4, "calls": 4, "file": "pkg/a.py"}}})

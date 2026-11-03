@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gpuBlock, kernelName, megabytes, memoryBlock, stepCard, strip, timeAt, type Session } from "./session";
+import { fnParts, functionsBlock, gpuBlock, kernelName, megabytes, memoryBlock, stepCard, strip, timeAt, topFunctions, type Session } from "./session";
 
 const step = (n: number, verdict: string, profile: Session["steps"][number]["profile"]) => ({
   n, run_id: "r" + n, axis: "", verdict, value: 1, incumbent_value: 1, delta: 0,
@@ -90,7 +90,7 @@ describe("every proxy at once", () => {
   it("sums up each proxy against its own baseline, and draws no single best line", () => {
     const html = strip(all, 3, "step");
     expect(html).toContain("solver <b>−20%</b> · mesh <b>−50%</b> since their baselines");
-    expect(html).not.toContain('class="line"');
+    expect(html).not.toContain('class="best"');
     expect(html).toContain("mesh · −50%");
   });
 
@@ -104,5 +104,53 @@ describe("every proxy at once", () => {
   it("offers a profile on each proxy's latest step only", () => {
     expect(stepCard(all, 1, (f, r) => f + " " + r)).not.toContain("data-prompt");
     expect(stepCard(all, 3, (f, r) => f + " " + r)).toContain("proxy_name='solver'");
+  });
+});
+
+describe("the session's chart", () => {
+  const run: Session = {
+    proxy: "solver", metric: "time_s", goal: "min",
+    baseline: { run_id: "r0", value: 10, profile: null },
+    steps: [
+      { ...step(1, "accept", null), value: 8, incumbent_value: 10, delta: -0.2 },
+      { ...step(2, "reject", null), value: 9, incumbent_value: 8, delta: 0.125 },
+    ],
+  };
+
+  it("draws the baseline, the best as it went, and kept and ruled-out steps apart", () => {
+    const html = strip(run, 1, "step", 600);
+    expect(html).toContain('class="base-line"');
+    expect(html).toContain('class="best"');
+    expect(html).toContain('class="dot kept is-cur" data-step="1"');
+    expect(html).toContain('class="dot rej is-after" data-step="2"');
+  });
+
+  it("has a chip per step, the one shown current", () => {
+    const html = strip(run, 2, "step");
+    expect(html).toContain('data-step="2" aria-current="true"');
+    expect(html).toContain("#2 ✕ <b>+13%</b>");
+    expect(html).toContain("#1 <b>−20%</b>");
+  });
+});
+
+describe("functions", () => {
+  const fns = {
+    "src/solver.f90::solver::relax": { self: 0.3, total: 0.5, line: 12 },
+    "src/grid.cpp::build": { self: 0.1, total: 0.1 },
+    "src/solver.f90::residual": { self: 0.2, total: 0.2, line: 40 },
+  };
+
+  it("keeps a Fortran name whole: the file ends at the first ::", () => {
+    expect(fnParts("src/solver.f90::solver::relax")).toEqual({ file: "src/solver.f90", name: "solver::relax" });
+  });
+
+  it("lists the costliest by their own time, of the files asked for", () => {
+    expect(topFunctions(fns, 2).map(([k]) => k)).toEqual(["src/solver.f90::solver::relax", "src/solver.f90::residual"]);
+    expect(topFunctions(fns, 5, (f) => f === "src/grid.cpp").map(([k]) => k)).toEqual(["src/grid.cpp::build"]);
+  });
+
+  it("gives each row its file, name and line", () => {
+    const html = functionsBlock(fns, (f, r, line, label) => [f, r, line, label].join("|"), 1);
+    expect(html).toContain("src/solver.f90|30%|12|solver::relax");
   });
 });

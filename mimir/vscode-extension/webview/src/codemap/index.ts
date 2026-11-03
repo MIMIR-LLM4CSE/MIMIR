@@ -3,7 +3,8 @@
 // what the server answered (`shared.code_map`) and reads nothing else.
 
 import { STYLE } from "./style";
-import { edgeKey, gpuBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, type Overlay, type Scope, type Session, type TimeView } from "./session";
+import { edgeKey, fnParts, functionsBlock, gpuBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, topFunctions,
+  type Overlay, type Scope, type Session, type TimeView } from "./session";
 
 interface Component { id: string; name: string; tier: number; declared: string[]; external: Record<string, number>; tests: boolean }
 interface Module { id: string; component: string }
@@ -20,13 +21,14 @@ type Selection = { kind: "comp" | "module" | "file"; id: string } | null;
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: unknown): void;
-  getState(): { skin?: string; tests?: boolean; pick?: string } | undefined;
-  setState(state: { skin?: string; tests?: boolean; pick?: string }): void;
+  getState(): { skin?: string; tests?: boolean; fns?: boolean; pick?: string } | undefined;
+  setState(state: { skin?: string; tests?: boolean; fns?: boolean; pick?: string }): void;
 };
 const vscode = acquireVsCodeApi();
 
 const NS = "http://www.w3.org/2000/svg";
-const BW = 156, BH = 52, GX = 12, GY = 12, LW = 128, COLS = 5, PAD = 14, BGAP = 30;
+// A box is BW wide at least, and widens to fill the tab; it grows by FN_ROW a function listed.
+const BW = 156, BH = 52, GX = 12, GY = 12, LW = 128, PAD = 14, BGAP = 30, FN_N = 3, FN_ROW = 14;
 const LANG: Record<string, string> = { python: "py", cython: "pyx", cpp: "c++", c: "c", fortran: "f", pyf: "f2py" };
 
 let map: CodeMap | null = null;
@@ -40,11 +42,15 @@ let skin = vscode.getState()?.skin === "light" ? "light" : "mimir";
 // The tests are folded away unless asked for: they depend on everything and would bury
 // the code's own architecture under their edges.
 let showTests = vscode.getState()?.tests === true;
+// Each module's costliest functions in its box: off unless asked for, the boxes grow with them.
+let showFns = vscode.getState()?.fns === true;
+// The columns of modules the tab's width holds, and how wide that makes a box.
+let cols = 5, boxW = BW;
 // Whose steps the map shows: "" the active session's, a proxy's name, or ALL for every proxy.
 const ALL = "*";
 let pick = vscode.getState()?.pick ?? "";
 
-function remember(): void { vscode.setState({ skin, tests: showTests, pick }); }
+function remember(): void { vscode.setState({ skin, tests: showTests, fns: showFns, pick }); }
 
 /** Ask the server again, for the steps *pick* names. */
 function ask(): void {
@@ -116,6 +122,8 @@ interface View {
   pos: Map<string, { x: number; y: number }>;
   bands: { c: Component; y: number; h: number }[];
   width: number; height: number;
+  /** A module box's size: wider with the tab, taller with its functions listed. */
+  bw: number; bh: number;
   modEdges: ModEdge[];
 }
 interface ModEdge {
@@ -123,7 +131,12 @@ interface ModEdge {
   cycle: boolean; deferred: boolean; added: number; removed: boolean;
 }
 
-function derive(m: CodeMap): View {
+/** How tall a box is: with its functions when they are shown and the profile has them. */
+function boxHeight(): number {
+  return showFns && time()?.functions ? BH + 4 + FN_N * FN_ROW : BH;
+}
+
+function derive(m: CodeMap, COLS = cols, bw = boxW, bh = boxHeight()): View {
   const byId = new Map(m.files.map((f) => [f.id, f]));
   const modFiles = new Map<string, File[]>();
   for (const f of m.files) (modFiles.get(f.module) ?? modFiles.set(f.module, []).get(f.module)!).push(f);
@@ -138,9 +151,9 @@ function derive(m: CodeMap): View {
   for (const c of order) {
     const mods = m.modules.filter((x) => x.component === c.id).map((x) => x.id).sort();
     if (!mods.length) continue;
-    const rows = Math.ceil(mods.length / COLS), h = PAD * 2 + rows * BH + (rows - 1) * GY;
+    const rows = Math.ceil(mods.length / COLS), h = PAD * 2 + rows * bh + (rows - 1) * GY;
     bands.push({ c, y, h });
-    mods.forEach((id, i) => pos.set(id, { x: LW + (i % COLS) * (BW + GX), y: y + PAD + Math.floor(i / COLS) * (BH + GY) }));
+    mods.forEach((id, i) => pos.set(id, { x: LW + (i % COLS) * (bw + GX), y: y + PAD + Math.floor(i / COLS) * (bh + GY) }));
     y += h + BGAP;
   }
   const agg = new Map<string, ModEdge>();
@@ -158,10 +171,12 @@ function derive(m: CodeMap): View {
   for (const me of agg.values()) {
     me.cycle = cycleOf.has(me.from) && cycleOf.get(me.from) === cycleOf.get(me.to);
   }
-  return { byId, modFiles, compOf, cycleOf, pos, bands, width: LW + COLS * (BW + GX) + 4, height: y - BGAP + 4, modEdges: [...agg.values()] };
+  return { byId, modFiles, compOf, cycleOf, pos, bands, width: LW + COLS * (bw + GX) + 4, height: y - BGAP + 4,
+    bw, bh, modEdges: [...agg.values()] };
 }
 
 function path(v: View, a: string, b: string): string {
+  const BW = v.bw, BH = v.bh;
   const pa = v.pos.get(a)!, pb = v.pos.get(b)!, ax = pa.x + BW / 2, bx = pb.x + BW / 2;
   if (pb.y > pa.y + 4) { const y1 = pa.y + BH, y2 = pb.y, k = (y2 - y1) / 2; return `M${ax},${y1} C${ax},${y1 + k} ${bx},${y2 - k} ${bx},${y2}`; }
   if (pb.y < pa.y - 4) {
@@ -220,15 +235,31 @@ function stillThere(v: View, s: Selection): boolean {
 // Set when a component arrives from the drawer: the map scrolls to its band once drawn.
 let scrollToBand = false;
 
-/** One time bar in a module's box: its share now, hatched where it was larger before. */
-function timeBar(g: SVGElement, now: number, was: number | null, scale: number, y: number, cls: string): void {
-  const tw = BW - 52;
+/** One time bar in a module's box *bw* wide: its share now, hatched where it was larger before. */
+function timeBar(g: SVGElement, bw: number, now: number, was: number | null, scale: number, y: number, cls: string): void {
+  const BW = bw, tw = BW - 52;
   svg("rect", { class: "track", x: 9, y, width: tw, height: 4, rx: 2 }, g);
   if (now > 0) svg("rect", { class: ("fill " + cls).trim(), x: 9, y, width: Math.max(2, (now / scale) * tw), height: 4, rx: 2 }, g);
   if (was !== null && was - now > 1e-6) {
     svg("rect", { x: 9 + (now / scale) * tw, y: y - 1, width: ((was - now) / scale) * tw, height: 6, fill: cls ? "url(#hatch-gpu)" : "url(#hatch)" }, g);
   }
   svg("text", { class: ("pct " + cls).trim(), x: BW - 8, y: y + 5, "text-anchor": "end" }, g).textContent = (cls ? "GPU " : "") + pctOf(now);
+}
+
+/** A module's costliest functions under its bars: each name, a thin bar on the module's
+ *  scale, and its own share of the baseline's time. */
+function functionLines(g: SVGElement, bw: number, fns: NonNullable<TimeView["functions"]>, files: Set<string>, scale: number): void {
+  const tw = 34, x0 = bw - 46 - tw;
+  topFunctions(fns, FN_N, (f) => files.has(f)).filter(([, f]) => f.self > 0).forEach(([k, f], i) => {
+    const y = BH + 4 + i * FN_ROW;
+    const name = fnParts(k).name;
+    const t = svg("text", { class: "fn", x: 9, y: y + 3 }, g);
+    t.textContent = name;
+    while (t.getComputedTextLength() > x0 - 15 && (t.textContent ?? "").length > 4) t.textContent = t.textContent!.slice(0, -2) + "…";
+    svg("title", {}, t).textContent = name + ": " + pctOf(f.self) + " own, " + pctOf(f.total) + " with what it calls";
+    svg("rect", { class: "fill fn-bar", x: x0, y: y - 2, width: Math.max(1.5, Math.min(1, f.self / scale) * tw), height: 3, rx: 1.5 }, g);
+    svg("text", { class: "fn-pct", x: bw - 8, y: y + 3, "text-anchor": "end" }, g).textContent = pctOf(f.self);
+  });
 }
 
 /** A module's share of the baseline's time in *files*: the sum of its files'. */
@@ -240,7 +271,9 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   const root = document.getElementById("map")!;
   root.innerHTML = "";
   const s = svg("svg", { viewBox: `0 0 ${v.width} ${v.height}`, role: "img", "aria-label": "Modules by component, with the dependencies between them" }, root);
-  s.style.cssText = `width:100%;min-width:720px;max-width:${v.width * 1.15}px;height:auto`;
+  // Drawn at its own size: the columns follow the tab's width, so nothing is scaled.
+  s.setAttribute("width", String(v.width));
+  s.setAttribute("height", String(v.height));
   const defs = svg("defs", {}, s);
   for (const [id, cls] of [["hatch", "hatch"], ["hatch-gpu", "hatch gpu"]]) {
     const pat = svg("pattern", { id, width: 4, height: 4, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, defs);
@@ -279,6 +312,8 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     }
   }
   const boxes = new Map<string, SVGGElement>();
+  const BW = v.bw, BH = v.bh;
+  const fns = showFns && time ? time.functions : null;
   for (const [id, files] of v.modFiles) {
     const p = v.pos.get(id);
     if (!p) continue;
@@ -295,9 +330,10 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
       // With a GPU traced, its bar sits under the CPU's, on the same scale.
       const gpuNow = time.gpuFiles ? moduleTime(v, id, time.gpuFiles) : 0;
       const both = !!time.gpuFiles;
-      timeBar(g, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 37 : 40, "");
-      if (both) timeBar(g, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, 45, "gpu");
+      timeBar(g, BW, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 37 : 40, "");
+      if (both) timeBar(g, BW, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, 45, "gpu");
     }
+    if (fns) functionLines(g, BW, fns, new Set(files.map((f) => f.id)), scale);
     let dx = BW - 9;
     if (map!.edges.some((e) => e.breaks && v.byId.get(e.from)!.module === id)) { svg("circle", { class: "dot-break", cx: dx, cy: 12, r: 4 }, g); dx -= 11; }
     if (v.cycleOf.has(id)) svg("circle", { class: "dot-cycle", cx: dx, cy: 12, r: 4 }, g);
@@ -343,13 +379,12 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   }
 }
 
-/** A file in a list: its name selects it in the map, ↗ opens it at *line*. */
-function fileRow(id: string, right: string, line?: number): string {
-  const where = line ? " at line " + line : "";
-  return '<div class="row"><button class="go" data-file="' + esc(id) + '" title="' + esc(id) + '">'
-    + esc(base(id)) + "</button><span>" + esc(right) + '</span><button class="ext" data-open="'
-    + esc(id) + '" data-line="' + (line ?? "") + '" title="Open ' + esc(base(id)) + where
-    + '" aria-label="Open ' + esc(base(id)) + '">↗</button></div>';
+/** A file in a list, or a function (*label*) in it: a click shows the file on the map, a
+ *  double-click opens it at *line*. */
+function fileRow(id: string, right: string, line?: number, label?: string, tip?: string): string {
+  const how = "click: show on the map · double-click: open" + (line ? " at line " + line : "");
+  return '<div class="row"><button class="go" data-file="' + esc(id) + '" data-line="' + (line ?? "")
+    + '" title="' + esc((tip ?? id) + "\n" + how) + '">' + esc(label ?? base(id)) + "</button><span>" + esc(right) + "</span></div>";
 }
 /** A module in a list, selecting it in the map. */
 function moduleRow(id: string, right: string | number = "", label = id): string {
@@ -411,6 +446,7 @@ function timeSection(t: TimeView): string {
   return section("time", "Where time goes", list(top.map(([f, v]) => fileRow(f, pctOf(v))))
     + '<div class="empty">Share of the baseline\'s time, from the profile of ' + esc(t.from)
     + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>"
+    + functionsBlock(t.functions, fileRow, 8)
     + gpuBlock(t.gpu) + memoryBlock(t.memory, fileRow));
 }
 
@@ -472,6 +508,7 @@ function moduleDetail(m: CodeMap, v: View, id: string): string {
     + (t?.gpuFiles ? line("GPU time", pctOf(moduleTime(v, id, t.gpuFiles)) + " of the baseline's") : "")
     + (t?.memory?.files ? line("memory", pctOf(moduleTime(v, id, t.memory.files)) + " of the heap's peak") : "")
     + '<div class="cap">Files</div>' + list(files.map((f) => fileRow(f.id, t && t.files[f.id] ? pctOf(t.files[f.id]) : f.lines + " l")))
+    + functionsBlock(t?.functions, fileRow, 10, (f) => ids.has(f))
     + '<div class="cap">Depends on</div>' + list(rows(out))
     + '<div class="cap">Used by</div>' + list(rows(inn)));
 }
@@ -485,6 +522,7 @@ function fileDetail(m: CodeMap, v: View, id: string): string {
     + (time()?.files[f.id] ? line("time", pctOf(time()!.files[f.id]) + " of the baseline's") : "")
     + (time()?.gpuFiles?.[f.id] ? line("GPU time", pctOf(time()!.gpuFiles![f.id]) + " of the baseline's") : "")
     + (time()?.memory?.files?.[f.id] ? line("memory", pctOf(time()!.memory!.files![f.id]) + " of the heap's peak") : "")
+    + functionsBlock(time()?.functions, fileRow, 12, (x) => x === f.id)
     + '<div class="cap">Depends on (' + out.length + ")</div>" + list(out.map((e) => fileRow(e.to, edgeRight(e))))
     + '<div class="cap">Used by (' + inn.length + ")</div>" + list(inn.map((e) => fileRow(e.from, edgeRight(e), e.line)))
     + '<button class="open" data-open="' + esc(f.id) + '" data-line="">Open ' + esc(base(f.id)) + "</button>");
@@ -501,20 +539,43 @@ function renderSide(v: View): void {
   document.getElementById("back")?.addEventListener("click", () => { sel = null; render(); });
   side.querySelectorAll<HTMLElement>("[data-module]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "module", id: b.dataset.module! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-comp]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "comp", id: b.dataset.comp! }; scrollToBand = true; render(); }));
-  side.querySelectorAll<HTMLElement>("[data-file]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "file", id: b.dataset.file! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-prompt]").forEach((b) => b.addEventListener("click", () => {
     vscode.postMessage({ type: "prompt", text: b.dataset.prompt! });
     b.setAttribute("disabled", "");
     b.textContent = "Asked the agent to profile";
   }));
   side.querySelectorAll<HTMLElement>("[data-open]").forEach((b) => b.addEventListener("click", () => {
-    const line = b.dataset.line ? Number(b.dataset.line) : undefined;
-    const rel = b.dataset.open!;
-    // The map's paths are relative to the server's root, which need not be the folder
-    // VS Code has open: the host is given both and opens whichever exists here.
-    const file = m.root ? m.root.replace(/[\\/]+$/, "") + "/" + rel : rel;
-    vscode.postMessage({ type: "open_file", file, rel, line });
+    openRel(b.dataset.open!, b.dataset.line ? Number(b.dataset.line) : undefined);
   }));
+}
+
+/** Opens a file of the map at *line*. Its paths are relative to the server's root, which
+ *  need not be the folder VS Code has open: the host is given both and opens whichever
+ *  exists here. */
+function openRel(rel: string, line?: number): void {
+  const root = map?.root ?? "";
+  const file = root ? root.replace(/[\\/]+$/, "") + "/" + rel : rel;
+  vscode.postMessage({ type: "open_file", file, rel, line });
+}
+
+// A click on a file in the side pane waits this long for a second one: two open the file.
+let pendingSelect: ReturnType<typeof setTimeout> | undefined;
+
+/** A file row clicked: once shows it on the map, twice (or with Ctrl/Cmd) opens it. The
+ *  listener sits on the pane, which outlives the rows each render replaces. */
+function onSideClick(ev: MouseEvent): void {
+  const b = (ev.target as Element).closest<HTMLElement>("[data-file]");
+  if (!b) return;
+  clearTimeout(pendingSelect);
+  const id = b.dataset.file!;
+  if (ev.detail >= 2 || ev.ctrlKey || ev.metaKey) {
+    openRel(id, b.dataset.line ? Number(b.dataset.line) : undefined);
+    return;
+  }
+  const choose = () => { sel = { kind: "file", id }; render(); };
+  // From the keyboard there is no second click to wait for.
+  if (ev.detail === 0) choose();
+  else pendingSelect = setTimeout(choose, 220);
 }
 
 function renderLegend(): void {
@@ -534,7 +595,8 @@ function timeLegend(): string {
   if (!t) return "";
   return '<span><i class="sw bar"></i>share of the baseline\'s time, profile of ' + esc(t.from) + " (" + esc(t.tool) + ")"
     + (t.before ? ", hatched where this step saved it" : "") + "</span>"
-    + (t.gpu ? '<span><i class="sw bar gpu"></i>its GPU kernels (' + esc(t.gpu.tool) + ")</span>" : "");
+    + (t.gpu ? '<span><i class="sw bar gpu"></i>its GPU kernels (' + esc(t.gpu.tool) + ")</span>" : "")
+    + (showFns && t.functions ? "<span>under the bars: each module's costliest functions, their own time</span>" : "");
 }
 
 function stepLegend(): string {
@@ -554,7 +616,7 @@ function renderSession(): void {
   const el = document.getElementById("session")!;
   el.hidden = !session || !session.steps.length;
   if (el.hidden || !session) return;
-  el.innerHTML = strip(session, step, scope);
+  el.innerHTML = strip(session, step, scope, el.clientWidth - 30);
   el.querySelectorAll<HTMLElement>("[data-step]").forEach((b) => b.addEventListener("click", () => {
     step = Number(b.dataset.step); render();
   }));
@@ -571,6 +633,12 @@ function render(): void {
   document.documentElement.dataset.skin = skin;
   document.querySelectorAll<HTMLButtonElement>("button[data-skin]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.skin === skin)));
   document.getElementById("tests")?.setAttribute("aria-pressed", String(showTests));
+  const fnsButton = document.getElementById("fns");
+  if (fnsButton) {
+    // Offered when the profile shown kept its functions.
+    fnsButton.hidden = !time()?.functions;
+    fnsButton.setAttribute("aria-pressed", String(showFns));
+  }
   if (!map || !view) return;
   const meta = document.getElementById("meta")!;
   const hiddenTests = raw ? raw.files.length - map.files.length : 0;
@@ -583,6 +651,8 @@ function render(): void {
   }
   renderPicker();
   renderSession();
+  // The boxes' height follows the functions shown, which follow the step shown.
+  if (view.bh !== boxHeight()) view = derive(map);
   renderMap(view, session && step ? overlay(session, step, scope) : null, time());
   renderLegend();
   renderSide(view);
@@ -596,6 +666,7 @@ function mount(): void {
     <header>
       <h1>Code map</h1><span class="meta" id="meta">waiting for the server…</span>
       <select class="push" id="proxy" title="Whose optimisation steps the map shows" aria-label="Proxy" hidden></select>
+      <button class="toggle" id="fns" aria-pressed="false" title="List each module's costliest functions on the map" hidden>Functions</button>
       <button class="toggle" id="tests" aria-pressed="false" title="Show the tests and what they depend on">Tests</button>
       <div class="seg" role="group" aria-label="Theme">
         <button data-skin="mimir">MIMIR</button><button data-skin="light">Light</button>
@@ -617,6 +688,34 @@ function mount(): void {
     remember();
     ask();
   });
+  document.getElementById("side")!.addEventListener("click", onSideClick);
+  document.getElementById("fns")!.addEventListener("click", () => {
+    showFns = !showFns;
+    remember();
+    render();
+  });
+  // The columns follow the tab's width, each box widening to fill what is left over.
+  let resizing = 0;
+  new ResizeObserver(() => {
+    cancelAnimationFrame(resizing);
+    resizing = requestAnimationFrame(() => {
+      const w = document.getElementById("map")!.clientWidth;
+      if (!w) return;
+      const c = Math.max(3, Math.min(14, Math.floor((w - LW - 4) / (BW + GX))));
+      const bw = Math.max(BW, Math.floor((w - LW - 4) / c) - GX);
+      if (c === cols && bw === boxW) return;
+      cols = c; boxW = bw;
+      if (map) { view = derive(map); render(); }
+    });
+  }).observe(document.getElementById("map")!);
+  // The session's chart is drawn to its strip's width.
+  let lastWidth = 0;
+  new ResizeObserver(() => {
+    const el = document.getElementById("session")!;
+    if (el.hidden || Math.abs(el.clientWidth - lastWidth) < 4) return;
+    lastWidth = el.clientWidth;
+    renderSession();
+  }).observe(document.getElementById("session")!);
   document.getElementById("tests")!.addEventListener("click", () => {
     showTests = !showTests;
     remember();

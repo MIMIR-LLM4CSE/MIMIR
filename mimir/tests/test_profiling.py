@@ -65,8 +65,8 @@ class ReadingTests(unittest.TestCase):
         resolve = _resolve({"main.py": "main.py", "pkg/work.py": "pkg/work.py"})
         prof = profiling.attribute(profiling.pyspy_stacks(_PYSPY), resolve)
         self.assertEqual(prof["functions"], {
-            "pkg/work.py::heavy": {"self": 0.8, "total": 0.8},
-            "pkg/work.py::light": {"self": 0.1, "total": 0.1},
+            "pkg/work.py::heavy": {"self": 0.8, "total": 0.8, "line": 5},
+            "pkg/work.py::light": {"self": 0.1, "total": 0.1, "line": 8},
             "main.py::<module>": {"self": 0.0, "total": 0.9},
         })
         self.assertEqual(prof["lines"], {"pkg/work.py:5": 0.8, "pkg/work.py:8": 0.1})
@@ -79,7 +79,7 @@ class ReadingTests(unittest.TestCase):
         prof = profiling.attribute(stacks, resolve)
         self.assertEqual(prof["files"], {"src/kernel.f90": 0.3333, "src/main.c": 0.3333})
         self.assertEqual(prof["outside"], {"openblas": 0.3333})
-        self.assertEqual(prof["functions"]["src/main.c::main"], {"self": 0.3333, "total": 0.6667})
+        self.assertEqual(prof["functions"]["src/main.c::main"], {"self": 0.3333, "total": 0.6667, "line": 21})
         self.assertEqual(prof["lines"], {"src/kernel.f90:12": 0.3333, "src/main.c:21": 0.3333})
 
     def test_dram_traffic_from_the_controllers_else_from_cache_misses(self) -> None:
@@ -465,7 +465,7 @@ class MemoryTests(unittest.TestCase):
         found = cpu.attribute(stacks, resolve)
         self.assertEqual(found["files"], {"src/solver.f90": 0.6667, "src/grid.cpp": 0.3})
         self.assertEqual(found["lines"], {"src/solver.f90:6": 0.6667, "src/grid.cpp:42": 0.3})
-        self.assertEqual(found["functions"]["src/solver.f90::solver::relax"], {"self": 0.6667, "total": 0.6667})
+        self.assertEqual(found["functions"]["src/solver.f90::solver::relax"], {"self": 0.6667, "total": 0.6667, "line": 6})
         self.assertEqual(found["outside"], {"small allocations": 0.0333})
 
     def test_the_readers_own_format_reads_root_first(self) -> None:
@@ -596,6 +596,8 @@ class RealProfileTests(unittest.TestCase):
         self.assertEqual(prof["tool"], "cprofile")
         self.assertEqual(next(iter(prof["files"])), "pkg/work.py")
         self.assertEqual(next(iter(prof["functions"])), "pkg/work.py::<genexpr>")
+        # Opened where it is defined: cProfile keeps no time per line.
+        self.assertGreater(prof["functions"]["pkg/work.py::<genexpr>"]["line"], 0)
         self.assertNotIn("lines", prof)
         with open(os.path.join(self.root, "out", "profile.json")) as fh:
             self.assertEqual(json.load(fh)["files"], prof["files"])

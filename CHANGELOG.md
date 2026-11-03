@@ -15,6 +15,22 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **The code map shows the time per function.** The profile's costliest functions, by their
+  own time, are listed in the side pane over the whole code and for the module or file
+  selected; the header's **Functions** toggle also lists each module's three costliest in
+  its box. A function opens at its line: the costliest sampled one, or where cProfile found
+  it defined.
+
+### Changed
+- **The optimisation strip is a chart.** The metric's axis, the baseline dashed, the best
+  value as a step line and one dot per run (green when kept, hollow when ruled out), with
+  a chip per run under it to pick it by.
+- **The code map fills its tab.** Its columns follow the window's width, so a wide tab
+  leaves no gap beside the side pane.
+- **A file in the code map's lists opens with a double-click** (or Ctrl/Cmd-click); a click
+  still shows it on the map. The ↗ beside each is gone.
+
 ## [1.12.0] — 2026-11-02
 
 ### Added
