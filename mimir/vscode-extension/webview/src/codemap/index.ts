@@ -68,6 +68,58 @@ function ask(): void {
   vscode.postMessage({ type: "refresh", ...(pick === ALL ? { combined: true } : pick ? { proxy: pick } : {}) });
 }
 
+// A mapping the user asked for (⟳, the proxy picker): under way, done (and when), or
+// failed and why. The map drawn again can look exactly the same, so the header says it.
+let mapping: "idle" | "busy" | "failed" = "idle";
+let mappedAt: Date | null = null;
+let mappingNote = "";
+let mappingTimer: ReturnType<typeof setTimeout> | undefined;
+// Past this, an answer that never came is said to have not come.
+const MAPPING_PATIENCE_MS = 60000;
+
+/** Map the code again on the user's word, saying so until the answer is in. */
+function remap(): void {
+  mapping = "busy";
+  clearTimeout(mappingTimer);
+  mappingTimer = setTimeout(() => {
+    if (mapping === "busy") settleMapping("failed", "no answer from the server; try ⟳ again");
+  }, MAPPING_PATIENCE_MS);
+  renderStatus();
+  ask();
+}
+
+function settleMapping(to: "idle" | "failed", note = ""): void {
+  const was = mapping;
+  clearTimeout(mappingTimer);
+  mapping = to;
+  mappingNote = note;
+  if (to === "idle") mappedAt = new Date();
+  renderStatus(was === "busy");
+}
+
+/** The ⟳ button and the line beside the counts: mapping, mapped at, or why not. */
+function renderStatus(flash = false): void {
+  const button = document.getElementById("reload");
+  const status = document.getElementById("status");
+  if (!button || !status) return;
+  const busy = mapping === "busy";
+  button.classList.toggle("is-busy", busy);
+  button.toggleAttribute("disabled", busy);
+  button.setAttribute("aria-busy", String(busy));
+  button.title = busy ? "Mapping the code…"
+    : "Scan the workspace again: its files, the dependencies between them, the optimisation steps (no model call)";
+  // Toggled, not rewritten: a redraw right after must not cut the flash short.
+  status.classList.toggle("is-warn", mapping === "failed");
+  status.textContent = busy ? "· mapping the code…"
+    : mapping === "failed" ? "· " + mappingNote
+    : mappedAt ? "· mapped at " + mappedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+  if (flash) {
+    status.classList.remove("flash");
+    void status.offsetWidth;
+    status.classList.add("flash");
+  }
+}
+
 /** The pick last asked again for an answer that did not hold it, until one does. */
 let reasked: string | null = null;
 
@@ -844,6 +896,7 @@ function render(): void {
     fnsButton.hidden = !time()?.functions;
     fnsButton.setAttribute("aria-pressed", String(showFns));
   }
+  renderStatus();
   if (!map || !view) return;
   const meta = document.getElementById("meta")!;
   const hiddenTests = raw ? raw.files.length - map.files.length : 0;
@@ -870,6 +923,7 @@ function mount(): void {
   document.getElementById("root")!.innerHTML = `
     <header>
       <h1>Code map</h1><span class="meta" id="meta">waiting for the server…</span>
+      <span class="meta status" id="status" role="status" aria-live="polite"></span>
       <select class="push" id="proxy" title="Whose optimisation steps the map shows" aria-label="Proxy" hidden></select>
       <button class="toggle" id="analyse" title="Ask the agent to analyse the whole code's architecture and propose a refactor">Analyse the architecture</button>
       <button class="toggle" id="fns" aria-pressed="false" title="List each module's costliest functions on the map" hidden>Functions</button>
@@ -877,7 +931,7 @@ function mount(): void {
       <div class="seg" role="group" aria-label="Theme">
         <button data-skin="mimir">MIMIR</button><button data-skin="light">Light</button>
       </div>
-      <button class="icon" id="reload" title="Map the code again" aria-label="Map the code again">⟳</button>
+      <button class="icon" id="reload" title="Scan the workspace again: its files, the dependencies between them, the optimisation steps (no model call)" aria-label="Map the code again">⟳</button>
     </header>
     <div class="ribbon" aria-hidden="true"></div>
     <section class="session" id="session" aria-label="Optimisation session" hidden></section>
@@ -888,11 +942,11 @@ function mount(): void {
     remember();
     render();
   }));
-  document.getElementById("reload")!.addEventListener("click", ask);
+  document.getElementById("reload")!.addEventListener("click", remap);
   document.getElementById("proxy")!.addEventListener("change", (e) => {
     pick = (e.target as HTMLSelectElement).value;
     remember();
-    ask();
+    remap();
   });
   document.getElementById("side")!.addEventListener("click", onSideClick);
   document.getElementById("analyse")!.addEventListener("click", () => {
@@ -948,7 +1002,12 @@ function mount(): void {
     else if (session && e.key === "ArrowLeft" && step > 0) { step--; render(); }
   });
   window.addEventListener("message", (ev: MessageEvent) => {
-    const msg = ev.data as { type?: string; map?: CodeMap; session?: Session; focus?: string };
+    const msg = ev.data as { type?: string; map?: CodeMap; session?: Session; focus?: string; reason?: string };
+    // The server had no map to give: said where the user is waiting for one.
+    if (msg?.type === "unavailable") {
+      if (mapping === "busy") settleMapping("failed", msg.reason || "the server gave no map: is the agent connected?");
+      return;
+    }
     if (msg?.type !== "map" || !msg.map) return;
     proxies = msg.session?.proxies ?? [];
     active = msg.session?.active ?? "";
@@ -977,6 +1036,9 @@ function mount(): void {
       sel = { kind: "comp", id: msg.focus };
       scrollToBand = true;
     }
+    // The answer the user waited for says it is in, even when the map is the same.
+    if (mapping === "busy") settleMapping("idle");
+    else mappedAt = new Date();
     render();
   });
   render();

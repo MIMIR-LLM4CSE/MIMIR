@@ -17,7 +17,7 @@ import { serverChannel } from "./serverChannel";
 import { findLiveServer, type ServerEntry } from "./serverRegistry";
 import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "./shared/defaults";
 import type { HostMessage, HostMessageOf } from "./shared/hostMessages";
-import { showCodeMap } from "./codeMapView";
+import { codeMapUnavailable, showCodeMap } from "./codeMapView";
 import { getWebviewHtml } from "./webviewHtml";
 import { workspaceRoot } from "./workspace";
 import { WorkspaceFiles } from "./workspaceFiles";
@@ -426,6 +426,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       refresh: (pick) => this.forwardToServer(JSON.stringify({ type: "code_map", ...pick })),
       prompt: (text) => this.post({ type: "map_prompt", text }),
     }),
+    code_map_unavailable: (m) => codeMapUnavailable(m.reason),
   };
 
   private handleFromWebview(msg: unknown): void {

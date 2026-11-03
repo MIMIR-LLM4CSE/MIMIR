@@ -34,6 +34,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sits under the map), so the button looked dead. The form is now scrolled into view
   when it is not, pulses once, and takes the cursor; the header's button stays pressed
   while the analysis is open, and pressing it again goes back to it.
+- **The code map's ⟳ says what it is doing.** It scans the workspace again (files,
+  dependencies, the optimisation steps; no model call), and when nothing changed the map
+  came back the same, so the click looked lost. The button now turns while the scan runs,
+  the header then says when the code was mapped, and a server with no map to give (no
+  agent connected) or no answer within a minute is said instead of nothing.
 
 ### Added
 - **R&D requests from the code map.** A module, file, function, component or the whole

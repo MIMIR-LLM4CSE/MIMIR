@@ -121,6 +121,8 @@ export function usePanels(send: (msg: ClientMessage) => void,
     code_map: (msg) => {
       if (msg.map) vscodePostMessage({ type: "show_code_map", map: msg.map, session: msg.session,
                                        focus: mapFocus.current });
+      // No map (no agent yet, no server that maps): an open tab waiting on ⟳ is told.
+      else vscodePostMessage({ type: "code_map_unavailable" });
       mapFocus.current = undefined;
     },
   }), []);

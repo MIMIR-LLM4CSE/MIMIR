@@ -75,6 +75,13 @@ export function showCodeMap(map: unknown, session: unknown, focus: string | unde
   }
 }
 
+/** Tell an open tab that the server had no map to give, so a ⟳ it waits on says so
+ *  instead of turning for ever. */
+export function codeMapUnavailable(reason?: string): void {
+  quiet = false;
+  void mapPanel?.webview.postMessage({ type: "unavailable", ...(reason ? { reason } : {}) });
+}
+
 function pageHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "codemap.js"));
   const nonce = getNonce();

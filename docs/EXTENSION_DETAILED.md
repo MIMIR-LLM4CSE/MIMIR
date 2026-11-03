@@ -564,7 +564,11 @@ purple), the selection beside. The columns follow the tab's width, each box wide
 what is left, so the map reaches the side pane at any size. A name in a list selects it on
 the map after a short wait; a double-click (or a Ctrl/Cmd-click) opens the file at the line
 through `openFile` (by the map's absolute `root` when that path exists here,
-relative to the open folder otherwise); ⟳ asks the server again. The components the map flags as
+relative to the open folder otherwise); ⟳ asks the server to map the code again (a
+scan of the tree, each file re-read when its mtime or size moved, and the session's steps;
+no model call). While it runs the button turns and the header says *mapping the code…*;
+the answer sets *mapped at* with the time, and an answer with no map (no agent connected:
+`code_map_unavailable`, relayed by the host) or none within a minute is said there. The components the map flags as
 tests are folded away until **Tests** is pressed: they depend on everything, and their
 edges would bury the code's own architecture.
 

@@ -49,6 +49,11 @@ h1 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: u
 .toggle[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .icon { border: 0; background: none; color: var(--fg-dim); font-size: 15px; cursor: pointer; padding: 0 4px; }
 .icon:hover { color: var(--fg); }
+.icon.is-busy { display: inline-block; animation: spin 0.9s linear infinite; color: var(--accent); cursor: progress; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.status.is-warn { color: var(--warn); }
+.status.flash { animation: status-in 1.6s ease-out; }
+@keyframes status-in { 0% { color: var(--accent); } 100% { color: var(--fg-dim); } }
 button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus); outline-offset: 2px; }
 .ribbon { height: 1px; background: var(--mimir-gradient); opacity: .7; margin-top: -6px; }
 .tab { display: grid; grid-template-columns: minmax(0, 1fr) 300px; background: var(--bg);
@@ -213,5 +218,6 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .rq-pill.st-studying rect { fill: var(--gpu); } .rq-pill.st-proposed rect { fill: var(--e-cycle); }
 .rq-pill.st-trying rect { fill: var(--time); } .rq-pill.st-done rect { fill: var(--ok); }
 .chip .rq { font: 600 10px var(--font); color: var(--accent); }
-@media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } .section.req-form.is-new { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } .section.req-form.is-new { animation: none; }
+  .icon.is-busy { animation: none; } .status.flash { animation: none; } }
 `;
