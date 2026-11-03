@@ -615,9 +615,17 @@ section heads the pane (those sent and not yet recorded marked *sent*, by their 
 a request opens on its status, the agent's summary and conclusion, and its variants side
 by side against the start, a row selecting its step; **Try it** (a proposed study) and
 **Drop** ask the agent. Each module a request targets carries an `R3` pill coloured by
-status, and the strip's chips name a step's request (`R3.2`). While a request is sent,
-open, studying or trying and the tab is seen, it asks the server again every 20 s; the
-host answers a refresh without revealing the tab, so nothing takes the focus.
+status, and the strip's chips name a step's request (`R3.2`).
+
+**The tab follows the session on its own.** A tool that may change what the map draws
+declares `CODE_MAP_MOVES` (`proxy_eval`, `proxy_eval_status`, `proxy_request`: a run
+settled, a background run's results read, a request recorded); after each successful
+call the client's dispatch emits `code_map_stale`, the chat passes it to the host
+(`codeMapStale`), and an open tab maps the code again with its own pick of proxy, as ⟳
+does and saying so. A burst of calls is one re-map (1.5 s), a tab out of sight waits until
+it is seen, and no event, no scan: nothing polls. The host answers a refresh without
+revealing the tab, so nothing takes the focus. An edit to the code outside a session
+step is not one of these: ⟳ maps it.
 
 With sessions on more than one proxy, a picker in the header chooses whose steps are
 drawn: the active session, another proxy's, or every proxy at once. The pick is kept in

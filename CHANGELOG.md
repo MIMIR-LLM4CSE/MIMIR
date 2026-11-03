@@ -34,6 +34,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sits under the map), so the button looked dead. The form is now scrolled into view
   when it is not, pulses once, and takes the cursor; the header's button stays pressed
   while the analysis is open, and pressing it again goes back to it.
+- **The code map follows the optimisation session on its own.** A run that settles, a
+  background run's results read, a request recorded: the map tab, when open, maps the
+  code again by itself, without taking the focus, its header saying so as for ⟳. It goes
+  by those events (the tools that move the map declare `CODE_MAP_MOVES`), not by a timer:
+  nothing is scanned while nothing happens, and a hidden tab catches up once it is seen.
+  The 20 s polling for R&D requests is gone.
 - **The code map's ⟳ says what it is doing.** It scans the workspace again (files,
   dependencies, the optimisation steps; no model call), and when nothing changed the map
   came back the same, so the click looked lost. The button now turns while the scan runs,

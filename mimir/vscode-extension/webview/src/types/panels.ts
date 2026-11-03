@@ -152,6 +152,12 @@ export interface CodeMapMessage {
 
 /** A request the code map tab puts to the agent (its Profile button), sent as the
  *  user's own message: from the extension host, not the server. */
+/** A call has changed what the map tab draws (a run settled, a request recorded): an
+ *  open tab maps the code again. From the server, after a tool that declares it. */
+export interface CodeMapStaleMessage {
+  type: "code_map_stale";
+}
+
 export interface MapPromptMessage {
   type: "map_prompt";
   text: string;

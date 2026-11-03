@@ -5,7 +5,7 @@
 import { STYLE } from "./style";
 import { edgeKey, fnParts, functionsBlock, gpuBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, topFunctions,
   type Overlay, type Scope, type Session, type TimeView } from "./session";
-import { live, newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
+import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
   type Draft, type Request, type Sent, type Target } from "./request";
 import { formHtml, requestDetail, requestsSection } from "./requestView";
 
@@ -68,7 +68,7 @@ function ask(): void {
   vscode.postMessage({ type: "refresh", ...(pick === ALL ? { combined: true } : pick ? { proxy: pick } : {}) });
 }
 
-// A mapping the user asked for (⟳, the proxy picker): under way, done (and when), or
+// A mapping asked for (⟳, the proxy picker, a step settled): under way, done (and when), or
 // failed and why. The map drawn again can look exactly the same, so the header says it.
 let mapping: "idle" | "busy" | "failed" = "idle";
 let mappedAt: Date | null = null;
@@ -77,7 +77,15 @@ let mappingTimer: ReturnType<typeof setTimeout> | undefined;
 // Past this, an answer that never came is said to have not come.
 const MAPPING_PATIENCE_MS = 60000;
 
-/** Map the code again on the user's word, saying so until the answer is in. */
+// What the agent did may have moved the map (the server says so after a run settles or a
+// request is recorded): the tab maps the code again on its own. A burst of calls is one
+// re-map, and a tab out of sight waits until it is seen.
+const STALE_SETTLE_MS = 1500;
+let staleTimer: ReturnType<typeof setTimeout> | undefined;
+let staleWhileHidden = false;
+
+/** Map the code again (⟳, the proxy picker, or the server saying something moved),
+ *  saying so until the answer is in. */
 function remap(): void {
   mapping = "busy";
   clearTimeout(mappingTimer);
@@ -955,11 +963,10 @@ function mount(): void {
     sel = null;
     openDraft({ ...newDraft([{ all: true }]), kind: "refactor" });
   });
-  // While the agent is at a request, the tab asks the server again now and then, so its
-  // status and runs show without a ⟳. Only while the tab is seen.
-  setInterval(() => {
-    if (document.visibilityState === "visible" && (sent.length || requests.some((r) => live(r.status)))) ask();
-  }, 20000);
+  // A hidden tab maps the code once it is seen again, if something moved meanwhile.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && staleWhileHidden) { staleWhileHidden = false; remap(); }
+  });
   document.getElementById("fns")!.addEventListener("click", () => {
     showFns = !showFns;
     remember();
@@ -1003,6 +1010,15 @@ function mount(): void {
   });
   window.addEventListener("message", (ev: MessageEvent) => {
     const msg = ev.data as { type?: string; map?: CodeMap; session?: Session; focus?: string; reason?: string };
+    // A run settled or a request was recorded: map the code again, once for a burst.
+    if (msg?.type === "stale") {
+      clearTimeout(staleTimer);
+      staleTimer = setTimeout(() => {
+        if (document.visibilityState === "visible") remap();
+        else staleWhileHidden = true;
+      }, STALE_SETTLE_MS);
+      return;
+    }
     // The server had no map to give: said where the user is waiting for one.
     if (msg?.type === "unavailable") {
       if (mapping === "busy") settleMapping("failed", msg.reason || "the server gave no map: is the agent connected?");

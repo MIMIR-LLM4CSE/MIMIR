@@ -14,6 +14,7 @@ export type HostMessage =
       anthropicApiKey?: string; remember?: boolean }
   | { type: "ws_send"; payload: string }
   | { type: "show_code_map"; map: unknown; session?: unknown; focus?: string }
-  | { type: "code_map_unavailable"; reason?: string };
+  | { type: "code_map_unavailable"; reason?: string }
+  | { type: "code_map_stale" };
 
 export type HostMessageOf<T extends HostMessage["type"]> = Extract<HostMessage, { type: T }>;

@@ -138,6 +138,11 @@ export const App: React.FC = () => {
         handleReady();
         return;
 
+      case "code_map_stale":
+        // Passed on to the map tab, if one is open; it asks for the map again itself.
+        vscodePostMessage({ type: "code_map_stale" });
+        return;
+
       case "map_prompt":
         // The code map tab's Profile button: the request goes out as the user's own.
         if (msg.text) sendPromptRef.current(msg.text);

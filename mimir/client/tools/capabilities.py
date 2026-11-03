@@ -22,6 +22,7 @@ from ...shared.capabilities import (  # noqa: F401  (re-exported)
     CLUSTER_SUBMIT,
     CODE_EXEC,
     CODE_MAP,
+    CODE_MAP_MOVES,
     CODE_MAP_STEPS,
     CODE_NAV,
     CONTENT_WRITE,
@@ -624,6 +625,6 @@ __all__ = [
     "PLAN_BLOCKED", "PLAN_READONLY", "SENSITIVE", "NON_BATCH",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
     "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
-    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "CODE_MAP_STEPS", "reserved_for_main",
+    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "CODE_MAP_STEPS", "CODE_MAP_MOVES", "reserved_for_main",
     "panel_sections", "code_map_tools",
 ]

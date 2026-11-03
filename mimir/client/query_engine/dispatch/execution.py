@@ -10,7 +10,7 @@ import time
 
 from ...protocol import human_pause
 from ...config.limits import AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS
-from ...tools.capabilities import timeout_for
+from ...tools.capabilities import CODE_MAP_MOVES, has_cap, timeout_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import DispatchAgent
 from ...protocol.event_sink import emit
@@ -233,6 +233,9 @@ async def run_call(agent: DispatchAgent, call: Call, execution_context: Executio
             math_info=extract_math_preview(result) if ok else None,
             target=file_target(name, args, result, agent.tool_caps) if ok else None,
         )
+        # A run settled or a request recorded: what the map tab draws may have moved.
+        if ok and has_cap(name, CODE_MAP_MOVES, agent.tool_caps):
+            emit({"type": "code_map_stale"})
         return await _follow_runs(agent, call, result, ok)
 
     except asyncio.TimeoutError:

@@ -82,6 +82,12 @@ export function codeMapUnavailable(reason?: string): void {
   void mapPanel?.webview.postMessage({ type: "unavailable", ...(reason ? { reason } : {}) });
 }
 
+/** Tell an open tab that what it draws may have moved; it asks for the map again itself,
+ *  with its own pick of proxy. Nothing when no tab is open. */
+export function codeMapStale(): void {
+  void mapPanel?.webview.postMessage({ type: "stale" });
+}
+
 function pageHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const script = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "dist", "codemap.js"));
   const nonce = getNonce();

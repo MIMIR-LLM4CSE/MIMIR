@@ -65,6 +65,9 @@ CODE_MAP = "code_map"                  # answers the workspace's code map: share
                                        # when called with shared.code_map.FULL_ARGS, for the map tab
 CODE_MAP_STEPS = "code_map_steps"      # answers the optimisation session's steps for the map tab:
                                        # each run's verdict, metric and the files and edges it changed
+CODE_MAP_MOVES = "code_map_moves"      # a call may change what the map tab draws (a run settled, a
+                                       # request recorded): the client says so after it, and an open
+                                       # tab maps the code again
 
 # --- Reversibility: how much of an action can be taken back ----------------
 # One ordered dimension, the *declared* one, from which SENSITIVE below is derived
@@ -374,5 +377,5 @@ __all__ = [
     "REVERSIBLE", "RECOVERABLE", "IRREVERSIBLE", "REVERSIBILITY_LEVELS",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
     "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
-    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "CODE_MAP_STEPS",
+    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "CODE_MAP_STEPS", "CODE_MAP_MOVES",
 ]

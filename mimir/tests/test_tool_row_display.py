@@ -10,7 +10,7 @@ import mimir.client.query_engine.dispatch.execution as dispatch_execution
 from mimir.tests.support.agents import FakeAgent
 from mimir.client.protocol.event_sink import event_sink as capture_events
 from mimir.tests.support.context import build_execution_context
-from mimir.client.tools.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
+from mimir.client.tools.capabilities import CODE_MAP_MOVES, ToolCaps, READ, SEARCH_WITH_PATH
 from mimir.client.tools.display import (
     clip_doing,
     summarize_tool_result,
@@ -673,3 +673,28 @@ class DispatchRowFieldsTests(unittest.TestCase):
             registry={"mystery_tool": ToolCaps(name="mystery_tool")},
         )
         self.assertEqual(rows[0]["kind"], "tool")
+
+
+class CodeMapStaleTests(unittest.TestCase):
+    """A call that may move what the map tab draws says so once it is done, and only one."""
+
+    def _events(self, name: str, caps: frozenset) -> list[dict]:
+        from unittest.mock import patch
+        from mimir.client.query_engine import dispatch as d
+
+        agent = _FakeAgent({name: ToolCaps(name=name, capabilities=caps)})
+        events: list[dict] = []
+        with capture_events(events.append), \
+             patch.object(dispatch_execution, "run_post_tool_annotations", lambda *a, **k: None):
+            asyncio.run(d.dispatch_tool_calls(
+                [{"id": "c1", "function": {"name": name, "arguments": {}}}], agent, [],
+                build_execution_context(), bound=list))
+        return [e for e in events if e.get("type") in ("tool_result", "code_map_stale")]
+
+    def test_a_run_settled_moves_the_map(self) -> None:
+        kinds = [e["type"] for e in self._events("proxy_eval", frozenset({CODE_MAP_MOVES}))]
+        self.assertEqual(kinds, ["tool_result", "code_map_stale"])
+
+    def test_a_read_does_not(self) -> None:
+        kinds = [e["type"] for e in self._events("read_file_lines", frozenset({READ}))]
+        self.assertEqual(kinds, ["tool_result"])

@@ -23,6 +23,7 @@ from ...shared.capabilities import (
     IRREVERSIBLE,
     RECOVERABLE,
     PANEL_REPORT,
+    CODE_MAP_MOVES,
     CODE_MAP_STEPS,
 )
 from ...shared.responses import err, ok
@@ -192,7 +193,8 @@ _RUN_OUTCOME = {
 _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config", "graph")
 
 
-@mcp.tool(**tool_caps(kind="proxy eval", label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
+@mcp.tool(**tool_caps(kind="proxy eval", caps=[CODE_MAP_MOVES], label="Proxy eval status: {op}",
+                      run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
     op: Annotated[str, Field(
         description="Which operation to perform (default 'status'). It selects everything else, and the parameters each one needs.",
@@ -527,7 +529,7 @@ _EVAL_OPS = ("init", "configure", "run", "profile", "stop", "reset", "reset_to_b
 _EVAL_RUN_TIMEOUT = 1800
 
 
-@mcp.tool(**tool_caps(kind="proxy eval", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
+@mcp.tool(**tool_caps(kind="proxy eval", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE, CODE_MAP_MOVES],
                       reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME,
                       timeout_secs=_EVAL_RUN_TIMEOUT))
@@ -950,7 +952,7 @@ def proxy_panel_report() -> dict:
     return panel.report()
 
 
-@mcp.tool(**tool_caps(kind="proxy", label="R&D request: {op}"))
+@mcp.tool(**tool_caps(kind="proxy", caps=[CODE_MAP_MOVES], label="R&D request: {op}"))
 def proxy_request(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
