@@ -67,7 +67,8 @@ CODE_MAP_STEPS = "code_map_steps"      # answers the optimisation session's step
                                        # each run's verdict, metric and the files and edges it changed
 CODE_MAP_MOVES = "code_map_moves"      # a call may change what the map tab draws (a run settled, a
                                        # request recorded): the client says so after it, and an open
-                                       # tab maps the code again
+                                       # tab maps the code again; `map_moves_when` {"arg", "values"}
+                                       # narrows it to the invocations that write
 
 # --- Reversibility: how much of an action can be taken back ----------------
 # One ordered dimension, the *declared* one, from which SENSITIVE below is derived
@@ -219,11 +220,10 @@ def _norm_panel(panel: dict[str, Any] | None) -> dict[str, Any] | None:
     return norm
 
 
-def _norm_readonly_when(readonly_when: dict[str, Any] | None) -> dict[str, Any] | None:
-    """``{"arg", "values"}``: the argument values that make a dual-use tool read-only."""
-    if readonly_when and readonly_when.get("arg") and readonly_when.get("values"):
-        return {"arg": str(readonly_when["arg"]),
-                "values": [str(v) for v in readonly_when["values"]]}
+def _norm_when(when: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``{"arg", "values"}``: the argument values a per-invocation trait holds for."""
+    if when and when.get("arg") and when.get("values"):
+        return {"arg": str(when["arg"]), "values": [str(v) for v in when["values"]]}
     return None
 
 
@@ -277,6 +277,7 @@ def build_descriptor(
     preview: dict[str, Any] | None = None,
     timeout_secs: int | None = None,
     readonly_when: dict[str, Any] | None = None,
+    map_moves_when: dict[str, Any] | None = None,
     run_outcome: dict[str, Any] | None = None,
     panel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -296,7 +297,8 @@ def build_descriptor(
         # A tool's own wall, which the client clamps.
         "timeout_secs": timeout_secs if isinstance(timeout_secs, int) and timeout_secs > 0
         else None,
-        "readonly_when": _norm_readonly_when(readonly_when),
+        "readonly_when": _norm_when(readonly_when),
+        "map_moves_when": _norm_when(map_moves_when),
         "preview": _norm_preview(preview),
         "run_outcome": _norm_run_outcome(run_outcome),
     }
@@ -318,6 +320,7 @@ def tool_caps(
     preview: dict[str, Any] | None = None,
     timeout_secs: int | None = None,
     readonly_when: dict[str, Any] | None = None,
+    map_moves_when: dict[str, Any] | None = None,
     run_outcome: dict[str, Any] | None = None,
     panel: dict[str, Any] | None = None,
     read_only: bool | None = None,
@@ -342,6 +345,7 @@ def tool_caps(
         preview=preview,
         timeout_secs=timeout_secs,
         readonly_when=readonly_when,
+        map_moves_when=map_moves_when,
         run_outcome=run_outcome,
         panel=panel,
     )

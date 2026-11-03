@@ -108,6 +108,9 @@ class ToolCaps:
     # invocations that are the read-only ones. None -> the guard falls back to
     # classifying the shell command it carries.
     readonly_when: dict[str, Any] | None = None
+    # For a CODE_MAP_MOVES tool: {"arg": name, "values": [...]} naming the invocations
+    # that write what the map draws. None -> every successful call may move it.
+    map_moves_when: dict[str, Any] | None = None
     # What the server itself saw of a run it performed: {"id": field, "crashed_when":
     # {...}, "failed_when": {...}, "rows": {...}}. The floor under the model's stated
     # verdict for a non-shell execution tool; withholds credit only, never grants it.
@@ -160,8 +163,8 @@ def _declared_timeout(value: Any) -> int | None:
     return min(value, TOOL_CALL_TIMEOUT_MAX_SECS)
 
 
-def _readonly_when(value: Any) -> dict[str, Any] | None:
-    """Normalise a dual-use tool's read-only-invocation spec; drop an incomplete one."""
+def _when(value: Any) -> dict[str, Any] | None:
+    """Normalise a per-invocation spec ({"arg", "values"}); drop an incomplete one."""
     if not isinstance(value, dict):
         return None
     arg, values = value.get("arg"), value.get("values")
@@ -219,7 +222,8 @@ def _caps_from_meta(name: str, desc: dict[str, Any]) -> ToolCaps:
         preview=preview,
         reversibility=reversibility,
         timeout_secs=_declared_timeout(desc.get("timeout_secs")),
-        readonly_when=_readonly_when(desc.get("readonly_when")),
+        readonly_when=_when(desc.get("readonly_when")),
+        map_moves_when=_when(desc.get("map_moves_when")),
         run_outcome=outcome,
         panel=panel,
     )
@@ -444,6 +448,17 @@ def readonly_invocation_spec(name: str, registry: dict[str, ToolCaps] | None = N
     return c.readonly_when if c else None
 
 
+def moves_code_map(name: str, args: dict[str, Any] | None,
+                   registry: dict[str, ToolCaps] | None = None) -> bool:
+    """Whether this call may change what the map tab draws: the tool declares
+    CODE_MAP_MOVES and, when it narrows it, *args* name one of the writing invocations."""
+    c = _registry(registry).get(name)
+    if not c or CODE_MAP_MOVES not in c.capabilities:
+        return False
+    when = c.map_moves_when
+    return when is None or str((args or {}).get(when["arg"])) in when["values"]
+
+
 def timeout_for(name: str, registry: dict[str, ToolCaps] | None = None) -> int:
     """This tool's per-call wall: what it declares, else the global default.
 
@@ -602,6 +617,7 @@ __all__ = [
     "build_tool_caps",
     "names_with_cap",
     "has_cap",
+    "moves_code_map",
     "is_write",
     "clears_edit_loop",
     "name_for_cap",

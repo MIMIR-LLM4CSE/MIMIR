@@ -15,6 +15,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **The code map no longer re-maps at every status poll.** While a run went, the agent's
+  `proxy_eval_status` polls each told an open map tab to map the code again, so it
+  flickered every ~20 s. A tool declaring `CODE_MAP_MOVES` now names the ops that write
+  with `map_moves_when`: `proxy_eval_status` moves the map only for `results`,
+  `proxy_request` only for `open` and `update`.
+
 ## [1.13.0] — 2026-11-03
 
 ### Added

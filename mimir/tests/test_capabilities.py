@@ -181,10 +181,13 @@ class WorkFamilyTest(unittest.TestCase):
             (None, None),
         ):
             with self.subTest(spec=spec):
-                desc = srv.build_descriptor(caps=[srv.READ], readonly_when=spec)
+                desc = srv.build_descriptor(caps=[srv.READ], readonly_when=spec,
+                                            map_moves_when=spec)
                 fake = types.SimpleNamespace(
                     name="t", meta={"mimir": desc}, annotations=None, inputSchema=None)
-                self.assertEqual(caps.infer_tool_caps(fake).readonly_when, expected)
+                inferred = caps.infer_tool_caps(fake)
+                self.assertEqual(inferred.readonly_when, expected)
+                self.assertEqual(inferred.map_moves_when, expected)
 
     def test_descriptor_round_trip(self):
         from mimir.shared import capabilities as srv

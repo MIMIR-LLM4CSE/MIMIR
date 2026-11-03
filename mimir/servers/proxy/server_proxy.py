@@ -193,7 +193,9 @@ _RUN_OUTCOME = {
 _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config", "graph")
 
 
+# Polled while a run is going: only reading the results records its verdict.
 @mcp.tool(**tool_caps(kind="proxy eval", caps=[CODE_MAP_MOVES], label="Proxy eval status: {op}",
+                      map_moves_when={"arg": "op", "values": ["results"]},
                       run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
     op: Annotated[str, Field(
@@ -952,7 +954,8 @@ def proxy_panel_report() -> dict:
     return panel.report()
 
 
-@mcp.tool(**tool_caps(kind="proxy", caps=[CODE_MAP_MOVES], label="R&D request: {op}"))
+@mcp.tool(**tool_caps(kind="proxy", caps=[CODE_MAP_MOVES], label="R&D request: {op}",
+                      map_moves_when={"arg": "op", "values": ["open", "update"]}))
 def proxy_request(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",

@@ -678,16 +678,18 @@ class DispatchRowFieldsTests(unittest.TestCase):
 class CodeMapStaleTests(unittest.TestCase):
     """A call that may move what the map tab draws says so once it is done, and only one."""
 
-    def _events(self, name: str, caps: frozenset) -> list[dict]:
+    def _events(self, name: str, caps: frozenset, args: dict | None = None,
+                moves_when: dict | None = None) -> list[dict]:
         from unittest.mock import patch
         from mimir.client.query_engine import dispatch as d
 
-        agent = _FakeAgent({name: ToolCaps(name=name, capabilities=caps)})
+        agent = _FakeAgent({name: ToolCaps(name=name, capabilities=caps,
+                                           map_moves_when=moves_when)})
         events: list[dict] = []
         with capture_events(events.append), \
              patch.object(dispatch_execution, "run_post_tool_annotations", lambda *a, **k: None):
             asyncio.run(d.dispatch_tool_calls(
-                [{"id": "c1", "function": {"name": name, "arguments": {}}}], agent, [],
+                [{"id": "c1", "function": {"name": name, "arguments": args or {}}}], agent, [],
                 build_execution_context(), bound=list))
         return [e for e in events if e.get("type") in ("tool_result", "code_map_stale")]
 
@@ -698,3 +700,13 @@ class CodeMapStaleTests(unittest.TestCase):
     def test_a_read_does_not(self) -> None:
         kinds = [e["type"] for e in self._events("read_file_lines", frozenset({READ}))]
         self.assertEqual(kinds, ["tool_result"])
+
+    def test_only_the_declared_invocations_move_it(self) -> None:
+        # A status poll while a run goes must not re-map the code at each poll.
+        when = {"arg": "op", "values": ["results"]}
+        for args, expected in (({"op": "status"}, ["tool_result"]), ({}, ["tool_result"]),
+                               ({"op": "results"}, ["tool_result", "code_map_stale"])):
+            with self.subTest(args=args):
+                kinds = [e["type"] for e in self._events(
+                    "proxy_eval_status", frozenset({CODE_MAP_MOVES}), args, when)]
+                self.assertEqual(kinds, expected)

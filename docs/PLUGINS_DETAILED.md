@@ -171,7 +171,7 @@ def read_note(path: str) -> str:
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
 | **Panel** | `PANEL_REPORT` | Fills one section of the scientific-computing panel, declared with a `panel` spec (`section`, `order`, `args`, and an optional `refresh_arg`). |
 | **Panel** | `CODE_MAP_STEPS` | Answers the optimisation session's steps for the map tab: per settled run, its axis, verdict, metric beside the incumbent's, and the files and dependencies it changed. |
-| **Panel** | `CODE_MAP_MOVES` | A call may change what the map tab draws (a run settled, a request recorded): after each successful one the client emits `code_map_stale`, and an open map tab maps the code again on its own. |
+| **Panel** | `CODE_MAP_MOVES` | A call may change what the map tab draws (a run settled, a request recorded): after each successful one the client emits `code_map_stale`, and an open map tab maps the code again on its own. `map_moves_when={"arg": "op", "values": [...]}` narrows it to the invocations that write, so a polled read does not re-map. |
 | **Panel** | `CODE_MAP` | Answers the workspace's code map: a summary by default, the whole map (`shared/code_map`'s dict, which the editor's map tab draws) when called with `code_map.FULL_ARGS`. |
 
 The vocabulary is defined once in `mimir/shared/capabilities.py` (the client re-exports

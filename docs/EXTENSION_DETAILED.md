@@ -625,8 +625,10 @@ status, and the strip's chips name a step's request (`R3.2`).
 
 **The tab follows the session on its own.** A tool that may change what the map draws
 declares `CODE_MAP_MOVES` (`proxy_eval`, `proxy_eval_status`, `proxy_request`: a run
-settled, a background run's results read, a request recorded); after each successful
-call the client's dispatch emits `code_map_stale`, the chat passes it to the host
+settled, a background run's results read, a request recorded), narrowed by
+`map_moves_when` to the ops that write (`proxy_eval_status` only for `results`,
+`proxy_request` only for `open` and `update`: a status poll while a run goes re-maps
+nothing); after each such successful call the client's dispatch emits `code_map_stale`, the chat passes it to the host
 (`codeMapStale`), and an open tab maps the code again with its own pick of proxy, as ⟳
 does and saying so. A burst of calls is one re-map (1.5 s), a tab out of sight waits until
 it is seen, and no event, no scan: nothing polls. The host answers a refresh without
