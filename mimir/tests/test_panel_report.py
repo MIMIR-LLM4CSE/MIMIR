@@ -453,12 +453,12 @@ def test_a_silent_host_is_listed_as_unknown_not_as_empty():
 def test_a_node_kind_is_named_by_what_it_is_and_lists_its_specs():
     """A kind is picked by its GPUs and its size; the node names are a line inside."""
     kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
-    assert kind["label"] == "4× a100 · 64 cpus · 503 GB"
+    assert kind["label"] == "4× a100 · 64 CPUs · 503 GB"
     assert kind["nodes"] == ["gpu001", "gpu002"]
     values = {line["label"]: line["value"] for line in kind["lines"]}
     assert values["nodes"] == "gpu001, gpu002 +8"
-    assert values["cpus"] == "x86_64 · 64 = 2 sockets × 32 cores × 1 threads"
-    assert values["gpu mem"] == "unknown until a node is profiled"
+    assert values["cpu"] == "x86_64 · 2 × 32 cores"
+    assert values["gpu memory"] == "unknown until a node is profiled"
     assert values["partitions"] == "gpu"
     assert values["features"] == "avx512,ib"
 
@@ -466,51 +466,61 @@ def test_a_node_kind_is_named_by_what_it_is_and_lists_its_specs():
 def test_a_kind_says_what_is_free_on_it_now():
     """Drained nodes are counted, never offered; a full node's cores are not room."""
     kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
-    assert kind["value"] == "10 GPUs · 160 cpus free"
+    assert kind["value"] == "2 / 9 free"
     values = {line["label"]: line["value"] for line in kind["lines"]}
-    assert values["idle"] == "2 of 9 nodes (1 out of service)"
+    assert values["free"] == "2 / 9 nodes · 160 CPUs · 10 GPUs · 1 down"
 
 
-def test_the_room_on_a_cluster_is_crossed_with_what_already_waits_for_it():
-    """Free cores are room only for a job that would be next: squeue says who is first."""
+def test_a_cluster_lays_its_partitions_out_as_a_table():
+    """One row per usable partition, crossed with what squeue says waits for it."""
     host = _tree(["hpc1"], {"hpc1": _DIGEST})[0]
-    assert host["value"] == "10 GPUs · 160 cpus free · 3 waiting"
-    values = {line["label"]: line["value"] for line in host["lines"]}
-    assert values["gpu"] == ("2/9 nodes idle · 10 GPUs · 160 cpus free · "
-                             "3 waiting (96 cpus, 6 GPUs)")
-    assert "cpu" not in values                 # a partition with no node of its own
-    assert "squeue" in host["detail"] and "09:41" in host["detail"]
+    assert host["value"] == "160 CPUs · 10 GPUs free"
+    assert host["table"] == {
+        "columns": ["Partition", "Free nodes", "Free CPUs", "Free GPUs", "Waiting"],
+        # "cpu" has no node of its own here, so it has no row.
+        "rows": [["gpu", "2 / 9", "160", "10", "3"]]}
+    assert "09:41" in host["detail"] and "all users" in host["detail"]
+
+
+def test_a_queue_that_did_not_answer_is_a_question_mark_not_a_zero():
+    host = _tree(["hpc1"], {"hpc1": _DIGEST}, loads={"hpc1": {**_LOAD, "queue": None}})[0]
+    assert host["table"]["rows"][0][-1] == "?"
+    assert "squeue did not answer" in host["detail"]
 
 
 def test_what_the_tree_leaves_out_is_said():
     """A node missing from the drawer reads as left out, not as unseen."""
     host = _tree(["hpc1"], {"hpc1": _DIGEST})[0]
     values = {line["label"]: line["value"] for line in host["lines"]}
-    assert values["not shown"] == ("3 nodes outside your partitions: admin (root only); "
-                                   "1 node down, drained or reserved")
+    assert values["hidden"] == ("3 nodes outside your partitions (admin: root only) · "
+                                "1 node down, drained or reserved")
 
 
 def test_a_site_that_hides_other_users_jobs_says_the_queue_is_only_yours():
     private = {**_DIGEST, "private_jobs": True}
     host = _tree(["hpc1"], {"hpc1": private})[0]
-    [line] = [line for line in host["lines"] if line["label"] == "queue"]
+    [line] = [line for line in host["lines"] if line["label"] == "waiting"]
     assert line["state"] == "warn"
-    assert "only your own jobs" in line["value"]
-    assert all(line["label"] != "queue" for line in _tree(["hpc1"], {"hpc1": _DIGEST})[0]["lines"])
+    assert "your own jobs only" in line["value"] and "PrivateData=jobs" in line["value"]
+    assert "your jobs" in host["detail"]
+    assert all(line["label"] != "waiting"
+               for line in _tree(["hpc1"], {"hpc1": _DIGEST})[0]["lines"])
 
 
 def test_a_kind_with_no_node_in_service_is_left_out():
     down = {**_LOAD, "nodes": [_gpu_node("gpu001", "DOWN*"), _gpu_node("gpu002", "DRAINED")]}
     host = _tree(["hpc1"], {"hpc1": _DIGEST}, loads={"hpc1": down})[0]
     assert "groups" not in host
-    assert host["value"] == "out of service · 3 waiting"
+    assert host["value"] == "out of service"
+    assert host["table"]["rows"] == [["gpu", "0 / 0", "0", "–", "3"]]
 
 
 def test_a_load_that_did_not_answer_keeps_the_hardware():
     host = _tree(["hpc1"], {"hpc1": _DIGEST}, loads={"hpc1": None})[0]
-    assert host["groups"][0]["label"] == "4× a100 · 64 cpus · 503 GB"
+    assert host["groups"][0]["label"] == "4× a100 · 64 CPUs · 503 GB"
     assert "value" not in host["groups"][0]
-    assert any(line["label"] == "room" and line["state"] == "warn" for line in host["lines"])
+    assert "table" not in host
+    assert any(line["label"] == "free" and line["state"] == "warn" for line in host["lines"])
 
 
 def test_an_unprofiled_kind_offers_the_request_that_would_fix_it_and_says_nothing_else():
@@ -534,11 +544,11 @@ def test_a_profiled_kind_carries_what_only_the_node_could_say():
                                                 "compute_cap": "8.0"}]}}}
     kind = _tree(["hpc1"], {"hpc1": _DIGEST}, {"gpu001": profile})[0]["groups"][0]
     values = {line["label"]: line["value"] for line in kind["lines"]}
-    assert values["cpu"] == "AMD EPYC 7763"
+    assert values["cpu model"] == "AMD EPYC 7763"
     assert values["-march=native"] == "znver3"
     assert values["os"] == "rhel 8.10 · glibc 2.28"
     assert values["compute capability"] == "8.0"
-    assert values["gpu mem"] == "80 GB per GPU"
+    assert values["gpu memory"] == "80 GB per GPU"
     assert "Profiled on gpu001, 2026-10-02" in kind["detail"]
     assert "action" not in kind          # nothing left to ask for
     assert kind.get("state") != "warn"

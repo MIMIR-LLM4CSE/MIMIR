@@ -4482,6 +4482,38 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .science-line-label { color: var(--fg-dim); flex: 0 1 auto; max-width: 55%; }
 
+/* A server's table (a cluster's partitions): numbers right-aligned so they compare down
+   a column; it scrolls sideways rather than wrapping in a narrow drawer. */
+.science-table-wrap { overflow-x: auto; margin: 2px 0 6px; }
+
+.science-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.science-table th,
+.science-table td {
+  padding: 3px 6px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.science-table th:first-child { text-align: left; padding-left: 0; }
+
+.science-table thead th {
+  color: var(--fg-dim);
+  font-weight: normal;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.science-table tbody th { font-weight: normal; color: var(--fg); }
+
+.science-table tbody tr + tr > * {
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
 .science-line-value {
   flex: 1 1 0;
   text-align: right;

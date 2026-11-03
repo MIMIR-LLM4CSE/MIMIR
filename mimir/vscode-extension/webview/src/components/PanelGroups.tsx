@@ -1,5 +1,5 @@
 import React from "react";
-import type { PanelGroup, WatchedRun } from "../types";
+import type { PanelGroup, PanelTable, WatchedRun } from "../types";
 import { badgeDetailRows, badgeKey, badgeLabel, kindLabel } from "./panelGroupUtils";
 
 interface Props {
@@ -71,6 +71,9 @@ export const PanelGroupList: React.FC<Props> = ({
 
           {isOpen && (
             <div className="science-group-body" id={bodyId} role="group">
+              {group.table && group.table.rows.length > 0 && (
+                <PanelTableView table={group.table} />
+              )}
               {(group.lines ?? []).map((line, i) => (
                 <div className="science-line" key={i}>
                   <span className="science-line-label" title={line.label}>{line.label}</span>
@@ -106,6 +109,34 @@ export const PanelGroupList: React.FC<Props> = ({
       );
     })}
   </>
+);
+
+/** A server's table: its header, then its rows; the first column names the row. */
+export const PanelTableView: React.FC<{ table: PanelTable }> = ({ table }) => (
+  <div className="science-table-wrap">
+    <table className="science-table">
+      <thead>
+        <tr>
+          {table.columns.map((column, i) => (
+            <th key={i} scope="col">{column}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {table.rows.map((row, r) => (
+          <tr key={r}>
+            {row.map((cell, c) =>
+              c === 0 ? (
+                <th key={c} scope="row" title={cell}>{cell}</th>
+              ) : (
+                <td key={c}>{cell}</td>
+              ),
+            )}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
 );
 
 /**

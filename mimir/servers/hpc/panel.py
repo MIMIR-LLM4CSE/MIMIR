@@ -85,7 +85,7 @@ def _node_kind_label(kind: dict) -> str:
     if gpu:
         parts.append(gpu)
     if kind.get("cpus"):
-        parts.append(f"{kind['cpus']} cpus")
+        parts.append(f"{kind['cpus']} CPUs")
     mem_mb = kind.get("mem_mb")
     if isinstance(mem_mb, (int, float)) and mem_mb:
         parts.append(f"{round(mem_mb / 1024)} GB")
@@ -119,13 +119,13 @@ def _kind_spec_lines(kind: dict, gpu_mem: str = "") -> list[dict]:
     lines = []
     cpu = [kind.get("arch") or "arch unknown"]
     topo = [kind.get(f) for f in ("sockets", "cores_per_socket", "threads_per_core")]
-    if kind.get("cpus") and all(topo):
-        cpu.append(f"{kind['cpus']} = {topo[0]} sockets × {topo[1]} cores × {topo[2]} threads")
-    lines.append({"label": "cpus", "value": " · ".join(cpu)})
+    if all(topo):
+        cpu.append(f"{topo[0]} × {topo[1]} cores" + (f" × {topo[2]} threads" if topo[2] > 1 else ""))
+    lines.append({"label": "cpu", "value": " · ".join(cpu)})
     if kind.get("gres") and not _gpu_of(kind):
         lines.append({"label": "gres", "value": str(kind["gres"])})
     if _gpu_of(kind):
-        lines.append({"label": "gpu mem",
+        lines.append({"label": "gpu memory",
                       "value": gpu_mem or "unknown until a node is profiled"})
     if kind.get("features"):
         lines.append({"label": "features", "value": kind["features"]})
@@ -137,70 +137,57 @@ def _count(n: int, word: str) -> str:
 
 
 def _free_label(room: dict) -> str:
-    """What *room* could give a job now, the GPUs first when it has any: ``2 GPUs · 96 cpus free``."""
+    """What *room* could give a job now, for a row: ``160 CPUs · 10 GPUs free``, or ``full``."""
     if not room["nodes"]:
         return "out of service"
-    parts = []
+    cpus, gpus = room["cpus_free"], room["gpus_free"]
+    if cpus == 0 and (not room["gpus"] or gpus == 0):
+        return "full"
+    parts = ["? CPUs" if cpus is None else _count(cpus, "CPU")]
     if room["gpus"]:
-        parts.append("? GPUs" if room["gpus_free"] is None else _count(room["gpus_free"], "GPU"))
-    parts.append("? cpus" if room["cpus_free"] is None else _count(room["cpus_free"], "cpu"))
-    if not room["gpus"] and room["cpus_free"] == 0:
-        return "full"
-    if room["gpus"] and room["gpus_free"] == 0 and room["cpus_free"] == 0:
-        return "full"
+        parts.append("? GPUs" if gpus is None else _count(gpus, "GPU"))
     return " · ".join(parts) + " free"
 
 
-def _waiting_label(queue: dict | None) -> str:
-    """The jobs in line for that room, ``12 waiting (480 cpus, 8 GPUs)``; "" when none."""
-    if not queue or not queue["waiting"]:
-        return ""
-    asks = [_count(queue["waiting_cpus"], "cpu")]
-    if queue["waiting_gpus"]:
-        asks.append(_count(queue["waiting_gpus"], "GPU"))
-    return f"{queue['waiting']} waiting ({', '.join(asks)})"
+_TABLE_COLUMNS = ["Partition", "Free nodes", "Free CPUs", "Free GPUs", "Waiting"]
 
 
-def _partition_room_lines(digest: dict, load: dict, limit: int = 8) -> list[dict]:
-    """One line per usable partition: what is free on it now, and what already waits for it.
+def _partition_table(digest: dict, load: dict) -> dict:
+    """One row per usable partition: what is free on it now, and how many jobs wait for it.
 
-    The partitions with the most room first, because that is the question being asked.
+    In the site's own order (sinfo's), so a row stays where it was from one refresh to
+    the next. A partition with no GPU node says "–" rather than 0.
     """
-    queue = load.get("queue") or {}
+    queue = load.get("queue")
     rows = []
     for name in dict.fromkeys(str(p.get("partition") or "") for p in digest["partitions"]):
         members = [n for n in load["nodes"] if name in n["partitions"]]
         if not members:
             continue
         room = sum_room(members)
-        parts = [f"{room['idle']}/{room['nodes']} nodes idle", _free_label(room)]
-        waiting = _waiting_label(queue.get(name))
-        if waiting:
-            parts.append(waiting)
-        rows.append(((-(room["cpus_free"] or 0), name),
-                     {"label": name, "value": " · ".join(parts)}))
-    rows.sort(key=lambda row: row[0])
-    lines = [line for _, line in rows[:limit]]
-    if len(rows) > limit:
-        lines.append({"label": "more", "value": f"{len(rows) - limit} other partitions"})
-    return lines
+        cpus = "?" if room["cpus_free"] is None else str(room["cpus_free"])
+        gpus = ("–" if not room["gpus"]
+                else "?" if room["gpus_free"] is None else str(room["gpus_free"]))
+        waiting = ("?" if queue is None
+                   else str((queue.get(name) or {}).get("waiting", 0)))
+        rows.append([name, f"{room['idle']} / {room['nodes']}", cpus, gpus, waiting])
+    return {"columns": _TABLE_COLUMNS, "rows": rows}
 
 
-def _left_out_line(digest: dict, out_of_service: int) -> dict | None:
-    """What the tree does not show, and why — so a missing node reads as left out, not unseen."""
+def _hidden_line(digest: dict, out_of_service: int) -> dict | None:
+    """What the drawer does not show, and why — so a missing node reads as left out, not unseen."""
     parts = []
     hidden = digest.get("left_out") or {}
+    why = ", ".join(f"{name}: {reason}"
+                    for name, reason in sorted((hidden.get("partitions") or {}).items()))
     if hidden.get("nodes"):
-        named = ", ".join(f"{name} ({why})"
-                          for name, why in sorted((hidden.get("partitions") or {}).items()))
         parts.append(_count(hidden["nodes"], "node") + " outside your partitions"
-                     + (f": {named}" if named else ""))
-    elif hidden.get("partitions"):
-        parts.append("partitions " + ", ".join(
-            f"{name} ({why})" for name, why in sorted(hidden["partitions"].items())))
+                     + (f" ({why})" if why else ""))
+    elif why:
+        parts.append(f"partitions you cannot use ({why})")
     if out_of_service:
         parts.append(_count(out_of_service, "node") + " down, drained or reserved")
-    return {"label": "not shown", "value": "; ".join(parts)} if parts else None
+    return {"label": "hidden", "value": " · ".join(parts)} if parts else None
 
 
 def _gpu_mem_label(raw: str) -> str:
@@ -227,7 +214,7 @@ def _profiled_kind_lines(kind: dict, host: str) -> tuple[list[dict], str]:
         cpu = profile.get("cpu") or {}
         lines = []
         if cpu.get("model"):
-            lines.append({"label": "cpu", "value": cpu["model"]})
+            lines.append({"label": "cpu model", "value": cpu["model"]})
         simd = sorted(k for k, v in (cpu.get("simd") or {}).items() if v)
         if simd:
             lines.append({"label": "vector isa", "value": ", ".join(simd[-3:])})
@@ -287,7 +274,7 @@ def _host_tree() -> list[dict]:
     for host in hosts:
         name = host_name(host)
         digest, load = reads.get(host) or _read_host(host)
-        reached = "Slurm answers on this host" if not host else f"Reached over ssh to {host}"
+        reached = "On this host" if not host else f"Over ssh to {host}"
         group: dict[str, Any] = {"id": f"host:{name}", "label": name, "host": name,
                                  "local": not host, "lines": []}
         if not digest["source"]:
@@ -319,27 +306,28 @@ def _host_tree() -> list[dict]:
 
         if load:
             total = sum_room(load["nodes"])
-            waiting = sum(q["waiting"] for q in (load.get("queue") or {}).values())
-            group["value"] = _free_label(total) + (f" · {waiting} waiting" if waiting else "")
-            group["lines"].extend(_partition_room_lines(digest, load))
-            detail = (f"{reached}. Free: not allocated to any job, read at "
-                      f"{load['read_at'][11:16]} UTC. Waiting: jobs of every user pending "
-                      "on Resources or Priority, as squeue shows them.")
+            group["value"] = _free_label(total)
+            group["table"] = _partition_table(digest, load)
+            if digest.get("private_jobs") and load.get("queue") is not None:
+                group["lines"].append({
+                    "label": "waiting", "state": "warn",
+                    "value": "your own jobs only: this cluster hides other users' "
+                             "jobs (PrivateData=jobs)"})
+            detail = (f"{reached} · read at {load['read_at'][11:16]} UTC. "
+                      "Free: held by no job. Free nodes: idle / in service. "
+                      + ("Waiting: your jobs queued for that partition."
+                         if digest.get("private_jobs") else
+                         "Waiting: jobs of all users queued for that partition."))
             if load.get("queue") is None:
                 detail += " squeue did not answer, so what waits is unknown."
-            elif digest.get("private_jobs"):
-                group["lines"].append({
-                    "label": "queue", "state": "warn",
-                    "value": "only your own jobs are visible (PrivateData=jobs): "
-                             "other users' waiting jobs are not counted"})
         else:
             group["value"] = hardware_of(host).get("hardware", "")
-            group["lines"].append({"label": "room", "value": "unknown: the node listing "
+            group["lines"].append({"label": "free", "value": "unknown: the node listing "
                                    "did not answer", "state": "warn"})
             detail = reached + "."
-        left_out = _left_out_line(digest, out_of_service)
-        if left_out:
-            group["lines"].append(left_out)
+        hidden = _hidden_line(digest, out_of_service)
+        if hidden:
+            group["lines"].append(hidden)
         if digest["degraded"]:
             group["lines"].append({"label": "reading", "value": digest["degraded"],
                                    "state": "warn"})
@@ -367,8 +355,14 @@ def _kind_entry(host: str, name: str, kind: dict, room: dict | None, label: str,
     profiled = [line for line in profiled if line["label"] != "gpu mem"]
     lines = []
     if room is not None:
-        lines.append({"label": "idle", "value": f"{room['idle']} of {_count(room['nodes'], 'node')}"
-                      + (f" ({room['out']} out of service)" if room["out"] else "")})
+        free = [f"{room['idle']} / {room['nodes']} nodes",
+                "? CPUs" if room["cpus_free"] is None else _count(room["cpus_free"], "CPU")]
+        if room["gpus"]:
+            free.append("? GPUs" if room["gpus_free"] is None
+                        else _count(room["gpus_free"], "GPU"))
+        if room["out"]:
+            free.append(f"{room['out']} down")
+        lines.append({"label": "free", "value": " · ".join(free)})
     if kind.get("partitions"):
         lines.append({"label": "partitions", "value": ", ".join(kind["partitions"])})
     lines.append({"label": "nodes", "value": _node_names_label(kind)})
@@ -379,7 +373,7 @@ def _kind_entry(host: str, name: str, kind: dict, room: dict | None, label: str,
         "nodes": list(kind.get("example_nodes") or []),
     }
     if room is not None:
-        entry["value"] = _free_label(room)
+        entry["value"] = f"{room['idle']} / {room['nodes']} free"
     if detail:
         entry["detail"] = detail
     if not profiled:

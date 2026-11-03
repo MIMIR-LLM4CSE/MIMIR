@@ -21,12 +21,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   up, not root-only and open to one of the user's accounts — and only the nodes in them:
   login and service nodes in no partition are gone, and a node down, drained, reserved
   or not responding is counted rather than offered. Each scheduler's row says what is
-  free now (cores and GPUs no job holds) and how many jobs already wait for it, crossed
-  with `squeue` over every user; it opens onto one line per partition, a `not shown`
-  line saying what was left out and why, and the kinds of node, named by what they are
-  (`4× a100 · 64 cpus · 503 GB`) rather than by a list of node names, the roomiest
-  first. The room is read again every 30 s; the section's top-level partition lines are
-  gone, folded into each scheduler's row.
+  free now and opens onto a table, one row per partition: free nodes, free CPUs, free
+  GPUs and the jobs already waiting for it, crossed with `squeue` over every user. A
+  `hidden` line says what was left out and why, and the kinds of node follow, named by
+  what they are (`4× a100 · 64 CPUs · 503 GB`) rather than by a list of node names. The
+  room is read again every 30 s; the section's top-level partition lines are gone.
+  A panel group may now carry a `table` (`{columns, rows}`), which the drawer draws as
+  is, for any server.
 - **The agent's cluster tools follow the same rule.** `slurm_nodes`, `slurm_node_profile`
   and `slurm_partitions` describe only what the user can submit to and count the rest in
   `left_out` (`all_nodes=True` / `all_partitions=True` list everything; a named node is

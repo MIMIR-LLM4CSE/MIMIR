@@ -157,3 +157,26 @@ describe("what the tree asks for", () => {
     expect(html).not.toContain("Profile a node");
   });
 });
+
+describe("a group with a table", () => {
+  const withTable: PanelGroup = {
+    ...host,
+    table: {
+      columns: ["Partition", "Free nodes", "Free CPUs", "Free GPUs", "Waiting"],
+      rows: [["gpu", "2 / 9", "160", "10", "3"], ["cpu", "0 / 40", "12", "–", "12"]],
+    },
+  };
+
+  it("draws it once the row is open, a header then one row per entry", () => {
+    expect(tree({}, [withTable])).not.toContain("<table");
+    const html = tree({ "host:hpc1": true }, [withTable]);
+    expect(html).toContain('<th scope="col">Free CPUs</th>');
+    expect(html).toContain('<th scope="row" title="gpu">gpu</th><td>2 / 9</td><td>160</td>');
+    expect(html.indexOf("<table")).toBeLessThan(html.indexOf("over ssh to hpc1"));
+  });
+
+  it("draws nothing for a table with no row", () => {
+    const empty = { ...withTable, table: { columns: withTable.table!.columns, rows: [] } };
+    expect(tree({ "host:hpc1": true }, [empty])).not.toContain("<table");
+  });
+});

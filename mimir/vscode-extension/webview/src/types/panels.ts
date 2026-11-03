@@ -12,6 +12,15 @@ export interface PanelLine {
 }
 
 /**
+ * A small table a server lays out itself: a header row and rows of the same width.
+ * Read as cells, never interpreted; the first column is a name, the rest are values.
+ */
+export interface PanelTable {
+  columns: string[];
+  rows: string[][];
+}
+
+/**
  * A request the server wrote for the panel to offer — a question to put to the model,
  * never a tool to call. The prompt comes from the end that knows the scheduler and the
  * partition, which is what keeps tool names out of this side entirely.
@@ -39,6 +48,8 @@ export interface PanelGroup {
   local?: boolean;
   nodes?: string[];
   lines?: PanelLine[];
+  /** Shown above the lines, for facts that compare across rows (partitions, say). */
+  table?: PanelTable;
   detail?: string;
   groups?: PanelGroup[];
   action?: PanelGroupAction;
