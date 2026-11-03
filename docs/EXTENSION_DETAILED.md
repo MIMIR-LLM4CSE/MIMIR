@@ -538,20 +538,23 @@ A section may answer with a tree as well as with lines. `groups` is recursive
 `table` being `{columns, rows}` of strings, drawn above the lines) and
 `PanelGroupList` renders any depth of it, so the shape is the server's decision: the HPC
 server fills it with the schedulers this workspace reaches, the kinds of node on each,
-and what a probe read on one of them. Only what the user can submit to is there: the
+and what a probe read on one of them; `attach_runs` puts a run's badge on any group under
+its host whose `nodes` name the run's node, at whatever depth. Only what the user can submit to is there: the
 partitions `sinfo` lists without `--all` (hidden ones and those closed to the user's
 groups are not), up, not root-only and open to one of the user's accounts
 (`scontrol show partition`, `sacctmgr`), and the nodes in one of them; a node down,
 drained, reserved or not responding is counted rather than offered, and a kind with none
 in service is left out. The scheduler's row says what is free now — cores and GPUs no
 job holds, a node whose memory is all allocated giving none — and opens onto a table, one
-row per partition in the site's order: `Free nodes` (idle / in service), `Free CPUs`,
-`Free GPUs` (`–` where the partition has none) and `Waiting`, the jobs `squeue` lists
+row per partition in the site's order: `Idle nodes` (running no job / in service),
+`Free CPUs` and `Free GPUs` (held by no job, the spare cores of partly used nodes
+included, `–` where the partition has no GPU) and `Waiting`, the jobs `squeue` lists
 for it over every user, pending on Resources or Priority (`?` when squeue did not
 answer; where `PrivateData=jobs` lets the user see only their own jobs, a `waiting` line
-says so). A `hidden` line names what was left out and why, and the kinds follow, the
-roomiest first. A kind is labelled by what it is (`4× a100 · 64 CPUs · 503 GB`), its row
-valued by its free nodes, and opens onto what is free on it, partitions, node names, cpu,
+says so). A `hidden` line names what was left out and why, and the kinds follow under a
+`Machine types` heading, the roomiest first. A kind is labelled by where and what it is
+(`gpu — 4× a100 · 64 CPUs · 503 GB`, two partitions then `+N`), its row valued by its
+idle nodes, and opens onto what is free on it, partitions, node names, cpu,
 `gpu memory` and features. `gpu memory` is per GPU from a probe, or said to be unknown
 until one runs, since Slurm's gres never carries it. The room is read again every 30 s at most; the hardware stays the digest's. Everything starts collapsed — a workspace reaching
 three clusters would otherwise open onto a page of

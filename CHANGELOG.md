@@ -21,10 +21,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   up, not root-only and open to one of the user's accounts — and only the nodes in them:
   login and service nodes in no partition are gone, and a node down, drained, reserved
   or not responding is counted rather than offered. Each scheduler's row says what is
-  free now and opens onto a table, one row per partition: free nodes, free CPUs, free
-  GPUs and the jobs already waiting for it, crossed with `squeue` over every user. A
-  `hidden` line says what was left out and why, and the kinds of node follow, named by
-  what they are (`4× a100 · 64 CPUs · 503 GB`) rather than by a list of node names. The
+  free now and opens onto a table, one row per partition: idle nodes, free CPUs and
+  GPUs (the spare cores of partly used nodes included) and the jobs already waiting for
+  it, crossed with `squeue` over every user. A `hidden` line says what was left out and
+  why, and the kinds of node follow under a `Machine types` heading, named by where and
+  what they are (`gpu — 4× a100 · 64 CPUs · 503 GB`) rather than by a list of node names. The
   room is read again every 30 s; the section's top-level partition lines are gone.
   A panel group may now carry a `table` (`{columns, rows}`), which the drawer draws as
   is, for any server.

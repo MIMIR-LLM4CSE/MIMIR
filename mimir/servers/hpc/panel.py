@@ -103,6 +103,13 @@ def _gpu_of(kind: dict) -> str:
     return " ".join(x for x in (f"{count}×" if count else "", model) if x).strip() or gres
 
 
+def _partitions_label(kind: dict, shown: int = 2) -> str:
+    """Where a kind is, for its label: ``krk``, or ``cpu, p4_general +2``."""
+    parts = list(kind.get("partitions") or [])
+    more = len(parts) - shown
+    return ", ".join(parts[:shown]) + (f" +{more}" if more > 0 else "") or "no partition"
+
+
 def _node_names_label(kind: dict) -> str:
     """The kind's nodes by name, ``+N`` for those beyond the sample."""
     names = list(kind.get("example_nodes") or [])
@@ -149,7 +156,7 @@ def _free_label(room: dict) -> str:
     return " · ".join(parts) + " free"
 
 
-_TABLE_COLUMNS = ["Partition", "Free nodes", "Free CPUs", "Free GPUs", "Waiting"]
+_TABLE_COLUMNS = ["Partition", "Idle nodes", "Free CPUs", "Free GPUs", "Waiting"]
 
 
 def _partition_table(digest: dict, load: dict) -> dict:
@@ -314,7 +321,11 @@ def _host_tree() -> list[dict]:
                     "value": "your own jobs only: this cluster hides other users' "
                              "jobs (PrivateData=jobs)"})
             detail = (f"{reached} · read at {load['read_at'][11:16]} UTC. "
-                      "Free: held by no job. Free nodes: idle / in service. "
+                      "Idle nodes: nodes running no job, out of those in service. "
+                      "Free CPUs and GPUs: held by no job, the spare cores of partly "
+                      "used nodes included — so a busy partition can show few idle "
+                      "nodes and many free CPUs. A partition sharing its nodes with "
+                      "another shows the same room. "
                       + ("Waiting: your jobs queued for that partition."
                          if digest.get("private_jobs") else
                          "Waiting: jobs of all users queued for that partition."))
@@ -334,14 +345,20 @@ def _host_tree() -> list[dict]:
         group["detail"] = detail
 
         partitions = [str(p.get("partition") or "") for p in digest["partitions"]]
-        labels = [_node_kind_label(kind) for kind, _ in kinds]
+        labels = [f"{_partitions_label(kind)} — {_node_kind_label(kind)}" for kind, _ in kinds]
         entries = []
         for (kind, room), label in zip(kinds, labels):
             if labels.count(label) > 1 and kind.get("features"):
                 label += f" · {kind['features']}"
             entries.append(_kind_entry(host, name, kind, room, label, partitions))
         if entries:
-            group["groups"] = entries
+            # Under a heading of their own, so the hardware does not read as more of the
+            # table above it.
+            group["groups"] = [{"id": f"host:{name}/kinds", "label": "Machine types",
+                                "value": _count(len(entries), "kind"),
+                                "detail": "Nodes grouped by hardware. Open one for its "
+                                          "nodes, its CPU and what a probe found on it.",
+                                "groups": entries}]
         groups.append(group)
     return groups
 
@@ -373,7 +390,7 @@ def _kind_entry(host: str, name: str, kind: dict, room: dict | None, label: str,
         "nodes": list(kind.get("example_nodes") or []),
     }
     if room is not None:
-        entry["value"] = f"{room['idle']} / {room['nodes']} free"
+        entry["value"] = f"{room['idle']} / {room['nodes']} idle"
     if detail:
         entry["detail"] = detail
     if not profiled:

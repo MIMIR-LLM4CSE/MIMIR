@@ -452,8 +452,8 @@ def test_a_silent_host_is_listed_as_unknown_not_as_empty():
 
 def test_a_node_kind_is_named_by_what_it_is_and_lists_its_specs():
     """A kind is picked by its GPUs and its size; the node names are a line inside."""
-    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
-    assert kind["label"] == "4× a100 · 64 CPUs · 503 GB"
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]["groups"][0]
+    assert kind["label"] == "gpu — 4× a100 · 64 CPUs · 503 GB"
     assert kind["nodes"] == ["gpu001", "gpu002"]
     values = {line["label"]: line["value"] for line in kind["lines"]}
     assert values["nodes"] == "gpu001, gpu002 +8"
@@ -465,8 +465,8 @@ def test_a_node_kind_is_named_by_what_it_is_and_lists_its_specs():
 
 def test_a_kind_says_what_is_free_on_it_now():
     """Drained nodes are counted, never offered; a full node's cores are not room."""
-    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
-    assert kind["value"] == "2 / 9 free"
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]["groups"][0]
+    assert kind["value"] == "2 / 9 idle"
     values = {line["label"]: line["value"] for line in kind["lines"]}
     assert values["free"] == "2 / 9 nodes · 160 CPUs · 10 GPUs · 1 down"
 
@@ -476,10 +476,25 @@ def test_a_cluster_lays_its_partitions_out_as_a_table():
     host = _tree(["hpc1"], {"hpc1": _DIGEST})[0]
     assert host["value"] == "160 CPUs · 10 GPUs free"
     assert host["table"] == {
-        "columns": ["Partition", "Free nodes", "Free CPUs", "Free GPUs", "Waiting"],
+        "columns": ["Partition", "Idle nodes", "Free CPUs", "Free GPUs", "Waiting"],
         # "cpu" has no node of its own here, so it has no row.
         "rows": [["gpu", "2 / 9", "160", "10", "3"]]}
     assert "09:41" in host["detail"] and "all users" in host["detail"]
+
+
+def test_the_kinds_sit_under_a_heading_of_their_own():
+    """The hardware is not more of the table: it is said to be the machine types."""
+    [heading] = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"]
+    assert heading["label"] == "Machine types"
+    assert heading["value"] == "1 kind"
+    assert heading["id"] == "host:hpc1/kinds"
+
+
+def test_a_kind_spread_over_many_partitions_names_the_first_two():
+    many = {**_DIGEST, "node_types": [{**_DIGEST["node_types"][0],
+                                       "partitions": ["gpu", "cpu", "a", "b"]}]}
+    kind = _tree(["hpc1"], {"hpc1": many})[0]["groups"][0]["groups"][0]
+    assert kind["label"].startswith("gpu, cpu +2 — ")
 
 
 def test_a_queue_that_did_not_answer_is_a_question_mark_not_a_zero():
@@ -517,15 +532,16 @@ def test_a_kind_with_no_node_in_service_is_left_out():
 
 def test_a_load_that_did_not_answer_keeps_the_hardware():
     host = _tree(["hpc1"], {"hpc1": _DIGEST}, loads={"hpc1": None})[0]
-    assert host["groups"][0]["label"] == "4× a100 · 64 CPUs · 503 GB"
-    assert "value" not in host["groups"][0]
+    kind = host["groups"][0]["groups"][0]
+    assert kind["label"] == "gpu — 4× a100 · 64 CPUs · 503 GB"
+    assert "value" not in kind
     assert "table" not in host
     assert any(line["label"] == "free" and line["state"] == "warn" for line in host["lines"])
 
 
 def test_an_unprofiled_kind_offers_the_request_that_would_fix_it_and_says_nothing_else():
     """An unprofiled kind shows the server-written request in its row, and no badge."""
-    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]["groups"][0]
     assert "state" not in kind
     assert kind["action"]["kind"] == "probe"
     assert "'hpc1'" in kind["action"]["prompt"]
@@ -542,7 +558,7 @@ def test_a_profiled_kind_carries_what_only_the_node_could_say():
                            "os": {"id": "rhel", "version": "8.10", "glibc": "2.28"},
                            "gpu": {"devices": [{"name": "A100", "memory": "81920 MiB",
                                                 "compute_cap": "8.0"}]}}}
-    kind = _tree(["hpc1"], {"hpc1": _DIGEST}, {"gpu001": profile})[0]["groups"][0]
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST}, {"gpu001": profile})[0]["groups"][0]["groups"][0]
     values = {line["label"]: line["value"] for line in kind["lines"]}
     assert values["cpu model"] == "AMD EPYC 7763"
     assert values["-march=native"] == "znver3"
@@ -557,10 +573,10 @@ def test_a_profiled_kind_carries_what_only_the_node_could_say():
 def test_a_kinds_id_is_the_same_on_the_next_refresh():
     """The panel's open rows are keyed on it. A tree that re-identified its rows every
     poll would collapse under whoever was reading it."""
-    first = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]["id"]
+    first = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]["groups"][0]["id"]
     shuffled = {**_DIGEST, "node_types": [dict(reversed(list(
         _DIGEST["node_types"][0].items())))]}
-    second = _tree(["hpc1"], {"hpc1": shuffled})[0]["groups"][0]["id"]
+    second = _tree(["hpc1"], {"hpc1": shuffled})[0]["groups"][0]["groups"][0]["id"]
     assert first == second
 
 
@@ -611,6 +627,19 @@ def test_a_cluster_run_lands_on_its_host_and_on_its_node():
     assert [b["job_key"] for b in hosts["hpc1"]["groups"][0]["badges"]] == ["15306620"]
     assert "badges" not in hosts["local"]
     assert unplaced == []
+
+
+def test_a_run_lands_on_a_kind_under_a_heading():
+    """The tree is the server's: a kind one level further down still gets its badge."""
+    from mimir.client.ui.ws.connection.panel_runs import attach_runs
+    sections = _sections_with_hosts()
+    hpc1 = sections[0]["groups"][1]
+    hpc1["groups"] = [{"id": "host:hpc1/kinds", "label": "Machine types",
+                       "groups": hpc1["groups"]}]
+    run = {"job_key": "j1", "state": "running", "scheduler": "hpc1", "nodes": ["gpu007"]}
+    attach_runs(sections, [run])
+    assert [b["job_key"] for b in hpc1["groups"][0]["groups"][0]["badges"]] == ["j1"]
+    assert "badges" not in hpc1["groups"][0]
 
 
 def test_a_run_on_a_node_outside_the_sample_still_lands_on_its_host():

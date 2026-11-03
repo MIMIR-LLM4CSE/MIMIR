@@ -91,6 +91,14 @@ def recorded_hosts_sections(state_dir: str) -> list[dict]:
     }]
 
 
+def _descendants(group: dict):
+    """Every group under *group*, at any depth: a kind may sit under a heading."""
+    for child in group.get("groups") or []:
+        if isinstance(child, dict):
+            yield child
+            yield from _descendants(child)
+
+
 def attach_runs(sections: list[dict], runs: list[dict]) -> tuple[list[dict], list[dict]]:
     """Hang each run on its host row and its node kind's row; ``(sections, unplaced)``."""
     placed: set[str] = set()
@@ -104,9 +112,7 @@ def attach_runs(sections: list[dict], runs: list[dict]) -> tuple[list[dict], lis
                     continue
                 host_badges.append(_badge(run))
                 placed.add(str(run.get("job_key") or ""))
-                for kind in group.get("groups") or []:
-                    if not isinstance(kind, dict):
-                        continue
+                for kind in _descendants(group):
                     known = {str(n) for n in (kind.get("nodes") or [])}
                     if known & _run_nodes(run):
                         kind.setdefault("badges", []).append(_badge(run))
