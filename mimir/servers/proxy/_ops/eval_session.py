@@ -30,13 +30,14 @@ from ._eval_validate import (
     check_requirements,
 )
 from ....shared import build_progress, run_channel
-from .._lib import proc_run, tree_snapshot
+from .._lib import proc_run, requests, tree_snapshot
 from ....shared.atomic import write_json
 from .._lib.store import (
     opt_git_dir, workspace_root, entry_or_err, load_suite, load_opt_config, save_opt_config,
     opt_ledger_file, opt_best_file, write_active_session, clear_active_session, run_dir_names,
 )
 from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name, read_json
+from . import requests_ops
 from .eval_common import (
     NEXT_DETACHED,
     NEXT_RUN,
@@ -630,6 +631,41 @@ def reset_to_best(proxy_name: str = "") -> dict:
                 "Try a different modification approach from there."
                 + _rebuild_note(rewritten),
     }, NEXT_RUN + " to verify, or summarize if converged"))
+
+
+def reset_to_request(request_id: str) -> dict:
+    """Restore every tracked file to the tree a request started from, so each of its
+    variants is measured from the same code and none carries another's edit. A request
+    opened before any session pins its start at the first restore: the session as it
+    stands then."""
+    row = requests.get(request_id)
+    if row is None:
+        return err(f"No request {requests.normalise(request_id)}.",
+                   hint="proxy_request(op='list') names them.")
+    start = row.get("start") or {}
+    if not start.get("tree"):
+        start = requests_ops.start_of(start.get("proxy", ""))
+        if not start.get("tree"):
+            return err("No optimization session to start the request from.",
+                       hint="Set one up with proxy_eval(op='init', ...) first.")
+        requests.update(row["id"], {"start": start})
+    cfg = load_opt_config(start.get("proxy", ""))
+    paths = list(cfg.get("optimize_paths") or [])
+    if not paths:
+        return err("optimize_paths not set in config.",
+                   hint="Call proxy_eval(op='init', ...) again.")
+    rewritten = tree_snapshot.restore(opt_git_dir(), workspace_root(), paths, start["tree"])
+    if rewritten is None:
+        return err("Could not restore the request's starting tree.",
+                   hint="The snapshot store may be missing or unwritable.")
+    return ok(with_next({
+        **_restored_payload(paths, rewritten),
+        "request": row["id"],
+        "from_run": start.get("run_id"),
+        "primary_value": start.get("value"),
+        "note": f"Every tracked file is back to where {row['id']} started. Implement the next "
+                "variant from here." + _rebuild_note(rewritten),
+    }, f"implement the variant, then proxy_eval(op='run', axis='[{row['id']}.k] <variant>', confirm=True)"))
 
 
 def rebaseline(proxy_name: str = "") -> dict:

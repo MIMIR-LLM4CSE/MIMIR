@@ -589,6 +589,30 @@ offers **Profile the code as it is now** on the latest step, which sends the req
 the agent as the user's own message (`map_prompt`, through the host to the chat). Its MIMIR skin follows the VS Code
 theme, the Light one is fixed, and the choice is kept in the tab's state.
 
+**R&D requests.** The tab puts a request to the agent on part of the code: a numerical
+method, an algorithm, external code to bring in, parallelism, data layout, precision, or
+an analysis and refactor of the architecture. **New request…** in the detail of a
+component, module or file, and **Analyse the architecture** there or in the header (the
+whole code), open a form at the top of the side pane (`codemap/request.ts`,
+`codemap/requestView.ts`): **Study** (read and propose, no edit) or **Try** (implement and
+measure), the kind, the targets (Shift+click a module on the map, or a file or function
+in the pane, to add one; the targets' costliest functions are offered), the idea, the
+variants (each measured from the same start), a source for external code, constraints.
+A refactor's form lists what the map finds in its scope: module cycles, rule breaks, the
+most coupled modules. The draft is kept in the tab's state. **Send to the agent** puts a
+message into the chat as the user's own, through the same `prompt` path as the profile
+button: the agent records it with `proxy_request(op='open', token=…)` and follows the
+map-request skill, every tool with its own approval. The tab writes nothing itself.
+
+The requests come back with the session's steps (`session.requests`). A **Requests**
+section heads the pane (those sent and not yet recorded marked *sent*, by their token);
+a request opens on its status, the agent's summary and conclusion, and its variants side
+by side against the start, a row selecting its step; **Try it** (a proposed study) and
+**Drop** ask the agent. Each module a request targets carries an `R3` pill coloured by
+status, and the strip's chips name a step's request (`R3.2`). While a request is sent,
+open, studying or trying and the tab is seen, it asks the server again every 20 s; the
+host answers a refresh without revealing the tab, so nothing takes the focus.
+
 With sessions on more than one proxy, a picker in the header chooses whose steps are
 drawn: the active session, another proxy's, or every proxy at once. The pick is kept in
 the tab's state and sent with its `refresh` (`proxy` or `combined`), which the host

@@ -516,22 +516,22 @@ class ConvergenceOrderTests(unittest.TestCase):
 
 class IsImprovementTests(unittest.TestCase):
     def test_min_goal(self) -> None:
-        self.assertTrue(ratchet._is_improvement(3.0, 5.0, "min"))
-        self.assertFalse(ratchet._is_improvement(5.0, 5.0, "min"))
-        self.assertFalse(ratchet._is_improvement(6.0, 5.0, "min"))
+        self.assertTrue(ratchet.is_improvement(3.0, 5.0, "min"))
+        self.assertFalse(ratchet.is_improvement(5.0, 5.0, "min"))
+        self.assertFalse(ratchet.is_improvement(6.0, 5.0, "min"))
 
     def test_max_goal(self) -> None:
-        self.assertTrue(ratchet._is_improvement(6.0, 5.0, "max"))
-        self.assertFalse(ratchet._is_improvement(5.0, 5.0, "max"))
+        self.assertTrue(ratchet.is_improvement(6.0, 5.0, "max"))
+        self.assertFalse(ratchet.is_improvement(5.0, 5.0, "max"))
 
     def test_min_improvement_margin(self) -> None:
         # needs to beat 10 by >10% -> < 9.0
-        self.assertFalse(ratchet._is_improvement(9.5, 10.0, "min", 0.1))
-        self.assertTrue(ratchet._is_improvement(8.5, 10.0, "min", 0.1))
+        self.assertFalse(ratchet.is_improvement(9.5, 10.0, "min", 0.1))
+        self.assertTrue(ratchet.is_improvement(8.5, 10.0, "min", 0.1))
 
     def test_missing_incumbent_is_improvement(self) -> None:
-        self.assertTrue(ratchet._is_improvement(1.0, None, "min"))
-        self.assertFalse(ratchet._is_improvement(None, 1.0, "min"))
+        self.assertTrue(ratchet.is_improvement(1.0, None, "min"))
+        self.assertFalse(ratchet.is_improvement(None, 1.0, "min"))
 
 
 class RatchetVerdictTests(unittest.TestCase):

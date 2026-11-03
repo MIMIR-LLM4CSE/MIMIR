@@ -37,6 +37,7 @@ from ._ops import (
     panel,
     references,
     registry,
+    requests_ops,
     runs,
     scaffold as scaffold_ops,
     slurm,
@@ -518,7 +519,7 @@ async def proxy_exec(
 
 
 _EVAL_OPS = ("init", "configure", "run", "profile", "stop", "reset", "reset_to_best",
-             "rebaseline", "end")
+             "reset_to_request", "rebaseline", "end")
 
 # op='run' waits for the run it launched, so the default 120 s tool wall would cut it
 # off mid-measurement. Sits above eval_session's own wait budget, which detaches the
@@ -553,6 +554,7 @@ async def proxy_eval(
     profile: bool = False,
     level: str | list[str] = "file",
     focus: str = "",
+    request_id: str = "",
     confirm: bool = False,
 ) -> dict:
     """Drive an iterative proxy-optimization session as a monotone ratchet (sensitive).
@@ -613,6 +615,9 @@ async def proxy_eval(
                        *accepted* run (undo a regression without discarding
                        progress). All of them or none: a per-file restore would
                        assemble a combination that was never measured together.
+      reset_to_request -> restore every optimize_paths file to the tree the request
+                       `request_id` (proxy_request) started from: before each of its
+                       variants, so none carries another's edit
       rebaseline    -> make the tree as it stands the new baseline, archiving the
                        ledger and best-so-far under a timestamp rather than
                        discarding them. For when the HARNESS was wrong and the
@@ -686,6 +691,7 @@ async def proxy_eval(
             workspace file whose functions or lines to show, as `where_time_goes`
             names it; at level 'kernel', the kernel's name, as `where_time_goes.gpu`
             names it. With a list of levels, it applies to each that takes one.
+        request_id: For op='reset_to_request': the request whose start to restore ("R3").
         confirm: Must be True to apply any operation.
     """
     if op not in _EVAL_OPS:
@@ -719,6 +725,8 @@ async def proxy_eval(
         return eval_session.reset(proxy_name)
     if op == "reset_to_best":
         return eval_session.reset_to_best(proxy_name)
+    if op == "reset_to_request":
+        return _missing_args(op, request_id=request_id) or eval_session.reset_to_request(request_id)
     if op == "rebaseline":
         return eval_session.rebaseline(proxy_name)
     # op == "end"
@@ -728,6 +736,7 @@ async def proxy_eval(
 # ── cluster tool (confirm=True required; consumes allocation hours) ───────────
 
 _SLURM_OPS = ("run", "suite", "eval")
+_REQUEST_OPS = ("open", "update", "list", "get")
 
 # op-dispatch cross-reference, for the _unknown_op redirect hint (see above).
 _TOOL_BY_OPS: dict[tuple[str, ...], str] = {
@@ -738,6 +747,7 @@ _TOOL_BY_OPS: dict[tuple[str, ...], str] = {
     _EXEC_OPS: "proxy_exec",
     _EVAL_OPS: "proxy_eval",
     _SLURM_OPS: "proxy_slurm",
+    _REQUEST_OPS: "proxy_request",
 }
 def _build_op_owners() -> dict[str, list[str]]:
     owners: dict[str, list[str]] = {}
@@ -938,6 +948,73 @@ def proxy_panel_report() -> dict:
     about proxies, which is what lets another server add a section of its own.
     """
     return panel.report()
+
+
+@mcp.tool(**tool_caps(kind="proxy", label="R&D request: {op}"))
+def proxy_request(
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_REQUEST_OPS)},
+    )],
+    request_id: str = "",
+    token: str = "",
+    mode: str = "",
+    kind: str = "",
+    targets: list[dict] | None = None,
+    idea: str = "",
+    variants: list[str] | None = None,
+    source: str = "",
+    constraints: str = "",
+    status: str = "",
+    summary: str = "",
+    conclusion: str = "",
+    proxy_name: str = "",
+) -> dict:
+    """Record and follow an R&D request put from the code map: a numerical method, an
+    algorithm, external code to bring in, parallelism, data layout, precision or a
+    refactor of the architecture to study or try on named modules and functions, a
+    component or the whole code. The map shows each request on its targets with
+    its status, and its runs (axis ``[R3]`` or ``[R3.k]``) side by side. It writes no code.
+
+    Operations:
+      open   -> number the request (R1, R2…) and record where the optimisation session
+                stands, the start every variant is measured from (requires: mode, kind,
+                idea). The message from the map gives `token` and the fields.
+      update -> set `status`, `summary` (a study's analysis and plan, what a variant
+                needed) or `conclusion` (the winner, its accuracy and cost, what next)
+      list   -> every request, briefly
+      get    -> one request whole
+
+    Args:
+        request_id: For update and get: the request, "R3".
+        token: For open: the token of the map's message, so it is not opened twice.
+        mode: For open: 'study' (read and propose, no edit) or 'try' (implement and measure).
+        kind: For open: 'method', 'algorithm', 'external', 'parallel', 'layout',
+            'precision', 'refactor' or 'other'. A refactor's runs are kept when neutral:
+            no worse than the best beyond the margin.
+        targets: For open: what the request is about: [{file, function?, line?}],
+            [{module}], [{component}], or [{all: true}] for the whole code.
+        idea: For open: what to study or try.
+        variants: For open: the variants to measure each from the start, in order.
+        source: For open: the external code to bring in (package, path, repository).
+        constraints: For open: what must hold besides the session's requirements.
+        status: For update: 'studying', 'proposed', 'trying', 'done' or 'dropped'.
+        summary: For update: what was found or done so far.
+        conclusion: For update: the outcome, once done.
+        proxy_name: For open: the proxy whose session it starts from; the active one's
+            when empty.
+    """
+    if op not in _REQUEST_OPS:
+        return _unknown_op(op, _REQUEST_OPS)
+    if op == "open":
+        return (_missing_args(op, mode=mode, kind=kind, idea=idea)
+                or requests_ops.open_(proxy_name, token, mode, kind, targets, idea, variants,
+                                      source, constraints))
+    if op == "update":
+        return _missing_args(op, request_id=request_id) or requests_ops.update(request_id, status, summary, conclusion)
+    if op == "get":
+        return _missing_args(op, request_id=request_id) or requests_ops.get(request_id)
+    return requests_ops.list_()
 
 
 @mcp.tool(**tool_caps(kind="proxy",

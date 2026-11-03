@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from ....shared import code_map
-from .._lib import profiling, tree_snapshot
+from .._lib import profiling, requests, tree_snapshot
 from .._lib.layout import opt_runs_dir, opt_session_runs_dir, read_json, resolve_proxy_name
 from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
 from .eval_observe import read_ledger
@@ -90,13 +90,39 @@ def answer(proxy_name: str = "", combined: bool = False) -> dict:
     """What the map tab is sent: the steps of *proxy_name* (else the active session's), or of
     every proxy at once when *combined*; with the proxies it can switch between."""
     known = proxies()
+    asked = requests_view()
     if not known:
-        return {}
+        return {"steps": [], "requests": asked} if asked else {}
     # A name the tab sends is one it was given; any other reads as the active session.
     value = merged(known) if combined else session(proxy_name if proxy_name in known else "")
     # Always a list of steps, even empty: the tab still offers the other proxies.
     return {"steps": [], **value, "proxies": known, "active": resolve_proxy_name("") or "",
-            "combined": bool(combined and value)}
+            "combined": bool(combined and value), "requests": asked}
+
+
+def requests_view() -> list[dict]:
+    """The R&D requests with the runs that tried them: those of their start's proxy whose
+    axis names them, each against the value the request started from. A request with runs
+    and no conclusion is being tried, whatever its status says."""
+    out = []
+    for row in requests.load():
+        start = row.get("start") or {}
+        mine = []
+        for st in session(start["proxy"]).get("steps", []) if start.get("proxy") else []:
+            tag = requests.axis_of(st.get("axis", ""))
+            if not tag or tag[0] != row.get("id"):
+                continue
+            mine.append({"run_id": st["run_id"], "variant": tag[1], "axis": st["axis"],
+                         "verdict": st["verdict"], "value": st["value"],
+                         "delta": _delta(st["value"], start.get("value"))})
+        status = row.get("status", "open")
+        if mine and not row.get("conclusion") and status in ("open", "studying", "proposed"):
+            status = "trying"
+        out.append({**{k: row.get(k) for k in ("id", "token", "ts", "mode", "kind", "targets", "idea", "variants",
+                                                "source", "constraints", "summary", "conclusion")},
+                    "status": status, "proxy": start.get("proxy", ""), "metric": start.get("metric", ""),
+                    "start_value": start.get("value"), "steps": mine})
+    return out
 
 
 def session(proxy_name: str = "") -> dict:

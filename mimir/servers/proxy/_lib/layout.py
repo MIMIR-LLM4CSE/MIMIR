@@ -24,6 +24,11 @@ def registry_path() -> str:
     return os.path.join(_ROOT, "registry.json")
 
 
+def requests_file() -> str:
+    """The R&D requests put from the code map, across every proxy: one list."""
+    return os.path.join(_ROOT, "requests.json")
+
+
 def opt_runs_dir() -> str:
     return os.path.join(_ROOT, "opt_runs")
 

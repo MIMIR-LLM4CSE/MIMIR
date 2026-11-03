@@ -4,6 +4,8 @@
 // session, or every proxy's at once: their steps in the order they settled, each value as a
 // multiple of its own proxy's baseline (lower is better), since their metrics differ.
 
+import { axisTag, type Request } from "./request";
+
 export interface StepEdge { from: string; to: string; line: number; kind: string; via: string; sure: string; breaks: string }
 /** Where a run's time went, per workspace file, in fractions of the baseline's metric. */
 /** A profile's GPU side: kernels, copies and idle time as shares of the baseline's time. */
@@ -44,6 +46,8 @@ export interface Session {
   steps: Step[];
   /** The proxies with a session, the active one, and whether these are all of theirs. */
   proxies?: string[]; active?: string; combined?: boolean;
+  /** The R&D requests put from the map, with the runs that tried them. */
+  requests?: Request[];
 }
 
 /** The time the map shows at a step: whose profile, and the one it is compared with. */
@@ -157,6 +161,12 @@ function bestSoFar(session: Session): (number | null)[] {
   return out;
 }
 
+/** A step's request, as its chip names it: ` R3.2`, or nothing. */
+function tagOf(s: Step): string {
+  const t = axisTag(s.axis);
+  return t ? ' <span class="rq">' + t.id + (t.variant ? "." + t.variant : "") + "</span>" : "";
+}
+
 /** The strip: a chart of the session (the baseline, the best as it went, one dot per step)
  *  *width* pixels wide, and one chip per step to pick it by. */
 export function strip(session: Session, k: number, scope: Scope, width = 760): string {
@@ -207,7 +217,7 @@ export function strip(session: Session, k: number, scope: Scope, width = 760): s
     + '" data-step="' + n_ + '" aria-current="' + (n_ === k) + '" title="' + esc(tip) + '">' + body + "</button>";
   const chips = chip(0, "base", "Baseline <b>" + value(base) + "</b>", session.metric + " " + value(base) + " · " + session.baseline.run_id)
     + session.steps.map((s) => chip(s.n, kept(s) ? "kept" : "rej",
-      "#" + s.n + (kept(s) ? "" : " ✕") + (session.combined && s.proxy ? " " + esc(s.proxy) : "")
+      "#" + s.n + tagOf(s) + (kept(s) ? "" : " ✕") + (session.combined && s.proxy ? " " + esc(s.proxy) : "")
       + " <b>" + (s.delta === null ? "–" : signed(s.delta)) + "</b>",
       (s.axis || "(no axis given)") + " · " + s.changed.length + " files")).join("");
   const keptCount = session.steps.filter(kept).length;

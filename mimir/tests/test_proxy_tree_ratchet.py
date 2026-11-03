@@ -274,22 +274,22 @@ class NoiseFloorTests(unittest.TestCase):
 
     def test_the_session_that_produced_this_would_now_reject_its_own_step(self) -> None:
         """The regression this whole lane exists for, with its real numbers."""
-        from mimir.servers.proxy._lib.ratchet import _is_improvement
+        from mimir.servers.proxy._lib.ratchet import is_improvement
         baseline, fused = 0.179888, 0.17491          # what the two runs measured
         floor = abs(0.179888 - 0.174488) / 0.179888  # 3.1%, from the two baseline runs
         margin, _ = ratchet.effective_min_improvement(
             self._cfg(noise_floor=floor))
-        self.assertTrue(_is_improvement(fused, baseline, "min", 0.02),
+        self.assertTrue(is_improvement(fused, baseline, "min", 0.02),
                         "premise: the old 2% margin accepted it")
-        self.assertFalse(_is_improvement(fused, baseline, "min", margin),
+        self.assertFalse(is_improvement(fused, baseline, "min", margin),
                          "a 2.8% gain cannot clear a 3.1% noise floor")
 
     def test_a_real_gain_still_clears_the_measured_floor(self) -> None:
         """The floor rejects noise, not results: float32 was a 22% win."""
-        from mimir.servers.proxy._lib.ratchet import _is_improvement
+        from mimir.servers.proxy._lib.ratchet import is_improvement
         margin, _ = ratchet.effective_min_improvement(
             self._cfg(noise_floor=0.031))
-        self.assertTrue(_is_improvement(0.136145, 0.17491, "min", margin))
+        self.assertTrue(is_improvement(0.136145, 0.17491, "min", margin))
 
     def test_repeat_is_decided_from_the_metric_when_unset(self) -> None:
         self.assertEqual(ratchet.effective_repeat({"primary_metric": "time_s"}), 3)

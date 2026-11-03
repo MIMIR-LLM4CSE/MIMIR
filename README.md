@@ -411,6 +411,7 @@ the directory) followed by the methodology body. Built-in skills:
 | `parallelize-kernel` | Thread, vectorise or distribute a kernel, and prove the speedup is real |
 | `run-on-cluster` | Build for the target node, size and submit a Slurm job, read what came back |
 | `proxy-optimize` | Optimize a registered proxy through the eval loop's accept/reject ratchet |
+| `map-request` | Study or try an R&D request from the code map, each variant measured from the same start |
 | `explore-repo` | Map unfamiliar code, and stop once the files and symbols are named |
 | `mimir-api` | Author a `.mimir` extension — skill, tool server, policy, hook, nudge — from MIMIR's own API |
 

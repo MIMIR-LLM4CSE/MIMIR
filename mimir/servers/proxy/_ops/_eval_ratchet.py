@@ -13,11 +13,13 @@ from .._lib.ratchet import (
     append_ledger,
     effective_min_improvement,
     load_best,
+    is_improvement,
     ratchet_verdict,
     run_primary_value,
     save_best,
 )
 from ....shared.atomic import write_json
+from .._lib.requests import is_refactor
 from .._lib.store import file_lock, save_opt_config
 from .._lib.layout import opt_session_runs_dir, read_json
 
@@ -138,7 +140,11 @@ def _ratchet_settle_locked(
         cfg["noise_floor"] = float(spread)
 
     min_improvement, margin_source = effective_min_improvement(cfg)
-    verdict = ratchet_verdict(feasible, primary_value, best, goal, min_improvement)
+    # A run tagged with a refactor request's axis is kept when it costs nothing measurable.
+    neutral = is_refactor(_run_axis(run_dir))
+    verdict = ratchet_verdict(feasible, primary_value, best, goal, min_improvement, neutral=neutral)
+    kept_neutral = (neutral and verdict == "accept" and best is not None
+                    and not is_improvement(primary_value, best.get("primary_value"), goal, min_improvement))
 
     timing_warning = _timing_warning(verdict, primary_metric, best, wall_value)
     memory = {k: final_metrics[k] for k in ("peak_rss_mb", "peak_rss_total_mb") if final_metrics.get(k) is not None}
@@ -182,6 +188,7 @@ def _ratchet_settle_locked(
         "primary_spread": spread,
         "min_improvement": min_improvement,
         "best_run_id":   best.get("run_id") if best else None,
+        **({"neutral": True} if kept_neutral else {}),
         **memory,
         **({"timing_warning": timing_warning} if timing_warning else {}),
         **({"memory_warning": memory_warning} if memory_warning else {}),
@@ -193,6 +200,8 @@ def _ratchet_settle_locked(
         "primary_value":  primary_value,
         "wall_value":     wall_value,
         "verdict":        verdict,
+        **({"neutral": "kept as a refactor: no better, and no worse than the best beyond the margin"}
+           if kept_neutral else {}),
         "stall":          stall,
         "max_stall":      max_stall,
         "primary_metric": primary_metric,

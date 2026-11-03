@@ -12,6 +12,9 @@ import { getNonce } from "./webviewHtml";
 /** The tab, while it is open. */
 let mapPanel: vscode.WebviewPanel | undefined;
 
+/** Set while the tab's own refresh is on its way: its answer does not reveal the tab. */
+let quiet = false;
+
 /** The last answer, for a page that loads after it arrived. */
 let last: { map: unknown; session?: unknown; focus?: string } = { map: undefined };
 
@@ -48,6 +51,9 @@ export function showCodeMap(map: unknown, session: unknown, focus: string | unde
     mapPanel.webview.onDidReceiveMessage((m: TabMessage) => {
       if (m?.type === "ready") void mapPanel?.webview.postMessage({ type: "map", ...last });
       else if (m?.type === "refresh") {
+        // The answer to the tab's own question updates it where it is: the tab asks again
+        // on its own while a request is at work, and must not take the focus each time.
+        quiet = true;
         actions.refresh({
           ...(typeof m.proxy === "string" && m.proxy ? { proxy: m.proxy } : {}),
           ...(m.combined === true ? { combined: true } : {}),
@@ -63,7 +69,8 @@ export function showCodeMap(map: unknown, session: unknown, focus: string | unde
     });
     mapPanel.onDidDispose(() => { mapPanel = undefined; });
   } else {
-    mapPanel.reveal(undefined, false);
+    if (!quiet) mapPanel.reveal(undefined, false);
+    quiet = false;
     void mapPanel.webview.postMessage({ type: "map", ...last });
   }
 }

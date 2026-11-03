@@ -5,6 +5,9 @@
 import { STYLE } from "./style";
 import { edgeKey, fnParts, functionsBlock, gpuBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, topFunctions,
   type Overlay, type Scope, type Session, type TimeView } from "./session";
+import { live, newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
+  type Draft, type Request, type Sent, type Target } from "./request";
+import { formHtml, requestDetail, requestsSection } from "./requestView";
 
 interface Component { id: string; name: string; tier: number; declared: string[]; external: Record<string, number>; tests: boolean }
 interface Module { id: string; component: string }
@@ -17,12 +20,15 @@ interface CodeMap {
   root: string; source_root: string; components: Component[]; modules: Module[]; files: File[];
   edges: Edge[]; cycles: string[][]; unresolved: Record<string, number>; truncated: boolean;
 }
-type Selection = { kind: "comp" | "module" | "file"; id: string } | null;
+type Selection = { kind: "comp" | "module" | "file" | "request"; id: string } | null;
 
+/** What the tab keeps across its reloads: its choices, the request being written, and
+ *  those sent that the server has not answered yet. */
+interface TabState { skin?: string; tests?: boolean; fns?: boolean; pick?: string; draft?: Draft | null; sent?: Sent[] }
 declare function acquireVsCodeApi(): {
   postMessage(msg: unknown): void;
-  getState(): { skin?: string; tests?: boolean; fns?: boolean; pick?: string } | undefined;
-  setState(state: { skin?: string; tests?: boolean; fns?: boolean; pick?: string }): void;
+  getState(): TabState | undefined;
+  setState(state: TabState): void;
 };
 const vscode = acquireVsCodeApi();
 
@@ -50,7 +56,12 @@ let cols = 5, boxW = BW;
 const ALL = "*";
 let pick = vscode.getState()?.pick ?? "";
 
-function remember(): void { vscode.setState({ skin, tests: showTests, fns: showFns, pick }); }
+// The request being written, the ones sent and not yet recorded, and the recorded ones.
+let draft: Draft | null = vscode.getState()?.draft ?? null;
+let sent: Sent[] = vscode.getState()?.sent ?? [];
+let requests: Request[] = [];
+
+function remember(): void { vscode.setState({ skin, tests: showTests, fns: showFns, pick, draft, sent }); }
 
 /** Ask the server again, for the steps *pick* names. */
 function ask(): void {
@@ -215,13 +226,17 @@ function edgeClass(me: ModEdge): string {
 }
 
 function selectedModule(v: View): string | null {
-  if (!sel || sel.kind === "comp") return null;
+  if (!sel || sel.kind === "comp" || sel.kind === "request") return null;
   return sel.kind === "module" ? sel.id : v.byId.get(sel.id)?.module ?? null;
 }
 
 /** The modules a selection stands for: a component's all, else the one module. */
 function selectedModules(v: View): Set<string> {
   if (sel?.kind === "comp") return new Set(map!.modules.filter((x) => x.component === sel!.id).map((x) => x.id));
+  if (sel?.kind === "request") {
+    const r = requests.find((x) => x.id === sel!.id);
+    return new Set(r ? [...v.modFiles].filter(([id, fs]) => requestOn(r, v, id, fs)).map(([id]) => id) : []);
+  }
   const one = selectedModule(v);
   return new Set(one ? [one] : []);
 }
@@ -229,7 +244,13 @@ function selectedModules(v: View): Set<string> {
 /** Whether a selection still names something on the map drawn. */
 function stillThere(v: View, s: Selection): boolean {
   if (!s) return true;
+  if (s.kind === "request") return true;
   return s.kind === "comp" ? v.compOf.has(s.id) : s.kind === "module" ? v.modFiles.has(s.id) : v.byId.has(s.id);
+}
+
+/** Whether request *r* is about module *id*, whose files are *files*. */
+function requestOn(r: { targets: Target[] }, v: View, id: string, files: File[]): boolean {
+  return touches(r, id, files[0]?.component ?? "", new Set(files.map((f) => f.id)));
 }
 
 // Set when a component arrives from the drawer: the map scrolls to its band once drawn.
@@ -348,9 +369,21 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
         svg("title", {}, pl).textContent = "#" + st.n + " " + st.axis;
       });
     }
+    // The requests on this module, latest last, as pills along its bottom edge.
+    requests.filter((r) => r.status !== "dropped" && requestOn(r, v, id, files)).slice(-3).forEach((r, i, all) => {
+      const pl = svg("g", { class: "rq-pill st-" + r.status, transform: `translate(${BW - 40 - (all.length - 1 - i) * 42},${BH - 8})` }, g);
+      svg("rect", { width: 36, height: 15, rx: 7.5 }, pl);
+      svg("text", { x: 18, y: 11, "text-anchor": "middle" }, pl).textContent = r.id;
+      svg("title", {}, pl).textContent = r.id + " · " + r.status + " · " + r.idea;
+      pl.addEventListener("click", (ev) => { ev.stopPropagation(); sel = { kind: "request", id: r.id }; render(); });
+    });
     svg("title", {}, g).textContent = id;
     boxes.set(id, g);
-    const pick = () => { sel = sel?.kind === "module" && sel.id === id ? null : { kind: "module", id }; render(); };
+    const pick = (ev?: Event) => {
+      // With a request being written, Shift+click adds the module to its targets.
+      if (draft && (ev as MouseEvent | undefined)?.shiftKey) { addTarget({ module: id }); return; }
+      sel = sel?.kind === "module" && sel.id === id ? null : { kind: "module", id }; render();
+    };
     g.addEventListener("click", pick);
     g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } });
     g.addEventListener("mouseenter", () => highlight(new Set([id])));
@@ -384,6 +417,7 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
 function fileRow(id: string, right: string, line?: number, label?: string, tip?: string): string {
   const how = "click: show on the map · double-click: open" + (line ? " at line " + line : "");
   return '<div class="row"><button class="go" data-file="' + esc(id) + '" data-line="' + (line ?? "")
+    + (label ? '" data-fn="' + esc(label) : "")
     + '" title="' + esc((tip ?? id) + "\n" + how) + '">' + esc(label ?? base(id)) + "</button><span>" + esc(right) + "</span></div>";
 }
 /** A module in a list, selecting it in the map. */
@@ -486,7 +520,8 @@ function componentDetail(m: CodeMap, v: View, id: string): string {
     + '<div class="cap">Modules (' + mods.length + ")</div>" + list(modRows)
     + '<div class="cap">Depends on</div>' + list(compRows(out))
     + '<div class="cap">Used by</div>' + list(compRows(inn))
-    + breaks.map(breakFlag).join(""));
+    + breaks.map(breakFlag).join("")
+    + newButtons({ component: id }));
 }
 
 function moduleDetail(m: CodeMap, v: View, id: string): string {
@@ -510,7 +545,8 @@ function moduleDetail(m: CodeMap, v: View, id: string): string {
     + '<div class="cap">Files</div>' + list(files.map((f) => fileRow(f.id, t && t.files[f.id] ? pctOf(t.files[f.id]) : f.lines + " l")))
     + functionsBlock(t?.functions, fileRow, 10, (f) => ids.has(f))
     + '<div class="cap">Depends on</div>' + list(rows(out))
-    + '<div class="cap">Used by</div>' + list(rows(inn)));
+    + '<div class="cap">Used by</div>' + list(rows(inn))
+    + newButtons({ module: id }));
 }
 
 function fileDetail(m: CodeMap, v: View, id: string): string {
@@ -525,17 +561,158 @@ function fileDetail(m: CodeMap, v: View, id: string): string {
     + functionsBlock(time()?.functions, fileRow, 12, (x) => x === f.id)
     + '<div class="cap">Depends on (' + out.length + ")</div>" + list(out.map((e) => fileRow(e.to, edgeRight(e))))
     + '<div class="cap">Used by (' + inn.length + ")</div>" + list(inn.map((e) => fileRow(e.from, edgeRight(e), e.line)))
-    + '<button class="open" data-open="' + esc(f.id) + '" data-line="">Open ' + esc(base(f.id)) + "</button>");
+    + '<button class="open" data-open="' + esc(f.id) + '" data-line="">Open ' + esc(base(f.id)) + "</button>"
+    + newButtons({ file: f.id }));
+}
+
+/** The buttons that start a request on *t*: any kind, or an analysis of its architecture. */
+function newButtons(t: Target): string {
+  return '<div class="actions"><button class="open ghost" data-new="' + esc(JSON.stringify(t)) + '">New request…</button>'
+    + (t.file ? "" : '<button class="open ghost" data-new="' + esc(JSON.stringify(t)) + '" data-kind="refactor">Analyse the architecture</button>')
+    + "</div>";
+}
+
+/** A request's target as a row: a file or function selects its file, a module or a
+ *  component selects it, the whole code nothing. */
+function targetRow(t: Target): string {
+  if (t.file) return fileRow(t.file, t.function ? "" : "", t.line, t.function ?? undefined, targetLabel(t));
+  if (t.module) return moduleRow(t.module, "module");
+  if (t.component) return '<div class="row"><button class="go" data-comp="' + esc(t.component) + '">' + esc(t.component) + "</button><span>component</span></div>";
+  return '<div class="row"><span class="go">the whole code</span></div>';
+}
+
+/** The modules a target stands for on the map. */
+function modulesOf(v: View, t: Target): string[] {
+  if (t.all) return [...v.modFiles.keys()];
+  if (t.component) return map!.modules.filter((x) => x.component === t.component).map((x) => x.id);
+  if (t.module) return [t.module];
+  const f = t.file ? v.byId.get(t.file) : undefined;
+  return f ? [f.module] : [];
+}
+
+/** What the map sees in a refactor's scope: its module cycles, the rule breaks that start
+ *  or end there, and its most coupled modules. */
+function findings(v: View, targets: Target[]): string[] {
+  const mods = new Set(targets.flatMap((t) => modulesOf(v, t)));
+  if (!mods.size) return [];
+  const out: string[] = [];
+  for (const c of map!.cycles) if (c.some((x) => mods.has(x))) out.push("module cycle: " + c.concat([c[0]]).join(" → "));
+  for (const e of map!.edges) {
+    const a = v.byId.get(e.from)?.module, b = v.byId.get(e.to)?.module;
+    if (e.breaks && ((a && mods.has(a)) || (b && mods.has(b)))) out.push("rule break: " + e.from + ":" + e.line + " → " + e.to + " (" + e.breaks + ")");
+  }
+  const uses = new Map<string, Set<string>>(), usedBy = new Map<string, Set<string>>();
+  for (const me of v.modEdges) {
+    (uses.get(me.from) ?? uses.set(me.from, new Set()).get(me.from)!).add(me.to);
+    (usedBy.get(me.to) ?? usedBy.set(me.to, new Set()).get(me.to)!).add(me.from);
+  }
+  const degree = (m: string) => (uses.get(m)?.size ?? 0) + (usedBy.get(m)?.size ?? 0);
+  [...mods].filter((m) => degree(m) >= 3).sort((a, b) => degree(b) - degree(a)).slice(0, 4).forEach((m) =>
+    out.push("coupling: " + m + " is used by " + (usedBy.get(m)?.size ?? 0) + " modules and uses " + (uses.get(m)?.size ?? 0)));
+  return out.slice(0, 14);
+}
+
+/** The costliest functions of the draft's targets not yet among them, to add with a click. */
+function suggestions(v: View, d: Draft): string {
+  const fns = time()?.functions;
+  if (!fns || d.kind === "refactor") return "";
+  const mods = new Set(d.targets.filter((t) => !t.function).flatMap((t) => modulesOf(v, t)));
+  const fileIn = (f: string) => mods.has(v.byId.get(f)?.module ?? "");
+  const rows = topFunctions(fns, 12, fileIn).map(([k, f]) => ({ ...fnParts(k), f }))
+    .filter(({ file, name }) => !d.targets.some((t) => sameTarget(t, { file, function: name })))
+    .slice(0, 5).map(({ file, name, f }) => '<div class="row"><button class="go" data-add-fn="' + esc(JSON.stringify({ file, function: name, line: f.line }))
+      + '" title="Add ' + esc(name) + ' to the targets">+ ' + esc(name) + "</button><span>" + pctOf(f.self) + "</span></div>");
+  return rows.length ? '<div class="cap">Their costliest functions</div><div class="list">' + rows.join("") + "</div>" : "";
+}
+
+/** *t* added to the draft's targets. */
+function addTarget(t: Target): void {
+  if (!draft) return;
+  draft.targets = withTarget(draft.targets, t);
+  remember();
+  render();
+}
+
+/** The draft sent to the agent as the user's message: it stays listed as sent until the
+ *  server has recorded it. */
+function sendDraft(v: View): void {
+  if (!draft || !ready(draft)) return;
+  const t = time();
+  const share = (x: Target) => {
+    if (!t) return null;
+    if (x.function && x.file) {
+      const f = t.functions?.[x.file + "::" + x.function];
+      return f ? pctOf(f.self) : null;
+    }
+    const total = modulesOf(v, x).reduce((n, m) => n + moduleTime(v, m, t.files), 0);
+    return total ? pctOf(total) : null;
+  };
+  vscode.postMessage({ type: "prompt", text: requestPrompt(draft, share, findings(v, draft.targets)) });
+  sent.push({ token: draft.token, idea: draft.idea.trim(), mode: draft.mode, targets: draft.targets });
+  draft = null;
+  remember();
+  render();
+}
+
+/** The form's text fields, read into the draft as they are typed, without drawing again. */
+function bindForm(side: HTMLElement, v: View): void {
+  if (!draft) return;
+  const d = draft;
+  const send = side.querySelector<HTMLButtonElement>("[data-send]");
+  const field = (id: string, k: "idea" | "variants" | "source" | "constraints") => {
+    const el = side.querySelector<HTMLInputElement | HTMLTextAreaElement>("#" + id);
+    el?.addEventListener("input", () => {
+      d[k] = el.value;
+      remember();
+      if (send) send.disabled = !ready(d);
+    });
+  };
+  field("rq-idea", "idea"); field("rq-variants", "variants"); field("rq-source", "source"); field("rq-constraints", "constraints");
+  side.querySelector<HTMLSelectElement>("#rq-kind")?.addEventListener("change", (e) => {
+    d.kind = (e.target as HTMLSelectElement).value; remember(); render();
+  });
+  side.querySelectorAll<HTMLElement>("[data-mode]").forEach((b) => b.addEventListener("click", () => {
+    d.mode = b.dataset.mode === "try" ? "try" : "study"; remember(); render();
+  }));
+  side.querySelectorAll<HTMLElement>("[data-untarget]").forEach((b) => b.addEventListener("click", () => {
+    d.targets.splice(Number(b.dataset.untarget), 1); remember(); render();
+  }));
+  side.querySelectorAll<HTMLElement>("[data-add-fn]").forEach((b) => b.addEventListener("click", () => addTarget(JSON.parse(b.dataset.addFn!))));
+  send?.addEventListener("click", () => sendDraft(v));
+  side.querySelector("[data-cancel]")?.addEventListener("click", () => { draft = null; remember(); render(); });
+}
+
+/** The session's step whose run is *runId*, as the strip numbers it; null when not shown. */
+function stepOfRun(runId: string): number | null {
+  return session?.steps.find((s) => s.run_id === runId)?.n ?? null;
 }
 
 function renderSide(v: View): void {
   const m = map!, side = document.getElementById("side")!;
   const card = session && step ? stepCard(session, step, fileRow) : "";
   const t = time();
-  const html = !sel ? card + (t ? timeSection(t) : "") + overview(m)
+  const request = sel?.kind === "request" ? requests.find((r) => r.id === sel!.id) : undefined;
+  const html = (draft ? formHtml(draft, suggestions(v, draft), findings(v, draft.targets)) : "")
+    + (!sel ? requestsSection(requests, sent) + card + (t ? timeSection(t) : "") + overview(m)
+    : sel.kind === "request" ? BACK + (request ? requestDetail(request, targetRow, stepOfRun) : '<div class="empty">No such request.</div>')
     : sel.kind === "comp" ? componentDetail(m, v, sel.id)
-    : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id);
+    : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id));
   side.innerHTML = html;
+  bindForm(side, v);
+  side.querySelectorAll<HTMLElement>("[data-new]").forEach((b) => b.addEventListener("click", () => {
+    draft = newDraft([JSON.parse(b.dataset.new!)]);
+    if (b.dataset.kind) draft.kind = b.dataset.kind;
+    remember(); render();
+    side.scrollTop = 0;
+    side.querySelector<HTMLElement>("#rq-idea")?.focus();
+  }));
+  side.querySelectorAll<HTMLElement>("[data-request]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "request", id: b.dataset.request! }; render(); }));
+  side.querySelectorAll<HTMLElement>("[data-step-n]").forEach((b) => b.addEventListener("click", () => { step = Number(b.dataset.stepN); render(); }));
+  side.querySelectorAll<HTMLElement>("[data-ask]").forEach((b) => b.addEventListener("click", () => {
+    vscode.postMessage({ type: "prompt", text: b.dataset.ask! });
+    b.setAttribute("disabled", "");
+    b.textContent = "Asked the agent";
+  }));
   document.getElementById("back")?.addEventListener("click", () => { sel = null; render(); });
   side.querySelectorAll<HTMLElement>("[data-module]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "module", id: b.dataset.module! }; render(); }));
   side.querySelectorAll<HTMLElement>("[data-comp]").forEach((b) => b.addEventListener("click", () => { sel = { kind: "comp", id: b.dataset.comp! }; scrollToBand = true; render(); }));
@@ -568,6 +745,12 @@ function onSideClick(ev: MouseEvent): void {
   if (!b) return;
   clearTimeout(pendingSelect);
   const id = b.dataset.file!;
+  // With a request being written, Shift+click adds the file, or the function, to its targets.
+  if (draft && ev.shiftKey) {
+    addTarget({ file: id, ...(b.dataset.fn ? { function: b.dataset.fn } : {}),
+      ...(b.dataset.line ? { line: Number(b.dataset.line) } : {}) });
+    return;
+  }
   if (ev.detail >= 2 || ev.ctrlKey || ev.metaKey) {
     openRel(id, b.dataset.line ? Number(b.dataset.line) : undefined);
     return;
@@ -666,6 +849,7 @@ function mount(): void {
     <header>
       <h1>Code map</h1><span class="meta" id="meta">waiting for the server…</span>
       <select class="push" id="proxy" title="Whose optimisation steps the map shows" aria-label="Proxy" hidden></select>
+      <button class="toggle" id="analyse" title="Ask the agent to analyse the whole code's architecture and propose a refactor">Analyse the architecture</button>
       <button class="toggle" id="fns" aria-pressed="false" title="List each module's costliest functions on the map" hidden>Functions</button>
       <button class="toggle" id="tests" aria-pressed="false" title="Show the tests and what they depend on">Tests</button>
       <div class="seg" role="group" aria-label="Theme">
@@ -689,6 +873,18 @@ function mount(): void {
     ask();
   });
   document.getElementById("side")!.addEventListener("click", onSideClick);
+  document.getElementById("analyse")!.addEventListener("click", () => {
+    draft = { ...newDraft([{ all: true }]), kind: "refactor" };
+    sel = null;
+    remember();
+    render();
+    document.getElementById("side")!.scrollTop = 0;
+  });
+  // While the agent is at a request, the tab asks the server again now and then, so its
+  // status and runs show without a ⟳. Only while the tab is seen.
+  setInterval(() => {
+    if (document.visibilityState === "visible" && (sent.length || requests.some((r) => live(r.status)))) ask();
+  }, 20000);
   document.getElementById("fns")!.addEventListener("click", () => {
     showFns = !showFns;
     remember();
@@ -724,6 +920,8 @@ function mount(): void {
     render();
   });
   window.addEventListener("keydown", (e) => {
+    // Typing in the request form moves nothing on the map.
+    if ((e.target as Element | null)?.closest?.("input, textarea, select")) return;
     if (e.key === "Escape" && sel) { sel = null; render(); }
     else if (session && e.key === "ArrowRight" && step < session.steps.length) { step++; render(); }
     else if (session && e.key === "ArrowLeft" && step > 0) { step--; render(); }
@@ -745,6 +943,10 @@ function mount(): void {
     const steps = msg.session?.steps?.length ?? 0;
     if (!session || steps !== session.steps.length || picked(session) !== picked(msg.session)) step = steps;
     session = steps ? msg.session! : null;
+    requests = msg.session?.requests ?? [];
+    // A request the server has recorded is no longer only sent.
+    const seen = new Set(requests.map((r) => r.token));
+    if (sent.some((x) => seen.has(x.token))) { sent = sent.filter((x) => !seen.has(x.token)); remember(); }
     raw = msg.map;
     map = visible(raw);
     view = derive(map);

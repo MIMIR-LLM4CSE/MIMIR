@@ -54,7 +54,7 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .tab { display: grid; grid-template-columns: minmax(0, 1fr) 300px; background: var(--bg);
   border: 1px solid var(--border-soft); border-radius: 6px; min-width: 0; }
 @media (max-width: 820px) { .tab { grid-template-columns: minmax(0, 1fr); } }
-.tab-map { padding: 14px; min-width: 0; border-right: 1px solid var(--border-soft); }
+.tab-map { padding: 14px; min-width: 0; border-right: 1px solid var(--border-soft); user-select: none; }
 .tab-side { padding: 12px; display: grid; gap: 12px; align-content: start; min-width: 0; }
 .lmap { overflow-x: auto; }
 .lmap svg { display: block; }
@@ -165,5 +165,45 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .sw.bar.gpu { border-color: var(--gpu); }
 .section.time .title::before { background: #f2663a; }
 .open[disabled] { opacity: .6; cursor: default; }
+/* R&D requests: the form, their status, their variants */
+.section.req-form .title::before, .section.reqs .title::before, .section.rq .title::before { background: var(--accent); }
+.section.req-form { display: grid; gap: 6px; border-color: var(--accent); }
+.section.req-form .title { margin-bottom: 2px; }
+.hint { font-size: 11.5px; color: var(--fg-dim); font-style: normal; }
+.cap .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.fl { display: grid; gap: 3px; font-size: 11.5px; color: var(--fg-dim); }
+.fl select, .fl input, .fl textarea { font: 12.5px var(--font); color: var(--vscode-input-foreground, var(--fg));
+  background: var(--vscode-input-background, var(--bg)); border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 3px; padding: 4px 6px; width: 100%; resize: vertical; }
+.fl select:focus, .fl input:focus, .fl textarea:focus { outline: 1px solid var(--focus); outline-offset: -1px; }
+.tchips { display: flex; flex-wrap: wrap; gap: 4px; }
+.tchip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; font: 11.5px var(--mono); padding: 1px 2px 1px 7px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tchip .x { all: unset; cursor: pointer; padding: 0 5px; color: var(--fg-dim); }
+.tchip .x:hover { color: var(--e-break); }
+.finds { margin: 0; padding-left: 16px; font-size: 11.5px; color: var(--fg); display: grid; gap: 2px; }
+.actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.actions .open { margin-top: 0; }
+.open.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.st { display: inline-block; font: 600 10px var(--font); letter-spacing: .04em; text-transform: uppercase; padding: 1px 7px;
+  border-radius: 8px; color: var(--pill-fg); background: var(--fg-dim); }
+.st-studying { background: var(--gpu); } .st-proposed { background: var(--e-cycle); } .st-trying { background: var(--time); }
+.st-done { background: var(--ok); } .st-dropped { background: transparent; color: var(--fg-dim); border: 1px solid var(--border); }
+.rq-row { grid-template-columns: minmax(0, 1fr) auto; }
+.row > span.st { color: var(--pill-fg); } .row > span.st-dropped { color: var(--fg-dim); }
+.rq-row .go b { color: var(--accent); font-weight: 600; }
+.section.rq .idea { font-size: 12.5px; margin: 6px 0 2px; }
+.note { font-size: 12px; white-space: pre-wrap; background: var(--bg); border-left: 2px solid var(--accent); padding: 4px 6px; border-radius: 0 3px 3px 0; }
+.vt { width: 100%; border-collapse: collapse; font-size: 12px; }
+.vt td { padding: 3px 4px; border-bottom: 1px solid var(--border-soft); }
+.vt td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.vt tr[data-step-n] { cursor: pointer; }
+.vt tr[data-step-n]:hover { background: var(--hover); }
+.rq-pill { cursor: pointer; }
+.rq-pill rect { fill: var(--fg-dim); }
+.rq-pill text { font: 600 10px var(--font); fill: var(--pill-fg); }
+.rq-pill.st-studying rect { fill: var(--gpu); } .rq-pill.st-proposed rect { fill: var(--e-cycle); }
+.rq-pill.st-trying rect { fill: var(--time); } .rq-pill.st-done rect { fill: var(--ok); }
+.chip .rq { font: 600 10px var(--font); color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } }
 `;

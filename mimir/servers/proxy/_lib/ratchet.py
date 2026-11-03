@@ -37,7 +37,7 @@ def select_best_case(
 
 # ── verdict logic ─────────────────────────────────────────────────────────────
 
-def _is_improvement(new, old, goal: str, min_improvement: float = 0.0) -> bool:
+def is_improvement(new, old, goal: str, min_improvement: float = 0.0) -> bool:
     """True iff *new* beats *old* by more than a relative *min_improvement* margin.
 
     ``goal == "max"`` treats larger as better; anything else minimizes.  A missing
@@ -56,17 +56,33 @@ def _is_improvement(new, old, goal: str, min_improvement: float = 0.0) -> bool:
     return new > old + tol if goal == "max" else new < old - tol
 
 
+def _within_noise(new, old, goal: str, margin: float) -> bool:
+    """True iff *new* is no worse than *old* by more than a relative *margin*."""
+    if new is None or old is None:
+        return old is None and new is not None
+    try:
+        new, old = float(new), float(old)
+    except (TypeError, ValueError):
+        return False
+    tol = abs(old) * float(margin)
+    return new >= old - tol if goal == "max" else new <= old + tol
+
+
 def ratchet_verdict(feasible: bool, primary_value, best: dict | None,
-                     goal: str, min_improvement: float = 0.0) -> str | None:
+                     goal: str, min_improvement: float = 0.0, neutral: bool = False) -> str | None:
     """``"accept"`` (feasible and better by *min_improvement*, or first), ``"reject"``, or None
-    (infeasible with no incumbent).
+    (infeasible with no incumbent). With *neutral* (a refactor), feasible and no worse than
+    the best beyond the same margin is enough: a refactor changes the code's shape, not
+    its speed, and is kept when it costs nothing measurable.
     """
     if not feasible:
         return "reject" if best is not None else None
     if best is None:
         return "accept"
     best_val = best.get("primary_value")
-    return "accept" if _is_improvement(primary_value, best_val, goal, min_improvement) else "reject"
+    if is_improvement(primary_value, best_val, goal, min_improvement):
+        return "accept"
+    return "accept" if neutral and _within_noise(primary_value, best_val, goal, min_improvement) else "reject"
 
 
 def run_primary_value(run_metrics: dict, primary_metric: str):

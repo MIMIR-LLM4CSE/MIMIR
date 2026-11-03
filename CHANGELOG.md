@@ -16,6 +16,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **R&D requests from the code map.** A module, file, function, component or the whole
+  code can be given a request for the agent: a numerical method, an algorithm, external
+  code to bring in, parallelism, data layout, precision, or an analysis and refactor of
+  the architecture (the form lists the cycles, rule breaks and coupling the map finds
+  there). **Study** has the agent read and propose without editing; **Try** has it
+  implement each variant from the same starting code and measure it through the
+  session's ratchet, where a refactor step is kept when it costs no time beyond the
+  noise. Requests are numbered (R1, R2…), kept in `proxy_bench/requests.json`, shown on
+  the modules they target and in a Requests list with their variants side by side, and
+  the tab follows them on its own. New: the `proxy_request` tool, `proxy_eval(op='reset_to_request')`
+  and the `map-request` skill.
 - **The code map shows the time per function.** The profile's costliest functions, by their
   own time, are listed in the side pane over the whole code and for the module or file
   selected; the header's **Functions** toggle also lists each module's three costliest in

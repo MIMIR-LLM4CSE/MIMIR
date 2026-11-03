@@ -222,6 +222,11 @@ the node. A baseline measured on the login node describes the login node.
    instrument, not the subject.
 4. **Compare runs**: `proxy_eval_status(op='diff')` or `(op='runs')` (note `is_best`).
 
+A request from the code map (an `[R3]` axis, "Request from the code map") is this loop
+with one more rule: every variant starts from the request's tree,
+`proxy_eval(op='reset_to_request', request_id=...)`, not from the last one's. The
+map-request skill has the protocol.
+
 ## Invariants of the loop
 
 - Read the file you are about to change before every modification. Never edit blind.
