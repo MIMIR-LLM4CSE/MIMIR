@@ -1,6 +1,6 @@
 ---
 name: mimir-api
-description: Explain or author a MIMIR extension — a .mimir skill, MCP server/tool, policy, post-tool hook, nudge or base prompt — using MIMIR's own API.
+description: Use when the user asks about MIMIR itself or wants to extend it — a .mimir skill, an MCP server or tool, a policy, a post-tool hook, a nudge, a base prompt — so the answer comes from MIMIR's own API.
 disable-model-invocation: false
 ---
 

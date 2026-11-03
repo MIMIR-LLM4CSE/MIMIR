@@ -1,6 +1,6 @@
 ---
 name: parallelize-kernel
-description: Parallelize or vectorize a compute kernel — threads, SIMD, ranks or a device — keeping the result correct and proving the speedup is real.
+description: Use when the work is to parallelize or vectorize code — threads, OpenMP, SIMD, MPI ranks, a GPU — keeping the result correct and proving the speedup is real; inside a proxy session, together with proxy-optimize.
 disable-model-invocation: false
 ---
 

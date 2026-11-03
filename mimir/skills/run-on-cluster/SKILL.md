@@ -1,6 +1,6 @@
 ---
 name: run-on-cluster
-description: Run work on a Slurm cluster — pick the partition and node type, build for the hardware that will run it, size and submit the job, read what came back.
+description: Use when work runs on a Slurm cluster — choosing the partition and node type, building for the hardware that runs it, sizing and submitting the job, reading what came back.
 disable-model-invocation: false
 ---
 

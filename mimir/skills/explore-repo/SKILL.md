@@ -1,6 +1,6 @@
 ---
 name: explore-repo
-description: Build an accurate map of unfamiliar code before acting on it — and stop as soon as the files and symbols the task touches can be named.
+description: Use when the task touches code you have not read yet — an unfamiliar repository, module or call path — to map it before acting, and stop as soon as the files and symbols the task touches can be named.
 disable-model-invocation: false
 ---
 

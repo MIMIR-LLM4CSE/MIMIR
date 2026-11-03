@@ -1,6 +1,6 @@
 ---
 name: write-tests
-description: Write tests that can actually fail — asserting against something independent of the code, not against what it currently prints.
+description: Use when writing or fixing tests — tests that can actually fail, asserting against something independent of the code rather than against what it currently prints.
 disable-model-invocation: false
 ---
 

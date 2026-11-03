@@ -1,6 +1,6 @@
 ---
 name: proxy-optimize
-description: Optimize a registered proxy through the eval loop — a ratchet that keeps a change only when it improved the metric and broke no constraint.
+description: Use whenever the goal is to make code faster or leaner — run time, memory, throughput, a speedup, a kernel, a profile to act on — even when the user does not say "proxy": sets up the proxy and its benchmark if none exists, then keeps a change only when a measured run improved the metric and broke no constraint.
 disable-model-invocation: false
 ---
 

@@ -92,7 +92,7 @@ class SkillsIndexSectionTests(unittest.TestCase):
         # The three rules that keep the mechanism from becoming its own failure mode.
         self.assertIn("SUBORDINATE", out)
         self.assertIn("at most three", out)
-        self.assertIn("Nothing obliges you", out)
+        self.assertIn("needs none of them", out)
 
     def test_no_index_is_printed_when_the_tool_is_not_connected(self) -> None:
         """An index naming a tool that is not there is a phantom instruction.

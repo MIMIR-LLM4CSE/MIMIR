@@ -1,6 +1,6 @@
 ---
 name: derive-model
-description: Derive or verify the mathematics before implementing it — truncation error and order, stability, closed forms, non-dimensionalization — with the symbolic tool rather than from memory.
+description: Use before implementing or changing mathematics — a scheme, its truncation error and order, stability, a closed form, a non-dimensionalization — and whenever a formula is about to come from memory: derive or verify it with the symbolic tool.
 disable-model-invocation: false
 ---
 

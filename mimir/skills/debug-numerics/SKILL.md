@@ -1,6 +1,6 @@
 ---
 name: debug-numerics
-description: Diagnose a computation that runs but is wrong — NaN, divergence, a plausible answer that is off, or a convergence rate that is not the expected one.
+description: Use when a computation runs but gives a wrong answer — NaN or Inf, divergence, a result that is plausible but off, a convergence rate or conservation that is not the expected one — before touching the code.
 disable-model-invocation: false
 ---
 
