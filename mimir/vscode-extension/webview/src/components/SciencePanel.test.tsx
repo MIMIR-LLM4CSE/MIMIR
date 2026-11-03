@@ -54,3 +54,44 @@ describe("a section that offers a view", () => {
     expect(render([machine])).not.toContain("Open map");
   });
 });
+
+describe("the optimisation's curve", () => {
+  const optimisation: PanelSection = {
+    section: "Optimisation",
+    title: "Optimisation",
+    lines: [{ label: "proxy", value: "solver" }],
+    open: "code_map",
+    chart: {
+      metric: "time_s", goal: "min", baseline: 10, best: 8, tried: 3, kept: 1,
+      points: [
+        { n: 1, run: "r1", axis: "tiling", value: 8, kind: "kept", best: 8 },
+        { n: 2, run: "r2", axis: "simd", value: 9, kind: "not kept", best: 8 },
+        { n: 3, run: "r3", axis: "omp", value: null, kind: "failed", best: 8 },
+      ],
+    },
+  };
+
+  it("heads the section with the best and what it won over the baseline", () => {
+    const html = render([optimisation]);
+    expect(html).toContain("best time_s");
+    expect(html).toContain(">8</span>");
+    expect(html).toContain("−20% · 1.25×");
+    expect(html).toContain("3 tried · 1 kept");
+  });
+
+  it("draws every run, the best so far and the baseline", () => {
+    const html = render([optimisation]);
+    expect(html.match(/science-curve-point/g)).toHaveLength(3);
+    expect(html).toContain("science-curve-best-line");
+    expect(html).toContain("science-curve-baseline");
+    expect(html).toContain("is-failed");
+  });
+
+  it("reads out the latest run until another is hovered", () => {
+    expect(render([optimisation])).toContain("#3 · omp");
+  });
+
+  it("draws nothing for a section without a curve", () => {
+    expect(render([machine])).not.toContain("science-curve");
+  });
+});

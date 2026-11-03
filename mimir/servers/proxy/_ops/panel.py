@@ -40,7 +40,7 @@ def _this_machine() -> dict:
 # on a timer while a turn runs; the ledger changes only when a run settles, which is
 # minutes apart at best. Keyed on mtime rather than on a clock so there is no staleness
 # to reason about: the moment the file changes, the next refresh re-reads it.
-_STEPS: dict = {"key": None, "value": []}
+_STEPS: dict = {"key": None, "value": {}}
 
 
 def _hottest(proxy_name: str, run_id: str) -> dict | None:
@@ -61,37 +61,74 @@ def _hottest(proxy_name: str, run_id: str) -> dict | None:
     return {"label": "hottest", "value": " · ".join(parts)} if parts else None
 
 
-def _steps_lines(proxy_name: str, cfg: dict) -> list[dict]:
-    """How many steps the session took and kept, and where the best stands against the
-    baseline; what each step was is the code map's to show, so the line opens it."""
+# How a ledger verdict is drawn on the curve: kept moves the best; not kept was measured
+# and lost; failed measured nothing; elsewhere ran on another machine than the baseline's.
+_POINT_KIND = {"accept": "kept", "reject": "not kept", "converged": "not kept",
+               "incomparable": "elsewhere"}
+
+# The curve keeps the latest runs: a drawer a few hundred pixels wide cannot tell more apart.
+_CURVE_MAX_POINTS = 120
+
+
+def _curve(rows: list[dict], cfg: dict, base, best) -> dict | None:
+    """The session as a curve: every run's value in the order it settled, and the best
+    so far after it — the ratchet's incumbent, which only a kept run moves."""
+    def num(v):
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    base, best = num(base), num(best)
+    incumbent, points = base, []
+    for i, row in enumerate(rows, 1):
+        value = num(row.get("primary_value"))
+        kind = _POINT_KIND.get(row.get("verdict"), "not kept")
+        if value is None or row.get("feasible") is False:
+            kind = "failed" if kind != "elsewhere" else kind
+        if kind == "kept" and value is not None:
+            incumbent = value
+        points.append({"n": i, "run": row.get("run_id", ""), "axis": row.get("axis") or "",
+                       "value": value, "kind": kind, "best": incumbent})
+    if not points:
+        return None
+    kept = sum(1 for p in points if p["kind"] == "kept")
+    return {
+        "metric": cfg.get("primary_metric", "time_s"),
+        "goal": cfg.get("primary_goal", "min"),
+        "baseline": base,
+        "best": best if best is not None else incumbent,
+        "tried": len(points),
+        "kept": kept,
+        "points": points[-_CURVE_MAX_POINTS:],
+    }
+
+
+def _session_view(proxy_name: str, cfg: dict) -> dict:
+    """The session's curve, and the line naming where the best run spends its time; what
+    each step changed is the code map's to show, so the section opens it."""
     from .._lib.store import opt_ledger_file
     from .._lib.ratchet import load_best
     try:
         key = (proxy_name, os.path.getmtime(opt_ledger_file(proxy_name)))
     except OSError:
-        return []                       # no ledger yet: nothing tried
+        return {}                       # no ledger yet: nothing tried
     if key == _STEPS["key"]:
         return _STEPS["value"]
     baseline_run = cfg.get("baseline_run_id", "")
     try:
         ledger = eval_observe.read_ledger(proxy_name)
-        best = (load_best(proxy_name) or {}).get("primary_value")
+        best_rec = load_best(proxy_name) or {}
     except Exception:
-        return []                       # one section's store costs its lines, never the drawer
+        return {}                       # one section's store costs its lines, never the drawer
     rows = [r for r in ledger if r.get("run_id") != baseline_run]
     base = next((r.get("primary_value") for r in ledger if r.get("run_id") == baseline_run), None)
-    lines: list[dict] = []
-    if rows:
-        kept = sum(1 for r in rows if r.get("verdict") == "accept")
-        value = f"{len(rows)} tried, {kept} kept"
-        if isinstance(base, (int, float)) and isinstance(best, (int, float)) and base:
-            value += f" · {(best - base) / abs(base):+.0%} since baseline"
-        lines.append({"label": "steps", "value": value})
-    hottest = _hottest(proxy_name, (load_best(proxy_name) or {}).get("run_id") or baseline_run)
+    view: dict = {}
+    chart = _curve(rows, cfg, base, best_rec.get("primary_value"))
+    if chart:
+        view["chart"] = chart
+    hottest = _hottest(proxy_name, best_rec.get("run_id") or baseline_run)
     if hottest:
-        lines.append(hottest)
-    _STEPS.update({"key": key, "value": lines})
-    return lines
+        view["lines"] = [hottest]
+    _STEPS.update({"key": key, "value": view})
+    return view
 
 
 def comparability_lines(cfg: dict, metric: str) -> list[dict]:
@@ -133,24 +170,28 @@ def report() -> dict:
 
     cfg = eval_session.load_opt_config(name) or {}
     state = eval_observe.status(name).get("state", "unknown")
-    best = load_best(name) or {}
     metric = cfg.get("primary_metric", "time_s")
+    view = _session_view(name, cfg)
     lines = [
         {"label": "proxy", "value": name},
         {"label": "state", "value": state,
          "state": "running" if state in ("running", "pending") else ""},
-        {"label": "metric", "value": metric},
     ]
-    if best:
-        lines.append({"label": "best so far",
-                      "value": f"{best.get('primary_value')} ({best.get('run_id', '?')})"})
+    if "chart" not in view:
+        # Before a step has settled the curve has nothing to draw: the metric and the
+        # baseline's value say where it will start.
+        best = load_best(name) or {}
+        lines.append({"label": "metric", "value": metric})
+        if best:
+            lines.append({"label": "best so far",
+                          "value": f"{best.get('primary_value')} ({best.get('run_id', '?')})"})
     if cfg.get("benchmark_name"):
         lines.append({"label": "benchmark", "value": cfg["benchmark_name"]})
     lines.extend(comparability_lines(cfg, metric))
-    steps = _steps_lines(name, cfg)
-    lines.extend(steps)
+    lines.extend(view.get("lines", []))
     registry_names = sorted(load_registry().keys())
     if len(registry_names) > 1:
         lines.append({"label": "other proxies",
                       "value": ", ".join(n for n in registry_names if n != name)})
-    return ok({"title": "Optimisation", "lines": lines, **({"open": "code_map"} if steps else {})})
+    return ok({"title": "Optimisation", "lines": lines,
+               **({"chart": view["chart"], "open": "code_map"} if "chart" in view else {})})

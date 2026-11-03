@@ -16,6 +16,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **The Optimisation drawer draws the session's curve.** The section opens on the best
+  value, its change over the baseline (`−34% · 1.51×`, green when it is a gain) and how
+  many runs were tried and kept; below, every run in the order it settled — kept, not
+  kept, failed, or taken on another machine — with the best so far stepping from the
+  dashed baseline and the room won shaded. Hovering a run reads out its number, axis,
+  value and verdict. The `metric`, `best so far` and `steps` lines give way to it once a
+  step has settled. A panel section may now carry a `chart`, passed through unread.
 - **The Cluster drawer shows where a job can actually go, and how much room is there.**
   Only the partitions the user can submit to are described — the ones `sinfo` lists,
   up, not root-only and open to one of the user's accounts — and only the nodes in them:

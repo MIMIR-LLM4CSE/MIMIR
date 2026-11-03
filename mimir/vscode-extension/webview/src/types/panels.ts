@@ -68,6 +68,24 @@ export interface PanelSection {
   open?: string;
   /** A small map of what the view shows, drawn in the section (the code's components). */
   map?: PanelMiniMap;
+  /** A curve the section draws (the optimisation's runs, in the order they settled). */
+  chart?: PanelChart;
+}
+
+/**
+ * A run-by-run curve: each run's value and the best after it, which only a kept run moves.
+ * `kind` is the server's word for how the run went ("kept", "not kept", "failed",
+ * "elsewhere"); a value of null measured nothing.
+ */
+export interface PanelChart {
+  metric: string;
+  /** "min" when lower is better, "max" when higher is. */
+  goal: string;
+  baseline: number | null;
+  best: number | null;
+  tried: number;
+  kept: number;
+  points: { n: number; run: string; axis: string; value: number | null; kind: string; best: number | null }[];
 }
 
 /** Components stacked by tier, highest first, and the links between them. */

@@ -562,6 +562,16 @@ machines. Which rows are open lives in `SciencePanel`, keyed on the servers' own
 the answer survives a refresh; native `<details>` would lose it, since the drawer
 re-renders on every `panel_report`.
 
+**A section may draw a curve.** A section answering a `chart` (the Optimisation section)
+gets `PanelCurve` at its head: the best value large, its change over the baseline as a
+pill (green when it goes the way the goal points, with the factor won), tried and kept;
+then every run in the order it settled — kept filled in the section's accent, not kept
+hollow, another machine's dashed, a run that measured nothing a red ✕ on the floor —
+the best so far as a step line from the dashed baseline, the room won between them
+shaded. Hovering a run's column reads it out below the plot (number, axis, value, how it
+went); otherwise the latest run is read out. The plot takes the drawer's width from a
+`ResizeObserver`, so its marks stay round. The client passes `chart` through unread.
+
 **A section may offer a view.** A section answering `open: "code_map"` (the Architecture
 section) may also send a small `map` of it — components and the links between them —
 which `PanelMiniMap` draws in the section: cards in bands by tier, highest first, the

@@ -4566,6 +4566,61 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 }
 .science-open:hover { background: var(--accent-hover); }
 
+/* A section's curve (the optimisation's runs): the best and what it won on top, then the
+   runs in the order they settled, the best so far stepping down (or up) from the baseline. */
+.science-curve {
+  --curve-best: var(--section-accent);
+  --curve-good: var(--vscode-charts-green, #3fb950);
+  margin: 2px 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+.science-curve-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; margin-bottom: 4px; }
+.science-curve-best { display: grid; gap: 0; min-width: 0; }
+.science-curve-caption { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--fg-dim); }
+.science-curve-value { font-size: 22px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--fg); }
+.science-curve-side { display: grid; justify-items: end; gap: 3px; }
+.science-curve-gain {
+  font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.science-curve-gain.is-better { color: var(--curve-good); background: color-mix(in srgb, var(--curve-good) 14%, transparent); }
+.science-curve-gain.is-worse { color: var(--fg-dim); background: var(--bg-hover); }
+.science-curve-count { white-space: nowrap; font-size: 11px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+
+.science-curve-plot { display: block; width: 100%; height: auto; overflow: visible; }
+.science-curve-axis { stroke: var(--vscode-panel-border, rgba(128, 128, 128, 0.35)); stroke-width: 1; }
+.science-curve-tick { font-size: 9.5px; fill: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.science-curve-baseline { stroke: var(--fg-dim); stroke-opacity: .6; stroke-width: 1; stroke-dasharray: 3 3; }
+.science-curve-area { fill: var(--curve-best); fill-opacity: .12; stroke: none; }
+.science-curve-best-line { fill: none; stroke: var(--curve-best); stroke-width: 2; stroke-linejoin: round; }
+.science-curve-guide { stroke: var(--fg-dim); stroke-opacity: .35; stroke-width: 1; }
+.science-curve-point { stroke: var(--surface-1); stroke-width: 2; }
+.science-curve-point.is-kept { fill: var(--curve-best); }
+.science-curve-point.is-not-kept { fill: var(--surface-1); stroke: var(--fg-dim); stroke-width: 1.25; }
+.science-curve-point.is-elsewhere { fill: none; stroke: var(--fg-dim); stroke-width: 1.25; stroke-dasharray: 2 1.5; }
+.science-curve-point.is-failed { fill: none; stroke: var(--danger); stroke-width: 1.5; }
+.science-curve-point.is-active { stroke: var(--fg); stroke-width: 1.5; }
+.science-curve-hit { fill: transparent; cursor: crosshair; }
+
+.science-curve-readout {
+  display: flex; justify-content: space-between; gap: 8px; margin-top: 2px;
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+}
+.science-curve-run { color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.science-curve-kind { color: var(--fg-dim); flex-shrink: 0; }
+.science-curve-kind.is-kept { color: var(--fg); }
+
+.science-curve-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 10.5px; color: var(--fg-dim); }
+.science-curve-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.science-curve-key { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.science-curve-key.is-kept { background: var(--curve-best); }
+.science-curve-key.is-not-kept { border: 1.25px solid var(--fg-dim); }
+.science-curve-key.is-elsewhere { border: 1.25px dashed var(--fg-dim); }
+.science-curve-key.is-failed { border-radius: 0; width: 8px; height: 2px; background: var(--danger); transform: rotate(45deg); }
+.science-curve-key.is-best { width: 12px; height: 2px; border-radius: 1px; background: var(--curve-best); }
+.science-curve-key.is-baseline { width: 12px; height: 0; border-radius: 0; border-top: 1px dashed var(--fg-dim); }
+
 /* A section's small map (the code's components): cards in bands by tier, the links drawn
    over them in one SVG once the cards are placed. */
 .science-minimap { position: relative; display: grid; gap: 12px; margin-top: 8px; }

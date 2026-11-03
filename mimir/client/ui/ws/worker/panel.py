@@ -130,6 +130,8 @@ class Panel:
                     # small map of it the drawer draws: passed through unread, as groups are.
                     "open": payload.get("open") or "",
                     **({"map": payload["map"]} if isinstance(payload.get("map"), dict) else {}),
+                    # A curve the section draws (the optimisation's runs), likewise unread.
+                    **({"chart": payload["chart"]} if isinstance(payload.get("chart"), dict) else {}),
                 })
             return out
 

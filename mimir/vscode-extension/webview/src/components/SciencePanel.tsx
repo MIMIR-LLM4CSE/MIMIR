@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { PanelSection, WatchedRun } from "../types";
 import { PanelGroupList, RunBadge } from "./PanelGroups";
+import { PanelCurve } from "./PanelCurve";
 import { PanelMiniMap } from "./PanelMiniMap";
 import { PanelResizer, usePanelWidth } from "./PanelResizer";
 import { badgeKey, isFilled, toggle } from "./panelGroupUtils";
@@ -159,6 +160,9 @@ export const SciencePanel: React.FC<Props> = ({
             </button>
             {isOpen && (
               <div id={bodyId} role="group">
+                {section.chart && section.chart.points.length > 0 && (
+                  <PanelCurve chart={section.chart} />
+                )}
                 {section.lines.map((line, i) => (
                   <div className="science-line" key={i}>
                     <span className="science-line-label" title={line.label}>{line.label}</span>

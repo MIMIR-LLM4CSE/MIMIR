@@ -872,6 +872,25 @@ def test_a_section_s_view_to_open_travels_to_the_drawer():
     assert "map" not in sections[0]
 
 
+def test_a_section_s_curve_travels_to_the_drawer_unread():
+    chart = {"metric": "time_s", "goal": "min", "baseline": 10.0, "best": 8.0, "tried": 1, "kept": 1,
+             "points": [{"n": 1, "run": "r1", "axis": "", "value": 8.0, "kind": "kept", "best": 8.0}]}
+
+    class Connection:
+        async def call_tool(self, tool, args):
+            return _mcp({"title": "Optimisation", "lines": [{"label": "proxy", "value": "p"}],
+                         "chart": chart})
+
+    worker, loop = _worker_with(fake_agent(
+        tool_caps=_caps(opt={"section": "Optimisation", "order": 20}),
+        tool_owner={"opt": "proxy"}, sessions={"proxy": Connection()}, turn=TurnState()))
+    future = worker.panel.sections()
+    _drain(loop, future)
+    sections = future.result(timeout=5)
+    loop.close()
+    assert sections[0]["chart"] == chart
+
+
 def test_the_code_map_is_asked_whole_of_whoever_declares_it():
     """By capability, with the arguments the contract names; nothing when nobody answers."""
     from mimir.client.tools.capabilities import CODE_MAP
