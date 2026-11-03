@@ -15,6 +15,35 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.13.0] — 2026-11-03
+
+### Added
+- **R&D requests from the code map.** A module, file, function, component or the whole
+  code can be given a request for the agent: a numerical method, an algorithm, external
+  code to bring in, parallelism, data layout, precision, or an analysis and refactor of
+  the architecture (the form lists the cycles, rule breaks and coupling the map finds
+  there). **Study** has the agent read and propose without editing; **Try** has it
+  implement each variant from the same starting code and measure it through the
+  session's ratchet, where a refactor step is kept when it costs no time beyond the
+  noise. Requests are numbered (R1, R2…), kept in `proxy_bench/requests.json`, shown on
+  the modules they target and in a Requests list with their variants side by side, and
+  the tab follows them on its own. New: the `proxy_request` tool, `proxy_eval(op='reset_to_request')`
+  and the `map-request` skill.
+- **The code map shows the time per function.** The profile's costliest functions, by their
+  own time, are listed in the side pane over the whole code and for the module or file
+  selected; the header's **Functions** toggle also lists each module's three costliest in
+  its box. A function opens at its line: the costliest sampled one, or where cProfile found
+  it defined.
+
+### Changed
+- **The optimisation strip is a chart.** The metric's axis, the baseline dashed, the best
+  value as a step line and one dot per run (green when kept, hollow when ruled out), with
+  a chip per run under it to pick it by.
+- **The code map fills its tab.** Its columns follow the window's width, so a wide tab
+  leaves no gap beside the side pane.
+- **A file in the code map's lists opens with a double-click** (or Ctrl/Cmd-click); a click
+  still shows it on the map. The ↗ beside each is gone.
+
 ### Fixed
 - **A state directory MIMIR cannot write is named, not hidden.** When `~/.mimir` (or
   `MIMIR_STATE_HOME`) is not writable, the extension used to fail silently, with no
@@ -52,33 +81,6 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   came back the same, so the click looked lost. The button now turns while the scan runs,
   the header then says when the code was mapped, and a server with no map to give (no
   agent connected) or no answer within a minute is said instead of nothing.
-
-### Added
-- **R&D requests from the code map.** A module, file, function, component or the whole
-  code can be given a request for the agent: a numerical method, an algorithm, external
-  code to bring in, parallelism, data layout, precision, or an analysis and refactor of
-  the architecture (the form lists the cycles, rule breaks and coupling the map finds
-  there). **Study** has the agent read and propose without editing; **Try** has it
-  implement each variant from the same starting code and measure it through the
-  session's ratchet, where a refactor step is kept when it costs no time beyond the
-  noise. Requests are numbered (R1, R2…), kept in `proxy_bench/requests.json`, shown on
-  the modules they target and in a Requests list with their variants side by side, and
-  the tab follows them on its own. New: the `proxy_request` tool, `proxy_eval(op='reset_to_request')`
-  and the `map-request` skill.
-- **The code map shows the time per function.** The profile's costliest functions, by their
-  own time, are listed in the side pane over the whole code and for the module or file
-  selected; the header's **Functions** toggle also lists each module's three costliest in
-  its box. A function opens at its line: the costliest sampled one, or where cProfile found
-  it defined.
-
-### Changed
-- **The optimisation strip is a chart.** The metric's axis, the baseline dashed, the best
-  value as a step line and one dot per run (green when kept, hollow when ruled out), with
-  a chip per run under it to pick it by.
-- **The code map fills its tab.** Its columns follow the window's width, so a wide tab
-  leaves no gap beside the side pane.
-- **A file in the code map's lists opens with a double-click** (or Ctrl/Cmd-click); a click
-  still shows it on the map. The ↗ beside each is gone.
 
 ## [1.12.0] — 2026-11-02
 
