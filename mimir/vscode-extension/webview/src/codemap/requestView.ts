@@ -29,7 +29,9 @@ export function statusPill(status: string): string {
 /** The form, filled in from *d*. *suggest* are rows offering the targets' costliest
  *  functions; *findings* what the map sees in a refactor's scope. */
 export function formHtml(d: Draft, suggest: string, findings: string[]): string {
-  const chips = d.targets.map((t, i) => '<span class="tchip" title="' + esc(targetLabel(t)) + '">' + esc(targetLabel(t))
+  // The label's end (the file, the function) is what tells two targets apart: cut at its start.
+  const chips = d.targets.map((t, i) => '<span class="tchip" title="' + esc(targetLabel(t)) + '"><span class="tl"><bdi>'
+    + esc(targetLabel(t)) + "</bdi></span>"
     + '<button class="x" data-untarget="' + i + '" aria-label="Remove ' + esc(targetLabel(t)) + '">×</button></span>').join("");
   const field = (label: string, input: string, hint = "") => '<label class="fl"><span>' + esc(label)
     + (hint ? ' <i class="hint">' + esc(hint) + "</i>" : "") + "</span>" + input + "</label>";

@@ -167,7 +167,9 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .open[disabled] { opacity: .6; cursor: default; }
 /* R&D requests: the form, their status, their variants */
 .section.req-form .title::before, .section.reqs .title::before, .section.rq .title::before { background: var(--accent); }
-.section.req-form { display: grid; gap: 6px; border-color: var(--accent); }
+/* One track that cannot grow past the pane: a long path wraps or is cut, never widens it. */
+.section.req-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; border-color: var(--accent); }
+.section.req-form > * { min-width: 0; }
 .section.req-form .title { margin-bottom: 2px; }
 .hint { font-size: 11.5px; color: var(--fg-dim); font-style: normal; }
 .cap .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
@@ -177,11 +179,13 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
   border-radius: 3px; padding: 4px 6px; width: 100%; resize: vertical; }
 .fl select:focus, .fl input:focus, .fl textarea:focus { outline: 1px solid var(--focus); outline-offset: -1px; }
 .tchips { display: flex; flex-wrap: wrap; gap: 4px; }
-.tchip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; font: 11.5px var(--mono); padding: 1px 2px 1px 7px;
-  border: 1px solid var(--border); border-radius: 10px; background: var(--bg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tchip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; font: 11.5px var(--mono);
+  padding: 1px 2px 1px 7px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.tchip .tl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.tchip .x { flex-shrink: 0; }
 .tchip .x { all: unset; cursor: pointer; padding: 0 5px; color: var(--fg-dim); }
 .tchip .x:hover { color: var(--e-break); }
-.finds { margin: 0; padding-left: 16px; font-size: 11.5px; color: var(--fg); display: grid; gap: 2px; }
+.finds { margin: 0; padding-left: 16px; font-size: 11.5px; color: var(--fg); display: grid; gap: 2px; overflow-wrap: anywhere; }
 .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .actions .open { margin-top: 0; }
 .open.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
@@ -192,9 +196,10 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .rq-row { grid-template-columns: minmax(0, 1fr) auto; }
 .row > span.st { color: var(--pill-fg); } .row > span.st-dropped { color: var(--fg-dim); }
 .rq-row .go b { color: var(--accent); font-weight: 600; }
-.section.rq .idea { font-size: 12.5px; margin: 6px 0 2px; }
-.note { font-size: 12px; white-space: pre-wrap; background: var(--bg); border-left: 2px solid var(--accent); padding: 4px 6px; border-radius: 0 3px 3px 0; }
-.vt { width: 100%; border-collapse: collapse; font-size: 12px; }
+.section.rq .idea { font-size: 12.5px; margin: 6px 0 2px; overflow-wrap: anywhere; }
+.note { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); border-left: 2px solid var(--accent); padding: 4px 6px; border-radius: 0 3px 3px 0; }
+.vt { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+.vt td:first-child { width: 52%; overflow-wrap: anywhere; }
 .vt td { padding: 3px 4px; border-bottom: 1px solid var(--border-soft); }
 .vt td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 .vt tr[data-step-n] { cursor: pointer; }

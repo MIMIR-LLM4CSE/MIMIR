@@ -25,6 +25,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`npm run deploy` updates the code map too.** Updating an installed extension in place
   copied the chat's bundles but not the code map's (`codemap.js`), so the map tab kept
   its old page after an update. It now copies the whole build.
+- **The code map's request form stays inside its pane.** A long path or name (a target,
+  a function, a refactor's findings) widened the whole form past the side pane; a target
+  is now cut at its start, keeping the file and function that tell it apart, and paths
+  wrap.
 
 ### Added
 - **R&D requests from the code map.** A module, file, function, component or the whole
