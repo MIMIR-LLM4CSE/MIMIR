@@ -569,7 +569,8 @@ class DigestTests(CatalogueTestCase):
         if script.startswith("sinfo -N"):
             return None
         if script.startswith("sinfo "):
-            return "compute|up|1-00:00:00|64|64|256000\n"
+            return ("compute|up|1-00:00:00|64|64|256000\n"
+                    "gpu|up|1-00:00:00|4|72|579000\n")
         return None
 
     def test_digest_records_node_types_and_partitions(self):

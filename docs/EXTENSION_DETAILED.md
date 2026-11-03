@@ -537,10 +537,22 @@ A section may answer with a tree as well as with lines. `groups` is recursive
 (`{id, label, value?, lines?, nodes?, detail?, groups?, action?, badges?}`) and
 `PanelGroupList` renders any depth of it, so the shape is the server's decision: the HPC
 server fills it with the schedulers this workspace reaches, the kinds of node on each,
-and what a probe read on one of them. A kind is labelled by its nodes (the digest's
-`example_nodes` and `nodes_total`) and opens onto one spec per line — arch, cpus, gpu,
-`cpu mem`, `gpu mem`, partitions, features, nodes. `gpu mem` is per GPU from a probe, or
-said to be unknown until one runs, since Slurm's gres never carries it. Everything starts collapsed — a workspace reaching
+and what a probe read on one of them. Only what the user can submit to is there: the
+partitions `sinfo` lists without `--all` (hidden ones and those closed to the user's
+groups are not), up, not root-only and open to one of the user's accounts
+(`scontrol show partition`, `sacctmgr`), and the nodes in one of them; a node down,
+drained, reserved or not responding is counted rather than offered, and a kind with none
+in service is left out. The scheduler's row says what is free now — cores and GPUs no job
+holds, a node whose memory is all allocated giving none — and how many jobs already wait,
+from `squeue` over every user, counting those pending on Resources or Priority only
+(where `PrivateData=jobs` lets the user see only their own jobs, a `queue` line says
+so); it
+opens onto one line per partition with the same crossed reading, a `not shown` line
+naming what was left out and why, and the kinds, the roomiest first. A kind is labelled
+by what it is (`4× a100 · 64 cpus · 503 GB`), its row valued by its free room, and opens
+onto idle nodes, partitions, node names, cpus, `gpu mem` and features. `gpu mem` is per
+GPU from a probe, or said to be unknown until one runs, since Slurm's gres never carries
+it. The room is read again every 30 s at most; the hardware stays the digest's. Everything starts collapsed — a workspace reaching
 three clusters would otherwise open onto a page of
 machines. Which rows are open lives in `SciencePanel`, keyed on the servers' own ids so
 the answer survives a refresh; native `<details>` would lose it, since the drawer

@@ -406,6 +406,19 @@ _SCONTROL = (
 )
 
 
+def _digest(partitions=None, left_out=None, private_jobs=None) -> dict:
+    """A scheduler's digest as the access rule reads it: usable partitions, what was left out."""
+    return {"source": "scontrol", "degraded": "", "node_types": [], "signature": "",
+            "partitions": [{"partition": p} for p in (partitions or [])],
+            "left_out": {"nodes": 0, "partitions": left_out or {}},
+            "private_jobs": private_jobs}
+
+
+def stub_digest(case: unittest.TestCase, **kwargs) -> None:
+    """Answer the tools' access rule from a canned digest, with no scheduler asked."""
+    stub_attr(case, server_hpc, "_cluster_digest", lambda host: _digest(**kwargs))
+
+
 class SlurmNodesTests(unittest.TestCase):
     """Node inventory read from Slurm's own database — no allocation, so it can be
     consulted *before* choosing where to submit. Architecture is the field that earns
@@ -416,6 +429,29 @@ class SlurmNodesTests(unittest.TestCase):
         local_slurm(self)
         stub_attr(self, hpc_cli, "run_argv", lambda argv, t, host='': {
             "status": "ok", "stdout": _SCONTROL, "stderr": "", "returncode": 0})
+        stub_digest(self)
+
+    def test_only_the_partitions_the_user_can_submit_to_are_described(self) -> None:
+        stub_digest(self, partitions=["cpu"], left_out={"gpu": "root only"})
+        res = server_hpc.slurm_nodes()
+        self.assertEqual(res["nodes_total"], 2)
+        self.assertEqual(res["left_out"]["outside_your_partitions"], 1)
+        self.assertEqual(res["left_out"]["partitions"], {"gpu": "root only"})
+        refused = server_hpc.slurm_nodes(partition="gpu")
+        self.assertEqual(refused["count"], 0)
+        self.assertIn("root only", refused["note"])
+        self.assertEqual(server_hpc.slurm_nodes(all_nodes=True)["nodes_total"], 3)
+        self.assertEqual(server_hpc.slurm_nodes(node="gpu-n01")["count"], 1)
+
+    def test_a_node_out_of_service_is_counted_not_offered(self) -> None:
+        drained = _SCONTROL.replace("State=MIXED", "State=MIXED+DRAIN")
+        stub_attr(self, hpc_cli, "run_argv", lambda argv, t, host='': {
+            "status": "ok", "stdout": drained, "stderr": "", "returncode": 0})
+        res = server_hpc.slurm_nodes()
+        self.assertEqual(res["nodes_total"], 2)
+        self.assertEqual(res["left_out"]["out_of_service"], 1)
+        # Asked for by state, it is there.
+        self.assertEqual(server_hpc.slurm_nodes(states="drain")["nodes_total"], 1)
 
 
     def test_aggregates_nodes_onto_hardware_types(self) -> None:
@@ -463,6 +499,38 @@ class SlurmNodesTests(unittest.TestCase):
             self.assertIn("architecture", res["degraded"])
         finally:
             stub_attr(self, hpc_cli, "run_bash", orig_bash)
+
+
+class PartitionAndQueueAccessTests(unittest.TestCase):
+    """The tools apply the drawer's rule, and say when squeue shows only the user's jobs."""
+
+    def setUp(self) -> None:
+        local_slurm(self)
+        stub_attr(self, hpc_cli, "run_bash", lambda cmd, t, stdin=None, host='': {
+            "status": "ok", "returncode": 0, "stderr": "",
+            "stdout": ("gpu|PENDING|8|1|gres/gpu:2|Resources\n"
+                       "cpu|PENDING|4|1|N/A|Priority\n" if cmd.startswith("squeue -h -t")
+                       else "1|me|RUNNING|1:00|2:00|1|n1|a\n" if cmd.startswith("squeue")
+                       else "cpu*|up|1-00|4|idle|64|773500\n"
+                            "gpu|up|1-00|1|mix|72|579000\n")})
+        stub_attr(self, server_hpc, "_recorded_jobs", lambda: set())
+
+    def test_partitions_are_the_usable_ones_with_what_waits_on_them(self) -> None:
+        stub_digest(self, partitions=["cpu"], left_out={"gpu": "not open to your accounts"})
+        res = server_hpc.slurm_partitions()
+        self.assertEqual([r["partition"] for r in res["partitions"]], ["cpu"])
+        self.assertEqual(res["left_out"], {"gpu": "not open to your accounts"})
+        self.assertEqual(list(res["queue"]), ["cpu"])
+        self.assertEqual(res["queue"]["cpu"]["waiting_cpus"], 4)
+        self.assertNotIn("note", res)
+        self.assertEqual(server_hpc.slurm_partitions(all_partitions=True)["count"], 2)
+
+    def test_a_site_hiding_other_users_jobs_is_said(self) -> None:
+        stub_digest(self, partitions=["cpu", "gpu"], private_jobs=True)
+        self.assertIn("PrivateData=jobs", server_hpc.slurm_partitions()["note"])
+        self.assertIn("PrivateData=jobs",
+                      server_hpc.slurm_queue(user_only=False)["note"])
+        self.assertNotIn("note", server_hpc.slurm_queue())
 
 
 class SbatchTargetingTests(unittest.TestCase):
@@ -559,6 +627,13 @@ class NodeProfileTests(unittest.TestCase):
             "cpu": {"model": "Intel(R) Xeon(R) 6747P", "simd": {"avx2": True, "amx_tile": True}},
         })
         os.environ.pop("SLURM_JOB_ID", None)
+        stub_digest(self)
+
+    def test_a_kind_outside_the_user_s_partitions_is_not_described(self) -> None:
+        stub_digest(self, partitions=["cpu"])
+        res = server_hpc.slurm_node_profile()
+        self.assertEqual(res["type_count"], 1)
+        self.assertEqual(res["left_out"], {"outside_your_partitions": 1})
 
     def tearDown(self) -> None:
         os.environ.clear()

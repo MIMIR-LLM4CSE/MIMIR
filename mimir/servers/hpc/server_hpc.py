@@ -46,13 +46,19 @@ from ...shared.slurm_site import (
     unwatched_hint as slurm_unwatched_hint,
 )
 from .slurm_digest import (
+    cached_cluster_digest as _cluster_digest,
     forget_cluster_digest as _forget_cluster_digest,
+    usable_set as _usable_set,
 )
 from .slurm_nodes import (
     SCONTROL_NODES_ARGV as _SCONTROL_NODES_ARGV,
+    SQUEUE_LOAD_FORMAT as _SQUEUE_LOAD_FORMAT,
     aggregate_node_types as _aggregate_node_types,
+    out_of_service as _out_of_service,
     parse_pipe_table as _parse_pipe_table,
     parse_scontrol_nodes as _parse_scontrol_nodes,
+    parse_squeue_load as _parse_squeue_load,
+    usable_nodes as _usable_nodes,
 )
 from ...shared.slurm_script import sbatch_header, validate_target
 from ...shared import build_progress
@@ -189,14 +195,55 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
     return ok(payload)
 
 
+# ── What this user can submit to ──────────────────────────────────────────────
+# The rule the Cluster drawer applies, from the same digest: the partitions sinfo lists
+# without --all, up, not root-only and open to one of the user's accounts, and the
+# nodes in one of them. Unknown access (the digest did not answer) filters nothing.
+
+_PRIVATE_JOBS_NOTE = ("Only your own jobs are visible on this scheduler (PrivateData=jobs): "
+                      "other users' pending jobs are not counted.")
+
+
+def _access_rule(nodes: list[dict], host: str, *,
+                 keep_out_of_service: bool = False) -> tuple[list[dict], dict]:
+    """*nodes* narrowed to where this user can submit, and what that left out."""
+    digest = _cluster_digest(host)
+    kept = _usable_nodes(nodes, _usable_set(digest))
+    left_out: dict = {}
+    if len(nodes) - len(kept):
+        left_out["outside_your_partitions"] = len(nodes) - len(kept)
+    if digest["left_out"]["partitions"]:
+        left_out["partitions"] = digest["left_out"]["partitions"]
+    if not keep_out_of_service:
+        in_service = [n for n in kept if not _out_of_service(n["state"])]
+        if len(kept) - len(in_service):
+            left_out["out_of_service"] = len(kept) - len(in_service)
+        kept = in_service
+    return kept, left_out
+
+
+def _partition_refusal(partition: str, left_out: dict) -> str:
+    """Why *partition* matched nothing, when it is one the rule left out."""
+    why = (left_out.get("partitions") or {}).get(partition)
+    return f"Partition '{partition}' is not usable by you: {why}." if why else ""
+
+
 @mcp.tool(**tool_caps(kind="slurm"))
-def slurm_partitions(scheduler: str = "") -> dict:
-    """List Slurm partitions with key scheduling attributes.
+def slurm_partitions(scheduler: str = "", all_partitions: bool = False) -> dict:
+    """List the Slurm partitions this user can submit to, and what already waits on each.
+
+    Only the partitions sinfo lists without --all, up, not root-only and open to one of
+    the user's accounts; `left_out` names the others and why. `queue` is squeue's
+    reading per partition, every user: `waiting` jobs (pending on Resources or
+    Priority, with the cpus and GPUs they ask), `held` ones (a dependency, a limit),
+    `running`. Where PrivateData hides other users' jobs, `note` says so: the counts
+    are then the user's own.
 
     Args:
         scheduler: Which scheduler to ask — 'local' for this machine's own, or
             a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
+        all_partitions: List every partition sinfo shows, usable or not.
     """
     host, refusal = chosen_host(scheduler)
     if refusal:
@@ -210,13 +257,32 @@ def slurm_partitions(scheduler: str = "") -> dict:
         result.get("stdout", ""),
         ["partition", "availability", "time_limit", "nodes", "state", "cpus_per_node", "mem_mb_per_node"],
     )
-    return ok({"partitions": rows, "count": len(rows),
-               "scheduler": _host_name(host)})
+    for row in rows:
+        row["partition"] = row["partition"].rstrip("*")
+    digest = _cluster_digest(host)
+    payload: dict = {"scheduler": _host_name(host)}
+    usable = _usable_set(digest)
+    if not all_partitions and usable is not None:
+        rows = [row for row in rows if row["partition"] in usable]
+        if digest["left_out"]["partitions"]:
+            payload["left_out"] = digest["left_out"]["partitions"]
+    payload.update({"partitions": rows, "count": len(rows)})
+    queued = cli.run_bash(f"squeue -h -t PENDING,RUNNING -o '{_SQUEUE_LOAD_FORMAT}'",
+                          TIMEOUT_READ, host=host)
+    if queued["status"] == "ok":
+        names = {row["partition"] for row in rows}
+        payload["queue"] = {name: q for name, q in
+                            _parse_squeue_load(queued.get("stdout", "")).items()
+                            if name in names}
+        if digest.get("private_jobs"):
+            payload["note"] = _PRIVATE_JOBS_NOTE
+    return ok(payload)
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
 def slurm_nodes(partition: str = "", states: str = "", node: str = "",
-                detail: bool = False, scheduler: str = "") -> dict:
+                detail: bool = False, scheduler: str = "",
+                all_nodes: bool = False) -> dict:
     """Inventory the cluster's compute nodes: hardware, GPUs, and what is free right now.
 
     Read-only and instant — it reads Slurm's own node database, which is what actually
@@ -229,6 +295,11 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
     per state) unless you ask for detail or name a node — a per-node listing of a large
     cluster is mostly noise.
 
+    Only the nodes a job of this user can land on: in a partition they can submit to
+    (listed by sinfo, up, not root-only, open to one of their accounts) and in service
+    (not down, drained, reserved or unresponsive — kept when `states` asks for them).
+    `left_out` counts the rest; a named node is always described.
+
     Args:
         partition: Only nodes in this partition.
         states: Comma-separated state filter, e.g. 'idle,mix,alloc'.
@@ -237,6 +308,7 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
         scheduler: Which scheduler to ask — 'local' for this machine's own, or
             a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
+        all_nodes: Every node Slurm knows, usable or not.
     """
     host, refusal = chosen_host(scheduler)
     if refusal:
@@ -252,9 +324,12 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
         return err(result.get("stderr") or result.get("error", "node query failed"),
                    hint=no_scheduler_hint(host))
 
+    left_out: dict = {}
     if node:
         wanted = {n.strip() for n in node.split(",") if n.strip()}
         nodes = [n for n in nodes if n["node"] in wanted]
+    elif not all_nodes:
+        nodes, left_out = _access_rule(nodes, host, keep_out_of_service=bool(states))
     if partition:
         nodes = [n for n in nodes if partition in n["partitions"]]
     if states:
@@ -263,7 +338,8 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
 
     if not nodes:
         return ok({"nodes": [], "count": 0,
-                   "note": "No node matched the filters."})
+                   "note": _partition_refusal(partition, left_out)
+                           or "No node matched the filters."})
     if detail or node:
         payload = {"nodes": nodes, "count": len(nodes)}
     else:
@@ -275,6 +351,8 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
             "architectures": sorted({n["arch"] for n in nodes if n["arch"]}),
             "note": "Aggregated by hardware signature; pass detail=True or node='<name>' for individual nodes.",
         }
+    if left_out:
+        payload["left_out"] = left_out
     if degraded:
         payload["degraded"] = degraded
     payload["scheduler"] = _host_name(host)
@@ -290,7 +368,8 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
     says where else to look.
 
     Args:
-        user_only: If true, show only jobs for the current user.
+        user_only: If true, show only jobs for the current user. Where PrivateData
+            hides other users' jobs, false lists the same jobs and `note` says so.
         states: Optional state filter (e.g. 'R,PD').
         scheduler: Which scheduler to ask — 'local' for this machine's own, or
             a hostname. Omitted is fine when this workspace reaches only one;
@@ -317,6 +396,8 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
     for row, job_id in zip(rows, ids):
         row["watched"] = _covered_by(job_id, recorded, host)
     payload = {"jobs": rows, "count": len(rows), "scheduler": _host_name(host)}
+    if not user_only and _cluster_digest(host).get("private_jobs"):
+        payload["note"] = _PRIVATE_JOBS_NOTE
     # Per row above, by array here: eight task rows name one descriptor to write, and
     # listing them one by one would ask for eight calls that all land on "already
     # recorded".
@@ -890,7 +971,8 @@ def slurm_node_profile(partition: str = "", node: str = "",
     """What the compute nodes are, as the machines code will be built for and run on.
 
     Read-only and instant. For each kind of node (Slurm's hardware signature) in
-    *partition* — or just *node* — returns Slurm's facts plus, when a node of that
+    *partition* — or just *node* — among the partitions this user can submit to
+    (`left_out` counts the rest), returns Slurm's facts plus, when a node of that
     kind has been profiled, its full profile read on the node: CPU model, vector ISA,
     caches, the name `-march=native` resolves to there, GPUs with compute capability,
     OS and glibc, toolchains and Python environments. A kind with no profiled node
@@ -935,13 +1017,17 @@ def slurm_node_profile(partition: str = "", node: str = "",
     if ctx["context"] == "in_allocation":
         node_profiles.refresh_own_profile(by_name, sched_host)
 
-    nodes = all_nodes
+    left_out: dict = {}
     if node:
-        nodes = [n for n in nodes if n["node"] == node]
+        nodes = [n for n in all_nodes if n["node"] == node]
+    else:
+        # The hardware is the question, so a drained node of a kind still describes it.
+        nodes, left_out = _access_rule(all_nodes, sched_host, keep_out_of_service=True)
     if partition:
         nodes = [n for n in nodes if partition in n["partitions"]]
     if not nodes:
-        return ok({"node_types": [], "note": "No node matched.", "pending_probes": pending})
+        return ok({"node_types": [], "pending_probes": pending,
+                   "note": _partition_refusal(partition, left_out) or "No node matched."})
 
     host = node_profiles.host_identity()
     types = _aggregate_node_types(nodes)
@@ -955,6 +1041,8 @@ def slurm_node_profile(partition: str = "", node: str = "",
         "node_types": out,
         "type_count": len(out),
     }
+    if left_out:
+        payload["left_out"] = left_out
     if not full:
         payload["note"] = ("Profiles summarised across many node kinds; pass partition "
                            "with one kind, or node, for the full profile.")
@@ -972,15 +1060,17 @@ def slurm_node_profile(partition: str = "", node: str = "",
 async def hpc_panel_report(refresh: bool = False) -> dict:
     """Where the work goes, in a form a panel can show: the queue, the room, the nodes.
 
-    Two halves with two shapes. The lines are this moment — what is queued, where there
-    is room — and the groups are the standing thing: every scheduler the workspace
-    reaches, each with the kinds of node it is made of and what a probe found on one.
-    A nested shape because the question is nested: which cluster, then which kind of
-    machine on it, then what that machine actually is.
+    The lines are the user's own jobs; the groups are every scheduler the workspace
+    reaches, each with the room on the partitions this user may submit to — free cores
+    and GPUs from the node listing, crossed with what squeue says already waits — and
+    the kinds of node it is made of, down, drained, reserved or closed partitions left
+    out and counted. A nested shape because the question is nested: which cluster, then
+    which kind of machine on it, then what that machine actually is.
 
     Everything is served from the panel's caches, so a panel refreshing on a timer costs
-    one ``squeue`` every few seconds at most, one ``sinfo`` every few minutes, and one
-    digest per scheduler for the life of the server. A host with nothing to say returns
+    one ``squeue`` of the user's jobs every few seconds at most, one node listing and
+    one ``squeue`` per scheduler every half minute, and one digest per scheduler for the
+    life of the server. A host with nothing to say returns
     neither lines nor groups, and the client then shows no section — a laptop should not
     grow an empty cluster panel.
 
@@ -1000,8 +1090,7 @@ async def hpc_panel_report(refresh: bool = False) -> dict:
 
 
 def _hpc_panel_report(refresh: bool) -> dict:
-    return panel.report(refresh, read_queue=lambda: slurm_queue(user_only=True),
-                        read_partitions=slurm_partitions)
+    return panel.report(refresh, read_queue=lambda: slurm_queue(user_only=True))
 
 
 

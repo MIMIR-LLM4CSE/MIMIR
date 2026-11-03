@@ -15,6 +15,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **The Cluster drawer shows where a job can actually go, and how much room is there.**
+  Only the partitions the user can submit to are described — the ones `sinfo` lists,
+  up, not root-only and open to one of the user's accounts — and only the nodes in them:
+  login and service nodes in no partition are gone, and a node down, drained, reserved
+  or not responding is counted rather than offered. Each scheduler's row says what is
+  free now (cores and GPUs no job holds) and how many jobs already wait for it, crossed
+  with `squeue` over every user; it opens onto one line per partition, a `not shown`
+  line saying what was left out and why, and the kinds of node, named by what they are
+  (`4× a100 · 64 cpus · 503 GB`) rather than by a list of node names, the roomiest
+  first. The room is read again every 30 s; the section's top-level partition lines are
+  gone, folded into each scheduler's row.
+- **The agent's cluster tools follow the same rule.** `slurm_nodes`, `slurm_node_profile`
+  and `slurm_partitions` describe only what the user can submit to and count the rest in
+  `left_out` (`all_nodes=True` / `all_partitions=True` list everything; a named node is
+  always described); a partition left out says why when asked for. `slurm_partitions`
+  also returns what already waits on each partition, from `squeue`. Where
+  `PrivateData=jobs` hides other users' jobs, the drawer, `slurm_partitions` and
+  `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
+
 ### Fixed
 - **The code map no longer re-maps at every status poll.** While a run went, the agent's
   `proxy_eval_status` polls each told an open map tab to map the code again, so it

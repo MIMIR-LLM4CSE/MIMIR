@@ -242,8 +242,7 @@ def test_a_refresh_drops_the_digest_that_outlives_every_other_cache():
     with mock.patch.object(panel, "forget_cluster_digest",
                            side_effect=lambda *a: forgotten.append(a)), \
          mock.patch.object(panel, "slurm_hosts", return_value=[]), \
-         mock.patch.object(panel, "_queue_line", return_value=None), \
-         mock.patch.object(panel, "_partition_lines", return_value=[]):
+         mock.patch.object(panel, "_queue_line", return_value=None):
         with mock.patch.object(panel, "_host_tree", return_value=[{"id": "host:stale"}]):
             _report(hpc)
         with mock.patch.object(panel, "_host_tree", return_value=[{"id": "host:fresh"}]):
@@ -264,8 +263,7 @@ def test_a_profile_landing_shows_without_a_refresh(tmp_path):
 
     with mock.patch.object(panel, "slurm_hosts", return_value=[""]), \
          mock.patch.object(panel, "profile_host_dir", return_value=str(host_dir)), \
-         mock.patch.object(panel, "_queue_line", return_value=None), \
-         mock.patch.object(panel, "_partition_lines", return_value=[]):
+         mock.patch.object(panel, "_queue_line", return_value=None):
         with mock.patch.object(panel, "_host_tree", return_value=[{"id": "before"}]):
             assert _report(hpc)["groups"] == [{"id": "before"}]
         (host_dir / "n01.json").write_text("{}")
@@ -278,12 +276,11 @@ def test_a_host_that_did_not_answer_is_asked_again_soon():
     hpc = _load("server_hpc_retry", SERVERS_DIR / "hpc" / "server_hpc.py")
     panel.forget()
     with mock.patch.object(panel, "slurm_hosts", return_value=[]), \
-         mock.patch.object(panel, "_queue_line", return_value=None), \
-         mock.patch.object(panel, "_partition_lines", return_value=[]):
+         mock.patch.object(panel, "_queue_line", return_value=None):
         with mock.patch.object(panel, "_host_tree",
                                return_value=[{"id": "h", "state": "warn"}]):
             _report(hpc)
-        panel._CACHE["hosts"]["at"] -= panel._RETRY_SECS + 1
+        panel._CACHE["hosts"]["at"] -= panel._LOAD_TTL_SECS + 1
         with mock.patch.object(panel, "_host_tree", return_value=[{"id": "h"}]):
             assert _report(hpc)["groups"] == [{"id": "h"}]
 
@@ -364,6 +361,7 @@ _DIGEST = {
     "scheduler": "hpc1", "built_at": "2026-10-13T00:00:00Z", "source": "scontrol",
     "signature": "abc", "degraded": "",
     "partitions": [{"partition": "gpu"}, {"partition": "cpu"}],
+    "left_out": {"nodes": 3, "partitions": {"admin": "root only"}},
     "node_types": [{"arch": "x86_64", "cpus": 64, "mem_mb": 515000,
                     "gres": "gpu:a100:4", "sockets": 2, "cores_per_socket": 32,
                     "threads_per_core": 1, "features": "avx512,ib",
@@ -372,14 +370,36 @@ _DIGEST = {
 }
 
 _SILENT_DIGEST = {"scheduler": "hpc2", "built_at": "", "source": "", "signature": "",
-                  "degraded": "", "partitions": [], "node_types": []}
+                  "degraded": "", "partitions": [], "node_types": [],
+                  "left_out": {"nodes": 0, "partitions": {}}}
 
 
-def _tree(hosts, digests, profiles=None):
-    """Build the host tree against canned digests and profiles — no scheduler is asked."""
+def _gpu_node(name, state="IDLE", cpus_alloc=0, gpus_alloc=0):
+    kind = _DIGEST["node_types"][0]
+    return {**{k: kind[k] for k in ("arch", "cpus", "mem_mb", "gres", "sockets",
+                                     "cores_per_socket", "threads_per_core", "features")},
+            "node": name, "state": state, "partitions": ["gpu"],
+            "cpus_allocated": cpus_alloc, "mem_alloc_mb": 0,
+            "gpus": 4, "gpus_allocated": gpus_alloc}
+
+
+# Ten nodes of the kind: two idle, six full, one half used, one drained.
+_LOAD = {"source": "scontrol", "read_at": "2026-10-13T09:41:00Z",
+         "nodes": ([_gpu_node(f"gpu00{i}") for i in (1, 2)]
+                   + [_gpu_node(f"gpu0{i:02d}", "ALLOCATED", 64, 4) for i in range(3, 9)]
+                   + [_gpu_node("gpu009", "MIXED", 32, 2),
+                      _gpu_node("gpu010", "IDLE+DRAIN")]),
+         "queue": {"gpu": {"running": 7, "waiting": 3, "waiting_cpus": 96,
+                           "waiting_gpus": 6, "held": 1}}}
+
+
+def _tree(hosts, digests, profiles=None, loads=None):
+    """Build the host tree against canned digests, loads and profiles — no scheduler is asked."""
     panel.forget()
     with mock.patch.object(panel, "slurm_hosts", return_value=hosts), \
          mock.patch.object(panel, "cluster_digest", side_effect=lambda h: digests[h]), \
+         mock.patch.object(panel, "cluster_load",
+                           side_effect=lambda h, usable=None: (loads or {}).get(h, _LOAD)), \
          mock.patch.object(panel, "read_node_profile",
                            side_effect=lambda node, host: (profiles or {}).get(node)):
         return panel._host_tree()
@@ -414,6 +434,7 @@ def test_the_schedulers_are_all_reached_at_once():
 
     with mock.patch.object(panel, "slurm_hosts", return_value=hosts), \
          mock.patch.object(panel, "cluster_digest", side_effect=_slow), \
+         mock.patch.object(panel, "cluster_load", return_value=None), \
          mock.patch.object(panel, "read_node_profile", return_value=None):
         tree = panel._host_tree()
     assert [g["label"] for g in tree] == hosts
@@ -429,26 +450,73 @@ def test_a_silent_host_is_listed_as_unknown_not_as_empty():
     assert "groups" not in tree[0]        # never an empty machine list
 
 
-def test_a_node_kind_is_named_by_its_nodes_and_lists_its_specs():
-    tree = _tree(["hpc1"], {"hpc1": _DIGEST})
-    kind = tree[0]["groups"][0]
-    assert kind["label"] == "gpu001, gpu002 +8"
+def test_a_node_kind_is_named_by_what_it_is_and_lists_its_specs():
+    """A kind is picked by its GPUs and its size; the node names are a line inside."""
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
+    assert kind["label"] == "4× a100 · 64 cpus · 503 GB"
     assert kind["nodes"] == ["gpu001", "gpu002"]
     values = {line["label"]: line["value"] for line in kind["lines"]}
-    assert values["arch"] == "x86_64"
-    assert values["cpus"] == "64 (2 sockets × 32 cores × 1 threads)"
-    assert values["gpu"] == "4× a100"
-    assert values["cpu mem"] == "503 GB"
+    assert values["nodes"] == "gpu001, gpu002 +8"
+    assert values["cpus"] == "x86_64 · 64 = 2 sockets × 32 cores × 1 threads"
     assert values["gpu mem"] == "unknown until a node is profiled"
     assert values["partitions"] == "gpu"
-    assert values["nodes"] == "10"
+    assert values["features"] == "avx512,ib"
+
+
+def test_a_kind_says_what_is_free_on_it_now():
+    """Drained nodes are counted, never offered; a full node's cores are not room."""
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
+    assert kind["value"] == "10 GPUs · 160 cpus free"
+    values = {line["label"]: line["value"] for line in kind["lines"]}
+    assert values["idle"] == "2 of 9 nodes (1 out of service)"
+
+
+def test_the_room_on_a_cluster_is_crossed_with_what_already_waits_for_it():
+    """Free cores are room only for a job that would be next: squeue says who is first."""
+    host = _tree(["hpc1"], {"hpc1": _DIGEST})[0]
+    assert host["value"] == "10 GPUs · 160 cpus free · 3 waiting"
+    values = {line["label"]: line["value"] for line in host["lines"]}
+    assert values["gpu"] == ("2/9 nodes idle · 10 GPUs · 160 cpus free · "
+                             "3 waiting (96 cpus, 6 GPUs)")
+    assert "cpu" not in values                 # a partition with no node of its own
+    assert "squeue" in host["detail"] and "09:41" in host["detail"]
+
+
+def test_what_the_tree_leaves_out_is_said():
+    """A node missing from the drawer reads as left out, not as unseen."""
+    host = _tree(["hpc1"], {"hpc1": _DIGEST})[0]
+    values = {line["label"]: line["value"] for line in host["lines"]}
+    assert values["not shown"] == ("3 nodes outside your partitions: admin (root only); "
+                                   "1 node down, drained or reserved")
+
+
+def test_a_site_that_hides_other_users_jobs_says_the_queue_is_only_yours():
+    private = {**_DIGEST, "private_jobs": True}
+    host = _tree(["hpc1"], {"hpc1": private})[0]
+    [line] = [line for line in host["lines"] if line["label"] == "queue"]
+    assert line["state"] == "warn"
+    assert "only your own jobs" in line["value"]
+    assert all(line["label"] != "queue" for line in _tree(["hpc1"], {"hpc1": _DIGEST})[0]["lines"])
+
+
+def test_a_kind_with_no_node_in_service_is_left_out():
+    down = {**_LOAD, "nodes": [_gpu_node("gpu001", "DOWN*"), _gpu_node("gpu002", "DRAINED")]}
+    host = _tree(["hpc1"], {"hpc1": _DIGEST}, loads={"hpc1": down})[0]
+    assert "groups" not in host
+    assert host["value"] == "out of service · 3 waiting"
+
+
+def test_a_load_that_did_not_answer_keeps_the_hardware():
+    host = _tree(["hpc1"], {"hpc1": _DIGEST}, loads={"hpc1": None})[0]
+    assert host["groups"][0]["label"] == "4× a100 · 64 cpus · 503 GB"
+    assert "value" not in host["groups"][0]
+    assert any(line["label"] == "room" and line["state"] == "warn" for line in host["lines"])
 
 
 def test_an_unprofiled_kind_offers_the_request_that_would_fix_it_and_says_nothing_else():
     """An unprofiled kind shows the server-written request in its row, and no badge."""
     kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
     assert "state" not in kind
-    assert "value" not in kind
     assert kind["action"]["kind"] == "probe"
     assert "'hpc1'" in kind["action"]["prompt"]
     assert "'gpu'" in kind["action"]["prompt"]
@@ -471,8 +539,6 @@ def test_a_profiled_kind_carries_what_only_the_node_could_say():
     assert values["os"] == "rhel 8.10 · glibc 2.28"
     assert values["compute capability"] == "8.0"
     assert values["gpu mem"] == "80 GB per GPU"
-    labels = [line["label"] for line in kind["lines"]]
-    assert labels.index("gpu mem") == labels.index("cpu mem") + 1
     assert "Profiled on gpu001, 2026-10-02" in kind["detail"]
     assert "action" not in kind          # nothing left to ask for
     assert kind.get("state") != "warn"
@@ -640,7 +706,7 @@ def test_a_host_without_a_scheduler_reports_no_cluster_at_all():
     assert not out.get("detail")
 
 
-def test_the_queue_and_the_room_are_what_the_cluster_section_says():
+def test_the_section_s_own_line_is_the_user_s_queue():
     hpc = _load("server_hpc_panel2", SERVERS_DIR / "hpc" / "server_hpc.py")
     panel.forget()
 
@@ -661,8 +727,8 @@ def test_the_queue_and_the_room_are_what_the_cluster_section_says():
         out = _report(hpc)
     values = {line["label"]: line["value"] for line in out["lines"]}
     assert values["your jobs"] == "1 pending, 1 running"
-    # 4 idle of 10: whether a job submitted now starts now is the whole question.
-    assert values["gpu"] == "4/10 nodes idle"
+    # The room is per scheduler, in its own row: none at the top of the section.
+    assert list(values) == ["your jobs"]
 
 
 def _proxy():

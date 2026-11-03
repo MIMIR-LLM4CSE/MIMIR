@@ -7,7 +7,7 @@ from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.servers.hpc import slurm_digest
+from mimir.servers.hpc import slurm_digest, slurm_nodes
 from mimir.shared import slurm_site
 
 from mimir.tests.support.scheduler import local_slurm
@@ -27,14 +27,26 @@ SINFO_NODES = (
     "cn001|debug|idle|64|256000|200000|(null)|2|32|1\n"
 )
 
-PARTITIONS = "compute*|up|1-00:00:00|12|64|256000\n"
+PARTITIONS = ("compute*|up|1-00:00:00|12|64|256000\n"
+              "gpu|up|1-00:00:00|4|72|579000\n"
+              "debug|up|1:00:00|2|64|256000\n"
+              "bigmem|up|1-00:00:00|1|192|768000\n")
+
+
+ACCESS = (
+    "PartitionName=compute AllowAccounts=ALL DenyAccounts=(null) RootOnly=NO State=UP\n"
+    "PartitionName=gpu AllowAccounts=gpu-users RootOnly=NO State=UP\n"
+    "@@mimir@@\nphys\n@@mimir@@\nalice\n"
+    "@@mimir@@\nPrivateData             = jobs,usage\n")
 
 
 class _Capture:
     """Stands in for the subprocess seam, dispatching on the script it is handed."""
 
     def __init__(self, scontrol=SCONTROL, sinfo_nodes=SINFO_NODES,
-                 partitions=PARTITIONS):
+                 partitions=PARTITIONS, access=None, squeue=None):
+        self.access = access
+        self.squeue = squeue
         self.scontrol = scontrol
         self.sinfo_nodes = sinfo_nodes
         self.partitions = partitions
@@ -42,6 +54,10 @@ class _Capture:
 
     def __call__(self, script, host, timeout):
         self.scripts.append((script, host))
+        if script.startswith("scontrol show partition"):
+            return self.access
+        if script.startswith("squeue"):
+            return self.squeue
         if script.startswith("scontrol"):
             return self.scontrol
         if script.startswith("sinfo -N"):
@@ -135,6 +151,102 @@ class DigestTests(_DigestTestCase):
     def test_a_remote_host_is_probed_whatever_this_machine_has(self):
         local_slurm(self, False)
         self.assertEqual(slurm_digest.cluster_digest("host-a")["source"], "scontrol")
+
+
+class AccessTests(_DigestTestCase):
+    """Only what this user can submit to is described; the rest is counted."""
+
+    def test_a_partition_sinfo_does_not_list_is_not_offered(self):
+        """sinfo without --all already hides what the user's groups cannot use."""
+        self.capture.partitions = "compute*|up|1-00:00:00|12|64|256000\n"
+        digest = slurm_digest.cluster_digest("host-a")
+        self.assertEqual([t["arch"] for t in digest["node_types"]], ["x86_64"])
+        self.assertEqual(digest["left_out"]["nodes"], 1)
+
+    def test_a_partition_closed_to_the_user_s_accounts_is_left_out(self):
+        self.capture.access = ACCESS
+        digest = slurm_digest.cluster_digest("host-a")
+        self.assertEqual({p["partition"] for p in digest["partitions"]},
+                         {"compute", "debug", "bigmem"})
+        self.assertEqual(digest["left_out"]["partitions"],
+                         {"gpu": "not open to your accounts"})
+        self.assertEqual(len(digest["node_types"]), 1)
+
+    def test_a_site_hiding_other_users_jobs_is_known(self):
+        """With PrivateData=jobs squeue shows this user only their own jobs."""
+        self.assertIsNone(slurm_digest.cluster_digest("host-a")["private_jobs"])
+        self.capture.access = ACCESS
+        self.assertTrue(slurm_digest.cluster_digest("host-a")["private_jobs"])
+        self.capture.access = ACCESS.replace("jobs,usage", "none")
+        self.assertFalse(slurm_digest.cluster_digest("host-a")["private_jobs"])
+
+    def test_a_node_in_no_partition_is_not_a_compute_node(self):
+        self.capture.scontrol = SCONTROL + (
+            "NodeName=login1 Arch=x86_64 CPUTot=32 CPUAlloc=0 RealMemory=128000 "
+            "Sockets=2 CoresPerSocket=16 ThreadsPerCore=1 Gres=(null) "
+            "AvailableFeatures=(null) State=IDLE\n")
+        digest = slurm_digest.cluster_digest("host-a")
+        self.assertEqual(digest["left_out"]["nodes"], 1)
+        self.assertNotIn(32, [t["cpus"] for t in digest["node_types"]])
+
+    def test_a_down_partition_is_left_out(self):
+        self.capture.partitions = PARTITIONS.replace("gpu|up", "gpu|down")
+        digest = slurm_digest.cluster_digest("host-a")
+        self.assertEqual(digest["left_out"]["partitions"], {"gpu": "down"})
+
+    def test_without_a_partition_listing_nothing_is_guessed_away(self):
+        self.capture.partitions = None
+        self.assertEqual(len(slurm_digest.cluster_digest("host-a")["node_types"]), 2)
+
+
+class LoadTests(_DigestTestCase):
+    def test_the_load_reads_the_nodes_and_the_queue_now(self):
+        self.capture.squeue = ("gpu|PENDING|8|1|gres/gpu:2|Resources\n"
+                               "gpu|PENDING|4|1|N/A|Dependency\n"
+                               "compute|RUNNING|64|1|N/A|None\n")
+        load = slurm_digest.cluster_load("host-a", usable={"compute"})
+        self.assertEqual([n["node"] for n in load["nodes"]], ["cn001"])
+        self.assertEqual(load["queue"]["gpu"]["waiting"], 1)
+        self.assertEqual(load["queue"]["gpu"]["waiting_gpus"], 2)
+        self.assertEqual(load["queue"]["gpu"]["held"], 1)
+        self.assertEqual(load["queue"]["compute"]["running"], 1)
+
+    def test_a_queue_that_did_not_answer_is_unknown_not_empty(self):
+        self.assertIsNone(slurm_digest.cluster_load("host-a")["queue"])
+
+
+class RoomTests(unittest.TestCase):
+    def test_out_of_service_states(self):
+        for state in ("DOWN", "IDLE+DRAIN", "MIXED+DRAIN", "down*", "idle*", "drng",
+                      "RESERVED", "maint", "IDLE+NOT_RESPONDING"):
+            self.assertTrue(slurm_nodes.out_of_service(state), state)
+        for state in ("IDLE", "MIXED", "ALLOCATED", "idle~", "IDLE+POWERED_DOWN", "mix"):
+            self.assertFalse(slurm_nodes.out_of_service(state), state)
+
+    def test_free_cores_with_no_memory_left_are_not_room(self):
+        node = {"state": "MIXED", "cpus": 64, "cpus_allocated": 8, "mem_mb": 256000,
+                "mem_alloc_mb": 256000, "gpus": 0, "gpus_allocated": None}
+        self.assertEqual(slurm_nodes.node_room(node)["cpus_free"], 0)
+
+    def test_allocated_gpus_are_read_from_alloc_tres(self):
+        [node] = slurm_nodes.parse_scontrol_nodes(
+            "NodeName=g1 CPUTot=64 CPUAlloc=16 RealMemory=512000 AllocMem=64000 "
+            "Gres=gpu:a100:4(S:0-1) AllocTRES=cpu=16,mem=64000M,gres/gpu=3 "
+            "State=MIXED Partitions=gpu\n")
+        room = slurm_nodes.node_room(node)
+        self.assertEqual((room["cpus_free"], room["gpus_free"]), (48, 1))
+
+    def test_a_mixed_node_read_from_sinfo_has_unknown_room(self):
+        node = {"state": "MIX", "cpus": 64, "cpus_allocated": None, "mem_mb": 1,
+                "mem_alloc_mb": None, "gpus": 2, "gpus_allocated": None}
+        room = slurm_nodes.node_room(node)
+        self.assertIsNone(room["cpus_free"])
+        self.assertIsNone(room["gpus_free"])
+
+    def test_gpu_counts(self):
+        self.assertEqual(slurm_nodes.gpu_count("gpu:a100:4,gpu:v100:2"), 6)
+        self.assertEqual(slurm_nodes.gpu_count("gpu:2"), 2)
+        self.assertEqual(slurm_nodes.gpu_count("mps:100"), 0)
 
 
 class MemoTests(_DigestTestCase):
