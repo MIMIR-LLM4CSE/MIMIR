@@ -28,7 +28,9 @@ done
 # --- Update in place --------------------------------------------------------
 if [ -n "$ext" ]; then
   mkdir -p "$ext/dist" "$ext/images"
-  cp dist/extension.js dist/webview.js "$ext/dist/"
+  # Every bundle the build made, not a list of them: a list forgets the next one (the
+  # code map's codemap.js was left behind this way, its tab staying on the old page).
+  cp -R dist/. "$ext/dist/"
   cp images/* "$ext/images/"
   cp package.json "$ext/package.json"
   echo "==> Updated $ext"

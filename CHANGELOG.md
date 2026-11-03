@@ -15,6 +15,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **`npm run deploy` updates the code map too.** Updating an installed extension in place
+  copied the chat's bundles but not the code map's (`codemap.js`), so the map tab kept
+  its old page after an update. It now copies the whole build.
+
 ### Added
 - **R&D requests from the code map.** A module, file, function, component or the whole
   code can be given a request for the agent: a numerical method, an algorithm, external
