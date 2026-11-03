@@ -39,9 +39,11 @@ export function resolvePython(extensionRoot: string): string {
  * Environment the MIMIR server process is spawned with: the extension host's, without
  * `PYTHONHOME` and `PYTHONPATH`, which would run the venv's python on the user's
  * packages. Only for the processes MIMIR starts; the user's shell is untouched.
+ * Unbuffered: the server's output goes to a file, where a block buffer would leave the
+ * log empty until a server stuck at startup, or killed there, has said nothing at all.
  */
 export function mimirServerEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUNBUFFERED: "1" };
   delete env.PYTHONHOME;
   delete env.PYTHONPATH;
   return env;

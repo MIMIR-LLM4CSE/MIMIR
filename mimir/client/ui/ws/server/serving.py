@@ -139,7 +139,16 @@ async def serve(
 
     # The pool: one agent per conversation, built on its first query, shared by every
     # connection. One server per workspace, enforced before binding (see registry.acquire).
-    if not await _acquire_lock():
+    try:
+        locked = await _acquire_lock()
+    except OSError as exc:
+        print(f"Cannot write this workspace's state directory ({exc}). MIMIR keeps its "
+              f"state, lock and logs there: make {os.path.dirname(server_registry.lock_path())} "
+              f"writable by this user, or point MIMIR_STATE_HOME (setting "
+              f"mimir.server.env) at a directory you own.",
+              file=ORIGINAL_STDOUT, flush=True)
+        raise SystemExit(1)
+    if not locked:
         existing = server_registry.current()
         if existing:
             # Say where the real one is, on the line the extension parses. A caller

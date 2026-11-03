@@ -45,19 +45,15 @@ def acquire() -> bool:
     """Claim the right to be this workspace's server with a kernel ``flock``; True when claimed.
 
     Two servers would share one journal and collide on ``seq``. Taken before binding.
+    Raises ``OSError`` when the lock file cannot be created: no other server is to blame
+    then, and serving unlocked is the exact state that corrupts the journal.
     """
     global _LOCK_FH
     if _LOCK_FH is not None:
         return True
     path = lock_path()
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        handle = open(path, "a+", encoding="utf-8")
-    except Exception:
-        # Nowhere to put the lock. Serving unlocked is worse than not serving: it is
-        # the exact state that corrupts the journal.
-        logger.warning("registry: could not open %s", path, exc_info=True)
-        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

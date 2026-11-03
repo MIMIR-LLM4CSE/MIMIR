@@ -7,6 +7,8 @@ const channels: string[] = [];
 const lines: string[] = [];
 const errors: string[] = [];
 const registry = { started: true };
+const made: string[] = [];
+const disk = { denied: false };
 
 vi.mock("vscode", () => ({
   workspace: {
@@ -31,6 +33,17 @@ vi.mock("child_process", () => ({
     return child;
   },
 }));
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  return {
+    ...actual,
+    mkdirSync: (dir: string) => {
+      if (disk.denied) throw new Error(`EACCES: permission denied, mkdir '${dir}'`);
+      made.push(dir);
+    },
+  };
+});
 
 vi.mock("./serverRegistry", () => ({
   logPath: (_cwd: string, stamp: string) => `/state/logs/server-${stamp}.log`,
@@ -70,7 +83,27 @@ describe("spawning the server", () => {
     expect(options.stdio).toBe("ignore");
     expect(command).toMatch(/>> '\/state\/logs\/server-[^']+\.log' 2>&1$/);
     expect(command).toContain("--backend vllm --vllm-base-url http://node:8000/v1");
+    expect(made).toContain("/state/logs");
+    expect((options.env as NodeJS.ProcessEnv).PYTHONUNBUFFERED).toBe("1");
     expect(server.childRunning).toBe(true);
+  });
+
+  it("names a state dir it cannot create instead of starting a server that cannot log", async () => {
+    const before = spawned.length;
+    errors.length = 0;
+    disk.denied = true;
+    try {
+      const outcome = await new LocalServer("/ext").spawn(
+        { model: "m", backend: "vllm", baseUrl: "http://node:8000/v1", anthropicApiKey: "", silent: true },
+        () => {},
+      );
+      expect(outcome).toEqual({ kind: "gave_up" });
+    } finally {
+      disk.denied = false;
+    }
+    expect(spawned.length).toBe(before);
+    expect(errors.join("\n")).toContain("cannot create its state directory /state/logs");
+    expect(errors.join("\n")).toContain("EACCES");
   });
 
   it("writes every start to the one server channel", async () => {

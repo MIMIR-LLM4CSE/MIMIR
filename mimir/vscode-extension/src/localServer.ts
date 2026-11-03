@@ -5,6 +5,7 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as fs from "fs";
+import * as path from "path";
 import { describeDiskFull, diagnoseDiskFull } from "./diskFull";
 import { serverChannel } from "./serverChannel";
 import { findLiveServer, logPath, stateDir, waitForServer } from "./serverRegistry";
@@ -112,19 +113,6 @@ export class LocalServer {
       : backend === "ollama" ? ` --backend ollama --ollama-base-url ${baseUrl}`
       : backend === "anthropic" ? " --backend anthropic"
       : "";
-    // `--port 0`: the OS picks a free port, which the server publishes. `exec` makes
-    // `kill()` reach python itself. Output goes to a file: a pipe held by this host
-    // would SIGPIPE a server meant to outlive the window.
-    const serverLog = logPath(cwd, new Date().toISOString().replace(/[:.]/g, "-"));
-    const quotedLog = `'${serverLog.replace(/'/g, "'\\''")}'`;
-    const spawnCmd =
-      `mkdir -p -- "$(dirname -- ${quotedLog})" && ` +
-      `exec ${pythonPath} -m mimir.client.ui.ws.server.main --port 0` +
-      `${req.model ? ` --model ${req.model}` : ""}${backendArgs} >> ${quotedLog} 2>&1`;
-    // The command only: the Claude API key goes through the environment below, so it
-    // never lands in the output channel.
-    outputChannel.appendLine(`Starting server: ${spawnCmd}`);
-
     // An HTTP proxy silently swallows requests to an on-prem endpoint, so
     // ws_server would hang on model resolution before ever binding its port.
     const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
@@ -143,6 +131,32 @@ export class LocalServer {
       ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...noProxyEnv, ...settingsEnv(),
       ...anthropicEnv,
     };
+
+    // The log sits in the state dir the server's own environment resolves. Made here:
+    // a directory that cannot be created leaves no log to say why, so it is said here.
+    const serverLog = logPath(cwd, new Date().toISOString().replace(/[:.]/g, "-"), env);
+    try {
+      fs.mkdirSync(path.dirname(serverLog), { recursive: true });
+    } catch (err) {
+      const message =
+        `MIMIR cannot create its state directory ${path.dirname(serverLog)} ` +
+        `(${(err as Error).message}). Make it writable by this user, or point ` +
+        "MIMIR_STATE_HOME (setting mimir.server.env) at a directory you own.";
+      outputChannel.appendLine(message);
+      void showToast("error", message);
+      return { kind: "gave_up" };
+    }
+    // `--port 0`: the OS picks a free port, which the server publishes. `exec` makes
+    // `kill()` reach python itself. Output goes to a file: a pipe held by this host
+    // would SIGPIPE a server meant to outlive the window.
+    const quotedLog = `'${serverLog.replace(/'/g, "'\\''")}'`;
+    const spawnCmd =
+      `exec ${pythonPath} -m mimir.client.ui.ws.server.main --port 0` +
+      `${req.model ? ` --model ${req.model}` : ""}${backendArgs} >> ${quotedLog} 2>&1`;
+    // The command only: the Claude API key goes through the environment below, so it
+    // never lands in the output channel.
+    outputChannel.appendLine(`Starting server: ${spawnCmd}`);
+
     const spawned = cp.spawn("bash", ["-c", spawnCmd], {
       cwd,
       env,

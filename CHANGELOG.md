@@ -16,6 +16,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A state directory MIMIR cannot write is named, not hidden.** When `~/.mimir` (or
+  `MIMIR_STATE_HOME`) is not writable, the extension used to fail silently, with no
+  log, since the log lives there too. It now says which directory and why, and the
+  server stops at once with the same advice, instead of waiting a minute and then
+  blaming another server for the lock. The server's output is unbuffered, so a server
+  stuck or killed at startup no longer leaves an empty log.
 - **`npm run deploy` updates the code map too.** Updating an installed extension in place
   copied the chat's bundles but not the code map's (`codemap.js`), so the map tab kept
   its old page after an update. It now copies the whole build.

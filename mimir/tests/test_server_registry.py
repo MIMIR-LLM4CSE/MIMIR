@@ -195,6 +195,15 @@ class OneServerPerWorkspaceTests(_RegistryCase):
         self.assertTrue(server_registry.acquire())
         self.assertTrue(server_registry.acquire())
 
+    def test_a_state_dir_it_cannot_write_raises_rather_than_reads_as_held(self):
+        # A refusal means another server holds the lock; a directory that cannot be made
+        # is a different fault, and the server says so instead of waiting on nobody.
+        blocker = os.path.join(self._tmp.name, "not-a-dir")
+        open(blocker, "w").close()
+        with mock.patch("mimir.client.config.paths.STATE_DIR", os.path.join(blocker, "state")):
+            with self.assertRaises(OSError):
+                server_registry.acquire()
+
     def test_a_second_process_is_refused_while_the_first_holds_it(self):
         # Real subprocesses: flock is a kernel object, and a mock of it would prove
         # nothing about the thing that has to hold.

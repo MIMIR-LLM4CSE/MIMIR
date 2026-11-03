@@ -63,9 +63,11 @@ export function registryPath(workspaceRoot: string): string {
   return path.join(stateDir(workspaceRoot), "server.json");
 }
 
-/** Where a server started by this extension writes its output. */
-export function logPath(workspaceRoot: string, stamp: string): string {
-  return path.join(stateDir(workspaceRoot), "logs", `server-${stamp}.log`);
+/** Where a server started by this extension, with *env*, writes its output. */
+export function logPath(
+  workspaceRoot: string, stamp: string, env: NodeJS.ProcessEnv = process.env,
+): string {
+  return path.join(stateDir(workspaceRoot, env), "logs", `server-${stamp}.log`);
 }
 
 /**
