@@ -162,6 +162,9 @@ async def run_sub_agent(
         # Also the copy it works in: a run that overruns its budget is read through
         # partial_handoff, and that is where the paths it reports get their names.
         child["worktree"] = worktree
+        if child.get("abandoned"):
+            # Stopped before it had an agent to stop: the flag it reads is this one.
+            agent.turn.cancel_flag.set()
     record = {
         "session": session, "task": task, "context": context, "tools": list(requested),
         "model": agent.model, "budget_secs": budget, "max_steps": max_steps,

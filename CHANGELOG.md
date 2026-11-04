@@ -16,6 +16,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **A sub-agent can be stopped.** `subagent_stop(job_key)` ends a run the orchestrator
+  no longer needs (an axis dropped, a task overtaken), which otherwise spent its whole
+  budget and held a slot. It stops at its next step; its result says it was stopped,
+  not that its budget ran out, and its copy stays for `continue_from`.
 - **A sub-agent's prompt can be read in the Sub-agents drawer.** An opened card shows,
   under "Prompt", what the orchestrator sent: its context, then the task. The card keeps
   the context (`subagent.json`); the list leaves it out and the detail view serves it.

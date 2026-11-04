@@ -1506,6 +1506,41 @@ class BackgroundTests(unittest.TestCase):
         out = spawn.subagent_job(job_key="sub-nope")
         self.assertEqual(out["status"], "error")
 
+    def test_a_stopped_child_ends_and_says_it_was_stopped(self):
+        """A run its caller gave up on stops at its next step, rather than spending its
+        whole budget; its result says it was stopped, not that the clock ended it."""
+        started = threading.Event()
+        agent = _FakeAgent()
+        agent.carry.fields["last_query_written_files"] = {"/w/solver.py"}
+
+        async def _drive(*a, **kw):
+            started.set()
+            # Its loop: what it does at each step is read the flag.
+            agent.turn.cancel_flag.wait(5)
+            return {"answer": "half done", "completed": False, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with self._launched(agent, _drive) as out:
+            key = out["background_job"]["job_key"]
+            self.assertTrue(started.wait(5))
+            stop = spawn.subagent_stop(key)
+            self.assertEqual(stop["status"], "ok")
+            self.assertTrue(stop["stopping"])
+            # Asked twice: still a stop, not an error.
+            self.assertEqual(spawn.subagent_stop(key)["status"], "ok")
+            settled = self._settled(key)
+        self.assertTrue(agent.turn.cancel_flag.is_set())
+        self.assertFalse(settled["completed"])
+        self.assertTrue(settled["stopped"])
+        self.assertNotIn("ended_on_budget", settled)
+        self.assertIn("stopped on your request", settled["answer"])
+        self.assertIn("/w/solver.py", settled["answer"])
+        # Ended: nothing left to stop.
+        self.assertEqual(spawn.subagent_stop(key)["status"], "error")
+
+    def test_stopping_an_unknown_handle_is_an_error(self):
+        self.assertEqual(spawn.subagent_stop("sub-nope")["status"], "error")
+
     def test_the_client_refuses_polling_but_allows_reading_the_result(self):
         """The wake answers "is it done"; asking it again is the poll the watcher
         exists to replace. Reading what it has is a different question."""

@@ -1535,6 +1535,13 @@ Tools:
   `MAIN_ONLY`: these are the caller's own handles. `result` on a child still working
   gives what it has touched so far, which is what makes reading progress possible
   without polling its state.
+- `subagent_stop(job_key)` — stop a child the caller no longer needs, before its work
+  or its budget ends: `abandon_child(stopped=True)` sets its `cancel_flag`, read at its
+  next step (a tool call in flight finishes first; a child stopped before it has an
+  agent gets the flag as it is built). It settles like an overrun one, but its result
+  says it was stopped (`stopped: true`), not that its clock ran out; its copy and
+  branch stay for `continue_from`. `MAIN_ONLY`, reversible; refused on an unknown
+  handle, on a child already ended, and on one this server no longer runs.
 
 Capabilities and gating:
 - Declares `DELEGATE` (the channel prompt, guidance and observation all address by

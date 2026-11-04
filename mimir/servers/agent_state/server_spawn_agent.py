@@ -18,7 +18,7 @@ from pydantic import Field
 from .subagent import caller, jobs, limits, output
 from .model_catalog import probe_served_models, served_models_description
 from .subagent.build import new_sub_session
-from .subagent.outcome import NO_ANSWER, abandon_child, overrun_note, partial_handoff
+from .subagent.outcome import NO_ANSWER, abandon_child, overrun_note, partial_handoff, stopped_note
 from .subagent.run import ChildRun
 from .subagent.worktree import continue_worktree, create_worktree
 from ...shared.capabilities import (
@@ -314,6 +314,9 @@ def subagent_job(
         # report, and a caller told only "crashed" would look for a crash there was not.
         base["outcome"] = entry.get("outcome", "")
         base["from_card"] = True
+    if state == "running" and (entry.get("child") or {}).get("stopped"):
+        # Asked to stop, not there yet: it ends at its next read of the flag.
+        base["stopping"] = True
     if op != "result":
         return ok(base)
     result = entry.get("result")
@@ -322,13 +325,59 @@ def subagent_job(
         # real, its answer is not. A run the clock ended says so in as many words —
         # `completed: False` alone is a flag a reader can skim past, and a handoff read
         # as a conclusion is the whole failure this guards against.
-        partial = partial_handoff(entry.get("child") or {})
-        if state == "unknown":
+        child = entry.get("child") or {}
+        partial = partial_handoff(child)
+        if child.get("stopped"):
+            partial["answer"] = (stopped_note() + " " + partial["answer"]).strip()
+            partial["stopped"] = True
+        elif state == "unknown":
             budget = int(entry.get("budget") or limits.SUBAGENT_EXPLORE_BUDGET_SECS)
             partial["answer"] = (overrun_note(budget) + " " + partial["answer"]).strip()
             partial["ended_on_budget"] = True
         return ok({**base, **partial, "completed": False})
     return ok({**base, **result, "completed": bool(result.get("completed"))})
+
+
+@mcp.tool(**tool_caps(kind="agent",
+    # MAIN_ONLY: the caller's own handles, as subagent_job's.
+    caps=[MAIN_ONLY],
+    # Its copy and its branch stay, and continue_from takes them over: nothing is lost.
+    reversibility=REVERSIBLE,
+    label="Stop sub-agent: {job_key}",
+    read_only=False,
+))
+def subagent_stop(job_key: str) -> dict:
+    """Stop a sub-agent you started, before the end of its work or its budget.
+
+    For a run you no longer need (a dropped axis, a task overtaken): left going, it
+    spends its whole budget and holds one of the sub-agent slots. It stops at its next
+    step: a tool call it is in the middle of (a measurement, a build) finishes first.
+    Its copy and its branch are kept; a sub-agent spawned with continue_from=<its
+    session> takes them over. You are resumed as for any background sub-agent that
+    ends, and subagent_job(op='result') gives where it had got to.
+
+    Args:
+        job_key: The handle spawn_agent returned (its session's last segment, sub-…).
+    """
+    entry = jobs.job_snapshot(job_key)
+    if entry is None:
+        if jobs.entry_from_card(job_key) is not None:
+            return err(f"sub-agent {job_key!r} is not running in this server: it ended "
+                       f"with the server that ran it, or it ended on its own. Read it "
+                       f"with subagent_job(op='result').")
+        return err(f"unknown sub-agent job {job_key!r}. Use subagent_job(op='list') to see "
+                   f"the ones this server holds.")
+    child = entry.get("child") or {}
+    if entry.get("state") != "running":
+        return err(f"sub-agent {job_key!r} has already ended ({jobs.job_state(entry)}): "
+                   f"there is nothing to stop. Read it with subagent_job(op='result').")
+    if child.get("stopped"):
+        return ok({"job_key": job_key, "stopping": True,
+                   "note": "Already asked to stop: it ends at its next step."})
+    abandon_child(child, stopped=True)
+    return ok({"job_key": job_key, "stopping": True, "session": entry.get("session", ""),
+               "note": "Asked to stop: it ends at its next step, and you are resumed when "
+                       "it does. Its copy and its branch are kept for continue_from."})
 
 
 if __name__ == "__main__":

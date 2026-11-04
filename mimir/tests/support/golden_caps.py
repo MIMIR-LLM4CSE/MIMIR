@@ -130,7 +130,7 @@ MAIN_ONLY_TOOLS = {
     "todo_set_plan", "todo_read_plan", "todo_list_plans", "todo_delete_plan",
     "memory_add", "memory_update", "memory_delete", "memory_clear",
     # The caller's handles on the children it detached.
-    "subagent_job",
+    "subagent_job", "subagent_stop",
 }
 
 # --- code-intelligence navigation (server_code_intel.py) ---------------------

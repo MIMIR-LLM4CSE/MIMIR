@@ -35,12 +35,15 @@ def repo_relative(paths: list[str], worktree: dict | None) -> list[str]:
     return out
 
 
-def abandon_child(child: dict) -> None:
-    """Ask a child that overran its budget to stop (its ``cancel_flag``) and mark it abandoned.
+def abandon_child(child: dict, stopped: bool = False) -> None:
+    """Ask a child to stop (its ``cancel_flag``) and mark it abandoned: it overran its
+    budget, or its caller *stopped* it.
 
     Its thread cannot be cancelled from here; the flag stops it at its next read.
     """
     child["abandoned"] = True
+    if stopped:
+        child["stopped"] = True
     agent = child.get("agent")
     flag = agent.turn.cancel_flag if agent is not None else None
     if flag is None:
@@ -66,6 +69,15 @@ def overrun_note(budget: int) -> str:
         f"sub-agent spawned with continue_from=<its session> takes over its branch, its "
         f"copy and its todo list: a full budget has just been spent on it and nothing "
         f"about it has changed."
+    )
+
+
+def stopped_note() -> str:
+    """Why a run its caller stopped ended: not its work, and not its clock either."""
+    return (
+        "This sub-agent was stopped on your request, before the end of its work. What "
+        "follows is where it had got to, not a conclusion. Its copy and its branch are "
+        "kept: a sub-agent spawned with continue_from=<its session> takes them over."
     )
 
 
