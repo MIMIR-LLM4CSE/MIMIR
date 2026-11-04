@@ -20,7 +20,8 @@ const chain: MergeState = {
     { proxy: "pc", kept: false, why: "conflict", files: ["a.py"] },
     { proxy: "pb", kept: false, why: "interference", marginal: 1.0625, interaction: 1.18 },
   ],
-  final: { from: "chain", relative: 0.8, kept: ["pa"] },
+  final: { from: "chain", relative: 0.8, kept: ["pa"],
+    set_aside: [{ proxy: "pc", why: "conflict" }, { proxy: "pb", why: "interference" }] },
 };
 
 describe("a merge's outcome per source", () => {
@@ -44,7 +45,7 @@ describe("a merge's outcome per source", () => {
 
 describe("the merge graph", () => {
   it("draws the conflict as an arc and the gains expected and measured", () => {
-    const html = mergeGraph(sources, pairs, chain.expected, chain);
+    const html = mergeGraph(chain);
     expect(html).toContain('class="arc conflict"');
     expect(html).not.toContain('class="arc shared"');
     expect(html).toContain("expected 39%");
@@ -54,10 +55,16 @@ describe("the merge graph", () => {
   });
 
   it("is a forecast for proxies ticked, not merged", () => {
-    const html = mergeGraph(sources, pairs, 0.612, null, 600, [{ proxy: "pd", why: "no run accepted beyond its baseline" }]);
+    const html = mergeGraph({ sources, pairs, expected: 0.612, refused: [{ proxy: "pd", why: "no run accepted beyond its baseline" }] }, 600);
     expect(html).toContain("Merge forecast");
     expect(html).toContain("never measured");
     expect(html).toContain("left out: pd");
+  });
+
+  it("says why a forecast cannot be measured", () => {
+    const html = mergeGraph({ sources, pairs, expected: 0.612, refusal: "pa and pb have a different metric" });
+    expect(html).toContain("pa and pb have a different metric");
+    expect(html).not.toContain("expected together");
   });
 
   it("writes a gain from a relative", () => {

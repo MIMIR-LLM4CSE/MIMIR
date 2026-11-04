@@ -18,7 +18,7 @@ from .._lib.ratchet import load_best, relative
 from .._lib.layout import (history_dir, merge_file, opt_runs_dir, opt_session_runs_dir, read_json,
                            resolve_proxy_name)
 from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
-from . import merge
+from . import merge_sources
 from .eval_observe import read_ledger
 
 _CACHE: dict[str, tuple[tuple, dict]] = {}
@@ -157,7 +157,6 @@ def _meta(name: str, active: str) -> dict:
                 "active": False, "frozen": (s.get("frozen") or {}).get("why", "frozen"),
                 "merge": bool(s.get("merge")), "sources": [x["proxy"] for x in (s.get("merge") or {}).get("sources", [])]}
     cfg = load_opt_config(name) or {}
-    src, _ = merge.source(name)
     rows = read_ledger(name)
     base = next((r.get("primary_value") for r in rows if r.get("run_id") == cfg.get("baseline_run_id")), None)
     best = (load_best(name) or {}).get("primary_value")
@@ -167,7 +166,8 @@ def _meta(name: str, active: str) -> dict:
             "goal": cfg.get("primary_goal", "min"), "steps": max(0, len(rows) - bool(cfg.get("baseline_run_id"))),
             "gain": None if rel is None else round(1 - rel, 6), "active": name == active, "frozen": "",
             "merge": bool(cfg.get("merge")), "sources": [x["proxy"] for x in state.get("sources", [])],
-            "mergeable": src is not None}
+            # A merge takes the proxies' own sessions, never another merge.
+            "mergeable": not cfg.get("merge") and merge_sources.source(name)[0] is not None}
 
 
 def answer(proxy_name: str = "", combined: bool = False, selected: list[str] | None = None) -> dict:
@@ -186,18 +186,18 @@ def answer(proxy_name: str = "", combined: bool = False, selected: list[str] | N
     name = proxy_name if proxy_name in known else ("" if active else _latest(known))
     together = picked if len(picked) > 1 else known if combined else []
     value = merged(together) if together else session(name)
+    # Always a list of steps, even empty: the tab still offers the other proxies.
     out = {"steps": [], **value, "proxies": known, "active": active,
            "proxies_meta": [_meta(n, active) for n in known],
            "combined": bool(together and value), "requests": asked}
     if len(picked) > 1:
         out["selected"] = picked
-        out["forecast"] = merge.forecast([n for n in picked if "@" not in n])
+        out["forecast"] = merge_sources.forecast(picked)
     elif not together:
         # A merge session draws its sources, the whole and the one-at-a-time chain.
         state = value.get("merge") or (read_json(merge_file(value["proxy"])) if value.get("proxy") else None)
         if state:
             out["merge"] = state
-    # Always a list of steps, even empty: the tab still offers the other proxies.
     return out
 
 

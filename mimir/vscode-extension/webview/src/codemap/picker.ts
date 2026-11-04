@@ -57,7 +57,7 @@ export function mergePrompt(names: string[]): string {
 
 function row(m: ProxyMeta, pick: string, ticks: Set<string>): string {
   const value = m.active ? "" : m.name;
-  const cur = !ticked(pick).length && pick !== ALL && pick === value;
+  const cur = pick === value;
   const badges = (m.active ? '<span class="badge on">active</span>' : "")
     + (m.merge ? '<span class="badge merge" title="Merges ' + esc(m.sources.join(", ")) + '">merge</span>' : "")
     + (m.frozen ? '<span class="badge">' + esc(m.frozen) + "</span>" : "");
@@ -65,7 +65,7 @@ function row(m: ProxyMeta, pick: string, ticks: Set<string>): string {
   return '<div class="pick-row' + (cur ? " is-cur" : "") + '">'
     + '<input type="checkbox" data-tick="' + esc(m.name) + '"' + (ticks.has(m.name) ? " checked" : "")
     + ' aria-label="Show ' + esc(m.name) + ' with the others ticked">'
-    + '<button class="pick-name" data-pick="' + esc(value) + '" role="option" aria-selected="' + cur + '" title="Show '
+    + '<button class="pick-name" data-pick="' + esc(value) + '" aria-current="' + cur + '" title="Show '
     + esc(m.name) + "'s steps alone" + '">' + esc(m.name) + "</button>"
     + badges
     + (m.branch ? '<span class="pick-branch" title="Branch">' + esc(m.branch) + "</span>" : "")
@@ -84,14 +84,14 @@ export function pickerHtml(meta: ProxyMeta[], pick: string, active: string, open
   const ready = mergeable(meta, [...ticks]);
   const list = groups.filter(([, ms]) => ms.length).map(([title, ms]) =>
     '<div class="pick-group">' + esc(title) + "</div>" + ms.map((m) => row(m, pick, ticks)).join("")).join("");
-  return '<button class="pick-btn" aria-haspopup="listbox" aria-expanded="' + open + '" title="Whose optimisation steps the map shows">'
+  return '<button class="pick-btn" aria-haspopup="true" aria-expanded="' + open + '" title="Whose optimisation steps the map shows">'
     + '<span class="pick-label">' + esc(pickLabel(pick, active)) + '</span><span class="caret">▾</span></button>'
-    + '<div class="pick-panel" role="listbox" aria-label="Proxies"' + (open ? "" : " hidden") + ">"
+    + '<div class="pick-panel" role="group" aria-label="Proxies"' + (open ? "" : " hidden") + ">"
     + '<button class="pick-name pick-all' + (pick === ALL ? " is-cur" : "") + '" data-pick="' + ALL + '">Every proxy, together'
     + '<span class="hint">each against its own baseline</span></button>'
     + list
     + '<div class="pick-foot"><span class="hint">' + (ticks.size > 1 ? ticks.size + " ticked, drawn together" : "Tick two or more to draw them together")
     + '</span><button class="open" data-merge' + (ready.length > 1 ? "" : " disabled")
-    + ' title="Ask the agent to merge them in a copy of its own and measure the whole">Merge ' + (ready.length > 1 ? ready.length : "")
+    + ' title="Ask the agent to merge them in a copy of its own and measure the whole">Merge' + (ready.length > 1 ? " " + ready.length : "")
     + "</button></div></div>";
 }

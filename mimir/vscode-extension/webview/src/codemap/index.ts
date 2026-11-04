@@ -171,14 +171,10 @@ function renderPicker(): void {
   el.hidden = proxies.length < 2;
   if (el.hidden) { pickerOpen = false; return; }
   // Rebuilt with each answer: the focus goes back to the control that had it.
-  const had = (document.activeElement as HTMLElement | null)?.closest?.("#proxy")
-    ? (document.activeElement as HTMLElement) : null;
+  const had = document.activeElement instanceof HTMLElement && el.contains(document.activeElement) ? document.activeElement : null;
   const again = had?.dataset.tick !== undefined ? '[data-tick="' + had.dataset.tick + '"]'
-    : had?.dataset.pick !== undefined ? '[data-pick="' + had.dataset.pick + '"]' : had?.classList.contains("pick-btn") ? ".pick-btn" : "";
-  const known = new Set(meta.map((m) => m.name));
-  ticks = new Set([...ticks].filter((t) => known.has(t)));
-  el.innerHTML = pickerHtml(meta.length ? meta : proxies.map((name) => ({ name, branch: "", metric: "", goal: "", steps: 0, gain: null,
-    active: name === active, frozen: name.includes("@") ? "frozen" : "", merge: false, sources: [] })), reachable(pick), active, pickerOpen, ticks);
+    : had?.dataset.pick !== undefined ? '[data-pick="' + had.dataset.pick + '"]' : had ? ".pick-btn" : "";
+  el.innerHTML = pickerHtml(meta, reachable(pick), active, pickerOpen, ticks);
   if (again) el.querySelector<HTMLElement>(again)?.focus();
 }
 
@@ -235,10 +231,12 @@ function onPickerKey(e: KeyboardEvent): void {
   }
   if (!pickerOpen || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
   e.preventDefault();
-  const all = Array.from(document.querySelectorAll<HTMLElement>("#proxy .pick-panel .pick-name, #proxy .pick-panel [data-merge]:not([disabled])"));
-  const at = all.indexOf((document.activeElement as HTMLElement)?.closest(".pick-row")?.querySelector(".pick-name") as HTMLElement
-    ?? document.activeElement as HTMLElement);
-  all[(at + (e.key === "ArrowDown" ? 1 : all.length - 1)) % all.length]?.focus();
+  const lines = Array.from(document.querySelectorAll<HTMLElement>("#proxy .pick-name, #proxy [data-merge]:not([disabled])"));
+  // From a tick, the line it is on.
+  const focused = document.activeElement as HTMLElement | null;
+  const here = focused?.closest(".pick-row")?.querySelector<HTMLElement>(".pick-name") ?? focused;
+  const at = here ? lines.indexOf(here) : -1;
+  lines[(at + (e.key === "ArrowDown" ? 1 : lines.length - 1)) % lines.length]?.focus();
 }
 
 /** The map as drawn: without its tests unless they are shown. */
@@ -1074,7 +1072,7 @@ function renderSession(): void {
   el.hidden = (!session || !session.steps.length) && !m;
   if (el.hidden) return;
   const width = el.clientWidth - 30;
-  el.innerHTML = (m ? mergeGraph(m.sources, m.pairs, m.expected, mergeState, width, forecast?.refused) : "")
+  el.innerHTML = (m ? mergeGraph(m, width) : "")
     + (session ? strip(session, step, scope, width) : "");
   el.querySelectorAll<HTMLElement>("[data-step]").forEach((b) => b.addEventListener("click", () => {
     step = Number(b.dataset.step); render();
@@ -1244,6 +1242,11 @@ function mount(): void {
     if (want !== got && reasked !== want) { pick = reasked = want; ask(); return; }
     reasked = null;
     if (pick !== got) { pick = got; remember(); }
+    // The ticks follow the pick the answer holds (a single tick is that proxy alone), and
+    // only name proxies it still offers.
+    if (ticked(pick).length) ticks = new Set(ticked(pick));
+    else if (ticks.size > 1) ticks = new Set();
+    ticks = new Set([...ticks].filter((t) => proxies.includes(t)));
     // A new answer opens on the session's latest step; one that adds no step, of the same
     // proxy, keeps the one shown.
     const steps = msg.session?.steps?.length ?? 0;

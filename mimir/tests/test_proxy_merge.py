@@ -4,10 +4,11 @@ falls short."""
 
 import json
 import os
+import unittest
 from unittest import mock
 
 from mimir.servers.proxy._lib import layout
-from mimir.servers.proxy._ops import code_map_steps, merge
+from mimir.servers.proxy._ops import code_map_steps, merge, merge_sources
 from mimir.shared.atomic import write_json
 from mimir.tests.support.proxy import (
     _TmpStorageTest,
@@ -130,6 +131,18 @@ class PlanTests(_MergeFixture):
         self.assertEqual(res["status"], "error")
         self.assertIn("metric", res["error"])
 
+    def test_a_frozen_session_is_left_out_and_says_why(self) -> None:
+        res = server_proxy.proxy_merge(op="plan", proxies=["pa", "pb", "pa@20261104-101500"])
+        self.assertEqual(res["status"], "ok", res)
+        self.assertEqual(res["refused"], [{"proxy": "pa@20261104-101500",
+                                           "why": "a frozen session: its trees are no longer kept"}])
+
+    def test_a_file_that_is_not_text_is_a_conflict(self) -> None:
+        src, _ = merge_sources.source("pa")
+        with open(os.path.join(self.root, "a.py"), "wb") as fh:
+            fh.write(b"\xff\xfe\x00")
+        self.assertEqual(merge_sources.apply(src), ["a.py"])
+
     def test_start_is_refused_in_the_main_workspace(self) -> None:
         res = server_proxy.proxy_merge(op="start", proxies=["*"], confirm=True)
         self.assertEqual(res["status"], "error")
@@ -171,6 +184,30 @@ class MergeRunTests(_MergeFixture):
         pb = next(s for s in rep["steps"] if s["proxy"] == "pb")
         self.assertGreater(pb["interaction"], 1)
 
+    def test_a_chain_worse_than_the_whole_keeps_the_whole(self) -> None:
+        self._merge()
+        self._complete("merge-t", 9.5)    # short of the promise, still a gain
+        server_proxy.proxy_merge(op="next", confirm=True)
+        for _ in range(3):                # pa, then pc (nothing kept to conflict with), then pb
+            self._complete("merge-t", 10.5)
+            rep = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(rep["final"]["from"], "all")
+        self.assertEqual(rep["kept"], ["pa", "pb"])
+        self.assertEqual(rep["set_aside"], [{"proxy": "pc", "why": "conflict"}])
+        self.assertEqual((self._read("a.py"), self._read("b.py")), ("A = 2\n\n\n\n\nX = 0\n", "B = 2\n"))
+
+    def test_a_whole_that_gains_nothing_keeps_the_copy_untouched(self) -> None:
+        self._merge()
+        self._complete("merge-t", 10.5)
+        server_proxy.proxy_merge(op="next", confirm=True)
+        for _ in range(3):
+            self._complete("merge-t", 10.5)
+            rep = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(rep["final"]["from"], "baseline")
+        self.assertEqual(rep["kept"], [])
+        self.assertEqual({s["why"] for s in rep["set_aside"]}, {"interference"})
+        self.assertEqual(self._read("a.py"), ORIGINAL["a.py"])
+
     def test_next_waits_for_the_run_it_named(self) -> None:
         res = self._merge()
         again = server_proxy.proxy_merge(op="next", confirm=True)
@@ -194,3 +231,15 @@ class MergeRunTests(_MergeFixture):
         self.assertTrue(drawn["combined"])
         self.assertEqual(drawn["selected"], ["pa", "pb"])
         self.assertAlmostEqual(drawn["forecast"]["expected"], 0.72, places=5)
+
+
+class MovedTests(unittest.TestCase):
+    def test_every_path_under_the_root_is_moved_and_no_other(self) -> None:
+        entry = {"executable_path": "/copies/a/tiny.py",
+                 "run_cmd_template": "python3 /copies/a/run.py --in /copies/a/data /copies/ab/x",
+                 "tags": ["/copies/a"], "build_cwd": "/copies/a", "peak": 1.0}
+        self.assertEqual(merge._moved(entry, "/copies/a", "/copies/m"), {
+            "executable_path": "/copies/m/tiny.py",
+            "run_cmd_template": "python3 /copies/m/run.py --in /copies/m/data /copies/ab/x",
+            "tags": ["/copies/m"], "build_cwd": "/copies/m", "peak": 1.0})
+
