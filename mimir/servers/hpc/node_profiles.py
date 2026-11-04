@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import sys
 import time
@@ -50,6 +51,11 @@ def profile_host_dir(host: str) -> str:
     """Where a scheduler's node profiles are filed: one directory per host (node names are per cluster)."""
     name = _host_name(host) or _LOCAL_NAME
     return os.path.join(NODE_PROFILES_DIR, re.sub(r"[^A-Za-z0-9._-]", "_", name))
+
+
+def forget_node_profiles(host: str) -> None:
+    """Delete every node profile filed for *host* (never raises)."""
+    shutil.rmtree(profile_host_dir(host), ignore_errors=True)
 
 
 def _node_profile_path(node: str, host: str) -> str:

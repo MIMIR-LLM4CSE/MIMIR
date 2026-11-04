@@ -6,14 +6,14 @@ and the shared ``Screen``. ``MESSAGES`` names the inbound message types it answe
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
-from .....config import paths
 from .....session.commands import CommandResult
 from .....session.store import list_subagents as _list_subagents
 from .....session.store import read_subagent as _read_subagent
-from ..panel_runs import attach_runs, recorded_hosts_sections
+from ..panel_runs import attach_runs, offered_calls
 from ..commands import WS_COMMANDS, WsCommandHost
 from ...pool.pool import AgentPool
 from ..screen import Screen
@@ -37,6 +37,7 @@ class PanelHandlers(Handlers):
         "code_map": "on_code_map",
         "read_subagent": "on_read_subagent",
         "cancel_run": "on_cancel_run",
+        "panel_call": "on_panel_call",
     }
 
     def __init__(self, view: ViewState, out: Sender, pool: AgentPool, screen: Screen) -> None:
@@ -45,6 +46,8 @@ class PanelHandlers(Handlers):
         # behind it: asks arriving while one is served fold into one more pass.
         self._panel_task: asyncio.Task | None = None
         self._panel_again: dict | None = None
+        # The calls the last report offered as buttons: the only ones `panel_call` runs.
+        self._offered: set[str] = set()
 
     async def on_command_msg(self, msg: dict) -> None:
         await self.run_command((msg.get("text") or "").strip())
@@ -130,8 +133,7 @@ class PanelHandlers(Handlers):
         worker = self.screen.worker
         sections = await asyncio.wrap_future(worker.panel.sections(force=refresh))
         agent_ready = worker.agent_ready()
-        if not agent_ready:
-            sections = recorded_hosts_sections(paths.STATE_DIR)
+        self._offered = offered_calls(sections)
         # The one place both halves exist: what a cluster is made of came from a
         # server, what is running on it is this client's own watcher state. A run that
         # no group claimed still travels, under `runs`, for the flat list — a run the
@@ -168,6 +170,27 @@ class PanelHandlers(Handlers):
         # may well be working beside the run.
         if payload.get("status") == "error":
             await self.screen.command_reply("cancel", f"Could not stop {job_key}",
+                                            note=str(payload.get("error") or ""), tone="warn")
+        self._request_panel()
+
+    async def on_panel_call(self, msg: dict) -> None:
+        """Run a call a panel row offers (its ``call``), then serve the panel again.
+
+        Only a call the last report carried runs, exactly as it was offered: the webview
+        names a button, never a tool of its choosing. Straight on the owning server, as
+        the report itself was asked.
+        """
+        tool = str(msg.get("tool") or "")
+        args = msg.get("args") if isinstance(msg.get("args"), dict) else {}
+        worker = self.pool.get(self.view.active_session_id)
+        if worker is None or json.dumps([tool, args], sort_keys=True) not in self._offered:
+            await self.screen.command_reply("panel", "This button is no longer offered.",
+                                            tone="warn")
+            self._request_panel()
+            return
+        payload = await asyncio.wrap_future(worker.call_session_tool(tool, args))
+        if payload.get("status") == "error":
+            await self.screen.command_reply("panel", f"{tool} failed",
                                             note=str(payload.get("error") or ""), tone="warn")
         self._request_panel()
 

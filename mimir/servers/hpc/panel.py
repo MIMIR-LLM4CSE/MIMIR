@@ -261,10 +261,11 @@ def _read_host(host: str) -> tuple[dict, dict | None]:
 
 
 def _host_tree() -> list[dict]:
-    """Every reachable scheduler, the room on it, and its node kinds.
+    """Every scheduler that answered, the room on it, and its node kinds.
 
-    A host that did not answer is listed as such, never as empty. A kind whose nodes
-    are all out of service is left out and counted; one with room comes first.
+    A host whose digest could not be read is left out: a name that never answered may
+    not be a cluster at all, and a row for it says nothing worth reading. A kind whose
+    nodes are all out of service is left out and counted; one with room comes first.
     """
     hosts = slurm_hosts()
     # Every host at once. Each miss is an ssh away and waits on a scheduler rather than
@@ -281,18 +282,13 @@ def _host_tree() -> list[dict]:
     for host in hosts:
         name = host_name(host)
         digest, load = reads.get(host) or _read_host(host)
+        if not digest["source"]:
+            continue
         reached = "On this host" if not host else f"Over ssh to {host}"
         group: dict[str, Any] = {"id": f"host:{name}", "label": name, "host": name,
                                  "local": not host, "lines": []}
-        if not digest["source"]:
-            group["state"] = "warn"
-            group["value"] = "did not answer"
-            group["lines"].append(
-                {"label": "hardware",
-                 "value": "unknown, not absent", "state": "warn"})
-            group["detail"] = reached + "."
-            groups.append(group)
-            continue
+        if host:
+            group["call"] = _forget_call(name)
 
         members: dict[tuple, list[dict]] = {}
         for node in (load or {}).get("nodes") or []:
@@ -361,6 +357,21 @@ def _host_tree() -> list[dict]:
                                 "groups": entries}]
         groups.append(group)
     return groups
+
+
+def _forget_call(name: str) -> dict:
+    """The row's own button: drop *name* and everything held about it (``slurm_schedulers``).
+
+    The local scheduler has none: it is this host answering sbatch, not a record.
+    """
+    return {
+        "label": "Forget this cluster",
+        "tool": "slurm_schedulers",
+        "args": {"forget": name},
+        "confirm": (f"Forget {name}? It leaves this workspace's schedulers, with its "
+                    "cached hardware and its node profiles. It comes back the next "
+                    "time a Slurm command succeeds over ssh to it."),
+    }
 
 
 def _kind_entry(host: str, name: str, kind: dict, room: dict | None, label: str,
@@ -448,10 +459,14 @@ def report(refresh: bool, read_queue: Callable[[], dict]) -> dict:
         return _report(read_queue)
 
 
-def forget() -> None:
-    """Drop what the panel holds, so the next report reads everything again."""
+def forget(host: str | None = None) -> None:
+    """Drop what the panel holds about *host*, or everything, so the next report reads it again."""
     with _LOCK:
-        _CACHE.clear()
+        if host is None:
+            _CACHE.clear()
+            return
+        _CACHE.pop(f"load:{host}", None)
+        _CACHE.pop("hosts", None)
 
 
 def _report(read_queue: Callable[[], dict]) -> dict:

@@ -16,6 +16,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **A cluster can be forgotten from the Cluster drawer, and one that never answered is not
+  listed.** Each remote scheduler's row offers **Forget this cluster**, which, once
+  confirmed, drops it from the workspace's schedulers with its cached hardware and its node
+  profiles (`slurm_schedulers(forget=…)` now clears both); it comes back the next time a
+  Slurm command succeeds over ssh to it. A scheduler whose hardware could not be read gets
+  no row instead of a "did not answer" one, and the drawer no longer lists the registry's
+  names before the agent is up. A panel group may now carry a `call`, a server's tool and
+  arguments the client runs only as the last report offered them.
 - **The Optimisation drawer draws the session's curve.** The section opens on the best
   value, its change over the baseline (`−34% · 1.51×`, green when it is a gain) and how
   many runs were tried and kept; below, every run in the order it settled — kept, not
@@ -45,6 +53,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **An R&D request no longer stays "trying" on the map after its runs.** A run tagged
+  `[R3.k]` settled with the ratchet's next step ("reset to the best, edit, run again"), so
+  the agent went on optimising and never closed the request. Its results now carry
+  `request_progress` and the request's own next step: the next variant to measure, or,
+  once every variant is measured, `reset_to_best` then
+  `proxy_request(op='update', status='done', conclusion=…)`.
 - **The code map no longer re-maps at every status poll.** While a run went, the agent's
   `proxy_eval_status` polls each told an open map tab to map the code again, so it
   flickered every ~20 s. A tool declaring `CODE_MAP_MOVES` now names the ops that write

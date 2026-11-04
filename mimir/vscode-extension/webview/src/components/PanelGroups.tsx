@@ -1,5 +1,5 @@
 import React from "react";
-import type { PanelGroup, PanelTable, WatchedRun } from "../types";
+import type { PanelGroup, PanelGroupCall, PanelTable, WatchedRun } from "../types";
 import { badgeDetailRows, badgeKey, badgeLabel, kindLabel } from "./panelGroupUtils";
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   onPrompt: (text: string) => void;
   /** Stop a run by its key; offered only on a run whose server named how. */
   onCancelRun: (jobKey: string) => void;
+  /** Run a call a row offers, once confirmed. */
+  onCall: (call: PanelGroupCall) => void;
   depth?: number;
 }
 
@@ -25,6 +27,7 @@ export const PanelGroupList: React.FC<Props> = ({
   onToggle,
   onPrompt,
   onCancelRun,
+  onCall,
   depth = 0,
 }) => (
   <>
@@ -93,6 +96,7 @@ export const PanelGroupList: React.FC<Props> = ({
                   onPrompt={onPrompt}
                 />
               )}
+              {group.call && <GroupCall call={group.call} onCall={onCall} />}
               {group.groups && group.groups.length > 0 && (
                 <PanelGroupList
                   groups={group.groups}
@@ -100,6 +104,7 @@ export const PanelGroupList: React.FC<Props> = ({
                   onToggle={onToggle}
                   onPrompt={onPrompt}
                   onCancelRun={onCancelRun}
+                  onCall={onCall}
                   depth={depth + 1}
                 />
               )}
@@ -282,6 +287,45 @@ const GroupAction: React.FC<{
           }}
         >
           Ask for it
+        </button>
+        <button className="science-group-action" onClick={() => setAsking(false)}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * A call the server offers on its row, run as is once confirmed: it acts without the
+ * model (forgetting a cluster, say), so the confirmation says what it will do.
+ */
+const GroupCall: React.FC<{
+  call: PanelGroupCall;
+  onCall: (call: PanelGroupCall) => void;
+}> = ({ call, onCall }) => {
+  const [asking, setAsking] = React.useState(false);
+  if (!asking) {
+    return (
+      <div className="science-run-actions">
+        <button className="science-group-action is-danger" onClick={() => setAsking(true)}>
+          {call.label}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="science-group-confirm">
+      <div className="science-detail">{call.confirm}</div>
+      <div className="science-group-confirm-row">
+        <button
+          className="science-group-action is-danger"
+          onClick={() => {
+            setAsking(false);
+            onCall(call);
+          }}
+        >
+          {call.label}
         </button>
         <button className="science-group-action" onClick={() => setAsking(false)}>
           Cancel

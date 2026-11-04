@@ -33,7 +33,7 @@ const machine: PanelSection = {
 function render(sections: PanelSection[]): string {
   const none = () => undefined;
   return renderToStaticMarkup(
-    <SciencePanel sections={sections} runs={[]} onCancelRun={none} onRefresh={none}
+    <SciencePanel sections={sections} runs={[]} onCancelRun={none} onCall={none} onRefresh={none}
       onReload={none} refreshing={false} agentReady onPrompt={none} onOpenView={none} />,
   );
 }

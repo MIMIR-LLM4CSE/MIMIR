@@ -31,6 +31,15 @@ export interface PanelGroupAction {
   prompt: string;
 }
 
+/** A call the row's server offers to run as is, past the model, once confirmed. */
+export interface PanelGroupCall {
+  label: string;
+  tool: string;
+  args: Record<string, unknown>;
+  /** What the confirmation says the call will do. */
+  confirm: string;
+}
+
 /**
  * One node of a section's tree: a scheduler, or a kind of machine on one.
  *
@@ -53,6 +62,7 @@ export interface PanelGroup {
   detail?: string;
   groups?: PanelGroup[];
   action?: PanelGroupAction;
+  call?: PanelGroupCall;
   /** Runs the client found to be on this machine. Attached on the way out. */
   badges?: WatchedRun[];
 }
@@ -204,6 +214,13 @@ export interface MapPromptMessage {
 export interface CancelRunMessage {
   type: "cancel_run";
   job_key: string;
+}
+
+/** Run a call a panel row offered (`PanelGroup.call`), exactly as offered. */
+export interface PanelCallMessage {
+  type: "panel_call";
+  tool: string;
+  args: Record<string, unknown>;
 }
 
 export interface ReadSubagentMessage {

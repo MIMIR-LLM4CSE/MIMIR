@@ -4,7 +4,7 @@
 // anything is still working.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, PanelSection, SubAgent, SubAgentLevel, WatchedRun } from "../types";
+import type { ClientMessage, PanelGroupCall, PanelSection, SubAgent, SubAgentLevel, WatchedRun } from "../types";
 import type { ServerHandlers } from "../state/serverMessages";
 import { vscodePostMessage } from "./useWebSocket";
 
@@ -41,6 +41,11 @@ export function usePanels(send: (msg: ClientMessage) => void,
   // The server answers with a fresh report; the watcher wakes the conversation.
   const cancelRun = useCallback(
     (jobKey: string) => send({ type: "cancel_run", job_key: jobKey }),
+    [send],
+  );
+  // A row's own button; the server answers with a fresh report.
+  const callPanel = useCallback(
+    (call: PanelGroupCall) => send({ type: "panel_call", tool: call.tool, args: call.args }),
     [send],
   );
   // One call fills the whole drawer from the servers' caches. `build`: before the
@@ -129,7 +134,7 @@ export function usePanels(send: (msg: ClientMessage) => void,
 
   return {
     subAgents, openedSubAgent, runningSubAgents, subAgentLevel, panelSections, panelRuns,
-    cancelRun,
+    cancelRun, callPanel,
     panelPending, panelAgentReady, showSciencePanel, showSubAgentsPanel,
     setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
     refreshSubAgents, refreshPanel, reloadPanel, openSubAgent, changeSubAgentLevel, openView,

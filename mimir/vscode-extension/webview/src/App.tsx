@@ -389,6 +389,7 @@ export const App: React.FC = () => {
           sections={panelSections}
           runs={panels.panelRuns}
           onCancelRun={panels.cancelRun}
+          onCall={panels.callPanel}
           onRefresh={refreshPanel}
           onReload={reloadPanel}
           refreshing={panelPending}

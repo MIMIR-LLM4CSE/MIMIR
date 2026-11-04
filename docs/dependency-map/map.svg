@@ -221,7 +221,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M316,98 C316,355 529,355 529,612" stroke-width="2"><title>client.ui.ws → client.llm · 1 import(s)</title></path>
 <path class="edge" d="M316,98 C316,166 485.5,166 485.5,234" stroke-width="2"><title>client.ui.ws → client.query_engine · 1 import(s)</title></path>
 <path class="edge" d="M316,98 C316,446 517.5,446 517.5,794" stroke-width="2"><title>client.ui.ws → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M410.5,98 C410.5,382 518.5,382 518.5,666" stroke-width="3.3"><title>client.ui.ws.connection → client.config · 4 import(s)</title></path>
+<path class="edge" d="M410.5,98 C410.5,382 518.5,382 518.5,666" stroke-width="3"><title>client.ui.ws.connection → client.config · 3 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,328 562,328 562,558" stroke-width="3.3"><title>client.ui.ws.connection → client.context · 4 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,382 598.5,382 598.5,666" stroke-width="2.6"><title>client.ui.ws.connection → client.protocol · 2 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,166 485.5,166 485.5,234" stroke-width="2"><title>client.ui.ws.connection → client.query_engine · 1 import(s)</title></path>

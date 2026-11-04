@@ -405,13 +405,8 @@ def _tree(hosts, digests, profiles=None, loads=None):
         return panel._host_tree()
 
 
-def test_every_registered_scheduler_is_in_the_tree():
-    """Including one nothing has been probed on yet.
-
-    What you have registered is what you can submit to, so it is what the panel has to
-    show — a cluster missing from the list reads as a cluster MIMIR cannot reach.
-    """
-    tree = _tree(["", "hpc1"], {"": _SILENT_DIGEST, "hpc1": _DIGEST})
+def test_every_scheduler_that_answered_is_in_the_tree():
+    tree = _tree(["", "hpc1"], {"": _DIGEST, "hpc1": _DIGEST})
     assert [g["label"] for g in tree] == ["local", "hpc1"]
     assert [g["local"] for g in tree] == [True, False]
 
@@ -440,14 +435,39 @@ def test_the_schedulers_are_all_reached_at_once():
     assert [g["label"] for g in tree] == hosts
 
 
-def test_a_silent_host_is_listed_as_unknown_not_as_empty():
-    """An unreachable cluster and a cluster with no machines are not the same thing,
-    and only one of them is worth waiting for."""
-    tree = _tree(["hpc2"], {"hpc2": _SILENT_DIGEST})
-    assert tree[0]["state"] == "warn"
-    assert tree[0]["value"] == "did not answer"
-    assert "unknown, not absent" in tree[0]["lines"][-1]["value"]
-    assert "groups" not in tree[0]        # never an empty machine list
+def test_a_host_that_could_not_be_read_is_left_out():
+    """A name that never answered may not be a cluster at all: it gets no row."""
+    tree = _tree(["hpc1", "hpc2"], {"hpc1": _DIGEST, "hpc2": _SILENT_DIGEST})
+    assert [g["label"] for g in tree] == ["hpc1"]
+
+
+def test_a_remote_cluster_offers_to_be_forgotten_and_the_local_one_does_not():
+    local, remote = _tree(["", "hpc1"], {"": _DIGEST, "hpc1": _DIGEST})
+    assert "call" not in local
+    assert remote["call"]["tool"] == "slurm_schedulers"
+    assert remote["call"]["args"] == {"forget": "hpc1"}
+    assert "node profiles" in remote["call"]["confirm"]
+
+
+def test_forgetting_a_cluster_drops_its_record_its_digest_and_its_profiles(tmp_path):
+    hpc = _load("server_hpc_forget", SERVERS_DIR / "hpc" / "server_hpc.py")
+    host_dir = tmp_path / "hpc1"
+    host_dir.mkdir()
+    (host_dir / "n01.json").write_text("{}")
+    panel._CACHE["load:hpc1"] = {"at": 0, "value": {}}
+    panel._CACHE["load:hpc2"] = {"at": 0, "value": {}}
+    with mock.patch.object(hpc, "_forget_host", return_value=True) as dropped, \
+         mock.patch.object(hpc, "_forget_cluster_digest") as digest, \
+         mock.patch.object(hpc, "slurm_hosts", return_value=[]), \
+         mock.patch.object(hpc.node_profiles, "profile_host_dir",
+                           return_value=str(host_dir)):
+        payload = hpc.slurm_schedulers(forget="hpc1")
+    assert payload["dropped"]["note"] == "hpc1 dropped."
+    dropped.assert_called_once_with("hpc1")
+    digest.assert_called_once_with("hpc1")
+    assert not host_dir.exists()
+    assert "load:hpc1" not in panel._CACHE and "load:hpc2" in panel._CACHE
+    panel.forget()
 
 
 def test_a_node_kind_is_named_by_what_it_is_and_lists_its_specs():
@@ -592,15 +612,16 @@ def _sections_with_hosts():
              ]}]
 
 
-def test_recorded_clusters_are_shown_before_any_agent_is_up(tmp_path):
-    """The registry is the workspace's; the first query should not be what reveals it."""
-    from mimir.client.ui.ws.connection.panel_runs import recorded_hosts_sections
-    assert recorded_hosts_sections(str(tmp_path)) == []
-    (tmp_path / "slurm_hosts").write_text("hpc1\n\nhpc2\nhpc1\n")
-    [section] = recorded_hosts_sections(str(tmp_path))
-    assert section["section"] == "Cluster"
-    assert [g["id"] for g in section["groups"]] == ["host:hpc1", "host:hpc2"]
-    assert all(g["host"] == g["label"] for g in section["groups"])
+def test_the_panel_runs_only_the_calls_its_rows_offered():
+    from mimir.client.ui.ws.connection.panel_runs import offered_calls
+    call = {"label": "Forget", "tool": "slurm_schedulers", "args": {"forget": "hpc1"}}
+    sections = [{"groups": [{"id": "host:hpc1", "call": call,
+                             "groups": [{"id": "k", "call": {"tool": "t", "args": {}}}]}]}]
+    assert offered_calls(sections) == {
+        json.dumps(["slurm_schedulers", {"forget": "hpc1"}], sort_keys=True),
+        json.dumps(["t", {}], sort_keys=True),
+    }
+    assert offered_calls([{"groups": [{"id": "x"}]}]) == set()
 
 
 def test_a_shell_run_lands_on_this_machine():

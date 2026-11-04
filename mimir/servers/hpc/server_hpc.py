@@ -134,8 +134,9 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
     Args:
         add: A host to add, verified before it is recorded — ``sbatch`` must answer
             there. Not needed for a host you have already reached over ssh.
-        forget: A host to drop: one that was a typo, or a cluster you no longer have.
-            The local scheduler cannot be dropped, being a fact rather than a record.
+        forget: A host to drop, with its cached hardware and its node profiles: one
+            that was a typo, or a cluster you no longer have. The local scheduler
+            cannot be dropped, being a fact rather than a record.
     """
     added: dict | None = None
     if add.strip():
@@ -163,6 +164,8 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
         else:
             gone = _forget_host(host)
             _forget_cluster_digest(host)
+            node_profiles.forget_node_profiles(host)
+            panel.forget(host)
             dropped = {"scheduler": host,
                        "note": f"{host} dropped." if gone
                                else f"{host} was not in this workspace's schedulers."}

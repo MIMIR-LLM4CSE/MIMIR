@@ -1,15 +1,13 @@
-"""Placing the runs the watchers hold onto the panel's host and node rows.
+"""Placing the runs the watchers hold onto the panel's host and node rows, and reading
+the calls its rows offer.
 
-Groups offer ``host``, ``local`` or ``nodes``; runs carry ``scheduler`` and ``nodes``.
-No tool or server is named.
+Groups offer ``host``, ``local``, ``nodes`` and ``call``; runs carry ``scheduler`` and
+``nodes``. No tool or server is named.
 """
 
 from __future__ import annotations
 
-import os
-
-# The workspace registry shared/slurm_site.py appends to, one host per line.
-_HOSTS_FILE = "slurm_hosts"
+import json
 
 # A run nothing claimed is not dropped: it goes back to the caller for the flat list the
 # panel already shows, because a run the user cannot see is worse than one shown out of
@@ -66,29 +64,19 @@ def _badge(run: dict) -> dict:
     return badge
 
 
-def recorded_hosts_sections(state_dir: str) -> list[dict]:
-    """The Cluster section as the workspace registry has it, before any server is up.
-
-    Names only: what each host is made of is a server's probe, and the drawer asks again
-    once the agent is ready. Ids match the server's so open rows survive the swap.
-    """
-    try:
-        with open(os.path.join(state_dir, _HOSTS_FILE)) as fh:
-            names = list(dict.fromkeys(line.strip() for line in fh if line.strip()))
-    except OSError:
-        return []
-    if not names:
-        return []
-    return [{
-        "section": "Cluster",
-        "title": "Cluster",
-        "lines": [],
-        "groups": [{"id": f"host:{name}", "label": name, "host": name, "local": False,
-                    "lines": [{"label": "reached", "value": f"over ssh to {name}"}]}
-                   for name in names],
-        "detail": "Recorded for this workspace. Hardware appears once this "
-                  "conversation's agent is up.",
-    }]
+def offered_calls(sections: list[dict]) -> set[str]:
+    """Every ``call`` a group of *sections* offers, at any depth, as ``[tool, args]`` JSON."""
+    out: set[str] = set()
+    for section in sections:
+        for top in section.get("groups") or []:
+            if not isinstance(top, dict):
+                continue
+            for group in (top, *_descendants(top)):
+                call = group.get("call")
+                if isinstance(call, dict) and call.get("tool"):
+                    args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                    out.add(json.dumps([str(call["tool"]), args], sort_keys=True))
+    return out
 
 
 def _descendants(group: dict):

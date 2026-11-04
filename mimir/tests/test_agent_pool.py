@@ -564,6 +564,31 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         self.assertEqual(_StubWorker.built, 1)
         self.assertIsNotNone(pool.get("s1"))
 
+    async def test_a_panel_call_runs_only_as_the_report_offered_it(self) -> None:
+        """The webview names a button, never a tool: an unoffered call is refused."""
+        import concurrent.futures
+        import json
+        from mimir.tests.support.connections import bare_session
+        pool = self._pool(cap=1)
+        worker = await pool.worker_for("s1")
+        calls: list = []
+
+        def _call(tool, args):
+            calls.append((tool, args))
+            fut: concurrent.futures.Future = concurrent.futures.Future()
+            fut.set_result({"status": "ok"})
+            return fut
+        worker.call_session_tool = _call
+        sess = bare_session(pool, active="s1")
+        sess.panel._request_panel = lambda **_kw: None
+        sess.panel._offered = {json.dumps(["slurm_schedulers", {"forget": "hpc1"}],
+                                          sort_keys=True)}
+        await sess.panel.on_panel_call({"tool": "slurm_schedulers", "args": {"forget": "hpc2"}})
+        await sess.panel.on_panel_call({"tool": "bash", "args": {"forget": "hpc1"}})
+        self.assertEqual(calls, [])
+        await sess.panel.on_panel_call({"tool": "slurm_schedulers", "args": {"forget": "hpc1"}})
+        self.assertEqual(calls, [("slurm_schedulers", {"forget": "hpc1"})])
+
     async def test_returning_to_a_conversation_reuses_its_agent(self) -> None:
         """Its context is live, so coming back is instant and costs no rebuild."""
         pool = self._pool(cap=2)

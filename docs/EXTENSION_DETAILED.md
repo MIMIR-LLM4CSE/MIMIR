@@ -524,9 +524,8 @@ conversation's agent when it has none: the sections come from MCP servers, a con
 holds none until its first query, and without this the drawer was empty until something
 had been asked of the model. The build is never awaited — the report goes out saying
 `agent_ready: false`, the drawer says so, and the worker's own `ready` is the cue to ask
-again. Meanwhile that report carries the Cluster section as the workspace registry has it
-(`connection/panel_runs.recorded_hosts_sections`, from `slurm_hosts` in the state directory): names
-only, with the server's own ids, so the rows a reader opens survive the swap.
+again. Until then the drawer keeps what it showed and lists no cluster from the registry
+alone: a name nothing has read yet may not be a cluster at all.
 
 The sections are asked all at once rather than in turn: they are owned by different
 processes, and the slow ones are slow because they are waiting on a scheduler. The
@@ -534,17 +533,25 @@ drawer costs the longest of those waits, not their sum — the same reason `_hos
 reaches every registered scheduler concurrently.
 
 A section may answer with a tree as well as with lines. `groups` is recursive
-(`{id, label, value?, lines?, table?, nodes?, detail?, groups?, action?, badges?}`, a
+(`{id, label, value?, lines?, table?, nodes?, detail?, groups?, action?, call?, badges?}`, a
 `table` being `{columns, rows}` of strings, drawn above the lines) and
 `PanelGroupList` renders any depth of it, so the shape is the server's decision: the HPC
 server fills it with the schedulers this workspace reaches, the kinds of node on each,
-and what a probe read on one of them; `attach_runs` puts a run's badge on any group under
+and what a probe read on one of them. A `call` (`{label, tool, args, confirm}`) is a
+button run past the model once the reader confirms what `confirm` says: the webview sends
+`panel_call` with the tool and its arguments, and the client runs it on the owning server
+only if the last report offered exactly that call (`panel_runs.offered_calls`), then serves
+the panel again. `attach_runs` puts a run's badge on any group under
 its host whose `nodes` name the run's node, at whatever depth. Only what the user can submit to is there: the
 partitions `sinfo` lists without `--all` (hidden ones and those closed to the user's
 groups are not), up, not root-only and open to one of the user's accounts
 (`scontrol show partition`, `sacctmgr`), and the nodes in one of them; a node down,
 drained, reserved or not responding is counted rather than offered, and a kind with none
-in service is left out. The scheduler's row says what is free now — cores and GPUs no
+in service is left out. A scheduler whose digest could not be read gets no row: a name
+that never answered may not be a cluster at all. Each remote one offers **Forget this
+cluster**, `slurm_schedulers(forget=…)`, which drops it from the registry with its digest,
+the panel's cache of it and its node profiles; it comes back the next time a Slurm command
+succeeds over ssh to it. The scheduler's row says what is free now — cores and GPUs no
 job holds, a node whose memory is all allocated giving none — and opens onto a table, one
 row per partition in the site's order: `Idle nodes` (running no job / in service),
 `Free CPUs` and `Free GPUs` (held by no job, the spare cores of partly used nodes

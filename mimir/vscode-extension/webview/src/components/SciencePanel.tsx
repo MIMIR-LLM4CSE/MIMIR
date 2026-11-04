@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import type { PanelSection, WatchedRun } from "../types";
+import type { PanelGroupCall, PanelSection, WatchedRun } from "../types";
 import { PanelGroupList, RunBadge } from "./PanelGroups";
 import { PanelCurve } from "./PanelCurve";
 import { PanelMiniMap } from "./PanelMiniMap";
@@ -27,6 +27,8 @@ interface Props {
   runs: WatchedRun[];
   /** Stop a run with the cancel op its server named. */
   onCancelRun: (jobKey: string) => void;
+  /** Run a call a row offers, once the reader confirmed it. */
+  onCall: (call: PanelGroupCall) => void;
   /** Ask again, serving whatever the servers have cached. The timer's call. */
   onRefresh: () => void;
   /** Read it all again, cache bypassed, building this conversation's agent if it has
@@ -55,6 +57,7 @@ export const SciencePanel: React.FC<Props> = ({
   sections,
   runs,
   onCancelRun,
+  onCall,
   onRefresh,
   onReload,
   refreshing,
@@ -181,6 +184,7 @@ export const SciencePanel: React.FC<Props> = ({
                     onToggle={toggleGroup}
                     onPrompt={onPrompt}
                     onCancelRun={onCancelRun}
+                    onCall={onCall}
                   />
                 )}
                 {section.unplaced && (

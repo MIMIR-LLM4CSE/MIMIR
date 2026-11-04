@@ -42,7 +42,7 @@ const tree = (open: Record<string, boolean>, groups: PanelGroup[] = [host]) =>
   renderToStaticMarkup(
     <PanelGroupList
       groups={groups} open={open} onToggle={() => {}} onPrompt={() => {}}
-      onCancelRun={() => {}}
+      onCancelRun={() => {}} onCall={() => {}}
     />,
   );
 
@@ -60,6 +60,21 @@ describe("a closed tree", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("<button");
     expect(html).toContain("▸");
+  });
+});
+
+describe("a call a row offers", () => {
+  const forgettable: PanelGroup = {
+    ...host,
+    call: { label: "Forget this cluster", tool: "slurm_schedulers",
+            args: { forget: "hpc1" }, confirm: "Forget hpc1?" },
+  };
+
+  it("is a button on the opened row, its confirmation not yet shown", () => {
+    expect(tree({}, [forgettable])).not.toContain("Forget this cluster");
+    const html = tree({ "host:hpc1": true }, [forgettable]);
+    expect(html).toContain(">Forget this cluster</button>");
+    expect(html).not.toContain("Forget hpc1?");
   });
 });
 
