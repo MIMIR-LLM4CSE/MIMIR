@@ -198,6 +198,8 @@ interface View {
   /** A module box's size: wider with the tab, taller with its functions listed. */
   bw: number; bh: number;
   modEdges: ModEdge[];
+  /** The modules a rule break starts from. */
+  breakMods: Set<string>;
 }
 interface ModEdge {
   from: string; to: string; edges: Edge[]; breaks: number; binding: number; byName: number;
@@ -222,13 +224,17 @@ function derive(m: CodeMap, COLS = cols, bw = boxW, bh = boxHeight()): View {
   const compOf = new Map(m.components.map((c) => [c.id, c]));
   const cycleOf = new Map<string, number>();
   m.cycles.forEach((c, i) => c.forEach((id) => cycleOf.set(id, i)));
-  const size = (c: Component) => m.files.filter((f) => f.component === c.id).length;
+  const sizes = new Map<string, number>();
+  for (const f of m.files) sizes.set(f.component, (sizes.get(f.component) ?? 0) + 1);
+  const compMods = new Map<string, string[]>();
+  for (const x of m.modules) (compMods.get(x.component) ?? compMods.set(x.component, []).get(x.component)!).push(x.id);
+  const size = (c: Component) => sizes.get(c.id) ?? 0;
   const order = [...m.components].sort((a, b) => b.tier - a.tier || size(b) - size(a));
   const pos = new Map<string, { x: number; y: number }>();
   const bands: View["bands"] = [];
   let y = 4;
   for (const c of order) {
-    const mods = m.modules.filter((x) => x.component === c.id).map((x) => x.id).sort();
+    const mods = (compMods.get(c.id) ?? []).sort();
     if (!mods.length) continue;
     const rows = Math.ceil(mods.length / COLS), h = PAD * 2 + rows * bh + (rows - 1) * GY;
     bands.push({ c, y, h });
@@ -247,23 +253,65 @@ function derive(m: CodeMap, COLS = cols, bw = boxW, bh = boxHeight()): View {
     if (e.sure === "by_name") me.byName++;
     me.deferred = me.deferred && e.deferred;
   }
+  const breakMods = new Set<string>();
   for (const me of agg.values()) {
     me.cycle = cycleOf.has(me.from) && cycleOf.get(me.from) === cycleOf.get(me.to);
   }
+  for (const e of m.edges) if (e.breaks) breakMods.add(byId.get(e.from)!.module);
   return { byId, modFiles, compOf, cycleOf, pos, bands, width: LW + COLS * (bw + GX) + 4, height: y - BGAP + 4,
-    bw, bh, modEdges: [...agg.values()] };
+    bw, bh, modEdges: [...agg.values()], breakMods };
 }
 
-function path(v: View, a: string, b: string): string {
+/** The edge from module *a* to *b* as a cubic: start, two controls, end. */
+function curve(v: View, a: string, b: string): number[] {
   const BW = v.bw, BH = v.bh;
   const pa = v.pos.get(a)!, pb = v.pos.get(b)!, ax = pa.x + BW / 2, bx = pb.x + BW / 2;
-  if (pb.y > pa.y + 4) { const y1 = pa.y + BH, y2 = pb.y, k = (y2 - y1) / 2; return `M${ax},${y1} C${ax},${y1 + k} ${bx},${y2 - k} ${bx},${y2}`; }
+  if (pb.y > pa.y + 4) { const y1 = pa.y + BH, y2 = pb.y, k = (y2 - y1) / 2; return [ax, y1, ax, y1 + k, bx, y2 - k, bx, y2]; }
   if (pb.y < pa.y - 4) {
     const x1 = pa.x + BW, x2 = pb.x + BW, y1 = pa.y + BH / 2, y2 = pb.y + BH / 2, k = 36 + Math.abs(y2 - y1) * 0.15;
-    return `M${x1},${y1} C${x1 + k},${y1} ${x2 + k},${y2} ${x2},${y2}`;
+    return [x1, y1, x1 + k, y1, x2 + k, y2, x2, y2];
   }
   const lift = 16 + Math.abs(bx - ax) * 0.1;
-  return `M${ax},${pa.y} C${ax},${pa.y - lift} ${bx},${pb.y - lift} ${bx},${pb.y}`;
+  return [ax, pa.y, ax, pa.y - lift, bx, pb.y - lift, bx, pb.y];
+}
+function pathOf(c: number[]): string {
+  return `M${c[0]},${c[1]} C${c[2]},${c[3]} ${c[4]},${c[5]} ${c[6]},${c[7]}`;
+}
+/** A cubic's middle, computed: measuring the drawn path would lay the page out once per edge. */
+function midOf(c: number[]): { x: number; y: number } {
+  return { x: (c[0] + 3 * c[2] + 3 * c[4] + c[6]) / 8, y: (c[1] + 3 * c[3] + 3 * c[5] + c[7]) / 8 };
+}
+
+/** The font an SVG text of class *cls* in a module's box is drawn in, read once. */
+const fonts = new Map<string, string>();
+function fontOf(cls: string): string {
+  let f = fonts.get(cls);
+  if (f === undefined) {
+    const probe = svg("svg", { width: 0, height: 0 }, document.body);
+    const cs = getComputedStyle(svg("text", { class: cls }, svg("g", { class: "m" }, probe)));
+    f = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    probe.remove();
+    fonts.set(cls, f);
+  }
+  return f;
+}
+/** *text* shortened by *cut* until it holds in *max* px, measured on a canvas: an SVG text
+ *  measured as it is drawn lays the page out at every try. */
+const fitted = new Map<string, string>();
+let pen: CanvasRenderingContext2D | null = null;
+function fitText(text: string, max: number, cls: string, cut: (s: string) => string): string {
+  const k = cls + "|" + max + "|" + text;
+  let out = fitted.get(k);
+  if (out !== undefined) return out;
+  pen ??= document.createElement("canvas").getContext("2d");
+  out = text;
+  if (pen) {
+    pen.font = fontOf(cls);
+    while (pen.measureText(out).width > max && out.length > 4) out = cut(out);
+  }
+  if (fitted.size > 5000) fitted.clear();
+  fitted.set(k, out);
+  return out;
 }
 
 /** The map's module edges with a step's marks: its added dependencies counted on the
@@ -338,15 +386,13 @@ function timeBar(g: SVGElement, bw: number, now: number, was: number | null, sca
 
 /** A module's costliest functions under its bars: each name, a thin bar on the module's
  *  scale, and its own share of the baseline's time. */
-function functionLines(g: SVGElement, bw: number, fns: NonNullable<TimeView["functions"]>, files: Set<string>, scale: number,
-                       top: number): void {
+function functionLines(g: SVGElement, bw: number, fns: NonNullable<TimeView["functions"]>, scale: number, top: number): void {
   const tw = 34, x0 = bw - PCT_W - tw;
-  topFunctions(fns, FN_N, (f) => files.has(f)).filter(([, f]) => f.self > 0).forEach(([k, f], i) => {
+  topFunctions(fns, FN_N).filter(([, f]) => f.self > 0).forEach(([k, f], i) => {
     const y = top + i * FN_ROW + 4;
     const name = fnParts(k).name;
     const t = svg("text", { class: "fn", x: 9, y: y + 3 }, g);
-    t.textContent = name;
-    while (t.getComputedTextLength() > x0 - 15 && (t.textContent ?? "").length > 4) t.textContent = t.textContent!.slice(0, -2) + "…";
+    t.textContent = fitText(name, x0 - 15, "fn", (x) => x.slice(0, -2) + "…");
     svg("title", {}, t).textContent = name + ": " + pctOf(f.self) + " own, " + pctOf(f.total) + " with what it calls";
     svg("rect", { class: "fill fn-bar", x: x0, y: y - 2, width: Math.max(1.5, Math.min(1, f.self / scale) * tw), height: 3, rx: 1.5 }, g);
     svg("text", { class: "fn-pct", x: bw - 8, y: y + 3, "text-anchor": "end" }, g).textContent = pctOf(f.self);
@@ -358,7 +404,28 @@ function moduleTime(v: View, id: string, files: Record<string, number>): number 
   return (v.modFiles.get(id) ?? []).reduce((n, f) => n + (files[f.id] ?? 0), 0);
 }
 
+/** A profile's functions grouped by their file, once per profile. */
+const fnsByFile = new WeakMap<object, Map<string, [string, NonNullable<TimeView["functions"]>[string]][]>>();
+function functionsOf(fns: NonNullable<TimeView["functions"]>, files: File[]): NonNullable<TimeView["functions"]> {
+  let by = fnsByFile.get(fns);
+  if (!by) {
+    by = new Map();
+    for (const e of Object.entries(fns)) {
+      const f = fnParts(e[0]).file;
+      (by.get(f) ?? by.set(f, []).get(f)!).push(e);
+    }
+    fnsByFile.set(fns, by);
+  }
+  return Object.fromEntries(files.flatMap((f) => by!.get(f.id) ?? []));
+}
+
+/** What the map drawn was drawn from, and how to bring its selection up to date: a click
+ *  that only selects restyles the map, it does not draw it again. */
+let drawn: { from: unknown[]; restyle: () => void } | null = null;
+
 function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
+  const from = [v, session, step, scope, showFns, requests, time];
+  if (drawn && drawn.from.length === from.length && drawn.from.every((x, i) => x === from[i])) { drawn.restyle(); return; }
   const root = document.getElementById("map")!;
   root.innerHTML = "";
   const s = svg("svg", { viewBox: `0 0 ${v.width} ${v.height}`, role: "img", "aria-label": "Modules by component, with the dependencies between them" }, root);
@@ -373,10 +440,11 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   // One scale for every step and both sides: the costliest module of whichever profile is drawn.
   const tables = time ? [time.files, time.before, time.gpuFiles, time.gpuBefore].filter((x): x is Record<string, number> => !!x) : [];
   const scale = Math.max(1e-9, ...[...v.modFiles.keys()].flatMap((id) => tables.map((t) => moduleTime(v, id, t))));
+  const bandRects: SVGRectElement[] = [];
   for (const b of v.bands) {
-    const band = svg("rect", { class: "band-bg" + (sel?.kind === "comp" && sel.id === b.c.id ? " is-sel" : ""),
-      x: 0, y: b.y, width: v.width, height: b.h, rx: 6 }, s);
+    const band = svg("rect", { class: "band-bg", x: 0, y: b.y, width: v.width, height: b.h, rx: 6 }, s);
     band.dataset.comp = b.c.id;
+    bandRects.push(band);
     band.addEventListener("click", () => {
       sel = sel?.kind === "comp" && sel.id === b.c.id ? null : { kind: "comp", id: b.c.id };
       render();
@@ -391,14 +459,15 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   }
   const gE = svg("g", {}, s), gX = svg("g", {}, s), gM = svg("g", {}, s);
   const rank = (e: ModEdge) => (e.removed || e.added ? 4 : e.breaks ? 3 : e.cycle ? 2 : e.binding ? 1 : 0);
-  const paths: SVGPathElement[] = [];
+  // Each path with whether it keeps its own colour when lit (a break, a cycle).
+  const paths: { p: SVGPathElement; from: string; to: string; loud: boolean }[] = [];
   for (const me of marked(v, ov).sort((a, b) => rank(a) - rank(b))) {
-    const p = svg("path", { d: path(v, me.from, me.to), class: edgeClass(me),
+    const c = curve(v, me.from, me.to), cls = edgeClass(me);
+    const p = svg("path", { d: pathOf(c), class: cls,
       "stroke-width": (me.breaks || me.removed || me.added ? 2.5 : 1.2) + Math.log2(me.edges.length) * 0.6 }, gE);
-    p.dataset.from = me.from; p.dataset.to = me.to;
-    paths.push(p);
+    paths.push({ p, from: me.from, to: me.to, loud: /is-(break|cycle)/.test(cls) });
     if (me.breaks) {
-      const mid = p.getPointAtLength(p.getTotalLength() / 2);
+      const mid = midOf(c);
       svg("text", { class: "xmark", x: mid.x, y: mid.y + 4, "text-anchor": "middle" }, gX).textContent = "✕";
     }
   }
@@ -412,8 +481,7 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     svg("rect", { class: "box", width: BW, height: BH, rx: 6 }, g);
     const comp = files[0].component;
     const nm = svg("text", { class: "mname", x: 9, y: 18 }, g);
-    nm.textContent = id === comp ? base(id) : id.slice(comp.length + 1);
-    while (nm.getComputedTextLength() > BW - 30 && (nm.textContent ?? "").length > 4) nm.textContent = "…" + nm.textContent!.slice(2);
+    nm.textContent = fitText(id === comp ? base(id) : id.slice(comp.length + 1), BW - 30, "mname", (x) => "…" + x.slice(2));
     const lines = files.reduce((n, f) => n + f.lines, 0);
     const langs = [...new Set(files.map((f) => LANG[f.lang] ?? f.lang))].join(" ");
     svg("text", { class: "msub", x: 9, y: 33 }, g).textContent = `${files.length} files · ${(lines / 1000).toFixed(1)}k · ${langs}`;
@@ -424,9 +492,9 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
       if (cpu) timeBar(g, BW, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 39 : 40, "");
       if (time.gpuFiles) timeBar(g, BW, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, both ? 50 : 40, "gpu");
     }
-    if (fns) functionLines(g, BW, fns, new Set(files.map((f) => f.id)), scale, barsHeight(time) + 4);
+    if (fns) functionLines(g, BW, functionsOf(fns, files), scale, barsHeight(time) + 4);
     let dx = BW - 9;
-    if (map!.edges.some((e) => e.breaks && v.byId.get(e.from)!.module === id)) { svg("circle", { class: "dot-break", cx: dx, cy: 12, r: 4 }, g); dx -= 11; }
+    if (v.breakMods.has(id)) { svg("circle", { class: "dot-break", cx: dx, cy: 12, r: 4 }, g); dx -= 11; }
     if (v.cycleOf.has(id)) svg("circle", { class: "dot-cycle", cx: dx, cy: 12, r: 4 }, g);
     // Pills ride the box's top edge, clear of its bars and functions: the steps that changed
     // it on the right, its requests on the left, as many as the room between them allows.
@@ -470,11 +538,11 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
   function highlight(core: Set<string>): void {
     const any = core.size > 0;
     const near = new Set(core);
-    for (const p of paths) {
-      const on = any && (core.has(p.dataset.from!) || core.has(p.dataset.to!));
-      p.classList.toggle("is-hot", on && !/is-(break|cycle)/.test(p.getAttribute("class") ?? ""));
+    for (const { p, from, to, loud } of paths) {
+      const on = any && (core.has(from) || core.has(to));
+      p.classList.toggle("is-hot", on && !loud);
       p.classList.toggle("is-faded", any && !on);
-      if (on) { near.add(p.dataset.from!); near.add(p.dataset.to!); }
+      if (on) { near.add(from); near.add(to); }
     }
     const chosen = selectedModules(v);
     for (const [mid, g] of boxes) {
@@ -482,11 +550,17 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
       g.classList.toggle("is-sel", chosen.has(mid));
     }
   }
-  highlight(selectedModules(v));
-  if (scrollToBand && sel?.kind === "comp") {
-    scrollToBand = false;
-    s.querySelector(`[data-comp="${CSS.escape(sel.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  /** The selection marked: its band, its modules and what they link. */
+  function restyle(): void {
+    v.bands.forEach((b, i) => bandRects[i].classList.toggle("is-sel", sel?.kind === "comp" && sel.id === b.c.id));
+    highlight(selectedModules(v));
+    if (scrollToBand && sel?.kind === "comp") {
+      scrollToBand = false;
+      s.querySelector(`[data-comp="${CSS.escape(sel.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
   }
+  drawn = { from, restyle };
+  restyle();
 }
 
 /** A file in a list, or a function (*label*) in it: a click shows the file on the map, a
@@ -549,9 +623,14 @@ function overview(m: CodeMap): string {
   return section("sel", "Code", code) + section("flags", "To look at", look) + section("bind", "Across languages", across);
 }
 
-/** The time of the session's step shown, or null without a session or a profile. */
+/** The time of the session's step shown, or null without a session or a profile: the
+ *  same object while the step shown is, which the map compares to know it is drawn. */
+let timeOf: { session: Session | null; step: number; scope: Scope; t: TimeView | null } | null = null;
 function time(): TimeView | null {
-  return session ? timeAt(session, step, scope) : null;
+  if (!timeOf || timeOf.session !== session || timeOf.step !== step || timeOf.scope !== scope) {
+    timeOf = { session, step, scope, t: session ? timeAt(session, step, scope) : null };
+  }
+  return timeOf.t;
 }
 
 /** Where the time goes over the whole code, from the profile shown: whose profile it is,
@@ -925,6 +1004,14 @@ let view: View | null = null;
 /** The map as the server answered it, tests included. */
 let raw: CodeMap | null = null;
 
+/** The map, drawn again only when what it shows has changed, else restyled. */
+function drawMap(): void {
+  if (!map || !view || !map.files.length) return;
+  // The boxes' height follows the functions shown, which follow the step shown.
+  if (view.bh !== boxHeight()) view = derive(map);
+  renderMap(view, session && step ? overlay(session, step, scope) : null, time());
+}
+
 function render(): void {
   document.documentElement.dataset.skin = skin;
   document.querySelectorAll<HTMLButtonElement>("button[data-skin]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.skin === skin)));
@@ -945,14 +1032,13 @@ function render(): void {
     + (hiddenTests ? ` · ${hiddenTests} test files folded` : "");
   if (!map.files.length) {
     document.getElementById("map")!.innerHTML = '<p class="empty">No Python, C/C++ or Fortran code in this workspace.</p>';
+    drawn = null;
     document.getElementById("side")!.innerHTML = "";
     return;
   }
   renderPicker();
   renderSession();
-  // The boxes' height follows the functions shown, which follow the step shown.
-  if (view.bh !== boxHeight()) view = derive(map);
-  renderMap(view, session && step ? overlay(session, step, scope) : null, time());
+  drawMap();
   renderLegend();
   renderSide(view);
 }
@@ -1016,7 +1102,8 @@ function mount(): void {
       const bw = Math.max(BW, Math.floor((w - LW - 4) / c) - GX);
       if (c === cols && bw === boxW) return;
       cols = c; boxW = bw;
-      if (map) { view = derive(map); render(); }
+      // Only the map follows the width: the pane beside it stays as it is.
+      if (map) { view = derive(map); drawMap(); }
     });
   }).observe(document.getElementById("map")!);
   // The session's chart is drawn to its strip's width.

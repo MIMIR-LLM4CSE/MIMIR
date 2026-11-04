@@ -86,6 +86,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **The code map answers at once.** A click that only selects (a module, a component,
+  a file, a request) restyled nothing and drew the whole map again, measuring each box's
+  name and functions by laying the page out at every letter cut; widening the tab did the
+  same at every frame and rebuilt the side pane too. A selection now restyles the map
+  drawn, names are fitted on a canvas once, a rule break's mark sits on its edge's
+  computed middle, and a resize draws the map alone.
 - **A sub-agent's optimisation session no longer takes its parent's.** The proxy pointer
   of a session sat at `opt_runs/active_session.<id>`, and a sub-agent's id runs under its
   parent's (`<id>/subagents/<child>`), so whichever wrote first turned the other's pointer
