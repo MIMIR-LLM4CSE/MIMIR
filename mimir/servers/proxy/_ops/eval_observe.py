@@ -17,7 +17,7 @@ from .._lib.ratchet import load_best
 from .._lib.report import diff_run_pair, parse_runner_log
 from ._eval_ratchet import ratchet_state
 from ....shared import build_progress
-from .._lib import build, build_files, profiling
+from .._lib import build, build_files, profiling, requests
 from .._lib.store import load_registry, load_opt_config, opt_ledger_file, run_dir_names
 from .._lib.layout import opt_session_runs_dir, resolve_proxy_name, read_json
 from .eval_common import (
@@ -346,6 +346,13 @@ def results(proxy_name: str = "") -> dict:
     build_s = (final_metrics or {}).get("build_s") or 0.0
     recommendation += _long_build_note(build_s)
 
+    # A run of an R&D request goes on with the request: its next variant, or its
+    # conclusion, which is what moves it off "trying" on the map.
+    axis = str((read_json(os.path.join(run_dir, "config.json")) or {}).get("axis") or "")
+    follow = requests.follow_up(axis, read_ledger(resolved))
+    if follow:
+        next_step = follow.pop("next_step")
+
     tried = axes_tried(proxy_name)
     prof = read_json(profiling.profile_path(run_dir))
 
@@ -367,6 +374,7 @@ def results(proxy_name: str = "") -> dict:
         # Attached rather than asked for: the moment the next edit is chosen is right
         # here, and a call the agent has to remember to make is one it will not make.
         **({"axes_tried": tried} if tried else {}),
+        **({"request_progress": follow} if follow else {}),
         # Same reason: where this code spends its time is what picks the next axis.
         **({"where_time_goes": profiling.top(prof)} if prof else {}),
         **({"timing_warning": r["timing_warning"]} if r.get("timing_warning") else {}),

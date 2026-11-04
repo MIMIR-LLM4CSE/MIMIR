@@ -122,6 +122,19 @@ class FollowUpTests(_Store):
         self.assertEqual(requests_ops.untagged_hint("mesh2", "x", "r9"), {})
 
 
+    def test_a_request_s_run_goes_on_with_its_next_variant_then_its_conclusion(self) -> None:
+        requests.add({"status": "trying", "idea": "solvers", "variants": ["CG", "BiCGStab"]})
+        first = requests.follow_up("[R1.1] CG", [{"axis": "[R1.1] CG"}])
+        self.assertEqual(first["variants_left"], [2])
+        self.assertIn("axis='[R1.2]", first["next_step"])
+        last = requests.follow_up("[R1.2] BiCGStab", [{"axis": "[R1.1] CG"}])
+        self.assertEqual(last["variants_left"], [])
+        self.assertIn("status='done'", last["next_step"])
+        requests.update("R1", {"status": "done"})
+        self.assertEqual(requests.follow_up("[R1.2] BiCGStab", []), {})
+        self.assertEqual(requests.follow_up("tiling", []), {})
+
+
 class RestoreTests(_Store):
     def test_each_variant_starts_from_the_request_s_tree_not_the_best(self) -> None:
         root = os.path.join(self.tmp.name, "ws")
