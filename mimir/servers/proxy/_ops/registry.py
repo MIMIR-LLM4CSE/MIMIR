@@ -387,13 +387,14 @@ def unregister(name: str) -> dict:
 def _other_proxies_with_state(name: str) -> list[str]:
     """Other proxies that still have runs or a session on disk (after this one's removal)."""
     found: set[str] = set()
+    pointers = os.path.basename(layout.active_sessions_dir())
     for directory in (store.runs_dir(), layout.opt_runs_dir()):
         try:
             entries = os.listdir(directory)
         except OSError:
             continue
         for entry in entries:
-            if entry != name and os.path.isdir(os.path.join(directory, entry)):
+            if entry not in (name, pointers) and os.path.isdir(os.path.join(directory, entry)):
                 found.add(entry)
     return sorted(found)
 

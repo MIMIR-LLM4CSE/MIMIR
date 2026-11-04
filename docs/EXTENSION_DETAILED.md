@@ -663,7 +663,9 @@ settled, a background run's results read, a request recorded), narrowed by
 `proxy_request` only for `open` and `update`: a status poll while a run goes re-maps
 nothing); after each such successful call the client's dispatch emits `code_map_stale`, the chat passes it to the host
 (`codeMapStale`), and an open tab maps the code again with its own pick of proxy, as ⟳
-does and saying so. A burst of calls is one re-map (1.5 s), a tab out of sight waits until
+does and saying so. A sub-agent's run reaches no dispatch of this window (a detached one
+not even its parent's), so the open tab also watches `proxy_bench/`'s ledgers, profiles
+and `requests.json` (`BENCH_GLOB`) and calls `codeMapStale` when one is written. A burst of calls is one re-map (1.5 s), a tab out of sight waits until
 it is seen, and no event, no scan: nothing polls. The host answers a refresh without
 revealing the tab, so nothing takes the focus. An edit to the code outside a session
 step is not one of these: ⟳ maps it.

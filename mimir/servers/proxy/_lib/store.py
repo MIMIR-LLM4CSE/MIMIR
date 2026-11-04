@@ -15,9 +15,9 @@ from ....shared import exec_seals
 from ....shared.atomic import write_json, write_text
 from .layout import (
     active_session_file,
+    active_sessions_dir,
     cache_dir,
     opt_config_file,
-    opt_runs_dir,
     opt_session_runs_dir,
     read_json,
     registry_path,
@@ -275,12 +275,19 @@ def clear_active_session(session_id: str | None = None) -> None:
     """Drop the active-session pointer (best-effort). Leaves opt_config/runs intact
     for history; only the "current session" marker is removed, so nameless ops no
     longer resolve to it and the seal on running the proxy directly lifts."""
+    path = active_session_file(session_id)
     try:
-        os.remove(active_session_file(session_id))
-    except FileNotFoundError:
-        pass
+        os.remove(path)
     except OSError:
         pass
+    # The session's directories, once empty, go too; a sibling's pointer keeps its own.
+    root, d = active_sessions_dir(), os.path.dirname(path)
+    while d != root and d.startswith(root + os.sep):
+        try:
+            os.rmdir(d)
+        except OSError:
+            break
+        d = os.path.dirname(d)
     exec_seals.unseal(SEAL_OWNER, session_id)
 
 
@@ -317,25 +324,13 @@ def publish_seal(session_id: str | None = None) -> None:
 
 def sessions_with_an_active_proxy() -> list[str]:
     """The session ids whose pointer names a proxy ("" for the pointer outside a session)."""
-    root = opt_runs_dir()
-    prefix = os.path.basename(active_session_file(""))
+    root = active_sessions_dir()
+    leaf = os.path.basename(active_session_file(""))
     out: list[str] = []
-    try:
-        entries = os.listdir(root)
-    except OSError:
-        return out
-    for entry in entries:
-        if not entry.startswith(prefix):
-            continue
-        path = os.path.join(root, entry)
-        if os.path.isfile(path):
-            out.append(entry[len(prefix) + 1:])
-            continue
-        # A sub-session's id carries slashes, so its pointer sits in directories.
-        for dirpath, _dirs, files in os.walk(path):
-            for name in files:
-                rel = os.path.relpath(os.path.join(dirpath, name), root)
-                out.append(rel[len(prefix) + 1:])
+    for dirpath, _dirs, files in os.walk(root):
+        if leaf in files:
+            rel = os.path.relpath(dirpath, root)
+            out.append("" if rel == "." else rel.replace(os.sep, "/"))
     return out
 
 

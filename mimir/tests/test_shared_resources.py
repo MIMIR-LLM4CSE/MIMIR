@@ -59,9 +59,31 @@ class ProxyActiveSessionPointerTests(unittest.TestCase):
             self.store.write_active_session("alpha")
             self.assertEqual(self.store.resolve_proxy_name("named"), "named")
 
-    def test_a_session_less_end_keeps_the_unsuffixed_pointer(self) -> None:
-        """The CLI and the tests: same file name it has always had."""
-        self.assertTrue(self.store.active_session_file().endswith("active_session"))
+    def test_a_session_less_end_has_a_pointer_of_its_own(self) -> None:
+        """The CLI and the tests: the pointer at the root, outside any session."""
+        self.store.write_active_session("alpha")
+        self.assertEqual(self.store.resolve_proxy_name(""), "alpha")
+        self.assertEqual(self.store.sessions_with_an_active_proxy(), [""])
+
+    def test_a_sub_session_and_its_parent_both_keep_a_pointer(self) -> None:
+        """A sub-agent's id runs under its parent's; either may write first."""
+        child = "p1/subagents/sub-1"
+        for first, second in (("p1", child), (child, "p1")):
+            with self.subTest(first=first):
+                self.store.write_active_session(f"of-{first}", session_id=first)
+                self.store.write_active_session(f"of-{second}", session_id=second)
+                self.assertEqual(self.store.resolve_proxy_name("", "p1"), "of-p1")
+                self.assertEqual(self.store.resolve_proxy_name("", child), f"of-{child}")
+                self.assertEqual(sorted(self.store.sessions_with_an_active_proxy()), ["p1", child])
+                self.store.clear_active_session("p1")
+                self.store.clear_active_session(child)
+
+    def test_a_cleared_sub_session_leaves_nothing_in_its_parents_way(self) -> None:
+        self.store.write_active_session("beta", session_id="p1/subagents/sub-1")
+        self.store.clear_active_session("p1/subagents/sub-1")
+        self.assertFalse(os.path.exists(os.path.join(layout.active_sessions_dir(), "p1")))
+        self.store.write_active_session("alpha", session_id="p1")
+        self.assertEqual(self.store.resolve_proxy_name("", "p1"), "alpha")
 
     def test_the_client_resolves_the_session_it_is_acting_for(self) -> None:
         """In the client, N sessions share one environment — the agent must say."""

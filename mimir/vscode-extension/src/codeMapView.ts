@@ -73,7 +73,8 @@ export function showCodeMap(map: unknown, session: unknown, focus: string | unde
         openFile({ type: "open_file", file, line: m.line });
       }
     });
-    mapPanel.onDidDispose(() => { mapPanel = undefined; });
+    const bench = watchBench();
+    mapPanel.onDidDispose(() => { mapPanel = undefined; bench.dispose(); });
   } else {
     if (!quiet) mapPanel.reveal(undefined, false);
     quiet = false;
@@ -92,6 +93,18 @@ export function codeMapUnavailable(reason?: string): void {
  *  with its own pick of proxy. Nothing when no tab is open. */
 export function codeMapStale(): void {
   void mapPanel?.webview.postMessage({ type: "stale" });
+}
+
+/** What the proxy server writes when a run settles, a profile lands or a request is
+ *  recorded, whichever session did it: a sub-agent's, detached or not, says nothing to
+ *  this window, so the tab watches the files themselves. */
+export const BENCH_GLOB = "**/proxy_bench/{requests.json,opt_runs/*/ledger.jsonl,opt_runs/*/*/profile/profile.json}";
+
+function watchBench(): vscode.Disposable {
+  const watcher = vscode.workspace.createFileSystemWatcher(BENCH_GLOB);
+  watcher.onDidCreate(codeMapStale);
+  watcher.onDidChange(codeMapStale);
+  return watcher;
 }
 
 function pageHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {

@@ -1040,7 +1040,8 @@ def proxy_code_map_steps(proxy_name: str = "", combined: bool = False) -> dict:
     (`active`). No steps when no session is open in this workspace.
 
     Args:
-        proxy_name: A proxy with a session, to draw its steps; empty for the active one's.
+        proxy_name: A proxy with a session, to draw its steps; empty for the active one's,
+            else the one that ran last.
         combined: Every proxy's steps together, in the order they settled, each value a
             multiple of its own proxy's baseline (lower is better).
     """

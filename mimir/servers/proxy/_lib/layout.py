@@ -43,11 +43,19 @@ def opt_config_file(proxy_name: str) -> str:
     return os.path.join(opt_session_runs_dir(proxy_name), "opt_config.json")
 
 
+def active_sessions_dir() -> str:
+    """Where the sessions' pointers live: ``active_sessions/<sid>/proxy``."""
+    return os.path.join(opt_runs_dir(), "active_sessions")
+
+
 def active_session_file(session_id: str | None = None) -> str:
-    """The pointer to the proxy a nameless ``proxy_eval`` op acts on: one per MIMIR session."""
+    """The pointer to the proxy a nameless ``proxy_eval`` op acts on: one per MIMIR session.
+
+    A fixed leaf under the session's id, so a sub-session's (``<sid>/subagents/<child>``)
+    sits beside its parent's pointer, never in its place.
+    """
     sid = session_id if session_id is not None else active_session_id()
-    name = f"active_session.{sid}" if sid else "active_session"
-    return os.path.join(opt_runs_dir(), name)
+    return os.path.join(active_sessions_dir(), *([sid] if sid else []), "proxy")
 
 
 def read_json(path: str, default=None):

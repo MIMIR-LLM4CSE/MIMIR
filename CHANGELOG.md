@@ -75,6 +75,20 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **A sub-agent's optimisation session no longer takes its parent's.** The proxy pointer
+  of a session sat at `opt_runs/active_session.<id>`, and a sub-agent's id runs under its
+  parent's (`<id>/subagents/<child>`), so whichever wrote first turned the other's pointer
+  into a directory ("Is a directory") and the parent could not open a session until the
+  folder was removed by hand. Pointers now live at `opt_runs/active_sessions/<id>/proxy`,
+  and a cleared one takes its empty directories with it. A session open across the update
+  is opened again with `proxy_eval(op='init')`; old `active_session.*` entries can be
+  deleted.
+- **The code map shows the optimisation steps when only sub-agents measured.** Without an
+  active session of its own, the map drew nothing; it now draws the proxy whose ledger
+  moved last, and the picker still offers the others and every proxy at once.
+- **The code map follows the runs sub-agents settle.** It re-mapped only on this window's
+  own calls; the open tab now also watches the proxy bench's ledgers, profiles and
+  requests, so the curve grows as each agent's run lands, detached or not.
 - **Following a working sub-agent no longer sends the drawer back to the top.** Each
   re-read of the opened card emptied it until the answer landed; it now stays on screen.
 - **A sub-agent killed mid-run no longer leaves its copy of the repository behind.** Its

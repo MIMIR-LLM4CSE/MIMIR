@@ -93,17 +93,31 @@ def proxies() -> list[str]:
     return [n for n in names if os.path.isfile(opt_ledger_file(n))]
 
 
+def _latest(names: list[str]) -> str:
+    """The proxy whose ledger moved last."""
+    def mtime(n: str) -> float:
+        try:
+            return os.path.getmtime(opt_ledger_file(n))
+        except OSError:
+            return 0.0
+    return max(names, key=mtime)
+
+
 def answer(proxy_name: str = "", combined: bool = False) -> dict:
-    """What the map tab is sent: the steps of *proxy_name* (else the active session's), or of
-    every proxy at once when *combined*; with the proxies it can switch between."""
+    """What the map tab is sent: the steps of *proxy_name* (else the active session's, else
+    the latest session's), or of every proxy at once when *combined*; with the proxies it
+    can switch between."""
     known = proxies()
     asked = requests_view()
     if not known:
         return {"steps": [], "requests": asked} if asked else {}
-    # A name the tab sends is one it was given; any other reads as the active session.
-    value = merged(known) if combined else session(proxy_name if proxy_name in known else "")
+    active = resolve_proxy_name("") or ""
+    # A name the tab sends is one it was given; any other reads as the active session, and
+    # without one (sub-agents measured, this session did not) as the latest.
+    name = proxy_name if proxy_name in known else ("" if active else _latest(known))
+    value = merged(known) if combined else session(name)
     # Always a list of steps, even empty: the tab still offers the other proxies.
-    return {"steps": [], **value, "proxies": known, "active": resolve_proxy_name("") or "",
+    return {"steps": [], **value, "proxies": known, "active": active,
             "combined": bool(combined and value), "requests": asked}
 
 

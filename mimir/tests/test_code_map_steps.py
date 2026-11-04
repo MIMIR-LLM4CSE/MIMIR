@@ -222,6 +222,18 @@ class PickTests(unittest.TestCase):
         # The sessions themselves are left as they were cached.
         self.assertEqual(self.sessions["mesh"]["steps"][0]["n"], 1)
 
+    def test_without_an_active_session_the_latest_is_drawn(self) -> None:
+        """Sub-agents measured, this session did not: the proxy whose ledger moved last."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ledgers = {n: os.path.join(tmp, f"{n}.jsonl") for n in ("mesh", "solver")}
+            for n, at in (("solver", 1000), ("mesh", 2000)):
+                open(ledgers[n], "w").close()
+                os.utime(ledgers[n], (at, at))
+            with mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=None), \
+                 mock.patch.object(code_map_steps, "opt_ledger_file", side_effect=ledgers.get):
+                out = code_map_steps.answer()
+        self.assertEqual((out["proxy"], out["active"]), ("mesh", ""))
+
     def test_no_proxy_is_no_answer(self) -> None:
         with mock.patch.object(code_map_steps, "proxies", return_value=[]):
             self.assertEqual(code_map_steps.answer(combined=True), {})
