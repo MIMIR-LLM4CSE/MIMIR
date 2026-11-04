@@ -98,7 +98,7 @@ export function codeMapStale(): void {
 /** What the proxy server writes when a run settles, a profile lands or a request is
  *  recorded, whichever session did it: a sub-agent's, detached or not, says nothing to
  *  this window, so the tab watches the files themselves. */
-export const BENCH_GLOB = "**/proxy_bench/{requests.json,opt_runs/*/ledger.jsonl,opt_runs/*/*/profile/profile.json}";
+export const BENCH_GLOB = "**/proxy_bench/{requests.json,history/*.json,opt_runs/*/ledger.jsonl,opt_runs/*/*/profile/profile.json}";
 
 function watchBench(): vscode.Disposable {
   const watcher = vscode.workspace.createFileSystemWatcher(BENCH_GLOB);

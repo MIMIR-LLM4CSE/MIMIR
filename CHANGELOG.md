@@ -16,6 +16,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **The optimisation graph outlives its proxy.** `proxy_manage(op='clean')` took the
+  ledger and the snapshots the code map draws from, so a clean at the end of a campaign
+  erased its whole curve; `rebaseline` moved the ledger aside, where the map no longer
+  read it. Both now freeze the session as the map draws it (steps, files changed,
+  dependencies, profiles) into `proxy_bench/history/<proxy>@<stamp>.json` first, and
+  refuse if it cannot be written. A frozen session is offered beside the live proxies,
+  drawn alone or in the combined curve, and a request keeps the runs it had.
 - **A sub-agent can be stopped.** `subagent_stop(job_key)` ends a run the orchestrator
   no longer needs (an axis dropped, a task overtaken), which otherwise spent its whole
   budget and held a slot. It stops at its next step; its result says it was stopped,

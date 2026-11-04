@@ -37,7 +37,7 @@ from .._lib.store import (
     opt_ledger_file, opt_best_file, write_active_session, clear_active_session, run_dir_names,
 )
 from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name, read_json
-from . import requests_ops
+from . import code_map_steps, requests_ops
 from .eval_common import (
     NEXT_DETACHED,
     NEXT_RUN,
@@ -687,6 +687,12 @@ def rebaseline(proxy_name: str = "") -> dict:
         return err("A run is still active — stop it before re-baselining.",
                    hint="proxy_eval(op='stop', confirm=True), then retry.")
 
+    # The map is drawn from the ledger, which moves aside: what it drew is kept first.
+    try:
+        frozen = code_map_steps.freeze(name, "rebaselined")
+    except Exception as exc:
+        return err(f"Could not keep the optimisation graph, so nothing was re-baselined: {exc}",
+                   hint="Check that proxy_bench/history is writable, then retry.")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     archived = _archive_session_history(name, stamp)
 
@@ -716,6 +722,7 @@ def rebaseline(proxy_name: str = "") -> dict:
         "baseline_id":         baseline_id,
         "previous_baseline_id": previous,
         "archived":            archived,
+        **({"graph_kept": frozen} if frozen else {}),
         "note": "The tree as it stands is the new baseline. Every later comparison is "
                 "against THIS point, not against the original — the ledger and best-so-far "
                 "that led here are archived, not deleted, so the earlier progression is "

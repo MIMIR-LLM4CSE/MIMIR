@@ -297,6 +297,8 @@ def proxy_manage(
                       (requires: name). Leaves sealed references and suites, and
                       names what it left in the response. `unregister` removes the
                       registry entry; `clean` removes the state behind it.
+                      The optimisation graph is kept: the session is frozen as
+                      the code map draws it before anything goes.
       scaffold     -> generate a PYTHON reference + test harness for a source
                       component (requires: proxy_path, component_hint). The
                       generated harness is Python whatever the source language;

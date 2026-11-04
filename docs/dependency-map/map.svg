@@ -312,7 +312,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,395 C1082.5,530.5 518.5,530.5 518.5,666" stroke-width="2"><title>servers.interaction → client.config · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,395 C1082.5,574.5 275,574.5 275,754" stroke-width="2"><title>servers.interaction → shared.capabilities · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,395 C1082.5,574.5 1018,574.5 1018,754" stroke-width="2"><title>servers.interaction → shared.responses · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 180.5,624 180.5,754" stroke-width="4.5"><title>servers.proxy → shared.atomic · 10 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 180.5,624 180.5,754" stroke-width="4.5"><title>servers.proxy → shared.atomic · 11 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 339,678 339,862" stroke-width="3"><title>servers.proxy → shared.build_progress · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 275,624 275,754" stroke-width="2"><title>servers.proxy → shared.capabilities · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 376.5,624 376.5,754" stroke-width="3"><title>servers.proxy → shared.code_map · 3 import(s)</title></path>

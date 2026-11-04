@@ -247,6 +247,17 @@ class RebaselineTests(_Workspace):
         cfg = store.load_opt_config("p")
         self.assertEqual(cfg["baseline_id"], "ORIGINAL")  # untouched by anything but rebaseline
 
+    def test_the_graph_drawn_before_it_stays_on_the_map(self) -> None:
+        """The ledger moves aside and the map reads only the live one: what it drew is kept."""
+        from mimir.servers.proxy._ops import code_map_steps
+        eval_session, _ = self._session()
+        out = eval_session.rebaseline("p")
+        key = out["graph_kept"]
+        self.assertIn(key, code_map_steps.proxies())
+        frozen = code_map_steps.session(key)
+        self.assertEqual(frozen["frozen"]["why"], "rebaselined")
+        self.assertEqual([(s["run_id"], s["value"]) for s in frozen["steps"]], [("r1", 0.0538)])
+
     def test_rebaseline_without_a_session_is_a_structured_error(self) -> None:
         from mimir.servers.proxy._ops import eval_session
         out = eval_session.rebaseline("nope")
@@ -402,6 +413,25 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
         self._optimisation("bench", "BENCH_BEST")
         out = registry.clean("bench")
         self.assertIn("tree snapshots", out["removed"])
+
+    def test_the_optimisation_graph_outlives_the_clean(self) -> None:
+        """A clean environment, and still every step the map drew: frozen before the
+        ledger and the snapshots go, and offered beside the live proxies."""
+        from mimir.servers.proxy._ops import code_map_steps, registry
+        self._optimisation("bench", "BENCH_BEST")
+        with open(store.opt_ledger_file("bench"), "w", encoding="utf-8") as fh:
+            fh.write('{"run_id": "r0", "primary_value": 0.2}\n')
+            fh.write('{"run_id": "r1", "primary_value": 0.1, "verdict": "accept", "axis": "[R4.1] fuse"}\n')
+        out = registry.clean("bench")
+        self.assertFalse(os.path.isdir(layout.opt_session_runs_dir("bench")))
+        self.assertFalse(os.path.isdir(store.opt_git_dir()))
+        [key] = code_map_steps.proxies()
+        self.assertTrue(key.startswith("bench@"))
+        self.assertIn(key, " ".join(out["kept"]))
+        steps = code_map_steps.answer(key)["steps"]
+        self.assertEqual([(s["run_id"], s["axis"], s["value"]) for s in steps], [("r1", "[R4.1] fuse", 0.1)])
+        # And the environment is clean all the same: no proxy left with state.
+        self.assertEqual(registry._other_proxies_with_state("bench"), [])
 
     def test_an_unregistered_proxy_still_counts_as_needing_them(self) -> None:
         """State on disk is what keeps a snapshot store alive, not registration."""

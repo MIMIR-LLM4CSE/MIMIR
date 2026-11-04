@@ -4,15 +4,17 @@ drop), its verdict, its axis, and its metric beside the incumbent's.
 
 Rebuilt from the tree snapshots the ledger names, so a run ruled out still shows what it
 tried. Cached on the ledger's mtime and its runs' profiles'. Any proxy's session can be
-drawn, or all at once.
+drawn, or all at once, and one frozen before a clean or a re-baseline (``freeze``).
 """
 from __future__ import annotations
 
 import os
+import time
 
 from ....shared import code_map
+from ....shared.atomic import write_json
 from .._lib import profiling, requests, tree_snapshot
-from .._lib.layout import opt_runs_dir, opt_session_runs_dir, read_json, resolve_proxy_name
+from .._lib.layout import history_dir, opt_runs_dir, opt_session_runs_dir, read_json, resolve_proxy_name
 from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
 from .eval_observe import read_ledger
 
@@ -85,19 +87,52 @@ def _delta(value, incumbent) -> float | None:
 
 
 def proxies() -> list[str]:
-    """The proxies with a session in this workspace: those whose ledger exists."""
+    """The proxies with a session in this workspace (those whose ledger exists), then the
+    sessions frozen before a clean or a re-baseline."""
     try:
         names = sorted(os.listdir(opt_runs_dir()))
     except OSError:
+        names = []
+    return [n for n in names if os.path.isfile(opt_ledger_file(n))] + history()
+
+
+def history() -> list[str]:
+    """The frozen sessions, by key: ``<proxy>@<stamp>``."""
+    try:
+        names = sorted(os.listdir(history_dir()))
+    except OSError:
         return []
-    return [n for n in names if os.path.isfile(opt_ledger_file(n))]
+    return [n[:-5] for n in names if n.endswith(".json") and "@" in n]
+
+
+def _frozen_file(key: str) -> str | None:
+    """Where the frozen session *key* is kept; None for a name that is not a key."""
+    if "@" not in key or os.path.basename(key) != key:
+        return None
+    return os.path.join(history_dir(), key + ".json")
+
+
+def freeze(name: str, why: str) -> str:
+    """Keep *name*'s session as the map draws it, before *why* (cleaned, rebaselined) takes
+    the ledger and snapshots it is rebuilt from. Its key, or "" when it had nothing to keep.
+    Raises when it cannot be written: the caller must not take the state then."""
+    value = session(name)
+    if not value.get("steps") and (value.get("baseline") or {}).get("value") is None:
+        return ""
+    key = f"{name}@{time.strftime('%Y%m%d-%H%M%S')}"
+    os.makedirs(history_dir(), exist_ok=True)
+    # Under its key, steps included: the tab picks a session by the proxy its steps name.
+    write_json(os.path.join(history_dir(), key + ".json"), {
+        **value, "proxy": key, "steps": [{**st, "proxy": key} for st in value.get("steps", [])],
+        "frozen": {"proxy": name, "why": why, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}})
+    return key
 
 
 def _latest(names: list[str]) -> str:
-    """The proxy whose ledger moved last."""
+    """The session that moved last: its ledger, or when it was frozen."""
     def mtime(n: str) -> float:
         try:
-            return os.path.getmtime(opt_ledger_file(n))
+            return os.path.getmtime(_frozen_file(n) or opt_ledger_file(n))
         except OSError:
             return 0.0
     return max(names, key=mtime)
@@ -121,6 +156,13 @@ def answer(proxy_name: str = "", combined: bool = False) -> dict:
             "combined": bool(combined and value), "requests": asked}
 
 
+def _steps_of(name: str) -> list[dict]:
+    """A proxy's steps, its frozen sessions' first: a request tried before a clean or a
+    re-baseline keeps its runs."""
+    keys = [k for k in history() if k.rsplit("@", 1)[0] == name] + [name]
+    return [st for k in keys for st in session(k).get("steps", [])]
+
+
 def requests_view() -> list[dict]:
     """The R&D requests with the runs that tried them: those of their start's proxy whose
     axis names them, each against the value the request started from. A request with runs
@@ -130,7 +172,7 @@ def requests_view() -> list[dict]:
         start = row.get("start") or {}
         mine = []
         attached = set(row.get("runs") or [])
-        for st in session(start["proxy"]).get("steps", []) if start.get("proxy") else []:
+        for st in _steps_of(start["proxy"]) if start.get("proxy") else []:
             tag = requests.axis_of(st.get("axis", ""))
             # By its axis tag, or attached to the request after the fact.
             if not (tag and tag[0] == row.get("id")) and st.get("run_id") not in attached:
@@ -166,7 +208,11 @@ def _profiles_stamp(name: str) -> tuple[int, float]:
 
 
 def session(proxy_name: str = "") -> dict:
-    """The session's steps of *proxy_name* (else the active one's), or {} when there is none."""
+    """The session's steps of *proxy_name* (else the active one's), or {} when there is none.
+    A frozen session's key reads it as it was frozen."""
+    frozen = _frozen_file(proxy_name)
+    if frozen:
+        return read_json(frozen, {}) or {}
     name = resolve_proxy_name(proxy_name)
     if not name:
         return {}

@@ -3,6 +3,7 @@ each settled run turned into what it changed against the incumbent it was measur
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -176,6 +177,43 @@ class SessionTests(unittest.TestCase):
     def test_no_session_is_no_steps(self) -> None:
         with mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=""):
             self.assertEqual(code_map_steps.session(), {})
+
+    def test_a_frozen_session_is_drawn_as_it_was_once_its_state_is_gone(self) -> None:
+        """A clean takes the ledger and the snapshots the steps are rebuilt from: what the
+        map drew is kept, under its own key, and offered with the live proxies."""
+        history = os.path.join(self.ws.tmp.name, "history")
+        with mock.patch.object(code_map_steps, "history_dir", return_value=history):
+            key = code_map_steps.freeze("solver", "cleaned")
+            self.assertTrue(key.startswith("solver@"))
+            shutil.rmtree(self.ws.git)
+            frozen = code_map_steps.session(key)
+            with mock.patch.object(code_map_steps, "opt_runs_dir", return_value=os.path.join(self.ws.tmp.name, "gone")):
+                self.assertEqual(code_map_steps.proxies(), [key])
+        self.assertEqual(frozen["proxy"], key)
+        self.assertEqual(frozen["frozen"]["proxy"], "solver")
+        self.assertEqual(frozen["frozen"]["why"], "cleaned")
+        self.assertEqual([(s["run_id"], s["proxy"], s["changed"]) for s in frozen["steps"]],
+                         [("r1", key, ["pkg/a.py"]), ("r2", key, ["pkg/a.py"])])
+        self.assertEqual(frozen["steps"][0]["profile"], self.session["steps"][0]["profile"])
+        self.assertEqual(frozen["baseline"]["value"], 10.0)
+
+    def test_a_request_keeps_the_runs_its_proxy_had_before_a_clean(self) -> None:
+        history = os.path.join(self.ws.tmp.name, "history")
+        row = {"id": "R4", "status": "open", "start": {"proxy": "solver", "value": 10.0}, "runs": ["r1"]}
+        with mock.patch.object(code_map_steps, "history_dir", return_value=history):
+            code_map_steps.freeze("solver", "cleaned")
+            with mock.patch.object(code_map_steps.requests, "load", return_value=[row]), \
+                 mock.patch.object(code_map_steps, "opt_ledger_file", return_value=os.path.join(history, "none")):
+                out = code_map_steps.requests_view()
+        self.assertEqual([s["run_id"] for s in out[0]["steps"]], ["r1"])
+        self.assertEqual(out[0]["status"], "trying")
+
+    def test_nothing_to_keep_is_no_frozen_session(self) -> None:
+        history = os.path.join(self.ws.tmp.name, "history")
+        with mock.patch.object(code_map_steps, "history_dir", return_value=history), \
+             mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=""):
+            self.assertEqual(code_map_steps.freeze("solver", "cleaned"), "")
+        self.assertFalse(os.path.exists(history))
 
 
 class PickTests(unittest.TestCase):

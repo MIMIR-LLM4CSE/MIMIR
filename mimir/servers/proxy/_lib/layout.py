@@ -33,6 +33,12 @@ def opt_runs_dir() -> str:
     return os.path.join(_ROOT, "opt_runs")
 
 
+def history_dir() -> str:
+    """The sessions the code map keeps after their state went (a clean, a re-baseline):
+    ``history/<proxy>@<stamp>.json``."""
+    return os.path.join(_ROOT, "history")
+
+
 def opt_session_runs_dir(proxy_name: str) -> str:
     """Directory that holds timestamped run dirs for one proxy's opt sessions."""
     return os.path.join(opt_runs_dir(), proxy_name)
