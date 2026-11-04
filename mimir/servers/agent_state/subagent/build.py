@@ -6,6 +6,7 @@ handle when it was detached.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -15,7 +16,7 @@ from typing import Callable
 from mimir.client.core.ports import AgentHost
 from mimir.client.session.journal import TranscriptLog
 from . import caller, human, limits
-from .brief import COPY_BRIEF, EXPLORE_BRIEF, SLURM_BRIEF, SLURM_LOCAL_COPY_BRIEF, WORK_BRIEF
+from .brief import CONTINUE_BRIEF, COPY_BRIEF, EXPLORE_BRIEF, SLURM_BRIEF, SLURM_LOCAL_COPY_BRIEF, WORK_BRIEF
 from .outcome import final_state, human_budget, repo_relative
 from .watcher import ChildWatcher
 from .worktree import WORKTREE_BASE_SHARED, finish_worktree
@@ -46,6 +47,30 @@ def _write_record(session: str, record: dict) -> None:
                    ensure_ascii=False, indent=2)
     except Exception as exc:
         print(f"spawn_agent: could not record sub-session {session}: {exc}", file=sys.stderr)
+
+# How much of the previous child's handoff a continuing child is given in its brief:
+# the files hold the work, this is only its account of it.
+_CONTINUED_ANSWER_CHARS = 4000
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= _CONTINUED_ANSWER_CHARS else text[:_CONTINUED_ANSWER_CHARS] + "…"
+
+
+def _carry_todo(previous: str, session: str) -> None:
+    """Give a continuing child the checklist of the one it continues; best-effort."""
+    if not previous:
+        return
+    try:
+        from ....shared.state_paths import TODO_FILENAME, session_dir
+        source = os.path.join(session_dir(previous), TODO_FILENAME)
+        target = os.path.join(session_dir(session), TODO_FILENAME)
+        if os.path.isfile(source) and not os.path.exists(target):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copyfile(source, target)
+    except OSError as exc:
+        print(f"spawn_agent: could not carry the checklist over: {exc}", file=sys.stderr)
+
 
 def new_sub_session() -> str:
     """A session of this child's own: ``<parent>/subagents/sub-xxxxxxxx`` (directories only)."""
@@ -81,6 +106,7 @@ async def run_sub_agent(
     child: dict | None = None,
     level: str = caller.DEFAULT_SUBAGENT_LEVEL,
     worktree: dict | None = None,
+    continues: dict | None = None,
     ask_session=None,
     ask_loop=None,
 ) -> dict:
@@ -92,6 +118,10 @@ async def run_sub_agent(
     """
     from mimir.client.agent_core import MimirAgent
 
+    # *continues*: the card of the child whose copy *worktree* is, whose checklist the
+    # new one takes over.
+    if continues and session:
+        _carry_todo(continues.get("session") or "", session)
     # Its own session (todo, scratchpad, approved paths), passed to the constructor: the
     # approval manager captures it there.
     agent = MimirAgent(model=model or caller.model_of(None), session_id=session or None)
@@ -133,7 +163,7 @@ async def run_sub_agent(
         # partial_handoff, and that is where the paths it reports get their names.
         child["worktree"] = worktree
     record = {
-        "session": session, "task": task, "tools": list(requested),
+        "session": session, "task": task, "context": context, "tools": list(requested),
         "model": agent.model, "budget_secs": budget, "max_steps": max_steps,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "state": "running",
         # Whose "running" this is. A card is only ever finished by the process that
@@ -141,13 +171,19 @@ async def run_sub_agent(
         # later reclaim tells that from a child that really is still working.
         "pid": os.getpid(),
     }
+    if continues:
+        record["continues"] = os.path.basename(continues.get("session") or "")
+    if worktree is not None:
+        # On the card from the start: a process killed mid-run never reaches the
+        # finally below, and a card naming no copy is one no reclaim ever looks at.
+        record["workspace"] = dict(worktree)
     _write_record(session, record)
     result: dict | None = None
     try:
         result = await drive_sub_agent(
             agent, task, context, requested, grantable, max_steps, on_event,
             approval_mode=approval_mode, budget=budget, level=level, worktree=worktree,
-            ask_session=ask_session, ask_loop=ask_loop)
+            continues=continues, ask_session=ask_session, ask_loop=ask_loop)
         # A run it launched can outlive the answer it gives. Named on the result the
         # caller reads, because a run named nowhere in it is a run nobody is left
         # holding — and the plural key is what has the client adopt it for the parent
@@ -211,6 +247,7 @@ async def drive_sub_agent(
     budget: int = limits.SUBAGENT_EXPLORE_BUDGET_SECS,
     level: str = caller.DEFAULT_SUBAGENT_LEVEL,
     worktree: dict | None = None,
+    continues: dict | None = None,
     ask_session=None,
     ask_loop=None,
 ) -> dict:
@@ -294,7 +331,15 @@ async def drive_sub_agent(
         WORK_BRIEF.format(budget=human_budget(budget))
         if working else EXPLORE_BRIEF
     )
-    if worktree:
+    if worktree and continues:
+        brief += CONTINUE_BRIEF.format(
+            previous=os.path.basename(continues.get("session") or ""),
+            state=continues.get("state") or "unknown",
+            path=worktree["path"], branch=worktree["branch"],
+            base=worktree.get("base") or "HEAD~1",
+            task=(continues.get("task") or "").strip() or "(not recorded)",
+            answer=_clip((continues.get("answer") or "").strip()) or "(nothing)")
+    elif worktree:
         brief += COPY_BRIEF.format(path=worktree["path"], branch=worktree["branch"])
         if any(has_cap(name, CLUSTER_SUBMIT, agent.tool_caps) for name in requested):
             brief += SLURM_BRIEF

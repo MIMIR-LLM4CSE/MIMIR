@@ -6,6 +6,7 @@ import {
   anyRunning,
   grantSummary,
   parseTodo,
+  promptText,
   stateLabel,
   taskTitle,
   workspaceLine,
@@ -109,6 +110,12 @@ export const SubAgentsPanel: React.FC<Props> = ({
                     <div className="subagent-model" title={workspaceLine(detail)}>
                       {workspaceLine(detail)}
                     </div>
+                  )}
+                  {detail && promptText(detail) && (
+                    <details className="subagent-prompt">
+                      <summary>Prompt</summary>
+                      <div className="subagent-answer">{promptText(detail)}</div>
+                    </details>
                   )}
                   {/* Indexed key, not row.id: a status row has no id, and several in
                       a row would otherwise share the empty one. */}

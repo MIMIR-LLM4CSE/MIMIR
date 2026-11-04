@@ -4399,6 +4399,16 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .subagent-todo li.done { color: var(--fg-dim); text-decoration: line-through; }
 
+.subagent-prompt {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.subagent-prompt > summary {
+  cursor: pointer;
+  color: var(--fg-dim);
+}
+
 .subagent-answer {
   margin-top: 6px;
   padding: 6px 8px;

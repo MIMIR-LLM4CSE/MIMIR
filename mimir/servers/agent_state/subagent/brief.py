@@ -31,6 +31,23 @@ COPY_BRIEF = (
     "do not seal them again."
 )
 
+# In place of COPY_BRIEF for a child that takes over another's copy: the copy does not
+# start from the last commit, and what is already in it is the point.
+CONTINUE_BRIEF = (
+    "\n\nYou CONTINUE the work of sub-agent {previous}, which stopped as {state}. You "
+    "work in its copy of the repository at {path}, on its branch {branch}: its changes "
+    "are already here. Before changing anything, read what it did — `git status` and "
+    "`git diff HEAD` for what it left uncommitted, `git log --oneline {base}..HEAD` for "
+    "what it committed — and pick up where it stopped rather than starting again. Its "
+    "checklist, if it kept one, is your todo list now. Other sub-agents work on other "
+    "copies at the same time and nothing you do touches their files. When you finish, "
+    "your changes are committed to {branch} for you, so leave the work in the files and "
+    "say in your answer what you changed and what it measured, its part included. If "
+    "this task involves a measurement proxy, register one of your own pointing at THIS "
+    "copy; the sealed reference and the benchmark suite are shared, so do not seal them "
+    "again.\n\nIts task was:\n{task}\n\nWhat it handed back:\n{answer}"
+)
+
 # Added for a child that may submit to the cluster. Its jobs run from its copy, so it
 # must know whether the compute nodes can see that copy at all.
 SLURM_BRIEF = (

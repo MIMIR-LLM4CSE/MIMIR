@@ -122,6 +122,9 @@ export interface SubAgent {
   id: string;
   state: "running" | "finished" | "abandoned" | "failed" | "unknown";
   task?: string;
+  /** What its caller put before the task (findings, constraints) — only sent when one
+   *  sub-agent is opened. */
+  context?: string;
   /** The tools it was granted; empty means a read-only exploration. */
   tools?: string[];
   model?: string;
@@ -135,6 +138,10 @@ export interface SubAgent {
   todo?: string;
   /** The tail of its activity log: one row per event, paired by `activityRows`. */
   activity?: unknown[];
+  /** The sub-agent whose branch and copy it took over (`continue_from`). */
+  continues?: string;
+  /** The sub-agent that took its branch and copy over since. */
+  continued_by?: string;
   /** Set when it worked in a copy of the repository: branch, path, diffstat. */
   workspace?: {
     /** Empty when it changed nothing: that branch carried no commit and was dropped. */

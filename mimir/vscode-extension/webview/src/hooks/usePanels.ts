@@ -64,8 +64,10 @@ export function usePanels(send: (msg: ClientMessage) => void,
     mapFocus.current = focus;
     send({ type: "code_map" });
   }, [send]);
+  // Opening another card clears the one on screen; re-reading the same one keeps it
+  // until the answer lands, so a live card never empties and the list never jumps.
   const openSubAgent = useCallback((id: string) => {
-    setOpenedSubAgent(null);
+    setOpenedSubAgent((prev) => (prev?.id === id ? prev : null));
     send({ type: "read_subagent", id });
   }, [send]);
   const changeSubAgentLevel = useCallback((level: SubAgentLevel) => {

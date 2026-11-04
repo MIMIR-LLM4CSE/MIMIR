@@ -1353,7 +1353,7 @@ package:
 | `watcher.py` | `ChildWatcher`, the watcher of the runs it detaches |
 
 Tools:
-- `spawn_agent(task, context="", tools=[], max_steps=30, time_budget_secs=600, model="")`
+- `spawn_agent(task, context="", tools=[], max_steps=30, time_budget_secs=600, model="", continue_from="")`
   — spin up a child agent, run it, return its answer. `context` is prepended to the task
   prompt.
   - `model` — empty means the caller's model. The client sends it with every call, in
@@ -1417,6 +1417,26 @@ Tools:
         an orphan when its owner is gone **and** its card is gone — either alone is a
         copy merely between states. One with no marker predates this and is judged by
         git: a directory `git worktree list` does not register is nobody's copy.
+    The card names the copy from the moment the child starts, not only when it ends:
+    a server killed mid-run never writes the ending, and a card naming no copy is one
+    neither rule above ever reads.
+  - **`continue_from` carries an earlier child's axis on** (`worktree.continue_worktree`).
+    It names a sibling's session (`sub-…`); the new child works on **that branch** — in
+    that copy while it stands, so the build tree and whatever the earlier child left
+    staged are there, else in a fresh copy checked out from the branch (a reclaimed copy
+    was committed before it went). One axis stays one line of commits: nothing to
+    reconcile between two branches, and git's one-branch-per-worktree rule is never hit.
+    The child gets `brief.CONTINUE_BRIEF` in place of `COPY_BRIEF` (the earlier task,
+    its handoff, how to read what it left) and its checklist, copied into its own
+    session. Refused, with the reason, when the earlier child is still running (its
+    card is live: one stopped on its budget finishes its step first), when its branch is
+    already being continued (by a live card, or within this process from the moment the
+    call resolves it until the child's thread ends — `_CONTINUED`), when it has no
+    branch (it changed nothing), when the branch is checked out somewhere else, and when
+    the call grants nothing that writes. A card written before copies were named at the
+    start is resolved through its marker. The two cards say so (`continues`,
+    `continued_by`), and reclamation skips a copy any live card holds, whichever older
+    card also names it.
   - **What the child reports, it reports in the repository's names.** `files_read` and
     `files_written` are made relative to the copy before they go back, as
     `files_changed` always was — a caller quoting `/tmp/mimir-worktrees-…` as evidence

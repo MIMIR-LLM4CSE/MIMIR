@@ -13,6 +13,7 @@ from mcp.server.fastmcp import Context
 
 from ....shared.responses import err, ok
 from . import build, human, jobs, limits, output
+from .worktree import release_continued
 from .outcome import NO_ANSWER, abandon_child, human_budget, overrun_note, partial_handoff
 
 # How often a run checks its budget, at most.
@@ -46,6 +47,8 @@ class ChildRun:
         self.job_key = self.child_key
         self.slot = _SlotLease(session)
         self.worktree: dict | None = None
+        # The card of the child whose copy this one continues, if any.
+        self.continues: dict | None = None
         self.events: queue.Queue = queue.Queue(maxsize=output.CHILD_QUEUE_MAX)
         self.counters: dict = {"dropped": 0}
         self.state: dict = {"sent": 0, "dropped": 0}
@@ -74,6 +77,7 @@ class ChildRun:
                         self.events, self.counters, self.job_key, self.session),
                     model=self.model, session=self.session, budget=self.budget,
                     child=self.child, level=level, worktree=self.worktree,
+                    continues=self.continues,
                     # Detached or not, the child can reach the person: the session
                     # outlives the request.
                     ask_session=ask_session, ask_loop=loop,
@@ -92,6 +96,7 @@ class ChildRun:
                                       {"answer": "", "completed": False, "error": str(exc)})
             finally:
                 self.slot.release()
+                self.release_branch()
 
         # Until the thread runs, nothing else gives the slot back.
         try:
@@ -107,6 +112,7 @@ class ChildRun:
                              name=jobs.THREAD_NAME_PREFIX + self.child_key).start()
         except BaseException:
             self.slot.release()
+            self.release_branch()
             raise
         # Held here: the loop keeps only a weak reference to a task.
         self._guard = loop.create_task(self._stop_at_budget())
@@ -123,6 +129,11 @@ class ChildRun:
                 abandon_child(self.child)
                 return
             await asyncio.sleep(min(left, _BUDGET_CHECK_SECS))
+
+    def release_branch(self) -> None:
+        """Let the branch this run continued be continued again."""
+        if self.continues and self.worktree:
+            release_continued(self.worktree["branch"])
 
     def _identity(self) -> dict:
         return {"model": self.model, "tools": self.requested, "session": self.session}

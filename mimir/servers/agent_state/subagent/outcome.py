@@ -62,9 +62,10 @@ def overrun_note(budget: int) -> str:
     return (
         f"This sub-agent was stopped after {human_budget(budget)} — its time budget, "
         f"not the end of its work. What follows is where it had got to, not a "
-        f"conclusion. Carry it on from here (its session holds its todo list and its "
-        f"scratchpad) rather than starting the task again: a full budget has just been "
-        f"spent on it and nothing about it has changed."
+        f"conclusion. Carry it on from here rather than starting the task again — a "
+        f"sub-agent spawned with continue_from=<its session> takes over its branch, its "
+        f"copy and its todo list: a full budget has just been spent on it and nothing "
+        f"about it has changed."
     )
 
 

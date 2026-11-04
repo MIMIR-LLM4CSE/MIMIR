@@ -53,6 +53,8 @@ export function workspaceLine(sub: SubAgent): string {
   const parts: string[] = [];
   if (ws.branch) parts.push(`branch ${ws.branch}`);
   if (ws.path) parts.push(ws.kept === false ? "copy removed" : `copy at ${ws.path}`);
+  if (sub.continues) parts.push(`continues ${sub.continues}`);
+  if (sub.continued_by) parts.push(`continued by ${sub.continued_by}`);
   return parts.join(" · ");
 }
 
@@ -62,6 +64,17 @@ export function taskTitle(sub: SubAgent): string {
   if (!task) return sub.id;
   const firstLine = task.split("\n")[0];
   return firstLine.length > 90 ? `${firstLine.slice(0, 89)}…` : firstLine;
+}
+
+/**
+ * What its caller sent it: the context, then the task, the way the child read them.
+ * The brief the server puts first is the same for every child and is left out.
+ */
+export function promptText(sub: SubAgent): string {
+  return [sub.context, sub.task]
+    .map((part) => (part ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n---\n\n");
 }
 
 /**

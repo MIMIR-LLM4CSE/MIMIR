@@ -15,6 +15,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **A sub-agent's prompt can be read in the Sub-agents drawer.** An opened card shows,
+  under "Prompt", what the orchestrator sent: its context, then the task. The card keeps
+  the context (`subagent.json`); the list leaves it out and the detail view serves it.
+- **A sub-agent can carry on where another stopped.** `spawn_agent(continue_from="sub-…")`
+  puts the new one on the earlier one's branch, in its copy while it stands (build tree
+  and unfinished changes included), else in a fresh copy of that branch, with its task,
+  handoff and checklist. One axis stays one branch, so there is nothing to merge between
+  the two. It is refused while the earlier one still runs or is already being continued,
+  and when it changed nothing. The drawer says which sub-agent continues which, and a
+  stopped run's result now points at `continue_from`.
+
 ### Changed
 - **A profile reads at a glance on the code map.** "Where time goes" holds the profile
   once, no longer repeated in the step's card: whose profile it is (tool, samples, case),
@@ -63,6 +75,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **Following a working sub-agent no longer sends the drawer back to the top.** Each
+  re-read of the opened card emptied it until the answer landed; it now stays on screen.
+- **A sub-agent killed mid-run no longer leaves its copy of the repository behind.** Its
+  card names the copy from the start, so the next reclaim commits what it held on its
+  branch and removes it, and the panel and the orchestrator see where that work is.
 - **The code map no longer hangs on a workspace that is itself a Python package.** An
   `__init__.py` at the root sent the module naming into an endless climb.
 - **An R&D request no longer stays "trying" on the map after its runs.** A run tagged

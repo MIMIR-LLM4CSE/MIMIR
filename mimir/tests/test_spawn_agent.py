@@ -1237,6 +1237,19 @@ class SubSessionTests(unittest.TestCase):
         self.assertEqual(card["state"], "finished")
         self.assertTrue(card["completed"])
 
+    def test_the_card_keeps_what_the_caller_put_before_the_task(self):
+        from mimir.shared import state_paths
+        agent = _FakeAgent()
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(state_paths, "state_dir", return_value=tmp), \
+                 mock.patch.object(state_paths, "active_session_id", return_value="parent-1"), \
+                 _patched_agent(agent):
+                out = asyncio.run(spawn.spawn_agent(
+                    "find X", context="X was last seen in solver.c", ctx=_GrantCtx()))
+            card = json.loads((Path(tmp) / "sessions" / out["session"] / "subagent.json")
+                              .read_text(encoding="utf-8"))
+        self.assertEqual(card["context"], "X was last seen in solver.c")
+
 
 class TimeBudgetTests(unittest.TestCase):
     """A child's time budget follows its rung, through the same test that gives it a copy of
@@ -1595,6 +1608,20 @@ class WorktreeTests(unittest.TestCase):
         out, _ = self._spawn()
         self.assertEqual(out["workspace"]["repo"], os.path.realpath(self.repo))
 
+    def test_the_card_names_its_copy_before_the_child_runs(self):
+        # A process killed mid-run never writes the card's ending; the copy it named at
+        # the start is what a later reclaim, and the panel, still find.
+        written: list[dict] = []
+        real = build._write_record
+        with mock.patch.object(build, "_write_record",
+                               lambda session, record: (written.append(dict(record)),
+                                                        real(session, record))):
+            out, _ = self._spawn()
+        first = written[0]
+        self.assertEqual(first["state"], "running")
+        self.assertEqual(first["workspace"]["path"], out["workspace"]["path"])
+        self.assertEqual(first["workspace"]["repo"], os.path.realpath(self.repo))
+
     def test_a_failed_axis_keeps_its_copy_because_nothing_else_holds_it(self):
         out, _ = self._spawn(fail=True)
         work = out["workspace"]
@@ -1670,6 +1697,170 @@ class WorktreeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state}):
             worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
         self.assertFalse(os.path.exists(wt["path"]))
+
+    # ── continue_from: a new child carries an earlier one's axis on ──────────────
+
+    def _state(self):
+        state = tempfile.mkdtemp(prefix="mimir-state-")
+        self.addCleanup(shutil.rmtree, state, ignore_errors=True)
+        patch = mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state,
+                                             "MIMIR_SESSION_ID": "parent-session"})
+        patch.start()
+        self.addCleanup(patch.stop)
+        return state
+
+    def _continue(self, previous: str, write: str = "", tools=("write_file",)):
+        """Spawn a child continuing *previous*; ``(reply, what its driver saw)``."""
+        seen: dict = {}
+
+        async def _drive(child, *a, **kw):
+            seen["root"] = child.workspace_root
+            seen["kw"] = kw
+            seen["solver"] = Path(child.workspace_root, "solver.c").read_text(encoding="utf-8")
+            if write:
+                Path(child.workspace_root, "notes.txt").write_text(write, encoding="utf-8")
+            return {"answer": "carried on", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with _patched_agent(_FakeAgent()), mock.patch.object(build, "drive_sub_agent", _drive):
+            out = asyncio.run(spawn.spawn_agent(
+                "finish vectorising", tools=list(tools), time_budget_secs=300,
+                continue_from=previous, ctx=_GrantCtx(level="build")))
+        return out, seen
+
+    def _read_card(self, state, session):
+        return json.loads(Path(state, "sessions", session, "subagent.json")
+                          .read_text(encoding="utf-8"))
+
+    def test_a_stopped_axis_is_continued_in_its_own_copy_on_its_own_branch(self):
+        state = self._state()
+        first, _ = self._spawn(fail=True)
+        out, seen = self._continue(first["session"], write="next step")
+        self.assertEqual(out["status"], "ok")
+        # Same copy, same branch: what it left staged is there, and its build tree.
+        self.assertEqual(seen["root"], first["workspace"]["path"])
+        self.assertEqual(seen["solver"], "vectorised")
+        self.assertEqual(out["workspace"]["branch"], first["workspace"]["branch"])
+        # One branch carries both children's work: nothing to reconcile.
+        shown = subprocess.run(
+            ["git", "show", f"{first['workspace']['branch']}:solver.c"],
+            cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(shown.stdout, "vectorised")
+        self.assertEqual(
+            [b for b in self._branches() if b.startswith("mimir/")],
+            [first["workspace"]["branch"]])
+        new_key = out["session"].rsplit("/", 1)[-1]
+        old_key = first["session"].rsplit("/", 1)[-1]
+        self.assertEqual(self._read_card(state, out["session"])["continues"], old_key)
+        self.assertEqual(self._read_card(state, first["session"])["continued_by"], new_key)
+
+    def test_the_continuing_child_is_told_what_is_already_there(self):
+        self._state()
+        first, _ = self._spawn(fail=True)
+        _, seen = self._continue(first["session"])
+        previous = seen["kw"]["continues"]
+        self.assertEqual(previous["task"], "vectorise the loop")
+        self.assertEqual(seen["kw"]["worktree"]["path"], first["workspace"]["path"])
+
+    def test_the_brief_names_the_previous_child_its_branch_and_its_handoff(self):
+        query = build.CONTINUE_BRIEF.format(
+            previous="sub-1", state="abandoned", path="/c", branch="mimir/sub-1",
+            base="abc", task="vectorise", answer="got to the inner loop")
+        for part in ("sub-1", "mimir/sub-1", "git diff HEAD", "abc..HEAD",
+                     "vectorise", "got to the inner loop"):
+            self.assertIn(part, query)
+
+    def test_its_checklist_is_carried_over(self):
+        state = self._state()
+        first, _ = self._spawn(fail=True)
+        Path(state, "sessions", first["session"], "todo_list.md").write_text(
+            "- [x] read\n- [ ] vectorise\n", encoding="utf-8")
+        out, _ = self._continue(first["session"])
+        self.assertEqual(
+            Path(state, "sessions", out["session"], "todo_list.md").read_text(encoding="utf-8"),
+            "- [x] read\n- [ ] vectorise\n")
+
+    def test_a_reclaimed_copy_is_checked_out_again_from_its_branch(self):
+        self._state()
+        first, _ = self._spawn(fail=True)
+        worktree.drop_copy(first["workspace"])      # commits what it held, then removes it
+        self.assertFalse(os.path.exists(first["workspace"]["path"]))
+        out, seen = self._continue(first["session"])
+        self.assertEqual(out["status"], "ok")
+        self.assertNotEqual(seen["root"], first["workspace"]["path"])
+        self.assertEqual(seen["solver"], "vectorised")
+        self.assertEqual(out["workspace"]["branch"], first["workspace"]["branch"])
+
+    def test_a_child_killed_before_its_card_named_a_copy_is_found_by_its_marker(self):
+        state = self._state()
+        first, _ = self._spawn(fail=True)
+        card = self._read_card(state, first["session"])
+        card.pop("workspace")
+        Path(state, "sessions", first["session"], "subagent.json").write_text(
+            json.dumps(card), encoding="utf-8")
+        out, seen = self._continue(first["session"])
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(seen["root"], first["workspace"]["path"])
+
+    def test_a_child_still_running_cannot_be_continued(self):
+        state = self._state()
+        wt, _ = worktree.create_worktree("sub-live")
+        self._card(state, "sub-live", {
+            "state": "running", "pid": os.getpid(), "session": "parent-session/subagents/sub-live",
+            "started_at": "2000-01-01T00:00:00", "workspace": wt})
+        out, _ = self._continue("sub-live")
+        self.assertEqual(out["status"], "error")
+        self.assertIn("still running", out["error"])
+
+    def test_a_branch_already_being_continued_is_not_continued_twice(self):
+        self._state()
+        first, _ = self._spawn(fail=True)
+        branch = first["workspace"]["branch"]
+        with mock.patch.object(worktree, "_CONTINUED", {branch}):
+            out, _ = self._continue(first["session"])
+        self.assertEqual(out["status"], "error")
+        self.assertIn("already being continued", out["error"])
+
+    def test_the_branch_is_free_again_once_the_continuing_child_ends(self):
+        self._state()
+        first, _ = self._spawn(fail=True)
+        self.assertEqual(self._continue(first["session"])[0]["status"], "ok")
+        self.assertEqual(worktree._CONTINUED, set())
+        self.assertEqual(self._continue(first["session"])[0]["status"], "ok")
+
+    def test_a_child_that_changed_nothing_has_nothing_to_continue(self):
+        self._state()
+        first, _ = self._spawn(edit=None)
+        out, _ = self._continue(first["session"])
+        self.assertEqual(out["status"], "error")
+        self.assertIn("no branch", out["error"])
+
+    def test_continuing_needs_a_tool_that_writes(self):
+        self._state()
+        first, _ = self._spawn(fail=True)
+        out, _ = self._continue(first["session"], tools=())
+        self.assertEqual(out["status"], "error")
+        self.assertIn("continue_from", out["error"])
+
+    def test_an_unknown_sub_agent_is_refused_by_name(self):
+        self._state()
+        out, _ = self._continue("sub-nothere")
+        self.assertEqual(out["status"], "error")
+        self.assertIn("sub-nothere", out["error"])
+
+    def test_a_copy_a_running_child_continues_is_never_reclaimed_from_the_older_card(self):
+        # The older card is finished and names the copy; the continuing one is running
+        # in it. Only the latter's word counts.
+        state = self._state()
+        wt, _ = worktree.create_worktree("sub-old")
+        self._card(state, "sub-old", {
+            "state": "abandoned", "session": "parent-session/subagents/sub-old",
+            "started_at": "2000-01-01T00:00:00", "workspace": wt})
+        self._card(state, "sub-next", {
+            "state": "running", "pid": os.getpid(), "session": "parent-session/subagents/sub-next",
+            "started_at": "2000-01-01T00:00:01", "workspace": wt, "continues": "sub-old"})
+        worktree.reclaim_worktrees("parent-session/subagents/sub-new", keep=0)
+        self.assertTrue(os.path.isdir(wt["path"]))
 
     def test_copies_go_where_compute_nodes_see_them(self):
         """The setting, else the site's scratch; the temp dir is the fallback that

@@ -20,7 +20,7 @@ from .model_catalog import probe_served_models, served_models_description
 from .subagent.build import new_sub_session
 from .subagent.outcome import NO_ANSWER, abandon_child, overrun_note, partial_handoff
 from .subagent.run import ChildRun
-from .subagent.worktree import create_worktree
+from .subagent.worktree import continue_worktree, create_worktree
 from ...shared.capabilities import (
     BACKGROUNDABLE,
     DELEGATE,
@@ -85,6 +85,7 @@ async def spawn_agent(
     time_budget_secs: int = 0,
     background: bool = False,
     model: Annotated[str, Field(description=_MODEL_DESCRIPTION)] = "",
+    continue_from: str = "",
     ctx: Context | None = None,
 ) -> dict:
     """Hand a self-contained sub-task to a fresh sub-agent, and get its answer back.
@@ -119,6 +120,17 @@ async def spawn_agent(
                     build-and-measure cycle — and leave it false when its answer is
                     your next step. A detached child's steps are not shown in your
                     rows; ask for its result if you need what it has so far.
+        continue_from:
+                    The ``session`` of an earlier sub-agent of yours that worked in a
+                    copy (``sub-…``), to carry its work on instead of starting again:
+                    stopped on its budget, crashed, killed, or finished and to be taken
+                    further. The new one works on THAT branch — in its copy when it
+                    still stands, so its build tree and its uncommitted state are
+                    there, else in a fresh copy of the branch — and is given its task,
+                    its handoff and its checklist. One axis stays one branch, so there
+                    is nothing to reconcile between the two. Needs a writing or running
+                    tool; refused while the earlier one is still running or is already
+                    being continued. ``task`` says what to do next.
     Returns:
         On success (the sub-agent ran to a result):
             {"status": "ok", "answer": "…", "completed": bool, "files_read": [...],
@@ -190,7 +202,18 @@ async def spawn_agent(
 
     # A child granted anything writing or executing works in its own copy of the
     # repository, so concurrent children cannot overwrite each other.
-    if working:
+    if continue_from and not working:
+        run.slot.release()
+        return err("continue_from carries on work in a copy of the repository, and a "
+                   "sub-agent given no writing or running tool gets none. Grant the tools "
+                   "the work needs.", **NO_ANSWER)
+    if continue_from:
+        run.worktree, run.continues, refusal = continue_worktree(
+            continue_from, run.child_key, session)
+        if run.worktree is None:
+            run.slot.release()
+            return err(refusal, **NO_ANSWER)
+    elif working:
         run.worktree, refusal = create_worktree(run.child_key, session)
         if run.worktree is None:
             run.slot.release()

@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from ....shared.atomic import write_json
 from ....shared.jobs import SLURM_JOB_ID, recorded_terminal_state
@@ -38,6 +39,12 @@ GIT_TIMEOUT_SECS = 120
 # which cost the axis its compile — but nothing reclaims /tmp on its own, so this count
 # is the bound: making the next copy drops the oldest beyond it.
 SUBAGENT_WORKTREES_KEPT = 3
+
+# The branches a child of this process is continuing, from the moment it is resolved
+# until its thread ends: two calls continuing one branch at once would share its copy,
+# and its card says "running" only once the child has started.
+_CONTINUED: set[str] = set()
+_CONTINUED_LOCK = threading.Lock()
 
 
 def git(args: list[str], cwd: str) -> tuple[bool, str]:
@@ -242,9 +249,25 @@ def reclaim_worktrees(session: str, keep: int) -> None:
     still be using are never counted or removed.
     """
     _, cards = sibling_cards(session)
-    copies = [w for w in (c.get("workspace") or {} for c in cards
-                          if not card_is_live(c) and not runs_slurm_jobs(c.get("session", "")))
-              if w.get("path") and w.get("repo") and os.path.isdir(w["path"])]
+    # A continued child works in the copy of the card it continues: that older card is
+    # finished, but the copy is not, so whoever holds a path keeps it from every card.
+    held = {os.path.realpath(w["path"]) for w in (
+                (c.get("workspace") or {}) for c in cards
+                if card_is_live(c) or runs_slurm_jobs(c.get("session", "")))
+            if w.get("path")}
+    with _CONTINUED_LOCK:
+        continued = set(_CONTINUED)
+    copies: list[dict] = []
+    seen: set[str] = set()
+    for card in cards:
+        w = card.get("workspace") or {}
+        if not (w.get("path") and w.get("repo") and os.path.isdir(w["path"])):
+            continue
+        real = os.path.realpath(w["path"])
+        if real in held or real in seen or w.get("branch") in continued:
+            continue
+        seen.add(real)
+        copies.append(w)
     for wt in copies[keep:]:
         drop_copy(wt)
 
@@ -325,7 +348,8 @@ def finish_worktree(wt: dict, task: str, succeeded: bool) -> dict:
         report["diffstat"] = stat if ok else ""
         report["note"] = (
             f"The run did not finish. Its copy is at {path}, with its uncommitted state "
-            f"left as it was — that state is the only place that work exists.")
+            f"left as it was — that state is the only place that work exists. Spawn a "
+            f"sub-agent with continue_from=<its session> to carry it on there.")
         return report
 
     files, diffstat = commit_copy(
@@ -351,3 +375,104 @@ def finish_worktree(wt: dict, task: str, succeeded: bool) -> dict:
         report["note"] = (f"It changed no file. Its copy is at {path}, and {branch} is "
                           f"still where it was cut from.")
     return report
+
+
+def _refuse(branch: str, message: str) -> tuple[None, None, str]:
+    release_continued(branch)
+    return None, None, message
+
+
+def release_continued(branch: str) -> None:
+    """Let *branch* be continued again: its child has ended (or never started)."""
+    with _CONTINUED_LOCK:
+        _CONTINUED.discard(branch)
+
+
+def _branch_holder(repo: str, branch: str) -> str:
+    """The worktree that has *branch* checked out, or ""."""
+    ok, listed = git(["worktree", "list", "--porcelain"], repo)
+    path = ""
+    for line in listed.splitlines() if ok else []:
+        if line.startswith("worktree "):
+            path = line.split(" ", 1)[1]
+        elif line == f"branch refs/heads/{branch}":
+            return path
+    return ""
+
+
+def continue_worktree(previous: str, child_key: str,
+                      session: str) -> tuple[dict | None, dict | None, str]:
+    """The copy a new child continues *previous*'s work in: ``(descriptor, card, error)``.
+
+    Its branch, so one axis stays one line of commits; its copy while it stands (build
+    tree, staged work), else a new copy of that branch. Claimed until ``release_continued``.
+    """
+    repo = repo_root()
+    if not repo:
+        return None, None, "this workspace is not a git repository, so there is no copy to continue."
+    key = os.path.basename(previous.strip().rstrip("/"))
+    base, cards = sibling_cards(session)
+    card = next((c for c in cards
+                 if os.path.basename(c.get("session", "")) == key), None)
+    if card is None:
+        return None, None, (f"no sub-agent {key!r} in this conversation; continue_from takes "
+                            f"the session of one of its sub-agents (sub-…).")
+    if card_is_live(card):
+        return None, None, (f"{key} is still running (a child stopped on its budget finishes "
+                            f"its step first). Wait for it to land, then continue it.")
+    ws = dict(card.get("workspace") or {})
+    if not ws.get("path"):
+        # A card written before copies were named at the start: its marker still says.
+        try:
+            with open(marker_path(repo, key), encoding="utf-8") as fh:
+                ws = {k: v for k, v in json.load(fh).items()
+                      if k in ("repo", "branch", "path", "base")}
+        except (OSError, json.JSONDecodeError):
+            pass
+    branch = ws.get("branch") or ""
+    if not branch:
+        return None, None, (f"{key} changed no file, so it has no branch to continue. "
+                            f"Start a new sub-agent instead.")
+    if os.path.realpath(ws.get("repo") or "") != os.path.realpath(repo):
+        return None, None, f"{key} worked on another repository ({ws.get('repo')})."
+    with _CONTINUED_LOCK:
+        if branch in _CONTINUED:
+            return None, None, f"{key}'s branch {branch} is already being continued by another sub-agent."
+        _CONTINUED.add(branch)
+    for other in cards:
+        if (card_is_live(other) and other is not card
+                and (other.get("workspace") or {}).get("branch") == branch):
+            return _refuse(branch, (f"{branch} is already being continued by "
+                                    f"{os.path.basename(other.get('session', ''))}."))
+    ok, _ = git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], repo)
+    if not ok:
+        return _refuse(branch, f"{key}'s branch {branch} no longer exists; nothing to continue.")
+
+    git(["worktree", "prune"], repo)
+    holder = _branch_holder(repo, branch)
+    path = ws.get("path") or ""
+    if holder and os.path.realpath(holder) == os.path.realpath(path):
+        pass                                   # its own copy, still standing: reuse it
+    elif holder:
+        return _refuse(branch, (f"{branch} is checked out at {holder}, which is not {key}'s "
+                                f"copy; free it there first."))
+    else:
+        if not ensure_private_dir(WORKTREE_BASE):
+            return _refuse(branch, (f"the copies directory {WORKTREE_BASE} is not safely "
+                                    f"this user's, so no copy can be made there."))
+        path = os.path.join(WORKTREE_BASE, os.path.basename(repo), child_key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        added, out = git(["worktree", "add", path, branch], repo)
+        if not added:
+            return _refuse(branch, "could not check out "
+                           f"{branch}: {out.splitlines()[-1] if out else 'git failed'}")
+    descriptor = {"repo": repo, "branch": branch, "path": path, "base": ws.get("base") or ""}
+    write_marker(marker_path(repo, os.path.basename(path)),
+                 {**descriptor, "session": session, "pid": os.getpid()})
+    # The older card says who took its copy over, so the panel and a later reader do
+    # not take it for an axis left as it was.
+    if base:
+        with contextlib.suppress(OSError):
+            write_json(os.path.join(base, key, "subagent.json"),
+                       {**card, "continued_by": child_key}, ensure_ascii=False, indent=2)
+    return descriptor, card, ""

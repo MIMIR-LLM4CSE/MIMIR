@@ -98,6 +98,7 @@ def list_subagents(session_id: str) -> list[dict]:
         # for the life of the session.
         if card.get("state") == "running" and not _still_running(card):
             card["state"] = "abandoned"
+        card.pop("context", None)   # the caller's preamble: the detail view reads it
         answer = card.get("answer") or ""
         if len(answer) > _CARD_ANSWER_CHARS:
             card["answer"] = answer[:_CARD_ANSWER_CHARS] + "…"

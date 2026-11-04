@@ -242,6 +242,20 @@ class SubAgentCardTests(unittest.TestCase):
         self.assertLess(len(cards[0]["answer"]), 9000)
         self.assertTrue(cards[0]["answer"].endswith("…"))
 
+    def test_the_callers_context_is_served_by_the_detail_view_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._session_with_card(tmp, "done")
+            card_path = os.path.join(tmp, "s1", "subagents", "sub-1", "subagent.json")
+            with open(card_path, encoding="utf-8") as fh:
+                card = json.load(fh)
+            card["context"] = "C" * 9000
+            with open(card_path, "w", encoding="utf-8") as fh:
+                json.dump(card, fh)
+            with mock.patch("mimir.client.session.store._sessions_dir",
+                            return_value=tmp):
+                self.assertNotIn("context", list_subagents("s1")[0])
+                self.assertEqual(read_subagent("s1", "sub-1")["context"], "C" * 9000)
+
     def test_a_short_answer_is_not_touched_by_either(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._session_with_card(tmp, "chi >= 8, colouring exact.")

@@ -4,6 +4,7 @@ import {
   anyRunning,
   grantSummary,
   parseTodo,
+  promptText,
   stateLabel,
   taskTitle,
   workspaceLine,
@@ -138,5 +139,25 @@ describe("workspaceLine", () => {
 
   it("says nothing about a child that never had a copy", () => {
     expect(workspaceLine(sub())).toBe("");
+  });
+
+  it("says which sub-agent it continues, and which continued it", () => {
+    const ws = { branch: "mimir/sub-1", path: "/c/sub-1" };
+    expect(workspaceLine(sub({ workspace: ws, continues: "sub-0" })))
+      .toBe("branch mimir/sub-1 · copy at /c/sub-1 · continues sub-0");
+    expect(workspaceLine(sub({ workspace: ws, continued_by: "sub-2" })))
+      .toBe("branch mimir/sub-1 · copy at /c/sub-1 · continued by sub-2");
+  });
+});
+
+describe("promptText", () => {
+  it("puts the caller's context before the task, as the child read them", () => {
+    expect(promptText(sub({ context: "seen in solver.c\n", task: "find X" })))
+      .toBe("seen in solver.c\n\n---\n\nfind X");
+  });
+
+  it("is the task alone without a context, and empty without either", () => {
+    expect(promptText(sub({ task: "find X" }))).toBe("find X");
+    expect(promptText(sub())).toBe("");
   });
 });
