@@ -235,6 +235,9 @@ def init(
         # the main branch for an ordinary session — it earns its keep when several
         # sub-agents each optimise a copy of their own.
         "branch":            _workspace_branch(),
+        # The tree the snapshots' paths are relative to: a merge rewrites this session's
+        # paths from here to its own copy.
+        "root":              workspace_root(),
         "initialized_at":    datetime.now(timezone.utc).isoformat(),
     }
     save_opt_config(cfg)

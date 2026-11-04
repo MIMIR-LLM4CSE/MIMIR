@@ -1,0 +1,119 @@
+// A merge of proxies on the map: each proxy's gain alone on the left, the files two of them
+// share and their conflicts as arcs between them, and the whole on the right with the gain
+// it was expected to bring and the one measured. Without a measurement (proxies ticked, not
+// merged yet) it is the forecast: what merging them promises and what stands in the way.
+
+import { esc } from "./session";
+
+/** A relative is a value against its baseline, lower is better whatever the goal: 0.8 is
+ *  a fifth better. */
+export interface MergeSource { proxy: string; branch?: string; relative: number; files: string[] }
+export interface MergePair { a: string; b: string; shared: string[]; conflicts: string[] }
+export interface MergeStep {
+  proxy: string; kept: boolean; why?: string; files?: string[];
+  /** Its gain on top of what was kept before it, and that against its gain alone. */
+  marginal?: number | null; interaction?: number | null;
+}
+export interface MergeState {
+  phase: string; sources: MergeSource[]; pairs: MergePair[]; expected: number;
+  all?: { applied: string[]; conflicts: { proxy: string; files: string[] }[]; expected: number;
+    relative?: number | null; holds?: boolean } | null;
+  steps?: MergeStep[];
+  final?: { from: string; relative: number | null; kept: string[] } | null;
+}
+export interface Forecast {
+  sources: MergeSource[]; pairs: MergePair[]; expected: number;
+  refused?: { proxy: string; why: string }[]; refusal?: string;
+}
+
+/** What became of one source: kept, set aside and why, or still to be measured. */
+export interface Outcome { state: "kept" | "conflict" | "interference" | "infeasible" | "applied" | "pending" | "forecast"; marginal?: number | null }
+
+export function outcome(m: MergeState | null, proxy: string): Outcome {
+  if (!m) return { state: "forecast" };
+  const step = [...(m.steps ?? [])].reverse().find((s) => s.proxy === proxy);
+  const clash = (m.all?.conflicts ?? []).some((c) => c.proxy === proxy);
+  if (m.final) {
+    if (m.final.kept.includes(proxy)) return { state: "kept", marginal: step?.marginal };
+    return { state: (step?.why as Outcome["state"]) ?? (clash ? "conflict" : "interference"), marginal: step?.marginal };
+  }
+  if (step) return step.kept ? { state: "kept", marginal: step.marginal } : { state: (step.why as Outcome["state"]) ?? "interference", marginal: step.marginal };
+  if (m.phase === "incremental") return { state: "pending" };
+  if (clash) return { state: "conflict" };
+  return { state: m.all?.applied.includes(proxy) ? "applied" : "pending" };
+}
+
+/** A gain, from a relative: "20%" for 0.8. */
+export function gainOf(rel: number | null | undefined): string {
+  if (rel === null || rel === undefined || !isFinite(rel)) return "–";
+  const g = Math.round((1 - rel) * 1e6) / 1e6;
+  return (g < 0 ? "−" : "") + Math.abs(g * 100).toFixed(Math.abs(g) < 0.1 ? 1 : 0) + "%";
+}
+
+const WHY: Record<string, string> = {
+  kept: "kept", conflict: "set aside: conflict", interference: "set aside: slowed the whole",
+  infeasible: "set aside: failed its requirements", applied: "applied, being measured", pending: "to measure", forecast: "",
+};
+
+/** The line above the graph: expected, measured, kept, and where the merge stands. */
+function summary(sources: MergeSource[], expected: number, m: MergeState | null, refused: Forecast["refused"]): string {
+  const parts = ["expected together <b>" + gainOf(expected) + "</b> better"];
+  if (m?.all?.relative !== undefined && m.all.relative !== null) parts.push("all at once <b>" + gainOf(m.all.relative) + "</b>");
+  if (m?.final) {
+    parts.push("kept <b>" + gainOf(m.final.relative) + "</b> with " + (m.final.kept.length ? esc(m.final.kept.join(", ")) : "nothing"));
+  } else if (m) {
+    parts.push(m.phase === "incremental" ? "now one at a time" : m.phase === "baseline" ? "measuring the copy untouched" : "measuring them all at once");
+  }
+  if (refused?.length) parts.push("left out: " + refused.map((r) => esc(r.proxy) + " (" + esc(r.why) + ")").join(", "));
+  return parts.join(" · ");
+}
+
+/** The graph, *width* pixels wide: a merge measured (*m*) or a forecast. */
+export function mergeGraph(sources: MergeSource[], pairs: MergePair[], expected: number, m: MergeState | null,
+                           width = 760, refused?: Forecast["refused"]): string {
+  const W = Math.max(420, Math.round(width)), ROW = 46, T = 8, ARC = 54;
+  const H = Math.max(96, T * 2 + sources.length * ROW);
+  const boxX = ARC + 8, boxW = Math.min(300, Math.round(W * 0.42)), mx = W - 170, mw = 160;
+  const y = (i: number) => T + i * ROW + ROW / 2;
+  const at = new Map(sources.map((s, i) => [s.proxy, i]));
+  const f1 = (x: number) => x.toFixed(1);
+  const arcs = pairs.filter((p) => p.shared.length && at.has(p.a) && at.has(p.b)).map((p) => {
+    const ya = y(at.get(p.a)!), yb = y(at.get(p.b)!), depth = Math.min(ARC - 6, 12 + Math.abs(yb - ya) / 3);
+    const cls = p.conflicts.length ? "arc conflict" : "arc shared";
+    const tip = p.a + " and " + p.b + (p.conflicts.length ? " conflict on " + p.conflicts.join(", ") : " both change " + p.shared.join(", "));
+    return '<path class="' + cls + '" d="M' + boxX + "," + f1(ya) + " C" + f1(boxX - depth) + "," + f1(ya) + " "
+      + f1(boxX - depth) + "," + f1(yb) + " " + boxX + "," + f1(yb) + '"><title>' + esc(tip) + "</title></path>";
+  }).join("");
+  const my = H / 2;
+  const rows = sources.map((s, i) => {
+    const o = outcome(m, s.proxy), yy = y(i);
+    const out = !["kept", "applied", "pending", "forecast"].includes(o.state);
+    const shift = o.marginal !== undefined && o.marginal !== null ? o.marginal - s.relative : 0;
+    const linkCls = "mlink " + o.state + (Math.abs(shift) > 0.005 ? (shift < 0 ? " syn" : " intf") : "");
+    const inWhole = o.marginal !== undefined && o.marginal !== null ? "in the merge " + gainOf(o.marginal) : "";
+    const status = [inWhole, WHY[o.state]].filter(Boolean).join(" · ");
+    const link = '<path class="' + linkCls + '" d="M' + (boxX + boxW) + "," + f1(yy) + " C" + f1((boxX + boxW + mx) / 2) + "," + f1(yy)
+      + " " + f1((boxX + boxW + mx) / 2) + "," + f1(my) + " " + mx + "," + f1(my) + '"/>';
+    return link + '<g class="src ' + (out ? "is-out" : "") + '"><title>' + esc(s.proxy + (s.branch ? " · " + s.branch : "")
+      + " · " + s.files.join(", ")) + "</title>"
+      + '<rect class="box" x="' + boxX + '" y="' + f1(yy - ROW / 2 + 3) + '" width="' + boxW + '" height="' + (ROW - 6) + '" rx="4"/>'
+      + '<text class="sname" x="' + (boxX + 10) + '" y="' + f1(yy - (status ? 3 : -4)) + '">' + esc(s.proxy) + "</text>"
+      + '<text class="sgain" x="' + (boxX + boxW - 10) + '" y="' + f1(yy - (status ? 3 : -4)) + '" text-anchor="end">alone <tspan class="v">'
+      + esc(gainOf(s.relative)) + "</tspan></text>"
+      + (status ? '<text class="sstate ' + o.state + '" x="' + (boxX + 10) + '" y="' + f1(yy + 12) + '">' + esc(status) + "</text>" : "") + "</g>";
+  }).join("");
+  const measured = m?.final?.relative ?? m?.all?.relative ?? null;
+  const node = '<g class="whole"><rect class="box" x="' + mx + '" y="' + f1(my - 30) + '" width="' + mw + '" height="60" rx="6"/>'
+    + '<text class="wname" x="' + (mx + 12) + '" y="' + f1(my - 11) + '">' + (m ? "Merged" : "If merged") + "</text>"
+    + '<text class="wsub" x="' + (mx + 12) + '" y="' + f1(my + 6) + '">expected ' + gainOf(expected) + "</text>"
+    + '<text class="wsub ' + (measured === null ? "" : measured <= expected + 0.005 ? "good" : "short") + '" x="' + (mx + 12) + '" y="' + f1(my + 21) + '">'
+    + (measured === null ? (m ? "not measured yet" : "never measured") : "measured " + gainOf(measured)) + "</text></g>";
+  const svg = '<svg class="mgraph" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Merge of '
+    + esc(sources.map((s) => s.proxy).join(", ")) + '">' + arcs + rows + node + "</svg>";
+  const legend = '<div class="mlegend"><span><i class="sw arc-shared"></i>both change a file</span>'
+    + '<span><i class="sw arc-conflict"></i>conflict: cannot both be kept</span>'
+    + (m ? '<span><i class="sw link-syn"></i>better in the merge than alone</span><span><i class="sw link-intf"></i>worse in the merge than alone</span>' : "")
+    + "</div>";
+  return '<div class="merge"><div class="session-head"><div class="title">' + (m ? "Merge" : "Merge forecast") + '</div><span class="sum">'
+    + summary(sources, expected, m, refused) + "</span></div>" + '<div class="chart-wrap">' + svg + "</div>" + legend + "</div>";
+}

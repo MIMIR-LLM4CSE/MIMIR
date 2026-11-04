@@ -97,12 +97,16 @@ class PanelHandlers(Handlers):
 
     async def on_code_map(self, msg: dict) -> None:
         """Serve the code map the servers answer, for the editor's map tab: the steps of the
-        proxy the tab picked (``proxy``), or of every proxy (``combined``)."""
+        proxy the tab picked (``proxy``), of those it ticked together (``proxies``), or of
+        every proxy (``combined``)."""
         steps_args: dict = {}
         if isinstance(msg.get("proxy"), str) and msg["proxy"]:
             steps_args["proxy_name"] = msg["proxy"]
         if msg.get("combined"):
             steps_args["combined"] = True
+        picked = msg.get("proxies")
+        if isinstance(picked, list) and all(isinstance(p, str) for p in picked) and len(picked) > 1:
+            steps_args["proxies"] = picked
         result = await asyncio.wrap_future(self.screen.worker.panel.code_map(steps_args))
         await self.out.send({"type": "code_map", **result})
 

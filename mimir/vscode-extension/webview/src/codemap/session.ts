@@ -5,6 +5,8 @@
 // multiple of its own proxy's baseline (lower is better), since their metrics differ.
 
 import { axisTag, type Request } from "./request";
+import type { Forecast, MergeState } from "./merge";
+import type { ProxyMeta } from "./picker";
 
 export interface StepEdge { from: string; to: string; line: number; kind: string; via: string; sure: string; breaks: string }
 /** Where a run's time went, per workspace file, in fractions of the baseline's metric. */
@@ -60,6 +62,9 @@ export interface Session {
   proxies?: string[]; active?: string; combined?: boolean;
   /** The R&D requests put from the map, with the runs that tried them. */
   requests?: Request[];
+  /** A line per proxy for the picker; the proxies ticked together and what merging them
+   *  promises; a merge session's state. */
+  proxies_meta?: ProxyMeta[]; selected?: string[]; forecast?: Forecast; merge?: MergeState;
 }
 
 /** The time the map shows at a step: whose profile, and the one it is compared with. */
@@ -153,7 +158,7 @@ export function overlay(session: Session, k: number, scope: Scope): Overlay {
   };
 }
 
-function esc(s: unknown): string {
+export function esc(s: unknown): string {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 }
 export function signed(d: number | null): string {

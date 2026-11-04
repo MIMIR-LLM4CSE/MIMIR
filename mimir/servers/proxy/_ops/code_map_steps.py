@@ -14,8 +14,11 @@ import time
 from ....shared import code_map
 from ....shared.atomic import write_json
 from .._lib import profiling, requests, tree_snapshot
-from .._lib.layout import history_dir, opt_runs_dir, opt_session_runs_dir, read_json, resolve_proxy_name
+from .._lib.ratchet import load_best, relative
+from .._lib.layout import (history_dir, merge_file, opt_runs_dir, opt_session_runs_dir, read_json,
+                           resolve_proxy_name)
 from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
+from . import merge
 from .eval_observe import read_ledger
 
 _CACHE: dict[str, tuple[tuple, dict]] = {}
@@ -122,8 +125,10 @@ def freeze(name: str, why: str) -> str:
     key = f"{name}@{time.strftime('%Y%m%d-%H%M%S')}"
     os.makedirs(history_dir(), exist_ok=True)
     # Under its key, steps included: the tab picks a session by the proxy its steps name.
+    state = read_json(merge_file(name))
     write_json(os.path.join(history_dir(), key + ".json"), {
         **value, "proxy": key, "steps": [{**st, "proxy": key} for st in value.get("steps", [])],
+        **({"merge": state} if state else {}),
         "frozen": {"proxy": name, "why": why, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}})
     return key
 
@@ -138,22 +143,62 @@ def _latest(names: list[str]) -> str:
     return max(names, key=mtime)
 
 
-def answer(proxy_name: str = "", combined: bool = False) -> dict:
+def _meta(name: str, active: str) -> dict:
+    """One line of the tab's picker: where the session ran, its metric, how many runs it
+    settled and its gain so far (1 - best/baseline, whatever the goal)."""
+    frozen = _frozen_file(name)
+    if frozen:
+        s = read_json(frozen, {}) or {}
+        base, goal = (s.get("baseline") or {}).get("value"), s.get("goal", "min")
+        kept = [st["value"] for st in s.get("steps", []) if st.get("verdict") == "accept"]
+        rel = min((r for r in (relative(v, base, goal) for v in kept) if r is not None), default=None)
+        return {"name": name, "branch": "", "metric": s.get("metric", ""), "goal": goal,
+                "steps": len(s.get("steps", [])), "gain": None if rel is None else round(1 - rel, 6),
+                "active": False, "frozen": (s.get("frozen") or {}).get("why", "frozen"),
+                "merge": bool(s.get("merge")), "sources": [x["proxy"] for x in (s.get("merge") or {}).get("sources", [])]}
+    cfg = load_opt_config(name) or {}
+    src, _ = merge.source(name)
+    rows = read_ledger(name)
+    base = next((r.get("primary_value") for r in rows if r.get("run_id") == cfg.get("baseline_run_id")), None)
+    best = (load_best(name) or {}).get("primary_value")
+    rel = relative(best, base, cfg.get("primary_goal", "min"))
+    state = read_json(merge_file(name)) or {}
+    return {"name": name, "branch": cfg.get("branch", ""), "metric": cfg.get("primary_metric", ""),
+            "goal": cfg.get("primary_goal", "min"), "steps": max(0, len(rows) - bool(cfg.get("baseline_run_id"))),
+            "gain": None if rel is None else round(1 - rel, 6), "active": name == active, "frozen": "",
+            "merge": bool(cfg.get("merge")), "sources": [x["proxy"] for x in state.get("sources", [])],
+            "mergeable": src is not None}
+
+
+def answer(proxy_name: str = "", combined: bool = False, selected: list[str] | None = None) -> dict:
     """What the map tab is sent: the steps of *proxy_name* (else the active session's, else
-    the latest session's), or of every proxy at once when *combined*; with the proxies it
-    can switch between."""
+    the latest session's), of the proxies *selected* together, or of every proxy at once
+    when *combined*; with the proxies it can switch between, a line on each. Two proxies
+    or more selected also bring what merging them promises (``forecast``)."""
     known = proxies()
     asked = requests_view()
     if not known:
         return {"steps": [], "requests": asked} if asked else {}
     active = resolve_proxy_name("") or ""
+    picked = [n for n in dict.fromkeys(selected or []) if n in known]
     # A name the tab sends is one it was given; any other reads as the active session, and
     # without one (sub-agents measured, this session did not) as the latest.
     name = proxy_name if proxy_name in known else ("" if active else _latest(known))
-    value = merged(known) if combined else session(name)
+    together = picked if len(picked) > 1 else known if combined else []
+    value = merged(together) if together else session(name)
+    out = {"steps": [], **value, "proxies": known, "active": active,
+           "proxies_meta": [_meta(n, active) for n in known],
+           "combined": bool(together and value), "requests": asked}
+    if len(picked) > 1:
+        out["selected"] = picked
+        out["forecast"] = merge.forecast([n for n in picked if "@" not in n])
+    elif not together:
+        # A merge session draws its sources, the whole and the one-at-a-time chain.
+        state = value.get("merge") or (read_json(merge_file(value["proxy"])) if value.get("proxy") else None)
+        if state:
+            out["merge"] = state
     # Always a list of steps, even empty: the tab still offers the other proxies.
-    return {"steps": [], **value, "proxies": known, "active": active,
-            "combined": bool(combined and value), "requests": asked}
+    return out
 
 
 def _steps_of(name: str) -> list[dict]:
@@ -275,14 +320,6 @@ def session(proxy_name: str = "") -> dict:
     return value
 
 
-def _relative(value, base, goal: str) -> float | None:
-    """*value* against its proxy's baseline, lower is better whatever the goal: 0.8 is a fifth
-    better, for a time or a throughput alike."""
-    if not isinstance(value, (int, float)) or not isinstance(base, (int, float)) or not base or not value:
-        return None
-    return round(value / base if goal != "max" else base / value, 6)
-
-
 def merged(names: list[str]) -> dict:
     """Every proxy's steps as one session, in the order they settled. Values are each proxy's
     metric against its own baseline (1.0), so the strip draws one line across metrics; what a
@@ -293,8 +330,8 @@ def merged(names: list[str]) -> dict:
     for s in sessions:
         base, goal = s["baseline"]["value"], s["goal"]
         for st in s["steps"]:
-            now = _relative(st["value"], base, goal)
-            then = _relative(st["incumbent_value"], base, goal)
+            now = relative(st["value"], base, goal)
+            then = relative(st["incumbent_value"], base, goal)
             steps.append({**st, "value": now, "incumbent_value": then, "delta": _delta(now, then),
                           "metric": s["metric"]})
     steps.sort(key=lambda st: st.get("ts") or "")

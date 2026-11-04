@@ -671,9 +671,20 @@ revealing the tab, so nothing takes the focus. An edit to the code outside a ses
 step is not one of these: ⟳ maps it.
 
 With sessions on more than one proxy, a picker in the header chooses whose steps are
-drawn: the active session, another proxy's, or every proxy at once. The pick is kept in
-the tab's state and sent with its `refresh` (`proxy` or `combined`), which the host
-forwards on the `code_map` message; it never moves the agent's active session. An answer
+drawn (`picker.ts`): a list grouped as running, merges and frozen, each line with its
+branch, its runs, its gain so far and its badges (active, merge, why it was frozen),
+from the answer's `proxies_meta`. A click on a name draws that proxy alone, "Every
+proxy, together" draws them all, and two ticks or more draw the ticked ones together.
+Escape and a click outside close the list, the arrows move through it. The pick
+(`""`, a name, `*`, or the ticked names joined by commas) is kept in the tab's state and
+sent with its `refresh` (`proxy`, `combined` or `proxies`), which the host forwards on
+the `code_map` message; it never moves the agent's active session. **Merge** under the
+list, with two mergeable proxies ticked, puts `proxy_merge(op='plan', …)` to the chat
+with the proxy-merge skill. Above the strip, `merge.ts` draws a merge: each proxy's gain
+alone, the files two of them share and their conflicts as arcs, a link to the whole
+coloured by what the proxy did in it (kept, better or worse than alone, set aside), and
+the whole with the gain expected and the one measured. For proxies ticked and not merged
+it draws the server's `forecast` the same way, unmeasured. An answer
 that holds other steps than the pick (the drawer's **Open map** asks for the active
 session's) is asked again once with the pick. Every proxy at once lays the steps out in
 the order they settled, each named with its proxy and valued as a multiple of its

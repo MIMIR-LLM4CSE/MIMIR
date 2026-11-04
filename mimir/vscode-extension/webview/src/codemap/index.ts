@@ -8,6 +8,8 @@ import { barWidth, cap, countersBlock, edgeKey, fnParts, functionsBlock, gpuBloc
 import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
   type Draft, type Request, type Sent, type Target } from "./request";
 import { formHtml, requestDetail, requestsSection } from "./requestView";
+import { ALL, mergeable, mergePrompt, pickerHtml, ticked, type ProxyMeta } from "./picker";
+import { mergeGraph, type Forecast, type MergeState } from "./merge";
 
 interface Component { id: string; name: string; tier: number; declared: string[]; external: Record<string, number>; tests: boolean }
 interface Module { id: string; component: string }
@@ -54,8 +56,8 @@ let showTests = vscode.getState()?.tests === true;
 let showFns = vscode.getState()?.fns === true;
 // The columns of modules the tab's width holds, and how wide that makes a box.
 let cols = 5, boxW = BW;
-// Whose steps the map shows: "" the active session's, a proxy's name, or ALL for every proxy.
-const ALL = "*";
+// Whose steps the map shows: "" the active session's, a proxy's name, ALL for every proxy,
+// or the ticked ones joined by commas.
 let pick = vscode.getState()?.pick ?? "";
 
 // The request being written, the ones sent and not yet recorded, and the recorded ones.
@@ -67,7 +69,9 @@ function remember(): void { vscode.setState({ skin, tests: showTests, fns: showF
 
 /** Ask the server again, for the steps *pick* names. */
 function ask(): void {
-  vscode.postMessage({ type: "refresh", ...(pick === ALL ? { combined: true } : pick ? { proxy: pick } : {}) });
+  const t = ticked(pick);
+  vscode.postMessage({ type: "refresh",
+    ...(t.length ? { proxies: t } : pick === ALL ? { combined: true } : pick ? { proxy: pick } : {}) });
 }
 
 // A mapping asked for (⟳, the proxy picker, a step settled): under way, done (and when), or
@@ -133,12 +137,20 @@ function renderStatus(flash = false): void {
 /** The pick last asked again for an answer that did not hold it, until one does. */
 let reasked: string | null = null;
 
-/** The proxies the server offered, and the active one: from the last answer. */
+/** The proxies the server offered, a line on each, and the active one: from the last answer. */
 let proxies: string[] = [];
+let meta: ProxyMeta[] = [];
 let active = "";
+// A merge session's state, or what merging the ticked proxies promises.
+let mergeState: MergeState | null = null;
+let forecast: Forecast | null = null;
+// The picker's list, open or not, and the proxies ticked in it (two or more are the pick).
+let pickerOpen = false;
+let ticks = new Set<string>(ticked(pick));
 
 /** Whose steps an answer holds, written as *pick* writes it. */
 function picked(s: Session | undefined): string {
+  if (s?.selected && s.selected.length > 1) return s.selected.join(",");
   if (s?.combined) return ALL;
   return !s?.proxy || s.proxy === s.active ? "" : s.proxy;
 }
@@ -146,18 +158,87 @@ function picked(s: Session | undefined): string {
 /** The pick as the server can answer it: the active proxy named is the active session. */
 function reachable(p: string): string {
   if (p === ALL) return proxies.length > 1 ? ALL : "";
+  const t = ticked(p);
+  if (t.length) {
+    const there = t.filter((x) => proxies.includes(x));
+    return there.length > 1 ? there.join(",") : reachable(there[0] ?? "");
+  }
   return p && p !== active && proxies.includes(p) ? p : "";
 }
 
 function renderPicker(): void {
-  const el = document.getElementById("proxy") as HTMLSelectElement;
+  const el = document.getElementById("proxy")!;
   el.hidden = proxies.length < 2;
-  if (el.hidden) return;
-  el.innerHTML = proxies.map((p) => '<option value="' + esc(p === active ? "" : p) + '">' + esc(p)
-      + (p === active ? " (active)" : "") + "</option>").join("")
-    + (active && proxies.includes(active) ? "" : '<option value="">active session</option>')
-    + '<option value="' + ALL + '">Every proxy (cumulative)</option>';
-  el.value = reachable(pick);
+  if (el.hidden) { pickerOpen = false; return; }
+  // Rebuilt with each answer: the focus goes back to the control that had it.
+  const had = (document.activeElement as HTMLElement | null)?.closest?.("#proxy")
+    ? (document.activeElement as HTMLElement) : null;
+  const again = had?.dataset.tick !== undefined ? '[data-tick="' + had.dataset.tick + '"]'
+    : had?.dataset.pick !== undefined ? '[data-pick="' + had.dataset.pick + '"]' : had?.classList.contains("pick-btn") ? ".pick-btn" : "";
+  const known = new Set(meta.map((m) => m.name));
+  ticks = new Set([...ticks].filter((t) => known.has(t)));
+  el.innerHTML = pickerHtml(meta.length ? meta : proxies.map((name) => ({ name, branch: "", metric: "", goal: "", steps: 0, gain: null,
+    active: name === active, frozen: name.includes("@") ? "frozen" : "", merge: false, sources: [] })), reachable(pick), active, pickerOpen, ticks);
+  if (again) el.querySelector<HTMLElement>(again)?.focus();
+}
+
+/** Show *p*'s steps, the picker's list closed or not. */
+function choose(p: string, close: boolean): void {
+  pick = p;
+  if (close) pickerOpen = false;
+  remember();
+  remap();
+}
+
+function onPickerClick(e: Event): void {
+  // The list is rebuilt under the click: the document's "click outside" must not see it.
+  e.stopPropagation();
+  const t = e.target as HTMLElement;
+  if (t.closest(".pick-btn")) {
+    pickerOpen = !pickerOpen;
+    renderPicker();
+    if (pickerOpen) document.querySelector<HTMLElement>("#proxy .pick-panel button, #proxy .pick-panel input")?.focus();
+    return;
+  }
+  const name = t.closest<HTMLElement>("[data-pick]");
+  if (name) { ticks = new Set(); choose(name.dataset.pick ?? "", true); return; }
+  if (t.closest("[data-merge]")) {
+    const names = mergeable(meta, [...ticks]);
+    if (names.length < 2) return;
+    pickerOpen = false;
+    renderPicker();
+    vscode.postMessage({ type: "prompt", text: mergePrompt(names) });
+  }
+}
+
+function onPickerTick(e: Event): void {
+  const box = e.target as HTMLInputElement;
+  const name = box.dataset.tick;
+  if (name === undefined) return;
+  if (box.checked) ticks.add(name); else ticks.delete(name);
+  // Two or more are drawn together; one alone is that proxy's steps.
+  const t = [...ticks];
+  if (t.length > 1) choose(t.join(","), false);
+  else if (t.length === 1) choose(meta.find((m) => m.name === t[0])?.active ? "" : t[0], false);
+  // At once, without waiting for the answer: the button and the Merge count follow the ticks.
+  renderPicker();
+}
+
+/** The picker's keys: Escape closes it, the arrows move between its lines. */
+function onPickerKey(e: KeyboardEvent): void {
+  if (e.key === "Escape" && pickerOpen) {
+    e.stopPropagation();
+    pickerOpen = false;
+    renderPicker();
+    document.querySelector<HTMLElement>("#proxy .pick-btn")?.focus();
+    return;
+  }
+  if (!pickerOpen || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+  e.preventDefault();
+  const all = Array.from(document.querySelectorAll<HTMLElement>("#proxy .pick-panel .pick-name, #proxy .pick-panel [data-merge]:not([disabled])"));
+  const at = all.indexOf((document.activeElement as HTMLElement)?.closest(".pick-row")?.querySelector(".pick-name") as HTMLElement
+    ?? document.activeElement as HTMLElement);
+  all[(at + (e.key === "ArrowDown" ? 1 : all.length - 1)) % all.length]?.focus();
 }
 
 /** The map as drawn: without its tests unless they are shown. */
@@ -989,9 +1070,12 @@ function signedShort(d: number): string {
 
 function renderSession(): void {
   const el = document.getElementById("session")!;
-  el.hidden = !session || !session.steps.length;
-  if (el.hidden || !session) return;
-  el.innerHTML = strip(session, step, scope, el.clientWidth - 30);
+  const m = mergeState ?? forecast;
+  el.hidden = (!session || !session.steps.length) && !m;
+  if (el.hidden) return;
+  const width = el.clientWidth - 30;
+  el.innerHTML = (m ? mergeGraph(m.sources, m.pairs, m.expected, mergeState, width, forecast?.refused) : "")
+    + (session ? strip(session, step, scope, width) : "");
   el.querySelectorAll<HTMLElement>("[data-step]").forEach((b) => b.addEventListener("click", () => {
     step = Number(b.dataset.step); render();
   }));
@@ -1051,7 +1135,7 @@ function mount(): void {
     <header>
       <h1>Code map</h1><span class="meta" id="meta">waiting for the server…</span>
       <span class="meta status" id="status" role="status" aria-live="polite"></span>
-      <select class="push" id="proxy" title="Whose optimisation steps the map shows" aria-label="Proxy" hidden></select>
+      <div class="picker push" id="proxy" hidden></div>
       <button class="toggle" id="analyse" title="Ask the agent to analyse the whole code's architecture and propose a refactor">Analyse the architecture</button>
       <button class="toggle" id="fns" aria-pressed="false" title="List each module's costliest functions on the map" hidden>Functions</button>
       <button class="toggle" id="tests" aria-pressed="false" title="Show the tests and what they depend on">Tests</button>
@@ -1070,10 +1154,13 @@ function mount(): void {
     render();
   }));
   document.getElementById("reload")!.addEventListener("click", remap);
-  document.getElementById("proxy")!.addEventListener("change", (e) => {
-    pick = (e.target as HTMLSelectElement).value;
-    remember();
-    remap();
+  const picker = document.getElementById("proxy")!;
+  picker.addEventListener("click", onPickerClick);
+  picker.addEventListener("change", onPickerTick);
+  picker.addEventListener("keydown", onPickerKey);
+  // A click anywhere else closes the list.
+  document.addEventListener("click", (e) => {
+    if (pickerOpen && !(e.target as Element | null)?.closest?.("#proxy")) { pickerOpen = false; renderPicker(); }
   });
   document.getElementById("side")!.addEventListener("click", onSideClick);
   document.getElementById("analyse")!.addEventListener("click", () => {
@@ -1123,7 +1210,7 @@ function mount(): void {
   });
   window.addEventListener("keydown", (e) => {
     // Typing in the request form moves nothing on the map.
-    if ((e.target as Element | null)?.closest?.("input, textarea, select")) return;
+    if ((e.target as Element | null)?.closest?.("input, textarea, select, #proxy")) return;
     if (e.key === "Escape" && sel) { sel = null; render(); }
     else if (session && e.key === "ArrowRight" && step < session.steps.length) { step++; render(); }
     else if (session && e.key === "ArrowLeft" && step > 0) { step--; render(); }
@@ -1146,7 +1233,10 @@ function mount(): void {
     }
     if (msg?.type !== "map" || !msg.map) return;
     proxies = msg.session?.proxies ?? [];
+    meta = msg.session?.proxies_meta ?? [];
     active = msg.session?.active ?? "";
+    mergeState = msg.session?.merge ?? null;
+    forecast = msg.session?.forecast ?? null;
     // An answer for other steps than the ones picked (the drawer opens the active session's):
     // asked again for those, as long as the server still has them.
     // Once: an answer that still differs is what the server can give, and is drawn.

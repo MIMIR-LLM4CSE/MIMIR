@@ -16,6 +16,22 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Proxies optimised in parallel can be merged, and the whole measured.** Each axis a
+  sub-agent optimised kept its gain on its own branch, measured against its own baseline,
+  and putting them together was left to the orchestrator by hand, with nothing to say
+  whether the gains added up. `proxy_merge` takes each proxy's kept patch (baseline to
+  best accepted tree, from the snapshot store), merges the files three ways in a
+  sub-agent's copy and measures them: all at once first, then, when the whole falls short
+  of the gain the parts promised, one at a time, best alone first, each kept only if it
+  still improves the whole. `plan` says beforehand what each proxy brings, the files two
+  share, their conflicts and the gain expected; `report` gives the gain measured, what
+  each proxy did in the merge against alone, and why the others were set aside. The
+  proxy-merge skill has the protocol.
+- **The code map's proxy picker is a list.** The plain dropdown gave a name and nothing
+  else. Each proxy now has a line: its branch, its runs, its gain so far, whether it is
+  active, a merge or frozen. Proxies ticked together are drawn together, with what
+  merging them promises, and **Merge** asks the agent to measure it. A merge session
+  draws its proxies, their conflicts and the whole, expected and measured.
 - **The optimisation graph outlives its proxy.** `proxy_manage(op='clean')` took the
   ledger and the snapshots the code map draws from, so a clean at the end of a campaign
   erased its whole curve; `rebaseline` moved the ledger aside, where the map no longer

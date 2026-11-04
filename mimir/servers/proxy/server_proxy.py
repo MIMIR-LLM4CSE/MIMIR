@@ -35,6 +35,7 @@ from ._ops import (
     eval_observe,
     eval_session,
     exec_jobs,
+    merge,
     panel,
     references,
     registry,
@@ -743,6 +744,7 @@ async def proxy_eval(
 
 _SLURM_OPS = ("run", "suite", "eval")
 _REQUEST_OPS = ("open", "update", "list", "get")
+_MERGE_OPS = ("plan", "start", "next", "report")
 
 # op-dispatch cross-reference, for the _unknown_op redirect hint (see above).
 _TOOL_BY_OPS: dict[tuple[str, ...], str] = {
@@ -754,6 +756,7 @@ _TOOL_BY_OPS: dict[tuple[str, ...], str] = {
     _EVAL_OPS: "proxy_eval",
     _SLURM_OPS: "proxy_slurm",
     _REQUEST_OPS: "proxy_request",
+    _MERGE_OPS: "proxy_merge",
 }
 def _build_op_owners() -> dict[str, list[str]]:
     owners: dict[str, list[str]] = {}
@@ -1028,12 +1031,66 @@ def proxy_request(
     return requests_ops.list_()
 
 
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_MAP_MOVES], reversibility=RECOVERABLE,
+                      label="Proxy merge: {op}",
+                      map_moves_when={"arg": "op", "values": ["start", "next"]}))
+def proxy_merge(
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_MERGE_OPS)},
+    )],
+    proxies: list[str] | None = None,
+    proxy_name: str = "",
+    confirm: bool = False,
+) -> dict:
+    """Merge the kept optimisations of several proxies (axes run in parallel, each by a
+    sub-agent of its own) and measure the gain of the whole against the gains alone.
+
+    A proxy brings its patch from its baseline to its best accepted tree, read from the
+    snapshot store; each file is merged three ways, and a proxy whose patch conflicts
+    with what is already applied is set aside. The merge is measured in a copy of its
+    own: all the proxies at once first; when that falls short of the gain they promise
+    together (their gains multiplied) beyond the noise, one at a time, best alone first,
+    each kept only if it still improves the whole.
+
+    Operations:
+      plan   -> each proxy's gain alone and files, the files two of them share and their
+                conflicts, the gain expected together, and the brief to hand to
+                spawn_agent. Read-only (requires: proxies, or ["*"] for every proxy)
+      start  -> in the merge's copy (a sub-agent's): register the merge proxy
+                `merge-<stamp>` over this copy and open its session (requires: proxies)
+      next   -> the next step of the merge: applies the proxies due and names the run
+                to launch, judges a settled run, says when it is done
+      report -> expected and measured gains, what each proxy did to the whole, what was
+                kept and what was set aside, and why
+
+    Args:
+        proxies: For plan and start: the proxies to merge, ["*"] for every proxy with
+            an accepted run.
+        proxy_name: For start: the merge proxy's name (`merge-<stamp>` when empty); for
+            next and report: the merge session (the active one's when empty).
+        confirm: Must be True for start and next.
+    """
+    if op not in _MERGE_OPS:
+        return _unknown_op(op, _MERGE_OPS)
+    if op == "plan":
+        return _missing_args(op, proxies=proxies) or merge.plan(list(proxies or []))
+    if op == "report":
+        return merge.report(proxy_name)
+    if not confirm:
+        return err("Not confirmed.", hint="Set confirm=True to proceed.")
+    if op == "start":
+        return _missing_args(op, proxies=proxies) or merge.start(list(proxies or []), proxy_name)
+    return merge.next_(proxy_name)
+
+
 @mcp.tool(**tool_caps(kind="proxy",
     caps=[CODE_MAP_STEPS],
     read_only=True,
     label="Optimisation steps on the code map",
 ))
-def proxy_code_map_steps(proxy_name: str = "", combined: bool = False) -> dict:
+def proxy_code_map_steps(proxy_name: str = "", combined: bool = False,
+                         proxies: list[str] | None = None) -> dict:
     """The optimisation session's runs as the code map draws them.
 
     For each settled run after the baseline: its axis, its verdict, its metric beside the
@@ -1046,8 +1103,11 @@ def proxy_code_map_steps(proxy_name: str = "", combined: bool = False) -> dict:
             else the one that ran last.
         combined: Every proxy's steps together, in the order they settled, each value a
             multiple of its own proxy's baseline (lower is better).
+        proxies: Two proxies or more to draw together the same way, with what merging
+            them promises (`forecast`: each one's gain alone, the files they share, their
+            conflicts and the gain expected together).
     """
-    return ok(code_map_steps.answer(proxy_name, combined))
+    return ok(code_map_steps.answer(proxy_name, combined, proxies))
 
 
 if __name__ == "__main__":

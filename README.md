@@ -412,6 +412,7 @@ the directory) followed by the methodology body. Built-in skills:
 | `run-on-cluster` | Build for the target node, size and submit a Slurm job, read what came back |
 | `proxy-optimize` | Optimize a registered proxy through the eval loop's accept/reject ratchet |
 | `map-request` | Study or try an R&D request from the code map, each variant measured from the same start |
+| `proxy-merge` | Merge proxies optimised in parallel in a copy of its own, and measure the whole against the gains alone |
 | `explore-repo` | Map unfamiliar code, and stop once the files and symbols are named |
 | `mimir-api` | Author a `.mimir` extension — skill, tool server, policy, hook, nudge — from MIMIR's own API |
 

@@ -28,7 +28,7 @@ SENSITIVE_TOOLS = {
     "delete_file", "bash_run", "bash_job_stop", "http_post",
     "salloc_submit", "sbatch_submit", "slurm_cancel", "slurm_probe_node", "memory_delete",
     "memory_clear", "todo_delete_plan",
-    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
+    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm", "proxy_merge",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
@@ -38,7 +38,7 @@ PLAN_BLOCKED_TOOLS = {
     "append_file", "bash_job_stop", "delete_file", "replace_in_file",
     "replace_all_in_file", "replace_lines", "write_file",
     "http_post", "memory_delete", "memory_clear",
-    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
+    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm", "proxy_merge",
     "salloc_submit", "sbatch_submit", "slurm_cancel",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
@@ -142,7 +142,7 @@ CACHEABLE_TOOLS = CACHEABLE_TOOLS | _CODE_INTEL_NAV
 # The code map reads the workspace's structure, not the contents an edit stands on: no READ.
 CODE_MAP_TOOLS = {"code_map"}
 CODE_MAP_STEPS_TOOLS = {"proxy_code_map_steps"}
-CODE_MAP_MOVES_TOOLS = {"proxy_eval", "proxy_eval_status", "proxy_request"}
+CODE_MAP_MOVES_TOOLS = {"proxy_eval", "proxy_eval_status", "proxy_merge", "proxy_request"}
 CACHEABLE_TOOLS = CACHEABLE_TOOLS | CODE_MAP_TOOLS
 SEARCH_TOOLS = SEARCH_TOOLS | {"find_definition", "find_references"}
 SEARCH_WITH_PATH_TOOLS = SEARCH_WITH_PATH_TOOLS | {"find_definition", "find_references"}

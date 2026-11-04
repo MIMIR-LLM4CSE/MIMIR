@@ -164,7 +164,8 @@ async def spawn_agent(
                                   what tells a finished axis from an interrupted one is
                                   ``committed`` and the ``note``, not ``kept``. Read the
                                   branch, compare the axes, and merge the one you keep
-                                  yourself.
+                                  yourself; optimisation axes measured on proxies are
+                                  merged and measured together by proxy_merge.
         On failure (the sub-agent crashed or ran out of time):
             {"status": "error", "error": "…", "answer": "<partial>", ...}
             — distinct ``status`` so the orchestrator can branch on failure without

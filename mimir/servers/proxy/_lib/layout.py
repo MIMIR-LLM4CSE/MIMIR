@@ -49,6 +49,11 @@ def opt_config_file(proxy_name: str) -> str:
     return os.path.join(opt_session_runs_dir(proxy_name), "opt_config.json")
 
 
+def merge_file(proxy_name: str) -> str:
+    """A merge session's state (its sources, its phase, what it kept): opt_runs/<merge>/merge.json."""
+    return os.path.join(opt_session_runs_dir(proxy_name), "merge.json")
+
+
 def active_sessions_dir() -> str:
     """Where the sessions' pointers live: ``active_sessions/<sid>/proxy``."""
     return os.path.join(opt_runs_dir(), "active_sessions")

@@ -26,7 +26,7 @@ DOCS = sorted(p for p in [*REPO.glob("*.md"), *REPO.glob("docs/**/*.md")]
 NOT_IN_THE_REPOSITORY = frozenset({
     # written at run time
     "best.json", "build.json", "current.json", "embeddings.json", "machine.json",
-    "meta.json", "metrics.json", "phase.json", "preferences.json", "probe.json",
+    "merge.json", "meta.json", "metrics.json", "phase.json", "preferences.json", "probe.json",
     "ratchet.json", "registry.json", "requests.json", "subagent.json", "tree_at_launch.json",
     "watcher.json", "todo_list.md", "postrun.py", "MEMORY.md", "PLANS.md", "seals/proxy.json",
     "harnesses/", "plans/", "proxy_bench/", "references/", "scaffolds/", "subagents/",

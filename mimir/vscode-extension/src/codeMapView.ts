@@ -21,13 +21,14 @@ let last: { map: unknown; session?: unknown; focus?: string } = { map: undefined
 /** What the tab can ask of the host. */
 type TabMessage =
   | { type: "ready" }
-  | { type: "refresh"; proxy?: string; combined?: boolean }
+  | { type: "refresh"; proxy?: string; combined?: boolean; proxies?: string[] }
   | { type: "open_file"; file: string; rel?: string; line?: number }
   | { type: "prompt"; text: string }
   | { type: "reveal_in_chat"; token: string; session?: string };
 
-/** Whose steps the tab asks for: a proxy's, or every proxy's; the active session's without. */
-export interface StepsPick { proxy?: string; combined?: boolean }
+/** Whose steps the tab asks for: a proxy's, those ticked together, or every proxy's; the
+ *  active session's without. */
+export interface StepsPick { proxy?: string; combined?: boolean; proxies?: string[] }
 
 /** What the tab can ask of the chat: the map again, or a request put to the agent. */
 export interface MapActions {
@@ -60,6 +61,8 @@ export function showCodeMap(map: unknown, session: unknown, focus: string | unde
         actions.refresh({
           ...(typeof m.proxy === "string" && m.proxy ? { proxy: m.proxy } : {}),
           ...(m.combined === true ? { combined: true } : {}),
+          ...(Array.isArray(m.proxies) && m.proxies.length > 1 && m.proxies.every((p) => typeof p === "string")
+            ? { proxies: m.proxies } : {}),
         });
       }
       else if (m?.type === "prompt" && typeof m.text === "string") actions.prompt(m.text);

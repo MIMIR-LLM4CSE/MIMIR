@@ -56,6 +56,14 @@ def is_improvement(new, old, goal: str, min_improvement: float = 0.0) -> bool:
     return new > old + tol if goal == "max" else new < old - tol
 
 
+def relative(value, base, goal: str) -> float | None:
+    """*value* against *base*, lower is better whatever the goal: 0.8 is a fifth better, for
+    a time or a throughput alike. None when either is missing or zero."""
+    if not isinstance(value, (int, float)) or not isinstance(base, (int, float)) or not base or not value:
+        return None
+    return round(value / base if goal != "max" else base / value, 6)
+
+
 def _within_noise(new, old, goal: str, margin: float) -> bool:
     """True iff *new* is no worse than *old* by more than a relative *margin*."""
     if new is None or old is None:

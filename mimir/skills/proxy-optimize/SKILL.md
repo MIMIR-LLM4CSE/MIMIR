@@ -227,6 +227,10 @@ with one more rule: every variant starts from the request's tree,
 `proxy_eval(op='reset_to_request', request_id=...)`, not from the last one's. The
 map-request skill has the protocol.
 
+Axes optimised in parallel, each by a sub-agent on its own proxy and branch, are put
+together and measured with `proxy_merge`: the proxy-merge skill has the protocol. Never
+assemble their files by hand: a combination nobody measured can run and mean nothing.
+
 ## Invariants of the loop
 
 - Read the file you are about to change before every modification. Never edit blind.
