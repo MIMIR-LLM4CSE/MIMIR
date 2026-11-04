@@ -3,7 +3,8 @@ against the incumbent it was measured on (files, and the dependencies those file
 drop), its verdict, its axis, and its metric beside the incumbent's.
 
 Rebuilt from the tree snapshots the ledger names, so a run ruled out still shows what it
-tried. Cached on the ledger's mtime. Any proxy's session can be drawn, or all at once.
+tried. Cached on the ledger's mtime and its runs' profiles'. Any proxy's session can be
+drawn, or all at once.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from .._lib.layout import opt_runs_dir, opt_session_runs_dir, read_json, resolve
 from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
 from .eval_observe import read_ledger
 
-_CACHE: dict[str, tuple[float, dict]] = {}
+_CACHE: dict[str, tuple[tuple, dict]] = {}
 _EDGE_FIELDS = ("from", "to", "line", "kind", "via", "sure", "breaks")
 
 
@@ -34,13 +35,22 @@ def _edges_at(root: str, snapshot_id: str, memo: dict[str, dict]) -> dict:
 
 def _profile(name: str, run_id: str, value, baseline) -> dict | None:
     """A run's profile with its shares in fractions of the baseline's metric, so two runs'
-    bars compare; None when the run was not profiled."""
+    bars compare; None when the run was not profiled. The sections taken apart (GPU,
+    memory, counters, a kernel's) ride along even when the sampled CPU side could not run."""
     prof = read_json(profiling.profile_path(os.path.join(opt_session_runs_dir(name), run_id))) if run_id else None
     if not prof:
         return None
-    if prof.get("unavailable"):
-        return {"unavailable": prof["unavailable"], "tool": prof.get("tool", "")}
     scale = value / baseline if isinstance(value, (int, float)) and isinstance(baseline, (int, float)) and baseline else 1.0
+    sections = {
+        **({"gpu": _gpu(prof["gpu"], scale)} if prof.get("gpu") else {}),
+        # Shares of the heap's peak, not of time: never scaled.
+        **({"memory": {k: prof["memory"][k] for k in ("tool", "peak_mb", "files", "unavailable", "note")
+                       if k in prof["memory"]}} if prof.get("memory") else {}),
+        # Rates and percentages of peak, not shares of time: never scaled.
+        **{k: prof[k] for k in ("counters", "kernel_detail") if prof.get(k)},
+    }
+    if prof.get("unavailable"):
+        return {"unavailable": prof["unavailable"], "tool": prof.get("tool", ""), **sections}
     return {"tool": prof.get("tool", ""), "samples": prof.get("samples", 0), "case": prof.get("case", ""),
             "files": {f: round(v * scale, 5) for f, v in (prof.get("files") or {}).items()},
             "outside": round(sum((prof.get("outside") or {}).values()) * scale, 5),
@@ -48,10 +58,7 @@ def _profile(name: str, run_id: str, value, baseline) -> dict | None:
                                   "total": round((v.get("total") or 0) * scale, 5),
                                   **({"line": v["line"]} if v.get("line") else {})}
                               for k, v in prof["functions"].items()}} if prof.get("functions") else {}),
-            **({"gpu": _gpu(prof["gpu"], scale)} if prof.get("gpu") else {}),
-            # Shares of the heap's peak, not of time: never scaled.
-            **({"memory": {k: prof["memory"][k] for k in ("tool", "peak_mb", "files", "unavailable", "note")
-                           if k in prof["memory"]}} if prof.get("memory") else {}),
+            **sections,
             **({"note": prof["note"]} if prof.get("note") else {})}
 
 
@@ -127,13 +134,30 @@ def requests_view() -> list[dict]:
     return out
 
 
+def _profiles_stamp(name: str) -> tuple[int, float]:
+    """How many of the session's runs hold a profile and when the latest was written: a
+    profile taken after its run's verdict leaves the ledger as it was."""
+    runs = opt_session_runs_dir(name)
+    try:
+        dirs = os.listdir(runs)
+    except OSError:
+        return 0, 0.0
+    stamps = []
+    for d in dirs:
+        try:
+            stamps.append(os.path.getmtime(profiling.profile_path(os.path.join(runs, d))))
+        except OSError:
+            pass
+    return len(stamps), max(stamps, default=0.0)
+
+
 def session(proxy_name: str = "") -> dict:
     """The session's steps of *proxy_name* (else the active one's), or {} when there is none."""
     name = resolve_proxy_name(proxy_name)
     if not name:
         return {}
     try:
-        mtime = os.path.getmtime(opt_ledger_file(name))
+        mtime = (os.path.getmtime(opt_ledger_file(name)), _profiles_stamp(name))
     except OSError:
         return {}
     cached = _CACHE.get(name)

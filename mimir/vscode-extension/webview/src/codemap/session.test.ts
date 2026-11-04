@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fnParts, functionsBlock, gpuBlock, kernelName, megabytes, memoryBlock, stepCard, strip, timeAt, topFunctions, type Session } from "./session";
+import { countersBlock, fnParts, functionsBlock, gpuBlock, kernelBlock, kernelName, megabytes, memoryBlock, stepCard, strip, timeAt, topFunctions, type Session } from "./session";
 
 const step = (n: number, verdict: string, profile: Session["steps"][number]["profile"]) => ({
   n, run_id: "r" + n, axis: "", verdict, value: 1, incumbent_value: 1, delta: 0,
@@ -34,6 +34,58 @@ describe("timeAt with a GPU", () => {
 
   it("compares nothing since the baseline", () => {
     expect(timeAt(session, 1, "all")!.gpuBefore).toBeNull();
+  });
+});
+
+describe("a profile whose CPU side could not be sampled", () => {
+  const gpuOnly: Session = {
+    ...session,
+    steps: [step(1, "accept", { tool: "", unavailable: "perf is not allowed here",
+                                gpu: { tool: "nsys", files: { "a.cu": 0.3 }, busy: 0.3 },
+                                memory: { tool: "heaptrack", peak_mb: 12, files: { "a.cu": 1 } } })],
+  };
+
+  it("draws its GPU alone", () => {
+    const t = timeAt(gpuOnly, 1, "step")!;
+    expect(t.from).toBe("#1");
+    expect(t.cpuUnavailable).toBe("perf is not allowed here");
+    expect(t.files).toEqual({});
+    expect(t.before).toBeNull();
+    expect(t.gpuFiles).toEqual({ "a.cu": 0.3 });
+    expect(t.gpuBefore).toEqual({ "a.cu": 0.6 });
+    expect(t.memory?.peak_mb).toBe(12);
+  });
+
+  it("says so in the step's card, with what was taken", () => {
+    const card = stepCard(gpuOnly, 1, (f, r) => f + " " + r);
+    expect(card).toContain("CPU not profiled");
+    expect(card).toContain("perf is not allowed here");
+    expect(card).toContain("On the GPU (nsys)");
+    expect(card).toContain("heap peak 12 MB");
+  });
+});
+
+describe("counters in a step's card", () => {
+  it("reads the run's hardware counters and DRAM traffic", () => {
+    const html = countersBlock({ tool: "perf stat", ipc: 0.82, cache_miss_rate: 0.31, branch_miss_rate: 0.004,
+                                 dram_gbytes_per_s: 18.4, bandwidth_fraction: 0.76 });
+    expect(html).toContain("IPC 0.82 · cache misses 31% · branch misses 0.4%");
+    expect(html).toContain("DRAM 18.4 GB/s (76% of peak)");
+    expect(countersBlock({ unavailable: "perf is not allowed here" })).toContain("perf is not allowed here");
+  });
+
+  it("reads one kernel's throughput and what limits it", () => {
+    const html = kernelBlock({ tool: "ncu", name: "void relax(float *)", sm_pct: 21, dram_pct: 84.6, occupancy_pct: 50, bound: "memory" });
+    expect(html).toContain("Kernel relax (ncu)");
+    expect(html).toContain("compute 21% · memory 85% · occupancy 50% of peak");
+    expect(html).toContain("memory-bound");
+  });
+
+  it("shows them in the card of a step that took them", () => {
+    const counted: Session = { ...session, steps: [step(1, "accept", { tool: "perf", files: { "a.cu": 0.4 },
+                                                                     counters: { tool: "perf stat", ipc: 1.5 } })] };
+    expect(stepCard(counted, 1, (f, r) => f + " " + r)).toContain("IPC 1.50");
+    expect(timeAt(counted, 1, "step")!.counters?.ipc).toBe(1.5);
   });
 });
 

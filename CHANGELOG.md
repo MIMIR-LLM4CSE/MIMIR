@@ -64,6 +64,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flickered every ~20 s. A tool declaring `CODE_MAP_MOVES` now names the ops that write
   with `map_moves_when`: `proxy_eval_status` moves the map only for `results`,
   `proxy_request` only for `open` and `update`.
+- **The code map shows every metric a profile took.** A profile taken with
+  `proxy_eval(op='profile')` after its run's verdict did not reach the map: the session was
+  cached on the ledger's mtime alone, which the profile leaves as it was; it is now also
+  cached on the runs' profiles. When the CPU side could not be sampled (perf not allowed
+  on a cluster), the GPU trace and the heap were dropped with it; they now reach the step's
+  card, and the map draws the GPU's bars alone. The hardware counters (IPC, miss rates,
+  DRAM traffic against its peak) and one kernel's throughput and what bounds it
+  (`level='counters'` and `'kernel'`) were never sent; they now show in the step's card
+  and under "Where time goes".
 
 ## [1.13.0] — 2026-11-03
 

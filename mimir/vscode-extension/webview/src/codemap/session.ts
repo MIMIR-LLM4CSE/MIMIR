@@ -19,6 +19,16 @@ export interface GpuProfile {
 export interface MemoryProfile {
   tool: string; peak_mb?: number; files?: Record<string, number>; unavailable?: string; note?: string;
 }
+/** The run's hardware counters: instructions per cycle, miss rates, DRAM traffic. */
+export interface Counters {
+  tool?: string; ipc?: number; cache_miss_rate?: number; branch_miss_rate?: number; llc_miss_rate?: number;
+  dram_gbytes_per_s?: number; dram_source?: string; bandwidth_fraction?: number; unavailable?: string;
+}
+/** One kernel's counters, in % of the GPU's peak, and what limits it. */
+export interface KernelDetail {
+  tool?: string; name?: string; sm_pct?: number; dram_pct?: number; occupancy_pct?: number; bound?: string;
+  unavailable?: string;
+}
 /** A function's time: its own, and with what it calls; the line to open it at, when known. */
 export interface FnTime { self: number; total: number; line?: number }
 export interface Profile {
@@ -28,6 +38,8 @@ export interface Profile {
   functions?: Record<string, FnTime>;
   gpu?: GpuProfile;
   memory?: MemoryProfile;
+  counters?: Counters;
+  kernel_detail?: KernelDetail;
 }
 export interface Step {
   n: number; run_id: string; axis: string; verdict: string;
@@ -63,6 +75,11 @@ export interface TimeView {
   gpu: GpuProfile | null;
   /** The allocations at the heap's peak, when the profile shown has them. */
   memory: MemoryProfile | null;
+  /** The hardware counters and one kernel's, when the profile shown took them. */
+  counters: Counters | null;
+  kernel: KernelDetail | null;
+  /** Why the CPU side was not sampled, when only the GPU was traced. */
+  cpuUnavailable?: string;
   from: string;
   tool: string;
   note?: string;
@@ -71,6 +88,9 @@ export interface TimeView {
 const usable = (p?: Profile | null): p is Profile & { files: Record<string, number> } =>
   !!p && !p.unavailable && !!p.files;
 const traced = (g?: GpuProfile | null): g is GpuProfile => !!g && !g.unavailable;
+/** A profile the map can draw: its CPU side, else its GPU's alone. */
+const drawable = (p?: Profile | null): p is Profile => usable(p) || (!!p && traced(p.gpu));
+const taken = <T extends { unavailable?: string }>(x?: T | null): T | null => (x && !x.unavailable ? x : null);
 
 /** The profile of step *k* if it has one, else of the last kept step before it, else of
  *  the baseline; with "This step" and a kept step, also the profile it improved on. */
@@ -79,18 +99,21 @@ export function timeAt(session: Session, k: number, scope: Scope): TimeView | nu
     { label: "the baseline", p: session.baseline.profile, kept: true, n: 0 },
     ...session.steps.map((st) => ({ label: "#" + st.n, p: st.profile, kept: st.verdict === "accept", n: st.n })),
   ];
-  const own = chain.find((c) => c.n === k && usable(c.p));
-  const prior = chain.filter((c) => c.n < k && c.kept && usable(c.p)).pop();
+  const own = chain.find((c) => c.n === k && drawable(c.p));
+  const prior = chain.filter((c) => c.n < k && c.kept && drawable(c.p)).pop();
   const shown = own ?? prior;
-  if (!shown || !usable(shown.p)) return null;
-  const compared = scope === "step" && own && own.kept && k > 0 && prior && usable(prior.p) ? prior.p : null;
+  if (!shown || !drawable(shown.p)) return null;
+  const compared = scope === "step" && own && own.kept && k > 0 && prior && drawable(prior.p) ? prior.p : null;
   const gpu = traced(shown.p.gpu) ? shown.p.gpu : null;
+  const cpu = usable(shown.p);
   return {
-    files: shown.p.files, before: compared ? compared.files : null,
-    functions: shown.p.functions ?? null, functionsBefore: compared ? compared.functions ?? null : null,
+    files: cpu ? shown.p.files ?? {} : {}, before: cpu && usable(compared) ? compared.files : null,
+    functions: cpu ? shown.p.functions ?? null : null,
+    functionsBefore: cpu && usable(compared) ? compared.functions ?? null : null,
     gpuFiles: gpu ? gpu.files ?? {} : null,
     gpuBefore: gpu && compared && traced(compared.gpu) ? compared.gpu.files ?? {} : null,
-    gpu, memory: shown.p.memory && !shown.p.memory.unavailable ? shown.p.memory : null,
+    gpu, memory: taken(shown.p.memory), counters: taken(shown.p.counters), kernel: taken(shown.p.kernel_detail),
+    ...(cpu ? {} : { cpuUnavailable: shown.p.unavailable }),
     from: shown.label, tool: shown.p.tool, note: shown.p.note,
   };
 }
@@ -254,9 +277,11 @@ function timeBlock(session: Session, s: Step, fileRow: Row): string {
       + (p.outside ? '<div class="empty">' + pctOf(p.outside) + " outside the workspace</div>" : "")
       + (p.note ? '<div class="empty">' + esc(p.note) + "</div>" : "")
       + functionsBlock(p.functions, fileRow, 5)
-      + gpuBlock(p.gpu) + memoryBlock(p.memory, fileRow);
+      + sectionsBlock(p, fileRow);
   }
-  if (p && p.unavailable) return '<div class="cap">Not profiled</div><div class="empty">' + esc(p.unavailable) + "</div>";
+  if (p && p.unavailable) {
+    return '<div class="cap">CPU not profiled</div><div class="empty">' + esc(p.unavailable) + "</div>" + sectionsBlock(p, fileRow);
+  }
   if (latest(session, s)) {
     return '<button class="open" data-prompt="' + esc(profilePrompt(session.combined ? s.proxy : undefined))
       + '">Profile the code as it is now</button>';
@@ -308,6 +333,41 @@ export function gpuBlock(g?: GpuProfile | null): string {
     + '<div class="list">' + kernels.map(([name, k]) => '<div class="row"><span title="' + esc(name) + '">'
       + esc(kernelName(name)) + "</span><span>" + pctOf(k.share) + "</span></div>").join("") + "</div>"
     + (g.note ? '<div class="empty">' + esc(g.note) + "</div>" : "");
+}
+
+/** What a profile took besides the CPU's samples: its GPU, its heap, its counters, a kernel's. */
+function sectionsBlock(p: Profile, fileRow: Row): string {
+  return gpuBlock(p.gpu) + memoryBlock(p.memory, fileRow) + countersBlock(p.counters) + kernelBlock(p.kernel_detail);
+}
+
+/** The run's hardware counters, or why there are none. */
+export function countersBlock(c?: Counters | null): string {
+  if (!c) return "";
+  if (c.unavailable) return '<div class="cap">No hardware counters</div><div class="empty">' + esc(c.unavailable) + "</div>";
+  const rate = (v?: number) => (v === undefined ? "" : (v * 100).toFixed(v < 0.1 ? 1 : 0) + "%");
+  const parts = [
+    c.ipc !== undefined ? "IPC " + c.ipc.toFixed(2) : "",
+    c.cache_miss_rate !== undefined ? "cache misses " + rate(c.cache_miss_rate) : "",
+    c.llc_miss_rate !== undefined ? "LLC misses " + rate(c.llc_miss_rate) : "",
+    c.branch_miss_rate !== undefined ? "branch misses " + rate(c.branch_miss_rate) : "",
+  ].filter(Boolean);
+  const dram = c.dram_gbytes_per_s !== undefined
+    ? "DRAM " + c.dram_gbytes_per_s.toFixed(1) + " GB/s"
+      + (c.bandwidth_fraction !== undefined ? " (" + rate(c.bandwidth_fraction) + " of peak)" : "") : "";
+  return '<div class="cap">Hardware counters (' + esc(c.tool ?? "perf stat") + ")</div>"
+    + (parts.length ? '<div class="empty">' + esc(parts.join(" · ")) + "</div>" : "")
+    + (dram ? '<div class="empty"' + (c.dram_source ? ' title="' + esc(c.dram_source) + '"' : "") + ">" + esc(dram) + "</div>" : "");
+}
+
+/** One kernel's throughput and what limits it, or why it could not be profiled. */
+export function kernelBlock(k?: KernelDetail | null): string {
+  if (!k) return "";
+  if (k.unavailable) return '<div class="cap">Kernel not profiled</div><div class="empty">' + esc(k.unavailable) + "</div>";
+  const pct = (l: string, v?: number) => (v === undefined ? "" : l + " " + v.toFixed(0) + "%");
+  const parts = [pct("compute", k.sm_pct), pct("memory", k.dram_pct), pct("occupancy", k.occupancy_pct)].filter(Boolean);
+  return '<div class="cap">Kernel ' + esc(kernelName(k.name ?? "")) + (k.tool ? " (" + esc(k.tool) + ")" : "") + "</div>"
+    + (parts.length ? '<div class="empty">' + esc(parts.join(" · ")) + " of peak</div>" : "")
+    + (k.bound && k.bound !== "unknown" ? '<div class="empty">' + esc(k.bound) + "-bound</div>" : "");
 }
 
 /** Where the heap's peak was allocated, or why it could not be profiled. */

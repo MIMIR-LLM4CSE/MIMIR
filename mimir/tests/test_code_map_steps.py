@@ -139,6 +139,34 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(kept["memory"], {"tool": "massif", "peak_mb": 900.0, "files": {"pkg/a.py": 0.9}})
         self.assertIsNone(self.session["steps"][1]["profile"])
 
+    def _profile_r2(self, prof: dict) -> None:
+        runs = code_map_steps.opt_session_runs_dir("solver")
+        os.makedirs(os.path.join(runs, "r2", "profile"), exist_ok=True)
+        with open(os.path.join(runs, "r2", "profile", "profile.json"), "w") as fh:
+            json.dump(prof, fh)
+
+    def test_a_profile_taken_after_the_verdict_reaches_the_map(self) -> None:
+        """op='profile' files its profile with the run and leaves the ledger as it was."""
+        self._profile_r2({"tool": "py-spy", "samples": 10, "files": {"pkg/a.py": 1.0}})
+        self.assertEqual(code_map_steps.session()["steps"][1]["profile"]["files"], {"pkg/a.py": 0.9})
+
+    def test_the_gpu_and_the_heap_ride_along_when_the_cpu_was_not_sampled(self) -> None:
+        self._profile_r2({"tool": "", "unavailable": "perf is not allowed here",
+                          "gpu": {"tool": "nsys", "busy": 0.5, "files": {"pkg/a.py": 0.5}},
+                          "memory": {"tool": "heaptrack", "peak_mb": 10.0, "files": {"pkg/a.py": 1.0}}})
+        prof = code_map_steps.session()["steps"][1]["profile"]
+        self.assertEqual(prof["unavailable"], "perf is not allowed here")
+        self.assertEqual((prof["gpu"]["busy"], prof["gpu"]["files"]), (0.45, {"pkg/a.py": 0.45}))
+        self.assertEqual(prof["memory"]["files"], {"pkg/a.py": 1.0})
+
+    def test_counters_and_a_kernel_s_detail_reach_the_map_unscaled(self) -> None:
+        counters = {"tool": "perf stat", "ipc": 0.8, "cache_miss_rate": 0.3, "dram_gbytes_per_s": 12.5}
+        kernel = {"tool": "ncu", "name": "k", "sm_pct": 20.0, "dram_pct": 85.0, "bound": "memory"}
+        self._profile_r2({"tool": "perf", "samples": 10, "files": {"pkg/a.py": 1.0},
+                          "counters": counters, "kernel_detail": kernel})
+        prof = code_map_steps.session()["steps"][1]["profile"]
+        self.assertEqual((prof["counters"], prof["kernel_detail"]), (counters, kernel))
+
     def test_a_step_carries_its_peak_memory_beside_its_incumbent_s(self) -> None:
         step = self.session["steps"][0]
         self.assertEqual((step["peak_rss_mb"], step["incumbent_peak_rss_mb"]), (900.0, 600.0))

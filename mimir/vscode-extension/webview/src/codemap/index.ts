@@ -3,7 +3,7 @@
 // what the server answered (`shared.code_map`) and reads nothing else.
 
 import { STYLE } from "./style";
-import { edgeKey, fnParts, functionsBlock, gpuBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, topFunctions,
+import { countersBlock, edgeKey, fnParts, functionsBlock, gpuBlock, kernelBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, topFunctions,
   type Overlay, type Scope, type Session, type TimeView } from "./session";
 import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
   type Draft, type Request, type Sent, type Target } from "./request";
@@ -408,11 +408,11 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     const langs = [...new Set(files.map((f) => LANG[f.lang] ?? f.lang))].join(" ");
     svg("text", { class: "msub", x: 9, y: 33 }, g).textContent = `${files.length} files · ${(lines / 1000).toFixed(1)}k · ${langs}`;
     if (time) {
-      // With a GPU traced, its bar sits under the CPU's, on the same scale.
+      // With a GPU traced, its bar sits under the CPU's, on the same scale; alone when the CPU was not sampled.
       const gpuNow = time.gpuFiles ? moduleTime(v, id, time.gpuFiles) : 0;
-      const both = !!time.gpuFiles;
-      timeBar(g, BW, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 37 : 40, "");
-      if (both) timeBar(g, BW, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, 45, "gpu");
+      const cpu = !time.cpuUnavailable, both = cpu && !!time.gpuFiles;
+      if (cpu) timeBar(g, BW, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 37 : 40, "");
+      if (time.gpuFiles) timeBar(g, BW, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, both ? 45 : 40, "gpu");
     }
     if (fns) functionLines(g, BW, fns, new Set(files.map((f) => f.id)), scale);
     let dx = BW - 9;
@@ -537,11 +537,14 @@ function time(): TimeView | null {
 /** Where the time goes over the whole code, from the profile shown. */
 function timeSection(t: TimeView): string {
   const top = Object.entries(t.files).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  return section("time", "Where time goes", list(top.map(([f, v]) => fileRow(f, pctOf(v))))
-    + '<div class="empty">Share of the baseline\'s time, from the profile of ' + esc(t.from)
-    + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>"
+  const cpu = t.cpuUnavailable
+    ? '<div class="empty">CPU not sampled in the profile of ' + esc(t.from) + ": " + esc(t.cpuUnavailable) + "</div>"
+    : list(top.map(([f, v]) => fileRow(f, pctOf(v))))
+      + '<div class="empty">Share of the baseline\'s time, from the profile of ' + esc(t.from)
+      + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>";
+  return section("time", "Where time goes", cpu
     + functionsBlock(t.functions, fileRow, 8)
-    + gpuBlock(t.gpu) + memoryBlock(t.memory, fileRow));
+    + gpuBlock(t.gpu) + memoryBlock(t.memory, fileRow) + countersBlock(t.counters) + kernelBlock(t.kernel));
 }
 
 /** A component: where it stacks, what the build says it links, its modules, and the
@@ -572,7 +575,7 @@ function componentDetail(m: CodeMap, v: View, id: string): string {
     + line("tier", String(c.tier))
     + line("files", files.length + " · " + files.reduce((n, f) => n + f.lines, 0).toLocaleString("en") + " lines")
     + (c.declared.length ? line("build links", esc(c.declared.map(base).join(", "))) : "")
-    + (t ? line("time", pctOf(mods.reduce((n, x) => n + modTime(x), 0)) + " of the baseline's") : "")
+    + (t && !t.cpuUnavailable ? line("time", pctOf(mods.reduce((n, x) => n + modTime(x), 0)) + " of the baseline's") : "")
     + (t?.gpuFiles ? line("GPU time", pctOf(mods.reduce((n, x) => n + moduleTime(v, x, t.gpuFiles!), 0)) + " of the baseline's") : "")
     + (t?.memory?.files ? line("memory", pctOf(mods.reduce((n, x) => n + moduleTime(v, x, t.memory!.files!), 0)) + " of the heap's peak") : "")
     + (breaks.length ? line("rule breaks", String(breaks.length), "is-danger") : "")
@@ -599,7 +602,7 @@ function moduleDetail(m: CodeMap, v: View, id: string): string {
   const cycle = v.cycleOf.has(id)
     ? line("cycle", "with " + (m.cycles[v.cycleOf.get(id)!].length - 1) + " modules", "is-cycle") : "";
   return BACK + section("sel", base(id), '<div class="path">' + esc(id) + "</div>" + cycle
-    + (t ? line("time", pctOf(moduleTime(v, id, t.files)) + " of the baseline's, profile of " + esc(t.from)) : "")
+    + (t && !t.cpuUnavailable ? line("time", pctOf(moduleTime(v, id, t.files)) + " of the baseline's, profile of " + esc(t.from)) : "")
     + (t?.gpuFiles ? line("GPU time", pctOf(moduleTime(v, id, t.gpuFiles)) + " of the baseline's") : "")
     + (t?.memory?.files ? line("memory", pctOf(moduleTime(v, id, t.memory.files)) + " of the heap's peak") : "")
     + '<div class="cap">Files</div>' + list(files.map((f) => fileRow(f.id, t && t.files[f.id] ? pctOf(t.files[f.id]) : f.lines + " l")))
@@ -859,9 +862,11 @@ function renderLegend(): void {
 function timeLegend(): string {
   const t = time();
   if (!t) return "";
-  return '<span><i class="sw bar"></i>share of the baseline\'s time, profile of ' + esc(t.from) + " (" + esc(t.tool) + ")"
-    + (t.before ? ", hatched where this step saved it" : "") + "</span>"
-    + (t.gpu ? '<span><i class="sw bar gpu"></i>its GPU kernels (' + esc(t.gpu.tool) + ")</span>" : "")
+  return (t.cpuUnavailable ? "" : '<span><i class="sw bar"></i>share of the baseline\'s time, profile of ' + esc(t.from)
+    + " (" + esc(t.tool) + ")" + (t.before ? ", hatched where this step saved it" : "") + "</span>")
+    + (t.gpu ? '<span><i class="sw bar gpu"></i>' + (t.cpuUnavailable ? "GPU kernels' share of the baseline's time, profile of "
+      + esc(t.from) + " (" + esc(t.gpu.tool) + ")" + (t.gpuBefore ? ", hatched where this step saved it" : "")
+      : "its GPU kernels (" + esc(t.gpu.tool) + ")") + "</span>" : "")
     + (showFns && t.functions ? "<span>under the bars: each module's costliest functions, their own time</span>" : "");
 }
 
