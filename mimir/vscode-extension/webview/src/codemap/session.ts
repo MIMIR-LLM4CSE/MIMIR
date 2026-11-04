@@ -83,6 +83,8 @@ export interface TimeView {
   from: string;
   tool: string;
   note?: string;
+  /** How many samples, of which case, and the share spent outside the workspace. */
+  samples?: number; case?: string; outside?: number;
 }
 
 const usable = (p?: Profile | null): p is Profile & { files: Record<string, number> } =>
@@ -115,6 +117,7 @@ export function timeAt(session: Session, k: number, scope: Scope): TimeView | nu
     gpu, memory: taken(shown.p.memory), counters: taken(shown.p.counters), kernel: taken(shown.p.kernel_detail),
     ...(cpu ? {} : { cpuUnavailable: shown.p.unavailable }),
     from: shown.label, tool: shown.p.tool, note: shown.p.note,
+    samples: shown.p.samples, case: shown.p.case, outside: shown.p.outside,
   };
 }
 export type Scope = "step" | "all";
@@ -266,31 +269,56 @@ function latest(session: Session, s: Step): boolean {
   return !session.steps.some((x) => x.n > s.n && x.proxy === s.proxy);
 }
 
-/** What a step's card says of its time: its costliest files, why it has no profile, or
+/** What a step's card says of its time: nothing when its own profile is drawn, since
+ *  "Where time goes" shows it below; why it has none, with what was taken anyway; or
  *  (the latest step only: the code as it is now) a button that asks for one. */
 function timeBlock(session: Session, s: Step, fileRow: Row): string {
   const p = s.profile;
-  if (usable(p)) {
-    const top = Object.entries(p.files).slice(0, 5);
-    return '<div class="cap">Where its time goes (' + esc(p.tool) + ")</div>"
-      + '<div class="list">' + top.map(([f, v]) => fileRow(f, pctOf(v))).join("") + "</div>"
-      + (p.outside ? '<div class="empty">' + pctOf(p.outside) + " outside the workspace</div>" : "")
-      + (p.note ? '<div class="empty">' + esc(p.note) + "</div>" : "")
-      + functionsBlock(p.functions, fileRow, 5)
-      + sectionsBlock(p, fileRow);
-  }
   if (p && p.unavailable) {
-    return '<div class="cap">CPU not profiled</div><div class="empty">' + esc(p.unavailable) + "</div>" + sectionsBlock(p, fileRow);
+    if (traced(p.gpu)) return "";
+    return cap("Not profiled", p.tool) + note(p.unavailable) + sectionsBlock(p, fileRow);
   }
+  if (usable(p)) return "";
   if (latest(session, s)) {
     return '<button class="open" data-prompt="' + esc(profilePrompt(session.combined ? s.proxy : undefined))
       + '">Profile the code as it is now</button>';
   }
-  return '<div class="empty">Not profiled. Only the code as it is now can be profiled.</div>';
+  return note("Not profiled. Only the code as it is now can be profiled.");
 }
 
+/** How a row is drawn beyond its name: a bar behind it (*w*, a fraction of the list's
+ *  largest) in the colour of *cls*, and a dim *sub* after its name. */
+export interface RowExtra { w?: number; cls?: "gpu" | "mem"; sub?: string }
 /** A file in a list: *label* (else the file's name), *right* beside it, opened at *line*. */
-export type Row = (id: string, right: string, line?: number, label?: string, tip?: string) => string;
+export type Row = (id: string, right: string, line?: number, label?: string, tip?: string, extra?: RowExtra) => string;
+
+/** A list's caption, with a dim *hint* after it. */
+export function cap(title: string, hint?: string): string {
+  return '<div class="cap">' + esc(title) + (hint ? ' <span class="hint">' + esc(hint) + "</span>" : "") + "</div>";
+}
+/** A remark set apart from the figures. */
+export function note(text?: string): string {
+  return text ? '<div class="note">' + esc(text) + "</div>" : "";
+}
+/** A figure and its label on one line. */
+function kv(label: string, value: string): string {
+  return '<div class="line kv"><span>' + esc(label) + "</span><span>" + esc(value) + "</span></div>";
+}
+/** A row that opens nothing: *label*, *right*, a bar behind it of *w*. */
+function meterRow(label: string, right: string, w: number, cls: string, tip = label): string {
+  return '<div class="row meter ' + cls + '" style="--w:' + barWidth(w) + '"><span class="nm" title="' + esc(tip) + '">'
+    + esc(label) + "</span><span>" + esc(right) + "</span></div>";
+}
+/** A bar's width in CSS, from a fraction. */
+export function barWidth(w: number): string {
+  return (Math.max(0, Math.min(1, w)) * 100).toFixed(1) + "%";
+}
+/** A fraction of a peak as a gauge: its label, its figure, and how full it is. */
+function gauge(label: string, frac: number, right: string, warn = false): string {
+  return '<div class="gauge' + (warn ? " is-warn" : "") + '"><div class="gl"><span>' + esc(label) + "</span><b>" + esc(right)
+    + '</b></div><div class="gt"><i style="width:' + barWidth(frac) + '"></i></div></div>';
+}
+const basename = (f: string) => f.slice(f.lastIndexOf("/") + 1);
 
 /** A function's key split at its first `::`: no path has one, a Fortran name keeps its own. */
 export function fnParts(key: string): { file: string; name: string } {
@@ -305,34 +333,45 @@ export function topFunctions(fns: Record<string, FnTime> | null | undefined, n: 
     .sort((a, b) => b[1].self - a[1].self || b[1].total - a[1].total).slice(0, n);
 }
 
-/** The costliest functions as rows: self time beside them, the total in their tooltip. */
+/** The costliest functions as rows: self time beside them, their file after their name,
+ *  the total in their tooltip. */
 export function functionsBlock(fns: Record<string, FnTime> | null | undefined, row: Row, n: number,
                                within?: (file: string) => boolean): string {
   const top = topFunctions(fns, n, within).filter(([, v]) => v.self > 0 || v.total > 0);
   if (!top.length) return "";
-  return '<div class="cap">Functions, own time</div><div class="list">' + top.map(([k, v]) => {
+  const max = Math.max(...top.map(([, v]) => v.self));
+  // One file's functions need not name it again.
+  const files = new Set(top.map(([k]) => fnParts(k).file));
+  return cap("Functions", "own time") + '<div class="list">' + top.map(([k, v]) => {
     const { file, name } = fnParts(k);
     return row(file, pctOf(v.self), v.line, name, name + " in " + file + ": " + pctOf(v.self) + " own, "
-      + pctOf(v.total) + " with what it calls");
+      + pctOf(v.total) + " with what it calls", { w: max ? v.self / max : 0, ...(files.size > 1 ? { sub: basename(file) } : {}) });
   }).join("") + "</div>";
 }
 
-/** What a step's card says of its GPU: the costliest kernels, copies and idle time, or
- *  why the GPU could not be traced. */
+/** The GPU: kernels, copies and idle time as one bar, its memory, its costliest kernels;
+ *  or why it could not be traced. */
 export function gpuBlock(g?: GpuProfile | null): string {
   if (!g) return "";
-  if (g.unavailable) return '<div class="cap">GPU not traced</div><div class="empty">' + esc(g.unavailable) + "</div>";
+  if (g.unavailable) return cap("GPU not traced", g.tool) + note(g.unavailable);
   const kernels = Object.entries(g.kernels ?? {}).slice(0, 5);
   const copies = Object.values(g.memcpy ?? {}).reduce((n, v) => n + v, 0);
-  const moved = Object.entries(g.memcpy_mb ?? {}).map(([dir, v]) => dir + " " + megabytes(v)).join(", ");
-  return '<div class="cap">On the GPU (' + esc(g.tool) + ")</div>"
-    + '<div class="empty">kernels ' + pctOf(g.busy ?? 0) + " · copies " + pctOf(copies) + " · idle " + pctOf(g.idle ?? 0) + "</div>"
-    + (g.peak_device_mb !== undefined || moved ? '<div class="empty">'
-      + (g.peak_device_mb !== undefined ? "peak device memory " + megabytes(g.peak_device_mb) : "")
-      + (g.peak_device_mb !== undefined && moved ? " · " : "") + (moved ? "copied " + esc(moved) : "") + "</div>" : "")
-    + '<div class="list">' + kernels.map(([name, k]) => '<div class="row"><span title="' + esc(name) + '">'
-      + esc(kernelName(name)) + "</span><span>" + pctOf(k.share) + "</span></div>").join("") + "</div>"
-    + (g.note ? '<div class="empty">' + esc(g.note) + "</div>" : "");
+  const parts: [string, string, number][] = [["k", "kernels", g.busy ?? 0], ["c", "copies", copies], ["i", "idle", g.idle ?? 0]];
+  const whole = parts.reduce((n, [, , v]) => n + v, 0);
+  const stack = whole ? '<div class="stack" role="img" aria-label="'
+      + esc(parts.map(([, l, v]) => l + " " + pctOf(v)).join(", ")) + '">'
+      + parts.filter(([, , v]) => v > 0).map(([c, l, v]) => '<i class="' + c + '" style="width:' + barWidth(v / whole)
+        + '" title="' + esc(l + " " + pctOf(v)) + '"></i>').join("") + "</div>"
+      + '<div class="keys">' + parts.map(([c, l, v]) => '<span><i class="' + c + '"></i>' + esc(l) + " <b>" + pctOf(v) + "</b></span>").join("")
+      + "</div>" : "";
+  const moved = Object.entries(g.memcpy_mb ?? {}).map(([dir, v]) => dir + " " + megabytes(v)).join(" · ");
+  const max = Math.max(0, ...kernels.map(([, k]) => k.share));
+  return cap("GPU", g.tool + " · share of the baseline's time") + stack
+    + (g.peak_device_mb !== undefined ? kv("device peak", megabytes(g.peak_device_mb)) : "")
+    + (moved ? kv("copied", moved) : "")
+    + (kernels.length ? '<div class="list">' + kernels.map(([name, k]) => meterRow(kernelName(name), pctOf(k.share), max ? k.share / max : 0, "gpu",
+      name + (k.calls ? " · " + k.calls.toLocaleString("en") + " calls" : ""))).join("") + "</div>" : "")
+    + note(g.note);
 }
 
 /** What a profile took besides the CPU's samples: its GPU, its heap, its counters, a kernel's. */
@@ -340,44 +379,48 @@ function sectionsBlock(p: Profile, fileRow: Row): string {
   return gpuBlock(p.gpu) + memoryBlock(p.memory, fileRow) + countersBlock(p.counters) + kernelBlock(p.kernel_detail);
 }
 
-/** The run's hardware counters, or why there are none. */
+/** The run's hardware counters as tiles, its DRAM traffic against its peak; or why there are none. */
 export function countersBlock(c?: Counters | null): string {
   if (!c) return "";
-  if (c.unavailable) return '<div class="cap">No hardware counters</div><div class="empty">' + esc(c.unavailable) + "</div>";
-  const rate = (v?: number) => (v === undefined ? "" : (v * 100).toFixed(v < 0.1 ? 1 : 0) + "%");
-  const parts = [
-    c.ipc !== undefined ? "IPC " + c.ipc.toFixed(2) : "",
-    c.cache_miss_rate !== undefined ? "cache misses " + rate(c.cache_miss_rate) : "",
-    c.llc_miss_rate !== undefined ? "LLC misses " + rate(c.llc_miss_rate) : "",
-    c.branch_miss_rate !== undefined ? "branch misses " + rate(c.branch_miss_rate) : "",
-  ].filter(Boolean);
-  const dram = c.dram_gbytes_per_s !== undefined
-    ? "DRAM " + c.dram_gbytes_per_s.toFixed(1) + " GB/s"
-      + (c.bandwidth_fraction !== undefined ? " (" + rate(c.bandwidth_fraction) + " of peak)" : "") : "";
-  return '<div class="cap">Hardware counters (' + esc(c.tool ?? "perf stat") + ")</div>"
-    + (parts.length ? '<div class="empty">' + esc(parts.join(" · ")) + "</div>" : "")
-    + (dram ? '<div class="empty"' + (c.dram_source ? ' title="' + esc(c.dram_source) + '"' : "") + ">" + esc(dram) + "</div>" : "");
+  if (c.unavailable) return cap("No hardware counters") + note(c.unavailable);
+  const rate = (v: number) => (v * 100).toFixed(v < 0.1 ? 1 : 0) + "%";
+  const tiles: [string, string, string][] = [];
+  if (c.ipc !== undefined) tiles.push(["IPC", c.ipc.toFixed(2), "instructions per cycle"]);
+  if (c.cache_miss_rate !== undefined) tiles.push(["cache misses", rate(c.cache_miss_rate), "of cache references"]);
+  if (c.llc_miss_rate !== undefined) tiles.push(["LLC misses", rate(c.llc_miss_rate), "of last-level cache loads"]);
+  if (c.branch_miss_rate !== undefined) tiles.push(["branch misses", rate(c.branch_miss_rate), "of branches"]);
+  const dram = c.dram_gbytes_per_s === undefined ? ""
+    : c.bandwidth_fraction !== undefined
+      ? gauge("DRAM bandwidth", c.bandwidth_fraction, c.dram_gbytes_per_s.toFixed(1) + " GB/s · " + rate(c.bandwidth_fraction) + " of peak",
+              c.bandwidth_fraction > 0.7)
+      : kv("DRAM traffic", c.dram_gbytes_per_s.toFixed(1) + " GB/s");
+  return cap("Hardware counters", c.tool ?? "perf stat")
+    + (tiles.length ? '<div class="tiles">' + tiles.map(([l, v, tip]) => '<div class="tile" title="' + esc(l + ": " + v + " " + tip)
+      + '"><b>' + esc(v) + "</b><span>" + esc(l) + "</span></div>").join("") + "</div>" : "")
+    + (dram ? (c.dram_source ? '<div title="' + esc(c.dram_source) + '">' + dram + "</div>" : dram) : "");
 }
 
-/** One kernel's throughput and what limits it, or why it could not be profiled. */
+/** One kernel's throughput against the GPU's peak and what limits it; or why it could not be profiled. */
 export function kernelBlock(k?: KernelDetail | null): string {
   if (!k) return "";
-  if (k.unavailable) return '<div class="cap">Kernel not profiled</div><div class="empty">' + esc(k.unavailable) + "</div>";
-  const pct = (l: string, v?: number) => (v === undefined ? "" : l + " " + v.toFixed(0) + "%");
-  const parts = [pct("compute", k.sm_pct), pct("memory", k.dram_pct), pct("occupancy", k.occupancy_pct)].filter(Boolean);
-  return '<div class="cap">Kernel ' + esc(kernelName(k.name ?? "")) + (k.tool ? " (" + esc(k.tool) + ")" : "") + "</div>"
-    + (parts.length ? '<div class="empty">' + esc(parts.join(" · ")) + " of peak</div>" : "")
-    + (k.bound && k.bound !== "unknown" ? '<div class="empty">' + esc(k.bound) + "-bound</div>" : "");
+  if (k.unavailable) return cap("Kernel not profiled") + note(k.unavailable);
+  const pct = (l: string, v?: number) => (v === undefined ? "" : gauge(l, v / 100, v.toFixed(0) + "%"));
+  return cap("One kernel", k.tool ?? "")
+    + '<div class="kname"><span title="' + esc(k.name ?? "") + '">' + esc(kernelName(k.name ?? "")) + "</span>"
+    + (k.bound && k.bound !== "unknown" ? '<span class="bound ' + esc(k.bound) + '">' + esc(k.bound) + "-bound</span>" : "") + "</div>"
+    + pct("compute", k.sm_pct) + pct("memory", k.dram_pct) + pct("occupancy", k.occupancy_pct);
 }
 
 /** Where the heap's peak was allocated, or why it could not be profiled. */
 export function memoryBlock(m: MemoryProfile | null | undefined, fileRow: Row): string {
   if (!m) return "";
-  if (m.unavailable) return '<div class="cap">Memory not profiled</div><div class="empty">' + esc(m.unavailable) + "</div>";
+  if (m.unavailable) return cap("Memory not profiled", m.tool) + note(m.unavailable);
   const top = Object.entries(m.files ?? {}).slice(0, 5);
-  return '<div class="cap">Where memory goes (' + esc(m.tool) + (m.peak_mb !== undefined ? ", heap peak " + megabytes(m.peak_mb) : "") + ")</div>"
-    + '<div class="list">' + top.map(([f, v]) => fileRow(f, pctOf(v))).join("") + "</div>"
-    + (m.note ? '<div class="empty">' + esc(m.note) + "</div>" : "");
+  const max = Math.max(0, ...top.map(([, v]) => v));
+  return cap("Heap at its peak", m.tool + (m.peak_mb !== undefined ? " · " + megabytes(m.peak_mb) : ""))
+    + '<div class="list">' + top.map(([f, v]) => fileRow(f, pctOf(v), undefined, undefined, undefined,
+      { w: max ? v / max : 0, cls: "mem" })).join("") + "</div>"
+    + note(m.note);
 }
 
 /** A size in MB, as the pane writes it. */

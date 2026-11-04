@@ -3,8 +3,8 @@
 // what the server answered (`shared.code_map`) and reads nothing else.
 
 import { STYLE } from "./style";
-import { countersBlock, edgeKey, fnParts, functionsBlock, gpuBlock, kernelBlock, memoryBlock, overlay, pctOf, stepCard, strip, timeAt, topFunctions,
-  type Overlay, type Scope, type Session, type TimeView } from "./session";
+import { barWidth, cap, countersBlock, edgeKey, fnParts, functionsBlock, gpuBlock, kernelBlock, memoryBlock, note, overlay, pctOf,
+  stepCard, strip, timeAt, topFunctions, type Overlay, type RowExtra, type Scope, type Session, type TimeView } from "./session";
 import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
   type Draft, type Request, type Sent, type Target } from "./request";
 import { formHtml, requestDetail, requestsSection } from "./requestView";
@@ -34,6 +34,8 @@ const vscode = acquireVsCodeApi();
 
 const NS = "http://www.w3.org/2000/svg";
 // A box is BW wide at least, and widens to fill the tab; it grows by FN_ROW a function listed.
+// A bar's figure takes PCT_W at the box's right, "<0.1%" included.
+const PCT_W = 46;
 const BW = 156, BH = 52, GX = 12, GY = 12, LW = 128, PAD = 14, BGAP = 30, FN_N = 3, FN_ROW = 14;
 const LANG: Record<string, string> = { python: "py", cython: "pyx", cpp: "c++", c: "c", fortran: "f", pyf: "f2py" };
 
@@ -202,9 +204,15 @@ interface ModEdge {
   cycle: boolean; deferred: boolean; added: number; removed: boolean;
 }
 
-/** How tall a box is: with its functions when they are shown and the profile has them. */
+/** How tall a box is: with its bars, and its functions when they are shown and the profile has them. */
 function boxHeight(): number {
-  return showFns && time()?.functions ? BH + 4 + FN_N * FN_ROW : BH;
+  const t = time();
+  return barsHeight(t) + (showFns && t?.functions ? 4 + FN_N * FN_ROW : 0);
+}
+
+/** How tall a box's head is: its name and size, and one bar or two. */
+function barsHeight(t: TimeView | null): number {
+  return t?.gpuFiles && !t.cpuUnavailable ? BH + 11 : BH;
 }
 
 function derive(m: CodeMap, COLS = cols, bw = boxW, bh = boxHeight()): View {
@@ -318,21 +326,23 @@ let scrollToBand = false;
 
 /** One time bar in a module's box *bw* wide: its share now, hatched where it was larger before. */
 function timeBar(g: SVGElement, bw: number, now: number, was: number | null, scale: number, y: number, cls: string): void {
-  const BW = bw, tw = BW - 52;
+  // The figure has a column of its own, right of the track: it never reaches the bar.
+  const BW = bw, tw = BW - 9 - PCT_W;
   svg("rect", { class: "track", x: 9, y, width: tw, height: 4, rx: 2 }, g);
   if (now > 0) svg("rect", { class: ("fill " + cls).trim(), x: 9, y, width: Math.max(2, (now / scale) * tw), height: 4, rx: 2 }, g);
   if (was !== null && was - now > 1e-6) {
     svg("rect", { x: 9 + (now / scale) * tw, y: y - 1, width: ((was - now) / scale) * tw, height: 6, fill: cls ? "url(#hatch-gpu)" : "url(#hatch)" }, g);
   }
-  svg("text", { class: ("pct " + cls).trim(), x: BW - 8, y: y + 5, "text-anchor": "end" }, g).textContent = (cls ? "GPU " : "") + pctOf(now);
+  svg("text", { class: ("pct " + cls).trim(), x: BW - 8, y: y + 4.5, "text-anchor": "end" }, g).textContent = pctOf(now);
 }
 
 /** A module's costliest functions under its bars: each name, a thin bar on the module's
  *  scale, and its own share of the baseline's time. */
-function functionLines(g: SVGElement, bw: number, fns: NonNullable<TimeView["functions"]>, files: Set<string>, scale: number): void {
-  const tw = 34, x0 = bw - 46 - tw;
+function functionLines(g: SVGElement, bw: number, fns: NonNullable<TimeView["functions"]>, files: Set<string>, scale: number,
+                       top: number): void {
+  const tw = 34, x0 = bw - PCT_W - tw;
   topFunctions(fns, FN_N, (f) => files.has(f)).filter(([, f]) => f.self > 0).forEach(([k, f], i) => {
-    const y = BH + 4 + i * FN_ROW;
+    const y = top + i * FN_ROW + 4;
     const name = fnParts(k).name;
     const t = svg("text", { class: "fn", x: 9, y: y + 3 }, g);
     t.textContent = name;
@@ -411,27 +421,34 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
       // With a GPU traced, its bar sits under the CPU's, on the same scale; alone when the CPU was not sampled.
       const gpuNow = time.gpuFiles ? moduleTime(v, id, time.gpuFiles) : 0;
       const cpu = !time.cpuUnavailable, both = cpu && !!time.gpuFiles;
-      if (cpu) timeBar(g, BW, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 37 : 40, "");
-      if (time.gpuFiles) timeBar(g, BW, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, both ? 45 : 40, "gpu");
+      if (cpu) timeBar(g, BW, moduleTime(v, id, time.files), time.before ? moduleTime(v, id, time.before) : null, scale, both ? 39 : 40, "");
+      if (time.gpuFiles) timeBar(g, BW, gpuNow, time.gpuBefore ? moduleTime(v, id, time.gpuBefore) : null, scale, both ? 50 : 40, "gpu");
     }
-    if (fns) functionLines(g, BW, fns, new Set(files.map((f) => f.id)), scale);
+    if (fns) functionLines(g, BW, fns, new Set(files.map((f) => f.id)), scale, barsHeight(time) + 4);
     let dx = BW - 9;
     if (map!.edges.some((e) => e.breaks && v.byId.get(e.from)!.module === id)) { svg("circle", { class: "dot-break", cx: dx, cy: 12, r: 4 }, g); dx -= 11; }
     if (v.cycleOf.has(id)) svg("circle", { class: "dot-cycle", cx: dx, cy: 12, r: 4 }, g);
+    // Pills ride the box's top edge, clear of its bars and functions: the steps that changed
+    // it on the right, its requests on the left, as many as the room between them allows.
+    let stepPills = 0;
     if (ov) {
       if (files.some((f) => ov.touchedNow.has(f.id))) g.classList.add("is-touched");
       else if (files.some((f) => ov.touched.has(f.id))) g.classList.add("is-touched-old");
       const ids = new Set(files.map((f) => f.id));
-      ov.steps.filter((st) => st.changed.some((f) => ids.has(f))).slice(-2).forEach((st, i) => {
+      const mine = ov.steps.filter((st) => st.changed.some((f) => ids.has(f))).slice(-2);
+      stepPills = mine.length;
+      mine.forEach((st, i) => {
         const pl = svg("g", { class: "pill", transform: `translate(${BW - 52 - i * 54},-8)` }, g);
         svg("rect", { class: st.verdict === "accept" ? "ok" : "no", width: 48, height: 15, rx: 7.5 }, pl);
         svg("text", { x: 24, y: 11, "text-anchor": "middle" }, pl).textContent = "#" + st.n + " " + (st.delta === null ? "" : signedShort(st.delta));
         svg("title", {}, pl).textContent = "#" + st.n + " " + st.axis;
       });
     }
-    // The requests on this module, latest last, as pills along its bottom edge.
-    requests.filter((r) => r.status !== "dropped" && requestOn(r, v, id, files)).slice(-3).forEach((r, i, all) => {
-      const pl = svg("g", { class: "rq-pill st-" + r.status, transform: `translate(${BW - 40 - (all.length - 1 - i) * 42},${BH - 8})` }, g);
+    const room = (stepPills ? BW - 52 - (stepPills - 1) * 54 - 6 : BW - 9) - 9;
+    const fit = Math.max(0, Math.min(3, Math.floor((room + 6) / 42)));
+    const asked = requests.filter((r) => r.status !== "dropped" && requestOn(r, v, id, files));
+    asked.slice(asked.length - Math.min(fit, asked.length)).forEach((r, i) => {
+      const pl = svg("g", { class: "rq-pill st-" + r.status, transform: `translate(${9 + i * 42},-8)` }, g);
       svg("rect", { width: 36, height: 15, rx: 7.5 }, pl);
       svg("text", { x: 18, y: 11, "text-anchor": "middle" }, pl).textContent = r.id;
       svg("title", {}, pl).textContent = r.id + " · " + r.status + " · " + r.idea;
@@ -474,11 +491,14 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
 
 /** A file in a list, or a function (*label*) in it: a click shows the file on the map, a
  *  double-click opens it at *line*. */
-function fileRow(id: string, right: string, line?: number, label?: string, tip?: string): string {
+function fileRow(id: string, right: string, line?: number, label?: string, tip?: string, extra: RowExtra = {}): string {
   const how = "click: show on the map · double-click: open" + (line ? " at line " + line : "");
-  return '<div class="row"><button class="go" data-file="' + esc(id) + '" data-line="' + (line ?? "")
+  const meter = extra.w !== undefined;
+  return '<div class="row' + (extra.sub ? " two" : "") + (meter ? " meter" + (extra.cls ? " " + extra.cls : "") + '" style="--w:' + barWidth(extra.w!) : "")
+    + '"><button class="go" data-file="' + esc(id) + '" data-line="' + (line ?? "")
     + (label ? '" data-fn="' + esc(label) : "")
-    + '" title="' + esc((tip ?? id) + "\n" + how) + '">' + esc(label ?? base(id)) + "</button><span>" + esc(right) + "</span></div>";
+    + '" title="' + esc((tip ?? id) + "\n" + how) + '"><span class="nm">' + esc(label ?? base(id)) + "</span>"
+    + (extra.sub ? '<span class="sub">' + esc(extra.sub) + "</span>" : "") + "</button><span>" + esc(right) + "</span></div>";
 }
 /** A module in a list, selecting it in the map. */
 function moduleRow(id: string, right: string | number = "", label = id): string {
@@ -534,16 +554,21 @@ function time(): TimeView | null {
   return session ? timeAt(session, step, scope) : null;
 }
 
-/** Where the time goes over the whole code, from the profile shown. */
+/** Where the time goes over the whole code, from the profile shown: whose profile it is,
+ *  then each side it took, its costliest first, a bar behind each on the list's largest. */
 function timeSection(t: TimeView): string {
+  const meta = ["profile of " + t.from, t.cpuUnavailable ? "" : t.tool,
+    t.samples ? t.samples.toLocaleString("en") + " samples" : "", t.case ? "case " + t.case : ""].filter(Boolean);
   const top = Object.entries(t.files).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const max = top.length ? top[0][1] : 0;
   const cpu = t.cpuUnavailable
-    ? '<div class="empty">CPU not sampled in the profile of ' + esc(t.from) + ": " + esc(t.cpuUnavailable) + "</div>"
-    : list(top.map(([f, v]) => fileRow(f, pctOf(v))))
-      + '<div class="empty">Share of the baseline\'s time, from the profile of ' + esc(t.from)
-      + " (" + esc(t.tool) + ")." + (t.note ? " " + esc(t.note) : "") + "</div>";
-  return section("time", "Where time goes", cpu
-    + functionsBlock(t.functions, fileRow, 8)
+    ? cap("CPU not sampled") + note(t.cpuUnavailable)
+    : cap("CPU", "share of the baseline's time")
+      + list(top.map(([f, v]) => fileRow(f, pctOf(v), undefined, undefined, undefined, { w: max ? v / max : 0 })))
+      + (t.outside ? '<div class="empty">' + pctOf(t.outside) + " outside the workspace</div>" : "")
+      + note(t.note);
+  return section("time", "Where time goes", '<div class="meta-line">' + meta.map((x) => "<span>" + esc(x) + "</span>").join("") + "</div>" + cpu
+    + functionsBlock(t.functions, fileRow, 5)
     + gpuBlock(t.gpu) + memoryBlock(t.memory, fileRow) + countersBlock(t.counters) + kernelBlock(t.kernel));
 }
 

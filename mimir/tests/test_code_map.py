@@ -61,6 +61,11 @@ class PythonTests(unittest.TestCase):
         self.assertIn(("pkg/b.py", "pkg/a.py", "import", "exact"), edges)
         self.assertIn(("pkg/b.py", "pkg/c.py", "import", "exact"), edges)
 
+    def test_a_root_that_is_itself_a_package_is_mapped(self) -> None:
+        with _tree({"__init__.py": "", "a.py": "from . import b\n", "b.py": ""}) as root:
+            m = code_map.scan(root)
+        self.assertEqual(_edges(m), {("a.py", "b.py", "import", "exact")})
+
     def test_a_type_checking_import_is_no_dependency(self) -> None:
         self.assertNotIn("pkg/c.py", {e["to"] for e in self.m["edges"] if e["from"] == "pkg/a.py"})
 

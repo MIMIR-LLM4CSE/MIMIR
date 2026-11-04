@@ -16,6 +16,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **A profile reads at a glance on the code map.** "Where time goes" holds the profile
+  once, no longer repeated in the step's card: whose profile it is (tool, samples, case),
+  then each list with a bar under each row on its largest — files, functions (their file
+  under them when they span several), GPU kernels, the heap at its peak. The GPU's time is
+  one stacked bar of kernels, copies and idle; the hardware counters are tiles, the DRAM's
+  bandwidth a gauge that turns amber past 70 % of its peak; one kernel's compute, memory
+  and occupancy are gauges beside what bounds it. On the map, a bar's figure has a column
+  of its own, so it never runs into the bar; a box with a CPU and a GPU bar grows to hold
+  both; and the requests' pills ride the box's top edge beside the steps', no longer
+  covering its figures or its functions.
 - **A cluster can be forgotten from the Cluster drawer, and one that never answered is not
   listed.** Each remote scheduler's row offers **Forget this cluster**, which, once
   confirmed, drops it from the workspace's schedulers with its cached hardware and its node
@@ -53,6 +63,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **The code map no longer hangs on a workspace that is itself a Python package.** An
+  `__init__.py` at the root sent the module naming into an endless climb.
 - **An R&D request no longer stays "trying" on the map after its runs.** A run tagged
   `[R3.k]` settled with the ratchet's next step ("reset to the best, edit, run again"), so
   the agent went on optimising and never closed the request. Its results now carry

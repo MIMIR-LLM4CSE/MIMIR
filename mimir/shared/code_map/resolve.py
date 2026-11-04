@@ -36,7 +36,8 @@ def _python_names(files: dict[str, Facts]) -> dict[str, list[str]]:
             continue
         d, stem = posixpath.split(f)
         parts = [] if stem.startswith("__init__.") else [stem.rsplit(".", 1)[0]]
-        while d in packages:
+        # The root itself may be a package: its name is not in the paths, so the climb stops there.
+        while d and d in packages:
             d, pkg = posixpath.split(d)
             parts.insert(0, pkg)
         if parts:
