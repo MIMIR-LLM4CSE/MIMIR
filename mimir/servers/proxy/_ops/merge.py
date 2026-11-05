@@ -1,15 +1,10 @@
 """proxy_merge ops: plan, start, next, resolved, pause, drop, report.
 
-A merge is git's: in a copy of its own, each proxy's kept patch is picked as a commit
-(``merge_sources.kept_commit``), a three-way merge whose base is that proxy's own
-baseline. A clean pick goes on; a conflict stops the merge with both sides and what each
-proxy was doing, for the agent to resolve when it is trivial and to put to the user when
-it is a choice of method. Then the merged code is measured as a new proxy,
-``merge-<stamp>``, over a suite that holds every source's cases (each against its own
-harness, through an entry ``merge-<stamp>--<proxy>``): each kernel judged against its
-source's gain alone, the whole as the total time of all of them. A kernel that lost its
-gain is reported, never set aside on its own: what to do is the user's call.
-``merge.json`` holds the sources, the phase and what each did.
+Each proxy's kept patch is picked as a git commit in a copy of its own
+(``merge_sources.kept_commit``); a conflict stops the merge for the agent, or the user,
+to resolve. The merged code is then the proxy ``merge-<stamp>``, over every source's
+cases: each kernel against its gain alone, the whole as their total time. Nothing is set
+aside on its own. ``merge.json`` holds the sources, the phase and what each did.
 """
 from __future__ import annotations
 
@@ -163,7 +158,7 @@ def start(names: list[str], name: str = "") -> dict:
                    f"committed only on {first['branch'] or 'its own copy'}.",
                    hint=f"git checkout {first['branch'] or '<branch>'} -- {os.path.relpath(harness, here)}, "
                         "then proxy_merge(op='start') again.")
-    # Every source's cases, each run by its source's harness moved here and judged by its
+    # Every source's cases, each run by its source's harness (its paths in this copy) and judged by its
     # source's requirements.
     cases = []
     for s in sources:
