@@ -35,6 +35,33 @@ def select_best_case(
     return best_case, best_time
 
 
+def case_times(results: list[tuple[str, bool, float | None]]) -> dict[str, float | None]:
+    """Each case at its fastest passing configuration; None for a case that has none."""
+    best: dict[str, float | None] = {}
+    for case_id, passed, time_s in results:
+        best.setdefault(case_id, None)
+        if passed and time_s is not None and (best[case_id] is None or time_s < best[case_id]):
+            best[case_id] = time_s
+    return best
+
+
+def total_time(results: list[tuple[str, bool, float | None]]) -> float | None:
+    """The suite's cases end to end: each case at its fastest passing configuration,
+    summed; None when a case has none. What a merge of several kernels is judged on,
+    where the fastest case alone would speak for one of them."""
+    best = case_times(results)
+    if not best or any(t is None for t in best.values()):
+        return None
+    return sum(best.values())
+
+
+def run_case_times(run_dir: str) -> dict[str, float | None]:
+    """``case_times`` of a settled run, read off its ``metrics.json``; {} without one."""
+    met = read_json(os.path.join(run_dir, "metrics.json")) or {}
+    return case_times([(r.get("case_id", ""), bool(r.get("passed")), (r.get("metrics") or {}).get("time_s"))
+                       for r in met.get("results", [])])
+
+
 # ── verdict logic ─────────────────────────────────────────────────────────────
 
 def is_improvement(new, old, goal: str, min_improvement: float = 0.0) -> bool:

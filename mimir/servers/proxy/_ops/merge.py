@@ -1,28 +1,41 @@
-"""proxy_merge ops: plan, start, next, report. The proxies' kept patches (``merge_sources``)
-merged in one copy and measured there: all at once first, then one by one when the whole
-falls short of what the parts promised. The merge is an ordinary proxy session,
-``merge-<stamp>``, whose ``merge.json`` holds the sources, the phase and what each did.
+"""proxy_merge ops: plan, start, next, resolved, pause, drop, report.
+
+A merge is git's: in a copy of its own, each proxy's kept patch is picked as a commit
+(``merge_sources.kept_commit``), a three-way merge whose base is that proxy's own
+baseline. A clean pick goes on; a conflict stops the merge with both sides and what each
+proxy was doing, for the agent to resolve when it is trivial and to put to the user when
+it is a choice of method. Then the merged code is measured as a new proxy,
+``merge-<stamp>``, over a suite that holds every source's cases (each against its own
+harness, through an entry ``merge-<stamp>--<proxy>``): each kernel judged against its
+source's gain alone, the whole as the total time of all of them. A kernel that lost its
+gain is reported, never set aside on its own: what to do is the user's call.
+``merge.json`` holds the sources, the phase and what each did.
 """
 from __future__ import annotations
 
 import copy
 import os
+import re
 import time
 from datetime import datetime, timezone
 
 from . import check_name, err, ok, with_next
-from ....shared.atomic import write_json
+from ....shared.atomic import read_json, write_json
 from ....shared.state_paths import SUBAGENTS_DIRNAME, active_session_id
-from .._lib import tree_snapshot
-from .._lib.layout import merge_file, resolve_proxy_name
-from ....shared.atomic import read_json
+from .._lib.layout import merge_file, opt_session_runs_dir, resolve_proxy_name
 from .._lib.procs import opt_active_run_dir, run_state
-from .._lib.ratchet import baseline_value, effective_min_improvement, is_improvement, read_ledger, relative
-from .._lib.store import (load_opt_config, load_registry, opt_git_dir, registry_lock,
-                          save_opt_config, save_registry, workspace_root)
+from .._lib.ratchet import (baseline_value, effective_min_improvement, load_best, read_ledger,
+                            relative, run_case_times)
+from .._lib.store import (load_opt_config, load_registry, load_suite, registry_lock, save_opt_config,
+                          save_registry, save_suite, suite_path, workspace_root)
 from . import eval_observe, eval_session, merge_sources
 
-_TOOLS = ["proxy_merge", "proxy_eval", "proxy_eval_status"]
+_TOOLS = ["proxy_merge", "proxy_eval", "proxy_eval_status", "read_file_lines", "replace_in_file",
+          "write_file", "ask_user_question"]
+
+# The lines shown around each conflict, and the most conflicts shown per file.
+_CONTEXT = 3
+_MAX_HUNKS = 6
 
 
 def _now() -> str:
@@ -30,14 +43,20 @@ def _now() -> str:
 
 
 def _brief(names: list[str]) -> str:
-    listed = ", ".join(names)
     return (
-        f"Merge the kept optimisations of the proxies {listed} and measure the result. In your "
-        f"copy: proxy_merge(op='start', proxies={names!r}, confirm=True); then follow its "
-        "next_step — proxy_merge(op='next', confirm=True) and the proxy_eval(op='run', axis=..., "
-        "confirm=True) it names, in turn — until it says the merge is done; edit no file "
-        "yourself. Then answer with proxy_merge(op='report'): the gain expected and measured, "
-        "the proxies kept and those set aside, and why."
+        f"Merge the kept optimisations of the proxies {', '.join(names)} and measure the whole. In "
+        f"your copy: proxy_merge(op='start', proxies={names!r}, confirm=True), then follow each "
+        "next_step: proxy_merge(op='next', confirm=True) and the proxy_eval(op='run', ...) it names. "
+        "When a proxy's patch conflicts, next shows both sides and what each proxy was doing. A "
+        "trivial conflict (an import, neighbouring lines, both keeping the same intent) you resolve "
+        "yourself in the files, then proxy_merge(op='resolved', resolution=<how>, confirm=True). A "
+        "conflict of method (two rewrites of the same loop, two layouts of the same data: one or "
+        "the other) or any doubt: reason about it, then ask the user with ask_user_question, giving "
+        "both options and your recommendation. If no answer comes, proxy_merge(op='pause', "
+        "question=<it>, confirm=True) and stop with the question. When the whole is measured, a "
+        "kernel that lost its gain in the merge is a question for the user too (keep it, drop that "
+        "proxy with proxy_merge(op='drop', proxies=[...], confirm=True), or rework the axis). "
+        "Answer with proxy_merge(op='report')."
     )
 
 
@@ -46,18 +65,16 @@ def plan(names: list[str]) -> dict:
     if refusal:
         return err(refusal, refused=refused)
     picked = [s["proxy"] for s in sources]
-    expected = merge_sources.expected(sources)
     return ok(with_next({
         "sources": [merge_sources.public(s) for s in sources],
         "refused": refused,
         "pairs": merge_sources.pairs(sources),
-        "expected": {"relative": expected, "gain": round(1 - expected, 6)},
         "order": picked,
         "brief": _brief(picked),
-        "note": ("The expected gain assumes the gains multiply. All the sources are applied and "
-                 "measured at once first; when that falls short of the expected gain beyond the "
-                 "noise, they are measured again one at a time, best alone first, and one that "
-                 "slows the whole down is set aside. Pairs with conflicts cannot both be kept."),
+        "note": ("Each proxy's kept patch is merged with git, one after the other, best alone first. "
+                 "Conflicts are resolved in the copy: the trivial ones by the merging agent, a choice "
+                 "of method by the user. The merged code is then measured on every proxy's own cases: "
+                 "each kernel against its gain alone, the whole as their total time."),
     }, f"spawn_agent(task=<brief>, tools={_TOOLS!r}, background=True): the merge runs in a "
        "copy of its own, on a branch you merge once it is measured"))
 
@@ -80,6 +97,28 @@ def _moved(value, src_root: str, here: str):
     return value
 
 
+def entry_name(merge: str, proxy: str) -> str:
+    """The registry entry that runs *proxy*'s cases in the merge *merge*."""
+    return f"{merge}--{proxy}"
+
+
+def _case_id(proxy: str, case_id: str) -> str:
+    return f"{proxy}/{case_id}"
+
+
+def _undo(name: str, entries: list[str]) -> None:
+    """What ``start`` wrote, removed: the merge's entries and its suite."""
+    with registry_lock(create=True):
+        reg = load_registry() or {}
+        for e in [name, *entries]:
+            reg.pop(e, None)
+        save_registry(reg)
+    try:
+        os.remove(suite_path(name))
+    except OSError:
+        pass
+
+
 def start(names: list[str], name: str = "") -> dict:
     if not _in_copy():
         return err("A merge is measured in a copy of its own, and this is the main workspace.",
@@ -97,47 +136,70 @@ def start(names: list[str], name: str = "") -> dict:
     lost = [p for p, r in roots.items() if not r]
     if lost:
         return err(f"Where the files of {', '.join(lost)} lived cannot be told, so their paths cannot be moved here.")
+    reg = load_registry() or {}
+    gone = [s["proxy"] for s in sources if s["proxy"] not in reg]
+    if gone:
+        return err(f"{', '.join(gone)} no longer registered: their harness cannot be found.")
     first = sources[0]
     cfg, root = configs[first["proxy"]], roots[first["proxy"]]
-    entry = (load_registry() or {}).get(first["proxy"])
-    if not entry:
-        return err(f"{first['proxy']} is no longer registered: its harness cannot be found.")
     harness = _moved(cfg.get("proxy_source_path", ""), root, here)
     if not os.path.isfile(harness):
         return err(f"The harness {os.path.relpath(harness, here)} is not in this copy: it was "
                    f"committed only on {first['branch'] or 'its own copy'}.",
                    hint=f"git checkout {first['branch'] or '<branch>'} -- {os.path.relpath(harness, here)}, "
                         "then proxy_merge(op='start') again.")
+    # Every source's cases, each run by its source's harness moved here and judged by its
+    # source's requirements.
+    cases = []
+    for s in sources:
+        suite = load_suite(s["suite"])
+        if not suite:
+            return err(f"{s['proxy']}'s suite {s['suite']} is gone: its cases cannot be measured.")
+        for case in suite.get("cases") or []:
+            c = _moved(copy.deepcopy(case), roots[s["proxy"]], here)
+            cases.append({**c, "case_id": _case_id(s["proxy"], case.get("case_id", "")),
+                          "proxy_name": entry_name(name, s["proxy"]),
+                          "requirements": c.get("requirements", s["requirements"]),
+                          "source": s["proxy"]})
+    entries = [entry_name(name, s["proxy"]) for s in sources]
     paths = sorted({_moved(path, roots[p], here) for p, c in configs.items() for path in c.get("optimize_paths") or []})
     with registry_lock(create=True):
         reg = load_registry() or {}
-        if name in reg:
-            return err(f"A proxy named {name} is already registered.")
-        reg[name] = {**_moved(copy.deepcopy(entry), root, here), "name": name,
+        taken = [e for e in [name, *entries] if e in reg]
+        if taken:
+            return err(f"{', '.join(taken)} already registered.")
+        reg[name] = {**_moved(copy.deepcopy(reg[first["proxy"]]), root, here), "name": name,
                      "registered_at": _now(), "merged_from": [s["proxy"] for s in sources]}
         reg[name].pop("updated_at", None)
+        for s, e in zip(sources, entries):
+            reg[e] = {**_moved(copy.deepcopy(reg[s["proxy"]]), roots[s["proxy"]], here), "name": e,
+                      "registered_at": _now(), "merge_of": name}
+            reg[e].pop("updated_at", None)
         save_registry(reg)
+    save_suite(name, {"name": name, "created_at": _now(), "cases": cases,
+                      "description": "The cases of " + ", ".join(s["proxy"] for s in sources) + ", merged"})
     res = eval_session.init(
-        name, first["suite"], cfg.get("requirements") or [], harness, paths,
+        name, name, [], harness, paths,
         _moved(cfg.get("python_executable", ""), root, here), cfg.get("max_hours", 0.0),
-        first["metric"], first["goal"], cfg.get("min_improvement", 0.02),
-        # Out of reach: a merge runs once all together and once per source, and a
+        "total_time_s", "min", cfg.get("min_improvement", 0.02),
+        # Out of reach: a merge runs its baseline, the whole and again after a drop, and a
         # "converged" verdict would say nothing about it.
-        max_stall=len(sources) + 2, convergence=cfg.get("convergence"), repeat=cfg.get("repeat", 0))
+        max_stall=len(sources) + 3, convergence=None, repeat=cfg.get("repeat", 0))
     if res.get("status") != "ok":
+        _undo(name, entries)
         return res
     mine = load_opt_config(name)
     mine["merge"] = True
     save_opt_config(mine)
-    expected = merge_sources.expected(sources)
     _save(name, {
         "name": name, "branch": mine.get("branch", ""), "started_at": _now(),
         "sources": sources, "refused": refused, "pairs": merge_sources.pairs(sources),
-        "expected": expected, "phase": "baseline", "pending": None,
-        "base_value": None, "all": None, "steps": [], "final": None,
+        "entries": entries, "suite": name, "phase": "baseline", "pending": None,
+        "merged": [], "conflict": None, "question": None, "dropped": [],
+        "kernels": None, "whole": None,
     })
     return ok(with_next({"proxy_name": name, "sources": [merge_sources.public(s) for s in sources],
-                         "refused": refused, "expected": expected},
+                         "refused": refused, "cases": [c["case_id"] for c in cases]},
                         "proxy_merge(op='next', confirm=True)"))
 
 
@@ -147,6 +209,14 @@ def _load(name: str) -> dict:
 
 def _save(name: str, state: dict) -> None:
     write_json(merge_file(name), state, indent=2)
+
+
+def _session(name: str) -> tuple[str, dict]:
+    name = resolve_proxy_name(name) or ""
+    return name, (_load(name) if name else {})
+
+
+_NO_SESSION = ("No merge session.", "proxy_merge(op='start', proxies=[...], confirm=True) first.")
 
 
 def _running(name: str, pending: dict) -> bool:
@@ -176,150 +246,167 @@ def _run(name: str, state: dict, step: str, axis: str, note: str) -> dict:
                         f"proxy_eval(op='run', axis={axis!r}, confirm=True), then proxy_merge(op='next', confirm=True)"))
 
 
-def _restore(name: str, tree: str) -> None:
-    cfg = load_opt_config(name) or {}
-    tree_snapshot.restore(opt_git_dir(), workspace_root(), list(cfg.get("optimize_paths") or []), tree)
-
-
-def _why(state: dict, proxy: str, kept_from: str) -> str:
-    """Why *proxy* is not in the code kept, which came *kept_from* the whole, the chain or
-    neither: what set it aside there, a conflict, or a whole that gained nothing (or failed)."""
-    whole = state.get("all") or {}
-    clash = any(c["proxy"] == proxy for c in whole.get("conflicts", []))
-    if kept_from == "all":
-        return "conflict"
-    step = next((s for s in reversed(state.get("steps", [])) if s["proxy"] == proxy), None)
-    if step and not step["kept"]:
-        return step["why"]
-    if clash:
-        return "conflict"
-    return "infeasible" if whole and not whole.get("feasible") else "no_gain"
-
-
-def _finish(name: str, state: dict) -> dict:
-    """Keep whichever was better, the whole or the chain, on disk and in the state."""
-    cfg = load_opt_config(name) or {}
-    goal = cfg.get("primary_goal", "min")
-    whole = state.get("all") or {}
-    tip = state.get("tip") or {}
-    best = {"from": "baseline", "tree": cfg.get("baseline_id", ""), "value": state.get("base_value"),
-            "kept": []}
-    if whole.get("feasible") and is_improvement(whole.get("value"), best["value"], goal):
-        best = {"from": "all", "tree": whole["tree"], "value": whole["value"], "kept": whole["applied"]}
-    kept = [s["proxy"] for s in state.get("steps", []) if s.get("kept")]
-    if tip.get("tree") and kept and is_improvement(tip.get("value"), best["value"], goal):
-        best = {"from": "chain", "tree": tip["tree"], "value": tip["value"], "kept": kept}
-    best["relative"] = relative(best["value"], state.get("base_value"), goal)
-    best["set_aside"] = [{"proxy": s["proxy"], "why": _why(state, s["proxy"], best["from"])}
-                         for s in state["sources"] if s["proxy"] not in best["kept"]]
-    if best["tree"]:
-        _restore(name, best["tree"])
-    state.update(phase="done", pending=None, final=best)
-    _save(name, state)
-    return report(name)
-
-
-def _policy(name: str) -> tuple[dict, str, float]:
-    """The merge session's config, its goal and the margin an improvement must clear."""
-    cfg = load_opt_config(name) or {}
-    return cfg, cfg.get("primary_goal", "min"), effective_min_improvement(cfg)[0]
-
-
 def _baseline(name: str, state: dict, row: dict | None) -> dict | None:
-    """The copy measured untouched first: every source is judged against it."""
+    """The copy measured untouched first: every kernel is judged against it."""
     cfg = load_opt_config(name) or {}
     if cfg.get("baseline_run_id"):
-        state.update(base_value=baseline_value(cfg, read_ledger(name)), phase="all", pending=None)
+        state.update(phase="merging", pending=None)
         return None
     if row:
         return err("The baseline run of this copy did not pass: nothing can be compared to it.",
                    hint="proxy_eval_status(op='results') says why.")
     return _run(name, state, "baseline", "merge: baseline",
-                "Measuring this copy untouched first: every source is judged against it.")
+                "Measuring this copy untouched first: every kernel is judged against it.")
 
 
-def _all(name: str, state: dict, row: dict | None) -> dict | None:
-    """Every source applied and measured at once; one at a time next when the whole falls
-    short of what the parts promised beyond the noise."""
-    if not state.get("pending"):
-        applied, conflicts = [], []
-        for s in state["sources"]:
-            clash = merge_sources.apply(s)
-            (conflicts.append({"proxy": s["proxy"], "files": clash}) if clash
-             else applied.append(s["proxy"]))
-        if not applied:
-            return _finish(name, state)
-        by_name = {s["proxy"]: s for s in state["sources"]}
-        state["all"] = {"applied": applied, "conflicts": conflicts,
-                        "expected": merge_sources.expected([by_name[p] for p in applied])}
-        return _run(name, state, "all", "merge: all (" + " + ".join(applied) + ")",
-                    f"{len(applied)} source(s) applied together"
-                    + (f"; {len(conflicts)} set aside for a conflict" if conflicts else "") + ".")
-    if not row:
-        return _run(name, state, "all", "merge: all (" + " + ".join(state["all"]["applied"]) + ")",
-                    "The sources are applied; the run that measures them is still to launch.")
-    cfg, goal, margin = _policy(name)
-    whole = state["all"]
-    whole.update(run_id=row.get("run_id", ""), value=row.get("primary_value"),
-                 feasible=bool(row.get("feasible")), tree=row.get("launch_tree", ""),
-                 relative=relative(row.get("primary_value"), state["base_value"], goal))
-    state["pending"] = None
-    whole["holds"] = bool(whole["feasible"] and whole["relative"] is not None
-                          and whole["relative"] <= whole["expected"] * (1 + margin))
-    if whole["holds"] or len(whole["applied"]) < 2:
-        return _finish(name, state)
-    _restore(name, cfg.get("baseline_id", ""))
-    state.update(phase="incremental", tip={"tree": cfg.get("baseline_id", ""), "value": state["base_value"]})
-    return None
+def _axes(proxy: str) -> list[str]:
+    """What *proxy* did, as the axes of its accepted runs say it."""
+    return [r["axis"] for r in read_ledger(proxy) if r.get("verdict") == "accept" and r.get("axis")
+            and not r.get("baseline")]
 
 
-def _incremental(name: str, state: dict, row: dict | None) -> dict | None:
-    """One source at a time over what was kept, best alone first: kept only if it still
-    improves the chain's tip, set aside otherwise."""
-    pending = state.get("pending")
-    if pending and not row:
-        return _run(name, state, pending["step"], f"merge: + {pending['step']}",
-                    f"{pending['step']} is applied; the run that measures it is still to launch.")
-    if pending and row:
-        _, goal, margin = _policy(name)
-        tip = state["tip"]
-        src = next(s for s in state["sources"] if s["proxy"] == pending["step"])
-        kept = bool(row.get("feasible")) and is_improvement(row.get("primary_value"), tip["value"], goal, margin)
-        marginal = relative(row.get("primary_value"), tip["value"], goal)
-        state["steps"].append({
-            "proxy": src["proxy"], "run_id": row.get("run_id", ""), "value": row.get("primary_value"),
-            "kept": kept, "alone": src["relative"], "marginal": marginal,
-            "interaction": round(marginal / src["relative"], 6) if marginal else None,
-            **({} if kept else {"why": "interference" if row.get("feasible") else "infeasible"}),
-        })
-        if kept:
-            state["tip"] = {"tree": row.get("launch_tree", ""), "value": row.get("primary_value")}
+def _hunks(path: str) -> list[str]:
+    """The conflicts git left in *path*, each with a few lines around it."""
+    try:
+        with open(os.path.join(workspace_root(), path), encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    out, i = [], 0
+    while i < len(lines) and len(out) < _MAX_HUNKS:
+        if lines[i].startswith("<<<<<<< "):
+            end = next((j for j in range(i, len(lines)) if lines[j].startswith(">>>>>>> ")), len(lines) - 1)
+            lo, hi = max(0, i - _CONTEXT), min(len(lines), end + 1 + _CONTEXT)
+            out.append("\n".join(f"{n + 1}: {lines[n]}" for n in range(lo, hi)))
+            i = end + 1
         else:
-            _restore(name, tip["tree"])
-        state["pending"] = None
-    done = {s["proxy"] for s in state["steps"]}
+            i += 1
+    return out
+
+
+def _unmerged() -> list[str]:
+    r = merge_sources.git("diff", "--name-only", "--diff-filter=U")
+    return [p for p in r.stdout.splitlines() if p] if r.returncode == 0 else []
+
+
+def _with_markers(paths: list[str]) -> list[str]:
+    marker = re.compile(r"^(<{7}|>{7}) ", re.M)
+    left = []
+    for p in paths:
+        try:
+            with open(os.path.join(workspace_root(), p), encoding="utf-8", errors="replace") as fh:
+                if marker.search(fh.read()):
+                    left.append(p)
+        except OSError:
+            pass
+    return left
+
+
+def _conflict_answer(name: str, state: dict) -> dict:
+    """The conflict the merge stopped on: each file's hunks, and what each side was doing."""
+    c = state["conflict"]
+    ours = [m["proxy"] for m in state["merged"] if m["proxy"] not in state["dropped"]]
+    return ok(with_next({
+        "proxy_name": name, "phase": state["phase"],
+        "conflict": {
+            "proxy": c["proxy"],
+            "files": [{"path": p, "hunks": _hunks(p)} for p in c["files"]],
+            # Between <<<<<<< and ======= what is merged so far, after it the proxy's.
+            "ours": {"proxies": ours, "axes": {p: _axes(p) for p in ours}},
+            "theirs": {"proxy": c["proxy"], "axes": _axes(c["proxy"])},
+        },
+        "note": ("Trivial (an import, neighbouring lines, the same intent on both sides): resolve it "
+                 "in the files. A choice of method (one rewrite or the other) or any doubt: reason "
+                 "about it and ask the user with ask_user_question, both options and your "
+                 "recommendation, before you resolve."),
+    }, "edit the files until no conflict marker is left, then "
+       "proxy_merge(op='resolved', resolution=<how and why>, confirm=True); no answer from the user: "
+       "proxy_merge(op='pause', question=<the question>, confirm=True) and stop with it"))
+
+
+def _merging(name: str, state: dict, row: dict | None) -> dict | None:
+    """Each source's kept commit picked over what is merged so far, best alone first."""
+    if state.get("conflict"):
+        return _conflict_answer(name, state)
+    done = {m["proxy"] for m in state["merged"]}
     for s in state["sources"]:
         if s["proxy"] in done:
             continue
-        clash = merge_sources.apply(s)
-        if clash:
-            state["steps"].append({"proxy": s["proxy"], "kept": False, "why": "conflict",
-                                   "files": clash, "alone": s["relative"]})
+        sha, why = merge_sources.kept_commit(s)
+        if not sha:
+            return err(f"{s['proxy']}'s kept state cannot be built here: {why}.")
+        picked = merge_sources.git("cherry-pick", "--allow-empty", sha)
+        if picked.returncode == 0:
+            head = merge_sources.git("rev-parse", "HEAD").stdout.strip()
+            state["merged"].append({"proxy": s["proxy"], "commit": head, "conflicts": [], "resolution": ""})
+            _save(name, state)
             continue
-        return _run(name, state, s["proxy"], f"merge: + {s['proxy']}",
-                    f"Measured together, the sources fell short of the gain they promised: "
-                    f"now one at a time. {s['proxy']} is applied over what was kept.")
-    return _finish(name, state)
+        files = _unmerged()
+        if not files:
+            merge_sources.git("cherry-pick", "--abort")
+            return err(f"{s['proxy']}'s kept state did not apply: {picked.stderr.strip()[-400:]}")
+        state["conflict"] = {"proxy": s["proxy"], "files": files}
+        _save(name, state)
+        return _conflict_answer(name, state)
+    state["phase"] = "measure"
+    return None
 
 
-_PHASES = {"baseline": _baseline, "all": _all, "incremental": _incremental}
+def _kernels(name: str, state: dict, row: dict) -> list[dict]:
+    """Each source's cases in the merged run, against the merge's baseline, beside the same
+    case in that source's best run against its own baseline."""
+    cfg = load_opt_config(name) or {}
+    merged = run_case_times(os.path.join(opt_session_runs_dir(name), row.get("run_id", "")))
+    base = run_case_times(os.path.join(opt_session_runs_dir(name), cfg.get("baseline_run_id", "")))
+    margin = effective_min_improvement(cfg)[0]
+    out = []
+    for s in state["sources"]:
+        if s["proxy"] in state["dropped"]:
+            continue
+        scfg = load_opt_config(s["proxy"]) or {}
+        runs = opt_session_runs_dir(s["proxy"])
+        best = run_case_times(os.path.join(runs, (load_best(s["proxy"]) or {}).get("run_id", "")))
+        alone_base = run_case_times(os.path.join(runs, scfg.get("baseline_run_id", "")))
+        for case in sorted(alone_base):
+            cid = _case_id(s["proxy"], case)
+            alone = relative(best.get(case), alone_base.get(case), "min")
+            in_merge = relative(merged.get(cid), base.get(cid), "min")
+            interaction = round(in_merge / alone, 6) if alone and in_merge else None
+            out.append({"proxy": s["proxy"], "case": case, "alone": alone, "in_merge": in_merge,
+                        "interaction": interaction,
+                        "flagged": interaction is not None and interaction > 1 + margin})
+    return out
+
+
+def _measure(name: str, state: dict, row: dict | None) -> dict | None:
+    """The merged code measured once: each kernel, and the whole as their total time."""
+    if not row:
+        kept = [m["proxy"] for m in state["merged"] if m["proxy"] not in state["dropped"]]
+        return _run(name, state, "measure", "merge: " + " + ".join(kept),
+                    "Every kept patch is merged: measuring the whole on every source's cases.")
+    cfg = load_opt_config(name) or {}
+    base = baseline_value(cfg, read_ledger(name))
+    state["kernels"] = _kernels(name, state, row)
+    state["whole"] = {"run_id": row.get("run_id", ""), "feasible": bool(row.get("feasible")),
+                      "value": row.get("primary_value"), "base_value": base,
+                      "relative": relative(row.get("primary_value"), base, "min")}
+    state.update(phase="done", pending=None)
+    _save(name, state)
+    return report(name)
+
+
+_PHASES = {"baseline": _baseline, "merging": _merging, "measure": _measure}
 
 
 def next_(name: str = "") -> dict:
-    name = resolve_proxy_name(name) or ""
-    state = _load(name) if name else {}
+    name, state = _session(name)
     if not state:
-        return err("No merge session.", hint="proxy_merge(op='start', proxies=[...], confirm=True) first.")
+        return err(_NO_SESSION[0], hint=_NO_SESSION[1])
+    if not _PHASES.get(state.get("phase", "")) and state.get("phase") != "done":
+        return err(f"{name} is a merge of an earlier kind; it cannot be carried on.",
+                   hint="proxy_merge(op='plan', ...) and start a new one.")
+    # Carried on after a pause: the user's answer is in the task that resumed it.
+    state["question"] = None
     while True:
         pending = state.get("pending")
         if pending and _running(name, pending):
@@ -334,36 +421,112 @@ def next_(name: str = "") -> dict:
             return out
 
 
-def report(name: str = "") -> dict:
-    name = resolve_proxy_name(name) or ""
-    state = _load(name) if name else {}
+def resolved(name: str = "", resolution: str = "") -> dict:
+    """The conflict the merge stopped on, resolved in the files: committed, then on."""
+    name, state = _session(name)
     if not state:
-        return err("No merge session.", hint="proxy_merge(op='start', proxies=[...], confirm=True) first.")
-    whole = state.get("all") or {}
-    final = state.get("final") or {}
+        return err(_NO_SESSION[0], hint=_NO_SESSION[1])
+    c = state.get("conflict")
+    if not c:
+        return err("The merge is not stopped on a conflict.", hint="proxy_merge(op='next', confirm=True)")
+    if not resolution.strip():
+        return err("Say how the conflict was resolved and why (resolution=...): the report and the map keep it.")
+    left = _with_markers(c["files"])
+    if left:
+        return err(f"Conflict markers are left in {', '.join(left)}.",
+                   hint="Resolve every <<<<<<< ... >>>>>>> block, then proxy_merge(op='resolved') again.")
+    added = merge_sources.git("add", "--", *c["files"])
+    # A commit, not --continue: a resolution that keeps what was merged leaves the pick
+    # empty, which --continue refuses. Committing ends a one-commit pick all the same.
+    done = merge_sources.git("commit", "--allow-empty", "--no-edit")
+    if added.returncode != 0 or done.returncode != 0:
+        return err(f"The resolution could not be committed: {(done.stderr or added.stderr).strip()[-400:]}")
+    head = merge_sources.git("rev-parse", "HEAD").stdout.strip()
+    state["merged"].append({"proxy": c["proxy"], "commit": head, "conflicts": c["files"],
+                            "resolution": resolution.strip()})
+    state["conflict"] = None
+    _save(name, state)
+    return next_(name)
+
+
+def pause(name: str = "", question: str = "") -> dict:
+    """Stop for an answer: a conflict pending is undone (the copy never stays mid-merge),
+    and the question is kept for whoever carries the merge on."""
+    name, state = _session(name)
+    if not state:
+        return err(_NO_SESSION[0], hint=_NO_SESSION[1])
+    c = state.get("conflict")
+    if c:
+        merge_sources.git("cherry-pick", "--abort")
+    state["conflict"] = None
+    state["question"] = {"proxy": c["proxy"] if c else "", "question": question.strip(), "at": _now()}
+    _save(name, state)
+    return ok(with_next({"proxy_name": name, "phase": state["phase"], "question": state["question"]},
+                        "stop here and hand the question back; once answered, a new sub-agent carries "
+                        "the merge on with proxy_merge(op='next', confirm=True) in this copy's branch"))
+
+
+def drop(name: str = "", proxies: list[str] | None = None) -> dict:
+    """Take *proxies* back out of the merged code (``git revert`` of their commits), then
+    measure the whole again."""
+    name, state = _session(name)
+    if not state:
+        return err(_NO_SESSION[0], hint=_NO_SESSION[1])
+    if state.get("conflict") or state["phase"] in ("baseline", "merging"):
+        return err("A proxy is dropped once the merge is measured.", hint="proxy_merge(op='next', confirm=True)")
+    by_name = {m["proxy"]: m for m in state["merged"]}
+    unknown = [p for p in proxies or [] if p not in by_name or p in state["dropped"]]
+    if unknown or not proxies:
+        return err(f"Not in the merged code: {', '.join(unknown) or '(none named)'}.")
+    for p in proxies:
+        commit = by_name[p]["commit"]
+        # A pick its resolution emptied changed nothing: there is nothing to take back.
+        if merge_sources.git("diff", "--quiet", f"{commit}^", commit).returncode == 0:
+            state["dropped"].append(p)
+            continue
+        r = merge_sources.git("revert", "--no-edit", commit)
+        if r.returncode != 0:
+            merge_sources.git("revert", "--abort")
+            return err(f"{p} cannot be taken back out cleanly: {r.stderr.strip()[-400:]}",
+                       hint="Another proxy's patch builds on its lines; ask the user what to keep.")
+        state["dropped"].append(p)
+    state.update(phase="measure", pending=None, kernels=None, whole=None)
+    _save(name, state)
+    return next_(name)
+
+
+def report(name: str = "") -> dict:
+    name, state = _session(name)
+    if not state:
+        return err(_NO_SESSION[0], hint=_NO_SESSION[1])
+    kernels = state.get("kernels") or []
+    whole = state.get("whole") or {}
+    flagged = [k for k in kernels if k.get("flagged")]
     payload = {
         "proxy_name": name,
         "phase": state["phase"],
         "branch": state.get("branch", ""),
         "sources": [merge_sources.public(s) for s in state["sources"]],
-        "pairs": state.get("pairs", []),
-        "expected": {"relative": state["expected"], "gain": round(1 - state["expected"], 6)},
-        "all": {k: whole.get(k) for k in ("applied", "conflicts", "expected", "relative", "holds", "run_id")
-                if k in whole},
-        "steps": state.get("steps", []),
+        "merged": state.get("merged", []),
+        "dropped": state.get("dropped", []),
+        "conflict": state.get("conflict"),
+        "question": state.get("question"),
+        "kernels": kernels,
+        "whole": {**whole, "gain": round(1 - whole["relative"], 6) if whole.get("relative") else None},
     }
-    if whole.get("relative") and whole.get("expected"):
-        payload["all"]["interaction"] = round(whole["relative"] / whole["expected"], 6)
     if state["phase"] != "done":
         return ok(with_next(payload, "proxy_merge(op='next', confirm=True)"))
-    kept = final.get("kept", [])
-    payload.update(
-        final={**{k: final.get(k) for k in ("from", "value", "relative")},
-               "gain": round(1 - final["relative"], 6) if final.get("relative") else None},
-        kept=kept,
-        set_aside=final.get("set_aside", []),
-        note=("An interaction under 1 means a source did better in the whole than alone, over 1 "
-              "that the whole took some of its gain. The files are left as the better of the whole "
-              "and the one-at-a-time chain; they are committed to the branch when you finish."),
-    )
-    return ok(with_next(payload, "answer with this report; the merged code is on " + (state.get("branch") or "this copy's branch")))
+    payload["note"] = (
+        "Each kernel: its gain alone (alone), in the merge (in_merge), and their ratio "
+        "(interaction: under 1 it did better merged, over 1 the merge took some of its gain). The "
+        "whole is the total time of every case against this copy untouched. The merged code is "
+        "committed on the branch; once the user has merged it, the source proxies can be cleaned "
+        "(proxy_manage(op='clean')), their graph stays on the map: suggest it, never do it unasked.")
+    if flagged:
+        names = sorted({k["proxy"] for k in flagged})
+        return ok(with_next(payload,
+                            f"{', '.join(names)} lost gain in the merge: reason about why, then ask the user "
+                            "with ask_user_question whether to keep it, drop it (proxy_merge(op='drop', "
+                            "proxies=[...], confirm=True)) or rework that axis on the merged code"))
+    return ok(with_next(payload, "answer with this report; the merged code is on "
+                        + (state.get("branch") or "this copy's branch")))

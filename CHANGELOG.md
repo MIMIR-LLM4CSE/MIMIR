@@ -16,16 +16,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- **Proxies optimised in parallel can be merged, and the whole measured.** Each axis a
-  sub-agent optimised kept its gain on its own branch, measured against its own baseline,
-  and putting them together was left to the orchestrator by hand, with nothing to say
-  whether the gains added up. `proxy_merge` takes each proxy's kept patch (baseline to
-  best accepted tree, from the snapshot store), merges the files three ways in a
-  sub-agent's copy and measures them: all at once first, then, when the whole falls short
-  of the gain the parts promised, one at a time, best alone first, each kept only if it
-  still improves the whole. `plan` says beforehand what each proxy brings, the files two
-  share, their conflicts and the gain expected; `report` gives the gain measured, what
-  each proxy did in the merge against alone, and why the others were set aside. The
+- **Proxies can be merged with git, and the whole measured.** Each proxy kept its gain
+  measured against its own baseline, in a sub-agent's copy or in this session, and
+  putting them together was left to the orchestrator by hand, with nothing to say whether
+  the gains added up. `proxy_merge` picks each proxy's kept patch (baseline to best
+  accepted tree, from the snapshot store, no branch needed) as a git commit in a
+  sub-agent's copy, a three-way merge from that proxy's own baseline. A conflict stops
+  the merge with both sides and what each proxy was doing: the agent resolves a trivial
+  one and asks the user about a choice of method (`resolved`, `pause`). The merged code
+  is then a new proxy over every source's own cases, so proxies of different suites
+  merge: each kernel is judged against its gain alone and the whole is the total time
+  (`total_time_s`, a new run-level metric). A kernel that lost its gain is put to the
+  user, who may `drop` its proxy; nothing is set aside on its own. A merge leaves its
+  branch and its proxy, whose suite and per-source entries go with its `clean`. The
   proxy-merge skill has the protocol.
 - **The code map's proxy picker is a list.** The plain dropdown gave a name and nothing
   else. Each proxy now has a line: its branch, its runs, its gain so far, whether it is

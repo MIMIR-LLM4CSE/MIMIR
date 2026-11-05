@@ -140,6 +140,30 @@ class SelectBestCaseTests(unittest.TestCase):
         self.assertIsNone(t)
 
 
+class CaseRequirementsTests(unittest.TestCase):
+    def test_a_case_carrying_its_requirements_is_judged_by_them(self) -> None:
+        """A merge's suite holds each source's cases with that source's requirements."""
+        from mimir.servers.proxy import _proxy_runner
+        session = [{"metric": "l2_rel", "operator": "lt", "threshold": 1e-6},
+                   {"metric": "convergence_order", "operator": "gt", "threshold": 1.5}]
+        plan = _proxy_runner._Plan.from_config({"requirements": session}, [])
+        self.assertEqual(plan.requirements_for({"case_id": "a"}), session[:1])
+        own = [{"metric": "time_s", "operator": "lt", "threshold": 5.0}]
+        self.assertEqual(plan.requirements_for({"case_id": "pa/a", "requirements": own}), own)
+        self.assertEqual(plan.requirements_for({"case_id": "pb/a", "requirements": []}), [])
+
+
+class TotalTimeTests(unittest.TestCase):
+    def test_each_case_at_its_fastest_configuration_summed(self) -> None:
+        self.assertEqual(ratchet.total_time([("iso", True, 2.0), ("iso", True, 1.5), ("tti", True, 4.0),
+                                             ("tti", False, 1.0)]), 5.5)
+
+    def test_a_case_with_no_passing_configuration_has_no_total(self) -> None:
+        self.assertIsNone(ratchet.total_time([("iso", True, 2.0), ("tti", False, 1.0)]))
+        self.assertIsNone(ratchet.total_time([("iso", True, 2.0), ("tti", True, None)]))
+        self.assertIsNone(ratchet.total_time([]))
+
+
 class DiffRunDirsTests(unittest.TestCase):
     def _make_run(self, root: str, name: str, config: dict, metrics: dict) -> str:
         d = os.path.join(root, name)

@@ -409,6 +409,8 @@ def clean(name: str) -> dict:
     kept_refs: list[str] = []
     kept_suites: list[str] = []
     kept_snapshots = ""
+    # A merge's suite and its per-source entries are its own: they go with it.
+    merge_state = read_json(layout.merge_file(name), {}) or {}
     # The optimisation graph outlives the state it was drawn from: frozen first, or nothing goes.
     try:
         frozen = code_map_session.freeze(name, "cleaned")
@@ -446,6 +448,21 @@ def clean(name: str) -> dict:
     if layout.resolve_proxy_name("") == name:
         store.clear_active_session()
         removed.append("active-session pointer")
+
+    owned = [e for e in merge_state.get("entries") or [] if e]
+    if owned:
+        with store.registry_lock(create=True):
+            reg = store.load_registry() or {}
+            for e in owned:
+                reg.pop(e, None)
+            store.save_registry(reg)
+        removed.append("its per-source entries " + ", ".join(owned))
+    if merge_state.get("suite"):
+        try:
+            os.remove(store.suite_path(merge_state["suite"]))
+            removed.append(f"its suite {merge_state['suite']}")
+        except OSError:
+            pass
 
     for d, sink in ((store.refs_dir(), kept_refs), (store.suites_dir(), kept_suites)):
         try:

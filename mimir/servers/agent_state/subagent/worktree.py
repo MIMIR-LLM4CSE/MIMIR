@@ -145,7 +145,13 @@ def commit_copy(path: str, message: str) -> tuple[list[str], str]:
     """Stage and commit whatever the copy holds; ``(files, diffstat)``.
 
     Called when the child finishes and before a copy is reclaimed, so no work is dropped.
+    A pick, merge or revert left half done (a merge stopped on a conflict) is undone first:
+    committed, its conflict markers would pass for work.
     """
+    for head, op in (("CHERRY_PICK_HEAD", "cherry-pick"), ("MERGE_HEAD", "merge"), ("REVERT_HEAD", "revert")):
+        found, where = git(["rev-parse", "--git-path", head], path)
+        if found and os.path.exists(os.path.join(path, where)):
+            git([op, "--abort"], path)
     git(["add", "-A"], path)
     ok, changed = git(["diff", "--cached", "--name-only"], path)
     files = [f for f in changed.splitlines() if f] if ok else []

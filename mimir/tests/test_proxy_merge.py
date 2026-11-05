@@ -4,10 +4,11 @@ falls short."""
 
 import json
 import os
+import subprocess
 import unittest
 from unittest import mock
 
-from mimir.servers.proxy._lib import layout
+from mimir.servers.proxy._lib import layout, store
 from mimir.servers.proxy._ops import merge, merge_sources
 from mimir.servers.proxy._ops.code_map import session, tab
 from mimir.shared.atomic import write_json
@@ -24,9 +25,9 @@ ORIGINAL = {"a.py": "A = 1\n\n\n\n\nX = 0\n", "b.py": "B = 1\n", "c.py": "C = 1\
 
 
 class _MergeFixture(_TmpStorageTest):
-    """Three proxies optimised one after the other in one tree, each from the original:
-    pa edits a.py's first line (0.8 alone), pb edits b.py (0.9), pc edits a.py's first
-    line otherwise (0.85), so pa and pc conflict."""
+    """Three proxies optimised one after the other in one git tree, each from the original
+    and each on a suite of its own: pa edits a.py's first line (0.8 alone), pb edits b.py
+    (0.9), pc edits a.py's first line otherwise (0.85), so pa and pc conflict."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -35,13 +36,21 @@ class _MergeFixture(_TmpStorageTest):
         self.harness = os.path.join(self.root, "harness.py")
         with open(self.harness, "w") as fh:
             fh.write("import a\n")
+        with open(os.path.join(self.root, "tiny.py"), "w") as fh:
+            fh.write("print('PROXY_METRICS_BEGIN')\nprint('time_s=0.1')\nprint('PROXY_METRICS_END')\n")
         self._write(ORIGINAL)
+        for argv in (["init", "-q"], ["add", "a.py", "b.py", "c.py", "harness.py", "tiny.py"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "original"]):
+            subprocess.run(["git", *argv], cwd=self.root, check=True, capture_output=True)
         self.n = 0
         for name, edit, value in (("pa", {"a.py": "A = 2\n\n\n\n\nX = 0\n"}, 8.0),
                                   ("pb", {"b.py": "B = 2\n"}, 9.0),
                                   ("pc", {"a.py": "A = 3\n\n\n\n\nX = 0\n"}, 8.5)):
             self._source(name, edit, value)
             self._write(ORIGINAL)
+
+    def _git(self, *argv: str) -> str:
+        return subprocess.run(["git", *argv], cwd=self.root, capture_output=True, text=True).stdout
 
     def _write(self, files: dict) -> None:
         for rel, text in files.items():
@@ -54,13 +63,11 @@ class _MergeFixture(_TmpStorageTest):
 
     def _source(self, name: str, edit: dict, value: float) -> None:
         exe = os.path.join(self.root, "tiny.py")
-        with open(exe, "w") as fh:
-            fh.write("print('PROXY_METRICS_BEGIN')\nprint('time_s=0.1')\nprint('PROXY_METRICS_END')\n")
         server_proxy.proxy_manage(op="register", name=name, executable_path=exe,
                                   run_cmd_template="python3 {executable}", confirm=True)
-        server_proxy.proxy_manage(op="suite_define", name="bench",
-                                  cases=[{"case_id": "a", "proxy_name": "pa"}], confirm=True)
-        res = _eval(op="init", proxy_name=name, benchmark_name="bench",
+        server_proxy.proxy_manage(op="suite_define", name=f"bench_{name}",
+                                  cases=[{"case_id": "a", "proxy_name": name}], confirm=True)
+        res = _eval(op="init", proxy_name=name, benchmark_name=f"bench_{name}",
                     requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],
                     proxy_source_path=self.harness,
                     optimize_paths=[os.path.join(self.root, f) for f in ORIGINAL], confirm=True)
@@ -69,17 +76,22 @@ class _MergeFixture(_TmpStorageTest):
         self._write(edit)
         self.assertEqual(self._settle(name, value)["verdict"], "accept")
 
-    def _complete(self, name: str, value: float, passed: bool = True) -> None:
-        """A finished run of *name* on the tree as it stands, as the runner leaves it."""
+    def _complete(self, name: str, value, passed: bool = True) -> None:
+        """A finished run of *name* on the tree as it stands, as the runner leaves it:
+        *value* is one case's time, or {case: time}."""
         self.n += 1
         run_dir = os.path.join(layout.opt_session_runs_dir(name), f"20240101T{self.n:06d}Z")
         os.makedirs(run_dir, exist_ok=True)
+        times = value if isinstance(value, dict) else {"a": value}
+        total = sum(times.values())
         with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
-            json.dump({"all_passed": passed, "best_time_s": value if passed else None,
-                       "results": [{"metrics": {"time_s": value}}]}, fh)
+            json.dump({"all_passed": passed, "best_time_s": min(times.values()) if passed else None,
+                       "total_time_s": total if passed else None,
+                       "results": [{"case_id": c, "passed": passed, "metrics": {"time_s": t}}
+                                   for c, t in times.items()]}, fh)
         with open(procs.run_log_path(run_dir), "w") as fh:
-            fh.write(f"[proxy_runner] summary cases_passed=1 cases_total=1 all_passed={passed} "
-                     f"best_case=a best_time_s={value}\n")
+            fh.write(f"[proxy_runner] summary cases_passed={len(times)} cases_total={len(times)} "
+                     f"all_passed={passed} best_case=a best_time_s={min(times.values())}\n")
         cfg = eval_session.load_opt_config(name)
         paths = cfg["optimize_paths"]
         sid = tree_snapshot.snapshot(eval_session.opt_git_dir(), eval_session.workspace_root(), paths, "launch")
@@ -87,37 +99,44 @@ class _MergeFixture(_TmpStorageTest):
                    {"snapshot_id": sid, "paths": paths, "is_baseline": sid == cfg.get("baseline_id")})
         procs.update_opt_active_link(name, run_dir)
 
-    def _settle(self, name: str, value: float) -> dict:
+    def _settle(self, name: str, value) -> dict:
         self._complete(name, value)
         return server_proxy.proxy_eval_status(op="results", proxy_name=name)
 
     def _merge(self) -> dict:
+        """Started and its baseline measured: answers what next says then."""
         with mock.patch.object(merge, "_in_copy", return_value=True):
             res = server_proxy.proxy_merge(op="start", proxies=["*"], proxy_name="merge-t", confirm=True)
         self.assertEqual(res.get("status"), "ok", res)
         nxt = server_proxy.proxy_merge(op="next", confirm=True)
         self.assertIn("merge: baseline", nxt["next_step"])
-        self._complete("merge-t", 10.0)
+        self._complete("merge-t", {"pa/a": 10.0, "pc/a": 10.0, "pb/a": 10.0})
         return server_proxy.proxy_merge(op="next", confirm=True)
+
+    def _resolve_keeping_pa(self) -> dict:
+        self._write({"a.py": "A = 2\n\n\n\n\nX = 0\n"})
+        return server_proxy.proxy_merge(op="resolved", resolution="pa's rewrite kept: method choice",
+                                        confirm=True)
 
 
 class PlanTests(_MergeFixture):
-    def test_plan_orders_the_sources_and_names_their_conflict(self) -> None:
+    def test_plan_takes_proxies_of_other_suites_and_names_their_conflict(self) -> None:
         res = server_proxy.proxy_merge(op="plan", proxies=["*"])
         self.assertEqual(res["status"], "ok", res)
         self.assertEqual(res["order"], ["pa", "pc", "pb"])
-        self.assertAlmostEqual(res["expected"]["relative"], 0.8 * 0.85 * 0.9, places=5)
+        self.assertEqual({s["suite"] for s in res["sources"]}, {"bench_pa", "bench_pb", "bench_pc"})
         pair = next(p for p in res["pairs"] if {p["a"], p["b"]} == {"pa", "pc"})
         self.assertEqual(pair["shared"], ["a.py"])
         self.assertEqual(pair["conflicts"], ["a.py"])
         apart = next(p for p in res["pairs"] if {p["a"], p["b"]} == {"pa", "pb"})
         self.assertEqual((apart["shared"], apart["conflicts"]), ([], []))
         self.assertIn("spawn_agent", res["next_step"])
+        self.assertIn("ask_user_question", res["next_step"])
 
     def test_a_proxy_with_nothing_kept_is_set_aside(self) -> None:
         server_proxy.proxy_manage(op="register", name="pd", executable_path=self.harness,
                                   run_cmd_template="python3 {executable}", confirm=True)
-        _eval(op="init", proxy_name="pd", benchmark_name="bench",
+        _eval(op="init", proxy_name="pd", benchmark_name="bench_pa",
               requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],
               proxy_source_path=self.harness, optimize_paths=[os.path.join(self.root, "c.py")], confirm=True)
         res = server_proxy.proxy_merge(op="plan", proxies=["pa", "pd"])
@@ -131,25 +150,11 @@ class PlanTests(_MergeFixture):
         files = ["lib/m.f90", "lib2/x.f90", "src/iso_adj.f90", "src/iso_dir.f90"]
         self.assertEqual(merge_sources.own(cfg, files), ["lib/m.f90", "src/iso_dir.f90"])
 
-    def test_another_metric_is_refused(self) -> None:
-        cfg = eval_session.load_opt_config("pb")
-        cfg["primary_metric"] = "gflops"
-        eval_session.save_opt_config(cfg)
-        res = server_proxy.proxy_merge(op="plan", proxies=["pa", "pb"])
-        self.assertEqual(res["status"], "error")
-        self.assertIn("metric", res["error"])
-
     def test_a_frozen_session_is_left_out_and_says_why(self) -> None:
         res = server_proxy.proxy_merge(op="plan", proxies=["pa", "pb", "pa@20261104-101500"])
         self.assertEqual(res["status"], "ok", res)
         self.assertEqual(res["refused"], [{"proxy": "pa@20261104-101500",
                                            "why": "a frozen session: its trees are no longer kept"}])
-
-    def test_a_file_that_is_not_text_is_a_conflict(self) -> None:
-        src, _ = merge_sources.source("pa")
-        with open(os.path.join(self.root, "a.py"), "wb") as fh:
-            fh.write(b"\xff\xfe\x00")
-        self.assertEqual(merge_sources.apply(src), ["a.py"])
 
     def test_start_is_refused_in_the_main_workspace(self) -> None:
         res = server_proxy.proxy_merge(op="start", proxies=["*"], confirm=True)
@@ -157,80 +162,132 @@ class PlanTests(_MergeFixture):
         self.assertIn("plan", res["hint"])
 
 
+class KeptCommitTests(_MergeFixture):
+    def test_the_kept_state_is_the_best_run_not_a_rejected_attempt_and_no_branch(self) -> None:
+        self._write({"a.py": "A = 9\n\n\n\n\nX = 0\n"})
+        self.assertEqual(self._settle("pa", 12.0)["verdict"], "reject")
+        self._write(ORIGINAL)
+        branches = self._git("branch", "--list")
+        src, _ = merge_sources.source("pa")
+        sha, why = merge_sources.kept_commit(src)
+        self.assertEqual(why, "")
+        self.assertEqual(self._git("show", f"{sha}:a.py"), "A = 2\n\n\n\n\nX = 0\n")
+        # Its parent is pa's baseline, so a pick is a three-way merge from there.
+        self.assertEqual(self._git("show", f"{sha}^:a.py"), ORIGINAL["a.py"])
+        self.assertEqual(self._git("branch", "--list"), branches)
+        self.assertEqual(self._read("a.py"), ORIGINAL["a.py"])     # nothing checked out
+
+
+    def test_a_proxy_run_after_another_in_this_session_picks_only_its_own_work(self) -> None:
+        """pe starts from pa's kept code, in the same tree, and changes another line of
+        a.py: merged after pa, only pe's line is picked, without a conflict."""
+        self._write({"a.py": "A = 2\n\n\n\n\nX = 0\n"})
+        self._source("pe", {"a.py": "A = 2\n\n\n\n\nX = 1\n"}, 9.5)
+        self._write(ORIGINAL)
+        for proxy in ("pa", "pe"):
+            src, _ = merge_sources.source(proxy)
+            sha, _ = merge_sources.kept_commit(src)
+            self.assertEqual(merge_sources.git("cherry-pick", sha).returncode, 0, proxy)
+        self.assertEqual(self._read("a.py"), "A = 2\n\n\n\n\nX = 1\n")
+
+
 class MergeRunTests(_MergeFixture):
-    def test_the_whole_holds_its_promise(self) -> None:
+    def test_a_conflict_stops_the_merge_with_both_sides(self) -> None:
         res = self._merge()
-        self.assertIn("merge: all (pa + pb)", res["next_step"])
+        c = res["conflict"]
+        self.assertEqual(c["proxy"], "pc")
+        self.assertEqual([f["path"] for f in c["files"]], ["a.py"])
+        hunk = c["files"][0]["hunks"][0]
+        self.assertIn("A = 2", hunk)
+        self.assertIn("A = 3", hunk)
+        self.assertEqual(c["ours"]["proxies"], ["pa"])
+        self.assertIn("resolved", res["next_step"])
+        self.assertIn("ask_user_question", res["note"])
+
+    def test_resolved_is_refused_while_a_marker_is_left(self) -> None:
+        self._merge()
+        res = server_proxy.proxy_merge(op="resolved", resolution="kept both", confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("a.py", res["error"])
+
+    def test_resolved_goes_on_to_the_next_source_and_the_measure(self) -> None:
+        self._merge()
+        res = self._resolve_keeping_pa()
+        self.assertIn("merge: pa + pc + pb", res["next_step"])
         self.assertEqual((self._read("a.py"), self._read("b.py")), ("A = 2\n\n\n\n\nX = 0\n", "B = 2\n"))
-        self._complete("merge-t", 7.2)
+        self.assertEqual(self._git("status", "--porcelain", "a.py", "b.py"), "")
+
+    def test_each_kernel_against_its_gain_alone_and_nothing_set_aside(self) -> None:
+        self._merge()
+        self._resolve_keeping_pa()
+        self._complete("merge-t", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 9.0})
         rep = server_proxy.proxy_merge(op="next", confirm=True)
         self.assertEqual(rep["phase"], "done")
-        self.assertEqual(rep["final"]["from"], "all")
-        self.assertEqual(rep["kept"], ["pa", "pb"])
-        self.assertEqual(rep["set_aside"], [{"proxy": "pc", "why": "conflict"}])
-        self.assertAlmostEqual(rep["final"]["gain"], 0.28, places=5)
-        self.assertTrue(rep["all"]["holds"])
+        k = {x["proxy"]: x for x in rep["kernels"]}
+        self.assertAlmostEqual(k["pa"]["in_merge"], 0.8, places=5)
+        self.assertAlmostEqual(k["pa"]["interaction"], 1.0, places=5)
+        self.assertTrue(k["pc"]["flagged"])                 # its rewrite lost to pa's
+        self.assertFalse(k["pb"]["flagged"])
+        self.assertAlmostEqual(rep["whole"]["relative"], 0.9, places=5)
+        self.assertEqual(rep["dropped"], [])
+        self.assertIn("pc lost gain", rep["next_step"])
+        merged = {m["proxy"]: m for m in rep["merged"]}
+        self.assertEqual(merged["pc"]["conflicts"], ["a.py"])
+        self.assertIn("method choice", merged["pc"]["resolution"])
 
-    def test_a_short_whole_is_measured_one_at_a_time(self) -> None:
+    def test_drop_takes_a_source_back_out_and_measures_again(self) -> None:
         self._merge()
-        self._complete("merge-t", 9.5)
-        res = server_proxy.proxy_merge(op="next", confirm=True)
-        # Back to the original, the best alone first.
-        self.assertIn("merge: + pa", res["next_step"])
-        self.assertEqual((self._read("a.py"), self._read("b.py")), ("A = 2\n\n\n\n\nX = 0\n", "B = 1\n"))
-        self._complete("merge-t", 8.0)
-        res = server_proxy.proxy_merge(op="next", confirm=True)
-        # pc conflicts with what was kept; pb is next.
-        self.assertIn("merge: + pb", res["next_step"])
-        self._complete("merge-t", 8.5)
-        rep = server_proxy.proxy_merge(op="next", confirm=True)
-        self.assertEqual(rep["final"]["from"], "chain")
-        self.assertEqual(rep["kept"], ["pa"])
-        why = {s["proxy"]: s["why"] for s in rep["set_aside"]}
-        self.assertEqual(why, {"pc": "conflict", "pb": "interference"})
+        self._resolve_keeping_pa()
+        self._complete("merge-t", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 9.0})
+        server_proxy.proxy_merge(op="next", confirm=True)
+        res = server_proxy.proxy_merge(op="drop", proxies=["pb"], confirm=True)
+        self.assertIn("merge: pa + pc", res["next_step"])
         self.assertEqual(self._read("b.py"), "B = 1\n")
-        pb = next(s for s in rep["steps"] if s["proxy"] == "pb")
-        self.assertGreater(pb["interaction"], 1)
+        self._complete("merge-t", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 10.0})
+        rep = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(rep["dropped"], ["pb"])
+        self.assertNotIn("pb", {x["proxy"] for x in rep["kernels"]})
 
-    def test_a_chain_worse_than_the_whole_keeps_the_whole(self) -> None:
+    def test_pause_undoes_the_pending_pick_and_next_carries_on(self) -> None:
         self._merge()
-        self._complete("merge-t", 9.5)    # short of the promise, still a gain
-        server_proxy.proxy_merge(op="next", confirm=True)
-        for _ in range(3):                # pa, then pc (nothing kept to conflict with), then pb
-            self._complete("merge-t", 10.5)
-            rep = server_proxy.proxy_merge(op="next", confirm=True)
-        self.assertEqual(rep["final"]["from"], "all")
-        self.assertEqual(rep["kept"], ["pa", "pb"])
-        self.assertEqual(rep["set_aside"], [{"proxy": "pc", "why": "conflict"}])
-        self.assertEqual((self._read("a.py"), self._read("b.py")), ("A = 2\n\n\n\n\nX = 0\n", "B = 2\n"))
-
-    def test_a_whole_that_gains_nothing_keeps_the_copy_untouched(self) -> None:
-        self._merge()
-        self._complete("merge-t", 10.5)
-        server_proxy.proxy_merge(op="next", confirm=True)
-        for _ in range(3):
-            self._complete("merge-t", 10.5)
-            rep = server_proxy.proxy_merge(op="next", confirm=True)
-        self.assertEqual(rep["final"]["from"], "baseline")
-        self.assertEqual(rep["kept"], [])
-        self.assertEqual({s["why"] for s in rep["set_aside"]}, {"interference"})
-        self.assertEqual(self._read("a.py"), ORIGINAL["a.py"])
+        res = server_proxy.proxy_merge(op="pause", question="pa's tiling or pc's?", confirm=True)
+        self.assertEqual(res["question"]["proxy"], "pc")
+        self.assertEqual(self._read("a.py"), "A = 2\n\n\n\n\nX = 0\n")
+        self.assertEqual(self._git("status", "--porcelain", "a.py"), "")
+        again = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(again["conflict"]["proxy"], "pc")
 
     def test_next_waits_for_the_run_it_named(self) -> None:
-        res = self._merge()
+        self._merge()
+        res = self._resolve_keeping_pa()
         again = server_proxy.proxy_merge(op="next", confirm=True)
         self.assertEqual(again["next_step"], res["next_step"])
 
+    def test_a_merge_leaves_only_its_branch_and_clean_takes_the_rest(self) -> None:
+        branches = self._git("branch", "--list")
+        self._merge()
+        self._resolve_keeping_pa()
+        self._complete("merge-t", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 9.0})
+        server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(self._git("branch", "--list"), branches)
+        reg = store.load_registry()
+        self.assertIn("merge-t--pa", reg)
+        server_proxy.proxy_manage(op="clean", name="merge-t", confirm=True)
+        reg = store.load_registry()
+        self.assertFalse([e for e in reg if e.startswith("merge-t--")])
+        self.assertFalse(os.path.exists(store.suite_path("merge-t")))
+
     def test_the_map_draws_the_merge_and_keeps_it_frozen(self) -> None:
         self._merge()
-        self._complete("merge-t", 7.2)
+        self._resolve_keeping_pa()
+        self._complete("merge-t", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 9.0})
         server_proxy.proxy_merge(op="next", confirm=True)
         drawn = tab.answer("merge-t")
         self.assertEqual(drawn["merge"]["phase"], "done")
         meta = {m["name"]: m for m in drawn["proxies_meta"]}
         self.assertTrue(meta["merge-t"]["merge"])
         self.assertEqual(meta["merge-t"]["sources"], ["pa", "pc", "pb"])
-        self.assertAlmostEqual(meta["pa"]["gain"], 0.2, places=5)
+        self.assertNotIn("merge-t--pa", meta)
         key = session.freeze("merge-t", "cleaned")
         self.assertEqual(session.session(key)["merge"]["phase"], "done")
 
@@ -238,7 +295,8 @@ class MergeRunTests(_MergeFixture):
         drawn = tab.answer(selected=["pa", "pb"])
         self.assertTrue(drawn["combined"])
         self.assertEqual(drawn["selected"], ["pa", "pb"])
-        self.assertAlmostEqual(drawn["forecast"]["expected"], 0.72, places=5)
+        self.assertEqual([s["proxy"] for s in drawn["forecast"]["sources"]], ["pa", "pb"])
+        self.assertEqual(drawn["forecast"]["refusal"], "")
 
 
 class MovedTests(unittest.TestCase):

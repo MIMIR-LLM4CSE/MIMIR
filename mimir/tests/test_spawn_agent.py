@@ -1585,6 +1585,24 @@ class WorktreeTests(unittest.TestCase):
         self._wt_base.start()
         self.addCleanup(self._wt_base.stop)
 
+    def test_a_pick_stopped_on_a_conflict_is_undone_not_committed(self) -> None:
+        """A merge left on a conflict (its child stopped) must not commit its markers."""
+        def git(*a):
+            return subprocess.run(["git", *a], cwd=self.repo, capture_output=True, text=True)
+        git("checkout", "-qb", "side")
+        (Path(self.repo) / "solver.c").write_text("int main(){return 1;}\n", encoding="utf-8")
+        git("commit", "-qam", "side")
+        side = git("rev-parse", "HEAD").stdout.strip()
+        git("checkout", "-q", "main")
+        (Path(self.repo) / "solver.c").write_text("int main(){return 2;}\n", encoding="utf-8")
+        git("commit", "-qam", "main")
+        self.assertNotEqual(git("cherry-pick", side).returncode, 0)
+        worktree.commit_copy(self.repo, "reclaimed")
+        text = (Path(self.repo) / "solver.c").read_text(encoding="utf-8")
+        self.assertNotIn("<<<<<<<", text)
+        self.assertEqual(text, "int main(){return 2;}\n")
+        self.assertEqual(git("log", "-1", "--format=%s").stdout.strip(), "main")
+
     def _branches(self) -> list[str]:
         out = subprocess.run(["git", "branch", "--format=%(refname:short)"],
                              cwd=self.repo, capture_output=True, text=True)

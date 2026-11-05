@@ -1,92 +1,98 @@
 ---
 name: proxy-merge
-description: Use when several optimisation proxies ran in parallel (one axis per sub-agent, each on its own branch) and their gains are to be put together — "merge the proxies", "what do they give together", "Merge" from the code map's proxy picker — to merge their kept optimisations in a copy of its own, measure the whole against the gains alone, and see which ones help or hurt each other.
+description: Use when the gains of several optimisation proxies are to be put together — whether they ran in parallel in sub-agents' copies or one after the other in this session — "merge the proxies", "what do they give together", "Merge" from the code map — to merge their kept optimisations with git in a copy of its own, resolve their conflicts (asking the user when it is a choice of method), and measure each kernel and the whole as a new proxy.
 disable-model-invocation: false
 ---
 
-Optimisations made in parallel are each measured alone, against their own baseline.
+Each proxy's optimisations are measured alone, against its own baseline, whether it ran
+in a sub-agent's copy or in this session, beside or after the others.
 Nothing says they add up: two can touch the same lines, one can take away what another
-gave (both cut the same memory traffic, say), and a gain alone is no promise once the
-code around it has changed. Only the merged code measured settles it. `proxy_merge`
-does that measurement and keeps its account, so you never have to assemble the
-combination by hand.
+gave (both cut the same memory traffic, say). Only the merged code measured settles it.
+`proxy_merge` does the merge with git and the measurement as a new proxy, and keeps the
+account.
 
 ## What a proxy brings
 
 A proxy brings its **kept** work: the patch from its baseline to its best accepted
-tree, read from the snapshot store. That is not the tip of its branch, which can still
-hold an attempt the ratchet rejected. Its copy need not stand any more. A proxy with no
-accepted run beyond its baseline brings nothing and is left out.
+tree, read from the snapshot store, and only the files under its own `optimize_paths`.
+No branch is needed: it is not the tip of a branch (which can still hold an attempt the
+ratchet rejected), and a sub-agent's copy need not stand any more. A proxy that started
+from another's work merges from its own baseline, so only what it added is picked. A proxy with no accepted run beyond its baseline
+brings nothing and is left out. Proxies need not share a metric or a suite: each is
+measured on its own cases.
 
 ## 1. Plan, in your own session
 
 `proxy_merge(op='plan', proxies=[...])`, or `proxies=['*']` for every proxy. It is
-read-only. It answers with:
+read-only. It answers with each proxy's gain alone and files, the files two of them
+share and the `conflicts` git will stop on, and the `brief` to hand to a sub-agent.
+Tell the user what it found, the conflicts especially, then:
 
-- each proxy's gain alone and the files it touches;
-- for each two proxies, the files both change, and the `conflicts` between their two
-  patches (those two cannot both be kept);
-- the gain **expected** together, which assumes the gains multiply;
-- the order a one-at-a-time measurement will follow (best alone first);
-- the `brief` to hand to a sub-agent.
+`spawn_agent(task=<brief>, tools=<the tools the plan names>, background=True)`.
 
-The plan refuses proxies whose metric, goal or benchmark suite differ: one measurement
-cannot judge them all. Tell the user what it found before going on, the conflicts
-especially.
+The merge runs in a copy of its own, on a branch of its own: the user's workspace does
+not change until they merge that branch.
 
-## 2. Measure, in a sub-agent's copy
+## 2. Merge, in the sub-agent's copy
 
-`spawn_agent(task=<brief>, tools=['proxy_merge', 'proxy_eval', 'proxy_eval_status'],
-background=True)`.
+1. `proxy_merge(op='start', proxies=[...], confirm=True)` registers `merge-<stamp>`, a
+   suite of every source's cases (each with its own harness and requirements), and
+   opens its session.
+2. Follow each `next_step`: `proxy_merge(op='next', confirm=True)` and the
+   `proxy_eval(op='run', ...)` it names. The copy is measured untouched first.
+3. Then each proxy's kept patch is picked as a git commit, best alone first: a
+   three-way merge whose base is that proxy's own baseline. A clean pick goes on.
 
-The merge is measured in a copy of its own, on a branch of its own, so the main
-workspace does not change until the user merges that branch. `start` refuses to run
-anywhere else.
+### A conflict
 
-The sub-agent does three things:
+`next` stops on it with each file's conflicting hunks (between `<<<<<<<` and `=======`
+what is merged so far, after it the proxy's) and the axes each side worked on. Decide
+what kind it is:
 
-1. `proxy_merge(op='start', proxies=[...], confirm=True)` registers `merge-<stamp>` over
-   its copy and opens its session.
-2. It alternates `proxy_merge(op='next', confirm=True)` with the
-   `proxy_eval(op='run', axis=..., confirm=True)` that `next` names, until `next` says
-   the merge is done. It edits no file itself.
-3. It answers with `proxy_merge(op='report')`.
+- **Trivial**: an import, neighbouring lines, a renamed variable, both sides keeping
+  the same intent. Resolve it yourself in the files.
+- **A choice of method**: two rewrites of the same loop, two layouts of the same data,
+  two ways to tile one kernel — keeping one means losing the other. Or any doubt.
+  Reason about it (what each side buys, whether they can be combined), then ask the
+  user with `ask_user_question`: both options, what each costs, your recommendation.
+  Resolve as they answer.
 
-`next` drives this sequence:
+Then `proxy_merge(op='resolved', resolution=<how and why>, confirm=True)`. It refuses
+while a conflict marker is left. If the user gives no answer,
+`proxy_merge(op='pause', question=<the question>, confirm=True)` undoes the pending pick
+and keeps the question; stop and hand it back. Whoever carries the merge on calls
+`next` again in the same branch.
 
-1. **The copy untouched.** It is measured first, and every result is judged against it.
-2. **All at once.** Every proxy is applied, one file at a time with a three-way merge. A
-   proxy in conflict with what is already applied writes nothing and is set aside. If
-   the whole holds the expected gain within the noise floor, the merge is done.
-3. **One at a time**, when the whole falls short of the expected gain. The copy goes
-   back to untouched and the proxies are applied in the plan's order, best alone first.
-   Each proxy is measured on top of what was kept before it:
-   - it is kept when it still improves the whole;
-   - it is set aside as `interference` when it does not;
-   - it is set aside as `conflict` when its patch no longer applies.
+## 3. The measurement
 
-At the end, the copy holds the better of the whole and the one-at-a-time chain, and
-that is what gets committed to the branch.
+Once every patch is merged, `next` names one run of the merged code on every source's
+cases. The report gives, per kernel (each source's case):
 
-## 3. Report
+- `alone`: its gain in its own proxy (best / baseline);
+- `in_merge`: its gain here, against this copy untouched;
+- `interaction`: their ratio, under 1 it did better merged, over 1 the merge took some
+  of its gain (`flagged` beyond the noise margin);
 
-The report gives:
+and the **whole**: the total time of every case against the copy untouched.
 
-- the gain expected and the gain measured (`final`);
-- the proxies kept, and those set aside with why;
-- for each proxy measured in the chain, its gain alone beside its gain in the merge
-  (`interaction`: under 1 means it did better with the others, over 1 that the merge
-  took some of its gain).
+Nothing is set aside on its own. A flagged kernel is a question for the user: reason
+about why it lost its gain, then ask whether to keep it anyway, take that proxy back
+out (`proxy_merge(op='drop', proxies=[...], confirm=True)`, a `git revert` of its
+commit, then the whole is measured again), or rework that axis on the merged code.
 
-Give the user those figures, then the branch. Bring the branch over with merge or
-cherry-pick when they want it. A proxy set aside for a conflict is an axis to redo on
-top of the merged code, not a loss; say so.
+## 4. Report
 
-The code map shows the merge in its strip, under the proxy `merge-<stamp>`:
+`proxy_merge(op='report')`: each kernel alone and in the merge, the whole, each
+conflict and how it was resolved, what was dropped, the branch. Give the user those
+figures, then the branch. Once they have merged it, suggest cleaning the source
+proxies (`proxy_manage(op='clean', ...)`): their graph stays on the map. Never clean
+them unasked.
 
-- every proxy's gain alone on the left;
-- their shared files and conflicts as arcs between them;
-- the whole on the right, with the gain expected and the gain measured.
+What a merge leaves: its branch, and the proxy `merge-<stamp>` with its suite and one
+registry entry per source (`merge-<stamp>--<proxy>`), all removed by
+`proxy_manage(op='clean', name='merge-<stamp>')`. No other branch, no other copy.
 
-When the user ticks proxies in the map's picker, the same graph appears without a
-measurement, as a forecast. Its **Merge** button puts the plan to you.
+The code map shows the merge under `merge-<stamp>`: every proxy's gain alone, the
+conflicts as arcs (resolved or not), and the whole. When the user ticks proxies in the
+map's picker, the same graph appears as a forecast, and its **Merge** button puts the
+plan to you.

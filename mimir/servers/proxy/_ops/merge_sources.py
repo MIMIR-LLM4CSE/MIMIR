@@ -1,7 +1,7 @@
-"""What each proxy brings to a merge, read-only: its kept patch (baseline to best accepted
-tree, from the snapshot store), its gain alone, the files two proxies share and the
-conflicts between their patches, the gain they promise together. ``merge`` measures the
-merge; the code map draws the forecast from here.
+"""What each proxy brings to a merge: its kept patch (baseline to best accepted tree, from
+the snapshot store), its gain alone, the files two proxies share and the conflicts
+between their patches; and, in the merge's copy, that patch as a commit git can pick
+(``kept_commit``). ``merge`` runs the merge; the code map draws the forecast from here.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def source(name: str) -> tuple[dict | None, str]:
     return {
         "proxy": name, "branch": cfg.get("branch", ""),
         "metric": cfg.get("primary_metric", "time_s"), "goal": goal,
-        "suite": cfg.get("benchmark_name", ""),
+        "suite": cfg.get("benchmark_name", ""), "requirements": cfg.get("requirements") or [],
         "base_value": base_value, "value": best.get("primary_value"), "run_id": best.get("run_id", ""),
         "relative": rel, "baseline_id": cfg["baseline_id"], "tree": best["tree_snapshot"],
         "files": files,
@@ -108,43 +108,6 @@ def merge3(ours: str | None, base: str | None, theirs: str | None) -> str | None
     return r.stdout
 
 
-def _on_disk(rel: str) -> str | None:
-    """The file as it is now, None when it does not exist; raises ``Conflict`` when it is
-    not text, which no line merge can take."""
-    try:
-        with open(os.path.join(workspace_root(), rel), encoding="utf-8") as fh:
-            return fh.read()
-    except UnicodeDecodeError:
-        raise Conflict from None
-    except OSError:
-        return None
-
-
-def apply(src: dict) -> list[str]:
-    """Merge *src*'s patch into the files on disk: the files in conflict, and then nothing
-    is written."""
-    files: dict[str, str | None] = {}
-    conflicts = []
-    for rel in src["files"]:
-        try:
-            files[rel] = merge3(_on_disk(rel), _read(src["baseline_id"], rel), _read(src["tree"], rel))
-        except Conflict:
-            conflicts.append(rel)
-    if conflicts:
-        return conflicts
-    root = workspace_root()
-    for rel, text in files.items():
-        path = os.path.join(root, rel)
-        if text is None:
-            if os.path.exists(path):
-                os.remove(path)
-            continue
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text)
-    return []
-
-
 def pairs(sources: list[dict]) -> list[dict]:
     """For each two sources: the files both touch, and those whose two patches conflict."""
     out = []
@@ -161,17 +124,10 @@ def pairs(sources: list[dict]) -> list[dict]:
     return out
 
 
-def expected(sources: list[dict]) -> float:
-    """What the sources promise together if their gains multiply: lower is better."""
-    value = 1.0
-    for s in sources:
-        value *= s["relative"]
-    return round(value, 6)
-
-
 def gather(names: list[str]) -> tuple[list[dict], list[dict], str]:
     """The sources *names* name ("*" for every proxy), those set aside and why, and a
-    refusal when they cannot be measured together."""
+    refusal when fewer than two bring anything. Each is measured on its own suite in the
+    merge, so neither their metric nor their suite need agree."""
     if names == ["*"]:
         # Every proxy with a session that is not itself a merge.
         names = [n for n in opt_sessions() if not (load_opt_config(n) or {}).get("merge")]
@@ -184,26 +140,74 @@ def gather(names: list[str]) -> tuple[list[dict], list[dict], str]:
             refused.append({"proxy": n, "why": why})
     if len(sources) < 2:
         return sources, refused, "A merge needs two proxies at least that kept an accepted run."
-    first = sources[0]
-    for s in sources[1:]:
-        for key, label in (("metric", "metric"), ("goal", "goal"), ("suite", "benchmark suite")):
-            if s[key] != first[key]:
-                return sources, refused, (f"{first['proxy']} and {s['proxy']} have a different {label} "
-                                          f"({first[key]} / {s[key]}): one measurement cannot judge both.")
     sources.sort(key=lambda s: s["relative"])
     return sources, refused, ""
 
 
 def public(src: dict) -> dict:
-    return {**{k: src[k] for k in ("proxy", "branch", "run_id", "value", "base_value", "relative", "files")},
+    return {**{k: src[k] for k in ("proxy", "branch", "suite", "metric", "run_id", "value", "base_value",
+                                   "relative", "files")},
             "gain": round(1 - src["relative"], 6)}
 
 
 def forecast(names: list[str]) -> dict:
     """What the map draws for proxies not merged yet: each one's gain alone, the files
-    two of them share, the conflicts between them and the gain they promise together."""
+    two of them share and the conflicts to resolve between them."""
     sources, refused, refusal = gather(names)
     if not sources:
         return {}
     return {"sources": [public(s) for s in sources], "refused": refused, "pairs": pairs(sources),
-            "expected": expected(sources), "refusal": refusal}
+            "refusal": refusal}
+
+
+# ── the patch as a commit, in the merge's copy ────────────────────────────────
+
+def git(*args: str, index: str = "", stdin: str | None = None) -> subprocess.CompletedProcess:
+    """git in the workspace's own repository (the merge's copy), *index* as its index
+    when given, never a shell."""
+    env = {**os.environ, **({"GIT_INDEX_FILE": index} if index else {})}
+    return subprocess.run(["git", "-c", "user.name=MIMIR merge", "-c", "user.email=merge@mimir.invalid",
+                           "-c", "commit.gpgsign=false", *args],
+                          cwd=workspace_root(), env=env, input=stdin, capture_output=True,
+                          text=True, timeout=_GIT_TIMEOUT_S)
+
+
+def _put(index: str, path: str, text: str | None) -> bool:
+    """*path* in *index* holding *text*, or gone from it for None."""
+    if text is None:
+        return git("update-index", "--force-remove", "--", path, index=index).returncode == 0
+    blob = git("hash-object", "-w", "--stdin", stdin=text)
+    if blob.returncode != 0:
+        return False
+    staged = git("ls-files", "-s", "--", path, index=index).stdout.split()
+    mode = staged[0] if staged else "100644"
+    return git("update-index", "--add", "--cacheinfo", f"{mode},{blob.stdout.strip()},{path}",
+               index=index).returncode == 0
+
+
+def kept_commit(src: dict) -> tuple[str, str]:
+    """*src*'s kept patch as a commit over this copy's HEAD, with no branch: (sha, "") or
+    ("", why). Its parent holds *src*'s files as its baseline had them and the commit as
+    its best tree has them, so picking it is a three-way merge whose base is the proxy's
+    own baseline, whatever the files hold here now."""
+    head = git("rev-parse", "HEAD")
+    prefix = git("rev-parse", "--show-prefix")
+    if head.returncode != 0 or prefix.returncode != 0:
+        return "", "this copy is not a git repository"
+    at = prefix.stdout.strip()
+    with tempfile.TemporaryDirectory(prefix="mimir-merge-") as tmp:
+        index = os.path.join(tmp, "index")
+        if git("read-tree", "HEAD", index=index).returncode != 0:
+            return "", "HEAD cannot be read"
+        parent = head.stdout.strip()
+        for snapshot, message in ((src["baseline_id"], f"{src['proxy']}: its baseline"),
+                                  (src["tree"], f"kept state of {src['proxy']} (run {src['run_id']}, "
+                                                f"{round((1 - src['relative']) * 100, 1)}% better alone)")):
+            if not all(_put(index, at + rel, _read(snapshot, rel)) for rel in src["files"]):
+                return "", f"{src['proxy']}'s files cannot be written to the index"
+            tree = git("write-tree", index=index)
+            commit = git("commit-tree", tree.stdout.strip(), "-p", parent, "-m", message)
+            if tree.returncode != 0 or commit.returncode != 0:
+                return "", f"{src['proxy']}'s commit cannot be written"
+            parent = commit.stdout.strip()
+    return parent, ""

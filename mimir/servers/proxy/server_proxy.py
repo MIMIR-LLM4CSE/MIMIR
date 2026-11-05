@@ -745,7 +745,7 @@ async def proxy_eval(
 
 _SLURM_OPS = ("run", "suite", "eval")
 _REQUEST_OPS = ("open", "update", "list", "get")
-_MERGE_OPS = ("plan", "start", "next", "report")
+_MERGE_OPS = ("plan", "start", "next", "resolved", "pause", "drop", "report")
 
 # op-dispatch cross-reference, for the _unknown_op redirect hint (see above).
 _TOOL_BY_OPS: dict[tuple[str, ...], str] = {
@@ -1034,7 +1034,7 @@ def proxy_request(
 
 @mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_MAP_MOVES], reversibility=RECOVERABLE,
                       label="Proxy merge: {op}",
-                      map_moves_when={"arg": "op", "values": ["start", "next"]}))
+                      map_moves_when={"arg": "op", "values": ["start", "next", "resolved", "pause", "drop"]}))
 def proxy_merge(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
@@ -1042,35 +1042,48 @@ def proxy_merge(
     )],
     proxies: list[str] | None = None,
     proxy_name: str = "",
+    resolution: str = "",
+    question: str = "",
     confirm: bool = False,
 ) -> dict:
-    """Merge the kept optimisations of several proxies (axes run in parallel, each by a
-    sub-agent of its own) and measure the gain of the whole against the gains alone.
+    """Merge the kept optimisations of several proxies (in sub-agents' copies or in this
+    session, side by side or one after another) with git, resolve their conflicts, and
+    measure the whole.
 
     A proxy brings its patch from its baseline to its best accepted tree, read from the
-    snapshot store; each file is merged three ways, and a proxy whose patch conflicts
-    with what is already applied is set aside. The merge is measured in a copy of its
-    own: all the proxies at once first; when that falls short of the gain they promise
-    together (their gains multiplied) beyond the noise, one at a time, best alone first,
-    each kept only if it still improves the whole.
+    snapshot store. In the merge's copy each patch is picked as a commit, a three-way
+    merge whose base is that proxy's own baseline; a conflict stops the merge with both
+    sides and what each proxy was doing. The merged code is then a new proxy measured on
+    every source's own cases: each kernel against its gain alone, the whole as the total
+    time of all of them. Nothing is set aside on its own: a choice of method in a
+    conflict, and a kernel that lost its gain, are the user's to decide.
 
     Operations:
-      plan   -> each proxy's gain alone and files, the files two of them share and their
-                conflicts, the gain expected together, and the brief to hand to
-                spawn_agent. Read-only (requires: proxies, or ["*"] for every proxy)
-      start  -> in the merge's copy (a sub-agent's): register the merge proxy
-                `merge-<stamp>` over this copy and open its session (requires: proxies)
-      next   -> the next step of the merge: applies the proxies due and names the run
-                to launch, judges a settled run, says when it is done
-      report -> expected and measured gains, what each proxy did to the whole, what was
-                kept and what was set aside, and why
+      plan     -> each proxy's gain alone and files, the files two of them share and
+                  their conflicts, and the brief to hand to spawn_agent. Read-only
+                  (requires: proxies, or ["*"] for every proxy)
+      start    -> in the merge's copy (a sub-agent's): register the merge proxy
+                  `merge-<stamp>` over this copy, its suite of every source's cases, and
+                  open its session (requires: proxies)
+      next     -> the next step: names the run to launch, merges the next proxy, shows a
+                  conflict to resolve, says when it is done
+      resolved -> the conflict shown is resolved in the files: commit it and go on
+                  (requires: resolution, how and why)
+      pause    -> stop for the user's answer: a pending conflict is undone and the
+                  question kept (requires: question)
+      drop     -> take proxies back out of the measured merge and measure again
+                  (requires: proxies)
+      report   -> each kernel alone and in the merge, the whole, the conflicts and how
+                  they were resolved, what was dropped
 
     Args:
         proxies: For plan and start: the proxies to merge, ["*"] for every proxy with
-            an accepted run.
+            an accepted run; for drop: those to take back out.
         proxy_name: For start: the merge proxy's name (`merge-<stamp>` when empty); for
-            next and report: the merge session (the active one's when empty).
-        confirm: Must be True for start and next.
+            the others: the merge session (the active one's when empty).
+        resolution: For resolved: how the conflict was resolved, and why.
+        question: For pause: the question the user is to answer.
+        confirm: Must be True for every operation but plan and report.
     """
     if op not in _MERGE_OPS:
         return _unknown_op(op, _MERGE_OPS)
@@ -1082,6 +1095,12 @@ def proxy_merge(
         return err("Not confirmed.", hint="Set confirm=True to proceed.")
     if op == "start":
         return _missing_args(op, proxies=proxies) or merge.start(list(proxies or []), proxy_name)
+    if op == "resolved":
+        return _missing_args(op, resolution=resolution) or merge.resolved(proxy_name, resolution)
+    if op == "pause":
+        return _missing_args(op, question=question) or merge.pause(proxy_name, question)
+    if op == "drop":
+        return _missing_args(op, proxies=proxies) or merge.drop(proxy_name, list(proxies or []))
     return merge.next_(proxy_name)
 
 

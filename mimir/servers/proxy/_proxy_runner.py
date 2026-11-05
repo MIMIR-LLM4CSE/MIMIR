@@ -261,6 +261,14 @@ class _Plan:
         # convergence_order is fitted across the sweep, never in one case's metrics.
         return [r for r in self.requirements if r.get("metric") != "convergence_order"]
 
+    def requirements_for(self, case: dict) -> list[dict]:
+        """A case's own requirements when it carries them (a merge's suite holds each
+        source's cases with that source's), else the session's."""
+        own = case.get("requirements")
+        if own is None:
+            return self.case_requirements
+        return [r for r in own if r.get("metric") != "convergence_order"]
+
     @property
     def run_requirements(self) -> list[dict]:
         return [r for r in self.requirements if r.get("metric") == "convergence_order"]
@@ -339,7 +347,7 @@ def _measure_sweep(plan: _Plan, tally: _Tally, case: dict, case_entry: dict, idx
     if spread is not None:
         case_metrics["primary_spread"] = spread
 
-    req_result = metrics.evaluate_requirements(case_metrics, plan.case_requirements)
+    req_result = metrics.evaluate_requirements(case_metrics, plan.requirements_for(case))
     passed = req_result["passed"]
     tally.passed += int(passed)
     tally.best_inputs.append((case_id, passed, case_metrics.get("time_s")))
@@ -499,6 +507,7 @@ def main() -> None:
         "all_passed": all_passed,
         "best_case": best_case,
         "best_time_s": best_time,
+        "total_time_s": ratchet.total_time(tally.best_inputs),
         "convergence_order": convergence_order,
         # Run-level, so no requirement can gate on how long a compiler took.
         "build_s": build_report.get("total_duration_s", 0.0),
