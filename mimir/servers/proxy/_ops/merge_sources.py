@@ -185,6 +185,17 @@ def _put(index: str, path: str, text: str | None) -> bool:
                index=index).returncode == 0
 
 
+def already_in(src: dict) -> bool:
+    """Whether this copy's HEAD already holds *src*'s kept files, as its branch does when
+    that work was committed on it."""
+    at = git("rev-parse", "--show-prefix").stdout.strip()
+    for rel in src["files"]:
+        here = git("show", f"HEAD:{at}{rel}")
+        if (here.stdout if here.returncode == 0 else None) != _read(src["tree"], rel):
+            return False
+    return bool(src["files"])
+
+
 def kept_commit(src: dict) -> tuple[str, str]:
     """*src*'s kept patch as a commit over this copy's HEAD, with no branch: (sha, "") or
     ("", why). Its parent holds *src*'s files as its baseline had them and the commit as

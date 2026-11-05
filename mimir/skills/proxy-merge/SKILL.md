@@ -38,6 +38,9 @@ not change until they merge that branch.
 1. `proxy_merge(op='start', proxies=[...], confirm=True)` registers `merge-<stamp>`, a
    suite of every source's cases (each with its own harness and requirements), and
    opens its session.
+   A proxy whose work is already committed on this branch is taken out first (a
+   revert), so the copy measured untouched is really without it; it is merged back
+   like the others.
 2. Follow each `next_step`: `proxy_merge(op='next', confirm=True)` and the
    `proxy_eval(op='run', ...)` it names. The copy is measured untouched first.
 3. Then each proxy's kept patch is picked as a git commit, best alone first: a

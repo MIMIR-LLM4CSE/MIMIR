@@ -257,6 +257,33 @@ class MergeRunTests(_MergeFixture):
         again = server_proxy.proxy_merge(op="next", confirm=True)
         self.assertEqual(again["conflict"]["proxy"], "pc")
 
+    def test_work_already_committed_on_the_branch_is_measured_out_then_merged_back(self) -> None:
+        """pa's work committed on this branch, pc's not: the copy untouched is measured
+        without pa, so pa's kernel keeps its gain instead of seeming to lose it."""
+        self._write({"a.py": "A = 2\n\n\n\n\nX = 0\n"})
+        self._git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "pa's work")
+        with mock.patch.object(merge, "_in_copy", return_value=True):
+            res = server_proxy.proxy_merge(op="start", proxies=["*"], proxy_name="merge-t", confirm=True)
+        self.assertEqual(res["unapplied"], ["pa"])
+        self.assertEqual(self._read("a.py"), ORIGINAL["a.py"])
+        server_proxy.proxy_merge(op="next", confirm=True)
+        self._complete("merge-t", {"pa/a": 10.0, "pc/a": 10.0, "pb/a": 10.0})
+        conflict = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(conflict["conflict"]["proxy"], "pc")
+        self._resolve_keeping_pa()
+        self._complete("merge-t", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 9.0})
+        rep = server_proxy.proxy_merge(op="next", confirm=True)
+        pa = next(k for k in rep["kernels"] if k["proxy"] == "pa")
+        self.assertAlmostEqual(pa["in_merge"], 0.8, places=5)
+        self.assertFalse(pa["flagged"])
+
+    def test_a_pick_this_copy_already_holds_is_not_a_failure(self) -> None:
+        src, _ = merge_sources.source("pb")
+        sha, _ = merge_sources.kept_commit(src)
+        self.assertEqual(merge_sources.git("cherry-pick", sha).returncode, 0)
+        again = merge_sources.git("cherry-pick", "--keep-redundant-commits", sha)
+        self.assertEqual(again.returncode, 0, again.stderr)
+
     def test_next_waits_for_the_run_it_named(self) -> None:
         self._merge()
         res = self._resolve_keeping_pa()

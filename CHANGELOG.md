@@ -27,7 +27,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is then a new proxy over every source's own cases, so proxies of different suites
   merge: each kernel is judged against its gain alone and the whole is the total time
   (`total_time_s`, a new run-level metric). A kernel that lost its gain is put to the
-  user, who may `drop` its proxy; nothing is set aside on its own. A merge leaves its
+  user, who may `drop` its proxy; nothing is set aside on its own. Work already committed on
+  the branch is taken out before the copy is measured untouched, so its kernel is not
+  judged against itself. A merge leaves its
   branch and its proxy, whose suite and per-source entries go with its `clean`. The
   proxy-merge skill has the protocol.
 - **The code map's proxy picker is a list.** The plain dropdown gave a name and nothing

@@ -106,8 +106,11 @@ def _case_id(proxy: str, case_id: str) -> str:
     return f"{proxy}/{case_id}"
 
 
-def _undo(name: str, entries: list[str]) -> None:
-    """What ``start`` wrote, removed: the merge's entries and its suite."""
+def _undo(name: str, entries: list[str], head: str = "") -> None:
+    """What ``start`` wrote, removed: the merge's entries, its suite, and the commits it
+    made on this copy since *head*."""
+    if head:
+        merge_sources.git("reset", "--keep", head)
     with registry_lock(create=True):
         reg = load_registry() or {}
         for e in [name, *entries]:
@@ -178,6 +181,22 @@ def start(names: list[str], name: str = "") -> dict:
         save_registry(reg)
     save_suite(name, {"name": name, "created_at": _now(), "cases": cases,
                       "description": "The cases of " + ", ".join(s["proxy"] for s in sources) + ", merged"})
+    head = merge_sources.git("rev-parse", "HEAD").stdout.strip()
+    # A proxy's work already committed on this branch is taken out before the copy is
+    # measured untouched: else that untouched copy holds it, and its kernel would seem to
+    # gain nothing in the merge. The merge picks it back like the others.
+    unapplied = []
+    for s in sources:
+        if not merge_sources.already_in(s):
+            continue
+        sha, why = merge_sources.kept_commit(s)
+        out = merge_sources.git("revert", "--no-edit", sha) if sha else None
+        if out is None or out.returncode != 0:
+            merge_sources.git("revert", "--abort")
+            _undo(name, entries, head)
+            return err(f"{s['proxy']}'s work is already on this branch and cannot be taken out to "
+                       f"measure the code without it: {why or out.stderr.strip()[-300:]}")
+        unapplied.append(s["proxy"])
     res = eval_session.init(
         name, name, [], harness, paths,
         _moved(cfg.get("python_executable", ""), root, here), cfg.get("max_hours", 0.0),
@@ -186,7 +205,7 @@ def start(names: list[str], name: str = "") -> dict:
         # "converged" verdict would say nothing about it.
         max_stall=len(sources) + 3, convergence=None, repeat=cfg.get("repeat", 0))
     if res.get("status") != "ok":
-        _undo(name, entries)
+        _undo(name, entries, head)
         return res
     mine = load_opt_config(name)
     mine["merge"] = True
@@ -194,12 +213,13 @@ def start(names: list[str], name: str = "") -> dict:
     _save(name, {
         "name": name, "branch": mine.get("branch", ""), "started_at": _now(),
         "sources": sources, "refused": refused, "pairs": merge_sources.pairs(sources),
-        "entries": entries, "suite": name, "phase": "baseline", "pending": None,
+        "entries": entries, "suite": name, "phase": "baseline", "pending": None, "unapplied": unapplied,
         "merged": [], "conflict": None, "question": None, "dropped": [],
         "kernels": None, "whole": None,
     })
     return ok(with_next({"proxy_name": name, "sources": [merge_sources.public(s) for s in sources],
-                         "refused": refused, "cases": [c["case_id"] for c in cases]},
+                         "refused": refused, "cases": [c["case_id"] for c in cases],
+                         "unapplied": unapplied},
                         "proxy_merge(op='next', confirm=True)"))
 
 
@@ -335,7 +355,9 @@ def _merging(name: str, state: dict, row: dict | None) -> dict | None:
         sha, why = merge_sources.kept_commit(s)
         if not sha:
             return err(f"{s['proxy']}'s kept state cannot be built here: {why}.")
-        picked = merge_sources.git("cherry-pick", "--allow-empty", sha)
+        # --keep-redundant-commits: a pick whose lines this copy already holds is a success
+        # that changes nothing, not a failure.
+        picked = merge_sources.git("cherry-pick", "--keep-redundant-commits", sha)
         if picked.returncode == 0:
             head = merge_sources.git("rev-parse", "HEAD").stdout.strip()
             state["merged"].append({"proxy": s["proxy"], "commit": head, "conflicts": [], "resolution": ""})
