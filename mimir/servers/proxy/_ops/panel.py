@@ -80,7 +80,7 @@ def _curve(rows: list[dict], cfg: dict, base, best) -> dict | None:
     incumbent, points = base, []
     for i, row in enumerate(rows, 1):
         value = num(row.get("primary_value"))
-        kind = _POINT_KIND.get(row.get("verdict"), "not kept")
+        kind = _POINT_KIND.get(row.get("verdict") or "", "not kept")
         if value is None or row.get("feasible") is False:
             kind = "failed" if kind != "elsewhere" else kind
         if kind == "kept" and value is not None:
@@ -105,7 +105,7 @@ def _session_view(proxy_name: str, cfg: dict) -> dict:
     """The session's curve, and the line naming where the best run spends its time; what
     each step changed is the code map's to show, so the section opens it."""
     from .._lib.store import opt_ledger_file
-    from .._lib.ratchet import load_best
+    from .._lib.ratchet import baseline_value, load_best, read_ledger
     try:
         key = (proxy_name, os.path.getmtime(opt_ledger_file(proxy_name)))
     except OSError:
@@ -114,12 +114,12 @@ def _session_view(proxy_name: str, cfg: dict) -> dict:
         return _STEPS["value"]
     baseline_run = cfg.get("baseline_run_id", "")
     try:
-        ledger = eval_observe.read_ledger(proxy_name)
+        ledger = read_ledger(proxy_name)
         best_rec = load_best(proxy_name) or {}
     except Exception:
         return {}                       # one section's store costs its lines, never the drawer
     rows = [r for r in ledger if r.get("run_id") != baseline_run]
-    base = next((r.get("primary_value") for r in ledger if r.get("run_id") == baseline_run), None)
+    base = baseline_value(cfg, ledger)
     view: dict = {}
     chart = _curve(rows, cfg, base, best_rec.get("primary_value"))
     if chart:

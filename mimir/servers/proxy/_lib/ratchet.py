@@ -152,6 +152,35 @@ def append_ledger(proxy_name: str, entry: dict) -> None:
         pass
 
 
+def read_ledger(proxy_name: str) -> list[dict]:
+    """Every settled run of *proxy_name*, oldest first.
+
+    One JSON object per line, appended as runs settle. A line that does not parse is
+    dropped rather than failing the read: the file is written by another process and
+    its last line can be half there. An entry may carry no axis.
+    """
+    rows = []
+    try:
+        with open(store.opt_ledger_file(proxy_name), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        return []
+    return rows
+
+
+def baseline_value(cfg: dict, rows: list[dict]):
+    """The session's baseline metric, read off its ledger *rows*; None until it is measured."""
+    run_id = cfg.get("baseline_run_id")
+    return next((r.get("primary_value") for r in rows if run_id and r.get("run_id") == run_id), None)
+
+
 # ── measurement policy ────────────────────────────────────────────────────────
 
 # Metrics whose value moves between two runs of identical code. A timing metric on a

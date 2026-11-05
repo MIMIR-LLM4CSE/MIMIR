@@ -9,7 +9,7 @@ from .._lib import requests
 from .._lib.layout import resolve_proxy_name
 from .._lib.ratchet import load_best
 from .._lib.store import load_opt_config
-from .eval_observe import read_ledger
+from .._lib.ratchet import read_ledger
 
 
 def start_of(proxy_name: str) -> dict:

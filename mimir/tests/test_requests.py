@@ -7,7 +7,8 @@ import unittest
 from unittest import mock
 
 from mimir.servers.proxy._lib import layout, requests, tree_snapshot
-from mimir.servers.proxy._ops import code_map_steps, eval_session, requests_ops
+from mimir.servers.proxy._ops import eval_session, requests_ops
+from mimir.servers.proxy._ops.code_map import tab
 
 
 class _Store(unittest.TestCase):
@@ -106,8 +107,8 @@ class FollowUpTests(_Store):
         self.assertEqual(requests_ops.update("R1", "trying", "", "", run_id="r9")["request"]["runs"], ["r9"])
         self.assertEqual(requests_ops.update("R1", "", "", "", run_id="r9")["request"]["runs"], ["r9"])
         steps = [{"run_id": "r9", "axis": "multigrid", "verdict": "accept", "value": 8.0}]
-        with mock.patch.object(code_map_steps, "session", return_value={"steps": steps}):
-            (row,) = code_map_steps.requests_view()
+        with mock.patch.object(tab, "session", return_value={"steps": steps}):
+            (row,) = tab.requests_view()
         self.assertEqual([(s["run_id"], s["variant"]) for s in row["steps"]], [("r9", None)])
         self.assertEqual(row["status"], "trying")
 
@@ -169,8 +170,8 @@ class MapTests(_Store):
                  {"run_id": "r2", "axis": "[R1.2] BiCGStab", "verdict": "reject", "value": 9.0},
                  {"run_id": "r3", "axis": "[R10] other", "verdict": "accept", "value": 7.0},
                  {"run_id": "r4", "axis": "tiling", "verdict": "accept", "value": 7.5}]
-        with mock.patch.object(code_map_steps, "session", return_value={"steps": steps}):
-            (row,) = code_map_steps.requests_view()
+        with mock.patch.object(tab, "session", return_value={"steps": steps}):
+            (row,) = tab.requests_view()
         self.assertEqual([(s["run_id"], s["variant"]) for s in row["steps"]], [("r1", 1), ("r2", 2)])
         self.assertAlmostEqual(row["steps"][1]["delta"], -0.1)
         self.assertEqual((row["status"], row["start_value"]), ("trying", 10.0))

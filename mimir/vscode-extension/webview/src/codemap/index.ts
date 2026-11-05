@@ -3,26 +3,18 @@
 // what the server answered (`shared.code_map`) and reads nothing else.
 
 import { STYLE } from "./style";
-import { barWidth, cap, countersBlock, edgeKey, fnParts, functionsBlock, gpuBlock, kernelBlock, memoryBlock, note, overlay, pctOf,
+import { basename, esc, signed } from "./format";
+import { barWidth, cap, countersBlock, fnParts, functionsBlock, gpuBlock, kernelBlock, memoryBlock, note, overlay, pctOf,
   stepCard, strip, timeAt, topFunctions, type Overlay, type RowExtra, type Scope, type Session, type TimeView } from "./session";
 import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
   type Draft, type Request, type Sent, type Target } from "./request";
 import { formHtml, requestDetail, requestsSection } from "./requestView";
-import { ALL, mergeable, mergePrompt, pickerHtml, ticked, type ProxyMeta } from "./picker";
+import { picked, Picker } from "./picker";
 import { mergeGraph, type Forecast, type MergeState } from "./merge";
+import { barsHeight, BW, curve, derive, edgeClass, FN_N, FN_ROW, GX, LW, marked, midOf, pathOf, visible, type ModEdge, type View } from "./layout";
+import { fitText, svg } from "./svgText";
+import type { CodeMap, Edge, File, Selection } from "./types";
 
-interface Component { id: string; name: string; tier: number; declared: string[]; external: Record<string, number>; tests: boolean }
-interface Module { id: string; component: string }
-interface File { id: string; lang: string; lines: number; module: string; component: string }
-interface Edge {
-  from: string; to: string; line: number; kind: string; via: string;
-  sure: "exact" | "by_name"; deferred: boolean; breaks: string;
-}
-interface CodeMap {
-  root: string; source_root: string; components: Component[]; modules: Module[]; files: File[];
-  edges: Edge[]; cycles: string[][]; unresolved: Record<string, number>; truncated: boolean;
-}
-type Selection = { kind: "comp" | "module" | "file" | "request"; id: string } | null;
 
 /** What the tab keeps across its reloads: its choices, the request being written, and
  *  those sent that the server has not answered yet. */
@@ -34,12 +26,10 @@ declare function acquireVsCodeApi(): {
 };
 const vscode = acquireVsCodeApi();
 
-const NS = "http://www.w3.org/2000/svg";
-// A box is BW wide at least, and widens to fill the tab; it grows by FN_ROW a function listed.
 // A bar's figure takes PCT_W at the box's right, "<0.1%" included.
 const PCT_W = 46;
-const BW = 156, BH = 52, GX = 12, GY = 12, LW = 128, PAD = 14, BGAP = 30, FN_N = 3, FN_ROW = 14;
 const LANG: Record<string, string> = { python: "py", cython: "pyx", cpp: "c++", c: "c", fortran: "f", pyf: "f2py" };
+
 
 let map: CodeMap | null = null;
 let sel: Selection = null;
@@ -56,22 +46,22 @@ let showTests = vscode.getState()?.tests === true;
 let showFns = vscode.getState()?.fns === true;
 // The columns of modules the tab's width holds, and how wide that makes a box.
 let cols = 5, boxW = BW;
-// Whose steps the map shows: "" the active session's, a proxy's name, ALL for every proxy,
-// or the ticked ones joined by commas.
-let pick = vscode.getState()?.pick ?? "";
+// Whose steps the map shows, and the picker that changes it: a pick shown is asked of the server.
+const picker = new Picker(vscode.getState()?.pick ?? "", {
+  choose: () => { remember(); remap(); },
+  prompt: (text) => vscode.postMessage({ type: "prompt", text }),
+});
 
 // The request being written, the ones sent and not yet recorded, and the recorded ones.
 let draft: Draft | null = vscode.getState()?.draft ?? null;
 let sent: Sent[] = vscode.getState()?.sent ?? [];
 let requests: Request[] = [];
 
-function remember(): void { vscode.setState({ skin, tests: showTests, fns: showFns, pick, draft, sent }); }
+function remember(): void { vscode.setState({ skin, tests: showTests, fns: showFns, pick: picker.pick, draft, sent }); }
 
-/** Ask the server again, for the steps *pick* names. */
+/** Ask the server again, for the steps the pick names. */
 function ask(): void {
-  const t = ticked(pick);
-  vscode.postMessage({ type: "refresh",
-    ...(t.length ? { proxies: t } : pick === ALL ? { combined: true } : pick ? { proxy: pick } : {}) });
+  vscode.postMessage({ type: "refresh", ...picker.query() });
 }
 
 // A mapping asked for (⟳, the proxy picker, a step settled): under way, done (and when), or
@@ -134,290 +124,19 @@ function renderStatus(flash = false): void {
   }
 }
 
-/** The pick last asked again for an answer that did not hold it, until one does. */
-let reasked: string | null = null;
-
-/** The proxies the server offered, a line on each, and the active one: from the last answer. */
-let proxies: string[] = [];
-let meta: ProxyMeta[] = [];
-let active = "";
 // A merge session's state, or what merging the ticked proxies promises.
 let mergeState: MergeState | null = null;
 let forecast: Forecast | null = null;
-// The picker's list, open or not, and the proxies ticked in it (two or more are the pick).
-let pickerOpen = false;
-let ticks = new Set<string>(ticked(pick));
 
-/** Whose steps an answer holds, written as *pick* writes it. */
-function picked(s: Session | undefined): string {
-  if (s?.selected && s.selected.length > 1) return s.selected.join(",");
-  if (s?.combined) return ALL;
-  return !s?.proxy || s.proxy === s.active ? "" : s.proxy;
-}
-
-/** The pick as the server can answer it: the active proxy named is the active session. */
-function reachable(p: string): string {
-  if (p === ALL) return proxies.length > 1 ? ALL : "";
-  const t = ticked(p);
-  if (t.length) {
-    const there = t.filter((x) => proxies.includes(x));
-    return there.length > 1 ? there.join(",") : reachable(there[0] ?? "");
-  }
-  return p && p !== active && proxies.includes(p) ? p : "";
-}
-
-function renderPicker(): void {
-  const el = document.getElementById("proxy")!;
-  el.hidden = proxies.length < 2;
-  if (el.hidden) { pickerOpen = false; return; }
-  // Rebuilt with each answer: the focus goes back to the control that had it.
-  const had = document.activeElement instanceof HTMLElement && el.contains(document.activeElement) ? document.activeElement : null;
-  const again = had?.dataset.tick !== undefined ? '[data-tick="' + had.dataset.tick + '"]'
-    : had?.dataset.pick !== undefined ? '[data-pick="' + had.dataset.pick + '"]' : had ? ".pick-btn" : "";
-  el.innerHTML = pickerHtml(meta, reachable(pick), active, pickerOpen, ticks);
-  if (again) el.querySelector<HTMLElement>(again)?.focus();
-}
-
-/** Show *p*'s steps, the picker's list closed or not. */
-function choose(p: string, close: boolean): void {
-  pick = p;
-  if (close) pickerOpen = false;
-  remember();
-  remap();
-}
-
-function onPickerClick(e: Event): void {
-  // The list is rebuilt under the click: the document's "click outside" must not see it.
-  e.stopPropagation();
-  const t = e.target as HTMLElement;
-  if (t.closest(".pick-btn")) {
-    pickerOpen = !pickerOpen;
-    renderPicker();
-    if (pickerOpen) document.querySelector<HTMLElement>("#proxy .pick-panel button, #proxy .pick-panel input")?.focus();
-    return;
-  }
-  const name = t.closest<HTMLElement>("[data-pick]");
-  if (name) { ticks = new Set(); choose(name.dataset.pick ?? "", true); return; }
-  if (t.closest("[data-merge]")) {
-    const names = mergeable(meta, [...ticks]);
-    if (names.length < 2) return;
-    pickerOpen = false;
-    renderPicker();
-    vscode.postMessage({ type: "prompt", text: mergePrompt(names) });
-  }
-}
-
-function onPickerTick(e: Event): void {
-  const box = e.target as HTMLInputElement;
-  const name = box.dataset.tick;
-  if (name === undefined) return;
-  if (box.checked) ticks.add(name); else ticks.delete(name);
-  // Two or more are drawn together; one alone is that proxy's steps.
-  const t = [...ticks];
-  if (t.length > 1) choose(t.join(","), false);
-  else if (t.length === 1) choose(meta.find((m) => m.name === t[0])?.active ? "" : t[0], false);
-  // At once, without waiting for the answer: the button and the Merge count follow the ticks.
-  renderPicker();
-}
-
-/** The picker's keys: Escape closes it, the arrows move between its lines. */
-function onPickerKey(e: KeyboardEvent): void {
-  if (e.key === "Escape" && pickerOpen) {
-    e.stopPropagation();
-    pickerOpen = false;
-    renderPicker();
-    document.querySelector<HTMLElement>("#proxy .pick-btn")?.focus();
-    return;
-  }
-  if (!pickerOpen || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
-  e.preventDefault();
-  const lines = Array.from(document.querySelectorAll<HTMLElement>("#proxy .pick-name, #proxy [data-merge]:not([disabled])"));
-  // From a tick, the line it is on.
-  const focused = document.activeElement as HTMLElement | null;
-  const here = focused?.closest(".pick-row")?.querySelector<HTMLElement>(".pick-name") ?? focused;
-  const at = here ? lines.indexOf(here) : -1;
-  lines[(at + (e.key === "ArrowDown" ? 1 : lines.length - 1)) % lines.length]?.focus();
-}
-
-/** The map as drawn: without its tests unless they are shown. */
-function visible(m: CodeMap): CodeMap {
-  if (showTests) return m;
-  const hidden = new Set(m.components.filter((c) => c.tests).map((c) => c.id));
-  if (!hidden.size) return m;
-  const files = m.files.filter((f) => !hidden.has(f.component));
-  const kept = new Set(files.map((f) => f.id));
-  const modules = new Set(files.map((f) => f.module));
-  return { ...m, files, components: m.components.filter((c) => !hidden.has(c.id)),
-    modules: m.modules.filter((x) => modules.has(x.id)),
-    edges: m.edges.filter((e) => kept.has(e.from) && kept.has(e.to)),
-    cycles: m.cycles.filter((c) => c.every((id) => modules.has(id))) };
-}
-
-function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, parent?: Element): SVGElementTagNameMap[K] {
-  const e = document.createElementNS(NS, tag);
-  for (const k in attrs) e.setAttribute(k, String(attrs[k]));
-  parent?.appendChild(e);
-  return e;
-}
-function esc(s: unknown): string {
-  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
-}
-const base = (p: string) => p.split("/").pop() ?? p;
-const key = (a: string, b: string) => `${a}|${b}`;
-
-/** What the map draws, derived once per answer: positions, module edges, lookups. */
-interface View {
-  byId: Map<string, File>;
-  modFiles: Map<string, File[]>;
-  compOf: Map<string, Component>;
-  cycleOf: Map<string, number>;
-  pos: Map<string, { x: number; y: number }>;
-  bands: { c: Component; y: number; h: number }[];
-  width: number; height: number;
-  /** A module box's size: wider with the tab, taller with its functions listed. */
-  bw: number; bh: number;
-  modEdges: ModEdge[];
-  /** The modules a rule break starts from. */
-  breakMods: Set<string>;
-}
-interface ModEdge {
-  from: string; to: string; edges: Edge[]; breaks: number; binding: number; byName: number;
-  cycle: boolean; deferred: boolean; added: number; removed: boolean;
+/** The map laid out to the tab's width and the boxes' height. */
+function layoutOf(m: CodeMap): View {
+  return derive(m, cols, boxW, boxHeight());
 }
 
 /** How tall a box is: with its bars, and its functions when they are shown and the profile has them. */
 function boxHeight(): number {
   const t = time();
   return barsHeight(t) + (showFns && t?.functions ? 4 + FN_N * FN_ROW : 0);
-}
-
-/** How tall a box's head is: its name and size, and one bar or two. */
-function barsHeight(t: TimeView | null): number {
-  return t?.gpuFiles && !t.cpuUnavailable ? BH + 11 : BH;
-}
-
-function derive(m: CodeMap, COLS = cols, bw = boxW, bh = boxHeight()): View {
-  const byId = new Map(m.files.map((f) => [f.id, f]));
-  const modFiles = new Map<string, File[]>();
-  for (const f of m.files) (modFiles.get(f.module) ?? modFiles.set(f.module, []).get(f.module)!).push(f);
-  const compOf = new Map(m.components.map((c) => [c.id, c]));
-  const cycleOf = new Map<string, number>();
-  m.cycles.forEach((c, i) => c.forEach((id) => cycleOf.set(id, i)));
-  const sizes = new Map<string, number>();
-  for (const f of m.files) sizes.set(f.component, (sizes.get(f.component) ?? 0) + 1);
-  const compMods = new Map<string, string[]>();
-  for (const x of m.modules) (compMods.get(x.component) ?? compMods.set(x.component, []).get(x.component)!).push(x.id);
-  const size = (c: Component) => sizes.get(c.id) ?? 0;
-  const order = [...m.components].sort((a, b) => b.tier - a.tier || size(b) - size(a));
-  const pos = new Map<string, { x: number; y: number }>();
-  const bands: View["bands"] = [];
-  let y = 4;
-  for (const c of order) {
-    const mods = (compMods.get(c.id) ?? []).sort();
-    if (!mods.length) continue;
-    const rows = Math.ceil(mods.length / COLS), h = PAD * 2 + rows * bh + (rows - 1) * GY;
-    bands.push({ c, y, h });
-    mods.forEach((id, i) => pos.set(id, { x: LW + (i % COLS) * (bw + GX), y: y + PAD + Math.floor(i / COLS) * (bh + GY) }));
-    y += h + BGAP;
-  }
-  const agg = new Map<string, ModEdge>();
-  for (const e of m.edges) {
-    const a = byId.get(e.from)!.module, b = byId.get(e.to)!.module;
-    if (a === b) continue;
-    let me = agg.get(key(a, b));
-    if (!me) agg.set(key(a, b), me = { from: a, to: b, edges: [], breaks: 0, binding: 0, byName: 0, cycle: false, deferred: true, added: 0, removed: false });
-    me.edges.push(e);
-    if (e.breaks) me.breaks++;
-    if (e.kind === "binding") me.binding++;
-    if (e.sure === "by_name") me.byName++;
-    me.deferred = me.deferred && e.deferred;
-  }
-  const breakMods = new Set<string>();
-  for (const me of agg.values()) {
-    me.cycle = cycleOf.has(me.from) && cycleOf.get(me.from) === cycleOf.get(me.to);
-  }
-  for (const e of m.edges) if (e.breaks) breakMods.add(byId.get(e.from)!.module);
-  return { byId, modFiles, compOf, cycleOf, pos, bands, width: LW + COLS * (bw + GX) + 4, height: y - BGAP + 4,
-    bw, bh, modEdges: [...agg.values()], breakMods };
-}
-
-/** The edge from module *a* to *b* as a cubic: start, two controls, end. */
-function curve(v: View, a: string, b: string): number[] {
-  const BW = v.bw, BH = v.bh;
-  const pa = v.pos.get(a)!, pb = v.pos.get(b)!, ax = pa.x + BW / 2, bx = pb.x + BW / 2;
-  if (pb.y > pa.y + 4) { const y1 = pa.y + BH, y2 = pb.y, k = (y2 - y1) / 2; return [ax, y1, ax, y1 + k, bx, y2 - k, bx, y2]; }
-  if (pb.y < pa.y - 4) {
-    const x1 = pa.x + BW, x2 = pb.x + BW, y1 = pa.y + BH / 2, y2 = pb.y + BH / 2, k = 36 + Math.abs(y2 - y1) * 0.15;
-    return [x1, y1, x1 + k, y1, x2 + k, y2, x2, y2];
-  }
-  const lift = 16 + Math.abs(bx - ax) * 0.1;
-  return [ax, pa.y, ax, pa.y - lift, bx, pb.y - lift, bx, pb.y];
-}
-function pathOf(c: number[]): string {
-  return `M${c[0]},${c[1]} C${c[2]},${c[3]} ${c[4]},${c[5]} ${c[6]},${c[7]}`;
-}
-/** A cubic's middle, computed: measuring the drawn path would lay the page out once per edge. */
-function midOf(c: number[]): { x: number; y: number } {
-  return { x: (c[0] + 3 * c[2] + 3 * c[4] + c[6]) / 8, y: (c[1] + 3 * c[3] + 3 * c[5] + c[7]) / 8 };
-}
-
-/** The font an SVG text of class *cls* in a module's box is drawn in, read once. */
-const fonts = new Map<string, string>();
-function fontOf(cls: string): string {
-  let f = fonts.get(cls);
-  if (f === undefined) {
-    const probe = svg("svg", { width: 0, height: 0 }, document.body);
-    const cs = getComputedStyle(svg("text", { class: cls }, svg("g", { class: "m" }, probe)));
-    f = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-    probe.remove();
-    fonts.set(cls, f);
-  }
-  return f;
-}
-/** *text* shortened by *cut* until it holds in *max* px, measured on a canvas: an SVG text
- *  measured as it is drawn lays the page out at every try. */
-const fitted = new Map<string, string>();
-let pen: CanvasRenderingContext2D | null = null;
-function fitText(text: string, max: number, cls: string, cut: (s: string) => string): string {
-  const k = cls + "|" + max + "|" + text;
-  let out = fitted.get(k);
-  if (out !== undefined) return out;
-  pen ??= document.createElement("canvas").getContext("2d");
-  out = text;
-  if (pen) {
-    pen.font = fontOf(cls);
-    while (pen.measureText(out).width > max && out.length > 4) out = cut(out);
-  }
-  if (fitted.size > 5000) fitted.clear();
-  fitted.set(k, out);
-  return out;
-}
-
-/** The map's module edges with a step's marks: its added dependencies counted on the
- *  edges that hold them, its removed ones drawn where both modules still are. */
-function marked(v: View, ov: Overlay | null): ModEdge[] {
-  if (!ov) return v.modEdges;
-  const out = v.modEdges.map((me) => ({ ...me, added: me.edges.filter((e) => ov.added.has(edgeKey(e))).length }));
-  const gone = new Map<string, ModEdge>();
-  for (const e of ov.removed) {
-    const a = v.byId.get(e.from)?.module, b = v.byId.get(e.to)?.module;
-    if (!a || !b || a === b || !v.pos.has(a) || !v.pos.has(b)) continue;
-    const k = key(a, b);
-    const me = gone.get(k) ?? { from: a, to: b, edges: [], breaks: 0, binding: 0, byName: 0, cycle: false,
-      deferred: false, added: 0, removed: true };
-    me.edges.push({ ...e, sure: e.sure === "by_name" ? "by_name" : "exact", deferred: false });
-    gone.set(k, me);
-  }
-  return out.concat([...gone.values()]);
-}
-
-function edgeClass(me: ModEdge): string {
-  if (me.removed) return "edge is-removed";
-  if (me.added && me.added === me.edges.length) return "edge is-added";
-  if (me.breaks) return "edge is-break";
-  if (me.cycle) return "edge is-cycle";
-  if (me.binding === me.edges.length) return me.byName === me.edges.length ? "edge is-binding is-byname" : "edge is-binding";
-  return me.deferred ? "edge is-deferred" : "edge";
 }
 
 function selectedModule(v: View): string | null {
@@ -531,7 +250,7 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     svg("rect", { class: "band-bar", x: 12, y: b.y + 15, width: 3, height: 11, rx: 1.5 }, s);
     svg("text", { class: "band-name", x: 21, y: b.y + 25 }, s).textContent = b.c.name;
     svg("text", { class: "band-sub", x: 12, y: b.y + 42 }, s).textContent = `tier ${b.c.tier}`;
-    const dl = b.c.declared.map(base);
+    const dl = b.c.declared.map(basename);
     const t = svg("text", { class: "band-sub", x: 12, y: b.y + 57 }, s);
     t.textContent = dl.length ? (dl.length > 2 ? `→ ${dl.length} components` : `→ ${dl.join(", ")}`) : "";
     if (dl.length > 2) svg("title", {}, t).textContent = dl.join(", ");
@@ -560,7 +279,7 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     svg("rect", { class: "box", width: BW, height: BH, rx: 6 }, g);
     const comp = files[0].component;
     const nm = svg("text", { class: "mname", x: 9, y: 18 }, g);
-    nm.textContent = fitText(id === comp ? base(id) : id.slice(comp.length + 1), BW - 30, "mname", (x) => "…" + x.slice(2));
+    nm.textContent = fitText(id === comp ? basename(id) : id.slice(comp.length + 1), BW - 30, "mname", (x) => "…" + x.slice(2));
     const lines = files.reduce((n, f) => n + f.lines, 0);
     const langs = [...new Set(files.map((f) => LANG[f.lang] ?? f.lang))].join(" ");
     svg("text", { class: "msub", x: 9, y: 33 }, g).textContent = `${files.length} files · ${(lines / 1000).toFixed(1)}k · ${langs}`;
@@ -587,7 +306,7 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
       mine.forEach((st, i) => {
         const pl = svg("g", { class: "pill", transform: `translate(${BW - 52 - i * 54},-8)` }, g);
         svg("rect", { class: st.verdict === "accept" ? "ok" : "no", width: 48, height: 15, rx: 7.5 }, pl);
-        svg("text", { x: 24, y: 11, "text-anchor": "middle" }, pl).textContent = "#" + st.n + " " + (st.delta === null ? "" : signedShort(st.delta));
+        svg("text", { x: 24, y: 11, "text-anchor": "middle" }, pl).textContent = "#" + st.n + " " + (st.delta === null ? "" : signed(st.delta, true));
         svg("title", {}, pl).textContent = "#" + st.n + " " + st.axis;
       });
     }
@@ -650,7 +369,7 @@ function fileRow(id: string, right: string, line?: number, label?: string, tip?:
   return '<div class="row' + (extra.sub ? " two" : "") + (meter ? " meter" + (extra.cls ? " " + extra.cls : "") + '" style="--w:' + barWidth(extra.w!) : "")
     + '"><button class="go" data-file="' + esc(id) + '" data-line="' + (line ?? "")
     + (label ? '" data-fn="' + esc(label) : "")
-    + '" title="' + esc((tip ?? id) + "\n" + how) + '"><span class="nm">' + esc(label ?? base(id)) + "</span>"
+    + '" title="' + esc((tip ?? id) + "\n" + how) + '"><span class="nm">' + esc(label ?? basename(id)) + "</span>"
     + (extra.sub ? '<span class="sub">' + esc(extra.sub) + "</span>" : "") + "</button><span>" + esc(right) + "</span></div>";
 }
 /** A module in a list, selecting it in the map. */
@@ -748,16 +467,16 @@ function componentDetail(m: CodeMap, v: View, id: string): string {
   const breaks = m.edges.filter((e) => e.breaks && ids.has(e.from));
   const cycles = m.cycles.filter((cy) => cy.some((x) => mods.includes(x)));
   const compRows = (mm: Map<string, number>) => [...mm].sort((a, b) => b[1] - a[1]).map(([k, n]) =>
-    '<div class="row"><button class="go" data-comp="' + esc(k) + '" title="' + esc(k) + '">' + esc(base(k))
+    '<div class="row"><button class="go" data-comp="' + esc(k) + '" title="' + esc(k) + '">' + esc(basename(k))
     + "</button><span>" + n + "</span></div>");
   const modTime = (x: string) => (t ? moduleTime(v, x, t.files) : 0);
   const modRows = [...mods].sort((a, b) => modTime(b) - modTime(a) || a.localeCompare(b)).map((x) =>
     moduleRow(x, t && modTime(x) ? pctOf(modTime(x)) : (v.modFiles.get(x) ?? []).length + " files",
-              x === id ? base(x) : x.slice(id.length + 1)));
+              x === id ? basename(x) : x.slice(id.length + 1)));
   return BACK + section("sel", c.name, '<div class="path">' + esc(id) + "</div>"
     + line("tier", String(c.tier))
     + line("files", files.length + " · " + files.reduce((n, f) => n + f.lines, 0).toLocaleString("en") + " lines")
-    + (c.declared.length ? line("build links", esc(c.declared.map(base).join(", "))) : "")
+    + (c.declared.length ? line("build links", esc(c.declared.map(basename).join(", "))) : "")
     + (t && !t.cpuUnavailable ? line("time", pctOf(mods.reduce((n, x) => n + modTime(x), 0)) + " of the baseline's") : "")
     + (t?.gpuFiles ? line("GPU time", pctOf(mods.reduce((n, x) => n + moduleTime(v, x, t.gpuFiles!), 0)) + " of the baseline's") : "")
     + (t?.memory?.files ? line("memory", pctOf(mods.reduce((n, x) => n + moduleTime(v, x, t.memory!.files!), 0)) + " of the heap's peak") : "")
@@ -784,7 +503,7 @@ function moduleDetail(m: CodeMap, v: View, id: string): string {
   const rows = (mm: Map<string, number>) => [...mm].sort((a, b) => b[1] - a[1]).map(([k, n]) => moduleRow(k, n));
   const cycle = v.cycleOf.has(id)
     ? line("cycle", "with " + (m.cycles[v.cycleOf.get(id)!].length - 1) + " modules", "is-cycle") : "";
-  return BACK + section("sel", base(id), '<div class="path">' + esc(id) + "</div>" + cycle
+  return BACK + section("sel", basename(id), '<div class="path">' + esc(id) + "</div>" + cycle
     + (t && !t.cpuUnavailable ? line("time", pctOf(moduleTime(v, id, t.files)) + " of the baseline's, profile of " + esc(t.from)) : "")
     + (t?.gpuFiles ? line("GPU time", pctOf(moduleTime(v, id, t.gpuFiles)) + " of the baseline's") : "")
     + (t?.memory?.files ? line("memory", pctOf(moduleTime(v, id, t.memory.files)) + " of the heap's peak") : "")
@@ -798,7 +517,7 @@ function moduleDetail(m: CodeMap, v: View, id: string): string {
 function fileDetail(m: CodeMap, v: View, id: string): string {
   const f = v.byId.get(id)!;
   const out = m.edges.filter((e) => e.from === f.id), inn = m.edges.filter((e) => e.to === f.id);
-  return BACK + section("sel", base(f.id), '<div class="path">' + esc(f.id) + "</div>"
+  return BACK + section("sel", basename(f.id), '<div class="path">' + esc(f.id) + "</div>"
     + line("module", '<button class="link" data-module="' + esc(f.module) + '">' + esc(f.module) + "</button>")
     + line("language", esc(f.lang)) + line("lines", f.lines.toLocaleString("en"))
     + (time()?.files[f.id] ? line("time", pctOf(time()!.files[f.id]) + " of the baseline's") : "")
@@ -807,7 +526,7 @@ function fileDetail(m: CodeMap, v: View, id: string): string {
     + functionsBlock(time()?.functions, fileRow, 12, (x) => x === f.id)
     + '<div class="cap">Depends on (' + out.length + ")</div>" + list(out.map((e) => fileRow(e.to, edgeRight(e))))
     + '<div class="cap">Used by (' + inn.length + ")</div>" + list(inn.map((e) => fileRow(e.from, edgeRight(e), e.line)))
-    + '<button class="open" data-open="' + esc(f.id) + '" data-line="">Open ' + esc(base(f.id)) + "</button>"
+    + '<button class="open" data-open="' + esc(f.id) + '" data-line="">Open ' + esc(basename(f.id)) + "</button>"
     + newButtons({ file: f.id }));
 }
 
@@ -1061,11 +780,6 @@ function stepLegend(): string {
     + "<span>the dependencies drawn are today's code</span>";
 }
 
-/** ±12% in the width of a pill. */
-function signedShort(d: number): string {
-  return (d > 0 ? "+" : d < 0 ? "−" : "±") + Math.abs(d * 100).toFixed(0) + "%";
-}
-
 function renderSession(): void {
   const el = document.getElementById("session")!;
   const m = mergeState ?? forecast;
@@ -1090,7 +804,7 @@ let raw: CodeMap | null = null;
 function drawMap(): void {
   if (!map || !view || !map.files.length) return;
   // The boxes' height follows the functions shown, which follow the step shown.
-  if (view.bh !== boxHeight()) view = derive(map);
+  if (view.bh !== boxHeight()) view = layoutOf(map);
   renderMap(view, session && step ? overlay(session, step, scope) : null, time());
 }
 
@@ -1118,7 +832,7 @@ function render(): void {
     document.getElementById("side")!.innerHTML = "";
     return;
   }
-  renderPicker();
+  picker.render();
   renderSession();
   drawMap();
   renderLegend();
@@ -1152,14 +866,7 @@ function mount(): void {
     render();
   }));
   document.getElementById("reload")!.addEventListener("click", remap);
-  const picker = document.getElementById("proxy")!;
-  picker.addEventListener("click", onPickerClick);
-  picker.addEventListener("change", onPickerTick);
-  picker.addEventListener("keydown", onPickerKey);
-  // A click anywhere else closes the list.
-  document.addEventListener("click", (e) => {
-    if (pickerOpen && !(e.target as Element | null)?.closest?.("#proxy")) { pickerOpen = false; renderPicker(); }
-  });
+  picker.mount(document.getElementById("proxy")!);
   document.getElementById("side")!.addEventListener("click", onSideClick);
   document.getElementById("analyse")!.addEventListener("click", () => {
     // Pressed again while open: back to the form already written, not a blank one.
@@ -1188,7 +895,7 @@ function mount(): void {
       if (c === cols && bw === boxW) return;
       cols = c; boxW = bw;
       // Only the map follows the width: the pane beside it stays as it is.
-      if (map) { view = derive(map); drawMap(); }
+      if (map) { view = layoutOf(map); drawMap(); }
     });
   }).observe(document.getElementById("map")!);
   // The session's chart is drawn to its strip's width.
@@ -1202,7 +909,7 @@ function mount(): void {
   document.getElementById("tests")!.addEventListener("click", () => {
     showTests = !showTests;
     remember();
-    if (raw) { map = visible(raw); view = derive(map); }
+    if (raw) { map = visible(raw, showTests); view = layoutOf(map); }
     if (view && !stillThere(view, sel)) sel = null;
     render();
   });
@@ -1230,23 +937,11 @@ function mount(): void {
       return;
     }
     if (msg?.type !== "map" || !msg.map) return;
-    proxies = msg.session?.proxies ?? [];
-    meta = msg.session?.proxies_meta ?? [];
-    active = msg.session?.active ?? "";
     mergeState = msg.session?.merge ?? null;
     forecast = msg.session?.forecast ?? null;
-    // An answer for other steps than the ones picked (the drawer opens the active session's):
-    // asked again for those, as long as the server still has them.
-    // Once: an answer that still differs is what the server can give, and is drawn.
-    const want = reachable(pick), got = picked(msg.session);
-    if (want !== got && reasked !== want) { pick = reasked = want; ask(); return; }
-    reasked = null;
-    if (pick !== got) { pick = got; remember(); }
-    // The ticks follow the pick the answer holds (a single tick is that proxy alone), and
-    // only name proxies it still offers.
-    if (ticked(pick).length) ticks = new Set(ticked(pick));
-    else if (ticks.size > 1) ticks = new Set();
-    ticks = new Set([...ticks].filter((t) => proxies.includes(t)));
+    const took = picker.answer(msg.session);
+    if (took === "again") { ask(); return; }
+    if (took === "moved") remember();
     // A new answer opens on the session's latest step; one that adds no step, of the same
     // proxy, keeps the one shown.
     const steps = msg.session?.steps?.length ?? 0;
@@ -1257,8 +952,8 @@ function mount(): void {
     const seen = new Set(requests.map((r) => r.token));
     if (sent.some((x) => seen.has(x.token))) { sent = sent.filter((x) => !seen.has(x.token)); remember(); }
     raw = msg.map;
-    map = visible(raw);
-    view = derive(map);
+    map = visible(raw, showTests);
+    view = layoutOf(map);
     if (!stillThere(view, sel)) sel = null;
     // A component clicked in the drawer: the map opens on it.
     if (msg.focus && view.compOf.has(msg.focus)) {

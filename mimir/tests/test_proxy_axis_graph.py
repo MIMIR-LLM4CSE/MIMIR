@@ -35,7 +35,7 @@ class _Ledgered(unittest.TestCase):
     def _graph(self, proxy_name: str = ""):
         with mock.patch.object(eval_observe, "load_registry",
                                return_value={k: {} for k in self.configs}), \
-             mock.patch.object(eval_observe, "opt_ledger_file",
+             mock.patch("mimir.servers.proxy._lib.store.opt_ledger_file",
                                side_effect=lambda p: os.path.join(self.tmp, f"{p}.jsonl")), \
              mock.patch.object(eval_observe, "load_opt_config",
                                side_effect=lambda p: self.configs.get(p)), \
@@ -187,7 +187,7 @@ class AttachedToEveryRunTests(_Ledgered):
     def _axes(self, proxy: str = "solver"):
         with mock.patch.object(eval_observe, "resolve_proxy_name",
                                side_effect=lambda p: p or "solver"), \
-             mock.patch.object(eval_observe, "opt_ledger_file",
+             mock.patch("mimir.servers.proxy._lib.store.opt_ledger_file",
                                side_effect=lambda p: os.path.join(self.tmp, f"{p}.jsonl")):
             return eval_observe.axes_tried(proxy)
 
@@ -257,7 +257,7 @@ class PanelLinesTests(unittest.TestCase):
         ledger = ledger_file or tempfile.mkstemp()[1]
         with mock.patch("mimir.servers.proxy._lib.store.opt_ledger_file", return_value=ledger), \
              mock.patch("mimir.servers.proxy._lib.ratchet.load_best", return_value=best), \
-             mock.patch.object(proxy_panel.eval_observe, "read_ledger", return_value=rows):
+             mock.patch("mimir.servers.proxy._lib.ratchet.read_ledger", return_value=rows):
             return proxy_panel._session_view("solver", self.CFG)
 
     def test_the_curve_carries_every_run_and_the_best_after_it(self):
@@ -295,7 +295,7 @@ class PanelLinesTests(unittest.TestCase):
         ledger = tempfile.mkstemp()[1]
         first = self._view(self.ROWS[:2], {"primary_value": 8.0}, ledger)
         with mock.patch("mimir.servers.proxy._lib.store.opt_ledger_file", return_value=ledger), \
-             mock.patch.object(proxy_panel.eval_observe, "read_ledger", return_value=self.ROWS):
+             mock.patch("mimir.servers.proxy._lib.ratchet.read_ledger", return_value=self.ROWS):
             self.assertEqual(proxy_panel._session_view("solver", self.CFG), first)
             os.utime(ledger, (0, 0))    # a run settled
             with mock.patch("mimir.servers.proxy._lib.ratchet.load_best",
@@ -310,7 +310,7 @@ class PanelLinesTests(unittest.TestCase):
         proxy_panel._STEPS.update({"key": None, "value": {}})
         with mock.patch("mimir.servers.proxy._lib.store.opt_ledger_file",
                         return_value=tempfile.mkstemp()[1]), \
-             mock.patch.object(proxy_panel.eval_observe, "read_ledger",
+             mock.patch("mimir.servers.proxy._lib.ratchet.read_ledger",
                                side_effect=RuntimeError("store is gone")):
             self.assertEqual(proxy_panel._session_view("solver", self.CFG), {})
 

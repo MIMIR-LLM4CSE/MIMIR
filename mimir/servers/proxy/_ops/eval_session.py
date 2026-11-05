@@ -37,7 +37,8 @@ from .._lib.store import (
     opt_ledger_file, opt_best_file, write_active_session, clear_active_session, run_dir_names,
 )
 from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name, read_json
-from . import code_map_steps, requests_ops
+from . import requests_ops
+from .code_map import session as code_map_session
 from .eval_common import (
     NEXT_DETACHED,
     NEXT_RUN,
@@ -692,7 +693,7 @@ def rebaseline(proxy_name: str = "") -> dict:
 
     # The map is drawn from the ledger, which moves aside: what it drew is kept first.
     try:
-        frozen = code_map_steps.freeze(name, "rebaselined")
+        frozen = code_map_session.freeze(name, "rebaselined")
     except Exception as exc:
         return err(f"Could not keep the optimisation graph, so nothing was re-baselined: {exc}",
                    hint="Check that proxy_bench/history is writable, then retry.")

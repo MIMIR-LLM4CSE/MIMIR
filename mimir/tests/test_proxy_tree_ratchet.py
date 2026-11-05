@@ -249,12 +249,12 @@ class RebaselineTests(_Workspace):
 
     def test_the_graph_drawn_before_it_stays_on_the_map(self) -> None:
         """The ledger moves aside and the map reads only the live one: what it drew is kept."""
-        from mimir.servers.proxy._ops import code_map_steps
+        from mimir.servers.proxy._ops.code_map import session, tab
         eval_session, _ = self._session()
         out = eval_session.rebaseline("p")
         key = out["graph_kept"]
-        self.assertIn(key, code_map_steps.proxies())
-        frozen = code_map_steps.session(key)
+        self.assertIn(key, tab.proxies())
+        frozen = session.session(key)
         self.assertEqual(frozen["frozen"]["why"], "rebaselined")
         self.assertEqual([(s["run_id"], s["value"]) for s in frozen["steps"]], [("r1", 0.0538)])
 
@@ -417,7 +417,8 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
     def test_the_optimisation_graph_outlives_the_clean(self) -> None:
         """A clean environment, and still every step the map drew: frozen before the
         ledger and the snapshots go, and offered beside the live proxies."""
-        from mimir.servers.proxy._ops import code_map_steps, registry
+        from mimir.servers.proxy._ops import registry
+        from mimir.servers.proxy._ops.code_map import tab
         self._optimisation("bench", "BENCH_BEST")
         with open(store.opt_ledger_file("bench"), "w", encoding="utf-8") as fh:
             fh.write('{"run_id": "r0", "primary_value": 0.2}\n')
@@ -425,10 +426,10 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
         out = registry.clean("bench")
         self.assertFalse(os.path.isdir(layout.opt_session_runs_dir("bench")))
         self.assertFalse(os.path.isdir(store.opt_git_dir()))
-        [key] = code_map_steps.proxies()
+        [key] = tab.proxies()
         self.assertTrue(key.startswith("bench@"))
         self.assertIn(key, " ".join(out["kept"]))
-        steps = code_map_steps.answer(key)["steps"]
+        steps = tab.answer(key)["steps"]
         self.assertEqual([(s["run_id"], s["axis"], s["value"]) for s in steps], [("r1", "[R4.1] fuse", 0.1)])
         # And the environment is clean all the same: no proxy left with state.
         self.assertEqual(registry._other_proxies_with_state("bench"), [])

@@ -9,11 +9,9 @@ import os
 import subprocess
 import tempfile
 
-from .._lib import tree_snapshot
-from .._lib.layout import opt_runs_dir
-from .._lib.ratchet import load_best, relative
-from .._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
-from .eval_observe import read_ledger
+from .._lib import history, tree_snapshot
+from .._lib.ratchet import baseline_value, load_best, read_ledger, relative
+from .._lib.store import load_opt_config, opt_git_dir, opt_sessions, workspace_root
 
 _GIT_TIMEOUT_S = 60
 
@@ -25,7 +23,7 @@ class Conflict(Exception):
 def source(name: str) -> tuple[dict | None, str]:
     """What *name* kept: its patch (baseline → best accepted tree), the files it touches and
     its gain alone. (None, why) when it has nothing to bring."""
-    if "@" in name:
+    if history.is_key(name):
         return None, "a frozen session: its trees are no longer kept"
     cfg = load_opt_config(name) or {}
     if not cfg.get("baseline_id"):
@@ -36,8 +34,7 @@ def source(name: str) -> tuple[dict | None, str]:
         return None, "its baseline was never measured"
     if not best.get("tree_snapshot") or best.get("run_id") == base_run:
         return None, "no run accepted beyond its baseline"
-    rows = {r.get("run_id"): r for r in read_ledger(name)}
-    base_value = (rows.get(base_run) or {}).get("primary_value")
+    base_value = baseline_value(cfg, read_ledger(name))
     goal = cfg.get("primary_goal", "min")
     rel = relative(best.get("primary_value"), base_value, goal)
     if rel is None:
@@ -148,21 +145,12 @@ def expected(sources: list[dict]) -> float:
     return round(value, 6)
 
 
-def _live() -> list[str]:
-    """Every proxy with a session in this workspace that is not itself a merge."""
-    try:
-        names = sorted(os.listdir(opt_runs_dir()))
-    except OSError:
-        return []
-    return [n for n in names if os.path.isfile(opt_ledger_file(n))
-            and not (load_opt_config(n) or {}).get("merge")]
-
-
 def gather(names: list[str]) -> tuple[list[dict], list[dict], str]:
     """The sources *names* name ("*" for every proxy), those set aside and why, and a
     refusal when they cannot be measured together."""
     if names == ["*"]:
-        names = _live()
+        # Every proxy with a session that is not itself a merge.
+        names = [n for n in opt_sessions() if not (load_opt_config(n) or {}).get("merge")]
     sources, refused = [], []
     for n in dict.fromkeys(names):
         src, why = source(n)

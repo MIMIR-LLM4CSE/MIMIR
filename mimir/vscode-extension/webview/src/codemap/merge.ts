@@ -3,7 +3,7 @@
 // it was expected to bring and the one measured. Without a measurement (proxies ticked, not
 // merged yet) it is the forecast: what merging them promises and what stands in the way.
 
-import { esc } from "./session";
+import { esc, pct } from "./format";
 
 /** A relative is a value against its baseline, lower is better whatever the goal: 0.8 is
  *  a fifth better. */
@@ -50,7 +50,7 @@ export function outcome(m: MergeState | null, proxy: string): Outcome {
 export function gainOf(rel: number | null | undefined): string {
   if (rel === null || rel === undefined || !isFinite(rel)) return "–";
   const g = Math.round((1 - rel) * 1e6) / 1e6;
-  return (g < 0 ? "−" : "") + Math.abs(g * 100).toFixed(Math.abs(g) < 0.1 ? 1 : 0) + "%";
+  return (g < 0 ? "−" : "") + pct(g);
 }
 
 // Half a percent: closer than that, a gain in the merge is its gain alone, and a merge's

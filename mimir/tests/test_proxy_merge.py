@@ -8,7 +8,8 @@ import unittest
 from unittest import mock
 
 from mimir.servers.proxy._lib import layout
-from mimir.servers.proxy._ops import code_map_steps, merge, merge_sources
+from mimir.servers.proxy._ops import merge, merge_sources
+from mimir.servers.proxy._ops.code_map import session, tab
 from mimir.shared.atomic import write_json
 from mimir.tests.support.proxy import (
     _TmpStorageTest,
@@ -217,17 +218,17 @@ class MergeRunTests(_MergeFixture):
         self._merge()
         self._complete("merge-t", 7.2)
         server_proxy.proxy_merge(op="next", confirm=True)
-        drawn = code_map_steps.answer("merge-t")
+        drawn = tab.answer("merge-t")
         self.assertEqual(drawn["merge"]["phase"], "done")
         meta = {m["name"]: m for m in drawn["proxies_meta"]}
         self.assertTrue(meta["merge-t"]["merge"])
         self.assertEqual(meta["merge-t"]["sources"], ["pa", "pc", "pb"])
         self.assertAlmostEqual(meta["pa"]["gain"], 0.2, places=5)
-        key = code_map_steps.freeze("merge-t", "cleaned")
-        self.assertEqual(code_map_steps.session(key)["merge"]["phase"], "done")
+        key = session.freeze("merge-t", "cleaned")
+        self.assertEqual(session.session(key)["merge"]["phase"], "done")
 
     def test_ticked_proxies_bring_their_forecast(self) -> None:
-        drawn = code_map_steps.answer(selected=["pa", "pb"])
+        drawn = tab.answer(selected=["pa", "pb"])
         self.assertTrue(drawn["combined"])
         self.assertEqual(drawn["selected"], ["pa", "pb"])
         self.assertAlmostEqual(drawn["forecast"]["expected"], 0.72, places=5)

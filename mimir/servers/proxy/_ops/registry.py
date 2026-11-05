@@ -14,6 +14,7 @@ from .._lib.procs import run_state
 from .._lib import store
 from .._lib.store import load_registry_or_err, save_registry, registry_lock, proxy_runs_dir
 from .._lib.layout import read_json
+from .code_map import session as code_map_session
 
 # Registration fields carried by the ``metadata`` dict parameter. Descriptive,
 # except the build triple: ``build_cmd`` is executed by the server before every
@@ -404,15 +405,13 @@ def clean(name: str) -> dict:
 
     References and suites are shared, so they stay, and the reply names them.
     """
-    from .code_map_steps import freeze
-
     removed: list[str] = []
     kept_refs: list[str] = []
     kept_suites: list[str] = []
     kept_snapshots = ""
     # The optimisation graph outlives the state it was drawn from: frozen first, or nothing goes.
     try:
-        frozen = freeze(name, "cleaned")
+        frozen = code_map_session.freeze(name, "cleaned")
     except Exception as exc:
         return err(f"Could not keep {name}'s optimisation graph, so nothing was removed: {exc}",
                    hint=f"Check that {layout.history_dir()} is writable, then clean again.")

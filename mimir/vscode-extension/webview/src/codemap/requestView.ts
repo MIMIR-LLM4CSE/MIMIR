@@ -1,15 +1,11 @@
 // The side pane's R&D requests: the form that writes one, the list of those sent, and one
 // request whole with its variants side by side. Plain HTML; index.ts binds the events.
 
-import { signed } from "./session";
+import { esc, signed } from "./format";
 import {
   dropPrompt, KINDS, kindLabel, live, ready, STATUS_LABEL, targetLabel, tryPrompt, variantRows,
   type Draft, type Request, type Sent, type Target,
 } from "./request";
-
-function esc(s: unknown): string {
-  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
-}
 
 const PLACEHOLDER: Record<string, string> = {
   method: "e.g. replace the Jacobi sweeps by a multigrid V-cycle",

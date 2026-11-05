@@ -16,7 +16,7 @@ from ....shared.state_paths import SUBAGENTS_DIRNAME, active_session_id
 from .._lib import tree_snapshot
 from .._lib.layout import merge_file, read_json, resolve_proxy_name
 from .._lib.procs import opt_active_run_dir, run_state
-from .._lib.ratchet import effective_min_improvement, is_improvement, relative
+from .._lib.ratchet import baseline_value, effective_min_improvement, is_improvement, read_ledger, relative
 from .._lib.store import (load_opt_config, load_registry, opt_git_dir, registry_lock,
                           save_opt_config, save_registry, workspace_root)
 from . import eval_observe, eval_session, merge_sources
@@ -161,23 +161,28 @@ def _save(name: str, state: dict) -> None:
     write_json(merge_file(name), state, indent=2)
 
 
-def _settled(name: str, pending: dict) -> dict | str | None:
-    """The run settled since *pending* was set, "running" while one is under way, None
-    when none was launched."""
-    rows = eval_observe.read_ledger(name)
-    if len(rows) <= pending["ledger"]:
-        active = opt_active_run_dir(name)
-        if active and run_state(active)["state"] in ("running", "pending"):
-            return "running"
-        if active:
-            # Ended, not settled yet: settling is the results read's, whoever comes first.
-            eval_observe.results(name)
-            rows = eval_observe.read_ledger(name)
+def _running(name: str, pending: dict) -> bool:
+    """Whether the run *pending* waits for is still under way."""
+    if len(read_ledger(name)) > pending["ledger"]:
+        return False
+    active = opt_active_run_dir(name)
+    if not active:
+        return False
+    return run_state(active)["state"] in ("running", "pending")
+
+
+def _settled(name: str, pending: dict) -> dict | None:
+    """The run settled since *pending* was set, None when none was launched."""
+    rows = read_ledger(name)
+    if len(rows) <= pending["ledger"] and opt_active_run_dir(name):
+        # Ended, not settled yet: settling is the results read's, whoever comes first.
+        eval_observe.results(name)
+        rows = read_ledger(name)
     return rows[pending["ledger"]] if len(rows) > pending["ledger"] else None
 
 
 def _run(name: str, state: dict, step: str, axis: str, note: str) -> dict:
-    state["pending"] = state.get("pending") or {"step": step, "ledger": len(eval_observe.read_ledger(name))}
+    state["pending"] = state.get("pending") or {"step": step, "ledger": len(read_ledger(name))}
     _save(name, state)
     return ok(with_next({"proxy_name": name, "phase": state["phase"], "note": note},
                         f"proxy_eval(op='run', axis={axis!r}, confirm=True), then proxy_merge(op='next', confirm=True)"))
@@ -226,104 +231,119 @@ def _finish(name: str, state: dict) -> dict:
     return report(name)
 
 
+def _policy(name: str) -> tuple[dict, str, float]:
+    """The merge session's config, its goal and the margin an improvement must clear."""
+    cfg = load_opt_config(name) or {}
+    return cfg, cfg.get("primary_goal", "min"), effective_min_improvement(cfg)[0]
+
+
+def _baseline(name: str, state: dict, row: dict | None) -> dict | None:
+    """The copy measured untouched first: every source is judged against it."""
+    cfg = load_opt_config(name) or {}
+    if cfg.get("baseline_run_id"):
+        state.update(base_value=baseline_value(cfg, read_ledger(name)), phase="all", pending=None)
+        return None
+    if row:
+        return err("The baseline run of this copy did not pass: nothing can be compared to it.",
+                   hint="proxy_eval_status(op='results') says why.")
+    return _run(name, state, "baseline", "merge: baseline",
+                "Measuring this copy untouched first: every source is judged against it.")
+
+
+def _all(name: str, state: dict, row: dict | None) -> dict | None:
+    """Every source applied and measured at once; one at a time next when the whole falls
+    short of what the parts promised beyond the noise."""
+    if not state.get("pending"):
+        applied, conflicts = [], []
+        for s in state["sources"]:
+            clash = merge_sources.apply(s)
+            (conflicts.append({"proxy": s["proxy"], "files": clash}) if clash
+             else applied.append(s["proxy"]))
+        if not applied:
+            return _finish(name, state)
+        by_name = {s["proxy"]: s for s in state["sources"]}
+        state["all"] = {"applied": applied, "conflicts": conflicts,
+                        "expected": merge_sources.expected([by_name[p] for p in applied])}
+        return _run(name, state, "all", "merge: all (" + " + ".join(applied) + ")",
+                    f"{len(applied)} source(s) applied together"
+                    + (f"; {len(conflicts)} set aside for a conflict" if conflicts else "") + ".")
+    if not row:
+        return _run(name, state, "all", "merge: all (" + " + ".join(state["all"]["applied"]) + ")",
+                    "The sources are applied; the run that measures them is still to launch.")
+    cfg, goal, margin = _policy(name)
+    whole = state["all"]
+    whole.update(run_id=row.get("run_id", ""), value=row.get("primary_value"),
+                 feasible=bool(row.get("feasible")), tree=row.get("launch_tree", ""),
+                 relative=relative(row.get("primary_value"), state["base_value"], goal))
+    state["pending"] = None
+    whole["holds"] = bool(whole["feasible"] and whole["relative"] is not None
+                          and whole["relative"] <= whole["expected"] * (1 + margin))
+    if whole["holds"] or len(whole["applied"]) < 2:
+        return _finish(name, state)
+    _restore(name, cfg.get("baseline_id", ""))
+    state.update(phase="incremental", tip={"tree": cfg.get("baseline_id", ""), "value": state["base_value"]})
+    return None
+
+
+def _incremental(name: str, state: dict, row: dict | None) -> dict | None:
+    """One source at a time over what was kept, best alone first: kept only if it still
+    improves the chain's tip, set aside otherwise."""
+    pending = state.get("pending")
+    if pending and not row:
+        return _run(name, state, pending["step"], f"merge: + {pending['step']}",
+                    f"{pending['step']} is applied; the run that measures it is still to launch.")
+    if pending and row:
+        _, goal, margin = _policy(name)
+        tip = state["tip"]
+        src = next(s for s in state["sources"] if s["proxy"] == pending["step"])
+        kept = bool(row.get("feasible")) and is_improvement(row.get("primary_value"), tip["value"], goal, margin)
+        marginal = relative(row.get("primary_value"), tip["value"], goal)
+        state["steps"].append({
+            "proxy": src["proxy"], "run_id": row.get("run_id", ""), "value": row.get("primary_value"),
+            "kept": kept, "alone": src["relative"], "marginal": marginal,
+            "interaction": round(marginal / src["relative"], 6) if marginal else None,
+            **({} if kept else {"why": "interference" if row.get("feasible") else "infeasible"}),
+        })
+        if kept:
+            state["tip"] = {"tree": row.get("launch_tree", ""), "value": row.get("primary_value")}
+        else:
+            _restore(name, tip["tree"])
+        state["pending"] = None
+    done = {s["proxy"] for s in state["steps"]}
+    for s in state["sources"]:
+        if s["proxy"] in done:
+            continue
+        clash = merge_sources.apply(s)
+        if clash:
+            state["steps"].append({"proxy": s["proxy"], "kept": False, "why": "conflict",
+                                   "files": clash, "alone": s["relative"]})
+            continue
+        return _run(name, state, s["proxy"], f"merge: + {s['proxy']}",
+                    f"Measured together, the sources fell short of the gain they promised: "
+                    f"now one at a time. {s['proxy']} is applied over what was kept.")
+    return _finish(name, state)
+
+
+_PHASES = {"baseline": _baseline, "all": _all, "incremental": _incremental}
+
+
 def next_(name: str = "") -> dict:
     name = resolve_proxy_name(name) or ""
     state = _load(name) if name else {}
     if not state:
         return err("No merge session.", hint="proxy_merge(op='start', proxies=[...], confirm=True) first.")
-    cfg = load_opt_config(name) or {}
-    goal = cfg.get("primary_goal", "min")
-    margin, _ = effective_min_improvement(cfg)
-    by_name = {s["proxy"]: s for s in state["sources"]}
     while True:
         pending = state.get("pending")
-        row = _settled(name, pending) if pending else None
-        if row == "running":
+        if pending and _running(name, pending):
             return ok(with_next({"proxy_name": name, "phase": state["phase"],
                                  "note": "A run is under way; its verdict decides the next step."},
                                 "wait for the run, then proxy_merge(op='next', confirm=True)"))
-        phase = state["phase"]
-
-        if phase == "baseline":
-            cfg = load_opt_config(name) or {}
-            if cfg.get("baseline_run_id"):
-                rows = {r.get("run_id"): r for r in eval_observe.read_ledger(name)}
-                state.update(base_value=(rows.get(cfg["baseline_run_id"]) or {}).get("primary_value"),
-                             phase="all", pending=None)
-                continue
-            if row:
-                return err("The baseline run of this copy did not pass: nothing can be compared to it.",
-                           hint="proxy_eval_status(op='results') says why.")
-            return _run(name, state, "baseline", "merge: baseline",
-                        "Measuring this copy untouched first: every source is judged against it.")
-
-        if phase == "all":
-            if not pending:
-                applied, conflicts = [], []
-                for s in state["sources"]:
-                    clash = merge_sources.apply(s)
-                    (conflicts.append({"proxy": s["proxy"], "files": clash}) if clash
-                     else applied.append(s["proxy"]))
-                if not applied:
-                    return _finish(name, state)
-                state["all"] = {"applied": applied, "conflicts": conflicts,
-                                "expected": merge_sources.expected([by_name[p] for p in applied])}
-                return _run(name, state, "all", "merge: all (" + " + ".join(applied) + ")",
-                            f"{len(applied)} source(s) applied together"
-                            + (f"; {len(conflicts)} set aside for a conflict" if conflicts else "") + ".")
-            if not row:
-                return _run(name, state, "all", "merge: all (" + " + ".join(state["all"]["applied"]) + ")",
-                            "The sources are applied; the run that measures them is still to launch.")
-            whole = state["all"]
-            whole.update(run_id=row.get("run_id", ""), value=row.get("primary_value"),
-                         feasible=bool(row.get("feasible")), tree=row.get("launch_tree", ""),
-                         relative=relative(row.get("primary_value"), state["base_value"], goal))
-            state["pending"] = None
-            holds = whole["feasible"] and whole["relative"] is not None and \
-                whole["relative"] <= whole["expected"] * (1 + margin)
-            whole["holds"] = bool(holds)
-            if holds or len(whole["applied"]) < 2:
-                return _finish(name, state)
-            _restore(name, cfg.get("baseline_id", ""))
-            state.update(phase="incremental",
-                         tip={"tree": cfg.get("baseline_id", ""), "value": state["base_value"]})
-            continue
-
-        if phase == "incremental":
-            if pending and row:
-                tip = state["tip"]
-                src = by_name[pending["step"]]
-                kept = bool(row.get("feasible")) and is_improvement(row.get("primary_value"), tip["value"], goal, margin)
-                marginal = relative(row.get("primary_value"), tip["value"], goal)
-                state["steps"].append({
-                    "proxy": src["proxy"], "run_id": row.get("run_id", ""), "value": row.get("primary_value"),
-                    "kept": kept, "alone": src["relative"], "marginal": marginal,
-                    "interaction": round(marginal / src["relative"], 6) if marginal else None,
-                    **({} if kept else {"why": "interference" if row.get("feasible") else "infeasible"}),
-                })
-                if kept:
-                    state["tip"] = {"tree": row.get("launch_tree", ""), "value": row.get("primary_value")}
-                else:
-                    _restore(name, tip["tree"])
-                state["pending"] = None
-            elif pending:
-                return _run(name, state, pending["step"], f"merge: + {pending['step']}",
-                            f"{pending['step']} is applied; the run that measures it is still to launch.")
-            done = {s["proxy"] for s in state["steps"]}
-            for s in state["sources"]:
-                if s["proxy"] in done:
-                    continue
-                clash = merge_sources.apply(s)
-                if clash:
-                    state["steps"].append({"proxy": s["proxy"], "kept": False, "why": "conflict",
-                                           "files": clash, "alone": s["relative"]})
-                    continue
-                return _run(name, state, s["proxy"], f"merge: + {s['proxy']}",
-                            f"Measured together, the sources fell short of the gain they promised: "
-                            f"now one at a time. {s['proxy']} is applied over what was kept.")
-            return _finish(name, state)
-
-        return report(name)
+        phase = _PHASES.get(state["phase"])
+        if not phase:
+            return report(name)
+        out = phase(name, state, _settled(name, pending) if pending else None)
+        if out is not None:
+            return out
 
 
 def report(name: str = "") -> dict:

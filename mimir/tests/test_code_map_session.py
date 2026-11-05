@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.servers.proxy._lib import tree_snapshot
-from mimir.servers.proxy._ops import code_map_steps
+from mimir.servers.proxy._lib import history, tree_snapshot
+from mimir.servers.proxy._ops.code_map import profile, session, tab
 
 
 class _Workspace:
@@ -90,20 +90,22 @@ class SessionTests(unittest.TestCase):
             with open(os.path.join(runs, run_id, "profile", "profile.json"), "w") as fh:
                 json.dump({"tool": "py-spy", "samples": 400, "files": files, "outside": {"numpy": 0.25},
                            **({"gpu": gpu, "memory": memory, "functions": functions} if run_id == "r1" else {})}, fh)
-        code_map_steps._CACHE.clear()
+        session._CACHE.clear()
+        self.runs = runs
         patches = [
-            mock.patch.object(code_map_steps, "resolve_proxy_name", return_value="solver"),
-            mock.patch.object(code_map_steps, "opt_ledger_file", return_value=ledger),
-            mock.patch.object(code_map_steps, "load_opt_config", return_value=cfg),
-            mock.patch.object(code_map_steps, "read_ledger", return_value=rows),
-            mock.patch.object(code_map_steps, "workspace_root", return_value=ws.root),
-            mock.patch.object(code_map_steps, "opt_git_dir", return_value=ws.git),
-            mock.patch.object(code_map_steps, "opt_session_runs_dir", return_value=runs),
+            mock.patch.object(session, "resolve_proxy_name", return_value="solver"),
+            mock.patch.object(session, "opt_ledger_file", return_value=ledger),
+            mock.patch.object(session, "load_opt_config", return_value=cfg),
+            mock.patch.object(session, "read_ledger", return_value=rows),
+            mock.patch.object(session, "workspace_root", return_value=ws.root),
+            mock.patch.object(session, "opt_git_dir", return_value=ws.git),
+            mock.patch.object(session, "opt_session_runs_dir", return_value=runs),
+            mock.patch.object(profile, "opt_session_runs_dir", return_value=runs),
         ]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.session = code_map_steps.session()
+        self.session = session.session()
 
     def test_the_baseline_is_not_a_step(self) -> None:
         self.assertEqual({k: self.session["baseline"][k] for k in ("run_id", "value")},
@@ -141,7 +143,7 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(self.session["steps"][1]["profile"])
 
     def _profile_r2(self, prof: dict) -> None:
-        runs = code_map_steps.opt_session_runs_dir("solver")
+        runs = self.runs
         os.makedirs(os.path.join(runs, "r2", "profile"), exist_ok=True)
         with open(os.path.join(runs, "r2", "profile", "profile.json"), "w") as fh:
             json.dump(prof, fh)
@@ -149,13 +151,13 @@ class SessionTests(unittest.TestCase):
     def test_a_profile_taken_after_the_verdict_reaches_the_map(self) -> None:
         """op='profile' files its profile with the run and leaves the ledger as it was."""
         self._profile_r2({"tool": "py-spy", "samples": 10, "files": {"pkg/a.py": 1.0}})
-        self.assertEqual(code_map_steps.session()["steps"][1]["profile"]["files"], {"pkg/a.py": 0.9})
+        self.assertEqual(session.session()["steps"][1]["profile"]["files"], {"pkg/a.py": 0.9})
 
     def test_the_gpu_and_the_heap_ride_along_when_the_cpu_was_not_sampled(self) -> None:
         self._profile_r2({"tool": "", "unavailable": "perf is not allowed here",
                           "gpu": {"tool": "nsys", "busy": 0.5, "files": {"pkg/a.py": 0.5}},
                           "memory": {"tool": "heaptrack", "peak_mb": 10.0, "files": {"pkg/a.py": 1.0}}})
-        prof = code_map_steps.session()["steps"][1]["profile"]
+        prof = session.session()["steps"][1]["profile"]
         self.assertEqual(prof["unavailable"], "perf is not allowed here")
         self.assertEqual((prof["gpu"]["busy"], prof["gpu"]["files"]), (0.45, {"pkg/a.py": 0.45}))
         self.assertEqual(prof["memory"]["files"], {"pkg/a.py": 1.0})
@@ -165,7 +167,7 @@ class SessionTests(unittest.TestCase):
         kernel = {"tool": "ncu", "name": "k", "sm_pct": 20.0, "dram_pct": 85.0, "bound": "memory"}
         self._profile_r2({"tool": "perf", "samples": 10, "files": {"pkg/a.py": 1.0},
                           "counters": counters, "kernel_detail": kernel})
-        prof = code_map_steps.session()["steps"][1]["profile"]
+        prof = session.session()["steps"][1]["profile"]
         self.assertEqual((prof["counters"], prof["kernel_detail"]), (counters, kernel))
 
     def test_a_step_carries_its_peak_memory_beside_its_incumbent_s(self) -> None:
@@ -175,20 +177,20 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(self.session["steps"][1]["peak_rss_mb"])
 
     def test_no_session_is_no_steps(self) -> None:
-        with mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=""):
-            self.assertEqual(code_map_steps.session(), {})
+        with mock.patch.object(session, "resolve_proxy_name", return_value=""):
+            self.assertEqual(session.session(), {})
 
     def test_a_frozen_session_is_drawn_as_it_was_once_its_state_is_gone(self) -> None:
         """A clean takes the ledger and the snapshots the steps are rebuilt from: what the
         map drew is kept, under its own key, and offered with the live proxies."""
-        history = os.path.join(self.ws.tmp.name, "history")
-        with mock.patch.object(code_map_steps, "history_dir", return_value=history):
-            key = code_map_steps.freeze("solver", "cleaned")
+        kept = os.path.join(self.ws.tmp.name, "history")
+        with mock.patch.object(history, "history_dir", return_value=kept):
+            key = session.freeze("solver", "cleaned")
             self.assertTrue(key.startswith("solver@"))
             shutil.rmtree(self.ws.git)
-            frozen = code_map_steps.session(key)
-            with mock.patch.object(code_map_steps, "opt_runs_dir", return_value=os.path.join(self.ws.tmp.name, "gone")):
-                self.assertEqual(code_map_steps.proxies(), [key])
+            frozen = session.session(key)
+            with mock.patch.object(tab, "opt_sessions", return_value=[]):
+                self.assertEqual(tab.proxies(), [key])
         self.assertEqual(frozen["proxy"], key)
         self.assertEqual(frozen["frozen"]["proxy"], "solver")
         self.assertEqual(frozen["frozen"]["why"], "cleaned")
@@ -198,22 +200,22 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(frozen["baseline"]["value"], 10.0)
 
     def test_a_request_keeps_the_runs_its_proxy_had_before_a_clean(self) -> None:
-        history = os.path.join(self.ws.tmp.name, "history")
+        kept = os.path.join(self.ws.tmp.name, "history")
         row = {"id": "R4", "status": "open", "start": {"proxy": "solver", "value": 10.0}, "runs": ["r1"]}
-        with mock.patch.object(code_map_steps, "history_dir", return_value=history):
-            code_map_steps.freeze("solver", "cleaned")
-            with mock.patch.object(code_map_steps.requests, "load", return_value=[row]), \
-                 mock.patch.object(code_map_steps, "opt_ledger_file", return_value=os.path.join(history, "none")):
-                out = code_map_steps.requests_view()
+        with mock.patch.object(history, "history_dir", return_value=kept):
+            session.freeze("solver", "cleaned")
+            with mock.patch.object(tab.requests, "load", return_value=[row]), \
+                 mock.patch.object(session, "opt_ledger_file", return_value=os.path.join(kept, "none")):
+                out = tab.requests_view()
         self.assertEqual([s["run_id"] for s in out[0]["steps"]], ["r1"])
         self.assertEqual(out[0]["status"], "trying")
 
     def test_nothing_to_keep_is_no_frozen_session(self) -> None:
-        history = os.path.join(self.ws.tmp.name, "history")
-        with mock.patch.object(code_map_steps, "history_dir", return_value=history), \
-             mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=""):
-            self.assertEqual(code_map_steps.freeze("solver", "cleaned"), "")
-        self.assertFalse(os.path.exists(history))
+        kept = os.path.join(self.ws.tmp.name, "history")
+        with mock.patch.object(history, "history_dir", return_value=kept), \
+             mock.patch.object(session, "resolve_proxy_name", return_value=""):
+            self.assertEqual(session.freeze("solver", "cleaned"), "")
+        self.assertFalse(os.path.exists(kept))
 
 
 class PickTests(unittest.TestCase):
@@ -233,23 +235,25 @@ class PickTests(unittest.TestCase):
                                                             ("2026-01-03T00:00:00", 9.0, "reject")]),
             "mesh": one("mesh", "gflops", "max", 50.0, [("2026-01-02T00:00:00", 100.0, "accept")]),
         }
-        for p in (mock.patch.object(code_map_steps, "proxies", return_value=["mesh", "solver"]),
-                  mock.patch.object(code_map_steps, "resolve_proxy_name", side_effect=lambda n: n or "solver"),
-                  mock.patch.object(code_map_steps, "session", side_effect=lambda n="": self.sessions[n or "solver"])):
+        drawn = mock.Mock(side_effect=lambda n="": self.sessions[n or "solver"])
+        for p in (mock.patch.object(tab, "proxies", return_value=["mesh", "solver"]),
+                  mock.patch.object(tab, "resolve_proxy_name", side_effect=lambda n: n or "solver"),
+                  mock.patch.object(tab, "_line", side_effect=lambda n, active: {"name": n}),
+                  mock.patch.object(tab, "session", drawn), mock.patch.object(session, "session", drawn)):
             p.start()
             self.addCleanup(p.stop)
 
     def test_the_tab_is_told_the_proxies_and_the_active_one(self) -> None:
-        out = code_map_steps.answer()
+        out = tab.answer()
         self.assertEqual((out["proxy"], out["proxies"], out["active"], out["combined"]),
                          ("solver", ["mesh", "solver"], "solver", False))
 
     def test_another_proxy_s_steps_and_never_an_unknown_name(self) -> None:
-        self.assertEqual(code_map_steps.answer("mesh")["proxy"], "mesh")
-        self.assertEqual(code_map_steps.answer("../elsewhere")["proxy"], "solver")
+        self.assertEqual(tab.answer("mesh")["proxy"], "mesh")
+        self.assertEqual(tab.answer("../elsewhere")["proxy"], "solver")
 
     def test_every_proxy_in_the_order_they_settled_against_their_own_baseline(self) -> None:
-        out = code_map_steps.answer(combined=True)
+        out = tab.answer(combined=True)
         self.assertTrue(out["combined"])
         self.assertEqual([(s["n"], s["proxy"]) for s in out["steps"]], [(1, "solver"), (2, "mesh"), (3, "solver")])
         # Lower is better for both: 8 s of 10 is 0.8, 100 GFLOP/s of 50 is 0.5.
@@ -267,14 +271,14 @@ class PickTests(unittest.TestCase):
             for n, at in (("solver", 1000), ("mesh", 2000)):
                 open(ledgers[n], "w").close()
                 os.utime(ledgers[n], (at, at))
-            with mock.patch.object(code_map_steps, "resolve_proxy_name", return_value=None), \
-                 mock.patch.object(code_map_steps, "opt_ledger_file", side_effect=ledgers.get):
-                out = code_map_steps.answer()
+            with mock.patch.object(tab, "resolve_proxy_name", return_value=None), \
+                 mock.patch.object(tab, "opt_ledger_file", side_effect=ledgers.get):
+                out = tab.answer()
         self.assertEqual((out["proxy"], out["active"]), ("mesh", ""))
 
     def test_no_proxy_is_no_answer(self) -> None:
-        with mock.patch.object(code_map_steps, "proxies", return_value=[]):
-            self.assertEqual(code_map_steps.answer(combined=True), {})
+        with mock.patch.object(tab, "proxies", return_value=[]):
+            self.assertEqual(tab.answer(combined=True), {})
 
 
 if __name__ == "__main__":

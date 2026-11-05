@@ -125,9 +125,9 @@ def _kind_spec_lines(kind: dict, gpu_mem: str = "") -> list[dict]:
     """
     lines = []
     cpu = [kind.get("arch") or "arch unknown"]
-    topo = [kind.get(f) for f in ("sockets", "cores_per_socket", "threads_per_core")]
-    if all(topo):
-        cpu.append(f"{topo[0]} × {topo[1]} cores" + (f" × {topo[2]} threads" if topo[2] > 1 else ""))
+    sockets, cores, threads = (kind.get(f) or 0 for f in ("sockets", "cores_per_socket", "threads_per_core"))
+    if sockets and cores and threads:
+        cpu.append(f"{sockets} × {cores} cores" + (f" × {threads} threads" if threads > 1 else ""))
     lines.append({"label": "cpu", "value": " · ".join(cpu)})
     if kind.get("gres") and not _gpu_of(kind):
         lines.append({"label": "gres", "value": str(kind["gres"])})

@@ -3,7 +3,6 @@ log, runs, diff, config, the graph and the axes tried. Read-only."""
 
 from __future__ import annotations
 
-import json
 import os
 
 from . import with_next, err, ok
@@ -13,12 +12,12 @@ from .._lib.procs import (
     run_state,
     opt_active_run_dir,
 )
-from .._lib.ratchet import load_best
+from .._lib.ratchet import load_best, read_ledger
 from .._lib.report import diff_run_pair, parse_runner_log
 from ._eval_ratchet import ratchet_state
 from ....shared import build_progress
 from .._lib import build, build_files, profiling, requests
-from .._lib.store import load_registry, load_opt_config, opt_ledger_file, run_dir_names
+from .._lib.store import load_registry, load_opt_config, run_dir_names
 from .._lib.layout import opt_session_runs_dir, resolve_proxy_name, read_json
 from .eval_common import (
     LONG_BUILD_S,
@@ -32,29 +31,6 @@ from .eval_common import (
 
 # The edge of the attempt graph is `best_run_id` (the incumbent a run was measured
 # against), not `launch_tree` (a node's own identity, the state a restore returns to).
-
-
-def read_ledger(proxy_name: str) -> list[dict]:
-    """Every settled run of *proxy_name*, oldest first.
-
-    One JSON object per line, appended as runs settle. A line that does not parse is
-    dropped rather than failing the read: the file is written by another process and
-    its last line can be half there. An entry may carry no axis.
-    """
-    rows = []
-    try:
-        with open(opt_ledger_file(proxy_name), encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except ValueError:
-                    continue
-    except OSError:
-        return []
-    return rows
 
 
 def graph(proxy_name: str = "") -> dict:

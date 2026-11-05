@@ -5,6 +5,7 @@
 // multiple of its own proxy's baseline (lower is better), since their metrics differ.
 
 import { axisTag, type Request } from "./request";
+import { basename, esc, signed } from "./format";
 import type { Forecast, MergeState } from "./merge";
 import type { ProxyMeta } from "./picker";
 
@@ -158,13 +159,6 @@ export function overlay(session: Session, k: number, scope: Scope): Overlay {
   };
 }
 
-export function esc(s: unknown): string {
-  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
-}
-export function signed(d: number | null): string {
-  if (d === null || !isFinite(d)) return "";
-  return (d > 0 ? "+" : d < 0 ? "−" : "±") + Math.abs(d * 100).toFixed(Math.abs(d) < 0.1 ? 1 : 0) + "%";
-}
 function value(v: number | null): string {
   return v === null ? "–" : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(3);
 }
@@ -323,7 +317,6 @@ function gauge(label: string, frac: number, right: string, warn = false): string
   return '<div class="gauge' + (warn ? " is-warn" : "") + '"><div class="gl"><span>' + esc(label) + "</span><b>" + esc(right)
     + '</b></div><div class="gt"><i style="width:' + barWidth(frac) + '"></i></div></div>';
 }
-const basename = (f: string) => f.slice(f.lastIndexOf("/") + 1);
 
 /** A function's key split at its first `::`: no path has one, a Fortran name keeps its own. */
 export function fnParts(key: string): { file: string; name: string } {

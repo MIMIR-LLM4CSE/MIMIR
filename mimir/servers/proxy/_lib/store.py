@@ -18,6 +18,7 @@ from .layout import (
     active_sessions_dir,
     cache_dir,
     opt_config_file,
+    opt_runs_dir,
     opt_session_runs_dir,
     read_json,
     registry_path,
@@ -223,6 +224,15 @@ def opt_active_link(proxy_name: str) -> str:
 def opt_ledger_file(proxy_name: str) -> str:
     """Append-only ledger of every completed run: opt_runs/<proxy>/ledger.jsonl."""
     return os.path.join(opt_session_runs_dir(proxy_name), "ledger.jsonl")
+
+
+def opt_sessions() -> list[str]:
+    """The proxies with an optimisation session in this workspace: those whose ledger exists."""
+    try:
+        names = sorted(os.listdir(opt_runs_dir()))
+    except OSError:
+        return []
+    return [n for n in names if os.path.isfile(opt_ledger_file(n))]
 
 
 def opt_best_file(proxy_name: str) -> str:

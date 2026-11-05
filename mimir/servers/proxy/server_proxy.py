@@ -31,7 +31,6 @@ from ._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT
 from ._lib.procs import validate_slurm_args, validate_slurm_comment, validate_slurm_token
 from ...shared.slurm_script import validate_target
 from ._ops import (
-    code_map_steps,
     eval_observe,
     eval_session,
     exec_jobs,
@@ -45,6 +44,7 @@ from ._ops import (
     slurm,
     suites,
 )
+from ._ops.code_map import tab as code_map_tab
 
 mcp = FastMCP(
     "ProxyServer",
@@ -1107,7 +1107,7 @@ def proxy_code_map_steps(proxy_name: str = "", combined: bool = False,
             them promises (`forecast`: each one's gain alone, the files they share, their
             conflicts and the gain expected together).
     """
-    return ok(code_map_steps.answer(proxy_name, combined, proxies))
+    return ok(code_map_tab.answer(proxy_name, combined, proxies))
 
 
 if __name__ == "__main__":

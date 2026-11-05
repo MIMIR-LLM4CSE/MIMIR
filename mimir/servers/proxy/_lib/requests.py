@@ -81,7 +81,7 @@ def follow_up(axis: str, ledger: list[dict]) -> dict:
     that close the request. {} for any other run."""
     tag = axis_of(axis)
     row = get(tag[0]) if tag else None
-    if not row or row.get("status") in ("done", "dropped"):
+    if not tag or not row or row.get("status") in ("done", "dropped"):
         return {}
     rid, n = row["id"], len(row.get("variants") or [])
     tags = (axis_of(r.get("axis", "")) for r in ledger)

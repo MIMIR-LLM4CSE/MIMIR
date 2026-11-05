@@ -185,7 +185,9 @@ class PanelHandlers(Handlers):
         the report itself was asked.
         """
         tool = str(msg.get("tool") or "")
-        args = msg.get("args") if isinstance(msg.get("args"), dict) else {}
+        args = msg.get("args")
+        if not isinstance(args, dict):
+            args = {}
         worker = self.pool.get(self.view.active_session_id)
         if worker is None or json.dumps([tool, args], sort_keys=True) not in self._offered:
             await self.screen.command_reply("panel", "This button is no longer offered.",

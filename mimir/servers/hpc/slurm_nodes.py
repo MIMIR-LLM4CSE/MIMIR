@@ -339,6 +339,7 @@ def node_room(node: dict) -> dict | None:
         cpus_free = 0
     gpus = node.get("gpus") or 0
     gpus_alloc = node.get("gpus_allocated")
+    gpus_free: int | None
     if not gpus:
         gpus_free = 0
     elif gpus_alloc is not None:
@@ -351,20 +352,20 @@ def node_room(node: dict) -> dict | None:
 
 def sum_room(nodes: list[dict]) -> dict:
     """The room of *nodes* together; a free count is None when any node's was unknown."""
-    total = {"nodes": 0, "out": 0, "idle": 0, "cpus": 0, "cpus_free": 0,
-             "gpus": 0, "gpus_free": 0}
+    total: dict[str, int | None] = {"nodes": 0, "out": 0, "idle": 0, "cpus": 0, "cpus_free": 0,
+                                    "gpus": 0, "gpus_free": 0}
+    counted = out = idle = 0
     for n in nodes:
         room = node_room(n)
         if room is None:
-            total["out"] += 1
+            out += 1
             continue
-        total["nodes"] += 1
-        total["idle"] += int(room["idle"])
+        counted += 1
+        idle += int(room["idle"])
         for key in ("cpus", "cpus_free", "gpus", "gpus_free"):
-            if total[key] is None or room[key] is None:
-                total[key] = None
-            else:
-                total[key] += room[key]
+            have = total[key]
+            total[key] = None if have is None or room[key] is None else have + room[key]
+    total.update(nodes=counted, out=out, idle=idle)
     return total
 
 

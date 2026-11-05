@@ -590,7 +590,7 @@ component — tier, build links, time, rule breaks, cycles, modules, the compone
 depends on and is used by. The section gets an "Open map" button: the drawer sends `code_map` over the socket, the
 server answers the map whole, and the webview hands it to the host as `show_code_map`.
 `codeMapView.ts` draws it in one editor tab, its own bundle (`dist/codemap.js`, from
-`webview/src/codemap/`, plain TypeScript): the modules in bands, one per component
+`webview/src/codemap/`, plain TypeScript; `codemap/index.ts` holds the tab's state and draws, `codemap/layout.ts` places the boxes and curves, `codemap/svgText.ts` fits names to a box, `codemap/format.ts` escapes and writes the percentages for every part): the modules in bands, one per component
 stacked by tier, every dependency between them coloured by kind (grey, a binding across
 languages in cyan, paler when only by name, a rule break red with ✕, a module cycle
 purple), the selection beside. The columns follow the tab's width, each box widening to fill
@@ -671,7 +671,7 @@ revealing the tab, so nothing takes the focus. An edit to the code outside a ses
 step is not one of these: ⟳ maps it.
 
 With sessions on more than one proxy, a picker in the header chooses whose steps are
-drawn (`picker.ts`): a list grouped as running, merges and frozen, each line with its
+drawn (`picker.ts`, the list's HTML and the `Picker` that holds the pick, the ticks and the answer's proxies): a list grouped as running, merges and frozen, each line with its
 branch, its runs, its gain so far and its badges (active, merge, why it was frozen),
 from the answer's `proxies_meta`. A click on a name draws that proxy alone, "Every
 proxy, together" draws them all, and two ticks or more draw the ticked ones together.

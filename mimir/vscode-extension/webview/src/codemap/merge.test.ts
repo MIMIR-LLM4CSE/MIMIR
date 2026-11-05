@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { gainOf, mergeGraph, outcome, type MergeState } from "./merge";
-import { mergeable, mergePrompt, pickerHtml, pickLabel, ticked, type ProxyMeta } from "./picker";
+import { mergeable, mergePrompt, picked, pickerHtml, pickLabel, reachable, ticked, type ProxyMeta } from "./picker";
 
 const sources = [
   { proxy: "pa", relative: 0.8, files: ["a.py"] },
@@ -112,5 +112,22 @@ describe("the proxy picker", () => {
 
   it("asks the agent to plan the merge", () => {
     expect(mergePrompt(["pa", "pb"])).toContain("proxy_merge(op='plan', proxies=['pa', 'pb'])");
+  });
+});
+
+describe("the pick and the answer", () => {
+  it("reads whose steps an answer holds as a pick writes it", () => {
+    expect(picked({ selected: ["pa", "pb"] })).toBe("pa,pb");
+    expect(picked({ combined: true })).toBe("*");
+    expect(picked({ proxy: "pa", active: "pa" })).toBe("");
+    expect(picked({ proxy: "pb", active: "pa" })).toBe("pb");
+  });
+
+  it("asks only for what the server still offers", () => {
+    expect(reachable("pa", ["pa", "pb"], "pa")).toBe("");
+    expect(reachable("gone", ["pa", "pb"], "pa")).toBe("");
+    expect(reachable("pa,gone,pb", ["pa", "pb"], "")).toBe("pa,pb");
+    expect(reachable("pb,gone", ["pa", "pb"], "pa")).toBe("pb");
+    expect(reachable("*", ["pa"], "pa")).toBe("");
   });
 });
