@@ -21,7 +21,8 @@ from .._lib.ratchet import (
 from ....shared.atomic import write_json
 from .._lib.requests import is_refactor
 from .._lib.store import file_lock, save_opt_config
-from .._lib.layout import opt_session_runs_dir, read_json
+from .._lib.layout import opt_session_runs_dir
+from ....shared.atomic import read_json
 
 def ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:
     """Compute the ratchet outcome for a completed run, persisting it once.

@@ -18,6 +18,7 @@ from mimir.servers.proxy._lib import store
 from mimir.shared import exec_seals
 from mimir.tests.support.proxy import _TmpStorageTest, _eval
 from mimir.shared.atomic import write_json  # noqa: E402
+from mimir.shared.atomic import read_json
 
 
 class _FakeAgent(FakeAgent):
@@ -218,7 +219,7 @@ class TheServersOwnOpsSealTests(_TmpStorageTest):
     def test_a_session_seals_its_source_until_it_ends(self) -> None:
         res = self._session()
         self.assertEqual(res.get("status"), "ok", res)
-        src = layout.read_json(layout.opt_config_file("tiny"))["proxy_source_path"]
+        src = read_json(layout.opt_config_file("tiny"))["proxy_source_path"]
         self.assertTrue(self._blocked(f"python {src}"))
         self.assertFalse(self._blocked(f"cat {src}"))
         self.assertEqual(_eval(op="end", proxy_name="tiny", confirm=True).get("status"), "ok")

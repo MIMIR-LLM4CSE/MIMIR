@@ -24,15 +24,28 @@ def clean_gres(value: str) -> str:
     return re.sub(r"\(S:[^)]*\)", "", value)
 
 
-def gpu_count(gres: str) -> int:
-    """The GPUs a gres string names: ``gpu:a100:4,gpu:v100:2`` -> 6, ``gpu:2`` -> 2."""
-    total = 0
+def gpus_of(gres: str) -> list[tuple[str, int]]:
+    """The GPUs a gres string names, as (model, count): ``gpu:a100:4,gpu:2`` ->
+    ``[("a100", 4), ("", 2)]``; the socket bindings and other resources are dropped."""
+    out = []
     for item in re.sub(r"\([^)]*\)", "", gres or "").split(","):
         bits = item.strip().split(":")
         if bits[0] != "gpu":
             continue
-        total += int(bits[-1]) if len(bits) > 1 and bits[-1].isdigit() else 1
-    return total
+        count = int(bits[-1]) if len(bits) > 1 and bits[-1].isdigit() else 1
+        out.append((bits[1] if len(bits) > 2 else "", count))
+    return out
+
+
+def gpu_count(gres: str) -> int:
+    """The GPUs a gres string names: ``gpu:a100:4,gpu:v100:2`` -> 6, ``gpu:2`` -> 2."""
+    return sum(n for _, n in gpus_of(gres))
+
+
+def gpu_label(gres: str) -> str:
+    """The GPUs a gres string names, as a label: ``4× a100``, ``4× a100 + 2× v100``; empty
+    when it names none."""
+    return " + ".join(f"{n}× {model}".strip() for model, n in gpus_of(gres))
 
 
 def _allocated_gpus(line: str, raw: dict) -> int | None:

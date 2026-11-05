@@ -11,7 +11,11 @@ import shlex
 from ...shared.responses import err, ok
 from ...shared import shell_activity
 from ...shared.state_paths import sessions_root
-from ...shared.jobs import SLURM_JOB_ID, slurm_descriptor
+from typing import Any
+
+from ...shared import build_progress, slurm_site
+from ...shared.jobs import (SLURM_JOB_ID, is_terminal, record_terminal_state, recorded_terminal_state,
+                            slurm_descriptor)
 from ...shared.slurm_site import (
     slurm_state,
     HOST_FILE as _HOST_FILE,
@@ -300,3 +304,215 @@ def launched_from_this_session(job_id: str, requested: str = "") -> str | None:
     except ValueError:
         return None
     return host if shell_activity.submitted_by_this_session(moment) else None
+
+
+# ── the job tools' bodies: status, adoption, cancellation ──────────────────────
+
+
+def status(job_id: str, scheduler: str = "") -> dict:
+    """The normalized status of *job_id*, settling its directory when it has ended (``slurm_job_status``)."""
+    if not str(job_id).strip():
+        return err("job_id is required.")
+    job_id = str(job_id).strip()
+    # Where the submission was recorded, so the script and the log stay reachable. A
+    # Slurm job outlives its conversation, so the sibling sessions are searched too and the
+    # answer says when the job came from another one.
+    job_dir, from_session = find_job_dir(job_id)
+    host, state, raw, nodes = locate_job(job_id, scheduler, job_dir)
+    payload: dict[str, Any] = {"job_id": job_id, "state": state, "raw_state": raw}
+    if host or state != "unknown":
+        payload["scheduler"] = slurm_site.name_of(host)
+    # Which machines it got. Only ever present for a running job: a pending one has no
+    # node yet, and Slurm's own column there is the reason it is waiting.
+    if nodes:
+        payload["nodes"] = nodes
+    if job_dir:
+        payload["job_dir"] = job_dir
+        # Read, not re-derived: the submission wrote down where it told the job to
+        # write, and that answer has to survive a change of rule between versions —
+        # a job submitted by an older build still has its log where that build put it.
+        log = recorded_log(job_dir)
+        if log:
+            payload["log"] = log
+            if state == "running":
+                tail = build_progress.last_lines(log)
+                if tail:
+                    payload["log_tail"] = tail
+        if from_session:
+            payload["submitted_by_another_session"] = from_session
+        # And if Slurm has let go, say so in the directory. See record_terminal_state:
+        # this poll is the only thing that will ever know, and the readers that decide
+        # whether a workspace still has work running cannot ask the scheduler.
+        if is_terminal(state):
+            record_terminal_state(job_dir, state)
+            # A finished job whose log never appeared says something specific, and it
+            # is not about the job: the directory it was told to write to is not one
+            # the node that ran it could write. Named here because this is where it
+            # becomes knowable, and because the alternative is reading an empty
+            # ``tail`` as a job that printed nothing.
+            if log and not os.path.exists(log):
+                payload["log_missing"] = (
+                    f"The job wrote no log at {log}. A job writes its output from the "
+                    "node it ran on, so that directory was not one that node could "
+                    "write — pass work_dir to sbatch_submit and the log lands beside "
+                    "the work, where it is certain to be reachable.")
+    # A handle for a job of this conversation still in flight, so asking re-arms its watcher;
+    # never for another session's job (its wake would land here).
+    if state in ("running", "pending") and not from_session:
+        payload["background_jobs"] = [slurm_descriptor(job_id)]
+    return ok(payload)
+
+
+def adopt(job_id: str, note: str = "", scheduler: str = "") -> dict:
+    """Record *job_id*, submitted outside MIMIR, as this conversation's, for its watcher (``slurm_watch``)."""
+    job_id = str(job_id or "").strip()
+    if not job_id:
+        return err("job_id is required.",
+                   hint="Use the id the submission printed, or slurm_queue() to list "
+                        "what is running.")
+    if not JOB_ID_RE.fullmatch(job_id):
+        return err(f"{job_id!r} is not a Slurm job id.",
+                   hint="One job, or one array task: 15306620 or 15306621_3.")
+
+    # The disk first, and the scheduler only on the path that writes something. An id
+    # already recorded is the common answer when a model adopts an array task by task,
+    # and polling Slurm to tell it "nothing to adopt" buys nothing — over ssh it is two
+    # round trips, per scheduler swept, for an answer the directory already has.
+    existing, from_session = find_job_dir(job_id)
+    if existing:
+        settled = recorded_terminal_state(existing)
+        payload: dict[str, Any] = {
+            "job_id": job_id,
+            "job_dir": existing,
+            "recorded_by": from_session or "this conversation",
+            "note": (f"Job {job_id} is already recorded ({settled}); nothing to adopt."
+                     if settled else
+                     f"Job {job_id} is already recorded; nothing to adopt. "
+                     "slurm_job_status(job_id) for where it is at."),
+        }
+        if settled:
+            payload["state"] = settled
+        # Recorded is not watched: hand the descriptor over so a lost watcher is put back (the
+        # client dedups). Withheld for a sibling's job, as in slurm_job_status.
+        if not settled and not from_session:
+            payload["background_jobs"] = [slurm_descriptor(job_id)]
+        return ok(payload)
+
+    # Asked before anything is written, because a descriptor for a job no scheduler has
+    # heard of is worse than no descriptor: it holds this process open until the
+    # staleness horizon for a run that does not exist. And asked of each of them, which
+    # is what makes an id enough — the caller holding a number from a launcher's output
+    # has no reason to know which cluster printed it.
+    host, state, raw, nodes = locate_job(job_id, scheduler)
+    if state == "unknown":
+        known = ", ".join(slurm_site.name_of(h) for h in slurm_site.hosts()) or "none reachable"
+        return err(f"No scheduler this workspace reaches knows job {job_id} ({known}).",
+                   hint="Check the id with slurm_queue(). A job that has already left "
+                        "both squeue and sacct cannot be watched, and one on a "
+                        "scheduler not listed above needs it added — "
+                        "slurm_schedulers(add=\"<host>\").")
+
+    try:
+        # The host beside the id, so the watcher's polls go straight to it. A cache,
+        # not a binding: a poll that finds it wrong sweeps again and rewrites it.
+        job_dir = slurm_site.record_job_dir(job_id, **{
+            slurm_site.ADOPTED_FILE: f"{note}\n" if note else "\n",
+            slurm_site.HOST_FILE: host,
+        })
+    except OSError as exc:
+        return err(f"Could not record the job: {exc}")
+
+    payload = {
+        "job_id": job_id,
+        "state": state,
+        "raw_state": raw,
+        "job_dir": job_dir,
+        "scheduler": slurm_site.name_of(host),
+        "note": note or None,
+    }
+    # Where it is running, for the same reason the status read carries it: a watcher
+    # keeps what its poll learned, and "on which node" is what a badge says.
+    if nodes:
+        payload["nodes"] = nodes
+    if is_terminal(state):
+        # Already over. Settled rather than watched: a watcher put on a finished job
+        # reports it at its first poll, which is a wake for news the caller is holding.
+        record_terminal_state(job_dir, state)
+        payload["headline"] = (f"Job {job_id} has already finished ({state}); "
+                               "recorded, with nothing left to watch.")
+        return ok(payload)
+    # What was adopted, not what will happen next: whether anything watches this job is
+    # the client's to know, and it says so itself when it registers a watcher. A server
+    # that promises a resume it does not perform produces a model that ends its turn on
+    # a guarantee nobody is holding — which is what the front-ends without a watcher
+    # hook were handing out here.
+    payload["headline"] = (f"Slurm job {job_id} ({state}) is recorded as this "
+                           "conversation's, and handed over to be watched.")
+    # The plural key, like a status answer and unlike a submission: this call launched
+    # nothing, it hands over a run already going. Singular says "this call started it",
+    # which is what gates it behind BACKGROUNDABLE — a capability an adopter has no
+    # business claiming, and whose absence here is why nothing ever read the descriptor.
+    payload["background_jobs"] = [slurm_descriptor(job_id)]
+    # What is still unaccounted for, named here because this is the moment the model is
+    # holding the ids: a launcher prints a server job and a client array, and adopting
+    # the first is the usual place to stop.
+    add_unwatched(payload)
+    return ok(payload)
+
+
+def cancel(job_id: str, scheduler: str = "") -> dict:
+    """Cancel *job_id* when this conversation or its sub-agents submitted it (``slurm_cancel``)."""
+    # Same Unix user is not ownership: other conversations and workspaces share it.
+    owned = slurm_site.owned_job_hosts(job_id)
+    if scheduler:
+        scheduler = scheduler.strip()
+        owned &= {slurm_site.LOCAL if scheduler == slurm_site.LOCAL_NAME else scheduler}
+    if not owned:
+        # Submitted outside the cluster tools — by a launcher or a script — yet while a
+        # command of this conversation ran, and no other conversation's did.
+        named = scheduler.strip() if scheduler else ""
+        launched = launched_from_this_session(
+            job_id, "" if named in ("", slurm_site.LOCAL_NAME) else named)
+        if launched is not None:
+            owned = {launched}
+    if not owned:
+        return err(f"Job {job_id} was not submitted by this conversation or its "
+                   "sub-agents — neither through the cluster tools nor while one of "
+                   "its own commands ran — so it is not this conversation's to cancel.",
+                   hint="Jobs of other conversations or workspaces are left alone; "
+                        "ask the user to cancel them where they were started.")
+    if len(owned) > 1:
+        return err(f"Job {job_id} was submitted here on several schedulers: "
+                   + ", ".join(slurm_site.name_of(h) for h in sorted(owned)) + ".",
+                   hint="Name the one to cancel on with scheduler=.")
+    # Only the scheduler it was submitted to: the same id elsewhere is another job.
+    host = next(iter(owned))
+    located, located_raw, _nodes = normalized_job_state(job_id, host=host)
+    if located == "unknown":
+        return err(f"{slurm_site.name_of(host)} no longer knows job {job_id}, "
+                   "so there is nothing to cancel.",
+                   hint="List what is running with slurm_queue(scheduler=...).")
+
+    q = cli.run_argv(["squeue", "-h", "-j", job_id, "-o", "%u|%T"], TIMEOUT_READ,
+                  host=host)
+    line = (q.get("stdout") or "").strip().splitlines()
+    if q.get("status") != "ok" or not line:
+        return err(f"Job {job_id} is not in {slurm_site.name_of(host)}'s queue, so there is "
+                   "nothing to cancel.",
+                   hint=f"Its last known state: {located_raw or located}.")
+    owner, _, queued_state = line[0].partition("|")
+    user = cli.current_user()
+    if user and owner.strip() != user:
+        return err(f"Job {job_id} belongs to '{owner.strip()}', not to you ('{user}').",
+                   hint="Only your own jobs can be cancelled from here.")
+
+    res = cli.run_argv(["scancel", job_id], TIMEOUT_SUBMIT, host=host)
+    if res.get("status") != "ok":
+        return err(res.get("stderr") or res.get("error", "scancel failed"))
+    return ok({
+        "job_id": job_id,
+        "was": queued_state.strip(),
+        "scheduler": slurm_site.name_of(host),
+        "note": f"Slurm job {job_id} cancelled on {slurm_site.name_of(host)} "
+                f"(it was {queued_state.strip().lower()}).",
+    })

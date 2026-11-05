@@ -14,6 +14,7 @@ from typing import Any
 from mcp.server.fastmcp import Context, FastMCP
 from ...shared.responses import err, ok
 from ...shared.capabilities import tool_caps
+from ...shared.user_question import USER_QUESTION_TIMEOUT_SECS
 
 mcp = FastMCP(
     "InteractionServer",
@@ -115,15 +116,6 @@ def _parse_answer(raw_answer: Any) -> dict[str, Any]:
         selected.append(other_text)
 
     return {"selected": selected, "other_text": other_text}
-
-
-# How long this question stays in front of the user before the agent is told to decide
-# for itself. Read from the client so there is one number, and defaulted here so the
-# server still runs when imported on its own (tests, a bare subprocess).
-try:
-    from mimir.client.config.limits import USER_QUESTION_TIMEOUT_SECS
-except ImportError:  # pragma: no cover - running without the client package on the path
-    USER_QUESTION_TIMEOUT_SECS = 300
 
 
 # Grantable: any agent — the orchestrator or a sub-agent — reaches the user through it.

@@ -2,7 +2,7 @@
 rebuilt only when the module tree changes, and searchable by name with no embeddings.
 """
 
-from mimir.servers.hpc import host_probe, module_catalogue, platform_parsers
+from mimir.servers.hpc import cli as hpc_cli, host_probe, module_catalogue, platform_parsers
 from mimir.tests.support.stubs import stub_attr
 import importlib.util
 import json
@@ -545,7 +545,7 @@ class DurabilityTests(CatalogueTestCase):
 class DigestTests(CatalogueTestCase):
     """The host half is this machine's; the cluster half comes from the shared builder.
 
-    Stubbed at ``slurm_digest._capture`` rather than at this server's ``_run``: the
+    Stubbed at ``cli.capture``, the seam the digest reads through, rather than at this server's ``_run``: the
     cluster half deliberately no longer runs its own commands, so a stub on the local
     seam would let a real scheduler answer these.
     """
@@ -556,9 +556,8 @@ class DigestTests(CatalogueTestCase):
         stub_attr(self, host_probe, "collect_toolchains", lambda: {"gcc": "gcc (GCC) 11.3.0"})
         stub_attr(self, host_probe, "collect_cpu", lambda: {"arch": "x86_64", "logical_cpus": 8})
         stub_attr(self, host_probe, "collect_memory", lambda: {"total_gb": 32.0})
-        self._real_capture = slurm_digest._capture
-        slurm_digest._capture = self._capture
-        self.addCleanup(setattr, slurm_digest, "_capture", self._real_capture)
+        stub_attr(self, hpc_cli, "capture",
+                  lambda script, timeout, *, host="": self._capture(script, host, timeout))
         local_slurm(self)
         slurm_digest.forget_cluster_digest()
         self.addCleanup(slurm_digest.forget_cluster_digest)
@@ -590,7 +589,7 @@ class DigestTests(CatalogueTestCase):
         not the empty digest but the empty list of commands.
         """
         asked = []
-        slurm_digest._capture = lambda script, host, timeout: asked.append(script)
+        stub_attr(self, hpc_cli, "capture", lambda script, timeout, *, host="": asked.append(script))
         local_slurm(self, False)
         slurm_digest.forget_cluster_digest()
         digest = host_probe.build_digest()
@@ -603,9 +602,9 @@ class DigestTests(CatalogueTestCase):
         """The gap this closes: a site that locks scontrol down had no digest at all."""
         self.scontrol = None
         slurm_digest.forget_cluster_digest()
-        slurm_digest._capture = lambda script, host, timeout: (
+        stub_attr(self, hpc_cli, "capture", lambda script, timeout, *, host="": (
             "cn001|compute*|idle|64|256000|200000|(null)|2|32|1\n"
-            if script.startswith("sinfo -N") else None)
+            if script.startswith("sinfo -N") else None))
         digest = host_probe.build_digest()
         self.assertEqual(len(digest["node_types"]), 1)
         self.assertIn("architecture", digest["degraded"])

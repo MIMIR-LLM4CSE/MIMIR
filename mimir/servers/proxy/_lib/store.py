@@ -12,7 +12,7 @@ import shutil
 import threading
 
 from ....shared import exec_seals
-from ....shared.atomic import write_json, write_text
+from ....shared.atomic import read_json, write_json, write_text
 from .layout import (
     active_session_file,
     active_sessions_dir,
@@ -20,7 +20,6 @@ from .layout import (
     opt_config_file,
     opt_runs_dir,
     opt_session_runs_dir,
-    read_json,
     registry_path,
     resolve_proxy_name,
 )

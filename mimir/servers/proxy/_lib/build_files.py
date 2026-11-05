@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from .layout import read_json
+from ....shared.atomic import read_json
 
 
 def build_log_path(run_dir: str) -> str:

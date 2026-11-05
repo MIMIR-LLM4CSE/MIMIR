@@ -18,6 +18,7 @@ from mimir.servers.proxy._lib import layout
 from mimir.servers.proxy._lib import execute, metrics, procs, ratchet, report, store
 from mimir.tests.support.proxy import _TmpStorageTest, pin_local_scheduler
 from mimir.shared.atomic import write_json
+from mimir.shared.atomic import read_json
 
 try:
     import numpy as _np
@@ -259,7 +260,7 @@ class PostRunFinalizeTests(_TmpStorageTest):
     def test_detached_run_carries_the_invariants(self) -> None:
         d = self._run_dir()
         execute._post_run_finalize(d, "tiny", "ref1", "npz", wall_s=0.6, returncode=0)
-        m = layout.read_json(os.path.join(d, "metrics.json"))
+        m = read_json(os.path.join(d, "metrics.json"))
 
         self.assertEqual(m["comparison_to_reference"]["reference"], "ref1")
         # Error norms lifted to top level so requirements can gate on them.
@@ -274,13 +275,13 @@ class PostRunFinalizeTests(_TmpStorageTest):
     def test_conservation_drift_surfaces_as_a_metric(self) -> None:
         d = self._run_dir(mass=126.0)
         execute._post_run_finalize(d, "tiny", "ref1", "npz", wall_s=0.6, returncode=0)
-        m = layout.read_json(os.path.join(d, "metrics.json"))
+        m = read_json(os.path.join(d, "metrics.json"))
         self.assertAlmostEqual(m["conservation_residual"], 0.05, places=6)
 
     def test_unknown_proxy_still_settles(self) -> None:
         d = self._run_dir()
         execute._post_run_finalize(d, "ghost", "ref1", "npz", wall_s=0.6, returncode=0)
-        m = layout.read_json(os.path.join(d, "metrics.json"))
+        m = read_json(os.path.join(d, "metrics.json"))
         self.assertEqual(m["finite"], 1)          # entry-independent invariant
         self.assertNotIn("conservation_residual", m)   # needs conserved_metric
 
@@ -442,7 +443,7 @@ class ScancelHasTwoCallersTests(unittest.TestCase):
             str(p.relative_to(servers)) for p in servers.rglob("*.py")
             if '["scancel"' in p.read_text(encoding="utf-8")
         )
-        self.assertEqual(callers, ["hpc/server_hpc.py", "proxy/_lib/procs.py"])
+        self.assertEqual(callers, ["hpc/jobs.py", "proxy/_lib/procs.py"])
 
 
 class FieldNormsTests(unittest.TestCase):

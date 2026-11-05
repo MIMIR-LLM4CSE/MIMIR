@@ -21,7 +21,7 @@ from mimir.servers.hpc import cli as hpc_cli
 from mimir.servers.hpc import slurm_digest
 from mimir.shared import shell_activity, slurm_site
 
-from mimir.tests.support.scheduler import local_slurm
+from mimir.tests.support.scheduler import local_slurm, reads_through_stubs
 
 
 def _canned(mapping: dict):
@@ -416,7 +416,7 @@ def _digest(partitions=None, left_out=None, private_jobs=None) -> dict:
 
 def stub_digest(case: unittest.TestCase, **kwargs) -> None:
     """Answer the tools' access rule from a canned digest, with no scheduler asked."""
-    stub_attr(case, server_hpc, "_cluster_digest", lambda host: _digest(**kwargs))
+    stub_attr(case, slurm_digest, "cached_cluster_digest", lambda host: _digest(**kwargs))
 
 
 class SlurmNodesTests(unittest.TestCase):
@@ -426,6 +426,7 @@ class SlurmNodesTests(unittest.TestCase):
     aarch64 compute node, and nothing else in the toolkit reports that."""
 
     def setUp(self) -> None:
+        reads_through_stubs(self)
         local_slurm(self)
         stub_attr(self, hpc_cli, "run_argv", lambda argv, t, host='': {
             "status": "ok", "stdout": _SCONTROL, "stderr": "", "returncode": 0})
@@ -505,6 +506,7 @@ class PartitionAndQueueAccessTests(unittest.TestCase):
     """The tools apply the drawer's rule, and say when squeue shows only the user's jobs."""
 
     def setUp(self) -> None:
+        reads_through_stubs(self)
         local_slurm(self)
         stub_attr(self, hpc_cli, "run_bash", lambda cmd, t, stdin=None, host='': {
             "status": "ok", "returncode": 0, "stderr": "",
@@ -513,7 +515,7 @@ class PartitionAndQueueAccessTests(unittest.TestCase):
                        else "1|me|RUNNING|1:00|2:00|1|n1|a\n" if cmd.startswith("squeue")
                        else "cpu*|up|1-00|4|idle|64|773500\n"
                             "gpu|up|1-00|1|mix|72|579000\n")})
-        stub_attr(self, server_hpc, "_recorded_jobs", lambda: set())
+        stub_attr(self, slurm_site, "recorded_jobs", lambda: set())
 
     def test_partitions_are_the_usable_ones_with_what_waits_on_them(self) -> None:
         stub_digest(self, partitions=["cpu"], left_out={"gpu": "not open to your accounts"})
@@ -607,6 +609,7 @@ class NodeProfileTests(unittest.TestCase):
     """Probing a compute node on the node, and reading the result back."""
 
     def setUp(self) -> None:
+        reads_through_stubs(self)
         local_slurm(self)
         self._tmp = tempfile.TemporaryDirectory()
         # Taken before anything here is set, which is what lets tearDown put the
@@ -1264,9 +1267,8 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
         stub_attr(self, hpc_jobs, "slurm_queued_by_host", lambda *_a, **_k: {})
         # The inventory describes each host's hardware, so no real scheduler is asked.
         self._hardware: dict[str, str | None] = {}
-        orig_capture = slurm_digest._capture
-        slurm_digest._capture = self._capture
-        self.addCleanup(setattr, slurm_digest, "_capture", orig_capture)
+        stub_attr(self, hpc_cli, "capture",
+                  lambda script, timeout, *, host="": self._capture(script, host, timeout))
         slurm_digest.forget_cluster_digest()
         self.addCleanup(slurm_digest.forget_cluster_digest)
 

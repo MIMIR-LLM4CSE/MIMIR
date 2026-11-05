@@ -36,7 +36,8 @@ from .._lib.store import (
     opt_git_dir, workspace_root, entry_or_err, load_suite, load_opt_config, save_opt_config,
     opt_ledger_file, opt_best_file, write_active_session, clear_active_session, run_dir_names,
 )
-from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name, read_json
+from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name
+from ....shared.atomic import read_json
 from . import requests_ops
 from .code_map import session as code_map_session
 from .eval_common import (

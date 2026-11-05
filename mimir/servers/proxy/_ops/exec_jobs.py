@@ -20,7 +20,7 @@ from .._lib.procs import (
     run_state,
     background_descriptor,
 )
-from .._lib.layout import read_json
+from ....shared.atomic import read_json
 from ....shared.atomic import write_json
 
 _JOB_WORKER = "mimir.servers.proxy._proxy_job"

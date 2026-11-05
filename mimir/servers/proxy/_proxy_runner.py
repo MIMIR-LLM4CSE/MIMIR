@@ -7,7 +7,6 @@ as two jobs. Its config and log lines: docs/SERVERS_DETAILED.md, "proxy".
 
 from __future__ import annotations
 
-from ._lib import layout
 import argparse
 import json
 import os
@@ -21,6 +20,7 @@ from typing import NoReturn
 from ._lib import build as build_mod
 from ._lib.build_files import read_report
 from ._lib import command, execute, metrics, profiling, ratchet, store, tree_snapshot
+from ...shared.atomic import read_json
 
 
 def _log(msg: str) -> None:
@@ -120,7 +120,7 @@ def _build_phase(reg: dict, suite: dict, proxy_name: str, entry: dict, run_dir: 
     # Makefile, a generated header listed in optimize_paths) leaves the measured
     # tree different from the one snapshotted at launch, so the run would be
     # recorded against code that is not what ran.
-    launch = layout.read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
+    launch = read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
     opt_paths = (cfg.get("optimize_paths") or launch.get("paths") or [])
     expected = launch.get("fingerprint", "")
     if expected and opt_paths:
@@ -148,7 +148,7 @@ def _profile_only(cfg: dict, reg: dict, suite: dict, proxy_name: str, entry: dic
     if not _build_phase(reg, suite, proxy_name, entry, run_dir, cfg):
         sys.exit(2)
     plan = _Plan.from_config(cfg, cases)
-    measured = (layout.read_json(os.path.join(run_dir, "metrics.json"), {}) or {}).get("results") or []
+    measured = (read_json(os.path.join(run_dir, "metrics.json"), {}) or {}).get("results") or []
     first = cases[0] if cases else {}
     tally = _Tally(results=[r for r in measured if isinstance(r.get("metrics"), dict)] or [
         {"case_id": first.get("case_id", "?"), "sweep": (first.get("param_sweeps") or [{}])[0],
@@ -304,7 +304,7 @@ def _measure_replicates(plan: _Plan, case: dict, case_entry: dict, idx: int,
         )
         if "error" in row:
             break
-        rep_metrics = layout.read_json(os.path.join(run_case_dir, "metrics.json"), {}) or {}
+        rep_metrics = read_json(os.path.join(run_case_dir, "metrics.json"), {}) or {}
         replicates.append(rep_metrics)
         if plan.repeat > 1:
             _log(f"[proxy_runner] case={case_id} sweep={idx} replicate={rep} "

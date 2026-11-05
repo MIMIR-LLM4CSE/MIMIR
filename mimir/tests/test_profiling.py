@@ -14,11 +14,12 @@ import time
 import unittest
 from unittest import mock
 
-from mimir.servers.proxy._lib import layout, procs, profiling
+from mimir.servers.proxy._lib import procs, profiling
 from mimir.servers.proxy._lib.profiling import Frame, cpu, frames, gpu, memory
 from mimir.servers.proxy import server_proxy
 from mimir.servers.proxy._ops import eval_session
 from mimir.tests.support.proxy import _TmpStorageTest, _eval
+from mimir.shared.atomic import read_json
 
 _PYSPY = """\
 0x7f (libc.so.6);<module> (main.py:3);heavy (pkg/work.py:5);0x7e (libm.so.6) 3
@@ -687,14 +688,14 @@ class RunnerProfilesTests(_TmpStorageTest):
 
     def test_the_baseline_is_profiled_and_a_ruled_out_run_is_not(self) -> None:
         base = self._run()
-        prof = layout.read_json(profiling.profile_path(base))
+        prof = read_json(profiling.profile_path(base))
         self.assertEqual(prof["tool"], "cprofile")
         self.assertIn("fast.py", prof["files"])
         # The same time again is no improvement: rejected, so not profiled.
         second = self._run()
-        self.assertIsNone(layout.read_json(profiling.profile_path(second)))
+        self.assertIsNone(read_json(profiling.profile_path(second)))
         third = self._run(profile=True)
-        self.assertIsNotNone(layout.read_json(profiling.profile_path(third)))
+        self.assertIsNotNone(read_json(profiling.profile_path(third)))
 
     def test_results_say_where_the_time_goes(self) -> None:
         self._run()
@@ -720,7 +721,7 @@ class RunnerProfilesTests(_TmpStorageTest):
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["profiled"], os.path.basename(base))
         self.assertIn("fast.py", res["where_time_goes"]["files"])
-        self.assertIsNotNone(layout.read_json(profiling.profile_path(base)))
+        self.assertIsNotNone(read_json(profiling.profile_path(base)))
 
     def test_a_deeper_view_of_a_profiled_tree_runs_nothing(self) -> None:
         base = self._run()
@@ -744,7 +745,7 @@ class RunnerProfilesTests(_TmpStorageTest):
              mock.patch.object(memory, "profile", return_value=found):
             res = _eval(op="profile", proxy_name="fast", level="memory", confirm=True)
         self.assertEqual(res["where_time_goes"]["files"], {"fast.py": 1.0})
-        self.assertEqual(layout.read_json(profiling.profile_path(base))["memory"], found)
+        self.assertEqual(read_json(profiling.profile_path(base))["memory"], found)
         with mock.patch.object(eval_session.proc_run, "run", side_effect=AssertionError("ran")):
             again = _eval(op="profile", proxy_name="fast", level="memory", focus="fast.py", confirm=True)
         self.assertEqual(again["where_time_goes"]["lines"], {"fast.py:4": 1.0})
@@ -759,7 +760,7 @@ class RunnerProfilesTests(_TmpStorageTest):
             if "--run-dir" not in argv:
                 return real_run(argv, **kwargs)
             run_dir = argv[argv.index("--run-dir") + 1]
-            runs.append(layout.read_json(os.path.join(run_dir, "config.json"))["profile_level"])
+            runs.append(read_json(os.path.join(run_dir, "config.json"))["profile_level"])
             with mock.patch.object(sys, "argv", ["_proxy_runner", *argv[argv.index("--run-dir"):]]):
                 _proxy_runner.main()
         found = {"tool": "massif", "peak_mb": 12.0, "files": {"fast.py": 1.0}, "functions": {}, "lines": {}, "outside": {}}
@@ -777,7 +778,7 @@ class RunnerProfilesTests(_TmpStorageTest):
             # cProfile keeps no lines: a line view takes a sampled run, which keeps the sections.
             res = _eval(op="profile", proxy_name="fast", level=["line"], confirm=True)
         self.assertIn("unavailable", res["where_time_goes"])
-        kept = layout.read_json(profiling.profile_path(base))
+        kept = read_json(profiling.profile_path(base))
         self.assertEqual((kept["memory"], kept["counters"]["ipc"]), (found, 0.7))
         self.assertIn("fast.py", kept["files"])
 
@@ -798,7 +799,7 @@ class RunnerProfilesTests(_TmpStorageTest):
              mock.patch.object(cpu, "counters", return_value={"tool": "perf stat", "ipc": 0.7}):
             res = _eval(op="profile", proxy_name="fast", level="counters", confirm=True)
         self.assertEqual(res["where_time_goes"], {"tool": "perf stat", "ipc": 0.7})
-        kept = layout.read_json(profiling.profile_path(base))
+        kept = read_json(profiling.profile_path(base))
         self.assertEqual(kept["counters"], {"tool": "perf stat", "ipc": 0.7})
         self.assertIn("fast.py", kept["files"])
 

@@ -2,7 +2,6 @@
 build/run split. A fake ``sbatch`` on a bare PATH; no scheduler is reachable.
 """
 
-from mimir.servers.proxy._lib import layout
 import json
 import os
 import unittest
@@ -17,6 +16,7 @@ from mimir.tests.support.proxy import (
     store,
 )
 from mimir.shared import jobs as shared_jobs, slurm_site
+from mimir.shared.atomic import read_json
 
 
 class ValidateSlurmArgsTests(unittest.TestCase):
@@ -151,7 +151,7 @@ class SubmitEvalTests(_FakeSbatchTest):
         res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
 
-        cfg = layout.read_json(os.path.join(res["run_dir"], "config.json"))
+        cfg = read_json(os.path.join(res["run_dir"], "config.json"))
         # The Slurm-specific key is merged in, not written over the rest.
         self.assertEqual(cfg["partition"], "debug")
         self.assertEqual(cfg["convergence"], {"h_param": "n", "error_metric": "l2_rel"})
@@ -203,7 +203,7 @@ class SubmitEvalTests(_FakeSbatchTest):
         self.assertNotEqual(res["slurm_job_id"], res["build_job_id"])
         self.assertTrue(os.path.isfile(os.path.join(run_dir, "build_batch_script.sh")))
 
-        cfg = layout.read_json(os.path.join(run_dir, "config.json"))
+        cfg = read_json(os.path.join(run_dir, "config.json"))
         self.assertEqual(cfg["placement"]["build"]["partition"], "compile")
         self.assertEqual(cfg["placement"]["run"]["constraint"], "a100")
 
@@ -249,7 +249,7 @@ class SubmitEvalTests(_FakeSbatchTest):
         build_script, run_script = self._submitted_scripts()
         for script in (build_script, run_script):
             self.assertIn("#SBATCH --comment='ratchet iter 12'", script)
-        cfg = layout.read_json(os.path.join(res["run_dir"], "config.json"))
+        cfg = read_json(os.path.join(res["run_dir"], "config.json"))
         self.assertEqual(cfg["placement"]["run"]["comment"], "ratchet iter 12")
         self.assertEqual(cfg["placement"]["build"]["comment"], "ratchet iter 12")
 

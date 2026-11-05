@@ -12,6 +12,16 @@ import tempfile
 from typing import Any
 
 
+def read_json(path: str, default: Any = None) -> Any:
+    """What *path* holds as JSON; *default* when it is missing, unreadable or not JSON
+    (a file another process writes can be half there)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return default
+
+
 def write_text(path: str, text: str, *, newline: str | None = None) -> None:
     """Replace *path* with *text*. Raises on failure, leaving *path* untouched."""
     directory = os.path.dirname(os.path.abspath(path))

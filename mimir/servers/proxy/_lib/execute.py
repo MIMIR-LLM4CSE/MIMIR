@@ -5,7 +5,6 @@ metrics.json). All share the reserved-metrics purge, the timing guard and the in
 
 from __future__ import annotations
 
-from . import layout
 import hashlib
 import json
 import os
@@ -18,6 +17,7 @@ from ....shared.responses import err
 from . import proc_run
 
 from . import command, metrics as metrics_mod, procs, report, store
+from ....shared.atomic import read_json
 
 DEFAULT_MAX_OUTPUT_MB = 512
 REF_RUN_TIMEOUT       = 3600         # seconds
@@ -91,7 +91,7 @@ def _apply_invariants(
                 run_metrics[k] = comparison[k]
 
     if reference_name:
-        sealed = (layout.read_json(os.path.join(store.reference_dir(reference_name),
+        sealed = (read_json(os.path.join(store.reference_dir(reference_name),
                                                 "config.json"), {}) or {}
                   ).get("executable_fingerprint") or {}
         current = _binary_fingerprint(entry.get("executable_path", ""))

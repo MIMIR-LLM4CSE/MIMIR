@@ -10,7 +10,7 @@ import shutil
 import socket
 import sys
 import time
-from ...shared.atomic import write_json
+from ...shared.atomic import read_json, write_json
 from ...shared.jobs import slurm_descriptor
 from ...shared.responses import err, ok
 from ...shared.launcher import launch_argv
@@ -63,7 +63,7 @@ def _node_profile_path(node: str, host: str) -> str:
 
 
 def read_node_profile(node: str, host: str) -> dict | None:
-    return _read_json(_node_profile_path(node, host))
+    return read_json(_node_profile_path(node, host))
 
 
 # Fallback when no MIMIR Python runs on the node: raw sections, parsed server-side
@@ -177,14 +177,6 @@ def slurm_facts(node: dict) -> dict:
     return {k: node.get(k) for k in _HARDWARE_FIELDS}
 
 
-def _read_json(path: str) -> dict | None:
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-
 def write_node_profile(node: str, record: dict, host: str = _LOCAL_HOST) -> None:
     write_json(os.path.join(profile_host_dir(host), f"{node}.json"), record,
                indent=2, ensure_ascii=False)
@@ -203,7 +195,7 @@ def harvest_probes(nodes_by_name: dict[str, dict],
         return pending
     for entry in entries:
         job_dir = os.path.join(_hpc_jobs_dir(), entry)
-        meta = _read_json(os.path.join(job_dir, PROBE_MARKER))
+        meta = read_json(os.path.join(job_dir, PROBE_MARKER))
         if not meta or meta.get("harvested"):
             continue
         # The scheduler this probe was submitted to, which is not necessarily the one

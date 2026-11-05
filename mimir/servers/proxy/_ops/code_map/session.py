@@ -12,7 +12,8 @@ import os
 
 from .....shared import code_map
 from ..._lib import history, profiling, tree_snapshot
-from ..._lib.layout import merge_file, opt_session_runs_dir, read_json, resolve_proxy_name
+from ..._lib.layout import merge_file, opt_session_runs_dir, resolve_proxy_name
+from .....shared.atomic import read_json
 from ..._lib.ratchet import baseline_value, read_ledger, relative
 from ..._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspace_root
 from . import profile

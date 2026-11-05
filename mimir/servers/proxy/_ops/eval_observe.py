@@ -18,7 +18,8 @@ from ._eval_ratchet import ratchet_state
 from ....shared import build_progress
 from .._lib import build, build_files, profiling, requests
 from .._lib.store import load_registry, load_opt_config, run_dir_names
-from .._lib.layout import opt_session_runs_dir, resolve_proxy_name, read_json
+from .._lib.layout import opt_session_runs_dir, resolve_proxy_name
+from ....shared.atomic import read_json
 from .eval_common import (
     LONG_BUILD_S,
     NEXT_RESET_BEST,

@@ -26,7 +26,7 @@ from .slurm_digest import (
     forget_cluster_digest,
     usable_set,
 )
-from .slurm_nodes import HARDWARE_FIELDS, hardware_key, sum_room
+from .slurm_nodes import HARDWARE_FIELDS, gpu_label, hardware_key, sum_room
 
 # The panel refreshes on a timer while a turn runs, so every line below is served from
 # a cache. Two clocks, because the facts age at different speeds: the user's queue moves
@@ -93,14 +93,8 @@ def _node_kind_label(kind: dict) -> str:
 
 
 def _gpu_of(kind: dict) -> str:
-    """``gpu:a100:4`` as ``4× a100``; empty when the kind has no GPU."""
-    gres = str(kind.get("gres") or "")
-    if not gres.startswith("gpu:"):
-        return ""
-    bits = gres.split(":")
-    model = bits[1] if len(bits) > 2 else ""
-    count = bits[-1] if bits[-1].isdigit() else ""
-    return " ".join(x for x in (f"{count}×" if count else "", model) if x).strip() or gres
+    """The kind's GPUs as a label (``4× a100``); empty when it has none."""
+    return gpu_label(str(kind.get("gres") or ""))
 
 
 def _partitions_label(kind: dict, shown: int = 2) -> str:

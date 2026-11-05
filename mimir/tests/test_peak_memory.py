@@ -12,9 +12,10 @@ import unittest
 from unittest import mock
 
 from mimir.servers.proxy import server_proxy
-from mimir.servers.proxy._lib import command, layout, measure, proc_run, procs, profiling
+from mimir.servers.proxy._lib import command, measure, proc_run, procs, profiling
 from mimir.servers.proxy._ops import _eval_ratchet, eval_session
 from mimir.tests.support.proxy import _TmpStorageTest, _eval
+from mimir.shared.atomic import read_json
 
 
 class SessionTests(_TmpStorageTest):
@@ -68,7 +69,7 @@ class SessionTests(_TmpStorageTest):
         from mimir.servers.proxy import _proxy_runner
         with mock.patch.object(sys, "argv", ["_proxy_runner", "--run-dir", run_dir]):
             _proxy_runner.main()
-        return layout.read_json(os.path.join(run_dir, "metrics.json"))
+        return read_json(os.path.join(run_dir, "metrics.json"))
 
     def test_the_peak_is_measured_and_a_reported_one_is_not_believed(self) -> None:
         self._init([{"metric": "time_s", "operator": "lt", "threshold": 100.0}])

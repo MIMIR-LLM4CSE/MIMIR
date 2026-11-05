@@ -9,7 +9,8 @@ import re
 from datetime import datetime, timezone
 
 from ....shared.atomic import write_json
-from .layout import read_json, requests_file
+from .layout import requests_file
+from ....shared.atomic import read_json
 from .store import file_lock
 
 MODES = ("study", "try")

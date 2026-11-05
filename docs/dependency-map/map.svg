@@ -26,7 +26,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 </style>
 <rect class="bg" width="1155" height="958"/>
 <text class="head" x="14" y="26">MIMIR dependency map</text>
-<text class="meta" x="14" y="44">61 units · 277 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
+<text class="meta" x="14" y="44">62 units · 278 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
 <rect class="band" x="8" y="60" width="966" height="48" rx="4"/>
 <text class="label" x="14" y="82">rank 11</text>
 <text class="label" x="14" y="96">front-ends</text>
@@ -86,6 +86,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M518.5,692 C518.5,723 180.5,723 180.5,754" stroke-width="2"><title>client.config → shared.atomic · 1 import(s)</title></path>
 <path class="edge" d="M518.5,692 C518.5,723 655.5,723 655.5,754" stroke-width="2"><title>client.config → shared.extension_paths · 1 import(s)</title></path>
 <path class="edge" d="M518.5,692 C518.5,743 517.5,743 517.5,794" stroke-width="2"><title>client.config → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M518.5,692 C518.5,743 791.5,743 791.5,794" stroke-width="2"><title>client.config → shared.user_question · 1 import(s)</title></path>
 <path class="edge" d="M562,584 C562,625 518.5,625 518.5,666" stroke-width="3.6"><title>client.context → client.config · 5 import(s)</title></path>
 <path class="edge" d="M562,584 C562,598 595,598 595,612" stroke-width="2"><title>client.context → client.tools · 1 import(s)</title></path>
 <path class="edge" d="M562,584 C562,669 180.5,669 180.5,754" stroke-width="2"><title>client.context → shared.atomic · 1 import(s)</title></path>
@@ -184,7 +185,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M562,152 C562,409 598.5,409 598.5,666" stroke-width="2"><title>client.session → client.protocol · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,193 485.5,193 485.5,234" stroke-width="2"><title>client.session → client.query_engine · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,193 663.5,193 663.5,234" stroke-width="2"><title>client.session → client.query_engine.jobs · 1 import(s)</title></path>
-<path class="edge" d="M562,152 C562,453 180.5,453 180.5,754" stroke-width="2"><title>client.session → shared.atomic · 1 import(s)</title></path>
+<path class="edge" d="M562,152 C562,453 180.5,453 180.5,754" stroke-width="2.6"><title>client.session → shared.atomic · 2 import(s)</title></path>
 <path class="edge" d="M562,152 C562,453 757,453 757,754" stroke-width="2"><title>client.session → shared.jobs · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,453 924,453 924,754" stroke-width="2"><title>client.session → shared.processes · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,473 517.5,473 517.5,794" stroke-width="3"><title>client.session → shared.state_paths · 3 import(s)</title></path>
@@ -301,7 +302,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,296 C1082.5,579 437,579 437,862" stroke-width="3.3"><title>servers.hpc → shared.clock · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 517,579 517,862" stroke-width="3.3"><title>servers.hpc → shared.cpu_facts · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 453,525 453,754" stroke-width="2.6"><title>servers.hpc → shared.embed · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,525 757,525 757,754" stroke-width="3"><title>servers.hpc → shared.jobs · 3 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,525 757,525 757,754" stroke-width="2.6"><title>servers.hpc → shared.jobs · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 833.5,525 833.5,754" stroke-width="2"><title>servers.hpc → shared.launcher · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 614.5,579 614.5,862" stroke-width="2"><title>servers.hpc → shared.module_env · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 1018,525 1018,754" stroke-width="4"><title>servers.hpc → shared.responses · 7 import(s)</title></path>
@@ -309,10 +310,10 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,296 C1082.5,579 853,579 853,862" stroke-width="2.6"><title>servers.hpc → shared.slurm_script · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 961.5,579 961.5,862" stroke-width="4"><title>servers.hpc → shared.slurm_site · 7 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,545 517.5,545 517.5,794" stroke-width="3.3"><title>servers.hpc → shared.state_paths · 4 import(s)</title></path>
-<path class="edge" d="M1082.5,395 C1082.5,530.5 518.5,530.5 518.5,666" stroke-width="2"><title>servers.interaction → client.config · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,395 C1082.5,574.5 275,574.5 275,754" stroke-width="2"><title>servers.interaction → shared.capabilities · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,395 C1082.5,574.5 1018,574.5 1018,754" stroke-width="2"><title>servers.interaction → shared.responses · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 180.5,624 180.5,754" stroke-width="4.5"><title>servers.proxy → shared.atomic · 12 import(s)</title></path>
+<path class="edge" d="M1082.5,395 C1082.5,594.5 791.5,594.5 791.5,794" stroke-width="2"><title>servers.interaction → shared.user_question · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 180.5,624 180.5,754" stroke-width="4.5"><title>servers.proxy → shared.atomic · 35 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 339,678 339,862" stroke-width="3"><title>servers.proxy → shared.build_progress · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 275,624 275,754" stroke-width="2"><title>servers.proxy → shared.capabilities · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 376.5,624 376.5,754" stroke-width="3"><title>servers.proxy → shared.code_map · 3 import(s)</title></path>
@@ -416,6 +417,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <g class="node shared"><title>shared.slurm_site — Which Slurm schedulers this workspace reaches, learned from successful calls.</title><rect x="917" y="862" width="89" height="26" rx="4"/><text x="961.5" y="879" text-anchor="middle">slurm_site</text></g>
 <g class="node shared"><title>shared.state_paths — The agent&#x27;s state directories, server-side: one source of truth.</title><rect x="469" y="794" width="97" height="26" rx="4"/><text x="517.5" y="811" text-anchor="middle">state_paths</text></g>
 <g class="node shared"><title>shared.trusted_read_roots — The out-of-workspace roots read without approval: the state dir, where MIMIR keeps its</title><rect x="578" y="794" width="146" height="26" rx="4"/><text x="651" y="811" text-anchor="middle">trusted_read_roots</text></g>
+<g class="node shared"><title>shared.user_question — How long a question put to the user stays open before the agent is told to decide for</title><rect x="736" y="794" width="111" height="26" rx="4"/><text x="791.5" y="811" text-anchor="middle">user_question</text></g>
 <g class="node front"><rect x="14" y="908" width="14" height="12" rx="3"/></g>
 <text class="label" x="34" y="918">Front-ends and measurement</text>
 <g class="node engine"><rect x="226.2" y="908" width="14" height="12" rx="3"/></g>

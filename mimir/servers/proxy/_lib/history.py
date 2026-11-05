@@ -8,7 +8,8 @@ import os
 import time
 
 from ....shared.atomic import write_json
-from .layout import history_dir, read_json
+from .layout import history_dir
+from ....shared.atomic import read_json
 
 
 def is_key(name: str) -> bool:

@@ -733,10 +733,14 @@ index of the site's whole module tree, and *loading* is the bash server's `modul
 because a load mutates one subprocess's environment.)
 
 A tool here is its contract, the check of its arguments, and a call. What runs behind
-them lives beside it: a job's record and the submission itself (`hpc/jobs.py`, whose
-`sbatch_on` both submitters use), node profiles and probes (`hpc/node_profiles.py`), the
-Slurm commands (`hpc/cli.py`), and the Cluster panel section (`hpc/panel.py`). The
-per-scheduler digest (`hpc/slurm_digest.py`) keeps only the nodes in a partition this
+them lives beside it: a job's record, its status, its adoption, its cancellation and the
+submission itself (`hpc/jobs.py`: `status`, `adopt`, `cancel`, and `sbatch_on` both
+submitters use), node profiles and probes (`hpc/node_profiles.py`), the Slurm commands
+(`hpc/cli.py`: `run_bash`, `run_argv`, and `capture` for a read parsed whole, which no
+answer's size limit cuts), and the Cluster panel section (`hpc/panel.py`). The cluster's
+reads are `hpc/slurm_digest.py`'s alone — `read_nodes` (scontrol, else sinfo, `DEGRADED`),
+`read_partitions`, `read_queue_load` — which the tools call as the digest does. The
+per-scheduler digest keeps only the nodes in a partition this
 user can submit to — listed by `sinfo` without `--all`, up, not root-only, open to one of
 the user's accounts — and counts the rest in `left_out`; `cluster_load` reads, unkept,
 what is free on those nodes and what `squeue` says already waits for each partition. The

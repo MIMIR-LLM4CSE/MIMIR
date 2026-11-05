@@ -47,7 +47,8 @@ def _hottest(proxy_name: str, run_id: str) -> dict | None:
     """The costliest workspace file of the best run's profile, and its costliest GPU
     kernel when it ran any, when it was profiled."""
     from .._lib import profiling
-    from .._lib.layout import opt_session_runs_dir, read_json
+    from .._lib.layout import opt_session_runs_dir
+    from ....shared.atomic import read_json
     prof = read_json(profiling.profile_path(os.path.join(opt_session_runs_dir(proxy_name), run_id))) if run_id else None
     files = (prof or {}).get("files") or {}
     kernels = ((prof or {}).get("gpu") or {}).get("kernels") or {}

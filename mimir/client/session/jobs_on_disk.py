@@ -7,7 +7,6 @@ words are the servers' own (``shared.jobs``).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -25,6 +24,7 @@ from ...shared.jobs import (
     shell_descriptor,
     slurm_descriptor,
 )
+from ...shared.atomic import read_json
 from ...shared.processes import is_running
 from ...shared.state_paths import sessions_root, subagents_dir
 from ..config import paths
@@ -84,13 +84,8 @@ class DetachedJob:
 
 
 def _read_json(path: str) -> dict | None:
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        logger.debug("_read_json: a best-effort step failed and was skipped", exc_info=True)
-        return None
+    data = read_json(path)
+    return data if isinstance(data, dict) else None
 
 
 # How long an unsettled Slurm submission reads as running: far past any wall-time, since

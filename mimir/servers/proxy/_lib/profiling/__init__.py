@@ -13,7 +13,7 @@ import re
 import subprocess
 
 from .....shared.atomic import write_json
-from ..layout import read_json
+from .....shared.atomic import read_json
 from . import cpu, gpu, memory
 from .cpu import attribute, choose, cprofile_files, is_python, perf_allowed, perf_stacks, pyspy_stacks
 from .frames import Frame, resolver

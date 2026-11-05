@@ -6,7 +6,8 @@ from __future__ import annotations
 import os
 
 from ..._lib import history, requests
-from ..._lib.layout import merge_file, read_json, resolve_proxy_name
+from ..._lib.layout import merge_file, resolve_proxy_name
+from .....shared.atomic import read_json
 from ..._lib.ratchet import baseline_value, load_best, read_ledger, relative
 from ..._lib.store import load_opt_config, opt_ledger_file, opt_sessions
 from .. import merge_sources

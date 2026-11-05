@@ -7,7 +7,8 @@ from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
 
-from mimir.servers.hpc import slurm_digest, slurm_nodes
+from mimir.servers.hpc import cli, slurm_digest, slurm_nodes
+from mimir.tests.support.stubs import stub_attr
 from mimir.shared import slurm_site
 
 from mimir.tests.support.scheduler import local_slurm
@@ -70,9 +71,8 @@ class _Capture:
 class _DigestTestCase(unittest.TestCase):
     def setUp(self):
         self.capture = _Capture()
-        self._real = slurm_digest._capture
-        slurm_digest._capture = self.capture
-        self.addCleanup(setattr, slurm_digest, "_capture", self._real)
+        capture = self.capture
+        stub_attr(self, cli, "capture", lambda script, timeout, *, host="": capture(script, host, timeout))
         slurm_digest.forget_cluster_digest()
         self.addCleanup(slurm_digest.forget_cluster_digest)
         local_slurm(self)
@@ -247,6 +247,9 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(slurm_nodes.gpu_count("gpu:a100:4,gpu:v100:2"), 6)
         self.assertEqual(slurm_nodes.gpu_count("gpu:2"), 2)
         self.assertEqual(slurm_nodes.gpu_count("mps:100"), 0)
+        self.assertEqual(slurm_nodes.gpu_label("gpu:a100:4(S:0-1)"), "4× a100")
+        self.assertEqual(slurm_nodes.gpu_label("gpu:a100:4,gpu:v100:2"), "4× a100 + 2× v100")
+        self.assertEqual(slurm_nodes.gpu_label("mps:100"), "")
 
 
 class MemoTests(_DigestTestCase):

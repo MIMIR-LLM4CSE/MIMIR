@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 
 from ..._lib import profiling
-from ..._lib.layout import opt_session_runs_dir, read_json
+from ..._lib.layout import opt_session_runs_dir
+from .....shared.atomic import read_json
 
 _KERNELS_SHOWN = 8
 

@@ -177,7 +177,7 @@ readers:
 
 | Reader | Modules |
 |---|---|
-| **The client and the servers**: the contract between them, and what both run | `state_paths` (the on-disk layout), `exec_seals` (the files a server seals for a conversation, which the guardrails refuse to run directly), `jobs` (the run contract), `run_channel` (the divert channel), `capabilities` (the vocabulary a server declares with), `responses` (the shape of a tool answer), `shell_paths`, `trusted_read_roots`, `extension_paths`, `skill_file`, `launcher`, `atomic`, `processes`, `embed`, `code_map` (a workspace's code read as a map, and the arguments a `CODE_MAP` tool answers it whole to) |
+| **The client and the servers**: the contract between them, and what both run | `state_paths` (the on-disk layout), `exec_seals` (the files a server seals for a conversation, which the guardrails refuse to run directly), `jobs` (the run contract), `run_channel` (the divert channel), `capabilities` (the vocabulary a server declares with), `responses` (the shape of a tool answer), `shell_paths`, `trusted_read_roots`, `extension_paths`, `skill_file`, `launcher`, `atomic`, `processes`, `embed`, `code_map` (a workspace's code read as a map, and the arguments a `CODE_MAP` tool answers it whole to), `user_question` (how long a question to the user stays open) |
 | **The servers only**: what two domains or more share | `slurm_site`, `slurm_script`, `shell_activity`, `cpu_facts`, `build_progress`, `approved_roots`, `module_env`, `clock` |
 
 ## The servers
@@ -190,8 +190,8 @@ workspace off `sys.path`; a server of `.mimir/servers/` still starts by its path
 - `shared` holds what two domains or more use, or what the client reads too; a module one
   domain uses lives in its package (`hpc/slurm_digest`, `workspace/lsp_client`,
   `agent_state/model_catalog`).
-- Only `agent_state` (the sub-agent server builds a `MimirAgent`) and `interaction`
-  import the client, and only its public names. The sub-agent is the
+- Only `agent_state` (the sub-agent server builds a `MimirAgent`) imports the client,
+  and only its public names. The sub-agent is the
   `agent_state/subagent/` package; it is lent an `AgentHost` as a conversation is, and
   watches its runs with a `RunWatcher` of its own.
 - The client imports no server: what it reads of a server's files is a contract in

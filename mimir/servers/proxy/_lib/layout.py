@@ -3,7 +3,6 @@ plain reads, under one root the tests redirect (``_ROOT``). ``store`` persists o
 """
 from __future__ import annotations
 
-import json
 import os
 
 from ....shared.state_paths import active_session_id
@@ -67,15 +66,6 @@ def active_session_file(session_id: str | None = None) -> str:
     """
     sid = session_id if session_id is not None else active_session_id()
     return os.path.join(active_sessions_dir(), *([sid] if sid else []), "proxy")
-
-
-def read_json(path: str, default=None):
-    """Best-effort JSON read; returns *default* on a missing or corrupt file."""
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        return default
 
 
 def resolve_proxy_name(arg: str, session_id: str | None = None) -> str | None:

@@ -25,43 +25,28 @@ from .slurm_nodes import (
     usable_nodes,
     usable_partitions,
 )
-from ...shared.slurm_site import LOCAL, argv_for, name_of, slurm_is_local
-
-import subprocess
+from ...shared.slurm_site import LOCAL, name_of, slurm_is_local
 from ...shared.clock import utc_stamp
+from . import cli
 
 # Long enough for ``scontrol show node`` on a cluster of a few thousand nodes, short
 # enough that a host which has stopped answering does not hold up a listing built from
 # several of them.
 _TIMEOUT = 20
 
-# The partition columns, in the order the format string asks for them. One fact in two
-# halves, kept adjacent for the same reason ``slurm_nodes`` keeps its own pair that way.
-_PARTITIONS_FORMAT = "%P|%a|%l|%D|%c|%m"
-_PARTITIONS_COLUMNS = [
-    "partition", "availability", "time_limit", "nodes",
-    "cpus_per_node", "mem_mb_per_node",
-]
+# The partition columns, in the order the format string asks for them, the live state's
+# beside its letter. One fact in two halves, kept adjacent for the same reason
+# ``slurm_nodes`` keeps its own pair that way.
+_PARTITION_FIELDS = [("%P", "partition"), ("%a", "availability"), ("%l", "time_limit"),
+                     ("%D", "nodes"), ("%t", "state"), ("%c", "cpus_per_node"),
+                     ("%m", "mem_mb_per_node")]
 
-_DEGRADED = "scontrol unavailable: architecture and node features are unknown."
+DEGRADED = "scontrol unavailable: architecture, node features and live CPU occupancy are unknown."
 
 # One digest per host, for the life of the process. Failures are not entered: a cluster
 # that was down for one call must not be silent until the server restarts.
 _MEMO: dict[str, dict] = {}
 
-
-
-def _capture(script: str, host: str, timeout: int) -> str | None:
-    """*script*'s stdout on *host* through a login shell (``slurm_site.argv_for``), or None."""
-    try:
-        res = subprocess.run(
-            argv_for(script, host=host),
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return res.stdout if res.returncode == 0 else None
 
 
 def _empty(host: str) -> dict:
@@ -70,15 +55,36 @@ def _empty(host: str) -> dict:
             "left_out": {"nodes": 0, "partitions": {}}, "private_jobs": None}
 
 
-def _read_nodes(host: str, timeout: int) -> tuple[list[dict] | None, str]:
-    """*host*'s nodes and the tool that gave them: scontrol, else sinfo; ``(None, "")`` if neither."""
-    stdout = _capture(shlex.join(SCONTROL_NODES_ARGV), host, timeout)
+def read_nodes(host: str, timeout: int = _TIMEOUT) -> tuple[list[dict] | None, str]:
+    """*host*'s nodes and the tool that gave them: scontrol, else sinfo, which does not
+    carry the architecture (``DEGRADED``); ``(None, "")`` if neither answered."""
+    stdout = cli.capture(shlex.join(SCONTROL_NODES_ARGV), timeout, host=host)
     if stdout is not None:
         return parse_scontrol_nodes(stdout), "scontrol"
-    stdout = _capture(f"sinfo -N -h -o '{SINFO_NODES_FORMAT}'", host, timeout)
+    stdout = cli.capture(f"sinfo -N -h -o '{SINFO_NODES_FORMAT}'", timeout, host=host)
     if stdout is None:
         return None, ""
     return parse_sinfo_nodes(stdout), "sinfo"
+
+
+def read_partitions(host: str, timeout: int = _TIMEOUT, *, states: bool = False) -> list[dict] | None:
+    """sinfo's partitions on *host*, the default one's ``*`` dropped; with *states*, one row
+    per partition and node state. None when sinfo did not answer."""
+    fields = [(f, c) for f, c in _PARTITION_FIELDS if states or c != "state"]
+    stdout = cli.capture("sinfo -h -o '" + "|".join(f for f, _ in fields) + "'", timeout, host=host)
+    if stdout is None:
+        return None
+    rows = parse_pipe_table(stdout, [c for _, c in fields])
+    for row in rows:
+        row["partition"] = row["partition"].rstrip("*")
+    return rows
+
+
+def read_queue_load(host: str, timeout: int = _TIMEOUT) -> dict[str, dict] | None:
+    """What waits and runs on *host*, per partition, every user (``parse_squeue_load``);
+    None when squeue did not answer."""
+    stdout = cli.capture(f"squeue -h -t PENDING,RUNNING -o '{SQUEUE_LOAD_FORMAT}'", timeout, host=host)
+    return parse_squeue_load(stdout) if stdout is not None else None
 
 
 # One login shell for the facts access is decided from. The separator stands between
@@ -93,7 +99,7 @@ _ACCESS_SCRIPT = (f"{shlex.join(SCONTROL_PARTITIONS_ARGV)} 2>/dev/null; echo {_S
 def _read_access(host: str, timeout: int) -> dict:
     """What decides access on *host*: partition ``restrictions``, the user's ``accounts``
     (None if not known), ``user``, and ``private_jobs`` (PrivateData hides others' jobs)."""
-    stdout = _capture(_ACCESS_SCRIPT, host, timeout) or ""
+    stdout = cli.capture(_ACCESS_SCRIPT, timeout, host=host) or ""
     sections = stdout.split(_SECTION + "\n")
     if len(sections) != 4:
         return {"restrictions": {}, "accounts": None, "user": "", "private_jobs": None}
@@ -115,16 +121,13 @@ def cluster_digest(host: str = LOCAL, *, timeout: int = _TIMEOUT) -> dict:
         return _empty(host)
 
     digest = _empty(host)
-    nodes, digest["source"] = _read_nodes(host, timeout)
+    nodes, digest["source"] = read_nodes(host, timeout)
     if nodes is None:
         return digest
     if digest["source"] == "sinfo":
-        digest["degraded"] = _DEGRADED
+        digest["degraded"] = DEGRADED
 
-    stdout = _capture(f"sinfo -h -o '{_PARTITIONS_FORMAT}'", host, timeout)
-    rows = parse_pipe_table(stdout, _PARTITIONS_COLUMNS) if stdout is not None else []
-    for row in rows:
-        row["partition"] = row["partition"].rstrip("*")
+    rows = read_partitions(host, timeout) or []
     access = _read_access(host, timeout)
     digest["private_jobs"] = access["private_jobs"]
     usable: set[str] | None = None
@@ -160,14 +163,11 @@ def cluster_load(host: str = LOCAL, *, usable: set[str] | None = None,
     ``nodes`` are the usable ones (:func:`usable_nodes` over *usable*); ``queue`` is
     ``parse_squeue_load``'s, None when squeue did not answer.
     """
-    nodes, source = _read_nodes(host, timeout)
+    nodes, source = read_nodes(host, timeout)
     if nodes is None:
         return None
-    stdout = _capture(f"squeue -h -t PENDING,RUNNING -o '{SQUEUE_LOAD_FORMAT}'",
-                      host, timeout)
     return {"source": source, "read_at": utc_stamp(),
-            "nodes": usable_nodes(nodes, usable),
-            "queue": parse_squeue_load(stdout) if stdout is not None else None}
+            "nodes": usable_nodes(nodes, usable), "queue": read_queue_load(host, timeout)}
 
 
 def cached_cluster_digest(host: str = LOCAL, *, timeout: int = _TIMEOUT) -> dict:

@@ -13,7 +13,7 @@ from .._lib.command import PARAM_EXT
 from .._lib.procs import run_state
 from .._lib import store
 from .._lib.store import load_registry_or_err, save_registry, registry_lock, proxy_runs_dir
-from .._lib.layout import read_json
+from ....shared.atomic import read_json
 from .code_map import session as code_map_session
 
 # Registration fields carried by the ``metadata`` dict parameter. Descriptive,

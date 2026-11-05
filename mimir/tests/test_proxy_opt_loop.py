@@ -18,6 +18,7 @@ from mimir.tests.support.proxy import (
     store,
 )
 from mimir.shared.atomic import write_json  # noqa: E402
+from mimir.shared.atomic import read_json
 
 
 
@@ -377,7 +378,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         # The accepted state is the TREE as it stood at launch, recorded for the whole
         # optimize_paths set — not a copy of one source file, which could only ever
         # restore part of a multi-file change.
-        launch = layout.read_json(os.path.join(run_dir, "tree_at_launch.json"))
+        launch = read_json(os.path.join(run_dir, "tree_at_launch.json"))
         self.assertTrue(launch, "no launch tree recorded")
         self.assertEqual(best["tree_snapshot"], launch["snapshot_id"])
 

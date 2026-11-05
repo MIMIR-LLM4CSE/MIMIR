@@ -1,7 +1,7 @@
 """Talking to a Slurm scheduler, local or over ssh: the one seam every call goes through.
 
-Every command reaches Slurm through ``run_bash`` or ``run_argv``, called by attribute
-(``cli.run_bash``) so a test replaces it in one place."""
+Every command reaches Slurm through ``run_bash``, ``run_argv`` or ``capture``, called by
+attribute (``cli.run_bash``) so a test replaces it in one place."""
 from __future__ import annotations
 
 import os
@@ -15,10 +15,6 @@ from ...shared.slurm_site import (
     resolve_host as _resolve_host,
     argv_for as slurm_argv,
     exec_argv as slurm_exec_argv,
-)
-from .slurm_nodes import (
-    SINFO_NODES_FORMAT as _SINFO_NODES_FORMAT,
-    parse_sinfo_nodes as _parse_sinfo_nodes,
 )
 
 TIMEOUT_READ = 15
@@ -65,28 +61,43 @@ def chosen_host(scheduler: str) -> tuple[str, dict | None]:
     return host, (err(refusal) if refusal else None)
 
 
-def run_bash(script: str, timeout: int, stdin: str | None = None, *,
-              host: str = _LOCAL_HOST) -> dict:
-    """Run *script* on *host*'s scheduler, with *stdin* on a pipe of ours or no stdin at all.
+def _exec(argv: list[str], timeout: int, stdin: str | None = None) -> subprocess.CompletedProcess:
+    """*argv* run with *stdin* on a pipe of ours, or no stdin at all: the server's own
+    stdin is its MCP pipe. Raises as ``subprocess.run`` does."""
+    return subprocess.run(argv, input=stdin, stdin=None if stdin is not None else subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
 
-    The server's own stdin is its MCP pipe; ``sbatch`` gets its script through *stdin*.
-    """
+
+def _answer(argv: list[str], timeout: int, stdin: str | None = None) -> dict:
     try:
-        res = subprocess.run(
-            slurm_argv(script, host=host, piped=stdin is not None),
-            input=stdin,
-            stdin=None if stdin is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-        )
-        return command_result(res)
+        return command_result(_exec(argv, timeout, stdin))
     except subprocess.TimeoutExpired:
         return err(f"Command timed out after {timeout}s.",
                    hint="Narrow the query or increase timeout.")
     except Exception as e:
         return err(str(e))
+
+
+def run_bash(script: str, timeout: int, stdin: str | None = None, *,
+              host: str = _LOCAL_HOST) -> dict:
+    """Run *script* on *host*'s scheduler through a login shell; ``sbatch`` gets its
+    script through *stdin*."""
+    return _answer(slurm_argv(script, host=host, piped=stdin is not None), timeout, stdin)
+
+
+def run_argv(argv: list[str], timeout: int, *, host: str = _LOCAL_HOST) -> dict:
+    """Run *argv* on *host* without a shell (over ``ssh``, each element quoted)."""
+    return _answer(slurm_exec_argv(argv, host=host), timeout)
+
+
+def capture(script: str, timeout: int, *, host: str = _LOCAL_HOST) -> str | None:
+    """*script*'s whole stdout on *host*, None when it failed: for the reads parsed here,
+    which no answer's size limit may cut."""
+    try:
+        res = _exec(slurm_argv(script, host=host), timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return res.stdout if res.returncode == 0 else None
 
 
 def command_result(res: subprocess.CompletedProcess) -> dict:
@@ -100,18 +111,9 @@ def command_result(res: subprocess.CompletedProcess) -> dict:
     return err(res.stderr.strip() or f"Exited with code {res.returncode}.", **fields)
 
 
-def run_argv(argv: list[str], timeout: int, *, host: str = _LOCAL_HOST) -> dict:
-    """Run *argv* on *host* without a shell (over ``ssh``, each element quoted)."""
-    try:
-        res = subprocess.run(
-            slurm_exec_argv(argv, host=host), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
-        )
-        return command_result(res)
-    except subprocess.TimeoutExpired:
-        return err(f"Command timed out after {timeout}s.")
-    except Exception as e:
-        return err(str(e))
+def failed(result: dict, what: str, host: str) -> dict:
+    """A read that did not answer, as a tool answer: Slurm's own words, and what to check."""
+    return err(result.get("stderr") or result.get("error", f"{what} failed"), hint=no_scheduler_hint(host))
 
 
 def current_user() -> str:
@@ -154,16 +156,3 @@ def lines_of(result: dict) -> list[str]:
         return []
     return [line.strip().upper()
             for line in (result.get("stdout") or "").splitlines() if line.strip()]
-
-
-def sinfo_nodes(host: str = _LOCAL_HOST) -> list[dict]:
-    """Degraded node list for a cluster whose `scontrol show node` is restricted.
-
-    sinfo is readable everywhere but does not carry the architecture, so callers are
-    told the field is unknown rather than being handed a wrong default.
-    """
-    result = run_bash(f"sinfo -N -h -o '{_SINFO_NODES_FORMAT}'",
-                       TIMEOUT_READ, host=host)
-    if result["status"] != "ok":
-        return []
-    return _parse_sinfo_nodes(result.get("stdout", ""))

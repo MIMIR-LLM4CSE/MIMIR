@@ -21,11 +21,8 @@ TOOL_CALL_TIMEOUT_SECS: int = 120
 # rather than a bare "timed out".
 TOOL_CALL_TIMEOUT_MAX_SECS: int = 1200
 
-# How long a clarification question waits before the model goes on with its own
-# recommendation. Human waits are outside the tool budget, so this is their only wall.
-# Not applied to approvals (expiring into "yes" would authorise unseen commands) nor to
-# plan approvals (already resolved to "execute nothing").
-USER_QUESTION_TIMEOUT_SECS: int = 300
+# How long a clarification question waits: the contract with the interaction server.
+from ...shared.user_question import USER_QUESTION_TIMEOUT_SECS  # noqa: E402,F401  (a public name of config)
 
 # Separate budget for the post-write auto-validation ladder (syntax/imports/lint/
 # typecheck/format + completeness + cross-file grep). It runs AFTER the write has

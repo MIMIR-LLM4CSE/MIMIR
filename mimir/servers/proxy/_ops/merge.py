@@ -14,7 +14,8 @@ from . import check_name, err, ok, with_next
 from ....shared.atomic import write_json
 from ....shared.state_paths import SUBAGENTS_DIRNAME, active_session_id
 from .._lib import tree_snapshot
-from .._lib.layout import merge_file, read_json, resolve_proxy_name
+from .._lib.layout import merge_file, resolve_proxy_name
+from ....shared.atomic import read_json
 from .._lib.procs import opt_active_run_dir, run_state
 from .._lib.ratchet import baseline_value, effective_min_improvement, is_improvement, read_ledger, relative
 from .._lib.store import (load_opt_config, load_registry, opt_git_dir, registry_lock,
