@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { gainOf, mergeGraph, outcome, type MergeState } from "./merge";
-import { mergeable, mergePrompt, picked, pickerHtml, pickLabel, reachable, ticked, type ProxyMeta } from "./picker";
+import { mergeNames, mergePrompt, picked, pickerHtml, pickLabel, reachable, ticked, type ProxyMeta } from "./picker";
 
 const sources = [
   { proxy: "pa", relative: 0.8, files: ["a.py"] },
@@ -83,10 +83,10 @@ describe("the merge graph", () => {
 });
 
 const meta: ProxyMeta[] = [
-  { name: "pa", branch: "mimir/sub-1", metric: "time_s", goal: "min", steps: 4, gain: 0.2, active: true, frozen: "", merge: false, sources: [], mergeable: true },
-  { name: "pb", branch: "mimir/sub-2", metric: "time_s", goal: "min", steps: 2, gain: 0.1, active: false, frozen: "", merge: false, sources: [], mergeable: true },
-  { name: "pz", branch: "", metric: "time_s", goal: "min", steps: 3, gain: null, active: false, frozen: "", merge: false, sources: [], mergeable: false },
-  { name: "merge-1", branch: "mimir/sub-3", metric: "time_s", goal: "min", steps: 3, gain: 0.25, active: false, frozen: "", merge: true, sources: ["pa", "pb"], mergeable: true },
+  { name: "pa", branch: "mimir/sub-1", metric: "time_s", goal: "min", steps: 4, gain: 0.2, active: true, frozen: "", merge: false, sources: [] },
+  { name: "pb", branch: "mimir/sub-2", metric: "time_s", goal: "min", steps: 2, gain: 0.1, active: false, frozen: "", merge: false, sources: [] },
+  { name: "pz", branch: "", metric: "time_s", goal: "min", steps: 3, gain: null, active: false, frozen: "", merge: false, sources: [] },
+  { name: "merge-1", branch: "mimir/sub-3", metric: "time_s", goal: "min", steps: 3, gain: 0.25, active: false, frozen: "", merge: true, sources: ["pa", "pb"] },
   { name: "pa@20261104-101500", branch: "", metric: "time_s", goal: "min", steps: 6, gain: 0.3, active: false, frozen: "cleaned", merge: false, sources: [] },
 ];
 
@@ -103,11 +103,18 @@ describe("the proxy picker", () => {
     expect(html).toMatch(/data-merge disabled/);
   });
 
-  it("merges only the ticked proxies a merge can take", () => {
-    expect(mergeable(meta, ["pa", "pz", "merge-1", "pa@20261104-101500", "pb"])).toEqual(["pa", "pb"]);
-    const html = pickerHtml(meta, "pa,pb", "pa", true, new Set(["pa", "pb"]));
+  it("merges the ticked proxies the server's forecast keeps, none when it refuses", () => {
+    const kept = { sources: [sources[0], sources[2]], pairs: [], expected: 0.72, refused: [{ proxy: "pz", why: "no run accepted beyond its baseline" }] };
+    expect(mergeNames(kept)).toEqual(["pa", "pb"]);
+    const html = pickerHtml(meta, "pa,pb", "pa", true, new Set(["pa", "pb", "pz"]), mergeNames(kept));
     expect(html).toContain("Merge 2");
     expect(html).not.toMatch(/data-merge disabled/);
+    const why = "pa and pb have a different benchmark suite (a_bench / b_bench): one measurement cannot judge both.";
+    expect(mergeNames({ ...kept, refusal: why })).toEqual([]);
+    const refused = pickerHtml(meta, "pa,pb", "pa", true, new Set(["pa", "pb"]), [], why);
+    expect(refused).toMatch(/data-merge disabled/);
+    expect(refused).toContain("different benchmark suite");
+    expect(mergeNames({ sources: [sources[0]], pairs: [], expected: 0.8 })).toEqual([]);
   });
 
   it("names the pick on its button", () => {

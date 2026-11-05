@@ -5,7 +5,7 @@
 // and a Merge button that asks the agent for it.
 
 import { esc, pct } from "./format";
-import { mergePrompt } from "./picker";
+import { mergeNames, mergePrompt } from "./picker";
 
 /** A relative is a value against its baseline, lower is better whatever the goal: 0.8 is
  *  a fifth better. */
@@ -81,8 +81,7 @@ function summary(expected: number, m: MergeState | null, f: Forecast | null): st
 /** The forecast's Merge button: what it puts to the agent, the proxies the forecast keeps;
  *  disabled when they are fewer than two or the server refuses to merge them. */
 function mergeButton(f: Forecast): string {
-  const names = f.sources.map((s) => s.proxy);
-  const ok = names.length > 1 && !f.refusal;
+  const names = mergeNames(f), ok = names.length > 0;
   return '<button class="open merge-go" data-prompt="' + esc(ok ? mergePrompt(names) : "") + '"' + (ok ? "" : " disabled")
     + ' title="' + (ok ? "Ask the agent to merge them in a copy of its own and measure the whole" : "Nothing these proxies can merge")
     + '">Merge' + (ok ? " " + names.length : "") + "</button>";

@@ -95,9 +95,7 @@ def _line(name: str, active: str) -> dict:
             "steps": max(0, len(rows) - bool(cfg.get("baseline_run_id"))),
             "gain": _gain(relative((load_best(name) or {}).get("primary_value"), baseline_value(cfg, rows), goal)),
             "active": name == active, "frozen": "",
-            "merge": bool(cfg.get("merge")), "sources": [x["proxy"] for x in state.get("sources", [])],
-            # A merge takes the proxies' own sessions, never another merge.
-            "mergeable": not cfg.get("merge") and merge_sources.source(name)[0] is not None}
+            "merge": bool(cfg.get("merge")), "sources": [x["proxy"] for x in state.get("sources", [])]}
 
 
 def _steps_of(name: str) -> list[dict]:

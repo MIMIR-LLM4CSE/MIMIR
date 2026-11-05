@@ -680,8 +680,11 @@ Escape and a click outside close the list, the arrows move through it. The pick
 (`""`, a name, `*`, or the ticked names joined by commas) is kept in the tab's state and
 sent with its `refresh` (`proxy`, `combined` or `proxies`), which the host forwards on
 the `code_map` message; it never moves the agent's active session. **Merge** under the
-list, with two mergeable proxies ticked, puts `proxy_merge(op='plan', …)` to the chat
-with the proxy-merge skill. Above the strip, `merge.ts` draws a merge: each proxy's gain
+list puts `proxy_merge(op='plan', …)` to the chat with the proxy-merge skill, for the
+ticked proxies the answer's `forecast` keeps (`picker.mergeNames`); it is disabled, its
+title the server's refusal, when the forecast refuses (fewer than two with an accepted
+run, or a metric, goal or benchmark suite they do not share) and until the forecast for
+the current ticks arrives. Above the strip, `merge.ts` draws a merge: each proxy's gain
 alone, the files two of them share and their conflicts as arcs, a link to the whole
 coloured by what the proxy did in it (kept, better or worse than alone, set aside), and
 the whole with the gain expected and the one measured. For proxies ticked and not merged
