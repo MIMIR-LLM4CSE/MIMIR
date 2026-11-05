@@ -680,16 +680,20 @@ Escape and a click outside close the list, the arrows move through it. The pick
 (`""`, a name, `*`, or the ticked names joined by commas) is kept in the tab's state and
 sent with its `refresh` (`proxy`, `combined` or `proxies`), which the host forwards on
 the `code_map` message; it never moves the agent's active session. **Merge** under the
-list puts `proxy_merge(op='plan', …)` to the chat with the proxy-merge skill, for the
-ticked proxies the answer's `forecast` keeps (`picker.mergeNames`); it is disabled, its
-title the server's refusal, when the forecast refuses (fewer than two with an accepted
-run, or a metric, goal or benchmark suite they do not share) and until the forecast for
-the current ticks arrives. Above the strip, `merge.ts` draws a merge: each proxy's gain
-alone, the files two of them share and their conflicts as arcs, a link to the whole
-coloured by what the proxy did in it (kept, better or worse than alone, set aside), and
-the whole with the gain expected and the one measured. For proxies ticked and not merged
-it draws the server's `forecast` the same way, unmeasured, with its own **Merge**: the
-same prompt for the proxies the forecast keeps, disabled when it refuses. An answer
+list, with two proxies ticked or more, puts `proxy_merge(op='plan', …)` to the chat with
+the proxy-merge skill (`picker.mergePrompt`): what cannot be merged is the agent's to say.
+Above the strip, `merge.ts` draws a merge: each proxy's gain alone, the files two of them
+share as arcs (a conflict dashed red until it is resolved, then green with its resolution
+in its tooltip), a link to the whole coloured by what the proxy's worst kernel did in it
+(better or worse than alone), and the whole: the total time of every case, measured
+against the copy untouched. While it runs, the summary says where it stands (the copy
+untouched being measured, merging n of m, the conflict it stopped on, the question it
+waits on); measured, which proxies lost gain and which were taken back out. For proxies
+ticked and not merged it draws the server's `forecast` the same way, unmeasured, with
+the conflicts to resolve and its own **Merge** for every proxy ticked. The legend names
+only what the graph draws. A merge frozen before merges were git's is read through
+`tab.merge_view` as done. The tab watches `merge.json` with the ledgers (`BENCH_GLOB`),
+so a conflict, its resolution or a pause in a sub-agent's merge shows at once. An answer
 that holds other steps than the pick (the drawer's **Open map** asks for the active
 session's) is asked again once with the pick. Every proxy at once lays the steps out in
 the order they settled, each named with its proxy and valued as a multiple of its

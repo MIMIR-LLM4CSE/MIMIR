@@ -3,7 +3,6 @@
 // ticks show several together, and the ticked ones can be merged.
 
 import { esc, pct } from "./format";
-import type { Forecast } from "./merge";
 import type { Session } from "./session";
 
 /** One proxy as the server describes it for the picker. */
@@ -40,19 +39,13 @@ export function gainText(g: number | null): string {
   return g > 0 ? pct(g) + " better" : g < 0 ? pct(g) + " worse" : "even";
 }
 
-/** The proxies a merge takes, as the server's forecast for them keeps them: none when it
- *  refuses (fewer than two kept, or a metric, goal or benchmark suite they do not share). */
-export function mergeNames(f: Forecast | null | undefined): string[] {
-  const names = (f?.sources ?? []).map((s) => s.proxy);
-  return f?.refusal || names.length < 2 ? [] : names;
-}
-
 /** What the "Merge" button puts to the agent. */
 export function mergePrompt(names: string[]): string {
   const list = names.map((n) => "'" + n + "'").join(", ");
-  return "Merge the kept optimisations of the proxies " + names.join(", ") + " and measure the gain of the whole: "
-    + "proxy_merge(op='plan', proxies=[" + list + "]), then follow the proxy-merge skill. The merge is measured "
-    + "in a sub-agent's copy of its own; my workspace stays as it is until I merge its branch.";
+  return "Merge the kept optimisations of the proxies " + names.join(", ") + " with git and measure the whole: "
+    + "proxy_merge(op='plan', proxies=[" + list + "]), then follow the proxy-merge skill. The merge runs "
+    + "in a sub-agent's copy of its own; my workspace stays as it is until I merge its branch. Resolve the "
+    + "trivial conflicts, ask me about a choice of method.";
 }
 
 function row(m: ProxyMeta, pick: string, ticks: Set<string>): string {
@@ -74,10 +67,10 @@ function row(m: ProxyMeta, pick: string, ticks: Set<string>): string {
     + esc(m.metric) + '">' + esc(gainText(g) || "–") + "</span></div>";
 }
 
-/** The picker: its button and, when *open*, the list, whose Merge button takes *ready*
- *  (``mergeNames``) and says *why* when it cannot. */
-export function pickerHtml(meta: ProxyMeta[], pick: string, active: string, open: boolean, ticks: Set<string>,
-  ready: string[] = [], why = ""): string {
+/** The picker: its button and, when *open*, the list, whose Merge button takes the ticks:
+ *  what cannot be merged is the agent's to say. */
+export function pickerHtml(meta: ProxyMeta[], pick: string, active: string, open: boolean, ticks: Set<string>): string {
+  const n = ticks.size;
   const groups: [string, ProxyMeta[]][] = [
     ["Running", meta.filter((m) => !m.frozen && !m.merge)],
     ["Merges", meta.filter((m) => !m.frozen && m.merge)],
@@ -92,14 +85,14 @@ export function pickerHtml(meta: ProxyMeta[], pick: string, active: string, open
     + '<span class="hint">each against its own baseline</span></button>'
     + list
     + '<div class="pick-foot"><span class="hint">' + (ticks.size > 1 ? ticks.size + " ticked, drawn together" : "Tick two or more to draw them together")
-    + '</span><button class="open" data-merge' + (ready.length > 1 ? "" : " disabled")
-    + ' title="' + esc(ready.length > 1 ? "Ask the agent to merge them in a copy of its own and measure the whole" : why || "Nothing these proxies can merge")
-    + '">Merge' + (ready.length > 1 ? " " + ready.length : "")
+    + '</span><button class="open" data-merge' + (n > 1 ? "" : " disabled")
+    + ' title="' + (n > 1 ? "Ask the agent to merge them with git in a copy of its own and measure the whole" : "Tick two proxies or more to merge them")
+    + '">Merge' + (n > 1 ? " " + n : "")
     + "</button></div></div>";
 }
 
 /** What the picker reads of an answer. */
-export type Answer = Pick<Session, "proxy" | "active" | "combined" | "selected" | "proxies" | "proxies_meta" | "forecast">;
+export type Answer = Pick<Session, "proxy" | "active" | "combined" | "selected" | "proxies" | "proxies_meta">;
 
 /** Whose steps an answer holds, written as a pick writes it. */
 export function picked(s: Partial<Answer> | undefined): string {
@@ -132,9 +125,6 @@ export class Picker {
   private proxies: string[] = [];
   private meta: ProxyMeta[] = [];
   private active = "";
-  /** The forecast of the answer and the proxies it is for: the Merge button's verdict. */
-  private forecast: Forecast | null = null;
-  private forecastFor = "";
   /** The pick last asked again for an answer that did not hold it, until one does. */
   private reasked: string | null = null;
 
@@ -155,8 +145,6 @@ export class Picker {
     this.proxies = s?.proxies ?? [];
     this.meta = s?.proxies_meta ?? [];
     this.active = s?.active ?? "";
-    this.forecast = s?.forecast ?? null;
-    this.forecastFor = [...(s?.selected ?? [])].sort().join(",");
     const want = reachable(this.pick, this.proxies, this.active), got = picked(s);
     // Once: an answer that still differs is what the server can give, and is drawn.
     if (want !== got && this.reasked !== want) { this.pick = this.reasked = want; return "again"; }
@@ -169,21 +157,6 @@ export class Picker {
     else if (this.ticks.size > 1) this.ticks = new Set();
     this.ticks = new Set([...this.ticks].filter((t) => this.proxies.includes(t)));
     return moved ? "moved" : "same";
-  }
-
-  /** What Merge takes for the ticks, from the server's forecast for them: none until it
-   *  answers for these ticks, or when it refuses. */
-  private ready(): string[] {
-    return this.forecastHeld() ? mergeNames(this.forecast) : [];
-  }
-
-  /** Why Merge cannot take the ticks: the server's refusal, or its forecast still to come. */
-  private why(): string {
-    return this.forecastHeld() ? this.forecast?.refusal ?? "" : "Waiting for the server's forecast";
-  }
-
-  private forecastHeld(): boolean {
-    return this.forecastFor === [...this.ticks].sort().join(",");
   }
 
   mount(el: HTMLElement): void {
@@ -206,8 +179,7 @@ export class Picker {
     const had = document.activeElement instanceof HTMLElement && el.contains(document.activeElement) ? document.activeElement : null;
     const again = had?.dataset.tick !== undefined ? '[data-tick="' + had.dataset.tick + '"]'
       : had?.dataset.pick !== undefined ? '[data-pick="' + had.dataset.pick + '"]' : had ? ".pick-btn" : "";
-    el.innerHTML = pickerHtml(this.meta, reachable(this.pick, this.proxies, this.active), this.active, this.open, this.ticks,
-      this.ready(), this.why());
+    el.innerHTML = pickerHtml(this.meta, reachable(this.pick, this.proxies, this.active), this.active, this.open, this.ticks);
     if (again) el.querySelector<HTMLElement>(again)?.focus();
   }
 
@@ -238,7 +210,7 @@ export class Picker {
       ?? (t.closest("[data-tick]") ? null : t.closest(".pick-row")?.querySelector<HTMLElement>("[data-pick]"));
     if (name) { this.ticks = new Set(); this.choose(name.dataset.pick ?? "", true); return; }
     if (t.closest("[data-merge]")) {
-      const names = this.ready();
+      const names = [...this.ticks];
       if (names.length < 2) return;
       this.close();
       this.host.prompt(mergePrompt(names));
@@ -254,8 +226,7 @@ export class Picker {
     const t = [...this.ticks];
     if (t.length > 1) this.choose(t.join(","), false);
     else if (t.length === 1) this.choose(this.meta.find((m) => m.name === t[0])?.active ? "" : t[0], false);
-    // At once, without waiting for the answer: the button follows the ticks; Merge waits
-    // for the server's forecast for them.
+    // At once, without waiting for the answer: the button and the Merge count follow the ticks.
     this.render();
   }
 

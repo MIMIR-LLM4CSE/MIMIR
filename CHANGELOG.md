@@ -35,9 +35,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The code map's proxy picker is a list.** The plain dropdown gave a name and nothing
   else. Each proxy now has a line: its branch, its runs, its gain so far, whether it is
   active, a merge or frozen, and a click anywhere on it shows that proxy. Proxies ticked together are drawn together, with what
-  merging them promises, and **Merge**, in the list or on the forecast, asks the agent to measure it,
-  offered only when the server would merge them (one metric, goal and benchmark suite; it says why not). A merge session
-  draws its proxies, their conflicts and the whole, expected and measured.
+  merging them promises and the conflicts to resolve, and **Merge**, in the list or on the
+  forecast, asks the agent to merge them as soon as two are ticked. A merge session draws its
+  proxies, its conflicts (resolved or not), where it stands, each proxy's kernels in the merge
+  against alone, and the whole.
 - **The optimisation graph outlives its proxy.** `proxy_manage(op='clean')` took the
   ledger and the snapshots the code map draws from, so a clean at the end of a campaign
   erased its whole curve; `rebaseline` moved the ledger aside, where the map no longer

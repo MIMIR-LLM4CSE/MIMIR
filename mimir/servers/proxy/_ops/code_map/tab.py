@@ -56,8 +56,24 @@ def answer(proxy_name: str = "", combined: bool = False, selected: list[str] | N
         # A merge session draws its sources, the whole and the one-at-a-time chain.
         state = value.get("merge") or (read_json(merge_file(value["proxy"])) if value.get("proxy") else None)
         if state:
-            out["merge"] = state
+            out["merge"] = merge_view(state)
     return out
+
+
+def merge_view(state: dict) -> dict:
+    """A merge's state as the map draws it. One kept from before merges were git's (all at
+    once, then one at a time; frozen on the map) reads as done: the proxies it kept as
+    merged, those it set aside as taken back out, its measured gain as the whole's."""
+    if "final" not in state and "expected" not in state:
+        return state
+    final = state.get("final") or {}
+    return {
+        "phase": "done", "sources": state.get("sources", []), "pairs": state.get("pairs", []),
+        "merged": [{"proxy": p, "conflicts": [], "resolution": ""} for p in final.get("kept", [])],
+        "dropped": [x["proxy"] for x in final.get("set_aside", [])],
+        "conflict": None, "question": None, "kernels": None,
+        "whole": {"relative": final.get("relative")} if final else None,
+    }
 
 
 def _latest(names: list[str]) -> str:

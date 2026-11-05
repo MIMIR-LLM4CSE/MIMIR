@@ -326,6 +326,21 @@ class MergeRunTests(_MergeFixture):
         self.assertEqual(drawn["forecast"]["refusal"], "")
 
 
+class LegacyMergeTests(unittest.TestCase):
+    def test_a_merge_frozen_before_git_merges_is_drawn_as_done(self) -> None:
+        old = {"phase": "done", "sources": [{"proxy": "pa"}, {"proxy": "pb"}], "pairs": [], "expected": 0.72,
+               "all": {"applied": ["pa", "pb"]}, "steps": [],
+               "final": {"from": "chain", "relative": 0.8, "kept": ["pa"],
+                         "set_aside": [{"proxy": "pb", "why": "interference"}]}}
+        view = tab.merge_view(old)
+        self.assertEqual(view["phase"], "done")
+        self.assertEqual([m["proxy"] for m in view["merged"]], ["pa"])
+        self.assertEqual(view["dropped"], ["pb"])
+        self.assertEqual(view["whole"], {"relative": 0.8})
+        new = {"phase": "merging", "sources": [], "pairs": [], "merged": []}
+        self.assertIs(tab.merge_view(new), new)
+
+
 class MovedTests(unittest.TestCase):
     def test_every_path_under_the_root_is_moved_and_no_other(self) -> None:
         entry = {"executable_path": "/copies/a/tiny.py",

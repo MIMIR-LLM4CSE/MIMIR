@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { gainOf, mergeGraph, outcome, type MergeState } from "./merge";
-import { mergeNames, mergePrompt, picked, pickerHtml, pickLabel, reachable, ticked, type ProxyMeta } from "./picker";
+import { mergePrompt, picked, pickerHtml, pickLabel, reachable, ticked, type ProxyMeta } from "./picker";
 
 const sources = [
   { proxy: "pa", relative: 0.8, files: ["a.py"] },
@@ -12,30 +12,40 @@ const pairs = [
   { a: "pa", b: "pb", shared: [], conflicts: [] },
   { a: "pc", b: "pb", shared: [], conflicts: [] },
 ];
-const chain: MergeState = {
-  phase: "done", sources, pairs, expected: 0.612,
-  all: { applied: ["pa", "pb"], conflicts: [{ proxy: "pc", files: ["a.py"] }], expected: 0.72, relative: 0.95, holds: false },
-  steps: [
-    { proxy: "pa", kept: true, marginal: 0.8, interaction: 1 },
-    { proxy: "pc", kept: false, why: "conflict", files: ["a.py"] },
-    { proxy: "pb", kept: false, why: "interference", marginal: 1.0625, interaction: 1.18 },
+const done: MergeState = {
+  phase: "done", sources, pairs,
+  merged: [
+    { proxy: "pa", conflicts: [], resolution: "" },
+    { proxy: "pc", conflicts: ["a.py"], resolution: "pa's tiling kept, as the user chose" },
+    { proxy: "pb", conflicts: [], resolution: "" },
   ],
-  final: { from: "chain", relative: 0.8, kept: ["pa"],
-    set_aside: [{ proxy: "pc", why: "conflict" }, { proxy: "pb", why: "interference" }] },
+  dropped: [], conflict: null, question: null,
+  kernels: [
+    { proxy: "pa", case: "a", alone: 0.8, in_merge: 0.8, interaction: 1, flagged: false },
+    { proxy: "pc", case: "a", alone: 0.85, in_merge: 1.0, interaction: 1.18, flagged: true },
+    { proxy: "pb", case: "a", alone: 0.9, in_merge: 0.85, interaction: 0.94, flagged: false },
+  ],
+  whole: { relative: 0.88 },
+};
+const stopped: MergeState = {
+  phase: "merging", sources, pairs, merged: [{ proxy: "pa", conflicts: [], resolution: "" }],
+  dropped: [], conflict: { proxy: "pc", files: ["a.py"] }, question: null, kernels: null, whole: null,
 };
 
 describe("a merge's outcome per source", () => {
-  it("says what was kept and why the others were set aside", () => {
-    expect(outcome(chain, "pa").state).toBe("kept");
-    expect(outcome(chain, "pc").state).toBe("conflict");
-    expect(outcome(chain, "pb")).toEqual({ state: "interference", marginal: 1.0625 });
+  it("says which kernel kept its gain and which lost it", () => {
+    expect(outcome(done, "pa").state).toBe("kept");
+    expect(outcome(done, "pc").state).toBe("flagged");
+    expect(outcome(done, "pb").kernel?.in_merge).toBe(0.85);
   });
 
-  it("marks the sources being measured all at once", () => {
-    const running: MergeState = { ...chain, phase: "all", steps: [], final: null,
-      all: { applied: ["pa", "pb"], conflicts: [{ proxy: "pc", files: ["a.py"] }], expected: 0.72 } };
-    expect(outcome(running, "pa").state).toBe("applied");
-    expect(outcome(running, "pc").state).toBe("conflict");
+  it("follows the merge under way", () => {
+    expect(outcome(stopped, "pa").state).toBe("merged");
+    expect(outcome(stopped, "pc").state).toBe("conflict");
+    expect(outcome(stopped, "pb").state).toBe("pending");
+    const waiting = { ...stopped, conflict: null, question: { proxy: "pc", question: "pa's tiling or pc's?" } };
+    expect(outcome(waiting, "pc").state).toBe("waiting");
+    expect(outcome({ ...done, dropped: ["pc"] }, "pc").state).toBe("dropped");
   });
 
   it("is a forecast without a merge", () => {
@@ -44,35 +54,46 @@ describe("a merge's outcome per source", () => {
 });
 
 describe("the merge graph", () => {
-  it("draws the conflict as an arc and the gains expected and measured", () => {
-    const html = mergeGraph(chain);
-    expect(html).toContain('class="arc conflict"');
-    expect(html).not.toContain('class="arc shared"');
-    expect(html).toContain("expected 39%");
-    expect(html).toContain("measured 20%");
-    expect(html).toContain("set aside: slowed the whole");
-    expect(html).toMatch(/class="mlink interference intf"/);
+  it("draws a resolved conflict, each kernel against alone and the whole", () => {
+    const html = mergeGraph(done);
+    expect(html).toContain('class="arc resolved"');
+    expect(html).toContain("pa's tiling kept");
+    expect(html).toContain("measured 12%");
+    expect(html).toContain("lost gain: pc");
+    expect(html).toMatch(/class="mlink flagged intf"/);
+    expect(html).toMatch(/class="mlink kept syn"/);
+    expect(html).toContain("conflict resolved");
+    expect(html).not.toContain("conflict: to resolve");
   });
 
-  it("is a forecast for proxies ticked, not merged", () => {
-    const html = mergeGraph({ sources, pairs, expected: 0.612, refused: [{ proxy: "pd", why: "no run accepted beyond its baseline" }] }, 600);
+  it("says where a merge stopped and what it waits for", () => {
+    expect(mergeGraph(stopped)).toContain("stopped on a conflict: pc on a.py");
+    expect(mergeGraph(stopped)).toContain('class="arc conflict"');
+    const waiting = { ...stopped, conflict: null, question: { proxy: "pc", question: "pa's tiling or pc's?" } };
+    expect(mergeGraph(waiting)).toContain("waiting for your answer: pa's tiling or pc's?");
+  });
+
+  it("is a forecast for proxies ticked, with its conflicts to resolve", () => {
+    const html = mergeGraph({ sources, pairs, refused: [{ proxy: "pd", why: "no run accepted beyond its baseline" }] }, 600);
     expect(html).toContain("Merge forecast");
-    expect(html).toContain("never measured");
+    expect(html).toContain("1</b> conflict to resolve");
     expect(html).toContain("left out: pd");
-    // Its Merge button asks the agent for the proxies it keeps.
-    expect(html).toContain(">Merge 3</button>");
-    expect(html).toContain("proxy_merge(op='plan', proxies=['pa', 'pc', 'pb'])");
+    expect(html).toContain("conflict: to resolve when merged");
+    expect(html).not.toContain("better in the merge");      // nothing measured, no such link
+    // Its Merge button asks the agent for every proxy ticked; the agent says what cannot be merged.
+    expect(html).toContain(">Merge 4</button>");
+    expect(html).toContain("proxy_merge(op='plan', proxies=['pa', 'pc', 'pb', 'pd'])");
   });
 
-  it("says why a forecast cannot be measured", () => {
-    const html = mergeGraph({ sources, pairs, expected: 0.612, refusal: "pa and pb have a different metric" });
-    expect(html).toContain("pa and pb have a different metric");
-    expect(html).not.toContain("expected together");
-    expect(html).toMatch(/data-prompt="" disabled/);
+  it("offers Merge even when the server would refuse, and draws no legend for nothing", () => {
+    const html = mergeGraph({ sources: [sources[2]], pairs: [], refused: [{ proxy: "pz", why: "no run accepted beyond its baseline" }],
+      refusal: "A merge needs two proxies at least that kept an accepted run." });
+    expect(html).toContain(">Merge 2</button>");
+    expect(html).not.toContain("mlegend");
   });
 
   it("has no Merge button once the merge runs", () => {
-    expect(mergeGraph(chain)).not.toContain("merge-go");
+    expect(mergeGraph(done)).not.toContain("merge-go");
   });
 
   it("writes a gain from a relative", () => {
@@ -103,18 +124,11 @@ describe("the proxy picker", () => {
     expect(html).toMatch(/data-merge disabled/);
   });
 
-  it("merges the ticked proxies the server's forecast keeps, none when it refuses", () => {
-    const kept = { sources: [sources[0], sources[2]], pairs: [], expected: 0.72, refused: [{ proxy: "pz", why: "no run accepted beyond its baseline" }] };
-    expect(mergeNames(kept)).toEqual(["pa", "pb"]);
-    const html = pickerHtml(meta, "pa,pb", "pa", true, new Set(["pa", "pb", "pz"]), mergeNames(kept));
+  it("offers Merge as soon as two proxies are ticked", () => {
+    const html = pickerHtml(meta, "pa,pb", "pa", true, new Set(["pa", "pb"]));
     expect(html).toContain("Merge 2");
     expect(html).not.toMatch(/data-merge disabled/);
-    const why = "pa and pb have a different benchmark suite (a_bench / b_bench): one measurement cannot judge both.";
-    expect(mergeNames({ ...kept, refusal: why })).toEqual([]);
-    const refused = pickerHtml(meta, "pa,pb", "pa", true, new Set(["pa", "pb"]), [], why);
-    expect(refused).toMatch(/data-merge disabled/);
-    expect(refused).toContain("different benchmark suite");
-    expect(mergeNames({ sources: [sources[0]], pairs: [], expected: 0.8 })).toEqual([]);
+    expect(pickerHtml(meta, "", "pa", true, new Set(["pa"]))).toMatch(/data-merge disabled/);
   });
 
   it("names the pick on its button", () => {

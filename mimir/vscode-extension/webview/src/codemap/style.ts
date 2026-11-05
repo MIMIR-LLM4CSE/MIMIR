@@ -303,21 +303,24 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .mgraph .sgain .v { fill: var(--fg); font-weight: 600; }
 .mgraph .sstate { font: 10.5px var(--font); fill: var(--fg-dim); }
 .mgraph .sstate.kept { fill: var(--ok); } .mgraph .sstate.conflict { fill: var(--e-break); }
-.mgraph .sstate.interference, .mgraph .sstate.infeasible { fill: var(--time); }
+.mgraph .sstate.flagged, .mgraph .sstate.waiting { fill: var(--time); }
 .mgraph .src.is-out .box, .mgraph .src.is-out .sname, .mgraph .src.is-out .sgain { opacity: .55; }
 .mgraph .whole .box { stroke: var(--e-cycle); stroke-width: 1.5; }
 .mgraph .arc, .mgraph .mlink { fill: none; }
 .mgraph .arc.shared { stroke: var(--edge); stroke-width: 1.4; }
 .mgraph .arc.conflict { stroke: var(--e-break); stroke-width: 1.6; stroke-dasharray: 4 3; }
+.mgraph .arc.resolved { stroke: var(--ok); stroke-width: 1.6; stroke-dasharray: 4 3; }
 .mgraph .mlink { stroke: var(--edge); stroke-width: 1.4; stroke-opacity: .7; }
 .mgraph .mlink.kept { stroke: var(--ok); stroke-opacity: 1; stroke-width: 2; }
 .mgraph .mlink.kept.syn, .mgraph .mlink.syn { stroke: var(--ok); }
 .mgraph .mlink.intf { stroke: var(--time); stroke-opacity: 1; }
-.mgraph .mlink.conflict, .mgraph .mlink.interference, .mgraph .mlink.infeasible { stroke-dasharray: 3 4; stroke-opacity: .5; }
+.mgraph .mlink.conflict, .mgraph .mlink.waiting { stroke: var(--e-break); stroke-dasharray: 3 4; }
+.mgraph .mlink.dropped { stroke-dasharray: 3 4; stroke-opacity: .5; }
 .mgraph .mlink.pending { stroke-dasharray: 2 3; }
 .mlegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--fg-dim); align-items: center; }
 .mlegend .sw { display: inline-block; width: 18px; margin-right: 6px; vertical-align: middle; border-top: 2px solid var(--edge); }
 .mlegend .sw.arc-conflict { border-top: 2px dashed var(--e-break); }
+.mlegend .sw.arc-resolved { border-top: 2px dashed var(--ok); }
 .mlegend .sw.link-syn { border-top-color: var(--ok); } .mlegend .sw.link-intf { border-top-color: var(--time); }
 @media (prefers-reduced-motion: reduce) { .m, .edge { transition: none; } .section.req-form.is-new { animation: none; }
   .icon.is-busy { animation: none; } .status.flash { animation: none; } }
