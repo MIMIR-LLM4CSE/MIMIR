@@ -205,8 +205,8 @@ def harvest_probes(nodes_by_name: dict[str, dict],
         work_dir = meta.get("work_dir") or job_dir
         files = _probe_results(work_dir, probe_host)
         if "mode" not in files:
-            state, raw, _nodes = jobs.normalized_job_state(str(meta.get("job_id", "")),
-                                                       host=probe_host)
+            state, raw = jobs.normalized_job_state(str(meta.get("job_id", "")),
+                                                   host=probe_host)[:2]
             if state in ("running", "pending"):
                 pending.append({"job_id": meta.get("job_id"), "state": state,
                                 "partition": meta.get("partition", ""),

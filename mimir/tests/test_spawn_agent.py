@@ -976,6 +976,13 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        # The child writes the runs it holds into its session directory.
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        self.state = state.name
+        env = mock.patch.dict(os.environ, {"MIMIR_STATE_DIR": state.name})
+        env.start()
+        self.addCleanup(env.stop)
         self._intervals = (ChildWatcher.first_interval,
                            ChildWatcher.max_interval)
         # Long enough that a watch registered here is still in flight when the
@@ -1015,6 +1022,32 @@ class AChildWatchesItsOwnRunsTests(unittest.TestCase):
                 "a task", "", [], {}, 4, lambda ev: None, session="parent/subagents/s1"))
         self.assertIsInstance(agent.host.watcher, ChildWatcher)
         self.assertTrue(callable(agent.host.steer))
+
+    def _published(self) -> list[dict]:
+        path = os.path.join(self.state, "sessions", "parent", "subagents",
+                            "sub-1a2b3c4d", "runs.json")
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)["runs"]
+
+    def test_the_runs_it_holds_are_written_for_the_callers_panel(self) -> None:
+        """The child runs in the spawn server's process; the panel is drawn in the
+        client's, so what it holds reaches the panel through its session directory —
+        named after the child, and emptied once the caller takes them over."""
+        os.makedirs(os.path.join(self.state, "sessions", "parent", "subagents",
+                                 "sub-1a2b3c4d"))
+        watcher = self._watcher(_PollingAgent(["running"] * 50))
+
+        async def body():
+            self.assertTrue(watcher.register(_bash_descriptor()))
+            runs = self._published()
+            self.assertEqual([r["job_key"] for r in runs], ["k1"])
+            self.assertEqual(runs[0]["origin"]["kind"], "subagent")
+            self.assertEqual(runs[0]["origin"]["label"], "port the solver to AVX-512")
+            watcher.handover()
+            self.assertEqual(self._published(), [])
+            await watcher.close()
+
+        self._run(body)
 
     def test_a_finished_run_reaches_the_child_as_a_steer(self) -> None:
         """And in the words every wake in the system is written in.

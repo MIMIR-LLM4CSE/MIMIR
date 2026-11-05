@@ -17,6 +17,8 @@ from ...shared import build_progress, slurm_site
 from ...shared.jobs import (SLURM_JOB_ID, is_terminal, record_terminal_state, recorded_terminal_state,
                             slurm_descriptor)
 from ...shared.slurm_site import (
+    UNKNOWN_JOB,
+    SlurmJobState,
     slurm_state,
     HOST_FILE as _HOST_FILE,
     LOCAL as _LOCAL_HOST,
@@ -125,35 +127,33 @@ def record_job_host(job_dir: str, host: str) -> None:
 
 
 def locate_job(job_id: str, requested: str = "",
-                job_dir: str = "") -> tuple[str, str, str, list[str]]:
-    """``(host, state, raw, nodes)`` of *job_id*: its recorded host first, then every scheduler.
+                job_dir: str = "") -> tuple[str, SlurmJobState]:
+    """``(host, state)`` of *job_id*: its recorded host first, then every scheduler.
 
-    *requested* skips the search; *job_dir* avoids a second walk. ``("", "unknown", "", [])``
+    *requested* skips the search; *job_dir* avoids a second walk. ``("", UNKNOWN_JOB)``
     when nothing knows it.
     """
     if requested:
-        state, raw, nodes = normalized_job_state(job_id, host=requested)
-        return requested, state, raw, nodes
+        return requested, normalized_job_state(job_id, host=requested)
     if not job_dir:
         job_dir, _ = find_job_dir(job_id)
     hint = _job_host(job_dir) if job_dir else None
     order = [hint] if hint is not None else []
     order += [host for host in slurm_hosts() if host != hint]
     for host in order:
-        state, raw, nodes = normalized_job_state(job_id, host=host)
-        if state != "unknown":
+        found = normalized_job_state(job_id, host=host)
+        if found.state != "unknown":
             # Found, so the next poll of this job is one call rather than a sweep. A
             # recorded host is never replaced: it is what slurm_cancel trusts.
             if job_dir and hint is None:
                 record_job_host(job_dir, host)
-            return host, state, raw, nodes
-    return "", "unknown", "", []
+            return host, found
+    return "", UNKNOWN_JOB
 
 
-def normalized_job_state(job_id: str, *,
-                          host: str = _LOCAL_HOST) -> tuple[str, str, list[str]]:
-    """``(state, raw, nodes)`` of a job on *host*: running, pending, done, crashed or
-    unknown (``shared.slurm_site.slurm_state``)."""
+def normalized_job_state(job_id: str, *, host: str = _LOCAL_HOST) -> SlurmJobState:
+    """A job's state on *host*: running, pending, done, crashed or unknown, with where it
+    is (``shared.slurm_site.slurm_state``)."""
     return slurm_state(job_id, lambda script: lines_of(cli.run_bash(script, TIMEOUT_READ,
                                                                     host=host)))
 
@@ -291,8 +291,8 @@ def launched_from_this_session(job_id: str, requested: str = "") -> str | None:
     # the scheduler is not asked about a job that cannot be its own.
     if not shell_activity.ran_commands():
         return None
-    host, state, _raw, _nodes = locate_job(job_id, requested)
-    if state == "unknown":
+    host, found = locate_job(job_id, requested)
+    if found.state == "unknown":
         return None
     queued = cli.run_argv(["squeue", "-h", "-j", job_id, "-o", "%V"], TIMEOUT_READ, host=host)
     stamp = (queued.get("stdout") or "").strip().splitlines()
@@ -309,6 +309,16 @@ def launched_from_this_session(job_id: str, requested: str = "") -> str | None:
 # ── the job tools' bodies: status, adoption, cancellation ──────────────────────
 
 
+def _add_placement(payload: dict, found: SlurmJobState) -> None:
+    """Where the job is, for a watcher to keep and a badge to say: its partitions while it
+    is queued or running, its nodes once it runs (a pending one has none yet, and Slurm's
+    own column there is the reason it is waiting)."""
+    if found.partitions:
+        payload["partitions"] = list(found.partitions)
+    if found.nodes:
+        payload["nodes"] = list(found.nodes)
+
+
 def status(job_id: str, scheduler: str = "") -> dict:
     """The normalized status of *job_id*, settling its directory when it has ended (``slurm_job_status``)."""
     if not str(job_id).strip():
@@ -318,14 +328,12 @@ def status(job_id: str, scheduler: str = "") -> dict:
     # Slurm job outlives its conversation, so the sibling sessions are searched too and the
     # answer says when the job came from another one.
     job_dir, from_session = find_job_dir(job_id)
-    host, state, raw, nodes = locate_job(job_id, scheduler, job_dir)
-    payload: dict[str, Any] = {"job_id": job_id, "state": state, "raw_state": raw}
+    host, found = locate_job(job_id, scheduler, job_dir)
+    state = found.state
+    payload: dict[str, Any] = {"job_id": job_id, "state": state, "raw_state": found.raw}
     if host or state != "unknown":
         payload["scheduler"] = slurm_site.name_of(host)
-    # Which machines it got. Only ever present for a running job: a pending one has no
-    # node yet, and Slurm's own column there is the reason it is waiting.
-    if nodes:
-        payload["nodes"] = nodes
+    _add_placement(payload, found)
     if job_dir:
         payload["job_dir"] = job_dir
         # Read, not re-derived: the submission wrote down where it told the job to
@@ -403,7 +411,8 @@ def adopt(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # staleness horizon for a run that does not exist. And asked of each of them, which
     # is what makes an id enough — the caller holding a number from a launcher's output
     # has no reason to know which cluster printed it.
-    host, state, raw, nodes = locate_job(job_id, scheduler)
+    host, found = locate_job(job_id, scheduler)
+    state = found.state
     if state == "unknown":
         known = ", ".join(slurm_site.name_of(h) for h in slurm_site.hosts()) or "none reachable"
         return err(f"No scheduler this workspace reaches knows job {job_id} ({known}).",
@@ -425,15 +434,12 @@ def adopt(job_id: str, note: str = "", scheduler: str = "") -> dict:
     payload = {
         "job_id": job_id,
         "state": state,
-        "raw_state": raw,
+        "raw_state": found.raw,
         "job_dir": job_dir,
         "scheduler": slurm_site.name_of(host),
         "note": note or None,
     }
-    # Where it is running, for the same reason the status read carries it: a watcher
-    # keeps what its poll learned, and "on which node" is what a badge says.
-    if nodes:
-        payload["nodes"] = nodes
+    _add_placement(payload, found)
     if is_terminal(state):
         # Already over. Settled rather than watched: a watcher put on a finished job
         # reports it at its first poll, which is a wake for news the caller is holding.
@@ -487,8 +493,8 @@ def cancel(job_id: str, scheduler: str = "") -> dict:
                    hint="Name the one to cancel on with scheduler=.")
     # Only the scheduler it was submitted to: the same id elsewhere is another job.
     host = next(iter(owned))
-    located, located_raw, _nodes = normalized_job_state(job_id, host=host)
-    if located == "unknown":
+    located = normalized_job_state(job_id, host=host)
+    if located.state == "unknown":
         return err(f"{slurm_site.name_of(host)} no longer knows job {job_id}, "
                    "so there is nothing to cancel.",
                    hint="List what is running with slurm_queue(scheduler=...).")
@@ -499,7 +505,7 @@ def cancel(job_id: str, scheduler: str = "") -> dict:
     if q.get("status") != "ok" or not line:
         return err(f"Job {job_id} is not in {slurm_site.name_of(host)}'s queue, so there is "
                    "nothing to cancel.",
-                   hint=f"Its last known state: {located_raw or located}.")
+                   hint=f"Its last known state: {located.raw or located.state}.")
     owner, _, queued_state = line[0].partition("|")
     user = cli.current_user()
     if user and owner.strip() != user:

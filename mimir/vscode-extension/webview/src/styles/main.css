@@ -4809,10 +4809,35 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .science-badge:hover { background: var(--bg-hover); }
 
+/* Whose run it is, in its colour: the conversation's own blue, a sub-agent's purple.
+   Queued, it is outlined only; running, it is tinted and its dot pulses. */
+.science-badge.is-main,
+.science-section-count.is-main { --run-color: var(--vscode-charts-blue, #4aa3ff); }
+.science-badge.is-subagent,
+.science-section-count.is-subagent { --run-color: var(--vscode-charts-purple, #b180d7); }
+
+.science-badge.is-main,
+.science-badge.is-subagent {
+  color: var(--run-color);
+  border-color: color-mix(in srgb, var(--run-color) 50%, transparent);
+}
+
 .science-badge.is-running {
-  color: var(--vscode-charts-blue, #4aa3ff);
-  border-color: color-mix(in srgb, var(--vscode-charts-blue, #4aa3ff) 50%, transparent);
-  background: color-mix(in srgb, var(--vscode-charts-blue, #4aa3ff) 8%, transparent);
+  background: color-mix(in srgb, var(--run-color) 8%, transparent);
+}
+
+/* A folded section's runs, counted on its title. */
+.science-section-count {
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  background: var(--run-color);
+  color: var(--vscode-editor-background, #000);
 }
 
 /* An opened run: a card of its own under the badges, so what it is reads apart from

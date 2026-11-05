@@ -703,10 +703,17 @@ proxy apart, and **Since baseline** marks every proxy's kept changes together.
 
 **Badges are the runs, on the machines they are running on.** The client joins them in
 `connection/panel_runs.attach_runs` before the message goes out, because that is the one place both
-halves exist. A badge names the node, and opens as a row *inside* the tree showing the
-job id or pid, the command, its state and phase, how long it has been going, and which
-agent launched it — a tooltip would be unreachable by keyboard and too small for a
-command line.
+halves exist. They include the runs of the sub-agents still working, read from the
+`runs.json` each child's watcher writes (`session.store.subagent_runs`; read-only, so
+none offers Cancel), a run the parent's watcher already holds being listed once. A badge
+names the partition then the node (`gpu · gpu007`; a queued job, its partition and id),
+in the colour of whoever launched it — blue for the conversation, purple for a
+sub-agent — tinted and pulsing while it runs. A folded section counts its runs on its
+title, one pill per origin in the same colours (`sectionRunCounts`; a run badged on its
+host and on its node kind counts once). A badge opens as a row *inside* the tree showing
+the job id or pid, the command, its state and phase, its partition and nodes, how long
+it has been going, and which agent launched it — a tooltip would be unreachable by
+keyboard and too small for a command line.
 
 **An action asks; it does not act.** A node kind nothing has been probed on carries the
 request that would fix it, in words the *server* wrote — it is the end that knows the

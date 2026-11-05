@@ -95,3 +95,25 @@ describe("the optimisation's curve", () => {
     expect(render([machine])).not.toContain("science-curve");
   });
 });
+
+describe("the runs on a cluster", () => {
+  it("say where they are, in the colour of whoever launched them", () => {
+    const cluster: PanelSection = {
+      section: "Cluster",
+      title: "Cluster",
+      lines: [],
+      groups: [{
+        id: "host:hpc1", label: "hpc1",
+        badges: [
+          { job_key: "1", state: "running", partitions: ["gpu"], nodes: ["gpu007"],
+            origin: { kind: "main" } },
+          { job_key: "2", state: "pending", partitions: ["cpu"], job_id: "2",
+            origin: { kind: "subagent", label: "sweep" } },
+        ],
+      }],
+    };
+    const html = render([cluster]);
+    expect(html).toMatch(/class="science-badge is-main is-running"[^>]*>gpu · gpu007</);
+    expect(html).toMatch(/class="science-badge is-subagent"[^>]*>cpu · 2</);
+  });
+});

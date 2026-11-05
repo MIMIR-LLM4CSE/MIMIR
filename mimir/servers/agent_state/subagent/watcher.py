@@ -1,10 +1,10 @@
 """A sub-agent's own watcher for the detached runs it launched: the conversation's
 :class:`RunWatcher`, delivering to the child.
 
-A finished run and a check-in reach the child as steers (its host's ``steer``), in
-``wake_text``'s and ``checkin_steer``'s words.
-The child's loop is its own: only :meth:`ChildWatcher.handover` may be called from another
-thread; :meth:`ChildWatcher.close` cancels, on the child's loop.
+Finished runs and check-ins reach the child as steers, in ``wake_text``'s and
+``checkin_steer``'s words; the runs it holds go to its session's ``runs.json`` for the
+caller's panel. The child's loop is its own: only :meth:`ChildWatcher.handover` may be
+called from another thread; :meth:`ChildWatcher.close` cancels, on the child's loop.
 """
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import logging
 from collections import deque
 
 from mimir.client.query_engine.jobs import RunWatcher, checkin_steer, wake_text
+from mimir.shared.atomic import write_json
+from mimir.shared.state_paths import RUNS_FILENAME, session_file
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,24 @@ class ChildWatcher(RunWatcher):
     def session_for(self, owner: str | None) -> str | None:
         return None   # the child is the only reader
 
+    def on_runs_changed(self) -> None:
+        self._publish()
+
+    def _publish(self) -> None:
+        """Write the runs the child holds to its session's ``runs.json``; none once handed over."""
+        session = str(self._origin.get("session") or "")
+        if not session:
+            return
+        with self._lock:
+            handed_over = self._handed_over
+        runs = [] if handed_over else self.watched_runs()
+        for run in runs:
+            run["origin"] = run.get("origin") or dict(self._origin)
+        try:
+            write_json(session_file(RUNS_FILENAME, session), {"runs": runs})
+        except OSError:
+            logger.debug("sub-agent runs: %s could not be written", session, exc_info=True)
+
     def deliver(self, event: dict) -> None:
         with self._lock:
             handed_over = self._handed_over
@@ -97,6 +117,7 @@ class ChildWatcher(RunWatcher):
             live = [dict(w.descriptor) for w in self.watches.values() if not w.task.done()]
         for descriptor in live:
             descriptor.setdefault("origin", dict(self._origin))
+        self._publish()
         return live
 
     async def close(self) -> None:
@@ -107,4 +128,5 @@ class ChildWatcher(RunWatcher):
         """
         with self._lock:
             self._handed_over = True
+        self._publish()
         await super().close()

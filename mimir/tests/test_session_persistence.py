@@ -20,7 +20,7 @@ from mimir.client.query_engine.history import (
     carries_compaction_summary, compacted_exchanges, compaction_summary_message,
 )
 from mimir.client.session.store import (
-    FullSession, SessionStore, list_subagents, read_subagent,
+    FullSession, SessionStore, list_subagents, read_subagent, subagent_runs,
 )
 
 
@@ -265,6 +265,42 @@ class SubAgentCardTests(unittest.TestCase):
                                  "chi >= 8, colouring exact.")
                 self.assertEqual(read_subagent("s1", "sub-1")["answer"],
                                  "chi >= 8, colouring exact.")
+
+
+class SubAgentRunsTests(unittest.TestCase):
+    """The runs a sub-agent still working holds, read off what its watcher wrote."""
+
+    def _child(self, tmp, name, state, runs):
+        directory = os.path.join(tmp, "s1", "subagents", name)
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "subagent.json"), "w", encoding="utf-8") as fh:
+            json.dump({"state": state, "pid": os.getpid()}, fh)
+        with open(os.path.join(directory, "runs.json"), "w", encoding="utf-8") as fh:
+            json.dump({"runs": runs}, fh)
+
+    def test_only_a_working_childs_runs_are_read_and_none_offers_a_cancel(self):
+        run = {"job_key": "4242", "state": "running", "cancellable": True,
+               "partitions": ["gpu"], "nodes": ["gpu007"],
+               "origin": {"kind": "subagent", "label": "sweep"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            self._child(tmp, "sub-1", "running", [run])
+            self._child(tmp, "sub-2", "finished", [{**run, "job_key": "4343"}])
+            with mock.patch("mimir.client.session.store._sessions_dir",
+                            return_value=tmp):
+                runs = subagent_runs("s1", list_subagents("s1"))
+        self.assertEqual([r["job_key"] for r in runs], ["4242"])
+        self.assertFalse(runs[0]["cancellable"])
+        self.assertEqual(runs[0]["partitions"], ["gpu"])
+
+    def test_a_child_that_wrote_nothing_has_no_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = os.path.join(tmp, "s1", "subagents", "sub-1")
+            os.makedirs(directory)
+            with open(os.path.join(directory, "subagent.json"), "w") as fh:
+                json.dump({"state": "running", "pid": os.getpid()}, fh)
+            with mock.patch("mimir.client.session.store._sessions_dir",
+                            return_value=tmp):
+                self.assertEqual(subagent_runs("s1", list_subagents("s1")), [])
 
 
 class StaleRunningCardTests(unittest.TestCase):

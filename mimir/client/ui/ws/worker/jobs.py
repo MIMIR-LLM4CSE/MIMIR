@@ -133,22 +133,3 @@ class JobWatcher(RunWatcher):
             return err("This run cannot be stopped from here.")
         return await call_tool_directly(self.worker.agent, cancel_op["tool"],
                                         dict(cancel_op.get("args") or {}))
-
-    def watched_runs(self) -> list[dict]:
-        """The runs held by watchers, for the panel: descriptor and last status, minus the local ``at``."""
-        out = []
-        for watch in self.watches.values():
-            descriptor = watch.descriptor
-            if not isinstance(descriptor, dict) or watch.task.done():
-                continue
-            status = {k: v for k, v in (watch.status or {}).items() if k != "at"}
-            out.append({
-                "job_key": descriptor.get("job_key", "?"),
-                "kind": descriptor.get("kind", ""),
-                "server": descriptor.get("server", ""),
-                "origin": descriptor.get("origin") or {},
-                "cancellable": bool((descriptor.get("cancel_op") or {}).get("tool")),
-                **status,
-            })
-        return out
-

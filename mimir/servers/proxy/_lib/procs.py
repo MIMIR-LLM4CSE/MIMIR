@@ -23,6 +23,8 @@ from ....shared.responses import err
 from ....shared import jobs
 from ....shared.jobs import WATCHER_FILE as _WATCHER_FILE
 from ....shared.slurm_site import (
+    UNKNOWN_JOB as _UNKNOWN_JOB,
+    SlurmJobState as _SlurmJobState,
     locate_slurm_job as _locate_on_schedulers,
     slurm_state as _read_slurm_state,
     record_job_dir as _record_job_dir,
@@ -30,6 +32,7 @@ from ....shared.slurm_site import (
     LOCAL as _SLURM_LOCAL,
     exec_argv as _slurm_exec_argv,
     hosts as _slurm_hosts,
+    name_of as _slurm_name,
     owned_job_hosts as _owned_job_hosts,
     owned_jobs as _owned_slurm_jobs,
     owns_job as _owns_slurm_job,
@@ -148,33 +151,36 @@ def _workspace_job_dir(run_dir: str) -> str:
         return ""
 
 
-def _locate_slurm_job(run_dir: str, job_id: int) -> str:
-    """The state of *job_id* on whichever scheduler knows it, its recorded one first.
+def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, dict]:
+    """The state of *job_id* on whichever scheduler knows it, its recorded one first, and
+    where it is (``scheduler``, ``partitions``, ``nodes``, for a badge to say).
 
     ``forgotten`` when every scheduler answered and none knows the job; ``unknown`` when
     none could be asked. The host found is written down, so the next poll is one call.
     """
     unreachable: list[str] = []
 
-    def state_on(host: str) -> tuple[str, str, list[str]]:
+    def state_on(host: str) -> _SlurmJobState:
         try:
             return _slurm_job_state(job_id, host)
         except (subprocess.TimeoutExpired, OSError):
             unreachable.append(host)
-            return "unknown", "", []
+            return _UNKNOWN_JOB
 
     hint = _read_slurm_host(run_dir)
     hosts = _slurm_hosts()
-    host, (state, _raw, _nodes) = _locate_on_schedulers(hint, hosts, state_on)
+    host, found = _locate_on_schedulers(hint, hosts, state_on)
     if host is not None:
         if host != hint:
             _write_slurm_host(run_dir, host)
-        return state
+        where = {"scheduler": _slurm_name(host), "partitions": list(found.partitions),
+                 "nodes": list(found.nodes)}
+        return found.state, {k: v for k, v in where.items() if v}
     asked = ([hint] if hint is not None else []) + [h for h in hosts if h != hint]
-    return "unknown" if len(unreachable) == len(asked) else "forgotten"
+    return ("unknown" if len(unreachable) == len(asked) else "forgotten"), {}
 
 
-def _slurm_job_state(job_id: int, host: str) -> tuple[str, str, list[str]]:
+def _slurm_job_state(job_id: int, host: str) -> _SlurmJobState:
     """``shared.slurm_site.slurm_state`` of *job_id* on *host*; raises when the scheduler
     cannot be asked."""
     def run_lines(script: str) -> list[str]:
@@ -261,15 +267,17 @@ def _build_job_failed(run_dir: str) -> bool:
 
 
 def run_state(run_dir: str) -> dict:
-    """Return state dict with keys: state, pid, slurm_job_id, elapsed_s."""
+    """Return state dict with keys: state, pid, slurm_job_id, elapsed_s; and, for a Slurm
+    job queued or running, where it is (scheduler, partitions, nodes)."""
     metrics_path = os.path.join(run_dir, "metrics.json")
     job_id = _read_slurm_id(run_dir)
     build_job_id = _read_build_slurm_id(run_dir)
+    where: dict = {}
     if job_id is not None:
         # Wherever it is: a run's scheduler is read from its own directory, so the
         # ~15 callers of this keep asking the same question and get the right answer
         # for a job on any of them.
-        slurm_state = _locate_slurm_job(run_dir, job_id)
+        slurm_state, where = _locate_slurm_job(run_dir, job_id)
         if slurm_state == "forgotten":
             # Left the queue with no accounting to say how: its own files decide.
             slurm_state = "done" if os.path.isfile(metrics_path) else "crashed"
@@ -320,6 +328,8 @@ def run_state(run_dir: str) -> dict:
         "elapsed_s":    elapsed,
         **_run_progress(run_dir),
     }
+    if state in ("running", "pending"):
+        out.update(where)
     if build_job_id is not None:
         out["build_slurm_job_id"] = build_job_id
     if state == "running":

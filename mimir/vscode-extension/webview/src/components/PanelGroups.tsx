@@ -1,6 +1,6 @@
 import React from "react";
 import type { PanelGroup, PanelGroupCall, PanelTable, WatchedRun } from "../types";
-import { badgeDetailRows, badgeKey, badgeLabel, kindLabel } from "./panelGroupUtils";
+import { badgeDetailRows, badgeKey, badgeLabel, kindLabel, originKind, originLabel } from "./panelGroupUtils";
 
 interface Props {
   groups: PanelGroup[];
@@ -158,9 +158,9 @@ export const RunBadge: React.FC<{
 }> = ({ run, open, onToggle, onCancel }) => (
   <>
     <button
-      className={`science-badge${run.state === "running" ? " is-running" : ""}`}
+      className={`science-badge is-${originKind(run)}${run.state === "running" ? " is-running" : ""}`}
       aria-expanded={open}
-      title={`${run.kind || "run"} — ${badgeLabel(run)}`}
+      title={`${run.kind || "run"} — ${badgeLabel(run)} — ${originLabel(run.origin)}`}
       onClick={onToggle}
     >
       {badgeLabel(run)}

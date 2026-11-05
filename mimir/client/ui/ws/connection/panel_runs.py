@@ -55,7 +55,8 @@ def _badge(run: dict) -> dict:
         "origin": origin,
         "cancellable": bool(run.get("cancellable")),
     }
-    for key in ("phase", "percent", "command", "pid", "job_id", "elapsed_s", "scheduler"):
+    for key in ("phase", "percent", "command", "pid", "job_id", "elapsed_s", "scheduler",
+                "partitions"):
         if run.get(key) not in (None, "", []):
             badge[key] = run[key]
     nodes = sorted(_run_nodes(run))

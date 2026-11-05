@@ -16,6 +16,7 @@ from mimir.tests.support.proxy import (
     store,
 )
 from mimir.shared import jobs as shared_jobs, slurm_site
+from mimir.shared.slurm_site import SlurmJobState
 from mimir.shared.atomic import read_json
 
 
@@ -234,11 +235,26 @@ class SubmitEvalTests(_FakeSbatchTest):
         run_dir = res["run_dir"]
         # squeue is not on PATH here; force the state the guard is about and assert
         # the build report alone settles it.
-        with mock.patch.object(procs, "_slurm_job_state", return_value=("pending", "", [])):
+        with mock.patch.object(procs, "_slurm_job_state", return_value=SlurmJobState("pending")):
             self.assertEqual(procs.run_state(run_dir)["state"], "pending")
             build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                           "error": "build exited 2", "duration_s": 1.0}])
             self.assertEqual(procs.run_state(run_dir)["state"], "crashed")
+
+    def test_a_live_run_says_where_it_is_and_a_finished_one_does_not(self) -> None:
+        """The proxy's status op is what its watcher polls, so its badge can say it."""
+        self._session()
+        res = server_proxy.proxy_slurm(op="eval", partition="gpu_simu", confirm=True)
+        run_dir = res["run_dir"]
+        running = SlurmJobState("running", "RUNNING", ["gpu007"], ["gpu_simu"])
+        with mock.patch.object(procs, "_slurm_job_state", return_value=running):
+            state = procs.run_state(run_dir)
+        self.assertEqual((state["partitions"], state["nodes"]), (["gpu_simu"], ["gpu007"]))
+        self.assertIn("scheduler", state)
+        with mock.patch.object(procs, "_slurm_job_state", return_value=SlurmJobState("done")):
+            state = procs.run_state(run_dir)
+        self.assertNotIn("partitions", state)
+        self.assertNotIn("nodes", state)
 
     def test_comment_reaches_both_jobs_of_a_split_run(self) -> None:
         """The comment labels the submission, so either job answers 'what was this'."""
@@ -330,7 +346,7 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
         run_dir, _ = self._submitted()
         with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
             fh.write("{}")
-        with mock.patch.object(procs, "_slurm_job_state", return_value=("done", "", [])):
+        with mock.patch.object(procs, "_slurm_job_state", return_value=SlurmJobState("done")):
             self.assertEqual(procs.run_state(run_dir)["state"], "done")
         self.assertEqual(
             shared_jobs.recorded_terminal_state(procs._workspace_job_dir(run_dir)), "done")

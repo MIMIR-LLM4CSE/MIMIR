@@ -4,7 +4,7 @@ import { PanelGroupList, RunBadge } from "./PanelGroups";
 import { PanelCurve } from "./PanelCurve";
 import { PanelMiniMap } from "./PanelMiniMap";
 import { PanelResizer, usePanelWidth } from "./PanelResizer";
-import { badgeKey, isFilled, toggle } from "./panelGroupUtils";
+import { badgeKey, isFilled, sectionRunCounts, toggle } from "./panelGroupUtils";
 
 /** While the drawer is open, ask again this often. */
 const PANEL_POLL_MS = 10000;
@@ -144,6 +144,9 @@ export const SciencePanel: React.FC<Props> = ({
           const accent = SECTION_ACCENT[section.section.toLowerCase()] ?? FALLBACK_ACCENT;
           const isOpen = !foldedSections[section.section];
           const bodyId = `ps-${section.section}`;
+          // Folded, the title says how many runs it hides, the conversation's apart from
+          // the sub-agents', in their badges' colours.
+          const counts = isOpen ? null : sectionRunCounts(section);
           return (
           <div
             className={`science-section${isOpen ? "" : " is-folded"}`}
@@ -157,6 +160,22 @@ export const SciencePanel: React.FC<Props> = ({
               onClick={() => toggleSection(section.section)}
             >
               <span className="science-section-label">{section.title}</span>
+              {counts && counts.main > 0 && (
+                <span
+                  className="science-section-count is-main"
+                  title={`${counts.main} run${counts.main === 1 ? "" : "s"} of this conversation`}
+                >
+                  {counts.main}
+                </span>
+              )}
+              {counts && counts.subagent > 0 && (
+                <span
+                  className="science-section-count is-subagent"
+                  title={`${counts.subagent} run${counts.subagent === 1 ? "" : "s"} of its sub-agents`}
+                >
+                  {counts.subagent}
+                </span>
+              )}
               <span className="science-section-chevron" aria-hidden="true">
                 {isOpen ? "▾" : "▸"}
               </span>

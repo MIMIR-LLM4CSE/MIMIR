@@ -31,6 +31,8 @@ export interface WatchedRun {
   phase?: string;
   percent?: number;
   scheduler?: string;
+  /** The partitions it is queued on or running in. */
+  partitions?: string[];
   nodes?: string[];
   pid?: number;
   job_id?: string;

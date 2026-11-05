@@ -20,6 +20,7 @@ from mimir.servers.hpc import jobs as hpc_jobs
 from mimir.servers.hpc import cli as hpc_cli
 from mimir.servers.hpc import slurm_digest
 from mimir.shared import shell_activity, slurm_site
+from mimir.shared.slurm_site import UNKNOWN_JOB, SlurmJobState
 
 from mimir.tests.support.scheduler import local_slurm, reads_through_stubs
 
@@ -111,6 +112,27 @@ class NormalizedStateTests(unittest.TestCase):
         self.assertEqual(
             self._state({"squeue": ("ok", ""), "sacct": ("ok", "")}), "unknown")
 
+    def test_a_running_job_says_its_partition_and_its_nodes(self) -> None:
+        stub_attr(self, hpc_cli, "run_bash",
+                  _canned({"squeue": ("ok", "RUNNING|gpu[007-008]|gpu_a100")}))
+        found = hpc_jobs.normalized_job_state("123")
+        self.assertEqual(found.state, "running")
+        self.assertEqual(found.nodes, ["gpu007", "gpu008"])
+        self.assertEqual(found.partitions, ["gpu_a100"])
+
+    def test_a_queued_job_lists_every_partition_it_may_start_on(self) -> None:
+        """Submitted to several, it waits on all of them until one takes it."""
+        stub_attr(self, hpc_cli, "run_bash",
+                  _canned({"squeue": ("ok", "PENDING|(Priority)|cpu,cpu_long")}))
+        found = hpc_jobs.normalized_job_state("123")
+        self.assertEqual((found.state, found.nodes, found.partitions),
+                         ("pending", [], ["cpu", "cpu_long"]))
+
+    def test_a_finished_job_is_on_no_partition(self) -> None:
+        stub_attr(self, hpc_cli, "run_bash",
+                  _canned({"squeue": ("ok", "COMPLETED|node1|cpu")}))
+        self.assertEqual(hpc_jobs.normalized_job_state("123").partitions, [])
+
 
 class SlurmJobStatusToolTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -126,6 +148,14 @@ class SlurmJobStatusToolTests(unittest.TestCase):
 
     def test_empty_job_id_errors(self) -> None:
         self.assertEqual(server_hpc.slurm_job_status(job_id="").get("status"), "error")
+
+    def test_the_status_says_where_the_job_runs(self) -> None:
+        """What the watcher keeps and the panel's badge says: partition and nodes."""
+        stub_attr(self, hpc_cli, "run_bash",
+                  _canned({"squeue": ("ok", "RUNNING|gpu007|gpu_a100")}))
+        res = server_hpc.slurm_job_status(job_id="7")
+        self.assertEqual(res["partitions"], ["gpu_a100"])
+        self.assertEqual(res["nodes"], ["gpu007"])
 
 
 class SbatchSubmitTests(unittest.TestCase):
@@ -198,14 +228,14 @@ class SbatchSubmitTests(unittest.TestCase):
         """A Slurm job outlives its conversation; filing it per session must not hide it."""
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             submitted = self._submit()["job_dir"]
-        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": ("running", "RUNNING", ["gpu007"]))
+        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": SlurmJobState("running", "RUNNING", ["gpu007"]))
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
             status = server_hpc.slurm_job_status(job_id="4242")
         self.assertEqual(status["job_dir"], submitted)
         self.assertEqual(status["submitted_by_another_session"], "session-a")
 
     def test_a_job_of_this_session_is_not_labelled_as_another_s(self) -> None:
-        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": ("running", "RUNNING", ["gpu007"]))
+        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": SlurmJobState("running", "RUNNING", ["gpu007"]))
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             submitted = self._submit()["job_dir"]
             status = server_hpc.slurm_job_status(job_id="4242")
@@ -213,7 +243,7 @@ class SbatchSubmitTests(unittest.TestCase):
         self.assertNotIn("submitted_by_another_session", status)
 
     def _status_as(self, state: str, job_id: str = "4242") -> dict:
-        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": (state, state.upper(),
+        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": SlurmJobState(state, state.upper(),
                                      ["gpu007"] if state == "running" else []))
         return server_hpc.slurm_job_status(job_id=job_id)
 
@@ -253,7 +283,7 @@ class SbatchSubmitTests(unittest.TestCase):
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             job_dir = self._submit()["job_dir"]
             self._status_as("crashed")
-            stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": ("unknown", "", []))
+            stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": UNKNOWN_JOB)
             server_hpc.slurm_job_status(job_id="4242")
         with open(os.path.join(job_dir, "slurm_state")) as fh:
             self.assertEqual(fh.read().strip(), "crashed")
@@ -1219,7 +1249,7 @@ class JobArraysTests(unittest.TestCase):
 
     def _state(self, mapping: dict) -> tuple[str, str]:
         stub_attr(self, hpc_cli, "run_bash", _canned(mapping))
-        state, raw, _nodes = hpc_jobs.normalized_job_state("15306621")
+        state, raw = hpc_jobs.normalized_job_state("15306621")[:2]
         return state, raw
 
     def test_one_task_still_running_keeps_the_array_live(self) -> None:

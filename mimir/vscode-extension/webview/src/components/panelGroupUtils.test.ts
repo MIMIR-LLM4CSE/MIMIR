@@ -8,8 +8,10 @@ import {
   groupKeys,
   isFilled,
   kindLabel,
+  originKind,
   originLabel,
   progressLabel,
+  sectionRunCounts,
   toggle,
 } from "./panelGroupUtils";
 import type { PanelGroup, PanelSection, WatchedRun } from "../types";
@@ -55,6 +57,47 @@ describe("what a badge says before it is opened", () => {
     expect(badgeLabel(run({ job_id: "15306620" }))).toBe("15306620");
     expect(badgeLabel(run({ pid: 4242 }))).toBe("pid 4242");
     expect(badgeLabel(run())).toBe("k1");
+  });
+
+  it("puts the partition ahead of the machine", () => {
+    expect(badgeLabel(run({ partitions: ["gpu_a100"], nodes: ["gpu007"] })))
+      .toBe("gpu_a100 · gpu007");
+  });
+
+  it("reads a queued job as its partitions and its id", () => {
+    expect(badgeLabel(run({ partitions: ["cpu"], job_id: "42" }))).toBe("cpu · 42");
+    expect(badgeLabel(run({ partitions: ["cpu", "cpu_long"], job_id: "42" })))
+      .toBe("2 partitions · 42");
+  });
+});
+
+describe("whose run a badge is", () => {
+  it("is the conversation's unless a sub-agent launched it", () => {
+    expect(originKind(run())).toBe("main");
+    expect(originKind(run({ origin: { kind: "main" } }))).toBe("main");
+    expect(originKind(run({ origin: { kind: "subagent", label: "sweep" } }))).toBe("subagent");
+  });
+});
+
+describe("what a folded section counts on its title", () => {
+  it("counts each run once, by whose it is, the unplaced ones included", () => {
+    const mine = run({ job_key: "a" });
+    const theirs = run({ job_key: "b", origin: { kind: "subagent" } });
+    const section = {
+      section: "Cluster",
+      title: "Cluster",
+      lines: [],
+      // Badged on its host and again on its node kind: one run.
+      groups: [{ id: "h", label: "h", badges: [mine, theirs],
+                 groups: [{ id: "h/k", label: "k", badges: [mine] }] }],
+      unplaced: [run({ job_key: "c" })],
+    };
+    expect(sectionRunCounts(section)).toEqual({ main: 2, subagent: 1 });
+  });
+
+  it("is nothing for a section with no run", () => {
+    expect(sectionRunCounts({ section: "Machine", title: "Machine", lines: [] }))
+      .toEqual({ main: 0, subagent: 0 });
   });
 });
 

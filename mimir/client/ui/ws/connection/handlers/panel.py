@@ -13,6 +13,7 @@ from typing import Any
 from .....session.commands import CommandResult
 from .....session.store import list_subagents as _list_subagents
 from .....session.store import read_subagent as _read_subagent
+from .....session.store import subagent_runs as _subagent_runs
 from ..panel_runs import attach_runs, offered_calls
 from ..commands import WS_COMMANDS, WsCommandHost
 from ...pool.pool import AgentPool
@@ -148,11 +149,17 @@ class PanelHandlers(Handlers):
         agent_ready = worker.agent_ready()
         self._offered = offered_calls(sections)
         # The one place both halves exist: what a cluster is made of came from a
-        # server, what is running on it is this client's own watcher state. A run that
-        # no group claimed still travels, under `runs`, for the flat list — a run the
-        # user cannot see is worse than one shown out of place.
-        sections, unplaced = attach_runs(sections, self.screen.worker.watched_runs())
+        # server, what is running on it is this client's own watcher state and what
+        # the sub-agents still working wrote of theirs. A run that no group claimed
+        # still travels, under `runs`, for the flat list — a run the user cannot see is
+        # worse than one shown out of place.
         cards = _list_subagents(self.view.active_session_id or "")
+        runs = worker.watched_runs()
+        held = {str(r.get("job_key")) for r in runs}
+        # A run handed over is the caller's from then on: listed once, as the caller's.
+        runs += [r for r in _subagent_runs(self.view.active_session_id or "", cards)
+                 if str(r.get("job_key")) not in held]
+        sections, unplaced = attach_runs(sections, runs)
         await self.out.send({
             "type": "panel_report",
             # Whether there was anything to ask. An empty section list from a

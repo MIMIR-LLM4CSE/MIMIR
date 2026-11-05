@@ -16,8 +16,10 @@ from typing import Any
 
 from ..config import paths
 from ...shared.atomic import write_json
+from ...shared.atomic import read_json
 from ...shared.state_paths import (
     ACTIVITY_FILENAME,
+    RUNS_FILENAME,
     SUBAGENTS_DIRNAME,
     TODO_FILENAME,
     sessions_root,
@@ -105,6 +107,25 @@ def list_subagents(session_id: str) -> list[dict]:
         cards.append(card)
     cards.sort(key=lambda c: c.get("started_at", ""), reverse=True)
     return cards
+
+
+def subagent_runs(session_id: str, cards: list[dict]) -> list[dict]:
+    """The runs the sub-agents of *cards* still working hold, as their watchers wrote them.
+
+    Only a running child's: one that ended handed its runs to the caller's watcher or
+    stopped them. Read-only from here, so none offers to be cancelled.
+    """
+    out: list[dict] = []
+    for card in cards:
+        if card.get("state") != "running":
+            continue
+        path = os.path.join(_subagents_dir(session_id), os.path.basename(str(card["id"])),
+                            RUNS_FILENAME)
+        data = read_json(path)
+        for run in (data.get("runs") if isinstance(data, dict) else None) or []:
+            if isinstance(run, dict) and run.get("job_key"):
+                out.append({**run, "cancellable": False})
+    return out
 
 
 def _activity_tail(directory: str, limit: int = 120) -> list[dict]:

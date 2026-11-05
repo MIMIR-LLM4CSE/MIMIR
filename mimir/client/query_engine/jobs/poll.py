@@ -35,10 +35,11 @@ STATUS_CALL_TIMEOUT = 60.0
 # check-in, a progress line, a badge on the node it landed on. A list of *field names*
 # rather than a parser per tool, which is what keeps this shape-driven — a status op that
 # reports none of them yields nothing here, and one that starts reporting a node needs no
-# change on this side. Names only, never a tool: ``nodes``/``scheduler`` come from the
-# cluster ops, ``pid``/``command`` from the shell one, and neither knows about the other.
-STATUS_FIELDS = ("state", "phase", "percent", "scheduler", "nodes", "node", "pid",
-                 "command", "elapsed_s", "job_id", "log_tail")
+# change on this side. Names only, never a tool: ``nodes``/``partitions``/``scheduler``
+# come from the cluster ops, ``pid``/``command`` from the shell one, and neither knows
+# about the other.
+STATUS_FIELDS = ("state", "phase", "percent", "scheduler", "partitions", "nodes", "node",
+                 "pid", "command", "elapsed_s", "job_id", "log_tail")
 
 # Signs in a running job's last lines that it went wrong while still running. Names a
 # category, never a tool: whatever the job is, these read the same in its output.

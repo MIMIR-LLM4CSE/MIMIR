@@ -151,8 +151,8 @@ def validate_comment(value: str) -> str | None:
 
 
 def lines_of(result: dict) -> list[str]:
-    """The non-empty lines of a command's output, upper-cased. [] when it failed."""
+    """The non-empty lines of a command's output. [] when it failed."""
     if result.get("status") != "ok":
         return []
-    return [line.strip().upper()
+    return [line.strip()
             for line in (result.get("stdout") or "").splitlines() if line.strip()]

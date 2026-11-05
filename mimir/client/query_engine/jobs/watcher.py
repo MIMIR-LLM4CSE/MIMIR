@@ -112,6 +112,9 @@ class RunWatcher:
                 session_id: str | None) -> None:
         """Called after each poll, once ``watch.status`` holds what it read."""
 
+    def on_runs_changed(self) -> None:
+        """Called once a run is taken on, polled or let go: :meth:`watched_runs` moved."""
+
     # ── the agent's hooks ────────────────────────────────────────────────────────
 
     def register(self, descriptor: dict, owner: str | None = None) -> bool:
@@ -156,6 +159,7 @@ class RunWatcher:
         logger.info("background job %r of session %s is now watched by %r",
                     job_key, session_id, descriptor["status_op"]["tool"])
         self._start_checkins(session_id)
+        self.on_runs_changed()
         return True
 
     async def follow(self, descriptor: dict) -> None:
@@ -167,6 +171,26 @@ class RunWatcher:
         with self._lock:
             self.watches[job_key] = Watch(asyncio.current_task(), descriptor)  # type: ignore[arg-type]
         await self._watch_job(job_key, descriptor, self.session_for(None))
+
+    def watched_runs(self) -> list[dict]:
+        """The runs held, for a panel: descriptor and last status, minus the local ``at``."""
+        with self._lock:
+            held = [w for w in self.watches.values() if not w.task.done()]
+        out = []
+        for watch in held:
+            descriptor = watch.descriptor
+            if not isinstance(descriptor, dict):
+                continue
+            status = {k: v for k, v in (watch.status or {}).items() if k != "at"}
+            out.append({
+                "job_key": descriptor.get("job_key", "?"),
+                "kind": descriptor.get("kind", ""),
+                "server": descriptor.get("server", ""),
+                "origin": descriptor.get("origin") or {},
+                "cancellable": bool((descriptor.get("cancel_op") or {}).get("tool")),
+                **status,
+            })
+        return out
 
     def watched(self) -> list[dict]:
         """Descriptors of the runs a live watch holds (what the dispatch guards consult)."""
@@ -298,6 +322,7 @@ class RunWatcher:
             # would say a run is in flight when it is over.
             with self._lock:
                 self.watches.pop(job_key, None)
+            self.on_runs_changed()
 
     async def _poll_to_completion(self, job_key: str, descriptor: dict,
                                   session_id: str | None) -> None:
@@ -333,6 +358,7 @@ class RunWatcher:
             if fresh:
                 self._emit_checkin(session_id)
             self.on_tick(job_key, watch, tick, session_id)
+            self.on_runs_changed()
 
         state, reason = await poll.poll_until_terminal(
             run_tool, status_op,

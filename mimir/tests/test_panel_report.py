@@ -687,6 +687,14 @@ def test_a_run_on_an_unknown_scheduler_is_still_shown_somewhere():
     assert [r["job_key"] for r in unplaced] == ["j7"]
 
 
+def test_a_badge_says_on_which_partition_the_run_is():
+    from mimir.client.ui.ws.connection.panel_runs import attach_runs
+    run = {"job_key": "j1", "state": "pending", "scheduler": "hpc1",
+           "partitions": ["gpu", "gpu_long"], "job_id": "j1"}
+    sections, _ = attach_runs(_sections_with_hosts(), [run])
+    assert sections[0]["groups"][1]["badges"][0]["partitions"] == ["gpu", "gpu_long"]
+
+
 def test_a_badge_says_which_agent_launched_the_run():
     """A job on a node is worth little to read if it does not say whose."""
     from mimir.client.ui.ws.connection.panel_runs import attach_runs

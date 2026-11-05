@@ -106,6 +106,8 @@ TODO_FILENAME = "todo_list.md"
 TODO_DEPS_FILENAME = "todo_deps.json"
 JOURNAL_FILENAME = "transcript.jsonl"
 ACTIVITY_FILENAME = "activity.jsonl"
+# A sub-agent's runs still in flight, as its own watcher holds them (the panel reads it).
+RUNS_FILENAME = "runs.json"
 
 
 def sessions_root(base: str | None = None) -> str:

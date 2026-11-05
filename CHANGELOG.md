@@ -16,6 +16,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **The Cluster section says where every job runs, sub-agents' included.** A badge names
+  the partition and the node (`gpu · gpu007`; a queued job, its partition and id):
+  `slurm_job_status` and the proxy's run status now report `partitions` from the same
+  `squeue` call. The runs of a sub-agent still working show beside the conversation's,
+  written by its watcher to `runs.json` in its session, and each badge is coloured by
+  whoever launched it (blue for the conversation, purple for a sub-agent). A folded
+  section counts its runs on its title, one pill per origin.
 - **Proxies can be merged with git, and the whole measured.** Each proxy kept its gain
   measured against its own baseline, in a sub-agent's copy or in this session, and
   putting them together was left to the orchestrator by hand, with nothing to say whether
@@ -115,6 +122,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **A Slurm job's badge lands on its node kind again.** The hpc server upper-cased all of
+  `squeue`'s output to read the state words, node names included, so `GPU007` never
+  matched the `gpu007` the tree lists and a job showed on its cluster's row only. Only
+  the state words are upper-cased now.
 - **Editing a sent message keeps the context as it was.** Once a compaction or a trim had
   rewritten the window since that message, the rewind rebuilt it from the whole untrimmed
   record: the context bar jumped past the limit and the next query compacted it all over

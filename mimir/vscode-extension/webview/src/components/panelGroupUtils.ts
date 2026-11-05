@@ -42,18 +42,46 @@ export function groupKeys(groups: PanelGroup[] | undefined): string[] {
 }
 
 /**
- * What a badge says before it is opened: the machine, when it names one, else the run.
+ * What a badge says before it is opened: where the run is — its partition, then its
+ * machine — else the run itself.
  *
- * The node first because the badge sits on a row that already names the cluster, and a
- * second copy of the cluster's name is not what the reader is missing.
+ * No cluster name: the badge sits on a row that already names it. A job still queued has
+ * no node yet, so it reads as its partition and its id.
  */
 export function badgeLabel(run: WatchedRun): string {
   const nodes = run.nodes ?? [];
-  if (nodes.length === 1) return nodes[0];
-  if (nodes.length > 1) return `${nodes.length} nodes`;
-  if (run.job_id) return run.job_id;
-  if (run.pid) return `pid ${run.pid}`;
-  return run.job_key;
+  const where = nodes.length === 1 ? nodes[0]
+    : nodes.length > 1 ? `${nodes.length} nodes`
+    : run.job_id ? run.job_id
+    : run.pid ? `pid ${run.pid}`
+    : run.job_key;
+  const partitions = run.partitions ?? [];
+  if (partitions.length === 0) return where;
+  const partition = partitions.length === 1 ? partitions[0] : `${partitions.length} partitions`;
+  return `${partition} · ${where}`;
+}
+
+/** Whose run this is, as the badge's colour: the conversation's own, or a sub-agent's. */
+export function originKind(run: WatchedRun): "main" | "subagent" {
+  return run.origin?.kind === "subagent" ? "subagent" : "main";
+}
+
+/**
+ * How many runs a section holds, by whose they are: what its title says once folded.
+ *
+ * A run is badged on its host row and again on its node kind's, so only the rows at the
+ * top of the tree are counted, with the runs no row claimed.
+ */
+export function sectionRunCounts(
+  section: PanelSection & { unplaced?: WatchedRun[] },
+): { main: number; subagent: number } {
+  const counts = { main: 0, subagent: 0 };
+  const runs = [
+    ...(section.groups ?? []).flatMap((group) => group.badges ?? []),
+    ...(section.unplaced ?? []),
+  ];
+  for (const run of runs) counts[originKind(run)] += 1;
+  return counts;
 }
 
 /** Who started this run, in words. */
@@ -98,6 +126,13 @@ export function badgeDetailRows(run: WatchedRun): { label: string; value: string
   if (run.job_id) rows.push({ label: "job", value: run.job_id });
   else if (run.pid) rows.push({ label: "pid", value: String(run.pid) });
   if (run.scheduler) rows.push({ label: "scheduler", value: run.scheduler });
+  const partitions = run.partitions ?? [];
+  if (partitions.length > 0) {
+    rows.push({
+      label: partitions.length > 1 ? "partitions" : "partition",
+      value: partitions.join(", "),
+    });
+  }
   const nodes = run.nodes ?? [];
   if (nodes.length > 0) {
     rows.push({ label: nodes.length > 1 ? "nodes" : "node", value: nodes.join(", ") });
