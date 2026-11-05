@@ -39,7 +39,7 @@ def source(name: str) -> tuple[dict | None, str]:
     rel = relative(best.get("primary_value"), base_value, goal)
     if rel is None:
         return None, "its best or its baseline has no value"
-    files = tree_snapshot.changed(opt_git_dir(), workspace_root(), cfg["baseline_id"], best["tree_snapshot"])
+    files = own(cfg, tree_snapshot.changed(opt_git_dir(), workspace_root(), cfg["baseline_id"], best["tree_snapshot"]) or [])
     if not files:
         return None, "its best tree changes no file"
     return {
@@ -50,6 +50,30 @@ def source(name: str) -> tuple[dict | None, str]:
         "relative": rel, "baseline_id": cfg["baseline_id"], "tree": best["tree_snapshot"],
         "files": files,
     }, ""
+
+
+def root_of(cfg: dict) -> str:
+    """The tree a session's snapshot paths are relative to: recorded at init, else read
+    off a tracked path whose end is one of the baseline's files."""
+    if cfg.get("root"):
+        return cfg["root"]
+    held = tree_snapshot.listing(opt_git_dir(), workspace_root(), cfg.get("baseline_id", "")) or []
+    for path in cfg.get("optimize_paths") or []:
+        for rel in held:
+            if path.endswith(os.sep + rel):
+                return path[: -len(rel) - 1]
+    return ""
+
+
+def own(cfg: dict, files: list[str]) -> list[str]:
+    """Of *files* (snapshot paths), those under the session's own optimize_paths: a
+    snapshot taken while copies shared the store's index also holds the paths another
+    proxy had staged, which are not its work."""
+    root = root_of(cfg)
+    if not root:
+        return files
+    mine = [os.path.relpath(p, root).replace(os.sep, "/") for p in cfg.get("optimize_paths") or []]
+    return [f for f in files if any(f == m or f.startswith(m + "/") for m in mine)]
 
 
 def _read(snapshot_id: str, rel: str) -> str | None:

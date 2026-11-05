@@ -124,6 +124,13 @@ class PlanTests(_MergeFixture):
         self.assertEqual(res["status"], "error")
         self.assertEqual(res["refused"][0]["proxy"], "pd")
 
+    def test_a_patch_holds_only_its_proxys_own_paths(self) -> None:
+        """A snapshot taken while copies shared the store's index held the other proxies'
+        staged files too: the patch keeps those under the proxy's optimize_paths."""
+        cfg = {"root": "/w", "optimize_paths": ["/w/src/iso_dir.f90", "/w/lib"]}
+        files = ["lib/m.f90", "lib2/x.f90", "src/iso_adj.f90", "src/iso_dir.f90"]
+        self.assertEqual(merge_sources.own(cfg, files), ["lib/m.f90", "src/iso_dir.f90"])
+
     def test_another_metric_is_refused(self) -> None:
         cfg = eval_session.load_opt_config("pb")
         cfg["primary_metric"] = "gflops"

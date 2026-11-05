@@ -1,7 +1,9 @@
 """Atomic snapshots of the file set under optimization, taken and restored as one.
 
-A shadow git repository in the store (never the user's ``.git``), signing off and
-``add -f``; a copy-per-snapshot fallback without git. A restore writes only the files
+A shadow git repository in the store (never the user's ``.git``), shared by every proxy
+and every copy of the workspace that keeps this store: each git call has an index of its
+own, so a snapshot holds its paths and nothing another proxy staged, and two copies never
+race on one index. A copy-per-snapshot fallback without git. A restore writes only the files
 whose content differs: a fresh mtime tells the build system to recompile.
 """
 
@@ -11,6 +13,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
 
 from . import proc_run  # noqa: E402  (kills the whole process group on timeout)
@@ -18,6 +21,10 @@ from . import proc_run  # noqa: E402  (kills the whole process group on timeout)
 # Long enough for a large tree on a slow filesystem, short enough that a hung git can
 # never become a hung optimisation run.
 _GIT_TIMEOUT_S = 120
+
+# How often a snapshot tries to move HEAD that another copy moved under it.
+_HEAD_TRIES = 8
+_NO_REF = "0" * 40  # update-ref's "must not exist yet"
 
 _IDENTITY = (
     "-c", "user.name=MIMIR proxy ratchet",
@@ -36,10 +43,14 @@ def git_available() -> bool:
         return False
 
 
-def _git(git_dir: str, work_tree: str, *args: str) -> subprocess.CompletedProcess:
+def _git(git_dir: str, work_tree: str, *args: str, index: str = "") -> subprocess.CompletedProcess:
+    """git on the shadow repository, with *index* as its index, else one of its own that
+    is gone once it returns."""
     argv = ["git", "--git-dir", git_dir, "--work-tree", work_tree, *_IDENTITY, *args]
-    return proc_run.run(argv, timeout=_GIT_TIMEOUT_S, cwd=work_tree,
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with tempfile.TemporaryDirectory(prefix="mimir-index-") as tmp:
+        env = {**os.environ, "GIT_INDEX_FILE": index or os.path.join(tmp, "index")}
+        return proc_run.run(argv, timeout=_GIT_TIMEOUT_S, cwd=work_tree, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
 def _rel(work_tree: str, paths: list[str]) -> list[str]:
@@ -59,16 +70,27 @@ def _git_snapshot(git_dir: str, work_tree: str, paths: list[str], message: str) 
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if r.returncode != 0:
             return None
-    rels = _rel(work_tree, paths)
-    if _git(git_dir, work_tree, "add", "-f", "--", *rels).returncode != 0:
+    # Only the paths that exist: a fresh index has no entry for a deleted one, which the
+    # snapshot then lacks.
+    rels = [r for r in _rel(work_tree, paths) if os.path.lexists(os.path.join(work_tree, r))]
+    with tempfile.TemporaryDirectory(prefix="mimir-index-") as tmp:
+        index = os.path.join(tmp, "index")
+        if rels and _git(git_dir, work_tree, "add", "-f", "--", *rels, index=index).returncode != 0:
+            return None
+        tree = _git(git_dir, work_tree, "write-tree", index=index)
+    if tree.returncode != 0:
         return None
-    # --allow-empty: re-measuring an unchanged tree is a legitimate run, and it must
-    # still get an identity of its own in the ledger.
-    c = _git(git_dir, work_tree, "commit", "--allow-empty", "-q", "-m", message)
-    if c.returncode != 0:
-        return None
-    h = _git(git_dir, work_tree, "rev-parse", "HEAD")
-    return h.stdout.strip() if h.returncode == 0 else None
+    # Chained on HEAD, which keeps every snapshot reachable; compare-and-swap, so two copies
+    # snapshotting at once each land, one after the other.
+    for _ in range(_HEAD_TRIES):
+        head = _git(git_dir, work_tree, "rev-parse", "-q", "--verify", "HEAD").stdout.strip()
+        c = _git(git_dir, work_tree, "commit-tree", tree.stdout.strip(), *(["-p", head] if head else []), "-m", message)
+        if c.returncode != 0:
+            return None
+        sid = c.stdout.strip()
+        if _git(git_dir, work_tree, "update-ref", "HEAD", sid, head or _NO_REF).returncode == 0:
+            return sid
+    return None
 
 
 def _snapshot_blobs(git_dir: str, work_tree: str, snapshot_id: str,

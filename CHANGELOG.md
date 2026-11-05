@@ -107,6 +107,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **A proxy's patch holds only its own files.** Sub-agents work in copies of their own but
+  keep one snapshot store, whose single index every snapshot committed whole: a proxy's
+  best tree carried the files another proxy had staged from its copy, and the merge
+  forecast drew conflicts between proxies whose commits never touched the same file.
+  Each snapshot now has an index of its own, and two copies no longer race on one; a
+  patch read from an older snapshot keeps only the files under its proxy's
+  `optimize_paths`.
 - **No handshake traceback at startup, and a server is told from a stranger on its port.**
   The extension and the server checked that a server was up by connecting to its port and
   hanging up; websockets logged each check as "opening handshake failed", with three chained

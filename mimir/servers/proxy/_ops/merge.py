@@ -68,19 +68,6 @@ def _in_copy() -> bool:
     return f"/{SUBAGENTS_DIRNAME}/" in "/" + active_session_id()
 
 
-def _root_of(cfg: dict) -> str:
-    """The tree a session's snapshot paths are relative to: recorded at init, else read
-    off a tracked path whose end is one of the baseline's files."""
-    if cfg.get("root"):
-        return cfg["root"]
-    held = tree_snapshot.listing(opt_git_dir(), workspace_root(), cfg.get("baseline_id", "")) or []
-    for path in cfg.get("optimize_paths") or []:
-        for rel in held:
-            if path.endswith(os.sep + rel):
-                return path[: -len(rel) - 1]
-    return ""
-
-
 def _moved(value, src_root: str, here: str):
     """*value* with every path under *src_root* moved under *here*, wherever it is in it
     (a command template names several)."""
@@ -106,7 +93,7 @@ def start(names: list[str], name: str = "") -> dict:
         return bad
     here = workspace_root()
     configs = {s["proxy"]: load_opt_config(s["proxy"]) or {} for s in sources}
-    roots = {p: _root_of(c) for p, c in configs.items()}
+    roots = {p: merge_sources.root_of(c) for p, c in configs.items()}
     lost = [p for p, r in roots.items() if not r]
     if lost:
         return err(f"Where the files of {', '.join(lost)} lived cannot be told, so their paths cannot be moved here.")

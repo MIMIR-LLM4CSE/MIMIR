@@ -143,6 +143,34 @@ class TreeAtomicityTests(_Workspace):
         self._restore(self.accepted)
         self.assertEqual((self._read(self.a), self._read(self.b)), ("A1", "B1"))
 
+    def test_copies_sharing_the_store_each_snapshot_their_own_paths(self) -> None:
+        """Two proxies in two copies of the workspace, one store: each snapshot holds its
+        proxy's paths, never what the other one staged, so neither patch takes the
+        other's file."""
+        if not tree_snapshot.git_available():
+            self.skipTest("git is not installed")
+        git = os.path.join(self.wt, "proxy_bench", "opt.git")
+        copy = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, copy, True)
+        shutil.copytree(os.path.join(self.wt, "pkg"), os.path.join(copy, "pkg"))
+        b_in_copy = os.path.join(copy, "pkg", "kernel.py")
+        a_base = tree_snapshot.snapshot(git, self.wt, [self.a], "pa baseline")
+        tree_snapshot.snapshot(git, copy, [b_in_copy], "pb baseline")
+        self._write(b_in_copy, "B_IN_PROGRESS\n")
+        tree_snapshot.snapshot(git, copy, [b_in_copy], "pb launch")
+        self._write(self.a, "A1\n")
+        a_best = tree_snapshot.snapshot(git, self.wt, [self.a], "pa launch")
+        self.assertEqual(tree_snapshot.listing(git, self.wt, a_best), ["pkg/solver.py"])
+        self.assertEqual(tree_snapshot.changed(git, self.wt, a_base, a_best), ["pkg/solver.py"])
+
+    def test_a_deleted_path_is_left_out_of_the_snapshot(self) -> None:
+        if not tree_snapshot.git_available():
+            self.skipTest("git is not installed")
+        os.remove(self.b)
+        sid = self._snap("b deleted")
+        self.assertEqual(tree_snapshot.listing(os.path.join(self.wt, "proxy_bench", "opt.git"), self.wt, sid),
+                         ["pkg/solver.py"])
+
     def test_the_fingerprint_notices_a_changed_tree(self) -> None:
         before = tree_snapshot.fingerprint(self.wt, [self.a, self.b])
         self._write(self.b, "CHANGED\n")
