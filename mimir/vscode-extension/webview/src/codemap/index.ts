@@ -10,7 +10,7 @@ import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withT
   type Draft, type Request, type Sent, type Target } from "./request";
 import { formHtml, requestDetail, requestsSection } from "./requestView";
 import { picked, Picker } from "./picker";
-import { mergeGraph, type Forecast, type MergeState } from "./merge";
+import { mergeFiles, mergeGraph, type Forecast, type MergeState } from "./merge";
 import { barsHeight, BW, curve, derive, edgeClass, FN_N, FN_ROW, GX, LW, marked, midOf, pathOf, visible, type ModEdge, type View } from "./layout";
 import { fitText, svg } from "./svgText";
 import type { CodeMap, Edge, File, Selection } from "./types";
@@ -227,11 +227,11 @@ function functionsOf(fns: NonNullable<TimeView["functions"]>, files: File[]): No
 let drawn: { from: unknown[]; restyle: () => void } | null = null;
 
 function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
-  const from = [v, session, step, scope, showFns, requests, time];
+  const from = [v, session, step, scope, showFns, requests, time, mergeState];
   if (drawn && drawn.from.length === from.length && drawn.from.every((x, i) => x === from[i])) { drawn.restyle(); return; }
   const root = document.getElementById("map")!;
-  root.innerHTML = "";
-  const s = svg("svg", { viewBox: `0 0 ${v.width} ${v.height}`, role: "img", "aria-label": "Modules by component, with the dependencies between them" }, root);
+  // Built aside and swapped in whole: the page never holds an empty map, which would lose its scroll.
+  const s = svg("svg", { viewBox: `0 0 ${v.width} ${v.height}`, role: "img", "aria-label": "Modules by component, with the dependencies between them" });
   // Drawn at its own size: the columns follow the tab's width, so nothing is scaled.
   s.setAttribute("width", String(v.width));
   s.setAttribute("height", String(v.height));
@@ -362,6 +362,7 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
       s.querySelector(`[data-comp="${CSS.escape(sel.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
     }
   }
+  root.replaceChildren(s);
   drawn = { from, restyle };
   restyle();
 }
@@ -763,7 +764,7 @@ function renderLegend(): void {
     <span><i class="sw" style="border-color:var(--e-cycle)"></i>inside a module cycle</span>
     <span><i class="dot" style="background:var(--e-break)"></i>has a break</span>
     <span><i class="dot" style="background:var(--e-cycle)"></i>in a cycle</span>`
-    + (session && step ? stepLegend() : "") + timeLegend();
+    + (session && step ? stepLegend() : !session && mergeState ? mergeLegend() : "") + timeLegend();
 }
 
 function timeLegend(): string {
@@ -775,6 +776,10 @@ function timeLegend(): string {
       + esc(t.from) + " (" + esc(t.gpu.tool) + ")" + (t.gpuBefore ? ", hatched where this step saved it" : "")
       : "its GPU kernels (" + esc(t.gpu.tool) + ")") + "</span>" : "")
     + (showFns && t.functions ? "<span>under the bars: each module's costliest functions, their own time</span>" : "");
+}
+
+function mergeLegend(): string {
+  return "<span>green outline: the files of the proxies merged so far; faint: of those still to merge</span>";
 }
 
 function stepLegend(): string {
@@ -808,15 +813,50 @@ let view: View | null = null;
 /** The map as the server answered it, tests included. */
 let raw: CodeMap | null = null;
 
+/** What the map marks: the step shown, else, for a merge with no step settled yet, the
+ *  files of the proxies merged so far (and, fainter, of those to come). */
+function marks(): Overlay | null {
+  if (session && step) return overlay(session, step, scope);
+  if (!session && mergeState) {
+    const f = mergeFiles(mergeState);
+    return { added: new Set(), removed: [], steps: [], touchedNow: f.now, touched: f.all };
+  }
+  return null;
+}
+
 /** The map, drawn again only when what it shows has changed, else restyled. */
 function drawMap(): void {
   if (!map || !view || !map.files.length) return;
   // The boxes' height follows the functions shown, which follow the step shown.
   if (view.bh !== boxHeight()) view = layoutOf(map);
-  renderMap(view, session && step ? overlay(session, step, scope) : null, time());
+  renderMap(view, marks(), time());
+}
+
+/** The selection the side pane was last drawn for: its lists keep their scroll while it is the same. */
+let sideOf: Selection | undefined;
+
+/** *draw* run without moving what the user scrolled: the page, the map and the charts
+ *  sideways, the pane's lists. A component opened from the drawer still scrolls to its band. */
+function keepScroll(draw: () => void): void {
+  const page = document.scrollingElement;
+  const at = (sel: string) => Array.from(document.querySelectorAll<HTMLElement>(sel), (e) => [e.scrollLeft, e.scrollTop] as const);
+  const sideways = "#map, #session .chart-wrap", lists = "#side .list";
+  const was = { top: page?.scrollTop ?? 0, left: page?.scrollLeft ?? 0, sideways: at(sideways), lists: at(lists) };
+  const moves = scrollToBand, sameSide = sel === sideOf;
+  draw();
+  sideOf = sel;
+  const back = (sel: string, to: (readonly [number, number])[]) =>
+    document.querySelectorAll<HTMLElement>(sel).forEach((e, i) => { if (to[i]) [e.scrollLeft, e.scrollTop] = to[i]; });
+  back(sideways, was.sideways);
+  if (sameSide) back(lists, was.lists);
+  if (page && !moves) { page.scrollTop = was.top; page.scrollLeft = was.left; }
 }
 
 function render(): void {
+  keepScroll(draw);
+}
+
+function draw(): void {
   document.documentElement.dataset.skin = skin;
   document.querySelectorAll<HTMLButtonElement>("button[data-skin]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.skin === skin)));
   document.getElementById("tests")?.setAttribute("aria-pressed", String(showTests));
@@ -855,14 +895,14 @@ function mount(): void {
     <header>
       <h1>Code map</h1><span class="meta" id="meta">waiting for the server…</span>
       <span class="meta status" id="status" role="status" aria-live="polite"></span>
-      <div class="picker push" id="proxy" hidden></div>
-      <button class="toggle" id="analyse" title="Ask the agent to analyse the whole code's architecture and propose a refactor">Analyse the architecture</button>
+      <button class="toggle push" id="analyse" title="Ask the agent to analyse the whole code's architecture and propose a refactor">Analyse the architecture</button>
       <button class="toggle" id="fns" aria-pressed="false" title="List each module's costliest functions on the map" hidden>Functions</button>
       <button class="toggle" id="tests" aria-pressed="false" title="Show the tests and what they depend on">Tests</button>
       <div class="seg" role="group" aria-label="Theme">
         <button data-skin="mimir">MIMIR</button><button data-skin="light">Light</button>
       </div>
       <button class="icon" id="reload" title="Scan the workspace again: its files, the dependencies between them, the optimisation steps (no model call)" aria-label="Map the code again">⟳</button>
+      <div class="picker" id="proxy" hidden></div>
     </header>
     <div class="ribbon" aria-hidden="true"></div>
     <section class="session" id="session" aria-label="Optimisation session" hidden></section>

@@ -36,6 +36,7 @@ export const STYLE = `
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--side); color: var(--fg); font: 13px/1.45 var(--font); }
 #root { padding: 14px 16px 24px; display: grid; gap: 12px; }
+#root > * { min-width: 0; }
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 h1 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin: 0; }
 .meta { font: 11.5px var(--mono); color: var(--fg-dim); }
@@ -129,7 +130,8 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .session .title::before { background: #f2663a; }
 .sum { font-size: 12px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
 .sum b { color: var(--fg); font-weight: 600; }
-.chart-wrap { min-width: 0; overflow: hidden; }
+/* Drawn at least so wide: a narrow tab scrolls it sideways rather than cutting it. */
+.chart-wrap { min-width: 0; overflow-x: auto; overflow-y: hidden; }
 .chart { display: block; }
 .chart .grid { stroke: var(--border-soft); stroke-width: 1; }
 .chart .tick, .chart .xl { font: 10.5px var(--mono); fill: var(--fg-dim); }
@@ -265,7 +267,8 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .bound.memory { background: var(--warn); } .bound.compute { background: var(--time); } .bound.latency { background: var(--e-cycle); }
 .section.time .cap:first-of-type { margin-top: 4px; }
 .picker { position: relative; }
-.pick-btn { display: inline-flex; align-items: center; gap: 8px; max-width: 280px; font: 12px var(--font); padding: 3px 8px 3px 10px;
+/* One width whatever it names: the list hung under it does not move as proxies are ticked. */
+.pick-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; width: 260px; font: 12px var(--font); padding: 3px 8px 3px 10px;
   border: 1px solid var(--border); border-radius: 4px; background: var(--surface-1); color: var(--fg); cursor: pointer; }
 .pick-btn:hover { background: var(--hover); }
 .pick-btn[aria-expanded="true"] { border-color: var(--focus); }
@@ -273,17 +276,17 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .pick-btn .caret { color: var(--fg-dim); font-size: 10px; }
 .pick-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; width: min(520px, 92vw); max-height: 60vh; overflow: auto;
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); padding: 4px 0; }
-.pick-group { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); padding: 8px 12px 3px; }
+.pick-group { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); padding: 8px 12px 3px; }
 .pick-row { display: flex; align-items: center; gap: 8px; padding: 3px 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
 .pick-row:hover { background: var(--hover); }
 .pick-row.is-cur { background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.pick-row input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.pick-row input, .pick-group input { margin: 0; accent-color: var(--accent); cursor: pointer; }
 .pick-name { all: unset; cursor: pointer; font: 12px var(--mono); color: var(--fg); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-name:focus-visible { outline: 1px solid var(--focus); outline-offset: 2px; }
-.pick-all { display: flex; flex-direction: column; padding: 5px 12px; width: 100%; box-sizing: border-box; font-family: var(--font); }
-.pick-all:hover { background: var(--hover); }
-.pick-all.is-cur { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.pick-every { padding: 5px 12px; }
+.pick-all { display: flex; flex-direction: column; flex: 1; font-family: var(--font); }
 .pick-all .hint, .pick-foot .hint { font-size: 11px; color: var(--fg-dim); }
+.pick-src { font: 11px var(--mono); color: var(--e-cycle); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-branch { font: 11px var(--mono); color: var(--fg-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-steps { margin-left: auto; font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
 .pick-gain { min-width: 76px; text-align: right; font-size: 11.5px; color: var(--fg-dim); white-space: nowrap; }

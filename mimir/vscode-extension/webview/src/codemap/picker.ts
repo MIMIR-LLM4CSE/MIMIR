@@ -1,6 +1,7 @@
 // The proxy picker in the map's header: one line per proxy with a session (where it ran,
-// how many runs, its gain so far), grouped as running, merges and frozen; a click on a line shows one,
-// ticks show several together, and the ticked ones can be merged.
+// how many runs, its gain so far, what a merge merges), grouped as running, merges and
+// frozen; a click on a line shows one, ticks show several together (all of them, or a
+// group's, at once), and the ticked ones can be merged.
 
 import { esc, pct } from "./format";
 import type { Session } from "./session";
@@ -25,12 +26,19 @@ export function ticked(pick: string): string[] {
   return pick.includes(",") ? pick.split(",").filter(Boolean) : [];
 }
 
-/** What the picker's button says for *pick*. */
-export function pickLabel(pick: string, active: string): string {
+/** What a merge proxy merges: "pa + pb". */
+export function mergeOf(m: ProxyMeta | undefined): string {
+  return m?.merge && m.sources.length ? m.sources.join(" + ") : "";
+}
+
+/** What the picker's button says for *pick*: a merge says what it merges. */
+export function pickLabel(pick: string, active: string, meta: ProxyMeta[] = []): string {
   if (pick === ALL) return "Every proxy";
   const t = ticked(pick);
   if (t.length) return t.length > 3 ? t.length + " proxies" : t.join(" + ");
-  return pick || active || "active session";
+  const name = pick || active || "active session";
+  const of = mergeOf(meta.find((m) => m.name === name));
+  return of ? name + " · merge of " + of : name;
 }
 
 /** A gain as the picker shows it: "20% better", "3% worse". */
@@ -48,6 +56,13 @@ export function mergePrompt(names: string[]): string {
     + "trivial conflicts, ask me about a choice of method.";
 }
 
+/** A checkbox that ticks every proxy of *names* at once: ticked when all are, half when some are. */
+function tickAll(names: string[], ticks: Set<string>, attr: string, label: string): string {
+  const n = names.filter((x) => ticks.has(x)).length;
+  return '<input type="checkbox" ' + attr + (n && n === names.length ? " checked" : "")
+    + (n && n < names.length ? " data-some" : "") + ' aria-label="' + esc(label) + '">';
+}
+
 function row(m: ProxyMeta, pick: string, ticks: Set<string>): string {
   const value = m.active ? "" : m.name;
   const cur = pick === value;
@@ -61,28 +76,36 @@ function row(m: ProxyMeta, pick: string, ticks: Set<string>): string {
     + '<button class="pick-name" data-pick="' + esc(value) + '" aria-current="' + cur + '" title="Show '
     + esc(m.name) + "'s steps alone" + '">' + esc(m.name) + "</button>"
     + badges
+    + (mergeOf(m) ? '<span class="pick-src" title="Merges ' + esc(m.sources.join(", ")) + '">of ' + esc(mergeOf(m)) + "</span>" : "")
     + (m.branch ? '<span class="pick-branch" title="Branch">' + esc(m.branch) + "</span>" : "")
     + '<span class="pick-steps">' + m.steps + (m.steps === 1 ? " run" : " runs") + "</span>"
     + '<span class="pick-gain' + (g === null ? "" : g > 0 ? " good" : g < 0 ? " bad" : "") + '" title="Best against its baseline, '
     + esc(m.metric) + '">' + esc(gainText(g) || "–") + "</span></div>";
 }
 
-/** The picker: its button and, when *open*, the list, whose Merge button takes the ticks:
- *  what cannot be merged is the agent's to say. */
-export function pickerHtml(meta: ProxyMeta[], pick: string, active: string, open: boolean, ticks: Set<string>): string {
-  const n = ticks.size;
-  const groups: [string, ProxyMeta[]][] = [
+/** The picker's groups, in the order it lists them. */
+function groups(meta: ProxyMeta[]): [string, ProxyMeta[]][] {
+  return [
     ["Running", meta.filter((m) => !m.frozen && !m.merge)],
     ["Merges", meta.filter((m) => !m.frozen && m.merge)],
     ["Frozen", meta.filter((m) => m.frozen)],
   ];
-  const list = groups.filter(([, ms]) => ms.length).map(([title, ms]) =>
-    '<div class="pick-group">' + esc(title) + "</div>" + ms.map((m) => row(m, pick, ticks)).join("")).join("");
+}
+
+/** The picker: its button and, when *open*, the list, whose Merge button takes the ticks:
+ *  what cannot be merged is the agent's to say. */
+export function pickerHtml(meta: ProxyMeta[], pick: string, active: string, open: boolean, ticks: Set<string>): string {
+  const n = ticks.size;
+  const list = groups(meta).filter(([, ms]) => ms.length).map(([title, ms]) =>
+    '<label class="pick-group">' + tickAll(ms.map((m) => m.name), ticks, 'data-tick-group="' + esc(title) + '"', "Tick every " + title.toLowerCase() + " proxy")
+    + esc(title) + "</label>" + ms.map((m) => row(m, pick, ticks)).join("")).join("");
   return '<button class="pick-btn" aria-haspopup="true" aria-expanded="' + open + '" title="Whose optimisation steps the map shows">'
-    + '<span class="pick-label">' + esc(pickLabel(pick, active)) + '</span><span class="caret">▾</span></button>'
+    + '<span class="pick-label" title="' + esc(pickLabel(pick, active, meta)) + '">' + esc(pickLabel(pick, active, meta)) + '</span><span class="caret">▾</span></button>'
     + '<div class="pick-panel" role="group" aria-label="Proxies"' + (open ? "" : " hidden") + ">"
-    + '<button class="pick-name pick-all' + (pick === ALL ? " is-cur" : "") + '" data-pick="' + ALL + '">Every proxy, together'
-    + '<span class="hint">each against its own baseline</span></button>'
+    + '<div class="pick-row pick-every' + (pick === ALL ? " is-cur" : "") + '">'
+    + tickAll(meta.map((m) => m.name), ticks, "data-tick-all", "Tick every proxy")
+    + '<button class="pick-name pick-all" data-pick="' + ALL + '">Every proxy, together'
+    + '<span class="hint">each against its own baseline; tick to merge them</span></button></div>'
     + list
     + '<div class="pick-foot"><span class="hint">' + (ticks.size > 1 ? ticks.size + " ticked, drawn together" : "Tick two or more to draw them together")
     + '</span><button class="open" data-merge' + (n > 1 ? "" : " disabled")
@@ -177,10 +200,17 @@ export class Picker {
     if (el.hidden) { this.open = false; return; }
     // Rebuilt with each answer: the focus goes back to the control that had it.
     const had = document.activeElement instanceof HTMLElement && el.contains(document.activeElement) ? document.activeElement : null;
-    const again = had?.dataset.tick !== undefined ? '[data-tick="' + had.dataset.tick + '"]'
+    const again = had?.dataset.tick !== undefined ? '[data-tick="' + CSS.escape(had.dataset.tick) + '"]'
+      : had?.dataset.tickGroup !== undefined ? '[data-tick-group="' + CSS.escape(had.dataset.tickGroup) + '"]'
+      : had?.hasAttribute("data-tick-all") ? "[data-tick-all]"
       : had?.dataset.pick !== undefined ? '[data-pick="' + had.dataset.pick + '"]' : had ? ".pick-btn" : "";
+    // The list stays where it was scrolled: a tick must not move the line under the cursor.
+    const top = el.querySelector(".pick-panel")?.scrollTop ?? 0;
     el.innerHTML = pickerHtml(this.meta, reachable(this.pick, this.proxies, this.active), this.active, this.open, this.ticks);
-    if (again) el.querySelector<HTMLElement>(again)?.focus();
+    el.querySelectorAll<HTMLInputElement>("[data-some]").forEach((b) => { b.indeterminate = true; });
+    const panel = el.querySelector(".pick-panel");
+    if (panel) panel.scrollTop = top;
+    if (again) el.querySelector<HTMLElement>(again)?.focus({ preventScroll: true });
   }
 
   private close(): void {
@@ -207,7 +237,7 @@ export class Picker {
     }
     // A proxy's line picks it wherever it is clicked, but on its tick.
     const name = t.closest<HTMLElement>("[data-pick]")
-      ?? (t.closest("[data-tick]") ? null : t.closest(".pick-row")?.querySelector<HTMLElement>("[data-pick]"));
+      ?? (t.closest("input") ? null : t.closest(".pick-row")?.querySelector<HTMLElement>("[data-pick]"));
     if (name) { this.ticks = new Set(); this.choose(name.dataset.pick ?? "", true); return; }
     if (t.closest("[data-merge]")) {
       const names = [...this.ticks];
@@ -219,15 +249,24 @@ export class Picker {
 
   private onTick(e: Event): void {
     const box = e.target as HTMLInputElement;
-    const name = box.dataset.tick;
-    if (name === undefined) return;
-    if (box.checked) this.ticks.add(name); else this.ticks.delete(name);
+    const names = box.dataset.tick !== undefined ? [box.dataset.tick]
+      : box.hasAttribute("data-tick-all") ? this.meta.map((m) => m.name)
+      : box.dataset.tickGroup !== undefined ? this.groupOf(box.dataset.tickGroup) : null;
+    if (!names) return;
+    for (const name of names) if (box.checked) this.ticks.add(name); else this.ticks.delete(name);
     // Two or more are drawn together; one alone is that proxy's steps.
     const t = [...this.ticks];
     if (t.length > 1) this.choose(t.join(","), false);
     else if (t.length === 1) this.choose(this.meta.find((m) => m.name === t[0])?.active ? "" : t[0], false);
+    // Every tick taken off at once: back to the active session.
+    else if (ticked(this.pick).length) this.choose("", false);
     // At once, without waiting for the answer: the button and the Merge count follow the ticks.
     this.render();
+  }
+
+  /** The proxies of the group *title* lists. */
+  private groupOf(title: string): string[] {
+    return groups(this.meta).find(([t]) => t === title)?.[1].map((m) => m.name) ?? [];
   }
 
   /** Escape closes the list, the arrows move between its lines. */

@@ -171,7 +171,18 @@ export function mergeGraph(shown: MergeState | Forecast, width = 760): string {
     ["intf", '<span><i class="sw link-intf"></i>worse in the merge than alone</span>'],
   ];
   const legend = LEGEND.filter(([k]) => drawn.has(k)).map(([, html]) => html).join("");
-  return '<div class="merge"><div class="session-head"><div class="title">' + (m ? "Merge" : "Merge forecast") + '</div><span class="sum">'
+  const of = sources.map((s) => s.proxy).join(" + ");
+  return '<div class="merge"><div class="session-head"><div class="title">' + esc((m ? "Merge of " : "Merge forecast: ") + of) + '</div><span class="sum">'
     + summary(shown, m, f) + "</span>" + (f ? mergeButton(f) : "") + "</div>" + '<div class="chart-wrap">' + svg + "</div>"
     + (legend ? '<div class="mlegend">' + legend + "</div>" : "") + "</div>";
+}
+
+/** The files a merge has taken in so far: those of the proxies picked into it, and of those
+ *  still to come. The map marks them while no run of the merge has settled a step. */
+export function mergeFiles(m: MergeState): { now: Set<string>; all: Set<string> } {
+  const out = new Set(m.dropped ?? []);
+  const merged = new Set((m.merged ?? []).map((x) => x.proxy));
+  const files = (keep: (p: string) => boolean) =>
+    new Set(m.sources.filter((s) => !out.has(s.proxy) && keep(s.proxy)).flatMap((s) => s.files));
+  return { now: files((p) => merged.has(p)), all: files(() => true) };
 }

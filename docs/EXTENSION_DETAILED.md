@@ -674,9 +674,13 @@ step is not one of these: ⟳ maps it.
 With sessions on more than one proxy, a picker in the header chooses whose steps are
 drawn (`picker.ts`, the list's HTML and the `Picker` that holds the pick, the ticks and the answer's proxies): a list grouped as running, merges and frozen, each line with its
 branch, its runs, its gain so far and its badges (active, merge, why it was frozen),
-from the answer's `proxies_meta`. A click on a name draws that proxy alone, "Every
+from the answer's `proxies_meta`; a merge's line, and the button while it is picked, say
+what it merges ("of pa + pb"). A click on a name draws that proxy alone, "Every
 proxy, together" draws them all, and two ticks or more draw the ticked ones together.
-Escape and a click outside close the list, the arrows move through it. The pick
+The box on "Every proxy" ticks or unticks them all, the one on a group's title that
+group's (half-ticked when some are). The button keeps one width and sits last in the
+header, and the list keeps its scroll as it is rebuilt: a tick moves nothing under the
+cursor. Escape and a click outside close the list, the arrows move through it. The pick
 (`""`, a name, `*`, or the ticked names joined by commas) is kept in the tab's state and
 sent with its `refresh` (`proxy`, `combined` or `proxies`), which the host forwards on
 the `code_map` message; it never moves the agent's active session. **Merge** under the
@@ -690,7 +694,10 @@ against the copy untouched. While it runs, the summary says where it stands (the
 untouched being measured, merging n of m, the conflict it stopped on, the question it
 waits on); measured, which proxies lost gain and which were taken back out. For proxies
 ticked and not merged it draws the server's `forecast` the same way, unmeasured, with
-the conflicts to resolve and its own **Merge** for every proxy ticked. Two proxies that ran at the same time in one tree (`together`) are named in the summary
+the conflicts to resolve and its own **Merge** for every proxy ticked. Its title names
+the proxies ("Merge of pa + pb"). A merge has no step until the whole is measured: until
+then the map outlines the files of the proxies merged so far, and fainter those still to
+merge (`merge.mergeFiles`). Two proxies that ran at the same time in one tree (`together`) are named in the summary
 ("ran together") and their arc's tooltip says why it matters. The legend names
 only what the graph draws. A merge frozen before merges were git's is read through
 `tab.merge_view` as done. The tab watches `merge.json` with the ledgers (`BENCH_GLOB`),
@@ -700,6 +707,11 @@ session's) is asked again once with the pick. Every proxy at once lays the steps
 the order they settled, each named with its proxy and valued as a multiple of its
 proxy's baseline: the strip draws the dots without a best-so-far line and sums up each
 proxy apart, and **Since baseline** marks every proxy's kept changes together.
+
+A redraw (⟳, a re-map, a pick) keeps the page where it was scrolled, the map and the
+charts sideways and the pane's lists while their selection stays (`keepScroll`): the map
+is built aside and swapped in whole, so the page never holds an empty one. The strip and
+the merge graph keep their least width and scroll sideways in a narrow tab.
 
 **Badges are the runs, on the machines they are running on.** The client joins them in
 `connection/panel_runs.attach_runs` before the message goes out, because that is the one place both

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gainOf, mergeGraph, outcome, type MergeState } from "./merge";
+import { gainOf, mergeFiles, mergeGraph, outcome, type MergeState } from "./merge";
 import { mergePrompt, picked, pickerHtml, pickLabel, reachable, ticked, type ProxyMeta } from "./picker";
 
 const sources = [
@@ -75,7 +75,7 @@ describe("the merge graph", () => {
 
   it("is a forecast for proxies ticked, with its conflicts to resolve", () => {
     const html = mergeGraph({ sources, pairs, refused: [{ proxy: "pd", why: "no run accepted beyond its baseline" }] }, 600);
-    expect(html).toContain("Merge forecast");
+    expect(html).toContain("Merge forecast: pa + pc + pb");
     expect(html).toContain("1</b> conflict to resolve");
     expect(html).toContain("left out: pd");
     expect(html).toContain("conflict: to resolve when merged");
@@ -97,6 +97,17 @@ describe("the merge graph", () => {
     expect(html).toContain("ran together: pa + pc");
     expect(html).toContain("ran at the same time in one tree");
     expect(mergeGraph({ sources, pairs })).not.toContain("ran together");
+  });
+
+  it("names the proxies it merges", () => {
+    expect(mergeGraph(done)).toContain("Merge of pa + pc + pb");
+  });
+
+  it("gives the map the files merged so far, and those still to come", () => {
+    const f = mergeFiles({ ...stopped, conflict: null, merged: [{ proxy: "pb", conflicts: [], resolution: "" }] });
+    expect([...f.now]).toEqual(["b.py"]);
+    expect([...f.all].sort()).toEqual(["a.py", "b.py"]);
+    expect([...mergeFiles({ ...done, dropped: ["pb"] }).all]).toEqual(["a.py"]);
   });
 
   it("has no Merge button once the merge runs", () => {
@@ -144,6 +155,25 @@ describe("the proxy picker", () => {
     expect(pickLabel("pa,pb", "pa")).toBe("pa + pb");
     expect(pickLabel("*", "pa")).toBe("Every proxy");
     expect(pickLabel("", "pa")).toBe("pa");
+  });
+
+  it("says what a merge merges, on its line and on the button", () => {
+    expect(pickerHtml(meta, "merge-1", "pa", true, new Set())).toContain('<span class="pick-src" title="Merges pa, pb">of pa + pb</span>');
+    expect(pickLabel("merge-1", "pa", meta)).toBe("merge-1 · merge of pa + pb");
+    expect(pickLabel("pb", "pa", meta)).toBe("pb");
+  });
+
+  it("ticks every proxy, or a group's, with one box", () => {
+    const none = pickerHtml(meta, "", "pa", true, new Set());
+    expect(none).toMatch(/<input type="checkbox" data-tick-all aria-label/);
+    expect(none).toMatch(/data-tick-group="Running" aria-label/);
+    const all = pickerHtml(meta, "", "pa", true, new Set(meta.map((m) => m.name)));
+    expect(all).toMatch(/data-tick-all checked/);
+    expect(all).toMatch(/data-tick-group="Merges" checked/);
+    expect(all).toContain("Merge 5");
+    const some = pickerHtml(meta, "pa,pb", "pa", true, new Set(["pa", "pb"]));
+    expect(some).toMatch(/data-tick-all data-some/);
+    expect(some).toMatch(/data-tick-group="Running" data-some/);
   });
 
   it("asks the agent to plan the merge", () => {

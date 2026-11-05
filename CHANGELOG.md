@@ -122,6 +122,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **The code map stays where you are looking.** A refresh (⟳, a re-map after a run, a
+  pick) threw the page back to the top; the page, the map and the charts sideways and
+  the side pane's lists now keep their scroll. The session strip and the merge graph were
+  cut in a narrow tab; they scroll sideways. Ticking a proxy moved the list under the
+  cursor (the button's label grew with the ticks, the Functions toggle came and went
+  beside it, the list lost its scroll); the button keeps one width at the header's end.
+  A merge proxy picked showed nothing of itself until the whole was measured: the map now
+  outlines the files of the proxies merged so far, the picker's line and button and the
+  graph's title name what it merges, and a box ticks every proxy, or a group's, at once.
 - **A Slurm job's badge lands on its node kind again.** The hpc server upper-cased all of
   `squeue`'s output to read the state words, node names included, so `GPU007` never
   matched the `gpu007` the tree lists and a job showed on its cluster's row only. Only
