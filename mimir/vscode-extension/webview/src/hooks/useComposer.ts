@@ -71,7 +71,7 @@ export function useComposer({ skillToggles, sendCommand, sendPrompt }: Senders) 
   // an opt-in click-to-attach chip above the input.
   const [activeEditor, setActiveEditor] = useState<{ file: string; selection: string | null } | null>(null);
   const slashItems = useMemo(
-    () => (slash ? filterSlashItems(skillToggles, slash.query) : []),
+    () => (slash ? filterSlashItems(skillToggles, slash.query, !slash.leading) : []),
     [slash, skillToggles]
   );
   const slashOpen = slash !== null && slashItems.length > 0;

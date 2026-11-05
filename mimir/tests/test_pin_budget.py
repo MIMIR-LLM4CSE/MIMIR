@@ -89,9 +89,10 @@ class SkillsIndexSectionTests(unittest.TestCase):
         self.assertIn("## Skills", out)
         self.assertIn("- fix-bug: repair a defect", out)
         self.assertIn("load_skill(name)", out)
-        # The three rules that keep the mechanism from becoming its own failure mode.
+        # Subordinate, never refused on a reload, and not loaded for a shared word.
         self.assertIn("SUBORDINATE", out)
-        self.assertIn("at most three", out)
+        self.assertIn("loaded again", out)
+        self.assertIn("`/name`", out)
         self.assertIn("needs none of them", out)
 
     def test_no_index_is_printed_when_the_tool_is_not_connected(self) -> None:

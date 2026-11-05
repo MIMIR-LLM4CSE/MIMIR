@@ -339,8 +339,8 @@ and resets a one-shot one. `validate_execution_context()` checks every declared 
 
 **Field traits.** The `traits` frozenset on each field declares what it *is* — `CARRY`,
 `FILE_PATH`, `KNOWN_FILE`, `DISCOVERY` — and `fields_with(*traits)` derives every list built
-from them: the carry merge (sets unioned, dicts merged, flags kept once raised; `skills_loaded`
-drops a "pending" reservation), session serialisation, the delete purge, the discovery signals,
+from them: the carry (a query starts from it and hands back what it ends with, so a pin a
+skill reload moved does not come back; flags kept once raised), session serialisation, the delete purge, the discovery signals,
 `known_existing_files`. None is hand-maintained.
 
 **Named predicates, not bare set membership.** `was_read()` / `is_known_to_exist()` /
@@ -398,7 +398,7 @@ missing content).
 | `denials` | `observations.evidence` (`record_denial`, which the agent's approvals call; the clearing), `dispatch.inject` (`handback_told`) | the denial ladder, the completion report |
 | `plan` | `observations.plan`, `query_engine.turn`, `plan_loop`, `dispatch.inject` | the commitments check, the checklist reminders |
 | `nudges` | `nudges.cascade`, `nudges.reminders`, `observations`, `verification.ladder` (resets), `dispatch.inject`, `agent_loop` | the per-category caps, the injections |
-| `bookkeeping` | `query_engine.dispatch`, `turn`, `loop_base`, the skill gate (`policy.gates`) | the history budget, the dispatch guards |
+| `bookkeeping` | `query_engine.dispatch`, `turn`, `loop_base` | the history budget, the dispatch guards |
 | `workflow_state` | `guardrails.workflow.set_workflow_state` | every state gate |
 | `action_op_count` | `observations.shell`, `observations.runs` | the todo nudge |
 
@@ -552,11 +552,18 @@ Five sites rebuild it — mode switch, thinking-rung change, plan→agent handof
 refresh, initial build — and before this existed the skill block was silently dropped by
 every one of them but the last.
 
-Only a skill the **user** invoked is in that block. One the **model** loads mid-run with
-`load_skill` deliberately does **not** go into `messages[0]`: rewriting the system message
-mid-query voids the prompt prefix for every remaining step, and a pull happens at step 14 as
-readily as at step 1. So the body stays where it landed — the tool result in the tail — and
-is protected there instead.
+Only the skills the **user** invoked are in that block: every `/<name>` in the query, at
+its start or after whitespace, naming a skill (`query_engine.skill_invocation`), each
+folded in order before the first step and announced as `⊙ Skill invoked`. That is the
+user's decision, never the model's: the body is there whatever the toggles or
+`disable-model-invocation` say. The block lasts the query; nothing records it as a load.
+One the **model** loads mid-run with `load_skill` deliberately does **not** go into
+`messages[0]`: rewriting the system message mid-query voids the prompt prefix for every
+remaining step, and a pull happens at step 14 as readily as at step 1. So the body stays
+where it landed — the tool result in the tail — and is protected there instead. Nothing
+caps how many, and a skill may be loaded again: the reload moves the pin to the new result
+(`skills_loaded` maps each skill to its pinned call), and the earlier copy becomes ordinary
+history.
 
 ### `variants.py`, and `config/prompt_variants.py`
 

@@ -126,12 +126,6 @@ DENIAL_QUERY_HANDBACK_TOTAL: int = 4  # total refusals in a query that force the
 # row is ignoring the reminder; any tool call resets the count.
 NUDGE_MAX_CONSECUTIVE_NOOP: int = 1
 
-# How many skills the model may load into one conversation (load_skill). A methodology
-# that stacks five applies none of them, and the real failure mode of on-demand loading
-# is a model that keeps reaching for one more playbook instead of doing the work. The
-# user's own /<name> counts towards it: it put a body in the context the same way.
-SKILL_PULL_MAX: int = 3
-
 # Multi-file thresholds: at least this many touched/planned files before the
 # todo-tracking nudge fires.
 NUDGE_MAX_CREATION: int = 1

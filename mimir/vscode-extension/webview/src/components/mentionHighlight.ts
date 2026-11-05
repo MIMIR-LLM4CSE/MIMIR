@@ -1,6 +1,7 @@
-// A sent message split into prose and the "@"-mentions it attached, by the backend's
-// rule (`_MENTION_RE` in client/context/resource_context.py): "@" opening a token.
-// Free of React, so unit-testable.
+// A sent message split into prose, the "@"-mentions it attached, by the backend's rule
+// (`_MENTION_RE` in client/context/resource_context.py): "@" opening a token, and the
+// skills it invokes, "/name" (client/query_engine/skill_invocation.py). Free of React,
+// so unit-testable.
 
 /** Trailing characters that belong to the sentence, not to the mention. */
 const TRAILING = ".,;:!?)]}\"'";
@@ -24,7 +25,20 @@ export type MentionSegment =
       /** Where `text` sits in the message — what the composer removes to detach it. */
       start: number;
       end: number;
+    }
+  | {
+      kind: "skill";
+      /** The invocation as typed, "/" included. */
+      text: string;
+      /** The skill it names. */
+      name: string;
     };
+
+/** The skills a "/name" may invoke: name → one-line description. */
+export type SkillNames = ReadonlyMap<string, string>;
+
+/** A skill name as the backend reads it after "/". */
+const SKILL_NAME_RE = /^[A-Za-z0-9][\w-]*$/;
 
 /**
  * Whether a mention token names a file rather than an MCP resource, by shape alone: a
@@ -36,12 +50,16 @@ export function looksLikeFile(target: string): boolean {
 }
 
 /**
- * Split `text` into prose and mention segments, in order.
+ * Split `text` into prose, mention and skill segments, in order.
  *
- * Adjacent prose is merged, so a message with no mention comes back as a single text
- * segment and renders exactly as it did before.
+ * A "/name" is a skill segment only when `skills` holds the name; anything else stays
+ * prose. Adjacent prose is merged, so a message with neither comes back as a single
+ * text segment.
  */
-export function splitMentionSegments(text: string): MentionSegment[] {
+export function splitMentionSegments(
+  text: string,
+  skills: Pick<SkillNames, "has"> = new Map()
+): MentionSegment[] {
   const out: MentionSegment[] = [];
   let prose = "";
   const pushProse = () => {
@@ -52,8 +70,8 @@ export function splitMentionSegments(text: string): MentionSegment[] {
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
-    // An "@" only opens a mention at the start of the text or after whitespace.
-    if (ch !== "@" || (i > 0 && /\S/.test(text[i - 1]))) {
+    // "@" and "/" only open a token at the start of the text or after whitespace.
+    if ((ch !== "@" && ch !== "/") || (i > 0 && /\S/.test(text[i - 1]))) {
       prose += ch;
       i += 1;
       continue;
@@ -66,6 +84,17 @@ export function splitMentionSegments(text: string): MentionSegment[] {
     while (token && TRAILING.includes(token[token.length - 1])) {
       trailing = token[token.length - 1] + trailing;
       token = token.slice(0, -1);
+    }
+    if (ch === "/") {
+      if (SKILL_NAME_RE.test(token) && skills.has(token)) {
+        pushProse();
+        out.push({ kind: "skill", text: `/${token}`, name: token });
+        prose = trailing;
+      } else {
+        prose += text.slice(i, end);
+      }
+      i = end;
+      continue;
     }
     if (!token) {
       prose += text.slice(i, end);

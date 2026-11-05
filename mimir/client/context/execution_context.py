@@ -263,9 +263,9 @@ class Bookkeeping:
     # results the history budget may not evict while anything else is reducible;
     # carried, since the pinned message is replayed into the next query
     pinned_call_ids: set[str] = _spec(set, (set,), CARRY)
-    # skill -> tool_call_id of its instructions ("" folded by /<name>, "pending" in flight)
+    # skill -> tool_call_id of its pinned instructions, moved on a reload
     skills_loaded: dict[str, str] = _spec(dict, (dict,), CARRY)
-    # the /<skill> block folded into the system message, put back on every rebuild
+    # the /<skill> blocks folded into the system message, put back on every rebuild
     skill_suffix: str = _spec(lambda: "", (str,))
     # the agent's mode as last seen, so only a change reads as a switch; None at start
     observed_agent_mode: str | None = _spec(lambda: None, (str, _NoneType))
@@ -341,8 +341,7 @@ WRITERS: dict[str, frozenset[str]] = {
     "plan":           frozenset({"guardrails/observations", "query_engine"}),
     "nudges":         frozenset({"guardrails/nudges", "guardrails/observations",
                                  "guardrails/verification", "query_engine"}),
-    # the skill gate reserves its slot in ``skills_loaded``
-    "bookkeeping":    frozenset({"query_engine", "guardrails/policy"}),
+    "bookkeeping":    frozenset({"query_engine"}),
     "workflow_state": frozenset({"guardrails/workflow"}),
     "action_op_count": frozenset({"guardrails/observations"}),
 }

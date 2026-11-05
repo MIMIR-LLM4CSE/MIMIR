@@ -175,22 +175,25 @@ def _pin_loaded_skill(
     result: str,
     execution_context: ExecutionContext,
 ) -> None:
-    """Pin a successful skill pull's result in the tail, or release the reserved slot.
+    """Pin a successful skill pull's result in the tail.
 
     The tail rather than messages[0], which a query may not rewrite without losing the
-    prefix cache; history passes honour the pin (``pinned_call_ids``).
+    prefix cache; history passes honour the pin (``pinned_call_ids``). A reload moves the
+    pin to the new result, and the earlier copy becomes ordinary history.
     """
     if name != SKILL_LOAD_TOOL:
         return
     skill = str((args or {}).get("name") or "").strip()
     if not skill:
         return
-    loaded: dict = execution_context.bookkeeping.skills_loaded
     succeeded, _summary = summarize_tool_result(name, result, agent.tool_caps)
     if not succeeded:
-        if loaded.get(skill) == "pending":
-            del loaded[skill]
         return
+    loaded: dict = execution_context.bookkeeping.skills_loaded
+    pinned: set = execution_context.bookkeeping.pinned_call_ids
+    earlier = loaded.get(skill)
+    if earlier:
+        pinned.discard(earlier)
     loaded[skill] = call_id
-    execution_context.bookkeeping.pinned_call_ids.add(call_id)
+    pinned.add(call_id)
     emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})

@@ -7,6 +7,7 @@ import type { useComposer } from "../hooks/useComposer";
 import { ApprovalSwitcher } from "./ApprovalSwitcher";
 import { DraftAttachments } from "./DraftAttachments";
 import { DraftHighlight } from "./DraftHighlight";
+import type { SkillNames } from "./mentionHighlight";
 import { MentionAutocomplete } from "./MentionAutocomplete";
 import { SlashAutocomplete } from "./SlashAutocomplete";
 import { SendIcon, StopIcon } from "./icons";
@@ -19,10 +20,12 @@ interface Props {
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => void;
   onStop: () => void;
+  /** The skills a "/name" in the draft invokes, tinted as typed. */
+  skills?: SkillNames;
 }
 
 export const Composer: React.FC<Props> = ({
-  composer, busy, enabled, approvalMode, onApprovalModeChange, onStop,
+  composer, busy, enabled, approvalMode, onApprovalModeChange, onStop, skills,
 }) => {
   const {
     input, activeEditor, textareaRef,
@@ -68,7 +71,7 @@ export const Composer: React.FC<Props> = ({
             />
           )}
           <div className="chat-input-wrap">
-          <DraftHighlight text={input} inputRef={textareaRef} />
+          <DraftHighlight text={input} inputRef={textareaRef} skills={skills} />
           <textarea
             ref={textareaRef}
             className="chat-input"

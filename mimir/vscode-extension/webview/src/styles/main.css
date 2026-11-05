@@ -1036,6 +1036,20 @@ button.ctx-mention:focus-visible {
   opacity: 0.9;
 }
 
+/* A skill the user invoked ("/name"): loaded for the turn, so it reads apart from an
+   attachment, in its own hue. */
+.ctx-skill {
+  display: inline;
+  font-family: var(--mono);
+  font-size: 0.95em;
+  font-weight: 600;
+  padding: 1px 4px;
+  margin: 0 1px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 28%, transparent);
+  color: var(--fg);
+}
+
 /* Mid-run steer message awaiting injection into the running turn. */
 .steer-badge {
   display: inline-block;
@@ -2444,6 +2458,11 @@ button.ctx-mention:focus-visible {
 
 /* A resource mention is marked a shade lighter: it addresses a server, not a path. */
 .chat-input-mark--plain { opacity: 0.6; }
+
+/* A skill "/name" takes the hue of its chip in the sent message. */
+.chat-input-mark--skill {
+  background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 28%, transparent);
+}
 
 .chat-input {
   flex: 1;

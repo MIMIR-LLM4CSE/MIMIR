@@ -21,6 +21,7 @@ from .deferral import KIND_CALLS, KIND_PLAN_DECISION, take_deferred_calls
 from .finalize import record_turn
 from .loop_base import ModeSwitch, StepLoop, TurnContext
 from .plan_loop import PlanLoop
+from .skill_invocation import invoked_skills, skill_block
 from ..guardrails.verification.ledger import build_ledger
 
 logger = logging.getLogger(__name__)
@@ -155,35 +156,18 @@ async def run_agent_query(
     agent.turn.live_messages = messages
 
     # -------------------------------------------------------
-    # Skill invoked by the user: /skill-name
+    # Skills invoked by the user: every /skill-name in the query
     # -------------------------------------------------------
-    # The user decided before the first step, so it is folded into messages[0]; a skill the
-    # model needs is pulled mid-run with ``load_skill`` instead.
-    skill_name = None
-    if query.strip().startswith("/"):
-        candidate = query.strip()[1:].split()[0]
-        if agent.skills and candidate in agent.skills:
-            skill_name = candidate
-
-    if skill_name:
-        skill = agent.skills[skill_name]
-        _base_system_content = system_content
-        # Folded into messages[0], never a second ``system`` message (which accumulated in history
-        # and meant different things per backend).
-        system_content = (
-            system_content
-            + "\n\nSKILL CONTEXT (SUBORDINATE). "
-            "The base system instructions remain fully authoritative. "
-            "Apply this methodology where relevant. "
-            + skill["content"]
-        )
+    # The user decided before the first step, so each is folded into messages[0] (never
+    # a second ``system`` message); a skill the model needs is pulled with ``load_skill``.
+    invoked = invoked_skills(query, agent.skills or {})
+    if invoked:
+        suffix = "".join(skill_block(name, agent.skills[name]["content"]) for name in invoked)
+        system_content += suffix
         messages[0]["content"] = system_content
-        execution_context.bookkeeping.skill_suffix = system_content[len(_base_system_content):]
-        # Counted among the loaded skills, with no call id: there is no tool result to
-        # pin because the body is in messages[0], which nothing evicts. What this buys
-        # is that the model cannot pull what it has already been given, and that the
-        # cap counts a body the user put there the same as one the model asked for.
-        execution_context.bookkeeping.skills_loaded[skill_name] = ""
+        execution_context.bookkeeping.skill_suffix = suffix
+        for name in invoked:
+            emit({"type": "status", "text": f"  \u2299 Skill invoked: {name}"})
 
     # messages[0] now carries the checklist as it stands at query start; _sync_checklist
     # rewrites it from here on, and only when the file behind it actually changes. The

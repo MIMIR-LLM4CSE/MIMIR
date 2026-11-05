@@ -1,5 +1,5 @@
-"""Loading a skill mid-run with ``load_skill``: who may, how often, and the pin that keeps
-the body in context, since it lives in a tool result the budget would otherwise evict.
+"""Loading a skill with ``load_skill`` — who may, again as often as needed, the pin that
+keeps the body in context — and the skills a user's ``/name`` folds in without asking.
 """
 from mimir.tests.support.context import build_execution_context
 import json
@@ -7,8 +7,9 @@ import types
 import unittest
 
 from mimir.client.config.servers import SKILL_LOAD_TOOL
-from mimir.client.config.limits import SKILL_PULL_MAX
+from mimir.client.context.carry import CarryContext
 from mimir.client.guardrails.policy.gates import check_skill_pull
+from mimir.client.query_engine.skill_invocation import invoked_skills, skill_block
 from mimir.client.query_engine import dispatch as dispatch_module
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine.history import (
@@ -50,33 +51,33 @@ def _refusal(payload: str | None) -> dict:
 
 
 class SkillPullGateTests(unittest.TestCase):
-    """The five refusals, and the reservation that makes the cap exact."""
+    """The two refusals; a reload, or any number of skills, passes."""
 
-    def test_a_first_pull_is_allowed_and_reserves_its_slot(self) -> None:
+    def test_a_pull_is_allowed_and_reserves_nothing(self) -> None:
         context = build_execution_context()
         self.assertIsNone(
             check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
         )
-        # "pending", not the call id: the result has not come back yet. What the
-        # reservation buys is a cap that two parallel pulls in one step cannot both
-        # pass with one slot left.
-        self.assertEqual(context.bookkeeping.skills_loaded, {"fix-bug": "pending"})
+        self.assertFalse(context.bookkeeping.skills_loaded)
 
     def test_another_tool_is_not_this_gate_s_business(self) -> None:
         context = build_execution_context()
         self.assertIsNone(
             check_skill_pull(_agent(), "read_file_lines", {"name": "fix-bug"}, context)
         )
-        self.assertFalse(context.bookkeeping.skills_loaded)
 
-    def test_the_same_skill_twice_is_refused_pointing_at_the_earlier_result(self) -> None:
-        context = build_execution_context()
-        check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
-        refusal = _refusal(
+    def test_a_skill_already_loaded_may_be_loaded_again(self) -> None:
+        context = build_execution_context(skills_loaded={"fix-bug": "call-1"})
+        self.assertIsNone(
             check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
         )
-        self.assertIn("already loaded", refusal["error"])
-        self.assertIn("earlier tool result", refusal["hint"])
+
+    def test_no_cap_on_how_many_skills_are_loaded(self) -> None:
+        context = build_execution_context(skills_loaded={
+            "fix-bug": "c1", "write-tests": "c2", "explore-repo": "c3"})
+        self.assertIsNone(
+            check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "refactor-code"}, context)
+        )
 
     def test_an_unknown_skill_is_refused_with_the_ones_on_offer(self) -> None:
         refusal = _refusal(
@@ -110,20 +111,6 @@ class SkillPullGateTests(unittest.TestCase):
         # command does exactly that, which is a handback nobody asked for.
         self.assertIn("do not", refusal["hint"].lower())
 
-    def test_the_cap_refuses_the_next_one_and_names_what_is_loaded(self) -> None:
-        context = build_execution_context()
-        agent = _agent()
-        for name in ("fix-bug", "write-tests", "explore-repo")[:SKILL_PULL_MAX]:
-            self.assertIsNone(
-                check_skill_pull(agent, SKILL_LOAD_TOOL, {"name": name}, context)
-            )
-        refusal = _refusal(
-            check_skill_pull(agent, SKILL_LOAD_TOOL, {"name": "refactor-code"}, context)
-        )
-        self.assertIn(str(SKILL_PULL_MAX), refusal["error"])
-        self.assertIn("fix-bug", refusal["error"])
-
-
 class PinRecordingTests(unittest.TestCase):
     """What the dispatcher does with a pull's result."""
 
@@ -133,22 +120,34 @@ class PinRecordingTests(unittest.TestCase):
             _agent(), SKILL_LOAD_TOOL, {"name": skill}, "call-1", result, context,
         )
 
-    def test_a_successful_pull_is_promoted_and_pinned(self) -> None:
-        context = build_execution_context(skills_loaded={"fix-bug": "pending"})
+    def test_a_successful_pull_is_recorded_and_pinned(self) -> None:
+        context = build_execution_context()
         self._pin(json.dumps({"status": "ok", "instructions": "method"}), context)
         self.assertEqual(context.bookkeeping.skills_loaded, {"fix-bug": "call-1"})
         self.assertEqual(context.bookkeeping.pinned_call_ids, {"call-1"})
 
-    def test_a_refused_pull_releases_the_slot_it_reserved(self) -> None:
-        """A refusal must not charge the budget of the thing it refused.
+    def test_a_reload_moves_the_pin_to_the_new_result(self) -> None:
+        context = build_execution_context(skills_loaded={"fix-bug": "call-0"},
+                                          pinned_call_ids={"call-0", "other"})
+        self._pin(json.dumps({"status": "ok", "instructions": "method"}), context)
+        self.assertEqual(context.bookkeeping.skills_loaded, {"fix-bug": "call-1"})
+        self.assertEqual(context.bookkeeping.pinned_call_ids, {"call-1", "other"})
 
-        Otherwise a mistyped name, or a skill the file declares user-invoked only,
-        spends one of the three loads the model is allowed.
-        """
-        context = build_execution_context(skills_loaded={"fix-bug": "pending"})
+    def test_a_refused_pull_changes_nothing(self) -> None:
+        context = build_execution_context(skills_loaded={"fix-bug": "call-0"},
+                                          pinned_call_ids={"call-0"})
         self._pin(json.dumps({"status": "error", "error": "no"}), context)
-        self.assertEqual(context.bookkeeping.skills_loaded, {})
-        self.assertNotIn("call-1", context.bookkeeping.pinned_call_ids)
+        self.assertEqual(context.bookkeeping.skills_loaded, {"fix-bug": "call-0"})
+        self.assertEqual(context.bookkeeping.pinned_call_ids, {"call-0"})
+
+    def test_a_moved_pin_does_not_come_back_with_the_next_query(self) -> None:
+        carry = CarryContext({"pinned_call_ids": {"call-0"}, "skills_loaded": {"fix-bug": "call-0"}})
+        context = build_execution_context()
+        carry.apply(context)
+        self._pin(json.dumps({"status": "ok", "instructions": "method"}), context)
+        carry.update(context)
+        self.assertEqual(carry.fields["pinned_call_ids"], {"call-1"})
+        self.assertEqual(carry.fields["skills_loaded"], {"fix-bug": "call-1"})
 
     def test_a_result_for_any_other_tool_pins_nothing(self) -> None:
         context = build_execution_context()
@@ -157,6 +156,29 @@ class PinRecordingTests(unittest.TestCase):
         )
         self.assertFalse(context.bookkeeping.skills_loaded)
         self.assertFalse(context.bookkeeping.pinned_call_ids)
+
+
+class InvokedSkillsTests(unittest.TestCase):
+    """Which ``/name`` tokens of a query are skills the user asked for."""
+
+    SKILLS = {"fix-bug", "write-tests"}
+
+    def test_at_the_start(self) -> None:
+        self.assertEqual(invoked_skills("/fix-bug the parser", self.SKILLS), ["fix-bug"])
+
+    def test_anywhere_and_several_in_order_once_each(self) -> None:
+        self.assertEqual(
+            invoked_skills("do it with /write-tests, then /fix-bug. And /write-tests.", self.SKILLS),
+            ["write-tests", "fix-bug"])
+
+    def test_unknown_names_and_paths_are_not_invocations(self) -> None:
+        self.assertEqual(
+            invoked_skills("/nope src/fix-bug /fix-bug/x a/write-tests", self.SKILLS), [])
+
+    def test_a_block_names_its_skill_and_carries_its_body(self) -> None:
+        block = skill_block("fix-bug", "BODY")
+        self.assertIn("fix-bug", block)
+        self.assertTrue(block.endswith("BODY"))
 
 
 def _history_with_pinned_body(body_size: int = 400) -> list[dict]:

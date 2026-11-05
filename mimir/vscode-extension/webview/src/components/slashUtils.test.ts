@@ -10,23 +10,28 @@ const SKILLS: ToggleItem[] = [
 
 describe("detectSlashQuery", () => {
   it("detects a / at the start", () => {
-    expect(detectSlashQuery("/fix", 4)).toEqual({ start: 0, query: "fix" });
+    expect(detectSlashQuery("/fix", 4)).toEqual({ start: 0, query: "fix", leading: true });
   });
 
   it("detects a / after leading whitespace", () => {
-    expect(detectSlashQuery("  /fix", 6)).toEqual({ start: 2, query: "fix" });
+    expect(detectSlashQuery("  /fix", 6)).toEqual({ start: 2, query: "fix", leading: true });
   });
 
   it("matches the empty query right after /", () => {
-    expect(detectSlashQuery("/", 1)).toEqual({ start: 0, query: "" });
+    expect(detectSlashQuery("/", 1)).toEqual({ start: 0, query: "", leading: true });
   });
 
   it("returns null once a space follows the command", () => {
     expect(detectSlashQuery("/fix bar", 8)).toBeNull();
   });
 
-  it("returns null for a slash that is not at the start", () => {
-    expect(detectSlashQuery("do /fix", 7)).toBeNull();
+  it("detects a / after whitespace mid-text, as not leading", () => {
+    expect(detectSlashQuery("do /fix", 7)).toEqual({ start: 3, query: "fix", leading: false });
+  });
+
+  it("returns null for a / inside a word (a path)", () => {
+    expect(detectSlashQuery("see src/fix", 11)).toBeNull();
+    expect(detectSlashQuery("see /src/fix", 12)).toBeNull();
   });
 
   it("returns null when caret sits before the slash", () => {
@@ -34,7 +39,7 @@ describe("detectSlashQuery", () => {
   });
 
   it("uses the caret, not end of text", () => {
-    expect(detectSlashQuery("/fixme", 3)).toEqual({ start: 0, query: "fi" });
+    expect(detectSlashQuery("/fixme", 3)).toEqual({ start: 0, query: "fi", leading: true });
   });
 });
 
@@ -68,6 +73,12 @@ describe("applySlash", () => {
 });
 
 describe("filterSlashItems", () => {
+  it("offers skills alone past the start of the input", () => {
+    const items = filterSlashItems(SKILLS, "", true);
+    expect(items.every((i) => i.kind === "skill")).toBe(true);
+    expect(items).toHaveLength(SKILLS.length);
+  });
+
   it("tags each row with its kind, session commands first", () => {
     const items = filterSlashItems(SKILLS, "");
     const kinds = items.map((i) => i.kind);

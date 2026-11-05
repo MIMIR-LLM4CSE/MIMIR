@@ -465,11 +465,11 @@ apply, at most, one of them.
 Two refusals are the server's own, because they are properties of the file and a server
 must run with no client on the path: a name it cannot resolve, and a skill whose
 front-matter sets `disable-model-invocation: true` — which stays available to the user's
-`/<name>` and refuses only the model's own pull. The answers that depend on **live** state
-— the operator's toggles, how many skills this conversation has already loaded, whether
-this one is among them — are given client-side before dispatch, by the `skill_pull` gate
-in `client/guardrails/policy/gates.py`, where a refusal costs one line instead of the
-thousands of tokens the body would. `name` is validated before any path join: it arrives
+`/<name>` and refuses only the model's own pull. The answer that depends on **live** state —
+the operator's toggles — is given client-side before dispatch, by the `skill_pull` gate in
+`client/guardrails/policy/gates.py`, where a refusal costs one line instead of the
+thousands of tokens the body would. A skill already loaded is never refused: loading it
+again is how the model gets a body back once it is out of view. `name` is validated before any path join: it arrives
 from the model, and this is the one path-traversal surface the server adds.
 
 Parity is tested rather than trusted: `test_mimir_api` asserts every capability the

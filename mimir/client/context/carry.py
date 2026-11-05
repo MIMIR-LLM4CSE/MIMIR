@@ -1,7 +1,7 @@
 """What one query leaves for the next in the same session: the carry context.
 
 Only accumulative fields are carried (what was read, searched, found to exist, the
-skills already loaded); per-query state (workflow phase, nudge counts, denials) starts
+skill results pinned); per-query state (workflow phase, nudge counts, denials) starts
 clean every query. A read is carried with the file's mtime at the end of the query, so
 a file changed on disk since is read again rather than trusted.
 """
@@ -22,8 +22,10 @@ from .paths import absolute_workspace_path
 
 
 def _mirrored_fields() -> tuple[str, ...]:
-    """The execution-context fields mirrored into the carry and back (the CARRY trait):
-    sets are unioned, dicts merged, flags kept once raised."""
+    """The execution-context fields mirrored into the carry and back (the CARRY trait).
+
+    A query starts from the carry (``apply``) and hands back what it ends with
+    (``update``), so a pin a reload moved does not come back; flags stay once raised."""
     return fields_with(CARRY)
 
 
@@ -82,7 +84,6 @@ class CarryContext:
                 # in a per-process hash order; a stable order keeps the pin byte-stable.
                 current.update(sorted(prior))
             elif isinstance(current, dict) and isinstance(prior, dict):
-                # A skill already in the conversation is not pulled again.
                 current.update(prior)
             elif isinstance(current, bool) and prior:
                 setattr(execution_context.home(field), field, True)
@@ -92,15 +93,10 @@ class CarryContext:
         carry = self.fields
         for field in _mirrored_fields():
             current = execution_context.get(field)
-            prior = carry.get(field)
             if isinstance(current, set):
-                carry[field] = (prior if isinstance(prior, set) else set()) | current
+                carry[field] = set(current)
             elif isinstance(current, dict):
-                # A reservation that never resolved is not a load: carrying "pending"
-                # would bar the skill for the rest of the session.
-                merged = dict(prior) if isinstance(prior, dict) else {}
-                merged.update({k: v for k, v in current.items() if v != "pending"})
-                carry[field] = merged
+                carry[field] = dict(current)
             elif isinstance(current, bool) and current:
                 carry[field] = True
         carry["last_query_written_files"] = set(execution_context.edits.dirty_written_files)

@@ -20,6 +20,16 @@ describe("MentionText", () => {
     expect(out).toContain("Open src/foo.py:10");
   });
 
+  it("renders an invoked skill as its own chip, described on hover", () => {
+    const out = renderToStaticMarkup(
+      <MentionText text="do it /fix-bug" skills={new Map([["fix-bug", "repair a defect"]])} />
+    );
+    expect(out).toContain('class="ctx-skill"');
+    expect(out).toContain("/fix-bug");
+    expect(out).toContain("repair a defect");
+    expect(out).not.toContain("ctx-mention");
+  });
+
   it("renders a resource mention as a marked span, not a link", () => {
     const out = html("@memory://all");
     expect(out).toContain("ctx-mention--plain");

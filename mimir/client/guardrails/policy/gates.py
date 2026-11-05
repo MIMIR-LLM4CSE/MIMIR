@@ -9,7 +9,6 @@ return; the gates know nothing of the orchestration.
 from __future__ import annotations
 
 from ...context.context_view import ContextView
-from ...context.execution_context import ExecutionContext
 import logging
 import os
 from typing import Any
@@ -23,7 +22,6 @@ from ....shared.shell_paths import (
 )
 from ....shared.trusted_read_roots import trusted_read_roots
 from ...config import paths
-from ...config.limits import SKILL_PULL_MAX
 from ...config.servers import SKILL_LOAD_TOOL
 from ...tools.bash_classify import segment_program, shell_segments
 from ...tools.capabilities import (
@@ -342,41 +340,20 @@ def check_sealed_exec(
 
 def check_skill_pull(
     agent: PolicyAgent, tool_name: str, arguments: dict[str, Any],
-    execution_context: ExecutionContext | None,
+    execution_context: ContextView | None,
 ) -> str | None:
-    """Refuse a skill pull the toggles, the skill itself, or the budget rules out.
+    """Refuse a skill pull the toggles or the skill itself rules out.
 
-    Reserves the slot (``"pending"``) on the way, so two pulls in one step cannot both pass
-    the cap; the dispatcher promotes or releases it.
+    A skill already loaded may be loaded again: the dispatcher moves the pin to the new result.
     """
     if tool_name != SKILL_LOAD_TOOL:
         return None
     skill = str((arguments or {}).get("name") or "").strip()
     if not skill:
         return None   # the server answers for a malformed name
-    # A call made outside a query has nothing loaded and nothing to reserve against.
-    loaded: dict = execution_context.bookkeeping.skills_loaded if execution_context is not None else {}
-
-    if skill in loaded:
-        return json_error_payload(
-            f"The skill '{skill}' is already loaded in this conversation.",
-            hint="Its instructions are in an earlier tool result — re-read that result "
-                 "rather than loading it again.",
-            tool=tool_name,
-        )
-
-    if len(loaded) >= SKILL_PULL_MAX:
-        return json_error_payload(
-            f"{len(loaded)} skills are already loaded "
-            f"({', '.join(sorted(loaded))}).",
-            hint="That is the limit for one task. Finish the work with the methods you "
-                 "have; a fourth playbook would not be applied either.",
-            tool=tool_name,
-        )
 
     available = dict(agent.skills or {})
     meta = available.get(skill)
-    offered = []
     offered = [name for name, _desc in agent.model_invocable_skills()]
 
     # A skill the operator soft-hid gets the SAME answer as one that does not exist,
@@ -398,6 +375,4 @@ def check_skill_pull(
                  "ask them to run it for you.",
             tool=tool_name,
         )
-
-    loaded[skill] = "pending"
     return None

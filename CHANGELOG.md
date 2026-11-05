@@ -75,6 +75,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   again.
 
 ### Changed
+- **A skill named with `/name` anywhere in a message is loaded, every time.** Only a
+  `/name` opening the message was; one further in was left to the model's judgement. Now
+  each `/name` naming a skill, at the start or after a space, folds that skill in before
+  the first step (several per message), and the trace says `⊙ Skill invoked`. The `/`
+  dropdown opens mid-message too, offering skills alone, and an invoked skill is tinted
+  purple in the input and drawn as a purple chip in the sent message, apart from the
+  blue `@`-attachments.
+- **A skill can be loaded again, and as many as needed.** The model was refused a skill
+  already loaded and any past the third. It may now reload one whose instructions are out
+  of view (the pin moves to the new copy) and load any number.
 - **The agent merges and measures its proxies itself, in its own workspace.** Once two or
   more optimisation axes are back with accepted gains, the main agent plans and starts the
   merge unasked (the system prompt, the proxy-merge and proxy-optimize skills,
@@ -134,6 +144,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **A skill invoked with `/name` no longer bars it for the rest of the session.** Its
+  instructions lasted one message, but it stayed recorded as loaded, so on the next
+  message the model was refused it with nothing in view.
 - **Two merges started in the same second no longer collide.** Both took
   `merge-<stamp>` and the second failed as already registered; a merge without a name
   now takes `-2`, `-3`… when its stamp is taken.

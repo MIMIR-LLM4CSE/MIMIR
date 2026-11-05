@@ -11,6 +11,7 @@ import { splitAnswerCompletion } from "./completionUtils";
 import { splitAnswerLedger } from "./ledgerUtils";
 import { vscodePostMessage } from "../hooks/useWebSocket";
 import { MentionText } from "./MentionText";
+import type { SkillNames } from "./mentionHighlight";
 import { MessageEditor } from "./MessageEditor";
 import type { Rewind } from "../hooks/useRewind";
 
@@ -23,10 +24,12 @@ interface Props {
   onEdit?: (id: string) => void;
   /** Set on the one message being edited only, so every other bubble stays memoized. */
   edit?: Rewind;
+  /** The skills a "/name" in a user message invokes, drawn as chips. */
+  skills?: SkillNames;
 }
 
 
-const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetry, onEdit, edit }) => {
+const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetry, onEdit, edit, skills }) => {
   // Per-file disclosure state of the editing card, keyed by file path (stable
   // across file_progress merges). Declared before any early return — hooks
   // must run unconditionally.
@@ -192,7 +195,7 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
             <MessageEditor initialText={message.text ?? ""} rewind={edit} />
           ) : (
             <div className="user-text">
-              <MentionText text={message.text ?? ""} />
+              <MentionText text={message.text ?? ""} skills={skills} />
               {message.queued && (
                 <span className="steer-badge" title="Queued — will reach MIMIR at its next step">
                   ↯ queued

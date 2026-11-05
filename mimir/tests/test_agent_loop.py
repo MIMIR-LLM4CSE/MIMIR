@@ -1225,8 +1225,18 @@ class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
         self.assertIn("METHOD BODY", system["content"])
         self.assertIn("SKILL CONTEXT (SUBORDINATE)", system["content"])
 
-    def test_an_explicit_skill_counts_against_what_the_model_may_pull(self) -> None:
-        """The user put a body in the context; the model must not pull it again."""
+    def test_a_slash_anywhere_in_the_query_folds_every_skill_it_names(self) -> None:
+        """An explicit request is the user's decision, not the model's: no load_skill."""
+        agent = self._skilled_agent()
+        agent.skills["write-tests"] = {"description": "tests", "content": "TESTS BODY",
+                                       "model_invocable": False}
+        _result, backend = self._run(agent, "fix the parser with /fix-bug then /write-tests")
+        self.assertEqual(len(backend.calls), 1)
+        system = backend.calls[0]["messages"][0]["content"]
+        self.assertLess(system.index("METHOD BODY"), system.index("TESTS BODY"))
+
+    def test_an_explicit_skill_leaves_the_model_free_to_load_it_later(self) -> None:
+        """The fold lasts one query; nothing records it as a load that bars a pull."""
         agent = self._skilled_agent()
         seen: dict = {}
         original = MimirAgent.new_execution_context
@@ -1238,7 +1248,8 @@ class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
 
         agent.new_execution_context = staticmethod(_capture)
         self._run(agent, "/fix-bug the parser crashes")
-        self.assertEqual(seen["ctx"].bookkeeping.skills_loaded, {"fix-bug": ""})
+        self.assertEqual(seen["ctx"].bookkeeping.skills_loaded, {})
+        self.assertIn("METHOD BODY", seen["ctx"].bookkeeping.skill_suffix)
 
 
 class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):

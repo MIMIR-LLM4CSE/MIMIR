@@ -250,8 +250,9 @@ webview/src/
     ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown: the MCP
     │                            resources, then the workspace files the host ranked
     ├── MentionText.tsx / mentionHighlight.ts       ← the `@`-attachments of a sent
-    │                            message, drawn as chips; a file one opens the file
-    ├── DraftHighlight.tsx     ← the mention tints drawn behind the input's own text
+    │                            message, drawn as chips; a file one opens the file;
+    │                            a `/skill` it invokes, a purple chip of its own
+    ├── DraftHighlight.tsx     ← the mention and skill tints drawn behind the input's text
     ├── DraftAttachments.tsx   ← what the draft will attach, as chips above the input
     ├── SlashAutocomplete.tsx  / slashUtils.ts      ← the `/` command dropdown
     ├── subAgentUtils.ts       ← sub-agent row grouping
@@ -286,10 +287,14 @@ component + keyboard nav with `wrapIndex`):
   appears or disappears). The reply echoes the query it answers, so one overtaken by
   further typing is dropped rather than listed under a narrower query.
 - **"/" slash commands** — invoke a skill explicitly (e.g. `/debug-numerics …`).
-  `slashUtils.detectSlashQuery` fires **only** when "/" is the first non-whitespace
-  character of the input, mirroring the backend rule (`agent_loop.py`:
-  `query.strip().startswith("/")`). The dropdown lists skills from `skillToggles`; picks
-  insert `/name ` at the start.
+  `slashUtils.detectSlashQuery` fires when "/" starts a word: at the start of the input
+  the dropdown offers session commands and skills, anywhere else after whitespace skills
+  alone (a "/" inside a word is a path). The backend loads every skill a query names
+  this way (`client/query_engine/skill_invocation.py`), so the dropdown mirrors it; picks insert
+  `/name ` where the slash was. A known `/name` is tinted purple in the draft and drawn as
+  a purple chip in the sent message (`mentionHighlight.splitMentionSegments` with the
+  skill names `useWorkspaceState.skillNames` builds, every skill, switched off or not),
+  apart from the blue of an `@`-attachment.
 
 Both are wired identically in `hooks/useComposer.ts`: `syncMention`/`syncSlash` (on change/select),
 `pickMention`/`pickSlash`, and a shared `handleKeyDown` (Arrow/Enter/Tab/Esc) that routes

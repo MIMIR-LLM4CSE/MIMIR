@@ -484,6 +484,7 @@ export const App: React.FC = () => {
           onRetry={retryLastQuery}
           onDivert={handleDivert}
           rewind={rewind}
+          skills={workspace.skillNames}
           emptyState={
             <EmptyState
               connection={connection}
@@ -561,6 +562,7 @@ export const App: React.FC = () => {
             approvalMode={approvalMode}
             onApprovalModeChange={approvals.changeMode}
             onStop={() => send({ type: "command", text: "/cancel" })}
+            skills={workspace.skillNames}
           />
         </div>
         )}

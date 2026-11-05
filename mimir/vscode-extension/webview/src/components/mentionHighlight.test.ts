@@ -15,6 +15,23 @@ describe("looksLikeFile", () => {
 });
 
 describe("splitMentionSegments", () => {
+  const SKILLS = new Map([["fix-bug", "repair a defect"]]);
+
+  it("marks a known /skill anywhere, with its punctuation left in the prose", () => {
+    expect(splitMentionSegments("use /fix-bug.", SKILLS)).toEqual([
+      { kind: "text", text: "use " },
+      { kind: "skill", text: "/fix-bug", name: "fix-bug" },
+      { kind: "text", text: "." },
+    ]);
+  });
+
+  it("leaves an unknown /name, a path, and a skill without the list as prose", () => {
+    expect(splitMentionSegments("/nope a/fix-bug /fix-bug/x", SKILLS)).toEqual([
+      { kind: "text", text: "/nope a/fix-bug /fix-bug/x" },
+    ]);
+    expect(splitMentionSegments("/fix-bug")).toEqual([{ kind: "text", text: "/fix-bug" }]);
+  });
+
   it("returns a message with no mention as one text segment", () => {
     expect(splitMentionSegments("hello there")).toEqual([
       { kind: "text", text: "hello there" },

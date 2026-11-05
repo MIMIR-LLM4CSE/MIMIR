@@ -5,6 +5,7 @@
 import { useCallback, useMemo, useState } from "react";
 import type { ClientMessage, DiffEntry, TodoItem, ToggleItem } from "../types";
 import type { ContextUsage } from "../components/ContextBar";
+import type { SkillNames } from "../components/mentionHighlight";
 import { withDiff } from "../components/batchUtils";
 import type { ServerHandlers } from "../state/serverMessages";
 
@@ -15,6 +16,11 @@ export function useWorkspaceState(send: (msg: ClientMessage) => void) {
   const [serverToggles, setServerToggles] = useState<ToggleItem[]>([]);
   const [skillToggles, setSkillToggles] = useState<ToggleItem[]>([]);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  // Every skill, switched off or not: a "/name" the user types loads it either way.
+  const skillNames: SkillNames = useMemo(
+    () => new Map(skillToggles.map((s) => [s.name, s.description ?? ""])),
+    [skillToggles]
+  );
 
   const clearTodos = useCallback(() => {
     send({ type: "clear_todos" });
@@ -78,7 +84,7 @@ export function useWorkspaceState(send: (msg: ClientMessage) => void) {
   }), []);
 
   return {
-    todos, clearTodos, batchFiles, batch, serverToggles, skillToggles, contextUsage,
+    todos, clearTodos, batchFiles, batch, serverToggles, skillToggles, skillNames, contextUsage,
     onSessionLoaded, reset, on,
   };
 }

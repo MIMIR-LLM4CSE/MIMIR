@@ -1,24 +1,29 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { splitMentionSegments } from "./mentionHighlight";
+import { splitMentionSegments, type SkillNames } from "./mentionHighlight";
 
 interface Props {
   /** The draft as the textarea holds it. */
   text: string;
   /** The textarea this paints behind, for its box and its scroll position. */
   inputRef: React.RefObject<HTMLTextAreaElement>;
+  /** The skills a "/name" invokes, tinted apart from the mentions. */
+  skills?: SkillNames;
 }
 
+const NO_SKILLS: SkillNames = new Map();
+
 /**
- * The mention tints inside the chat input.
+ * The mention and skill tints inside the chat input.
  *
  * A textarea cannot colour its text, and must stay one (the dropdowns, history and
  * steers all work on `value` + `selectionStart`), so the text is drawn again underneath
- * with the same metrics, taken from the textarea itself. Nothing renders without a mention.
+ * with the same metrics, taken from the textarea itself. Nothing renders without a mention
+ * or a skill.
  */
-export function DraftHighlight({ text, inputRef }: Props) {
-  const segments = useMemo(() => splitMentionSegments(text), [text]);
+export function DraftHighlight({ text, inputRef, skills = NO_SKILLS }: Props) {
+  const segments = useMemo(() => splitMentionSegments(text, skills), [text, skills]);
   const mirrorRef = useRef<HTMLDivElement>(null);
-  const hasMention = segments.some((s) => s.kind === "mention");
+  const hasMention = segments.some((s) => s.kind !== "text");
 
   // Follow the textarea's box and its scroll, so the tints stay under their words.
   useEffect(() => {
@@ -51,7 +56,9 @@ export function DraftHighlight({ text, inputRef }: Props) {
           <mark
             key={i}
             className={
-              "chat-input-mark" + (seg.isFile ? "" : " chat-input-mark--plain")
+              "chat-input-mark" +
+              (seg.kind === "skill" ? " chat-input-mark--skill"
+                : seg.isFile ? "" : " chat-input-mark--plain")
             }
           >
             {seg.text}

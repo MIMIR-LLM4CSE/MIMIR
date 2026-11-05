@@ -9,6 +9,7 @@ import { GlobalApprovalBar } from "./GlobalApprovalBar";
 import { StreamingStatus } from "./StreamingStatus";
 import { orderLiveStream } from "./liveStreamUtils";
 import type { Rewind } from "../hooks/useRewind";
+import type { SkillNames } from "./mentionHighlight";
 
 /** Messages rendered at first, and added each time the reader reaches the top. */
 export const THREAD_WINDOW_STEP = 120;
@@ -47,6 +48,8 @@ interface Props {
   onDivert?: (id: string) => void;
   /** Editing a sent message: which one is open, and the means to rewind to it. */
   rewind?: Rewind;
+  /** The skills a "/name" in a user message invokes. */
+  skills?: SkillNames;
 }
 
 /**
@@ -71,6 +74,7 @@ export const ChatThread: React.FC<Props> = ({
   onRetry,
   onDivert,
   rewind,
+  skills,
 }) => {
   // All message kinds render via renderMessage; thinking blocks (frozen) and
   // tool lists each have their own render branch in ChatMessage.
@@ -186,6 +190,7 @@ export const ChatThread: React.FC<Props> = ({
           onRetry={isLatestError ? onRetry : undefined}
           onEdit={rewind?.start}
           edit={rewind && rewind.editingId === msg.id ? rewind : undefined}
+          skills={skills}
         />
       </div>
     );

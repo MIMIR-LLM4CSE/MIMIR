@@ -2,8 +2,9 @@
 //
 // Two kinds of slash share the input: a skill ("/fix-bug …") is part of the query, sent
 // as `type: "query"`; a session command ("/mode agent") never reaches the model and is
-// sent as `type: "command"`. Both are offered; `isSessionCommand` routes them. The
-// dropdown opens only at the start of the input. Free of React, so unit-testable.
+// sent as `type: "command"`. Both are offered at the start of the input; anywhere else
+// after whitespace, only skills, which the backend loads wherever the query names them.
+// `isSessionCommand` routes them. Free of React, so unit-testable.
 
 import type { ToggleItem } from "../types";
 
@@ -48,31 +49,33 @@ export function isSessionCommand(text: string): boolean {
 }
 
 export interface SlashQuery {
-  /** Index of the "/" that opens the command (after any leading whitespace). */
+  /** Index of the "/" that opens the command. */
   start: number;
   /** The partial command name typed after "/" (may be empty right after "/"). */
   query: string;
+  /** Whether the "/" opens the input — the one place a session command may go. */
+  leading: boolean;
 }
 
 /**
- * If the caret sits inside a leading "/"-command being typed, return its start index
- * and the partial query; otherwise null. A slash only counts when it is the first
- * non-whitespace character of the input and the caret has not moved past the first
- * word (skill names never contain spaces). `caret` is the textarea selectionStart.
+ * If the caret sits inside a "/"-command being typed, return its start index and the
+ * partial query; otherwise null. The "/" opens the input or follows whitespace, and
+ * the caret has not moved past the word (skill names never contain spaces). Mid-text,
+ * a "/" inside the word reads as a path, not a command. `caret` is the textarea
+ * selectionStart.
  */
 export function detectSlashQuery(text: string, caret: number): SlashQuery | null {
   if (caret < 0 || caret > text.length) return null;
 
-  // Find the first non-whitespace character; it must be the "/".
-  const start = text.search(/\S/);
-  if (start < 0 || text[start] !== "/") return null;
+  // Walk back from the caret to the start of the word it is in.
+  let start = caret;
+  while (start > 0 && /\S/.test(text[start - 1])) start -= 1;
+  if (start === caret || text[start] !== "/") return null;
 
-  // The caret must be at or after the slash, and everything from "/"+1 up to the
-  // caret is the query — which must be a single word (no whitespace).
-  if (caret <= start) return null;
   const query = text.slice(start + 1, caret);
-  if (/\s/.test(query)) return null;
-  return { start, query };
+  const leading = text.slice(0, start).trim() === "";
+  if (!leading && query.includes("/")) return null;
+  return { start, query, leading };
 }
 
 /** A row of the "/" dropdown: a session command or a skill, which the dropdown groups. */
@@ -81,15 +84,20 @@ export interface SlashItem extends ToggleItem {
 }
 
 /**
- * Case-insensitive filter over BOTH kinds of slash: session commands first, then skills.
+ * Case-insensitive filter over BOTH kinds of slash: session commands first, then skills;
+ * skills alone with *skillsOnly* (a "/" past the start of the input).
  *
  * Session commands lead because they act on the session immediately, while a skill only
  * steers the next query — and because they are the half with no other way to be found.
  */
-export function filterSlashItems(skills: ToggleItem[], query: string): SlashItem[] {
+export function filterSlashItems(
+  skills: ToggleItem[],
+  query: string,
+  skillsOnly = false
+): SlashItem[] {
   const q = query.trim().toLowerCase();
   const all: SlashItem[] = [
-    ...SESSION_COMMANDS.map((c) => ({ ...c, kind: "command" as const })),
+    ...(skillsOnly ? [] : SESSION_COMMANDS.map((c) => ({ ...c, kind: "command" as const }))),
     ...skills.map((s) => ({ ...s, kind: "skill" as const })),
   ];
   if (!q) return all;
@@ -119,7 +127,7 @@ export interface ApplySlashResult {
 
 /**
  * Replace the "/partial" spanning [start, caret) with "/name " and return the new
- * text and caret. Preserves any leading whitespace before the slash.
+ * text and caret. Preserves the text before the slash.
  */
 export function applySlash(
   text: string,
