@@ -164,9 +164,13 @@ class Checkpoints:
     # ── Recording ─────────────────────────────────────────────────────────────
 
     def open(self, message_id: str, *, full_len: int, history_len: int,
-             window_epoch: int, carry_context: dict[str, Any] | None = None,
+             window_epoch: int, window_head: list[dict[str, Any]] | None = None,
+             window_from: int | None = None, carry_context: dict[str, Any] | None = None,
              todos: list[dict[str, Any]] | None = None, todo_deps: list[list[int]] | None = None) -> None:
-        """Start the checkpoint of *message_id*: the conversation as it stands before it."""
+        """Start the checkpoint of *message_id*: the conversation as it stands before it.
+
+        The window is kept as *window_head* followed by the record from *window_from*.
+        """
         with self._lock:
             entries = self._load()
             self._remove([e for e in entries if e.get("id") == message_id])
@@ -181,6 +185,9 @@ class Checkpoints:
                 "todos": list(todos or []), "todo_deps": list(todo_deps or []),
                 "files": {}, "written": {}, "unknown": [], "runs": [],
             })
+            if window_from is not None:
+                entries[-1].update(window_head=[dict(m) for m in window_head or []],
+                                   window_from=window_from)
             self._save()
 
     def _current(self) -> dict[str, Any] | None:

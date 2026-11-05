@@ -115,6 +115,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **Editing a sent message keeps the context as it was.** Once a compaction or a trim had
+  rewritten the window since that message, the rewind rebuilt it from the whole untrimmed
+  record: the context bar jumped past the limit and the next query compacted it all over
+  again. Each checkpoint keeps its window (the summaries, then where the record takes
+  over), and the rewind puts it back.
 - **The code map answers while the agent thinks.** A pick, a tick or a refresh waited for
   the model call under way to end: the call streamed synchronously on the loop the map is
   built on, and the editor's connection read nothing else while a map was on its way. The

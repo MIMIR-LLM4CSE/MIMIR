@@ -150,9 +150,11 @@ class Conversation:
         checkpoints = self.checkpoints
         if checkpoints is None or not message_id:
             return
+        head, start = _window_split(self.history, self.history_full)
         checkpoints.open(
             message_id, full_len=len(self.history_full), history_len=len(self.history),
-            window_epoch=self.window_epoch, carry_context=carry_context,
+            window_epoch=self.window_epoch, window_head=head, window_from=start,
+            carry_context=carry_context,
             todos=self.record.todos, todo_deps=self.record.todo_deps)
 
     def add_user_message(self, text: str, *, show: bool = False,
@@ -174,8 +176,8 @@ class Conversation:
         """Go back to just before the message *checkpoint* was opened for.
 
         The record is cut at its length then; the window too while nothing rewrote it
-        from the front since, else it is rebuilt from the record and the next query's
-        budget fits it again. Everything owed to the turns that are gone goes with them.
+        from the front since, else it is put back as the checkpoint kept it. Everything
+        owed to the turns that are gone goes with them.
         """
         full_len = int(checkpoint.get("full_len") or 0)
         history_len = int(checkpoint.get("history_len") or 0)
@@ -183,7 +185,13 @@ class Conversation:
         if (checkpoint.get("window_epoch") == self.window_epoch
                 and len(self.history) >= history_len):
             del self.history[history_len:]
+        elif "window_from" in checkpoint:
+            start = int(checkpoint.get("window_from") or 0)
+            self.history = ([dict(m) for m in checkpoint.get("window_head") or []]
+                            + [dict(m) for m in self.history_full[start:]])
+            self.window_rewritten()
         else:
+            # A checkpoint without its window: the next query's budget fits the record.
             self.history = reconcile_tool_pairs([dict(m) for m in self.history_full])
             self.window_rewritten()
         message_id = checkpoint.get("id")
@@ -341,3 +349,15 @@ class Conversations:
     def delete(self, session_id: str) -> None:
         self.forget(session_id)
         self.store.delete_session(session_id)
+
+
+def _window_split(window: list[dict], full: list[dict]) -> tuple[list[dict], int]:
+    """(head, start) such that *window* is *head* + *full*[start:], with the shortest head.
+
+    Before any compaction or trim the head is empty; after, it holds the summaries.
+    """
+    i, j = len(window), len(full)
+    while i > 0 and j > 0 and window[i - 1] == full[j - 1]:
+        i -= 1
+        j -= 1
+    return [dict(m) for m in window[:i]], j

@@ -138,10 +138,36 @@ class ConversationRewindTests(_Case):
         self.assertEqual([m["text"] for m in self.conv.display], ["first", "a1"])
         self.assertEqual(self.conv.record.carry_context, {"k": "m2"})
 
-    def test_a_window_rewritten_since_is_rebuilt_from_the_record(self):
+    def test_a_window_rewritten_since_comes_back_as_it_was(self):
         self._turn("m1", "first", "a1")
         self._turn("m2", "second", "a2")
         del self.conv.history[0]          # trimmed from the front
+        self.conv.window_rewritten()
+        self.conv.rewind(self.cps.plan("m2").checkpoint)
+        self.assertEqual([m["content"] for m in self.conv.history], ["first", "a1"])
+
+    def test_a_compacted_window_keeps_its_summary_not_the_whole_record(self):
+        self._turn("m1", "first", "a1")
+        self._turn("m2", "second", "a2")
+        self.conv.history[0:2] = [{"role": "user", "content": "summary"}]
+        self.conv.window_rewritten()
+        self._turn("m3", "third", "a3")
+        self.conv.history[0:3] = [{"role": "user", "content": "summary 2"}]
+        self.conv.window_rewritten()
+        self._turn("m4", "fourth", "a4")
+        self.conv.rewind(self.cps.plan("m4").checkpoint)
+        self.assertEqual([m["content"] for m in self.conv.history], ["summary 2", "third", "a3"])
+        self.conv.rewind(self.cps.plan("m3").checkpoint)
+        self.assertEqual([m["content"] for m in self.conv.history], ["summary", "second", "a2"])
+        self.assertEqual([m["content"] for m in self.conv.history_full],
+                         ["first", "a1", "second", "a2"])
+
+    def test_a_checkpoint_without_its_window_rebuilds_it_from_the_record(self):
+        self._turn("m1", "first", "a1")
+        self.cps.open("m2", full_len=2, history_len=2, window_epoch=0)
+        self.conv.add_user_message("second", show=True, message_id="m2")
+        self.conv.commit_answer({"text": "a2"}, {})
+        self.conv.history[0:2] = [{"role": "user", "content": "summary"}]
         self.conv.window_rewritten()
         self.conv.rewind(self.cps.plan("m2").checkpoint)
         self.assertEqual([m["content"] for m in self.conv.history], ["first", "a1"])

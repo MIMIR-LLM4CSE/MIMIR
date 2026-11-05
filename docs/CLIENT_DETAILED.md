@@ -258,8 +258,9 @@ text is sent as a new query.
 
 **Checkpoints** (`context/checkpoints.py`). `on_query` opens one per message, keyed by the
 id of the bubble the client sent it under (`message_id`), before the message is added. It
-holds the lengths of `history_full` and `history`, the `window_epoch`, the agent's carried
-context and the checklist. Until the next message it collects, from every turn (wake turns
+holds the lengths of `history_full` and `history`, the `window_epoch`, the window itself
+(`window_head`, what differs from the record such as compaction summaries, then the record
+from `window_from`), the agent's carried context and the checklist. Until the next message it collects, from every turn (wake turns
 included), the first content of each file the agent writes and the runs it starts. Kept
 in the conversation's directory, under `checkpoints`: one small JSON file per checkpoint,
 so a write rewrites only the current one, and the contents in a content-addressed `blobs`
@@ -299,8 +300,9 @@ revert. A file already at its original is skipped.
 4. the files are put back (`Checkpoints.restore`, a temporary file renamed into place) and
    the batch review forgets them;
 5. `Conversation.rewind` cuts the record at its old length, and the window too while
-   `window_epoch` has not moved (else rebuilds it from the record, and the next query's
-   budget fits it again); cuts the transcript before the bubble; restores the carried
+   `window_epoch` has not moved, else puts back the window the checkpoint kept (one
+   without it rebuilds the window from the record, and the next query's budget fits
+   it again); cuts the transcript before the bubble; restores the carried
    context and the checklist, which are written back to the agent and the todo file;
 6. the checkpoints from *k* on are dropped, a `rewind` line is journaled, and the rendered
    watermark moves past it, so a replay never brings back what was cut;
