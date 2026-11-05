@@ -128,6 +128,43 @@ class ReadingTests(unittest.TestCase):
             prof = cpu.sample("perf", ["/ws/build/solver"], "/tmp", lambda p: None, None, None)
         self.assertIn("add -g", prof["note"])
 
+    def test_py_spy_s_process_frames_are_not_frames(self) -> None:
+        text = ('process 7:"python3 h.py";process 8:"python3 -c a;b (x)";'
+                '<module> (/ws/src/k.py:9);work (/ws/src/k.py:3) 20\n')
+        self.assertEqual(profiling.pyspy_stacks(text),
+                         [([Frame("/ws/src/k.py", "<module>", 9), Frame("/ws/src/k.py", "work", 3)], 20)])
+
+    def _harness_waiting(self, perf_ok: tuple[bool, str], native: list | None = None) -> dict:
+        """A Python harness whose code runs in a compiled child: py-spy sees it wait."""
+        resolve = lambda p: p.removeprefix("/ws/") if p.startswith("/ws/") else None
+        waiting = [([Frame("/ws/bench/h.py", "<module>", 2), Frame("libc.so.6", "wait4")], 5)]
+        with mock.patch.object(cpu, "_pyspy", return_value=profiling.attribute(waiting, resolve)), \
+             mock.patch.object(cpu, "perf_allowed", return_value=perf_ok), \
+             mock.patch.object(cpu, "_perf", return_value=native or []):
+            return cpu.sample("py-spy", ["python3", "h.py"], "/tmp", resolve, None, None, wall_s=2.0)
+
+    def test_a_harness_seen_waiting_on_a_compiled_child_is_profiled_by_perf(self) -> None:
+        native = [([Frame("/usr/bin/python3.12"), Frame("/ws/src/main.c", "main", 20)], 1)] * 900
+        prof = self._harness_waiting((True, ""), native)
+        self.assertEqual((prof["tool"], prof["files"]), ("perf", {"src/main.c": 1.0}))
+        self.assertIn("py-spy saw 0.0 s of the run's 2.0 s", prof["note"])
+        self.assertNotIn("debug information", prof["note"])
+
+    def test_a_harness_seen_waiting_says_why_perf_did_not_take_over(self) -> None:
+        prof = self._harness_waiting((False, "perf is not installed"))
+        self.assertEqual(prof["files"], {"bench/h.py": 1.0})
+        self.assertIn("perf would see it, but perf is not installed", prof["note"])
+        prof = self._harness_waiting((True, ""), [([Frame("/usr/bin/python3.12")], 1)] * 900)
+        self.assertEqual(prof["files"], {"bench/h.py": 1.0})
+        self.assertIn("perf saw no more of the workspace", prof["note"])
+
+    def test_a_py_spy_profile_that_saw_the_run_is_kept(self) -> None:
+        seen = {"samples": 400, "files": {"src/k.py": 1.0}, "outside": {}}
+        with mock.patch.object(cpu, "_pyspy", return_value=seen), mock.patch.object(cpu, "_perf") as perf:
+            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", None, None, None, wall_s=2.0), seen)
+            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", None, None, None), seen)
+        perf.assert_not_called()
+
     def test_perf_stat_gives_instructions_per_cycle_and_miss_rates(self) -> None:
         text = ("# started on Mon\n\n2000,,cycles:u,100,100.00,,\n3000,,instructions:u,100,100.00,1.50,insn per cycle\n"
                 "100,,cache-references:u,100,100.00,,\n25,,cache-misses:u,100,100.00,,\n"
@@ -484,6 +521,28 @@ class MemoryTests(unittest.TestCase):
         with mock.patch.object(memory.shutil, "which", return_value=None):
             self.assertIn("heaptrack", memory.choose(["./solver"])[1])
 
+    def _python_harness(self, native: tuple[str, str], heaps: dict) -> dict:
+        """A Python harness whose code allocates in a child: its own heap is small."""
+        resolve = lambda p: p if p.startswith("src/") else None
+        taken = lambda tool, *_a: heaps[tool]
+        with mock.patch.object(memory, "choose", return_value=("memray", "")), \
+             mock.patch.object(memory, "choose_native", return_value=native), \
+             mock.patch.object(memory, "_take", side_effect=taken):
+            return memory.profile(["python3", "h.py"], self.root, resolve, None, None, measured_mb=80)
+
+    def test_a_python_harness_s_child_is_traced_by_the_native_profiler(self) -> None:
+        heaps = {"memray": (2**20, [([Frame("bench/h.py", "<module>", 2)], 2**20)]),
+                 "heaptrack": (80 * 2**20, [([Frame("src/grid.c", "build", 4)], 80 * 2**20)])}
+        found = self._python_harness(("heaptrack", ""), heaps)
+        self.assertEqual((found["tool"], found["files"], found["peak_mb"]), ("heaptrack", {"src/grid.c": 1.0}, 80.0))
+        self.assertIn("memray traced 1 of the 80 MB measured, so heaptrack profiled", found["note"])
+
+    def test_a_python_harness_s_child_untraced_says_why(self) -> None:
+        heaps = {"memray": (2**20, [([Frame("src/h.py", "<module>", 2)], 2**20)])}
+        found = self._python_harness(("", "neither heaptrack nor valgrind is installed"), heaps)
+        self.assertEqual(found["tool"], "memray")
+        self.assertIn("not followed: neither heaptrack nor valgrind", found["note"])
+
     def test_the_memory_view_is_files_then_the_lines_of_one(self) -> None:
         prof = {"tool": "py-spy", "files": {}, "memory": {
             "tool": "massif", "peak_mb": 28.6, "files": {"src/solver.f90": 0.67, "src/grid.cpp": 0.3},
@@ -513,6 +572,19 @@ class MemoryTests(unittest.TestCase):
         with mock.patch.object(memory, "choose", return_value=("massif", "")):
             return profiling.profile([exe], self.root, self.root, files, level="memory", timeout=120,
                                      peak_mb=1000)["memory"]
+
+    def test_massif_finds_the_allocation_of_a_child_a_python_harness_starts(self) -> None:
+        exe = self._build("grid.c", _C_ALLOC.replace("free(x); ", ""), "cc")
+        if not shutil.which("valgrind"):
+            self.skipTest("valgrind is not installed")
+        _write_files(self.root, {"h.py": f"import subprocess\nsubprocess.run([{exe!r}], check=True)\n"})
+        with mock.patch.object(memory, "_has_memray", return_value=False), \
+             mock.patch.object(memory, "choose_native", return_value=("massif", "")):
+            found = profiling.profile([sys.executable, os.path.join(self.root, "h.py")], self.root, self.root,
+                                      ["src/grid.c", "h.py"], level="memory", timeout=300, peak_mb=16)["memory"]
+        self.assertEqual(found["tool"], "massif")
+        self.assertEqual(next(iter(found["functions"])), "src/grid.c::build")
+        self.assertIn("tracemalloc traced", found["note"])
 
     def test_massif_finds_the_fortran_allocation(self) -> None:
         exe = self._build("solver.f90", _F90_ALLOC, "gfortran")
@@ -611,6 +683,24 @@ class RealProfileTests(unittest.TestCase):
         self.assertEqual(prof["tool"], "py-spy")
         self.assertGreater(prof["files"].get("pkg/work.py", 0), 0.5)
         self.assertEqual(next(iter(prof["lines"])), "pkg/work.py:3")
+
+    @unittest.skipUnless(shutil.which("py-spy"), "py-spy is not installed")
+    def test_py_spy_follows_the_python_child_a_harness_starts(self) -> None:
+        _write_files(self.root, {"bench/h.py": "import subprocess, sys\n"
+                                               "subprocess.run([sys.executable, 'main.py'], check=True)\n"})
+        out = os.path.join(self.root, "out")
+        os.makedirs(out, exist_ok=True)
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        try:
+            prof = profiling.profile([sys.executable, "bench/h.py"], out, self.root, self.files + ["bench/h.py"],
+                                     timeout=120)
+        finally:
+            os.chdir(cwd)
+        if prof.get("unavailable"):
+            self.skipTest(prof["unavailable"])
+        self.assertGreater(prof["files"].get("pkg/work.py", 0), 0.5)
+        self.assertLess(prof["files"].get("bench/h.py", 0), 0.1)
 
     def test_tracemalloc_finds_the_line_that_allocates(self) -> None:
         _write_files(self.root, {"pkg/store.py": "def build(n):\n    return [float(i) for i in range(n)]\n",

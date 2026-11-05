@@ -61,7 +61,7 @@ def profile(argv: list[str], out_dir: str, root: str, files: list[str], *,
     else:
         try:
             with open(log, "w") as fh:
-                result.update(cpu.sample(tool, argv, out_dir, resolver(root, os.getcwd(), files), fh, timeout))
+                result.update(cpu.sample(tool, argv, out_dir, resolver(root, os.getcwd(), files), fh, timeout, wall_s))
             if not result.get("samples"):
                 result["unavailable"] = f"{tool} recorded nothing (see profile.log)"
         except (OSError, subprocess.SubprocessError, ValueError) as exc:

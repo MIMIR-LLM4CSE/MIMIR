@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countersBlock, fnParts, functionsBlock, gpuBlock, kernelBlock, kernelName, megabytes, memoryBlock, stepCard, strip, timeAt, topFunctions, type Session } from "./session";
+import { countersBlock, fnParts, functionsBlock, gpuBlock, kernelBlock, kernelName, megabytes, memoryBlock, stepCard, strip, timeAt, topFunctions, fnRowsOnMap, type Session } from "./session";
 
 const step = (n: number, verdict: string, profile: Session["steps"][number]["profile"]) => ({
   n, run_id: "r" + n, axis: "", verdict, value: 1, incumbent_value: 1, delta: 0,
@@ -216,6 +216,15 @@ describe("functions", () => {
   it("lists the costliest by their own time, of the files asked for", () => {
     expect(topFunctions(fns, 2).map(([k]) => k)).toEqual(["src/solver.f90::solver::relax", "src/solver.f90::residual"]);
     expect(topFunctions(fns, 5, (f) => f === "src/grid.cpp").map(([k]) => k)).toEqual(["src/grid.cpp::build"]);
+  });
+
+  it("grows the boxes by the rows of the map's own files only", () => {
+    const files = [{ id: "src/solver.f90", module: "src" }, { id: "src/grid.cpp", module: "src" }, { id: "lib/x.c", module: "lib" }];
+    expect(fnRowsOnMap(fns, files, 5)).toBe(3);
+    expect(fnRowsOnMap(fns, files, 2)).toBe(2);
+    // All the time in the harness, off the map: the boxes do not grow empty.
+    expect(fnRowsOnMap({ "proxy_bench/h.py::<module>": { self: 1, total: 1 } }, files, 5)).toBe(0);
+    expect(fnRowsOnMap(null, files, 5)).toBe(0);
   });
 
   it("gives each row its file, name and line", () => {

@@ -3,8 +3,8 @@ deepest workspace frame of the stack that made it, by file, function and line, a
 of the bytes live then.
 
 memray (or tracemalloc, near the peak) for a Python command; heaptrack, else valgrind's
-massif, for a compiled one. heaptrack's data is read through its massif export, so one
-reader serves both.
+massif, for a compiled one, or for a Python one whose traced heap is under half the
+measured peak (its child processes, which only they follow), read through one reader.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def watch():
         cur, _ = tracemalloc.get_traced_memory()
         if cur > best["cur"] * 1.05 + 2**20:
             best.update(cur=cur, snap=tracemalloc.take_snapshot())
-        time.sleep(0.05)
+        time.sleep(0.01)
 threading.Thread(target=watch, daemon=True).start()
 def dump():
     cur, peak = tracemalloc.get_traced_memory()
@@ -83,6 +83,11 @@ def choose(argv: list[str]) -> tuple[str, str]:
         if len(argv) > 1 and argv[1] != "-c":
             return "tracemalloc", ""
         return "", "memray is not installed (pip install memray) and tracemalloc cannot run a `-c` command"
+    return choose_native()
+
+
+def choose_native() -> tuple[str, str]:
+    """The allocation profiler that follows a command's processes, whatever they run."""
     if shutil.which("heaptrack") and shutil.which("heaptrack_print"):
         return "heaptrack", ""
     if shutil.which("valgrind"):
@@ -157,12 +162,22 @@ def profile(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
     mem_dir = os.path.join(out_dir, "memory")
     os.makedirs(mem_dir, exist_ok=True)
     peak, stacks = _take(tool, argv, mem_dir, log, timeout)
+    notes = []
+    if is_python(argv) and measured_mb and peak / 2**20 < 0.5 * measured_mb:
+        native, why = choose_native()
+        if native:
+            more = _take(native, argv, os.path.join(mem_dir, native), log, timeout)
+            if more[0] > peak:
+                notes.append(f"{tool} traced {peak / 2**20:.0f} of the {measured_mb:.0f} MB measured, "
+                             f"so {native} profiled the processes the command starts")
+                tool, (peak, stacks) = native, more
+        else:
+            notes.append(f"the processes the command starts are not followed: {why}")
     if not stacks:
         return {"tool": tool, "unavailable": f"{tool} recorded no allocation (see profile.log)"}
     found = attribute(stacks, resolve)
     found.pop("samples", None)
     result = {"tool": tool, "peak_mb": round(peak / 2**20, 1), **found}
-    notes = []
     if tool == "tracemalloc":
         notes.append("tracemalloc: Python's allocations near the peak, by file and line")
     if tool == "massif":
@@ -179,6 +194,7 @@ def profile(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
 
 def _take(tool: str, argv: list[str], mem_dir: str, log: TextIO,
           timeout: float | None) -> tuple[int, list[tuple[list[Frame], int]]]:
+    os.makedirs(mem_dir, exist_ok=True)
     if tool in ("memray", "tracemalloc"):
         out = os.path.join(mem_dir, "peak.json")
         if tool == "memray":
@@ -190,8 +206,11 @@ def _take(tool: str, argv: list[str], mem_dir: str, log: TextIO,
         else:
             proc_run.run([argv[0], "-c", _TRACEMALLOC_BOOT, out, *argv[1:]],
                          stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
-        with open(out) as fh:
-            return json_stacks(json.load(fh))
+        try:
+            with open(out) as fh:
+                return json_stacks(json.load(fh))
+        except (OSError, ValueError):
+            return 0, []                 # the run failed under it: profile.log says why
     if tool == "heaptrack":
         proc_run.run(["heaptrack", "-o", os.path.join(mem_dir, "heaptrack"), *argv],
                      stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
@@ -199,7 +218,7 @@ def _take(tool: str, argv: list[str], mem_dir: str, log: TextIO,
             proc_run.run(["heaptrack_print", "-f", data, "--print-massif", os.path.join(mem_dir, f"massif.out.{i}"),
                           "--massif-detailed-freq", "1"], stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     else:
-        proc_run.run(["valgrind", "--tool=massif", "--trace-children=yes", "--threshold=0.5",
+        proc_run.run(["valgrind", "--tool=massif", "--trace-children=yes", "--threshold=0.5", "--detailed-freq=1",
                       f"--massif-out-file={os.path.join(mem_dir, 'massif.out.%p')}", *argv],
                      stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     # One file per process the run started: the one whose peak is largest is the run's.

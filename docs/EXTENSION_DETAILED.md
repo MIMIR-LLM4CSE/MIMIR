@@ -625,7 +625,9 @@ its share of the baseline's time from the profile of the step shown (else of the
 kept step before it, else of the baseline, always named), hatched where a kept step saved
 time against the profile it improved on. When the profile kept its functions, the header's
 **Functions** toggle (kept in the tab's state) lists each module's three costliest under its
-bars, by their own time, the boxes growing to hold them; the side pane lists them always —
+bars, by their own time, the boxes growing by the rows the fullest needs (`fnRowsOnMap`),
+not at all when no function of the map's files took time, the legend then naming the
+files the time went to; the side pane lists them always —
 over the whole code, and for the module or file selected — a double-click opening one at
 its line. The card lists where the step's time goes, its costliest functions too, or
 offers **Profile the code as it is now** on the latest step, which sends the request to

@@ -144,6 +144,21 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **A profile sees the code a harness starts, not the harness waiting on it.** py-spy
+  followed only the harness: one that runs its code in a child process put all the run's
+  time on its own line, and the code map showed nothing else. py-spy now follows the
+  Python processes the command starts (`--subprocesses`, with full file names); when it
+  still sees less than half the run's measured time (a compiled program the harness
+  starts), perf profiles it again and the profile that puts more time in the workspace is
+  kept, or the profile says why perf could not. The memory view did the same: memray and
+  tracemalloc trace the harness alone, so when they hold less than half the measured peak,
+  heaptrack or massif, which follow child processes, trace it again. massif now keeps
+  every snapshot detailed, so a heap that never shrinks still has its peak's stacks, and
+  tracemalloc watches the heap every 10 ms instead of 50, so a short peak is not missed.
+- **The code map's Functions toggle no longer grows empty boxes.** The boxes grew for
+  three functions whenever the profile had any, even when none was in the module's files;
+  they grow by the rows the fullest module needs, and when no function of the map's files
+  took time the legend names the files the time went to.
 - **A skill invoked with `/name` no longer bars it for the rest of the session.** Its
   instructions lasted one message, but it stayed recorded as loaded, so on the next
   message the model was refused it with nothing in view.

@@ -1,7 +1,11 @@
 """The CPU side of a profile: py-spy (``--native``: the C/C++ frames of a Python process
-too) or cProfile for a Python command, perf for a compiled one, each sample given to the
-deepest workspace frame of its stack, by file, function and line; and perf's hardware
-counters for a compiled command, on request."""
+too; ``--subprocesses``: the Python processes it starts) or cProfile for a Python command,
+perf for a compiled one, each sample given to the deepest workspace frame of its stack, by
+file, function and line; and perf's hardware counters for a compiled command, on request.
+
+A Python harness that runs the code in a program py-spy cannot read (a compiled solver it
+starts) leaves py-spy with the harness waiting: when py-spy saw less than half the run,
+perf profiles it again, and the profile that puts more seconds in the workspace is kept."""
 from __future__ import annotations
 
 import os
@@ -20,6 +24,11 @@ FUNCTIONS_KEPT, LINES_KEPT = 50, 200
 
 _PYTHON_RE = re.compile(r"^(python|pypy)[\d.]*$")
 _PYSPY_FRAME_RE = re.compile(r"^(?P<name>.*?) \((?P<where>[^()]*)\)$")
+# The root frames ``--subprocesses`` gives each stack: the process, then its parents'.
+_PYSPY_PROCESS_RE = re.compile(r'^(?:process \d+:"(?:[^"\\]|\\.)*";)+')
+PYSPY_HZ, PERF_HZ = 250, 499
+# A py-spy profile that saw less than this share of the run missed where it went.
+SEEN_ENOUGH = 0.5
 _HEX_RE = re.compile(r"^\s*([0-9a-f]+)\s+(?P<sym>\S.*?)?\s*\((?P<dso>[^()]*)\)\s*$")
 _SRCLINE_RE = re.compile(r"^\s+(?P<file>[^\s:][^:]*):(?P<line>\d+|\?\?)\s*$")
 _PERF_EVENTS = ("cycles", "instructions", "cache-references", "cache-misses", "branches", "branch-misses")
@@ -67,6 +76,7 @@ def pyspy_stacks(text: str) -> list[tuple[list[Frame], int]]:
     out = []
     for line in text.splitlines():
         stack, _, count = line.rpartition(" ")
+        stack = _PYSPY_PROCESS_RE.sub("", stack)
         if not stack or not count.isdigit():
             continue
         frames = []
@@ -261,22 +271,54 @@ def _uncore_events() -> tuple[str, ...]:
 # ── taking one ───────────────────────────────────────────────────────────────
 
 def sample(tool: str, argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
-           log: TextIO, timeout: float | None) -> dict:
-    """Run *argv* once under *tool* and attribute its samples."""
+           log: TextIO, timeout: float | None, wall_s: float | None = None) -> dict:
+    """Run *argv* once under *tool* and attribute its samples; a py-spy profile that saw
+    less than half of *wall_s*, the run's measured time, is taken again by perf."""
     if tool == "py-spy":
-        raw = os.path.join(out_dir, "profile.raw")
-        cmd = ["py-spy", "record", "--native", "--format", "raw", "--rate", "250", "-o", raw, "--", *argv]
-        proc_run.run(cmd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
-        if not os.path.isfile(raw):      # --native is not supported everywhere
-            proc_run.run([c for c in cmd if c != "--native"], stdout=log,
-                         stderr=subprocess.STDOUT, timeout=timeout)
-        with open(raw, encoding="utf-8", errors="replace") as rf:
-            return attribute(pyspy_stacks(rf.read()), resolve)
+        found = _pyspy(argv, out_dir, resolve, log, timeout)
+        seen = found.get("samples", 0) / PYSPY_HZ
+        if not wall_s or seen >= SEEN_ENOUGH * wall_s:
+            return found
+        missed = (f"py-spy saw {seen:.1f} s of the run's {wall_s:.1f} s: the rest ran in a process "
+                  "it cannot read (a compiled program the command starts)")
+        ok, why = perf_allowed()
+        if not ok:
+            return {**found, "note": f"{missed}; perf would see it, but {why}"}
+        native = _perf_sample(argv, out_dir, resolve, log, timeout)
+        if _workspace_s(native, PERF_HZ) <= _workspace_s(found, PYSPY_HZ):
+            return {**found, "note": f"{missed}; perf saw no more of the workspace"}
+        return {**native, "tool": "perf",
+                "note": "; ".join(filter(None, [f"{missed}, so perf profiled it: Python's frames are "
+                                                "the interpreter's there", native.get("note")]))}
     if tool == "cprofile":
         dump = os.path.join(out_dir, "profile.pstats")
         proc_run.run([argv[0], "-m", "cProfile", "-o", dump, *argv[1:]], stdout=log,
                      stderr=subprocess.STDOUT, timeout=timeout)
         return cprofile_files(dump, resolve)
+    return _perf_sample(argv, out_dir, resolve, log, timeout)
+
+
+def _workspace_s(found: dict, hz: int) -> float:
+    """The seconds a sampled profile puts in the workspace's files."""
+    return found.get("samples", 0) / hz * sum((found.get("files") or {}).values())
+
+
+def _pyspy(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
+           log: TextIO, timeout: float | None) -> dict:
+    raw = os.path.join(out_dir, "profile.raw")
+    base = ["py-spy", "record", "--format", "raw", "--rate", str(PYSPY_HZ), "-o", raw]
+    # --native is not supported everywhere, and an older py-spy lacks the others.
+    for flags in (["--native", "--subprocesses", "--full-filenames"], ["--subprocesses", "--full-filenames"], []):
+        proc_run.run([*base, *flags, "--", *argv], stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+        if os.path.isfile(raw):
+            break
+    with open(raw, encoding="utf-8", errors="replace") as rf:
+        return attribute(pyspy_stacks(rf.read()), resolve)
+
+
+def _perf_sample(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
+                 log: TextIO, timeout: float | None) -> dict:
+    """perf's profile of *argv* and the children it starts."""
     stacks = _perf(argv, out_dir, log, timeout, "fp")
     if stacks and shallow(stacks) > SHALLOW:
         # No frame pointers (an optimised build): unwind from the stack's own copy instead.
@@ -289,7 +331,7 @@ def sample(tool: str, argv: list[str], out_dir: str, resolve: Callable[[str], st
         notes.append("stacks are cut short, so a function's total time is understated: build with "
                      "-fno-omit-frame-pointer")
     binary = os.path.basename(argv[0])
-    if (result.get("outside") or {}).get(binary, 0) > 0.3:
+    if not is_python(argv) and (result.get("outside") or {}).get(binary, 0) > 0.3:
         notes.append(f"{binary} has no debug information, so its time is not on its source files: "
                      "add -g to the build (it does not change the generated code)")
     if notes:
@@ -311,7 +353,7 @@ def _perf(argv: list[str], out_dir: str, log: TextIO, timeout: float | None, unw
     """perf's stacks of one run of *argv*, unwound by frame pointer ("fp") or DWARF."""
     data = os.path.join(out_dir, "perf.data")
     graph = ["-g"] if unwind == "fp" else ["--call-graph", "dwarf,16384"]
-    proc_run.run(["perf", "record", *graph, "-F", "499", "-o", data, "--", *argv],
+    proc_run.run(["perf", "record", *graph, "-F", str(PERF_HZ), "-o", data, "--", *argv],
                  stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     script = proc_run.run(["perf", "script", "-i", data, "-F", "ip,sym,dso,srcline"],
                           stdout=subprocess.PIPE, stderr=log, text=True, timeout=timeout)

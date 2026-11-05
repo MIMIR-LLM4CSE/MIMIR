@@ -107,8 +107,9 @@ Optional extras (declared in `pyproject.toml`):
   its tool is absent, and the required one never depends on them.
 - **Profilers (optional).** An optimisation session profiles its baseline and kept runs
   with what it finds where the run runs: `py-spy` (`pip install py-spy`; it also sees the
-  C/C++ frames of a Python process) or the built-in `cProfile` for a Python command, and
-  `perf` for a compiled one. `perf` needs `kernel.perf_event_paranoid` at 2 or below
+  C/C++ frames of a Python process and the Python processes it starts) or the built-in
+  `cProfile` for a Python command, and `perf` for a compiled one, or for a Python harness
+  whose code runs in a compiled program it starts. `perf` needs `kernel.perf_event_paranoid` at 2 or below
   (`sudo sysctl kernel.perf_event_paranoid=1`); many desktop distributions set 4, and
   the profile then says it was blocked rather than failing the run. `perf stat` gives the
   hardware counters `proxy_eval(op='profile', level='counters')` reads. A run that uses a
@@ -120,7 +121,8 @@ Optional extras (declared in `pyproject.toml`):
   needs the `video` and `render` groups. A tool that is missing or refused is named in
   the profile, with how to allow it. Where the memory goes (`level='memory'`) uses
   `memray` for Python (`pip install memray`; the built-in `tracemalloc` otherwise),
-  and `heaptrack` (your distribution's package) or else `valgrind` for compiled code;
+  and `heaptrack` (your distribution's package) or else `valgrind` for compiled code,
+  and for a Python harness whose code allocates in a process it starts;
   massif, valgrind's tool, is many times slower. The memory controllers' traffic in
   `level='counters'` needs `kernel.perf_event_paranoid` at 0 or below (or root);
   otherwise it is estimated from cache misses. Compile with `-g` (and

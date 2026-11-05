@@ -5,7 +5,7 @@
 import { STYLE } from "./style";
 import { basename, esc, signed } from "./format";
 import { barWidth, cap, countersBlock, fnParts, functionsBlock, gpuBlock, kernelBlock, memoryBlock, note, overlay, pctOf,
-  stepCard, strip, timeAt, topFunctions, type Overlay, type RowExtra, type Scope, type Session, type TimeView } from "./session";
+  fnRowsOnMap, stepCard, strip, timeAt, topFunctions, type Overlay, type RowExtra, type Scope, type Session, type TimeView } from "./session";
 import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
   type Draft, type Request, type Sent, type Target } from "./request";
 import { formHtml, requestDetail, requestsSection } from "./requestView";
@@ -138,10 +138,11 @@ function layoutOf(m: CodeMap): View {
   return derive(m, cols, boxW, boxHeight());
 }
 
-/** How tall a box is: with its bars, and its functions when they are shown and the profile has them. */
+/** How tall a box is: with its bars, and the rows its functions take when they are shown. */
 function boxHeight(): number {
   const t = time();
-  return barsHeight(t) + (showFns && t?.functions ? 4 + FN_N * FN_ROW : 0);
+  const rows = showFns && map ? fnRowsOnMap(t?.functions, map.files, FN_N) : 0;
+  return barsHeight(t) + (rows ? 4 + rows * FN_ROW : 0);
 }
 
 function selectedModule(v: View): string | null {
@@ -775,7 +776,15 @@ function timeLegend(): string {
     + (t.gpu ? '<span><i class="sw bar gpu"></i>' + (t.cpuUnavailable ? "GPU kernels' share of the baseline's time, profile of "
       + esc(t.from) + " (" + esc(t.gpu.tool) + ")" + (t.gpuBefore ? ", hatched where this step saved it" : "")
       : "its GPU kernels (" + esc(t.gpu.tool) + ")") + "</span>" : "")
-    + (showFns && t.functions ? "<span>under the bars: each module's costliest functions, their own time</span>" : "");
+    + (showFns && t.functions ? fnsLegend(t.functions) : "");
+}
+
+/** What the functions under the bars are, or where the time went when none of them is on the map. */
+function fnsLegend(fns: NonNullable<TimeView["functions"]>): string {
+  if (map && fnRowsOnMap(fns, map.files, FN_N)) return "<span>under the bars: each module's costliest functions, their own time</span>";
+  const off = [...new Set(topFunctions(fns, 20).filter(([, f]) => f.self > 0).map(([k]) => fnParts(k).file))].slice(0, 3);
+  return "<span>no function of the map's files took any of the profiled time"
+    + (off.length ? ": it went to " + off.map(esc).join(", ") : "") + "</span>";
 }
 
 function mergeLegend(): string {

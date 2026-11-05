@@ -331,6 +331,19 @@ export function topFunctions(fns: Record<string, FnTime> | null | undefined, n: 
     .sort((a, b) => b[1].self - a[1].self || b[1].total - a[1].total).slice(0, n);
 }
 
+/** How many function rows a module box needs, at most *n*: the most any module has of its
+ *  files' functions that took time; 0 when the time is all in files off the map. */
+export function fnRowsOnMap(fns: Record<string, FnTime> | null | undefined, files: { id: string; module: string }[],
+                            n: number): number {
+  const moduleOf = new Map(files.map((f) => [f.id, f.module]));
+  const per = new Map<string, number>();
+  for (const [k, v] of Object.entries(fns ?? {})) {
+    const m = moduleOf.get(fnParts(k).file);
+    if (m !== undefined && v.self > 0) per.set(m, (per.get(m) ?? 0) + 1);
+  }
+  return Math.min(n, Math.max(0, ...per.values()));
+}
+
 /** The costliest functions as rows: self time beside them, their file after their name,
  *  the total in their tooltip. */
 export function functionsBlock(fns: Record<string, FnTime> | null | undefined, row: Row, n: number,
