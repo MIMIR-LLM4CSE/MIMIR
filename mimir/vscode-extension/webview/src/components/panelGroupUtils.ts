@@ -24,6 +24,30 @@ export function toggle(open: Record<string, boolean>, key: string): Record<strin
 }
 
 /**
+ * A record kept in the webview's storage under *key*, or {} when there is none.
+ *
+ * Storage can be absent or throw (a webview with site data blocked), and what it holds
+ * was written by an older build, so anything unreadable is an empty record.
+ */
+export function readStoredRecord<T>(key: string): Record<string, T> {
+  try {
+    const held = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    return held && typeof held === "object" && !Array.isArray(held) ? held : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Keep *record* under *key*; a storage that refuses keeps it for this window only. */
+export function storeRecord<T>(key: string, record: Record<string, T>): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(record));
+  } catch {
+    /* Held in memory still. */
+  }
+}
+
+/**
  * Whether a section has anything to read: a line or a row. A detail alone is the server
  * saying there is nothing here ("no optimisation session"), which is not worth a card.
  */

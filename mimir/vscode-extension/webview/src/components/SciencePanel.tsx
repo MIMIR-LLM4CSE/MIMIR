@@ -4,7 +4,7 @@ import { PanelGroupList, RunBadge } from "./PanelGroups";
 import { PanelCurve } from "./PanelCurve";
 import { PanelMiniMap } from "./PanelMiniMap";
 import { PanelResizer, usePanelWidth } from "./PanelResizer";
-import { badgeKey, isFilled, sectionRunCounts, toggle } from "./panelGroupUtils";
+import { badgeKey, isFilled, readStoredRecord, sectionRunCounts, storeRecord, toggle } from "./panelGroupUtils";
 
 /** While the drawer is open, ask again this often. */
 const PANEL_POLL_MS = 10000;
@@ -17,6 +17,9 @@ const SECTION_ACCENT: Record<string, string> = {
   architecture: "var(--mimir-violet)",
 };
 const FALLBACK_ACCENT = "var(--mimir-violet)";
+
+/** Where the sections the reader folded are kept between openings of the drawer. */
+const FOLDED_KEY = "mimir.scienceFolded";
 
 /** A section as the drawer draws it; the runs one carries its badges itself. */
 type ShownSection = PanelSection & { unplaced?: WatchedRun[] };
@@ -76,11 +79,19 @@ export const SciencePanel: React.FC<Props> = ({
     (key: string) => setOpenGroups((open) => toggle(open, key)),
     [],
   );
-  // Which sections are folded, keyed on the section's id. Everything starts open: a
-  // section is shown only once it has something in it, and that is what to read.
-  const [foldedSections, setFoldedSections] = useState<Record<string, boolean>>({});
+  // Which sections are folded, keyed on the section's id, kept across openings of the
+  // drawer and reloads of the window. A section never folded is open: it is shown only
+  // once it has something in it, and that is what to read.
+  const [foldedSections, setFoldedSections] = useState<Record<string, boolean>>(() =>
+    readStoredRecord<boolean>(FOLDED_KEY),
+  );
   const toggleSection = useCallback(
-    (key: string) => setFoldedSections((folded) => toggle(folded, key)),
+    (key: string) =>
+      setFoldedSections((folded) => {
+        const next = toggle(folded, key);
+        storeRecord(FOLDED_KEY, next);
+        return next;
+      }),
     [],
   );
   const { width, panelRef, handleProps } = usePanelWidth("science");

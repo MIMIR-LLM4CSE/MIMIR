@@ -135,3 +135,30 @@ describe("the runs on a cluster", () => {
     expect(html).toMatch(/class="science-badge is-subagent"[^>]*>cpu · 2</);
   });
 });
+
+describe("the sections the reader folded", () => {
+  function withStorage(held: string | null, body: () => void): void {
+    const win = globalThis.window as { localStorage?: unknown };
+    const before = win.localStorage;
+    win.localStorage = { getItem: () => held, setItem: () => undefined };
+    try {
+      body();
+    } finally {
+      win.localStorage = before;
+    }
+  }
+
+  it("stay folded when the drawer opens again", () => {
+    withStorage(JSON.stringify({ Machine: true }), () => {
+      const html = render([architecture, machine]);
+      expect(html).toMatch(/science-section is-folded[^>]*>\s*<button[^>]*aria-controls="ps-Machine"/);
+      expect(html).not.toMatch(/is-folded[^>]*>\s*<button[^>]*aria-controls="ps-Architecture"/);
+    });
+  });
+
+  it("are none when the storage holds nothing readable", () => {
+    withStorage("not json", () => {
+      expect(render([architecture, machine])).not.toContain("is-folded");
+    });
+  });
+});

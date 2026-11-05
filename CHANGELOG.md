@@ -144,6 +144,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **The scientific-computing drawer remembers the sections you folded.** Each opening
+  of the drawer opened every section again; the folded ones are now kept in the
+  webview's storage, across openings and reloads of the window.
 - **The Optimisation section shows the proxy you pin.** It showed only this
   conversation's active proxy, which a run launched by name on another proxy does not
   move, so the section stayed on the earlier one with no way to look at the other. With

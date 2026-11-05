@@ -741,7 +741,9 @@ names the partition then the node (`gpu · gpu007`; a queued job, its partition 
 in the colour of whoever launched it — blue for the conversation, purple for a
 sub-agent — tinted and pulsing while it runs. A folded section counts its runs on its
 title, one pill per origin in the same colours (`sectionRunCounts`; a run badged on its
-host and on its node kind counts once). A badge opens as a row *inside* the tree showing
+host and on its node kind counts once). The sections the reader folds stay folded when the drawer
+opens again and across reloads of the window (`mimir.scienceFolded` in the webview's
+storage, `readStoredRecord`). A badge opens as a row *inside* the tree showing
 the job id or pid, the command, its state and phase, its partition and nodes, how long
 it has been going, and which agent launched it — a tooltip would be unreachable by
 keyboard and too small for a command line.

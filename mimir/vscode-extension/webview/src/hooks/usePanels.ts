@@ -7,26 +7,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientMessage, PanelGroupCall, PanelSection, SubAgent, SubAgentLevel, WatchedRun } from "../types";
 import type { ServerHandlers } from "../state/serverMessages";
 import { vscodePostMessage } from "./useWebSocket";
+import { readStoredRecord, storeRecord } from "../components/panelGroupUtils";
 
 /** Where the reader's pins (`PanelChoice`) are kept between reloads. */
 const CHOICES_KEY = "mimir.panelChoices";
-
-function readPanelChoices(): Record<string, string> {
-  try {
-    const held = JSON.parse(window.localStorage.getItem(CHOICES_KEY) ?? "{}");
-    return held && typeof held === "object" ? held : {};
-  } catch {
-    return {};
-  }
-}
-
-function storePanelChoices(choices: Record<string, string>): void {
-  try {
-    window.localStorage.setItem(CHOICES_KEY, JSON.stringify(choices));
-  } catch {
-    // A storage that refuses keeps the pin for this window only.
-  }
-}
 
 /** How often the cards are re-read while a turn runs or a sub-agent works. */
 const SUBAGENT_POLL_MS = 2000;
@@ -71,7 +55,7 @@ export function usePanels(send: (msg: ClientMessage) => void,
   // What the reader pinned each section to (which proxy), sent with every ask and kept
   // across reloads. A ref, so the asks keep their identity: the drawer's timers are
   // keyed on them.
-  const panelChoices = useRef<Record<string, string>>(readPanelChoices());
+  const panelChoices = useRef<Record<string, string>>(readStoredRecord<string>(CHOICES_KEY));
   // One call fills the whole drawer from the servers' caches. `build`: before the
   // first query there is no agent holding the servers; a no-op once one is up.
   const refreshPanel = useCallback(
@@ -87,7 +71,7 @@ export function usePanels(send: (msg: ClientMessage) => void,
   const choosePanel = useCallback((section: string, value: string) => {
     const { [section]: _, ...rest } = panelChoices.current;
     panelChoices.current = value ? { ...rest, [section]: value } : rest;
-    storePanelChoices(panelChoices.current);
+    storeRecord(CHOICES_KEY, panelChoices.current);
     setPanelPending(true);
     refreshPanel();
   }, [refreshPanel]);
