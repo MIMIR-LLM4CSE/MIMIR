@@ -59,13 +59,30 @@ function RunCard({ run, onFocus }: { run: ToolActivity; onFocus: (id: string) =>
   );
 }
 
-/**
- * Runs still going whose rows have scrolled off the top of the thread, one click from
- * their place in it. No close button: a card leaves when its run ends or its row is
- * visible again.
- */
-export function RunProgressDock({ runs, onFocus }: Props) {
+interface ViewProps extends Props {
+  /** Folded to one line that counts the runs. */
+  folded: boolean;
+  onFold: (folded: boolean) => void;
+}
+
+/** The dock as it is drawn, open or folded. */
+export function RunDockView({ runs, onFocus, folded, onFold }: ViewProps) {
   if (runs.length === 0) return null;
+  if (folded) {
+    return (
+      <div className="run-dock" aria-live="polite">
+        <button
+          className="run-dock-fold"
+          onClick={() => onFold(false)}
+          aria-expanded="false"
+          title="Show the cards of the runs still going"
+        >
+          <span className="tb-spinner" aria-hidden="true" />
+          {`${runs.length} running · Show`}
+        </button>
+      </div>
+    );
+  }
   const shown = runs.slice(0, MAX_CARDS);
   const hidden = runs.length - shown.length;
 
@@ -74,11 +91,28 @@ export function RunProgressDock({ runs, onFocus }: Props) {
       {shown.map((run) => (
         <RunCard key={run.id} run={run} onFocus={onFocus} />
       ))}
-      {hidden > 0 && (
-        <span className="run-dock-more">
-          +{hidden} more running
-        </span>
-      )}
+      <span className="run-dock-foot">
+        {hidden > 0 && <span className="run-dock-more">{`+${hidden} more running`}</span>}
+        <button
+          className="run-dock-fold"
+          onClick={() => onFold(true)}
+          aria-expanded="true"
+          title="Fold the cards to one line; the runs go on"
+        >
+          Hide
+        </button>
+      </span>
     </div>
   );
+}
+
+/**
+ * Runs still going whose rows have scrolled off the top of the thread, one click from
+ * their place in it. A card leaves when its run ends or its row is visible again; Hide
+ * folds them all to one line, which stays folded for the runs that come after until
+ * it is opened again.
+ */
+export function RunProgressDock(props: Props) {
+  const [folded, setFolded] = React.useState(false);
+  return <RunDockView {...props} folded={folded} onFold={setFolded} />;
 }

@@ -894,8 +894,10 @@ into a frozen message mid-run and that replaces its element. A card needs a *liv
 phase, not just a `background` status: a reloaded session brings back rows whose
 watchers died with the process that wrote the file, and requiring evidence means such a
 row shows a card only once something reports on it again. Clicking a card scrolls back
-to its row; there is no close button, because a card is there only while both facts
-hold and leaves when either stops.
+to its row. A card has no close button, because it is there only while both facts
+hold and leaves when either stops; **Hide** folds the whole dock to one line that
+counts the runs ("2 running · Show"), and it stays folded for the runs that follow
+until that line is clicked.
 
 ---
 

@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
-import { RunProgressDock } from "./RunProgressDock";
+import { RunDockView, RunProgressDock } from "./RunProgressDock";
 import type { ToolActivity } from "../types";
 
 function run(over: Partial<ToolActivity>): ToolActivity {
@@ -37,5 +37,15 @@ describe("the run dock", () => {
     const html = dock(run({ kind: "proxy eval", doing: "running the kernel", phase: "building solver" }));
     expect(html).toContain("Proxy eval · running the kernel");
     expect(html).toContain("building solver");
+  });
+
+  it("can be hidden, folded to one line that counts the runs", () => {
+    const runs = [run({ id: "a" }), run({ id: "b" }), run({ id: "c" })];
+    const open = renderToStaticMarkup(<RunDockView runs={runs} onFocus={() => {}} folded={false} onFold={() => {}} />);
+    expect(open).toContain("+1 more running");
+    expect(open).toContain(">Hide<");
+    const folded = renderToStaticMarkup(<RunDockView runs={runs} onFocus={() => {}} folded onFold={() => {}} />);
+    expect(folded).not.toContain("run-dock-card");
+    expect(folded).toContain("3 running · Show");
   });
 });

@@ -630,12 +630,27 @@ body.is-resizing * { transition: none !important; }
   color: var(--fg-dim);
   flex-shrink: 0;
 }
-.run-dock-more {
-  pointer-events: auto;
-  font-size: 0.85em;
-  color: var(--fg-dim);
+.run-dock-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
   padding-left: 2px;
 }
+.run-dock-more {
+  font-size: 0.85em;
+  color: var(--fg-dim);
+}
+.run-dock-fold {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85em;
+  color: var(--fg-dim);
+}
+.run-dock-fold:hover { color: var(--fg); }
+.run-dock-fold:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: 2px; }
 
 .chat-thread {
   flex: 1;

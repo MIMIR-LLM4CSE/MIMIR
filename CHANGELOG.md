@@ -53,6 +53,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the two. It is refused while the earlier one still runs or is already being continued,
   and when it changed nothing. The drawer says which sub-agent continues which, and a
   stopped run's result now points at `continue_from`.
+- **The run cards at the bottom of the chat can be hidden.** While a job, a build or a
+  sub-agent ran, its card stayed under the thread for as long as the run lasted.
+  **Hide** folds them to one line that counts the runs, and a click on it shows them
+  again.
 
 ### Changed
 - **A profile reads at a glance on the code map.** "Where time goes" holds the profile
