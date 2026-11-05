@@ -50,6 +50,31 @@ class AnnouncedUrlAnswersTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await asyncio.wait_for(ws.recv(), 5), "hi")
 
 
+class LivenessProbeTests(unittest.IsolatedAsyncioTestCase):
+    """A liveness probe connects and hangs up; the server must not log it as an error."""
+
+    async def _errors_after(self, payload: bytes) -> list[str]:
+        async def _hello(ws):
+            await ws.send("hi")
+
+        with self.assertLogs("websockets.server", level="INFO") as logs:
+            async with websockets.serve(_hello, "127.0.0.1", 0) as server:
+                port = server.sockets[0].getsockname()[1]
+                _r, writer = await asyncio.open_connection("127.0.0.1", port)
+                if payload:
+                    writer.write(payload)
+                    await writer.drain()
+                writer.close()
+                await asyncio.sleep(0.2)
+        return [r.getMessage() for r in logs.records if r.levelname == "ERROR"]
+
+    async def test_a_connection_closed_before_a_byte_logs_nothing(self):
+        self.assertEqual(await self._errors_after(b""), [])
+
+    async def test_a_malformed_request_still_logs(self):
+        self.assertEqual(await self._errors_after(b"garbage\r\n\r\n"),
+                         ["opening handshake failed"])
+
 
 class EntryPointTests(unittest.TestCase):
     def test_the_entry_point_resolves_no_workspace_before_main(self) -> None:

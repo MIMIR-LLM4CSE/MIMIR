@@ -43,6 +43,29 @@ _MAX_FRAME_BYTES = 32 * 1024 * 1024
 _LOCK_WAIT_SECS = 60.0
 
 
+class _ProbeFilter(logging.Filter):
+    """Drops the handshake failure of a connection closed before it sent a byte.
+
+    That is a liveness probe (registry.port_answers, the extension's portAnswers): it
+    connects and hangs up, and websockets would log each one as an error with its
+    traceback. A request that arrives and is malformed still logs.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() != "opening handshake failed" or not record.exc_info:
+            return True
+        exc: BaseException | None = record.exc_info[1]
+        while exc is not None:
+            if isinstance(exc, EOFError) and "after 0 bytes" in str(exc):
+                return False
+            exc = exc.__cause__
+        return True
+
+
+_HANDSHAKE_LOGGER = logging.getLogger("websockets.server")
+_HANDSHAKE_LOGGER.addFilter(_ProbeFilter())
+
+
 def _announced_address(sockets: Any) -> tuple[str, int]:
     """The host and port behind :func:`_announced_url` — the same choice, unformatted."""
     names = [s.getsockname() for s in sockets]

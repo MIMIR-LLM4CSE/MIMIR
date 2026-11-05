@@ -102,6 +102,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **No handshake traceback at startup.** The extension and the server check that a server
+  is up by connecting to its port and hanging up. websockets logged each check as
+  "opening handshake failed", with three chained tracebacks. A connection that closes
+  before it sends a byte is no longer logged; a malformed request still is.
 - **Starting MIMIR shows, and the first code map comes sooner.** Opening the drawer before
   the first query builds the agent (the model backend and every MCP server), and nothing
   said so: the "Starting MIMIR" line showed only during a turn, and the context bar stayed
