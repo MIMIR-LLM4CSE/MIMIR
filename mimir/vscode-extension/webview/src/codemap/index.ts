@@ -83,13 +83,18 @@ let staleWhileHidden = false;
 /** Map the code again (⟳, the proxy picker, or the server saying something moved),
  *  saying so until the answer is in. */
 function remap(): void {
+  awaitMap();
+  ask();
+}
+
+/** Say the map is on its way until it is in, or until it is late. */
+function awaitMap(): void {
   mapping = "busy";
   clearTimeout(mappingTimer);
   mappingTimer = setTimeout(() => {
     if (mapping === "busy") settleMapping("failed", "no answer from the server; try ⟳ again");
   }, MAPPING_PATIENCE_MS);
   renderStatus();
-  ask();
 }
 
 function settleMapping(to: "idle" | "failed", note = ""): void {
@@ -931,6 +936,8 @@ function mount(): void {
       }, STALE_SETTLE_MS);
       return;
     }
+    // Opened from the drawer before its answer: the map is on its way, already asked.
+    if (msg?.type === "mapping") { awaitMap(); return; }
     // The server had no map to give: said where the user is waiting for one.
     if (msg?.type === "unavailable") {
       if (mapping === "busy") settleMapping("failed", msg.reason || "the server gave no map: is the agent connected?");

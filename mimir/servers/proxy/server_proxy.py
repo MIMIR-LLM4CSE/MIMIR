@@ -7,6 +7,7 @@ storage and the ratchet flow are in docs/SERVERS_DETAILED.md, "proxy".
 
 from __future__ import annotations
 
+import threading
 from typing import Annotated
 
 from pydantic import Field
@@ -1111,4 +1112,5 @@ def proxy_code_map_steps(proxy_name: str = "", combined: bool = False,
 
 
 if __name__ == "__main__":
+    threading.Thread(target=code_map_tab.warm, name="code-map-warm", daemon=True).start()
     mcp.run()

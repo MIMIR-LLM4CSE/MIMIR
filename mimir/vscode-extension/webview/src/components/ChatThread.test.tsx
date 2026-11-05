@@ -10,11 +10,13 @@ const msgs = (n: number): ChatMessage[] =>
     id: `m${i}`, role: i % 2 ? "assistant" : "user", kind: "text", text: `message ${i}`,
   }) as ChatMessage);
 
-const thread = (messages: ChatMessage[]) =>
+const thread = (messages: ChatMessage[], starting = false) =>
   renderToStaticMarkup(
     <ChatThread
       messages={messages}
       busy={false}
+      starting={starting}
+      emptyState={<p>empty</p>}
       chatThreadRef={React.createRef()}
       bottomRef={React.createRef()}
       lastUserMsgRef={React.createRef()}
@@ -37,5 +39,18 @@ describe("the thread window", () => {
     expect(html).toContain(`message ${30}`);
     expect(html).not.toContain(">message 29<");
     expect(html).toContain("Show earlier messages (30 hidden)");
+  });
+});
+
+describe("an agent being built", () => {
+  it("says so in a thread with no message yet, outside any turn", () => {
+    // The drawer builds the agent before the first query: nothing is busy, nothing is said.
+    const html = thread([], true);
+    expect(html).toContain("empty");
+    expect(html).toContain("Starting MIMIR");
+  });
+
+  it("says nothing once it is up", () => {
+    expect(thread([])).not.toContain("Starting MIMIR");
   });
 });

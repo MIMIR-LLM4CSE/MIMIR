@@ -45,17 +45,17 @@ def _terminate_group(proc: subprocess.Popen) -> None:
 def run(argv: list[str], *, timeout: float | None = None, rusage: bool = False, **kwargs: Any):
     """:func:`subprocess.run`, but a timeout kills the child's process group.
 
-    ``start_new_session`` is forced; ``stdin`` defaults to ``DEVNULL``, since a server's stdin
-    is its MCP pipe and a reading child would eat the protocol. With *rusage* (output to
-    files, not pipes), the result's ``peak_rss_kb`` is the tree's largest resident set.
+    ``stdin`` is ``DEVNULL`` (a server's stdin is its MCP pipe), or a pipe of ours for
+    ``input``. With *rusage* (output to files), ``peak_rss_kb`` is the tree's peak.
     """
+    given = kwargs.pop("input", None)
     kwargs.setdefault("start_new_session", True)
-    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    kwargs.setdefault("stdin", subprocess.PIPE if given is not None else subprocess.DEVNULL)
     if rusage and hasattr(os, "wait4"):
         return _run_measured(argv, timeout, kwargs)
     with subprocess.Popen(argv, **kwargs) as proc:
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(given, timeout=timeout)
         except subprocess.TimeoutExpired:
             _terminate_group(proc)
             # The group is dead, so the pipes are closed and this cannot block. Bounded

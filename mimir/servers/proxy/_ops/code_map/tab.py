@@ -19,6 +19,16 @@ def proxies() -> list[str]:
     return opt_sessions() + history.keys()
 
 
+def warm() -> None:
+    """Build what the tab is first sent, so its first open does not pay for reading every
+    snapshot back: run in the background as the server starts. Nothing without a session."""
+    try:
+        if proxies():
+            answer()
+    except Exception:   # a warm-up that fails leaves the first open to build it
+        pass
+
+
 def answer(proxy_name: str = "", combined: bool = False, selected: list[str] | None = None) -> dict:
     """The steps of *proxy_name* (else the active session's, else the latest session's), of
     the proxies *selected* together, or of every proxy at once when *combined*; with the

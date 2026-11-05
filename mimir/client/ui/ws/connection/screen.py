@@ -232,6 +232,9 @@ class Screen:
             worker = await self.pool.worker_for(session_id, on_wait=_announce)
             if worker is not None:
                 worker.session_title = self.session_title(session_id)
+                # The system prompt and the tools now count: the bar leaves its provisional
+                # grey whatever started the agent, a query or the drawer.
+                await self.emit_context_usage()
             return worker
         except Exception as exc:
             await self.out.send({

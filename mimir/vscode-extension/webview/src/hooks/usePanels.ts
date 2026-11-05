@@ -62,6 +62,8 @@ export function usePanels(send: (msg: ClientMessage) => void,
   const openView = useCallback((view: string, focus?: string) => {
     if (view !== "code_map") return;
     mapFocus.current = focus;
+    // The tab opens at once and says it is mapping: a first map can take a while.
+    vscodePostMessage({ type: "open_code_map" });
     send({ type: "code_map" });
   }, [send]);
   // Opening another card clears the one on screen; re-reading the same one keeps it

@@ -150,7 +150,14 @@ export const ChatThread: React.FC<Props> = ({
   // One animated status line, pinned to the bottom of the thread for as long as
   // the agent is busy — whatever else is on screen. It is the only place the
   // status word shows, so the draft and the live reasoning line carry none.
-  const showStatusLine = busy;
+  // A turn at work, or the agent being built — by a first query or by the drawer, which
+  // starts it before any turn exists.
+  const showStatusLine = busy || starting;
+  const statusLine = showStatusLine && (
+    <div className="agent-thinking">
+      <StreamingStatus label={starting ? "Starting MIMIR — model backend and MCP servers" : undefined} />
+    </div>
+  );
 
   // ── One message → one render path, dispatched by kind ──────────────────────
   const renderMessage = (msg: ChatMessage, idx: number) => {
@@ -194,7 +201,10 @@ export const ChatThread: React.FC<Props> = ({
       aria-label="Conversation"
     >
       {visible.length === 0 ? (
-        emptyState
+        <>
+          {emptyState}
+          {statusLine}
+        </>
       ) : loading ? (
         <div className="session-loading">
           <span className="inline-spinner" aria-hidden="true" />
@@ -249,13 +259,7 @@ export const ChatThread: React.FC<Props> = ({
           })}
 
           {/* Animated status line — pinned to the bottom while the agent is busy */}
-          {showStatusLine && (
-            <div className="agent-thinking">
-              <StreamingStatus
-                label={starting ? "Starting MIMIR — model backend and MCP servers" : undefined}
-              />
-            </div>
-          )}
+          {statusLine}
         </>
       )}
       <div ref={bottomRef} />

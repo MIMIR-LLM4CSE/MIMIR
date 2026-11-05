@@ -38,51 +38,69 @@ export interface MapActions {
   reveal: (token: string, session?: string) => void;
 }
 
+/** Open the tab at once, saying it is mapping the code, while the server answers: the
+ *  first map of a session can take a while (servers cold, snapshots read back). */
+export function openCodeMap(extensionUri: vscode.Uri, actions: MapActions): void {
+  if (mapPanel) {
+    mapPanel.reveal(undefined, false);
+    void mapPanel.webview.postMessage({ type: "mapping" });
+    return;
+  }
+  // A tab opened before its answer must not draw a previous one meanwhile.
+  last = { map: undefined };
+  createPanel(extensionUri, actions);
+}
+
 /** Show *map* (and the session's steps) in the tab, opening it if needed, on the
  *  component *focus* when given; *actions* ask the server again or put a request to the agent. */
 export function showCodeMap(map: unknown, session: unknown, focus: string | undefined,
                             extensionUri: vscode.Uri, actions: MapActions): void {
   last = { map, session, focus };
-  if (!mapPanel) {
-    mapPanel = vscode.window.createWebviewPanel(
-      "mimir.codeMap",
-      "Code map",
-      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
-      { enableScripts: true, retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(extensionUri, "dist")] }
-    );
-    mapPanel.webview.html = pageHtml(mapPanel.webview, extensionUri);
-    mapPanel.webview.onDidReceiveMessage((m: TabMessage) => {
-      if (m?.type === "ready") void mapPanel?.webview.postMessage({ type: "map", ...last });
-      else if (m?.type === "refresh") {
-        // The answer to the tab's own question updates it where it is: the tab asks again
-        // on its own while a request is at work, and must not take the focus each time.
-        quiet = true;
-        actions.refresh({
-          ...(typeof m.proxy === "string" && m.proxy ? { proxy: m.proxy } : {}),
-          ...(m.combined === true ? { combined: true } : {}),
-          ...(Array.isArray(m.proxies) && m.proxies.length > 1 && m.proxies.every((p) => typeof p === "string")
-            ? { proxies: m.proxies } : {}),
-        });
-      }
-      else if (m?.type === "prompt" && typeof m.text === "string") actions.prompt(m.text);
-      else if (m?.type === "reveal_in_chat" && typeof m.token === "string") {
-        actions.reveal(m.token, typeof m.session === "string" && m.session ? m.session : undefined);
-      }
-      else if (m?.type === "open_file" && typeof m.file === "string") {
-        // The server's absolute path when it exists on this machine, else the path
-        // relative to the map's root, resolved against the open folder.
-        const file = fs.existsSync(m.file) || !m.rel ? m.file : m.rel;
-        openFile({ type: "open_file", file, line: m.line });
-      }
-    });
-    const bench = watchBench();
-    mapPanel.onDidDispose(() => { mapPanel = undefined; bench.dispose(); });
-  } else {
+  if (!mapPanel) createPanel(extensionUri, actions);
+  else {
     if (!quiet) mapPanel.reveal(undefined, false);
     quiet = false;
     void mapPanel.webview.postMessage({ type: "map", ...last });
   }
+}
+
+/** The tab, its page and what it asks of the host. */
+function createPanel(extensionUri: vscode.Uri, actions: MapActions): void {
+  mapPanel = vscode.window.createWebviewPanel(
+    "mimir.codeMap",
+    "Code map",
+    { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+    { enableScripts: true, retainContextWhenHidden: true,
+      localResourceRoots: [vscode.Uri.joinPath(extensionUri, "dist")] }
+  );
+  mapPanel.webview.html = pageHtml(mapPanel.webview, extensionUri);
+  mapPanel.webview.onDidReceiveMessage((m: TabMessage) => {
+    // A tab that loads before its answer says it is mapping; one that loads after draws it.
+    if (m?.type === "ready") void mapPanel?.webview.postMessage(last.map ? { type: "map", ...last } : { type: "mapping" });
+    else if (m?.type === "refresh") {
+      // The answer to the tab's own question updates it where it is: the tab asks again
+      // on its own while a request is at work, and must not take the focus each time.
+      quiet = true;
+      actions.refresh({
+        ...(typeof m.proxy === "string" && m.proxy ? { proxy: m.proxy } : {}),
+        ...(m.combined === true ? { combined: true } : {}),
+        ...(Array.isArray(m.proxies) && m.proxies.length > 1 && m.proxies.every((p) => typeof p === "string")
+          ? { proxies: m.proxies } : {}),
+      });
+    }
+    else if (m?.type === "prompt" && typeof m.text === "string") actions.prompt(m.text);
+    else if (m?.type === "reveal_in_chat" && typeof m.token === "string") {
+      actions.reveal(m.token, typeof m.session === "string" && m.session ? m.session : undefined);
+    }
+    else if (m?.type === "open_file" && typeof m.file === "string") {
+      // The server's absolute path when it exists on this machine, else the path
+      // relative to the map's root, resolved against the open folder.
+      const file = fs.existsSync(m.file) || !m.rel ? m.file : m.rel;
+      openFile({ type: "open_file", file, line: m.line });
+    }
+  });
+  const bench = watchBench();
+  mapPanel.onDidDispose(() => { mapPanel = undefined; bench.dispose(); });
 }
 
 /** Tell an open tab that the server had no map to give, so a ⟳ it waits on says so

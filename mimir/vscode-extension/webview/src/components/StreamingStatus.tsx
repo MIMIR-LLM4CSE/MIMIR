@@ -94,7 +94,7 @@ const MimirSpinner: React.FC = () => {
   const id = `rune-grad-${React.useId().replace(/:/g, "")}`;
   // SMIL ignores CSS, so the reduced-motion preference is honoured here.
   const still = React.useMemo(
-    () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
+    () => (typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) || false,
     [],
   );
   return (

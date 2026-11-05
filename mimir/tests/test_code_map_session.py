@@ -47,6 +47,8 @@ class SnapshotReadTests(unittest.TestCase):
         self.assertEqual(tree_snapshot.read(ws.git, ws.root, second, "pkg/a.py"), "from . import c\n")
         self.assertIsNone(tree_snapshot.read(ws.git, ws.root, first, "pkg/nope.py"))
         self.assertEqual(tree_snapshot.changed(ws.git, ws.root, first, second), ["pkg/a.py"])
+        self.assertEqual(tree_snapshot.read_all(ws.git, ws.root, second),
+                         {"pkg/a.py": "from . import c\n", "pkg/b.py": ""})
 
     def test_a_git_snapshot_reads_back(self) -> None:
         if not tree_snapshot.git_available():
@@ -275,6 +277,14 @@ class PickTests(unittest.TestCase):
                  mock.patch.object(tab, "opt_ledger_file", side_effect=ledgers.get):
                 out = tab.answer()
         self.assertEqual((out["proxy"], out["active"]), ("mesh", ""))
+
+    def test_the_warm_up_builds_the_first_answer_only_when_there_is_a_session(self) -> None:
+        with mock.patch.object(tab, "answer") as built:
+            with mock.patch.object(tab, "proxies", return_value=[]):
+                tab.warm()
+            built.assert_not_called()
+            tab.warm()
+            built.assert_called_once_with()
 
     def test_no_proxy_is_no_answer(self) -> None:
         with mock.patch.object(tab, "proxies", return_value=[]):

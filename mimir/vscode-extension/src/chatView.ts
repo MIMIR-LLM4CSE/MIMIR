@@ -17,7 +17,7 @@ import { serverChannel } from "./serverChannel";
 import { findLiveServer, type ServerEntry } from "./serverRegistry";
 import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "./shared/defaults";
 import type { HostMessage, HostMessageOf } from "./shared/hostMessages";
-import { codeMapStale, codeMapUnavailable, showCodeMap } from "./codeMapView";
+import { codeMapStale, codeMapUnavailable, openCodeMap, showCodeMap, type MapActions } from "./codeMapView";
 import { getWebviewHtml } from "./webviewHtml";
 import { workspaceRoot } from "./workspace";
 import { WorkspaceFiles } from "./workspaceFiles";
@@ -404,6 +404,17 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** One handler per message the webview posts (`HostMessage`). */
+  /** What the code map tab asks of the chat: the map again, or a request put to the agent. */
+  private readonly mapActions: MapActions = {
+    refresh: (pick) => this.forwardToServer(JSON.stringify({ type: "code_map", ...pick })),
+    prompt: (text) => this.post({ type: "map_prompt", text }),
+    reveal: (token, session) => {
+      // The chat is brought forward first, so the answer it scrolls to is in sight.
+      this.view?.show?.(true);
+      this.post({ type: "reveal_request", token, ...(session ? { session } : {}) });
+    },
+  };
+
   private readonly webviewHandlers: {
     [T in HostMessage["type"]]: (m: HostMessageOf<T>) => void;
   } = {
@@ -422,15 +433,8 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     fetch_models: (m) => void this.models.probe(m.backend ?? DEFAULT_BACKEND, m.baseUrl ?? ""),
     connect: (m) => this.connect(m),
     ws_send: (m) => this.forwardToServer(m.payload),
-    show_code_map: (m) => showCodeMap(m.map, m.session, m.focus, this.extensionUri, {
-      refresh: (pick) => this.forwardToServer(JSON.stringify({ type: "code_map", ...pick })),
-      prompt: (text) => this.post({ type: "map_prompt", text }),
-      reveal: (token, session) => {
-        // The chat is brought forward first, so the answer it scrolls to is in sight.
-        this.view?.show?.(true);
-        this.post({ type: "reveal_request", token, ...(session ? { session } : {}) });
-      },
-    }),
+    open_code_map: () => openCodeMap(this.extensionUri, this.mapActions),
+    show_code_map: (m) => showCodeMap(m.map, m.session, m.focus, this.extensionUri, this.mapActions),
     code_map_unavailable: (m) => codeMapUnavailable(m.reason),
     code_map_stale: () => codeMapStale(),
   };

@@ -292,6 +292,31 @@ def read(git_dir: str, work_tree: str, snapshot_id: str, rel: str) -> str | None
     return r.stdout if r.returncode == 0 else None
 
 
+def read_all(git_dir: str, work_tree: str, snapshot_id: str) -> dict[str, str]:
+    """Every file *snapshot_id* holds, by path, read in one git call (``cat-file --batch``)
+    rather than one per file; {} when it cannot be read."""
+    rels = listing(git_dir, work_tree, snapshot_id) or []
+    if not rels or _copy_dir(git_dir, snapshot_id):
+        return {rel: text for rel in rels if (text := read(git_dir, work_tree, snapshot_id, rel)) is not None}
+    argv = ["git", "--git-dir", git_dir, "--work-tree", work_tree, "cat-file", "--batch"]
+    r = proc_run.run(argv, timeout=_GIT_TIMEOUT_S, cwd=work_tree, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, input="".join(f"{snapshot_id}:{rel}\n" for rel in rels).encode())
+    if r.returncode != 0:
+        return {}
+    out: dict[str, str] = {}
+    data, at = r.stdout, 0
+    for rel in rels:
+        end = data.index(b"\n", at)
+        head = data[at:end]
+        at = end + 1
+        if not head.endswith(b"blob " + head.rsplit(b" ", 1)[-1]):    # "<name> missing"
+            continue
+        size = int(head.rsplit(b" ", 1)[-1])
+        out[rel] = data[at:at + size].decode("utf-8", errors="replace")
+        at += size + 1
+    return out
+
+
 def changed(git_dir: str, work_tree: str, a: str, b: str) -> list[str] | None:
     """The paths whose content differs between two snapshots, added and removed ones
     included; None when either cannot be read."""

@@ -587,8 +587,9 @@ each card; a card opens the full map on its component (`focus`, carried from the
 through `show_code_map` to the tab), which the tab selects as it does a band clicked on
 the map: its modules and their neighbours stand out, and the side pane shows the
 component — tier, build links, time, rule breaks, cycles, modules, the components it
-depends on and is used by. The section gets an "Open map" button: the drawer sends `code_map` over the socket, the
-server answers the map whole, and the webview hands it to the host as `show_code_map`.
+depends on and is used by. The section gets an "Open map" button: the webview has the host open the tab at once
+(`open_code_map`), which says it is mapping the code, and sends `code_map` over the socket;
+the server answers the map whole, and the webview hands it to the host as `show_code_map`.
 `codeMapView.ts` draws it in one editor tab, its own bundle (`dist/codemap.js`, from
 `webview/src/codemap/`, plain TypeScript; `codemap/index.ts` holds the tab's state and draws, `codemap/layout.ts` places the boxes and curves, `codemap/svgText.ts` fits names to a box, `codemap/format.ts` escapes and writes the percentages for every part): the modules in bands, one per component
 stacked by tier, every dependency between them coloured by kind (grey, a binding across

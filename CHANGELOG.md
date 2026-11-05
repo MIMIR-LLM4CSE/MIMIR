@@ -102,6 +102,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **Starting MIMIR shows, and the first code map comes sooner.** Opening the drawer before
+  the first query builds the agent (the model backend and every MCP server), and nothing
+  said so: the "Starting MIMIR" line showed only during a turn, and the context bar stayed
+  grey, provisional, until a query. The line now shows whatever starts the agent, and the
+  bar is filled as soon as it is up. **Open map** opens its tab at once, saying it is
+  mapping the code, instead of nothing until the answer. The proxy server reads each
+  snapshot's files in one git call rather than one per file, and builds the map's
+  optimisation steps in the background as it starts, so the first open does not wait on
+  them.
 - **The code map answers at once.** A click that only selects (a module, a component,
   a file, a request) restyled nothing and drew the whole map again, measuring each box's
   name and functions by laying the page out at every letter cut; widening the tab did the

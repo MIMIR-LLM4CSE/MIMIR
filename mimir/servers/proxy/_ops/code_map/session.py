@@ -9,6 +9,7 @@ it as it was kept (``freeze``).
 from __future__ import annotations
 
 import os
+import threading
 
 from .....shared import code_map
 from ..._lib import history, profiling, tree_snapshot
@@ -19,6 +20,10 @@ from ..._lib.store import load_opt_config, opt_git_dir, opt_ledger_file, workspa
 from . import profile
 
 _CACHE: dict[str, tuple[tuple, dict]] = {}
+# One build per proxy at a time: a call that arrives during the warm-up at start waits for
+# it rather than reading every snapshot again.
+_BUILDING: dict[str, threading.Lock] = {}
+_GUARD = threading.Lock()
 _EDGE_FIELDS = ("from", "to", "line", "kind", "via", "sure", "breaks")
 
 
@@ -40,12 +45,16 @@ def session(proxy_name: str = "") -> dict:
         stamp = (os.path.getmtime(opt_ledger_file(name)), _profiles_stamp(name))
     except OSError:
         return {}
-    cached = _CACHE.get(name)
-    if cached and cached[0] == stamp:
-        return cached[1]
-    value = _build(name)
-    _CACHE[name] = (stamp, value)
-    return value
+    with _GUARD:
+        lock = _BUILDING.setdefault(name, threading.Lock())
+    with lock:
+        cached = _CACHE.get(name)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        value = _build(name)
+        _CACHE[name] = (stamp, value)
+        return value
+
 
 
 def _build(name: str) -> dict:
@@ -101,11 +110,8 @@ def _edges_at(root: str, snapshot_id: str, memo: dict[str, dict]) -> dict:
     """The code map's edges with the tracked files as *snapshot_id* holds them, keyed by
     (from, to, kind); the rest of the tree is read from disk."""
     if snapshot_id not in memo:
-        git = opt_git_dir()
-        held = tree_snapshot.listing(git, root, snapshot_id) or []
-        texts = {rel: tree_snapshot.read(git, root, snapshot_id, rel) for rel in held}
-        m = code_map.scan(root, overrides={rel: t for rel, t in texts.items()
-                                           if code_map.language_of(rel) and t is not None})
+        texts = tree_snapshot.read_all(opt_git_dir(), root, snapshot_id)
+        m = code_map.scan(root, overrides={rel: t for rel, t in texts.items() if code_map.language_of(rel)})
         memo[snapshot_id] = {(e["from"], e["to"], e["kind"]): e for e in m["edges"]}
     return memo[snapshot_id]
 
