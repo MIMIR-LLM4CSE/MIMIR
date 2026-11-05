@@ -1,9 +1,11 @@
 // A merge of proxies on the map: each proxy's gain alone on the left, the files two of them
 // share and their conflicts as arcs between them, and the whole on the right with the gain
 // it was expected to bring and the one measured. Without a measurement (proxies ticked, not
-// merged yet) it is the forecast: what merging them promises and what stands in the way.
+// merged yet) it is the forecast: what merging them promises and what stands in the way,
+// and a Merge button that asks the agent for it.
 
 import { esc, pct } from "./format";
+import { mergePrompt } from "./picker";
 
 /** A relative is a value against its baseline, lower is better whatever the goal: 0.8 is
  *  a fifth better. */
@@ -76,6 +78,16 @@ function summary(expected: number, m: MergeState | null, f: Forecast | null): st
   return parts.join(" · ");
 }
 
+/** The forecast's Merge button: what it puts to the agent, the proxies the forecast keeps;
+ *  disabled when they are fewer than two or the server refuses to merge them. */
+function mergeButton(f: Forecast): string {
+  const names = f.sources.map((s) => s.proxy);
+  const ok = names.length > 1 && !f.refusal;
+  return '<button class="open merge-go" data-prompt="' + esc(ok ? mergePrompt(names) : "") + '"' + (ok ? "" : " disabled")
+    + ' title="' + (ok ? "Ask the agent to merge them in a copy of its own and measure the whole" : "Nothing these proxies can merge")
+    + '">Merge' + (ok ? " " + names.length : "") + "</button>";
+}
+
 /** The graph, *width* pixels wide: a merge session's (it has a phase) or a forecast. */
 export function mergeGraph(shown: MergeState | Forecast, width = 760): string {
   const m = "phase" in shown ? shown : null, f = "phase" in shown ? null : shown;
@@ -124,5 +136,5 @@ export function mergeGraph(shown: MergeState | Forecast, width = 760): string {
     + (m ? '<span><i class="sw link-syn"></i>better in the merge than alone</span><span><i class="sw link-intf"></i>worse in the merge than alone</span>' : "")
     + "</div>";
   return '<div class="merge"><div class="session-head"><div class="title">' + (m ? "Merge" : "Merge forecast") + '</div><span class="sum">'
-    + summary(expected, m, f) + "</span></div>" + '<div class="chart-wrap">' + svg + "</div>" + legend + "</div>";
+    + summary(expected, m, f) + "</span>" + (f ? mergeButton(f) : "") + "</div>" + '<div class="chart-wrap">' + svg + "</div>" + legend + "</div>";
 }

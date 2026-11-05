@@ -685,7 +685,8 @@ with the proxy-merge skill. Above the strip, `merge.ts` draws a merge: each prox
 alone, the files two of them share and their conflicts as arcs, a link to the whole
 coloured by what the proxy did in it (kept, better or worse than alone, set aside), and
 the whole with the gain expected and the one measured. For proxies ticked and not merged
-it draws the server's `forecast` the same way, unmeasured. An answer
+it draws the server's `forecast` the same way, unmeasured, with its own **Merge**: the
+same prompt for the proxies the forecast keeps, disabled when it refuses. An answer
 that holds other steps than the pick (the drawer's **Open map** asks for the active
 session's) is asked again once with the pick. Every proxy at once lays the steps out in
 the order they settled, each named with its proxy and valued as a multiple of its

@@ -59,12 +59,20 @@ describe("the merge graph", () => {
     expect(html).toContain("Merge forecast");
     expect(html).toContain("never measured");
     expect(html).toContain("left out: pd");
+    // Its Merge button asks the agent for the proxies it keeps.
+    expect(html).toContain(">Merge 3</button>");
+    expect(html).toContain("proxy_merge(op='plan', proxies=['pa', 'pc', 'pb'])");
   });
 
   it("says why a forecast cannot be measured", () => {
     const html = mergeGraph({ sources, pairs, expected: 0.612, refusal: "pa and pb have a different metric" });
     expect(html).toContain("pa and pb have a different metric");
     expect(html).not.toContain("expected together");
+    expect(html).toMatch(/data-prompt="" disabled/);
+  });
+
+  it("has no Merge button once the merge runs", () => {
+    expect(mergeGraph(chain)).not.toContain("merge-go");
   });
 
   it("writes a gain from a relative", () => {

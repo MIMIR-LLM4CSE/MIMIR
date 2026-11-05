@@ -799,6 +799,9 @@ function renderSession(): void {
   el.querySelectorAll<HTMLElement>("[data-scope]").forEach((b) => b.addEventListener("click", () => {
     scope = b.dataset.scope === "all" ? "all" : "step"; render();
   }));
+  el.querySelectorAll<HTMLButtonElement>("[data-prompt]").forEach((b) => b.addEventListener("click", () => {
+    if (!b.disabled) vscode.postMessage({ type: "prompt", text: b.dataset.prompt! });
+  }));
 }
 
 let view: View | null = null;

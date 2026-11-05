@@ -124,6 +124,7 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .session[hidden] { display: none; }
 .session-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
 .session-head .title { margin: 0; }
+.merge-go { margin: 0 0 0 auto; }
 .session .title::before { background: #f2663a; }
 .sum { font-size: 12px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
 .sum b { color: var(--fg); font-weight: 600; }
