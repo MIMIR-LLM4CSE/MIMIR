@@ -177,7 +177,7 @@ class AgentLoop(StepLoop):
                 return ended
             # Trim/compact again after the results so history stays bounded between
             # steps; the enforcement before each call is what guarantees the fit.
-            self.enforce_budget(self.tools)
+            await self._off_loop(self.enforce_budget, self.tools)
             self.step += 1
 
         # Only a caller-supplied budget running out gets here; every other exit (a

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
@@ -644,8 +645,9 @@ class MimirAgent:
         ]
 
         try:
-            msg = get_backend().chat(
-                self.model, messages, [], False, False, {"temperature": 0.2},
+            # Off the loop: a summary is a whole model call.
+            msg = await asyncio.to_thread(
+                get_backend().chat, self.model, messages, [], False, False, {"temperature": 0.2},
                 token_callback=_discard_token,
             )
         except Exception:

@@ -6,6 +6,8 @@ mode does with the answer. A mode change returns a :class:`ModeSwitch` to the dr
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -330,20 +332,33 @@ class StepLoop:
             context_ceiling=self.context_ceiling,
         )
 
+    async def _off_loop(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """*fn* in a thread: a model call blocks for its whole stream, and on the loop it
+        held up everything else the loop serves (the code map, the panel, the tools' MCP
+        reads). Cancelled, it is waited out (the cancel flag stops a stream at its next
+        chunk) so nothing touches the history once the turn has ended."""
+        fut = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            with contextlib.suppress(BaseException):
+                await fut
+            raise
+
     async def call_model(self, tools: list[dict], *, may_refuse: bool
                          ) -> tuple[dict, DraftHold | None]:
         """One model call, within the budget; returns the message and the hold its prose sits in.
 
         When the loop *may_refuse* a bare answer, its prose is held off the screen.
         """
-        self.enforce_budget(tools)
+        await self._off_loop(self.enforce_budget, tools)
         callbacks = self.turn.callbacks
         hold = (DraftHold(callbacks["token_callback"])
                 if may_refuse and callbacks.get("token_callback") is not None else None)
         step_callbacks = {**callbacks, "token_callback": hold.capture} if hold else callbacks
         try:
-            msg = stream_chat(
-                self.turn.model, self.messages, tools, self.thinking,
+            msg = await self._off_loop(
+                stream_chat, self.turn.model, self.messages, tools, self.thinking,
                 self.turn.streaming, self.step_options(),
                 cancel_flag=self.agent.turn.cancel_flag,
                 on_retry=hold.discard if hold else None,

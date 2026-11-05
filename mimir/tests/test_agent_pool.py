@@ -589,6 +589,36 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         await sess.panel.on_panel_call({"tool": "slurm_schedulers", "args": {"forget": "hpc1"}})
         self.assertEqual(calls, [("slurm_schedulers", {"forget": "hpc1"})])
 
+    async def test_a_map_ask_does_not_hold_the_read_loop(self) -> None:
+        """The map is built beside the read loop: picking another proxy while one map is
+        on its way is read at once, and each answer goes out as it lands."""
+        import asyncio
+        import concurrent.futures
+        import types
+        from mimir.tests.support.connections import bare_session
+        pool = self._pool(cap=1)
+        worker = await pool.worker_for("s1")
+        pending: list[concurrent.futures.Future] = []
+
+        def _code_map(args):
+            fut: concurrent.futures.Future = concurrent.futures.Future()
+            pending.append(fut)
+            return fut
+        worker.panel = types.SimpleNamespace(code_map=_code_map)
+        sess = bare_session(pool, active="s1")
+        await asyncio.wait_for(sess.panel.on_code_map({"type": "code_map", "proxy": "pa"}), 0.2)
+        await asyncio.wait_for(sess.panel.on_code_map({"type": "code_map", "proxy": "pb"}), 0.2)
+        await asyncio.sleep(0)
+        self.assertEqual(len(pending), 2)
+        pending[1].set_result({"map": {"files": []}, "session": {"proxy": "pb"}})
+        pending[0].set_result({"map": {"files": []}, "session": {"proxy": "pa"}})
+        for _ in range(20):
+            if len([m for m in sess.ws.sent if m.get("type") == "code_map"]) == 2:
+                break
+            await asyncio.sleep(0.01)
+        maps = [m["session"]["proxy"] for m in sess.ws.sent if m.get("type") == "code_map"]
+        self.assertEqual(maps, ["pb", "pa"])
+
     async def test_returning_to_a_conversation_reuses_its_agent(self) -> None:
         """Its context is live, so coming back is instant and costs no rebuild."""
         pool = self._pool(cap=2)

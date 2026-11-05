@@ -1130,6 +1130,50 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
         self.assertEqual(len(backend.calls), 2)     # tool-call step, then final answer
 
 
+class ModelCallOffTheLoopTests(RunAgentQueryNonInteractiveTests):
+    """A model call blocks for its whole stream; on the loop it held up everything else
+    the loop serves (the code map a pick asks for, the panel), until it ended."""
+
+    def test_the_loop_answers_while_the_model_streams(self) -> None:
+        import time
+
+        class _Slow(ScriptedBackend):
+            def chat(self, *a, **k):
+                time.sleep(1.0)
+                return super().chat(*a, **k)
+
+        agent = self._query_agent()
+        backend = _Slow([{"content": "final answer"}])
+        lags: list[float] = []
+
+        async def _ticker(stop: asyncio.Event) -> None:
+            while not stop.is_set():
+                t = time.monotonic()
+                await asyncio.sleep(0.02)
+                lags.append(time.monotonic() - t)
+
+        async def _both() -> str:
+            stop = asyncio.Event()
+            tick = asyncio.ensure_future(_ticker(stop))
+            try:
+                return await turn_module.run_agent_query(agent=agent, query="q", max_steps=2)
+            finally:
+                stop.set()
+                await tick
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
+             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: []), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            result = asyncio.run(_both())
+
+        self.assertEqual(result, "final answer")
+        self.assertGreater(len(lags), 10)          # the ticker kept running through the call
+        self.assertLess(max(lags), 0.5)
+
+
 class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
     """What a query costs in model calls before its first step, and what /name does.
 

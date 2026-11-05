@@ -107,8 +107,17 @@ class PanelHandlers(Handlers):
         picked = msg.get("proxies")
         if isinstance(picked, list) and all(isinstance(p, str) for p in picked) and len(picked) > 1:
             steps_args["proxies"] = picked
-        result = await asyncio.wrap_future(self.screen.worker.panel.code_map(steps_args))
-        await self.out.send({"type": "code_map", **result})
+        # Served beside the read loop, not in it: the editor's next message (another pick,
+        # a stop) is read while the map is built. Answers that cross are the tab's to
+        # sort out: one that does not hold its pick is asked again.
+        self.out.schedule(self._serve_code_map(steps_args))
+
+    async def _serve_code_map(self, steps_args: dict) -> None:
+        try:
+            result = await asyncio.wrap_future(self.screen.worker.panel.code_map(steps_args))
+            await self.out.send({"type": "code_map", **result})
+        except Exception:
+            logger.debug("code map: a best-effort step failed and was skipped", exc_info=True)
 
     def _request_panel(self, *, refresh: bool = False) -> None:
         """Have a panel report sent, without waiting for it."""

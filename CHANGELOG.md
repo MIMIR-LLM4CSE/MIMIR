@@ -107,6 +107,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **The code map answers while the agent thinks.** A pick, a tick or a refresh waited for
+  the model call under way to end: the call streamed synchronously on the loop the map is
+  built on, and the editor's connection read nothing else while a map was on its way. The
+  model call and the history's compaction run in a thread, and the map is served beside
+  the connection's read loop.
 - **A proxy's patch holds only its own files.** Sub-agents work in copies of their own but
   keep one snapshot store, whose single index every snapshot committed whole: a proxy's
   best tree carried the files another proxy had staged from its copy, and the merge
