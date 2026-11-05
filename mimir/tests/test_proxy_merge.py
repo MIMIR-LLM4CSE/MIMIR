@@ -132,6 +132,9 @@ class PlanTests(_MergeFixture):
         self.assertEqual((apart["shared"], apart["conflicts"]), ([], []))
         self.assertIn("spawn_agent", res["next_step"])
         self.assertIn("ask_user_question", res["next_step"])
+        # One after the other in one tree: nothing to warn of.
+        self.assertFalse(any(p["together"] for p in res["pairs"]))
+        self.assertEqual(res["warnings"], [])
 
     def test_a_proxy_with_nothing_kept_is_set_aside(self) -> None:
         server_proxy.proxy_manage(op="register", name="pd", executable_path=self.harness,
@@ -324,6 +327,26 @@ class MergeRunTests(_MergeFixture):
         self.assertEqual(drawn["selected"], ["pa", "pb"])
         self.assertEqual([s["proxy"] for s in drawn["forecast"]["sources"]], ["pa", "pb"])
         self.assertEqual(drawn["forecast"]["refusal"], "")
+
+
+class TogetherTests(unittest.TestCase):
+    """Two proxies that ran at the same time in one tree, on a file both change."""
+
+    def _src(self, root: str, start: str, end: str) -> dict:
+        return {"root": root, "span": [f"2026-11-05T{start}:00+00:00", f"2026-11-05T{end}:00+00:00"]}
+
+    def test_only_the_same_tree_at_the_same_time(self) -> None:
+        a = self._src("/w", "10:00", "12:00")
+        self.assertTrue(merge_sources.together(a, self._src("/w", "11:00", "13:00")))
+        self.assertFalse(merge_sources.together(a, self._src("/w", "12:30", "13:00")))     # one after the other
+        self.assertFalse(merge_sources.together(a, self._src("/copy", "11:00", "13:00")))  # copies of their own
+        self.assertFalse(merge_sources.together(a, {"root": "/w", "span": []}))
+
+    def test_the_plan_warns_of_a_pair_that_ran_together(self) -> None:
+        said = merge.warnings([{"a": "pa", "b": "pb", "shared": ["a.py"], "conflicts": [], "together": True},
+                               {"a": "pa", "b": "pc", "shared": ["a.py"], "conflicts": ["a.py"], "together": False}])
+        self.assertEqual(len(said), 1)
+        self.assertIn("pa and pb ran at the same time in the same tree and both change a.py", said[0])
 
 
 class LegacyMergeTests(unittest.TestCase):

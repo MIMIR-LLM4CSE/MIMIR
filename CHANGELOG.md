@@ -29,7 +29,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`total_time_s`, a new run-level metric). A kernel that lost its gain is put to the
   user, who may `drop` its proxy; nothing is set aside on its own. Work already committed on
   the branch is taken out before the copy is measured untouched, so its kernel is not
-  judged against itself. A merge leaves its
+  judged against itself. Two proxies that ran at the same time in one tree, on a file
+  both change, are flagged in the plan, the report and the map: each one's patch and gain
+  alone may hold the other's work. A merge leaves its
   branch and its proxy, whose suite and per-source entries go with its `clean`. The
   proxy-merge skill has the protocol.
 - **The code map's proxy picker is a list.** The plain dropdown gave a name and nothing

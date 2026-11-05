@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from datetime import datetime
 
 from .._lib import history, tree_snapshot
 from .._lib.ratchet import baseline_value, load_best, read_ledger, relative
@@ -48,8 +49,27 @@ def source(name: str) -> tuple[dict | None, str]:
         "suite": cfg.get("benchmark_name", ""), "requirements": cfg.get("requirements") or [],
         "base_value": base_value, "value": best.get("primary_value"), "run_id": best.get("run_id", ""),
         "relative": rel, "baseline_id": cfg["baseline_id"], "tree": best["tree_snapshot"],
-        "files": files,
+        "files": files, "root": root_of(cfg), "span": span(read_ledger(name)),
     }, ""
+
+
+def span(rows: list[dict]) -> list[str]:
+    """When a session ran: its first and last ledger rows' times, [] without any."""
+    ts = sorted(r["ts"] for r in rows if isinstance(r.get("ts"), str) and r["ts"])
+    return [ts[0], ts[-1]] if ts else []
+
+
+def together(a: dict, b: dict) -> bool:
+    """Whether *a* and *b* ran at the same time in the same tree: a snapshot of one then
+    held, in a file both change, what the other had on disk, so its patch and its gain
+    alone may hold the other's work."""
+    if not (a.get("root") and a.get("root") == b.get("root") and a.get("span") and b.get("span")):
+        return False
+    try:
+        (a0, a1), (b0, b1) = ([datetime.fromisoformat(t) for t in x["span"]] for x in (a, b))
+    except ValueError:
+        return False
+    return a0 <= b1 and b0 <= a1
 
 
 def root_of(cfg: dict) -> str:
@@ -109,7 +129,8 @@ def merge3(ours: str | None, base: str | None, theirs: str | None) -> str | None
 
 
 def pairs(sources: list[dict]) -> list[dict]:
-    """For each two sources: the files both touch, and those whose two patches conflict."""
+    """For each two sources: the files both touch, those whose two patches conflict, and
+    whether they ran at the same time in the same tree (``together``)."""
     out = []
     for i, a in enumerate(sources):
         for b in sources[i + 1:]:
@@ -120,7 +141,8 @@ def pairs(sources: list[dict]) -> list[dict]:
                     merge3(_read(a["tree"], rel), _read(b["baseline_id"], rel), _read(b["tree"], rel))
                 except Conflict:
                     conflicts.append(rel)
-            out.append({"a": a["proxy"], "b": b["proxy"], "shared": shared, "conflicts": conflicts})
+            out.append({"a": a["proxy"], "b": b["proxy"], "shared": shared, "conflicts": conflicts,
+                        "together": bool(shared) and together(a, b)})
     return out
 
 

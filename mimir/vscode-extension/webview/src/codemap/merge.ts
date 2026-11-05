@@ -10,7 +10,8 @@ import { mergePrompt } from "./picker";
 /** A relative is a value against its baseline, lower is better whatever the goal: 0.8 is
  *  a fifth better. */
 export interface MergeSource { proxy: string; branch?: string; suite?: string; relative: number; files: string[] }
-export interface MergePair { a: string; b: string; shared: string[]; conflicts: string[] }
+/** *together*: they ran at the same time in one tree, so each one's patch may hold the other's work. */
+export interface MergePair { a: string; b: string; shared: string[]; conflicts: string[]; together?: boolean }
 /** A proxy's kept patch picked into the merge: the files git stopped on, and how they were resolved. */
 export interface Merged { proxy: string; commit?: string; conflicts: string[]; resolution: string }
 /** One case of a source's suite: its gain alone, in the merge, and their ratio. */
@@ -89,7 +90,10 @@ function summary(shown: MergeState | Forecast, m: MergeState | null, f: Forecast
     if (flagged.length) parts.push("lost gain: " + esc(flagged.join(", ")));
     if ((m.dropped ?? []).length) parts.push("taken back out: " + esc((m.dropped ?? []).join(", ")));
   }
-  if (f?.refused?.length) parts.push("left out: " + f.refused.map((r) => esc(r.proxy) + " (" + esc(r.why) + ")").join(", "));
+  const together = shown.pairs.filter((p) => p.together);
+  if (together.length) parts.push('<span class="warn" title="Each one\'s patch and gain alone may hold the other\'s work">ran together: '
+    + together.map((p) => esc(p.a) + " + " + esc(p.b)).join(", ") + "</span>");
+    if (f?.refused?.length) parts.push("left out: " + f.refused.map((r) => esc(r.proxy) + " (" + esc(r.why) + ")").join(", "));
   return parts.join(" · ");
 }
 
@@ -119,7 +123,8 @@ export function mergeGraph(shown: MergeState | Forecast, width = 760): string {
     const done = p.conflicts.length ? resolution(p, m) : undefined;
     const kind = !p.conflicts.length ? "shared" : done ? "resolved" : "conflict";
     drawn.add(kind);
-    const tip = p.a + " and " + p.b + (kind === "shared" ? " both change " + p.shared.join(", ")
+    const tip = (p.together ? "ran at the same time in one tree: each one's patch may hold the other's work. " : "")
+      + p.a + " and " + p.b + (kind === "shared" ? " both change " + p.shared.join(", ")
       : kind === "resolved" ? " conflicted on " + p.conflicts.join(", ") + ", resolved: " + done!.resolution
       : " conflict on " + p.conflicts.join(", ") + ": to resolve when merged");
     return '<path class="arc ' + kind + '" d="M' + boxX + "," + f1(ya) + " C" + f1(boxX - depth) + "," + f1(ya) + " "

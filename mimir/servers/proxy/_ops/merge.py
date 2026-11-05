@@ -60,15 +60,27 @@ def _brief(names: list[str]) -> str:
     )
 
 
+def warnings(pairs: list[dict]) -> list[str]:
+    """What the user is to know before trusting a merge: proxies that ran at the same time
+    in one tree, on a file both change."""
+    return [f"{p['a']} and {p['b']} ran at the same time in the same tree and both change "
+            f"{', '.join(p['shared'])}: each one's kept patch, and its gain alone, may hold the other's "
+            "work. A conflict between them may be with the other's state of the moment, and their "
+            "kernels' gain in the merge against alone says less. Tell the user before merging."
+            for p in pairs if p.get("together")]
+
+
 def plan(names: list[str]) -> dict:
     sources, refused, refusal = merge_sources.gather(names)
     if refusal:
         return err(refusal, refused=refused)
     picked = [s["proxy"] for s in sources]
+    pairs = merge_sources.pairs(sources)
     return ok(with_next({
         "sources": [merge_sources.public(s) for s in sources],
         "refused": refused,
-        "pairs": merge_sources.pairs(sources),
+        "pairs": pairs,
+        "warnings": warnings(pairs),
         "order": picked,
         "brief": _brief(picked),
         "note": ("Each proxy's kept patch is merged with git, one after the other, best alone first. "
@@ -534,6 +546,7 @@ def report(name: str = "") -> dict:
         "conflict": state.get("conflict"),
         "question": state.get("question"),
         "kernels": kernels,
+        "warnings": warnings(state.get("pairs", [])),
         "whole": {**whole, "gain": round(1 - whole["relative"], 6) if whole.get("relative") else None},
     }
     if state["phase"] != "done":

@@ -690,7 +690,8 @@ against the copy untouched. While it runs, the summary says where it stands (the
 untouched being measured, merging n of m, the conflict it stopped on, the question it
 waits on); measured, which proxies lost gain and which were taken back out. For proxies
 ticked and not merged it draws the server's `forecast` the same way, unmeasured, with
-the conflicts to resolve and its own **Merge** for every proxy ticked. The legend names
+the conflicts to resolve and its own **Merge** for every proxy ticked. Two proxies that ran at the same time in one tree (`together`) are named in the summary
+("ran together") and their arc's tooltip says why it matters. The legend names
 only what the graph draws. A merge frozen before merges were git's is read through
 `tab.merge_view` as done. The tab watches `merge.json` with the ledgers (`BENCH_GLOB`),
 so a conflict, its resolution or a pause in a sub-agent's merge shows at once. An answer

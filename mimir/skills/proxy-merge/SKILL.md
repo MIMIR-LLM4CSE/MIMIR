@@ -26,7 +26,10 @@ measured on its own cases.
 `proxy_merge(op='plan', proxies=[...])`, or `proxies=['*']` for every proxy. It is
 read-only. It answers with each proxy's gain alone and files, the files two of them
 share and the `conflicts` git will stop on, and the `brief` to hand to a sub-agent.
-Tell the user what it found, the conflicts especially, then:
+Tell the user what it found, the conflicts especially, and every `warnings` entry: two
+proxies that ran at the same time in the same tree, on a file both change, each
+snapshotted what the other had on disk, so one's patch and gain alone may hold the
+other's work, and nothing in the merge can tell them apart. Then:
 
 `spawn_agent(task=<brief>, tools=<the tools the plan names>, background=True)`.
 

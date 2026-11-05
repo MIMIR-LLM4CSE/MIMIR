@@ -92,6 +92,13 @@ describe("the merge graph", () => {
     expect(html).not.toContain("mlegend");
   });
 
+  it("warns of proxies that ran together in one tree", () => {
+    const html = mergeGraph({ sources, pairs: [{ ...pairs[0], together: true }, pairs[1], pairs[2]] });
+    expect(html).toContain("ran together: pa + pc");
+    expect(html).toContain("ran at the same time in one tree");
+    expect(mergeGraph({ sources, pairs })).not.toContain("ran together");
+  });
+
   it("has no Merge button once the merge runs", () => {
     expect(mergeGraph(done)).not.toContain("merge-go");
   });
