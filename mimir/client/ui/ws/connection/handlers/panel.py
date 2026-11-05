@@ -49,6 +49,9 @@ class PanelHandlers(Handlers):
         self._panel_again: dict | None = None
         # The calls the last report offered as buttons: the only ones `panel_call` runs.
         self._offered: set[str] = set()
+        # The reader's pick per section (which proxy the Optimisation section shows), as
+        # the webview last sent it: every report is asked with it, its own or not.
+        self._choices: dict[str, str] = {}
 
     async def on_command_msg(self, msg: dict) -> None:
         await self.run_command((msg.get("text") or "").strip())
@@ -88,10 +91,13 @@ class PanelHandlers(Handlers):
     async def on_list_panel(self, msg: dict) -> None:
         """Serve the scientific panel: the servers' sections plus the runs the watchers hold.
 
-        ``build`` starts the agent without waiting (the report follows once it lands);
-        ``refresh`` re-reads past the servers' caches. Reports are served in the background,
-        concurrent asks folded into one pass.
+        ``build`` starts the agent without waiting; ``refresh`` re-reads past the servers'
+        caches; ``choices`` is the reader's pick per section, kept for the reports after.
+        Served in the background, concurrent asks folded into one pass.
         """
+        choices = msg.get("choices")
+        if isinstance(choices, dict):
+            self._choices = {str(k): v for k, v in choices.items() if isinstance(v, str) and v}
         if msg.get("build") and self.pool.get(self.view.active_session_id) is None:
             self.out.schedule(self._report_panel_once_built(self.screen.ensure_worker()))
         self._request_panel(refresh=bool(msg.get("refresh")))
@@ -145,7 +151,8 @@ class PanelHandlers(Handlers):
         # One worker for the whole report: the agent may land during the await, and a
         # report read off the stand-in must not then claim to be the agent's.
         worker = self.screen.worker
-        sections = await asyncio.wrap_future(worker.panel.sections(force=refresh))
+        sections = await asyncio.wrap_future(
+            worker.panel.sections(force=refresh, choices=self._choices))
         agent_ready = worker.agent_ready()
         self._offered = offered_calls(sections)
         # The one place both halves exist: what a cluster is made of came from a

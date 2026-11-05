@@ -4526,6 +4526,26 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .science-line-label { color: var(--fg-dim); flex: 0 1 auto; max-width: 55%; }
 
+/* Which of the section's subjects it shows (the Optimisation section's proxy). */
+.science-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 3px 0 5px;
+}
+
+.science-choice select {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--vscode-dropdown-background, var(--bg));
+  color: var(--vscode-dropdown-foreground, var(--fg));
+  border: 1px solid var(--vscode-dropdown-border, var(--border, transparent));
+  border-radius: 3px;
+  padding: 2px 4px;
+  font: inherit;
+}
+
 /* A server's table (a cluster's partitions): numbers right-aligned so they compare down
    a column; it scrolls sideways rather than wrapping in a narrow drawer. */
 .science-table-wrap { overflow-x: auto; margin: 2px 0 6px; }

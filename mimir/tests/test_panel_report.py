@@ -89,6 +89,11 @@ class TestTheServersThatFillIt:
         by_section = {spec["section"] for spec in sections.values()}
         assert {"Optimisation", "Machine"} <= by_section
 
+    def test_the_optimisation_section_takes_the_readers_pick_of_proxy(self):
+        sections = dict(panel_sections(self._declared()))
+        spec = next(s for s in sections.values() if s["section"] == "Optimisation")
+        assert spec["choice_arg"] == "proxy_name"
+
     def test_every_panel_tool_is_read_only(self):
         """The panel is a drawer the user opens, not a step the agent takes."""
         declared = self._declared()
@@ -226,6 +231,42 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
         # costs that server its whole section.
         {"tool": "machine"},
     ]
+
+
+def test_the_readers_pick_reaches_only_the_section_that_offers_one():
+    """Which proxy the Optimisation section shows is the reader's: the pick travels as the
+    argument the tool declared, to that section alone, and the choice comes back unread."""
+    import asyncio
+    from mimir.client.ui.ws.worker.worker import AgentWorker
+
+    seen: list[dict] = []
+    choice = {"label": "proxy", "value": "b", "options": [{"value": "", "label": "follow"}]}
+
+    class Connection:
+        async def call_tool(self, tool, args):
+            seen.append({"tool": tool, **args})
+            return _mcp({"lines": [{"label": "l", "value": "v"}], "choice": choice})
+
+    agent = fake_agent(
+        tool_caps=_caps(optim={"section": "Optimisation", "order": 10, "choice_arg": "proxy_name"},
+                        machine={"section": "Machine", "order": 20, "choice_arg": "x"}),
+        tool_owner={"optim": "proxy", "machine": "platform"},
+        sessions={"proxy": Connection(), "platform": Connection()}, turn=TurnState())
+    loop = asyncio.new_event_loop()
+    worker = AgentWorker("test-model", start=False)
+    worker._agent = agent
+    worker._loop = loop
+
+    sections = []
+    for choices in (None, {"Optimisation": "b"}):
+        future = worker.panel.sections(choices=choices)
+        _drain(loop, future)
+        sections = future.result(timeout=5)
+    loop.close()
+
+    assert seen == [{"tool": "optim"}, {"tool": "machine"},
+                    {"tool": "optim", "proxy_name": "b"}, {"tool": "machine"}]
+    assert sections[0]["choice"] == choice
 
 
 def test_a_refresh_drops_the_digest_that_outlives_every_other_cache():

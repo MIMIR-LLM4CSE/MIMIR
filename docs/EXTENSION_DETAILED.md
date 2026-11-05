@@ -584,6 +584,16 @@ shaded. Hovering a run's column reads it out below the plot (number, axis, value
 went); otherwise the latest run is read out. The plot takes the drawer's width from a
 `ResizeObserver`, so its marks stay round. The client passes `chart` through unread.
 
+**A section may offer a pick.** A section answering a `choice` (`{label, value, options}`,
+`PanelChoice`) gets a selector at its head: the Optimisation section offers *the agent's
+active proxy* (`""`, the conversation's pointer, which no run moves) and every proxy with
+a session, when there are several. The pick is the reader's: `usePanels` keeps it per
+section (`choosePanel`, in `localStorage` across reloads) and sends it with every
+`list_panel` as `choices`; the client
+keeps the last one for the reports it serves on its own and passes it to the section's
+tool as the argument its `panel` spec names (`choice_arg`). The server echoes the pick in
+`value`, `""` when it is no longer a session.
+
 **A section may offer a view.** A section answering `open: "code_map"` (the Architecture
 section) may also send a small `map` of it — components and the links between them —
 which `PanelMiniMap` draws in the section: cards in bands by tier, highest first, the

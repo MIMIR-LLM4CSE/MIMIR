@@ -8,6 +8,26 @@ import type { ClientMessage, PanelGroupCall, PanelSection, SubAgent, SubAgentLev
 import type { ServerHandlers } from "../state/serverMessages";
 import { vscodePostMessage } from "./useWebSocket";
 
+/** Where the reader's pins (`PanelChoice`) are kept between reloads. */
+const CHOICES_KEY = "mimir.panelChoices";
+
+function readPanelChoices(): Record<string, string> {
+  try {
+    const held = JSON.parse(window.localStorage.getItem(CHOICES_KEY) ?? "{}");
+    return held && typeof held === "object" ? held : {};
+  } catch {
+    return {};
+  }
+}
+
+function storePanelChoices(choices: Record<string, string>): void {
+  try {
+    window.localStorage.setItem(CHOICES_KEY, JSON.stringify(choices));
+  } catch {
+    // A storage that refuses keeps the pin for this window only.
+  }
+}
+
 /** How often the cards are re-read while a turn runs or a sub-agent works. */
 const SUBAGENT_POLL_MS = 2000;
 
@@ -48,14 +68,29 @@ export function usePanels(send: (msg: ClientMessage) => void,
     (call: PanelGroupCall) => send({ type: "panel_call", tool: call.tool, args: call.args }),
     [send],
   );
+  // What the reader pinned each section to (which proxy), sent with every ask and kept
+  // across reloads. A ref, so the asks keep their identity: the drawer's timers are
+  // keyed on them.
+  const panelChoices = useRef<Record<string, string>>(readPanelChoices());
   // One call fills the whole drawer from the servers' caches. `build`: before the
   // first query there is no agent holding the servers; a no-op once one is up.
-  const refreshPanel = useCallback(() => send({ type: "list_panel", build: true }), [send]);
+  const refreshPanel = useCallback(
+    () => send({ type: "list_panel", build: true, choices: panelChoices.current }),
+    [send],
+  );
   // The ⟳ alone reads past every cache, at the price of an ssh to each cluster.
   const reloadPanel = useCallback(() => {
     setPanelPending(true);
-    send({ type: "list_panel", build: true, refresh: true });
+    send({ type: "list_panel", build: true, refresh: true, choices: panelChoices.current });
   }, [send]);
+  // A pick is shown at once: the server answers with the section it names.
+  const choosePanel = useCallback((section: string, value: string) => {
+    const { [section]: _, ...rest } = panelChoices.current;
+    panelChoices.current = value ? { ...rest, [section]: value } : rest;
+    storePanelChoices(panelChoices.current);
+    setPanelPending(true);
+    refreshPanel();
+  }, [refreshPanel]);
   // A view a section offers ("code_map"): asked of the server, drawn in an editor tab
   // by the extension once the answer comes back, on the component asked for if any.
   const mapFocus = useRef<string | undefined>(undefined);
@@ -138,7 +173,7 @@ export function usePanels(send: (msg: ClientMessage) => void,
 
   return {
     subAgents, openedSubAgent, runningSubAgents, subAgentLevel, panelSections, panelRuns,
-    cancelRun, callPanel,
+    cancelRun, callPanel, choosePanel,
     panelPending, panelAgentReady, showSciencePanel, showSubAgentsPanel,
     setShowSciencePanel, setShowSubAgentsPanel, setOpenedSubAgent,
     refreshSubAgents, refreshPanel, reloadPanel, openSubAgent, changeSubAgentLevel, openView,

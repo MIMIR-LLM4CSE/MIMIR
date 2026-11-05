@@ -1,5 +1,6 @@
-"""The Optimisation panel section: where the current session stands, in this server's
-own words — the client renders the lines and knows nothing about proxies.
+"""The Optimisation panel section: where the session the reader pinned, or the agent's
+active one, stands, in this server's own words — the client renders the lines and
+knows nothing about proxies.
 """
 
 from __future__ import annotations
@@ -158,26 +159,39 @@ def comparability_lines(cfg: dict, metric: str) -> list[dict]:
     ]
 
 
-def report() -> dict:
-    """The section for the session this workspace is optimising, or a line saying none is."""
-    from .._lib.store import load_registry
+def _choice(names: list[str], picked: str, active: str | None) -> dict:
+    """The proxies the reader may pin: any by name, or the agent's active one."""
+    default = "the agent's active proxy" + (f" · {active}" if active else "")
+    return {"label": "proxy", "value": picked,
+            "options": [{"value": "", "label": default}, *({"value": n, "label": n} for n in names)]}
+
+
+def report(proxy_name: str = "") -> dict:
+    """The section for the proxy the reader pinned (*proxy_name*), else for this
+    conversation's active one; with several sessions, the choice of which to pin."""
     from .._lib.layout import resolve_proxy_name
+    from .._lib.store import initialized_sessions
     from .._lib.ratchet import load_best
 
-    name = resolve_proxy_name("")
+    names = initialized_sessions()
+    active = resolve_proxy_name("")
+    active = active if active in names else None
+    picked = proxy_name if proxy_name in names else ""
+    name = picked or active or (names[0] if len(names) == 1 else None)
+    choice = {"choice": _choice(names, picked, active)} if len(names) > 1 else {}
     if not name:
-        return ok({"title": "Optimisation", "lines": [],
-                   "detail": "No optimisation session in this workspace."})
+        return ok({"title": "Optimisation", "lines": [], **choice,
+                   "detail": "Pick the proxy to follow." if names
+                   else "No optimisation session in this workspace."})
 
     cfg = eval_session.load_opt_config(name) or {}
     state = eval_observe.status(name).get("state", "unknown")
     metric = cfg.get("primary_metric", "time_s")
     view = _session_view(name, cfg)
-    lines = [
-        {"label": "proxy", "value": name},
-        {"label": "state", "value": state,
-         "state": "running" if state in ("running", "pending") else ""},
-    ]
+    # The choice names the proxy shown when there is one to make.
+    lines = [] if choice else [{"label": "proxy", "value": name}]
+    lines.append({"label": "state", "value": state,
+                  "state": "running" if state in ("running", "pending") else ""})
     if "chart" not in view:
         # Before a step has settled the curve has nothing to draw: the metric and the
         # baseline's value say where it will start.
@@ -190,9 +204,5 @@ def report() -> dict:
         lines.append({"label": "benchmark", "value": cfg["benchmark_name"]})
     lines.extend(comparability_lines(cfg, metric))
     lines.extend(view.get("lines", []))
-    registry_names = sorted(load_registry().keys())
-    if len(registry_names) > 1:
-        lines.append({"label": "other proxies",
-                      "value": ", ".join(n for n in registry_names if n != name)})
-    return ok({"title": "Optimisation", "lines": lines,
+    return ok({"title": "Optimisation", "lines": lines, **choice,
                **({"chart": view["chart"], "open": "code_map"} if "chart" in view else {})})

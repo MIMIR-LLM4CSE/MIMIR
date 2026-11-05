@@ -234,6 +234,15 @@ def opt_sessions() -> list[str]:
     return [n for n in names if os.path.isfile(opt_ledger_file(n))]
 
 
+def initialized_sessions() -> list[str]:
+    """The proxies initialised for optimisation in this workspace, a run settled or not."""
+    try:
+        names = sorted(os.listdir(opt_runs_dir()))
+    except OSError:
+        return []
+    return [n for n in names if os.path.isfile(opt_config_file(n))]
+
+
 def opt_best_file(proxy_name: str) -> str:
     """Best-so-far pointer: opt_runs/<proxy>/best.json."""
     return os.path.join(opt_session_runs_dir(proxy_name), "best.json")

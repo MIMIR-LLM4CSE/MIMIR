@@ -60,7 +60,7 @@ DELEGATE = "delegate"                  # hands a self-contained sub-task to a fr
 MAIN_ONLY = "main_only"                # reserved to the orchestrating agent; never granted to a child
                                        # (the approved plan, the user's questions, the shared memory)
 PANEL_REPORT = "panel_report"          # fills one section of the scientific-computing panel, declared
-                                       # with a `panel` spec {"section", "order", "args", "refresh_arg"?}
+                                       # with a `panel` spec {"section", "order", "args", "refresh_arg"?, "choice_arg"?}
 CODE_MAP = "code_map"                  # answers the workspace's code map: shared.code_map's dict
                                        # when called with shared.code_map.FULL_ARGS, for the map tab
 CODE_MAP_STEPS = "code_map_steps"      # answers the optimisation session's steps for the map tab:
@@ -215,8 +215,9 @@ def _norm_panel(panel: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     norm = {"section": str(panel["section"]), "order": int(panel.get("order") or 100),
             "args": dict(panel.get("args") or {})}
-    if panel.get("refresh_arg"):
-        norm["refresh_arg"] = str(panel["refresh_arg"])
+    for key in ("refresh_arg", "choice_arg"):
+        if panel.get(key):
+            norm[key] = str(panel[key])
     return norm
 
 

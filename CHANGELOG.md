@@ -144,6 +144,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **The Optimisation section shows the proxy you pin.** It showed only this
+  conversation's active proxy, which a run launched by name on another proxy does not
+  move, so the section stayed on the earlier one with no way to look at the other. With
+  several sessions in the workspace, a selector at the head of the section pins any proxy
+  by name, or *the agent's active proxy* (moved by `init`, a re-baseline or a merge,
+  never by a run, the agent's or a sub-agent's). The pin is kept across the drawer's
+  refreshes and the window's reloads. Any section may offer such a pick: a `choice` in
+  its answer, passed back as the argument its `panel` spec names (`choice_arg`).
 - **A profile sees the code a harness starts, not the harness waiting on it.** py-spy
   followed only the harness: one that runs its code in a child process put all the run's
   time on its own line, and the code map showed nothing else. py-spy now follows the

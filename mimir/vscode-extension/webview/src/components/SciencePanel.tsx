@@ -29,6 +29,8 @@ interface Props {
   onCancelRun: (jobKey: string) => void;
   /** Run a call a row offers, once the reader confirmed it. */
   onCall: (call: PanelGroupCall) => void;
+  /** Show *value* of what a section offers to pick ("" for its server's default). */
+  onChoose: (section: string, value: string) => void;
   /** Ask again, serving whatever the servers have cached. The timer's call. */
   onRefresh: () => void;
   /** Read it all again, cache bypassed, building this conversation's agent if it has
@@ -58,6 +60,7 @@ export const SciencePanel: React.FC<Props> = ({
   runs,
   onCancelRun,
   onCall,
+  onChoose,
   onRefresh,
   onReload,
   refreshing,
@@ -182,6 +185,19 @@ export const SciencePanel: React.FC<Props> = ({
             </button>
             {isOpen && (
               <div id={bodyId} role="group">
+                {section.choice && (
+                  <label className="science-choice">
+                    <span className="science-line-label">{section.choice.label}</span>
+                    <select
+                      value={section.choice.value}
+                      onChange={(e) => onChoose(section.section, e.target.value)}
+                    >
+                      {section.choice.options.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 {section.chart && section.chart.points.length > 0 && (
                   <PanelCurve chart={section.chart} />
                 )}

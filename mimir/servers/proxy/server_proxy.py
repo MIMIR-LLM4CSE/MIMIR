@@ -956,17 +956,23 @@ def proxy_slurm(
 @mcp.tool(**tool_caps(kind="proxy",
     caps=[PANEL_REPORT],
     read_only=True,
-    panel={"section": "Optimisation", "order": 50},
+    panel={"section": "Optimisation", "order": 50, "choice_arg": "proxy_name"},
     label="Optimisation status",
 ))
-def proxy_panel_report() -> dict:
-    """Where the current optimisation stands, in a form a panel can show.
+def proxy_panel_report(proxy_name: str = "") -> dict:
+    """Where an optimisation stands, in a form a panel can show: *proxy_name*'s, else
+    that of this conversation's active proxy.
 
     Read-only and cheap: the panel calls it on every refresh. It reports in this
     server's own words — the client renders the lines it is given and knows nothing
-    about proxies, which is what lets another server add a section of its own.
+    about proxies, which is what lets another server add a section of its own. With
+    several sessions it offers the choice of which to show (``choice``), and the panel
+    passes the reader's pick back as *proxy_name*.
+
+    Args:
+        proxy_name: The proxy to report on; empty for this conversation's active one.
     """
-    return panel.report()
+    return panel.report(proxy_name)
 
 
 @mcp.tool(**tool_caps(kind="proxy", caps=[CODE_MAP_MOVES], label="R&D request: {op}",

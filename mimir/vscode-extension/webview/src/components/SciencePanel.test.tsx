@@ -33,7 +33,7 @@ const machine: PanelSection = {
 function render(sections: PanelSection[]): string {
   const none = () => undefined;
   return renderToStaticMarkup(
-    <SciencePanel sections={sections} runs={[]} onCancelRun={none} onCall={none} onRefresh={none}
+    <SciencePanel sections={sections} runs={[]} onCancelRun={none} onCall={none} onChoose={none} onRefresh={none}
       onReload={none} refreshing={false} agentReady onPrompt={none} onOpenView={none} />,
   );
 }
@@ -93,6 +93,24 @@ describe("the optimisation's curve", () => {
 
   it("draws nothing for a section without a curve", () => {
     expect(render([machine])).not.toContain("science-curve");
+  });
+
+  it("offers the proxies to show, the one shown selected", () => {
+    const html = render([{
+      ...optimisation,
+      choice: {
+        label: "proxy", value: "b",
+        options: [{ value: "", label: "the agent's active proxy · a" }, { value: "a", label: "a" },
+                  { value: "b", label: "b" }],
+      },
+    }]);
+    expect(html).toContain('class="science-choice"');
+    expect(html).toContain(">the agent&#x27;s active proxy · a</option>");
+    expect(html).toMatch(/<option value="b" selected="">b<\/option>/);
+  });
+
+  it("offers no pick to a section without one", () => {
+    expect(render([optimisation])).not.toContain("science-choice");
   });
 });
 

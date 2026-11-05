@@ -64,10 +64,11 @@ class Panel:
         return asyncio.run_coroutine_threadsafe(
             augment_query_with_resources(agent, text), loop)
 
-    def sections(self, *, force: bool = False) -> Any:
+    def sections(self, *, force: bool = False, choices: dict[str, str] | None = None) -> Any:
         """Every section the connected servers fill (``PANEL_REPORT``), as a future of a list.
 
-        *force* passes the server's declared refresh argument, for a user's ⟳. Called straight
+        *force* passes the server's declared refresh argument, for a user's ⟳; *choices*
+        the reader's pick per section, as its declared choice argument. Called straight
         on the owning sessions, outside the guardrails.
         """
         agent, loop = self._agent(), self._loop()
@@ -84,6 +85,9 @@ class Panel:
             args = dict(spec.get("args") or {})
             if force and spec.get("refresh_arg"):
                 args[str(spec["refresh_arg"])] = True
+            picked = (choices or {}).get(str(spec.get("section", tool)))
+            if picked and spec.get("choice_arg"):
+                args[str(spec["choice_arg"])] = picked
             try:
                 raw = await agent.sessions[owner].call_tool(tool, args)
                 text = normalize_tool_content(raw)
@@ -132,6 +136,8 @@ class Panel:
                     **({"map": payload["map"]} if isinstance(payload.get("map"), dict) else {}),
                     # A curve the section draws (the optimisation's runs), likewise unread.
                     **({"chart": payload["chart"]} if isinstance(payload.get("chart"), dict) else {}),
+                    # What the reader may pick the section to show (which proxy), unread too.
+                    **({"choice": payload["choice"]} if isinstance(payload.get("choice"), dict) else {}),
                 })
             return out
 

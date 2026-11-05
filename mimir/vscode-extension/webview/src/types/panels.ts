@@ -80,6 +80,18 @@ export interface PanelSection {
   map?: PanelMiniMap;
   /** A curve the section draws (the optimisation's runs, in the order they settled). */
   chart?: PanelChart;
+  /** What the reader may pick the section to show (which proxy). */
+  choice?: PanelChoice;
+}
+
+/**
+ * A pick the section offers, in its server's words: `value` is the one shown ("" for the
+ * server's own default), and the pick goes back with every ask (`ListPanelMessage.choices`).
+ */
+export interface PanelChoice {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
 }
 
 /**
@@ -181,6 +193,9 @@ export interface ListPanelMessage {
   type: "list_panel";
   build?: boolean;
   refresh?: boolean;
+  /** The reader's pick per section (`PanelChoice`), by section id; a section absent
+   *  shows its server's default. */
+  choices?: Record<string, string>;
 }
 
 /** Ask for the workspace's code map, for the editor's map tab. */

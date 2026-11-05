@@ -117,9 +117,10 @@ class ToolCaps:
     # None -> the client has no machine reading of this tool's runs.
     run_outcome: dict[str, Any] | None = None
     # Which section of the scientific-computing panel this tool fills, and how to call
-    # it: {"section", "order", "args", "refresh_arg"?}. Read by ``panel_sections``.
-    # ``refresh_arg`` names the parameter that bypasses the tool's own cache, set only
-    # when the reader asked for a re-read rather than when a timer did.
+    # it: {"section", "order", "args", "refresh_arg"?, "choice_arg"?}. Read by
+    # ``panel_sections``. ``refresh_arg`` names the parameter that bypasses the tool's own
+    # cache, set only when the reader asked for a re-read rather than when a timer did;
+    # ``choice_arg`` the one that carries the reader's pick among the section's ``choice``.
     panel: dict[str, Any] | None = None
 
     def has(self, cap: str) -> bool:
