@@ -3,19 +3,28 @@
  *
  * `workspaceId` must stay byte-identical to `state_paths.workspace_id` (pinned by
  * serverRegistry.test.ts). An entry is live when its pid exists, its start time matches, and
- * its port accepts a connection; a stale entry costs one failed attempt.
+ * the server at its port names that pid; a stale entry costs one failed attempt.
  */
 import * as crypto from "crypto";
 import * as fs from "fs";
-import * as net from "net";
+import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 
 /** Bumped when the file's shape changes incompatibly; an unknown version is refused. */
 export const PROTOCOL = 1;
 
-/** How long to wait for the port to answer — a loopback accept, not a round trip. */
-const PROBE_TIMEOUT_MS = 300;
+/**
+ * Where the server answers its liveness probe with its pid, as plain HTTP — `ALIVE_PATH`
+ * in the Python registry.
+ */
+export const ALIVE_PATH = "/alive";
+
+/**
+ * How long to wait for the answer: a round trip through the server's event loop, which a
+ * busy turn can hold for a moment. A dead address is refused at once and does not wait.
+ */
+const PROBE_TIMEOUT_MS = 2000;
 
 export interface ServerEntry {
   protocol: number;
@@ -88,7 +97,7 @@ export async function waitForServer(
     if (entry) {
       if (ourPid !== undefined && entry.pid === ourPid) return entry;
       // Somebody else's, and alive: ours lost the lock and stood down.
-      if (processAlive(entry) && (await portAnswers(entry.host, entry.port))) return entry;
+      if (processAlive(entry) && (await serverAnswers(entry))) return entry;
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
@@ -141,28 +150,43 @@ export function processAlive(entry: ServerEntry): boolean {
   return true;
 }
 
-/** Whether something accepts a connection at that address. */
-export function portAnswers(
-  host: string, port: number, timeoutMs = PROBE_TIMEOUT_MS,
+/**
+ * Whether the server at the entry's address is the entry's process, asked at `ALIVE_PATH`.
+ *
+ * A server from before the probe existed refuses the plain request with 426 (Upgrade
+ * Required): a WebSocket server, taken as the entry's since its pid check passed.
+ */
+export function serverAnswers(
+  entry: Pick<ServerEntry, "host" | "port" | "pid">, timeoutMs = PROBE_TIMEOUT_MS,
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    if (!port) {
+    if (!entry.port) {
       resolve(false);
       return;
     }
-    const sock = new net.Socket();
     let settled = false;
     const finish = (answer: boolean) => {
       if (settled) return;
       settled = true;
-      sock.destroy();
       resolve(answer);
     };
-    sock.setTimeout(timeoutMs);
-    sock.once("connect", () => finish(true));
-    sock.once("timeout", () => finish(false));
-    sock.once("error", () => finish(false));
-    sock.connect(port, host || "127.0.0.1");
+    // agent: false — a fresh socket, not one a keep-alive pool may hand back later.
+    const req = http.get(
+      { host: entry.host || "127.0.0.1", port: entry.port, path: ALIVE_PATH, agent: false,
+        timeout: timeoutMs },
+      (res) => {
+        let body = "";
+        res.setEncoding("ascii");
+        res.on("data", (chunk: string) => { body += chunk; });
+        res.on("end", () => finish(
+          res.statusCode === 426
+            || (res.statusCode === 200 && body.trim() === String(entry.pid)),
+        ));
+        res.on("error", () => finish(false));
+      },
+    );
+    req.on("timeout", () => { req.destroy(); finish(false); });
+    req.on("error", () => finish(false));
   });
 }
 
@@ -178,6 +202,6 @@ export async function findLiveServer(
   const entry = readEntry(workspaceRoot);
   if (!entry) return undefined;
   if (!processAlive(entry)) return undefined;
-  if (!(await portAnswers(entry.host, entry.port))) return undefined;
+  if (!(await serverAnswers(entry))) return undefined;
   return entry;
 }

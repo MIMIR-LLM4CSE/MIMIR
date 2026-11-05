@@ -9,14 +9,15 @@
  */
 import { createHash } from "crypto";
 import * as fs from "fs";
+import * as http from "http";
 import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
-  PROTOCOL, findLiveServer, portAnswers, processAlive, readEntry, registryPath,
-  stateDir, workspaceId,
+  ALIVE_PATH, PROTOCOL, findLiveServer, processAlive, readEntry, registryPath,
+  serverAnswers, stateDir, workspaceId,
 } from "./serverRegistry";
 
 let tmp: string;
@@ -49,9 +50,22 @@ function baseEntry(over: Record<string, unknown> = {}): Record<string, unknown> 
   };
 }
 
-/** A real listening socket, so the probe has something true to find. */
+/** A real listening socket that says nothing; the probe gets no answer from it. */
 async function listening(): Promise<{ port: number; close: () => void }> {
   const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as net.AddressInfo).port;
+  return { port, close: () => server.close() };
+}
+
+/** A real server answering the probe with *body* (this process's pid by default). */
+async function answering(
+  body = String(process.pid), status = 200,
+): Promise<{ port: number; close: () => void }> {
+  const server = http.createServer((req, res) => {
+    res.writeHead(req.url === ALIVE_PATH ? status : 404);
+    res.end(body);
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as net.AddressInfo).port;
   return { port, close: () => server.close() };
@@ -170,22 +184,51 @@ describe("processAlive", () => {
   });
 });
 
-describe("portAnswers", () => {
-  it("is true for a listening port", async () => {
+describe("serverAnswers", () => {
+  const at = (port: number) => ({ host: "127.0.0.1", port, pid: process.pid });
+
+  it("is true for a server that names the entry's pid", async () => {
+    const { port, close } = await answering();
+    try {
+      expect(await serverAnswers(at(port))).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
+  it("is false for a stranger on the port", async () => {
+    const { port, close } = await answering("1");
+    try {
+      expect(await serverAnswers(at(port))).toBe(false);
+    } finally {
+      close();
+    }
+  });
+
+  it("is true for a server from before the probe, which answers 426", async () => {
+    const { port, close } = await answering("", 426);
+    try {
+      expect(await serverAnswers(at(port))).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
+  it("is false for a listener that does not answer", async () => {
     const { port, close } = await listening();
     try {
-      expect(await portAnswers("127.0.0.1", port)).toBe(true);
+      expect(await serverAnswers(at(port), 300)).toBe(false);
     } finally {
       close();
     }
   });
 
   it("is false for a port nothing is on", async () => {
-    expect(await portAnswers("127.0.0.1", await freePort())).toBe(false);
+    expect(await serverAnswers(at(await freePort()))).toBe(false);
   });
 
   it("is false for port zero", async () => {
-    expect(await portAnswers("127.0.0.1", 0)).toBe(false);
+    expect(await serverAnswers(at(0))).toBe(false);
   });
 });
 
@@ -195,7 +238,7 @@ describe("findLiveServer", () => {
   });
 
   it("finds a server that is actually there", async () => {
-    const { port, close } = await listening();
+    const { port, close } = await answering();
     try {
       writeEntry(tmp, baseEntry({ port, url: `ws://127.0.0.1:${port}` }));
       const found = await findLiveServer(tmp);
@@ -214,7 +257,7 @@ describe("findLiveServer", () => {
   });
 
   it("rejects an entry whose process has gone", async () => {
-    const { port, close } = await listening();
+    const { port, close } = await answering();
     try {
       writeEntry(tmp, baseEntry({ pid: 4194301, port }));
       expect(await findLiveServer(tmp)).toBeUndefined();
@@ -228,7 +271,7 @@ describe("findLiveServer", () => {
   });
 
   it("does not look in another workspace's entry", async () => {
-    const { port, close } = await listening();
+    const { port, close } = await answering();
     try {
       writeEntry(tmp, baseEntry({ port }));
       delete process.env.MIMIR_STATE_DIR;

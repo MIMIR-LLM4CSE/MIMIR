@@ -1,16 +1,16 @@
 """Where this workspace's server is: ``<STATE_DIR>/server.json``, one server per workspace.
 
-Liveness is a pid, its start time, and a port that answers. Advisory: a stale entry
-costs a failed connection.
+Liveness is a pid, its start time, and the server at the port naming that pid.
+Advisory: a stale entry costs a failed connection.
 """
 
 from __future__ import annotations
 
 import fcntl
+import http.client
 import json
 import logging
 import os
-import socket
 import time
 
 from .....shared.processes import is_running, proc_starttime
@@ -24,9 +24,13 @@ logger = logging.getLogger(__name__)
 # a server whose protocol it cannot speak.
 PROTOCOL = 1
 
-# How long to wait for the port to answer. Long enough for a loopback accept on a loaded
-# machine, short enough that probing a dead address does not stall a window's startup.
-_PROBE_TIMEOUT = 0.3
+# Where the server answers its liveness probe with its pid, as plain HTTP (serving's
+# _answer_probe; ALIVE_PATH in the extension's serverRegistry.ts).
+ALIVE_PATH = "/alive"
+
+# How long to wait for the answer: a round trip through the server's event loop, which a
+# busy turn can hold for a moment. A dead address is refused at once and does not wait.
+_PROBE_TIMEOUT = 2.0
 
 _FILENAME = "server.json"
 _LOCKNAME = "server.lock"
@@ -155,26 +159,28 @@ def read() -> dict | None:
     return entry
 
 
-def port_answers(host: str, port: int, timeout: float = _PROBE_TIMEOUT) -> bool:
-    """Whether something accepts a connection at *host*:*port* (both loopbacks for a name)."""
+def server_answers(host: str, port: int, pid: int,
+                   timeout: float = _PROBE_TIMEOUT) -> bool:
+    """Whether the server at *host*:*port* is process *pid*, asked at :data:`ALIVE_PATH`.
+
+    A server from before the probe existed refuses the plain request with 426 (Upgrade
+    Required): a WebSocket server, taken as ours since the pid check passed.
+    """
     if not port:
         return False
+    conn = http.client.HTTPConnection(host or "localhost", int(port), timeout=timeout)
     try:
-        infos = socket.getaddrinfo(host or "localhost", int(port),
-                                   type=socket.SOCK_STREAM)
+        conn.request("GET", ALIVE_PATH)
+        response = conn.getresponse()
+        body = response.read(64).decode("ascii", "replace").strip()
     except Exception:
-        logger.debug("port_answers: a best-effort step failed and was skipped", exc_info=True)
+        logger.debug("server_answers: %s:%s did not answer", host, port, exc_info=True)
         return False
-    for family, socktype, proto, _canon, addr in infos:
-        try:
-            with socket.socket(family, socktype, proto) as sock:
-                sock.settimeout(timeout)
-                sock.connect(addr)
-                return True
-        except Exception:
-            logger.debug("port_answers: a best-effort step failed and was skipped", exc_info=True)
-            continue
-    return False
+    finally:
+        conn.close()
+    if response.status == 426:
+        return True
+    return response.status == 200 and body == str(pid)
 
 
 def alive(entry: dict | None, *, probe: bool = True) -> bool:
@@ -195,8 +201,8 @@ def alive(entry: dict | None, *, probe: bool = True) -> bool:
         return False
     if not probe:
         return True
-    return port_answers(str(entry.get("host") or "localhost"),
-                        int(entry.get("port") or 0))
+    return server_answers(str(entry.get("host") or "localhost"),
+                          int(entry.get("port") or 0), pid)
 
 
 # ── Who asked for this server to survive ──────────────────────────────────────

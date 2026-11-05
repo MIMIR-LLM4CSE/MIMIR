@@ -1,11 +1,13 @@
 """Finding a server that outlived the window which started it, through its registry entry.
 
-An entry is live only if its pid is alive and its listener still answers.
+An entry is live only if its pid is alive and the server at its port names that pid.
 """
+import http.server
 import json
 import os
 import socket
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -20,13 +22,33 @@ class _RegistryCase(unittest.TestCase):
         pin_state_dir(self, self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
-    def _listening(self) -> socket.socket:
-        """A real listening socket, so the probe has something true to find."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("127.0.0.1", 0))
-        sock.listen(1)
-        self.addCleanup(sock.close)
-        return sock
+    def _answering(self, body: str | None = None, status: int = 200):
+        """A real server answering the probe with *body* (this process's pid by default).
+
+        Returns its address and a stop that frees the port.
+        """
+        answer = (str(os.getpid()) if body is None else body).encode()
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                found = self.path == server_registry.ALIVE_PATH
+                self.send_response(status if found else 404)
+                self.send_header("Content-Length", str(len(answer)))
+                self.end_headers()
+                self.wfile.write(answer)
+
+            def log_message(self, *_args) -> None:
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+        def stop() -> None:
+            server.shutdown()
+            server.server_close()
+
+        self.addCleanup(stop)
+        return server.server_address[0], server.server_address[1], stop
 
     def _free_port(self) -> int:
         """A port nothing is listening on."""
@@ -94,11 +116,30 @@ class PublishAndReadTests(_RegistryCase):
 
 
 class LivenessTests(_RegistryCase):
-    def test_a_live_pid_with_a_listening_port_is_alive(self):
-        sock = self._listening()
-        host, port = sock.getsockname()
+    def test_a_live_pid_whose_server_names_it_is_alive(self):
+        host, port, _stop = self._answering()
         server_registry.publish(url=f"ws://{host}:{port}", host=host, port=port)
         self.assertTrue(server_registry.alive(server_registry.read()))
+
+    def test_a_stranger_on_the_port_is_not_the_server(self):
+        # The pid is alive, and the port is held by another process that answers.
+        host, port, _stop = self._answering(body="1")
+        server_registry.publish(url=f"ws://{host}:{port}", host=host, port=port)
+        self.assertFalse(server_registry.alive(server_registry.read()))
+
+    def test_a_listener_that_does_not_answer_the_probe_is_not_the_server(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        self.addCleanup(sock.close)
+        host, port = sock.getsockname()
+        self.assertFalse(server_registry.server_answers(host, port, os.getpid(),
+                                                        timeout=0.3))
+
+    def test_a_server_from_before_the_probe_is_alive(self):
+        # It refuses a plain request with 426, as every WebSocket server does.
+        host, port, _stop = self._answering(body="", status=426)
+        self.assertTrue(server_registry.server_answers(host, port, os.getpid()))
 
     def test_a_live_pid_whose_listener_is_gone_is_not_alive(self):
         # The question the process table cannot answer: this very process is running,
@@ -119,8 +160,7 @@ class LivenessTests(_RegistryCase):
         self.assertFalse(server_registry.alive(entry))
 
     def test_a_recycled_pid_is_not_mistaken_for_the_server(self):
-        sock = self._listening()
-        host, port = sock.getsockname()
+        host, port, _stop = self._answering()
         server_registry.publish(url=f"ws://{host}:{port}", host=host, port=port)
         entry = server_registry.read()
         entry["pid_starttime"] = 1          # a different process wears that number now
@@ -134,19 +174,18 @@ class LivenessTests(_RegistryCase):
         self.assertFalse(server_registry.alive({"pid": "not a number", "port": 1}))
 
     def test_current_hands_back_only_a_live_entry(self):
-        sock = self._listening()
-        host, port = sock.getsockname()
+        host, port, stop = self._answering()
         server_registry.publish(url=f"ws://{host}:{port}", host=host, port=port)
         self.assertIsNotNone(server_registry.current())
-        sock.close()
+        stop()
         self.assertIsNone(server_registry.current())
 
     def test_probing_port_zero_is_never_alive(self):
-        self.assertFalse(server_registry.port_answers("127.0.0.1", 0))
+        self.assertFalse(server_registry.server_answers("127.0.0.1", 0, os.getpid()))
 
     def test_an_unresolvable_host_is_not_alive(self):
         self.assertFalse(
-            server_registry.port_answers("no-such-host.invalid", 1234))
+            server_registry.server_answers("no-such-host.invalid", 1234, os.getpid()))
 
 
 class ClearTests(_RegistryCase):

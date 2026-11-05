@@ -1,4 +1,4 @@
-"""The "Listening on" line must name an address that answers.
+"""The "Listening on" line must name an address that answers, and the probe an answer.
 
 With ``--port 0`` on ``localhost`` the server binds 127.0.0.1 and ::1 on two
 different ports, in an order that changes between launches. The line used to say
@@ -11,7 +11,8 @@ import unittest
 
 import websockets
 
-from mimir.client.ui.ws.server.serving import _announced_url
+from mimir.client.ui.ws.process import registry as server_registry
+from mimir.client.ui.ws.server.serving import _announced_url, _answer_probe
 
 
 class _Sock:
@@ -51,29 +52,35 @@ class AnnouncedUrlAnswersTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LivenessProbeTests(unittest.IsolatedAsyncioTestCase):
-    """A liveness probe connects and hangs up; the server must not log it as an error."""
+    """The server answers the registry's probe with its pid, and logs nothing for it."""
 
-    async def _errors_after(self, payload: bytes) -> list[str]:
+    async def _probe(self, **serve_kwargs) -> tuple[bool, list[str]]:
         async def _hello(ws):
             await ws.send("hi")
 
         with self.assertLogs("websockets.server", level="INFO") as logs:
-            async with websockets.serve(_hello, "127.0.0.1", 0) as server:
+            async with websockets.serve(_hello, "127.0.0.1", 0, **serve_kwargs) as server:
                 port = server.sockets[0].getsockname()[1]
-                _r, writer = await asyncio.open_connection("127.0.0.1", port)
-                if payload:
-                    writer.write(payload)
-                    await writer.drain()
-                writer.close()
-                await asyncio.sleep(0.2)
-        return [r.getMessage() for r in logs.records if r.levelname == "ERROR"]
+                answered = await asyncio.to_thread(
+                    server_registry.server_answers, "127.0.0.1", port, os.getpid())
+        return answered, [r.getMessage() for r in logs.records if r.levelname == "ERROR"]
 
-    async def test_a_connection_closed_before_a_byte_logs_nothing(self):
-        self.assertEqual(await self._errors_after(b""), [])
+    async def test_the_probe_is_answered_without_an_error(self):
+        self.assertEqual(await self._probe(process_request=_answer_probe), (True, []))
 
-    async def test_a_malformed_request_still_logs(self):
-        self.assertEqual(await self._errors_after(b"garbage\r\n\r\n"),
-                         ["opening handshake failed"])
+    async def test_a_server_without_the_answer_still_passes(self):
+        # A server started before the probe existed refuses the plain request (426).
+        answered, _errors = await self._probe()
+        self.assertTrue(answered)
+
+    async def test_a_websocket_still_connects(self):
+        async def _hello(ws):
+            await ws.send("hi")
+
+        async with websockets.serve(_hello, "127.0.0.1", 0,
+                                    process_request=_answer_probe) as server:
+            async with websockets.connect(_announced_url(server.sockets), proxy=None) as ws:
+                self.assertEqual(await asyncio.wait_for(ws.recv(), 5), "hi")
 
 
 class EntryPointTests(unittest.TestCase):

@@ -1711,8 +1711,11 @@ to exist.
 
 Liveness is three questions, and the third is the one the other two cannot answer: the pid
 exists; its start time matches what was recorded, because a recycled pid wears the same
-number; and the port actually accepts a connection, because a process can be alive with its
-listener already gone. The first two come from `session/jobs_on_disk`, which holds that contract for
+number; and the server at the port answers `GET /alive` with that pid, because a process can
+be alive with its listener already gone, and another process can hold the port since. The
+answer is plain HTTP, given before any WebSocket handshake, so a probe is a complete request
+and the server logs nothing for it. A server from before `/alive` refuses the plain request
+with 426, which both ends take as alive. The first two come from `session/jobs_on_disk`, which holds that contract for
 detached runs. The entry is advisory throughout — a stale one costs a connection attempt that
 fails and is then replaced, whereas trusting it is how a window ends up waiting on an address
 nothing is listening at. It is removed on a clean shutdown and deliberately left behind by a

@@ -43,27 +43,14 @@ _MAX_FRAME_BYTES = 32 * 1024 * 1024
 _LOCK_WAIT_SECS = 60.0
 
 
-class _ProbeFilter(logging.Filter):
-    """Drops the handshake failure of a connection closed before it sent a byte.
+def _answer_probe(connection: Any, request: Any) -> Any:
+    """Answer the liveness probe (registry.ALIVE_PATH) with this process's pid.
 
-    That is a liveness probe (registry.port_answers, the extension's portAnswers): it
-    connects and hangs up, and websockets would log each one as an error with its
-    traceback. A request that arrives and is malformed still logs.
+    Plain HTTP before any handshake; the pid tells us from a stranger on the port.
     """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.getMessage() != "opening handshake failed" or not record.exc_info:
-            return True
-        exc: BaseException | None = record.exc_info[1]
-        while exc is not None:
-            if isinstance(exc, EOFError) and "after 0 bytes" in str(exc):
-                return False
-            exc = exc.__cause__
-        return True
-
-
-_HANDSHAKE_LOGGER = logging.getLogger("websockets.server")
-_HANDSHAKE_LOGGER.addFilter(_ProbeFilter())
+    if request.path == server_registry.ALIVE_PATH:
+        return connection.respond(200, str(os.getpid()))
+    return None
 
 
 def _announced_address(sockets: Any) -> tuple[str, int]:
@@ -204,7 +191,8 @@ async def serve(
     # The default 1 MiB frame cap is below what a client transcript weighs once it
     # carries diffs and command output, and an oversized frame closes the connection
     # rather than failing the one message.
-    async with websockets.serve(_handler, host, port, max_size=_MAX_FRAME_BYTES) as server:
+    async with websockets.serve(_handler, host, port, max_size=_MAX_FRAME_BYTES,
+                                process_request=_answer_probe) as server:
         # Read the port back off the socket rather than echoing the argument: with
         # --port 0 the argument is a placeholder, and this line is the contract the
         # VS Code extension parses to learn where to connect.
