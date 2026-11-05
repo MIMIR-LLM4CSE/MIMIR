@@ -29,7 +29,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   proxy-merge skill has the protocol.
 - **The code map's proxy picker is a list.** The plain dropdown gave a name and nothing
   else. Each proxy now has a line: its branch, its runs, its gain so far, whether it is
-  active, a merge or frozen. Proxies ticked together are drawn together, with what
+  active, a merge or frozen, and a click anywhere on it shows that proxy. Proxies ticked together are drawn together, with what
   merging them promises, and **Merge** asks the agent to measure it. A merge session
   draws its proxies, their conflicts and the whole, expected and measured.
 - **The optimisation graph outlives its proxy.** `proxy_manage(op='clean')` took the

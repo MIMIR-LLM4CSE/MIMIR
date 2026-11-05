@@ -272,7 +272,7 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .pick-panel { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; width: min(520px, 92vw); max-height: 60vh; overflow: auto;
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); padding: 4px 0; }
 .pick-group { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); padding: 8px 12px 3px; }
-.pick-row { display: flex; align-items: center; gap: 8px; padding: 3px 12px; font-variant-numeric: tabular-nums; }
+.pick-row { display: flex; align-items: center; gap: 8px; padding: 3px 12px; font-variant-numeric: tabular-nums; cursor: pointer; }
 .pick-row:hover { background: var(--hover); }
 .pick-row.is-cur { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .pick-row input { margin: 0; accent-color: var(--accent); cursor: pointer; }

@@ -1,5 +1,5 @@
 // The proxy picker in the map's header: one line per proxy with a session (where it ran,
-// how many runs, its gain so far), grouped as running, merges and frozen; a click shows one,
+// how many runs, its gain so far), grouped as running, merges and frozen; a click on a line shows one,
 // ticks show several together, and the ticked ones can be merged.
 
 import { esc, pct } from "./format";
@@ -210,7 +210,9 @@ export class Picker {
       if (this.open) this.el?.querySelector<HTMLElement>(".pick-panel button, .pick-panel input")?.focus();
       return;
     }
-    const name = t.closest<HTMLElement>("[data-pick]");
+    // A proxy's line picks it wherever it is clicked, but on its tick.
+    const name = t.closest<HTMLElement>("[data-pick]")
+      ?? (t.closest("[data-tick]") ? null : t.closest(".pick-row")?.querySelector<HTMLElement>("[data-pick]"));
     if (name) { this.ticks = new Set(); this.choose(name.dataset.pick ?? "", true); return; }
     if (t.closest("[data-merge]")) {
       const names = mergeable(this.meta, [...this.ticks]);
