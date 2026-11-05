@@ -1,6 +1,6 @@
 """What each proxy brings to a merge: its kept patch (baseline to best accepted tree, from
 the snapshot store), its gain alone, the files two proxies share and the conflicts
-between their patches; and, in the merge's copy, that patch as a commit git can pick
+between their patches; and, where the merge runs, that patch as a commit git can pick
 (``kept_commit``). ``merge`` runs the merge; the code map draws the forecast from here.
 """
 from __future__ import annotations
@@ -182,16 +182,36 @@ def forecast(names: list[str]) -> dict:
             "refusal": refusal}
 
 
-# ── the patch as a commit, in the merge's copy ────────────────────────────────
+# ── the patch as a commit, where the merge runs ────────────────────────────────
 
 def git(*args: str, index: str = "", stdin: str | None = None) -> subprocess.CompletedProcess:
-    """git in the workspace's own repository (the merge's copy), *index* as its index
+    """git in the workspace's own repository (where the merge runs), *index* as its index
     when given, never a shell."""
     env = {**os.environ, **({"GIT_INDEX_FILE": index} if index else {})}
     return subprocess.run(["git", "-c", "user.name=MIMIR merge", "-c", "user.email=merge@mimir.invalid",
                            "-c", "commit.gpgsign=false", *args],
                           cwd=workspace_root(), env=env, input=stdin, capture_output=True,
                           text=True, timeout=_GIT_TIMEOUT_S)
+
+
+def current_ref() -> str:
+    """The branch the workspace is on, else the commit it is detached at."""
+    on = git("symbolic-ref", "--quiet", "--short", "HEAD")
+    return on.stdout.strip() if on.returncode == 0 else git("rev-parse", "HEAD").stdout.strip()
+
+
+def dirty() -> list[str]:
+    """The tracked files the workspace has changed, staged or not."""
+    r = git("status", "--porcelain", "--untracked-files=no")
+    if r.returncode != 0:
+        return ["(git status failed)"]
+    return [line[3:] for line in r.stdout.splitlines() if line.strip()]
+
+
+def tracked(*paths: str) -> list[str]:
+    """The files git tracks under *paths* (none for a path outside the repository)."""
+    r = git("ls-files", "--", *paths)
+    return [p for p in r.stdout.splitlines() if p] if r.returncode == 0 else []
 
 
 def _put(index: str, path: str, text: str | None) -> bool:
@@ -208,7 +228,7 @@ def _put(index: str, path: str, text: str | None) -> bool:
 
 
 def already_in(src: dict) -> bool:
-    """Whether this copy's HEAD already holds *src*'s kept files, as its branch does when
+    """Whether HEAD already holds *src*'s kept files, as its branch does when
     that work was committed on it."""
     at = git("rev-parse", "--show-prefix").stdout.strip()
     for rel in src["files"]:
@@ -219,14 +239,14 @@ def already_in(src: dict) -> bool:
 
 
 def kept_commit(src: dict) -> tuple[str, str]:
-    """*src*'s kept patch as a commit over this copy's HEAD, with no branch: (sha, "") or
+    """*src*'s kept patch as a commit over HEAD, with no branch: (sha, "") or
     ("", why). Its parent holds *src*'s files as its baseline had them and the commit as
     its best tree has them, so picking it is a three-way merge whose base is the proxy's
     own baseline, whatever the files hold here now."""
     head = git("rev-parse", "HEAD")
     prefix = git("rev-parse", "--show-prefix")
     if head.returncode != 0 or prefix.returncode != 0:
-        return "", "this copy is not a git repository"
+        return "", "this workspace is not a git repository"
     at = prefix.stdout.strip()
     with tempfile.TemporaryDirectory(prefix="mimir-merge-") as tmp:
         index = os.path.join(tmp, "index")

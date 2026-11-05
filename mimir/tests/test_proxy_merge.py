@@ -159,10 +159,15 @@ class PlanTests(_MergeFixture):
         self.assertEqual(res["refused"], [{"proxy": "pa@20261104-101500",
                                            "why": "a frozen session: its trees are no longer kept"}])
 
-    def test_start_is_refused_in_the_main_workspace(self) -> None:
-        res = server_proxy.proxy_merge(op="start", proxies=["*"], confirm=True)
-        self.assertEqual(res["status"], "error")
-        self.assertIn("plan", res["hint"])
+    def test_the_plan_names_start_here_and_sub_agents_only_for_combinations(self) -> None:
+        res = server_proxy.proxy_merge(op="plan", proxies=["*"])
+        self.assertTrue(res["next_step"].startswith("proxy_merge(op='start', proxies=['pa', 'pc', 'pb']"))
+        self.assertIn("combination", res["next_step"])
+
+    def test_a_default_name_taken_in_the_same_second_gets_a_suffix(self) -> None:
+        reg = {"merge-20261105-101500": {}, "merge-20261105-101500--pa": {}, "pa": {}}
+        self.assertEqual(merge._free_name(reg, "20261105-101500"), "merge-20261105-101500-2")
+        self.assertEqual(merge._free_name({"pa": {}}, "20261105-101500"), "merge-20261105-101500")
 
 
 class KeptCommitTests(_MergeFixture):
@@ -327,6 +332,125 @@ class MergeRunTests(_MergeFixture):
         self.assertEqual(drawn["selected"], ["pa", "pb"])
         self.assertEqual([s["proxy"] for s in drawn["forecast"]["sources"]], ["pa", "pb"])
         self.assertEqual(drawn["forecast"]["refusal"], "")
+
+
+class WorkspaceTests(_MergeFixture):
+    """A merge started in the main workspace: on a branch of its own while it runs, back
+    on the user's once measured or paused, and the other sessions kept off its files."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.home = self._git("symbolic-ref", "--short", "HEAD").strip()
+
+    def _on(self) -> str:
+        return self._git("symbolic-ref", "--short", "HEAD").strip()
+
+    def _start(self) -> dict:
+        res = server_proxy.proxy_merge(op="start", proxies=["*"], proxy_name="merge-w", confirm=True)
+        self.assertEqual(res.get("status"), "ok", res)
+        return res
+
+    def _to_conflict(self) -> dict:
+        self._start()
+        server_proxy.proxy_merge(op="next", confirm=True)
+        self._complete("merge-w", {"pa/a": 10.0, "pc/a": 10.0, "pb/a": 10.0})
+        return server_proxy.proxy_merge(op="next", confirm=True)
+
+    def _measured(self) -> dict:
+        self._to_conflict()
+        self._write({"a.py": "A = 2\n\n\n\n\nX = 0\n"})
+        server_proxy.proxy_merge(op="resolved", resolution="pa's kept", confirm=True)
+        self._complete("merge-w", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 9.0})
+        return server_proxy.proxy_merge(op="next", confirm=True)
+
+    def test_start_puts_the_workspace_on_a_branch_of_its_own(self) -> None:
+        res = self._start()
+        self.assertEqual(res["branch"], "mimir/merge-w")
+        self.assertIn(self.home, res["note"])
+        self.assertEqual(self._on(), "mimir/merge-w")
+        self.assertEqual(layout.resolve_proxy_name(""), "merge-w")
+        state = merge._load("merge-w")
+        self.assertEqual((state["in_workspace"], state["return_to"], state["was_active"]), (True, self.home, "pc"))
+
+    def test_once_measured_the_workspace_and_its_session_are_back(self) -> None:
+        rep = self._measured()
+        self.assertEqual(rep["phase"], "done")
+        self.assertEqual(self._on(), self.home)
+        self.assertEqual({f: self._read(f) for f in ORIGINAL}, ORIGINAL)
+        self.assertEqual(layout.resolve_proxy_name(""), "pc")
+        self.assertEqual(rep["workspace"]["on"], self.home)
+        self.assertEqual(self._git("show", "mimir/merge-w:b.py"), "B = 2\n")
+        self.assertIn(f"back on {self.home}", rep["next_step"])
+
+    def test_drop_goes_back_to_the_merge_then_home(self) -> None:
+        self._measured()
+        res = server_proxy.proxy_merge(op="drop", proxy_name="merge-w", proxies=["pb"], confirm=True)
+        self.assertEqual(self._on(), "mimir/merge-w")
+        self.assertIn("merge: pa + pc", res["next_step"])
+        self._complete("merge-w", {"pa/a": 8.0, "pc/a": 10.0, "pb/a": 10.0})
+        rep = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual((rep["dropped"], self._on()), (["pb"], self.home))
+
+    def test_pause_goes_home_and_next_comes_back_to_the_conflict(self) -> None:
+        self._to_conflict()
+        res = server_proxy.proxy_merge(op="pause", question="pa's or pc's?", confirm=True)
+        self.assertEqual(self._on(), self.home)
+        self.assertEqual(res["workspace"]["on"], self.home)
+        self.assertEqual(self._read("a.py"), ORIGINAL["a.py"])
+        self.assertIn("proxy_name='merge-w'", res["next_step"])
+        again = server_proxy.proxy_merge(op="next", proxy_name="merge-w", confirm=True)
+        self.assertEqual((again["conflict"]["proxy"], self._on()), ("pc", "mimir/merge-w"))
+
+    def test_start_is_refused_over_changes_git_tracks(self) -> None:
+        self._write({"c.py": "C = 5\n"})
+        res = server_proxy.proxy_merge(op="start", proxies=["*"], confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("c.py", res["error"])
+        self.assertEqual(self._on(), self.home)
+
+    def test_start_is_refused_while_a_run_is_under_way_here(self) -> None:
+        with mock.patch.object(merge, "run_state", return_value={"state": "running"}):
+            res = server_proxy.proxy_merge(op="start", proxies=["*"], confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("under way", res["error"])
+
+    def test_start_is_refused_when_git_tracks_the_store(self) -> None:
+        self._git("add", "-f", layout.registry_path())
+        self._git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "store")
+        res = server_proxy.proxy_merge(op="start", proxies=["*"], confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn(".gitignore", res["hint"])
+
+    def test_start_is_refused_while_another_merge_holds_the_workspace(self) -> None:
+        self._start()
+        res = server_proxy.proxy_merge(op="start", proxies=["pa", "pb"], proxy_name="merge-v", confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("merge-w", res["error"])
+
+    def test_a_failed_start_takes_the_workspace_back(self) -> None:
+        with mock.patch.object(merge.eval_session, "init", return_value={"status": "error", "error": "no"}):
+            res = server_proxy.proxy_merge(op="start", proxies=["*"], proxy_name="merge-w", confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(self._on(), self.home)
+        self.assertEqual(self._git("branch", "--list", "mimir/merge-w"), "")
+        self.assertNotIn("merge-w", store.load_registry())
+
+    def test_other_sessions_are_kept_off_the_files_while_a_merge_holds_them(self) -> None:
+        self._start()
+        for op in ("reset_to_best", "run", "init"):
+            res = _eval(op=op, proxy_name="pa", confirm=True)
+            self.assertEqual(res["status"], "error", op)
+            self.assertIn("mimir/merge-w", res["error"])
+        slurm = server_proxy.proxy_slurm(op="eval", partition="cpu", proxy_name="pa", confirm=True)
+        self.assertIn("mimir/merge-w", slurm.get("error", ""))
+        self.assertIsNone(merge.held_against("merge-w"))
+        server_proxy.proxy_merge(op="pause", question="later", confirm=True)
+        self.assertIsNone(merge.held_against("pa"))
+
+    def test_the_map_draws_a_source_the_same_on_either_branch(self) -> None:
+        before = session._build("pa")
+        self._start()
+        self.assertEqual(session._build("pa"), before)
 
 
 class TogetherTests(unittest.TestCase):

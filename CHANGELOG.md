@@ -75,6 +75,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   again.
 
 ### Changed
+- **The agent merges and measures its proxies itself, in its own workspace.** Once two or
+  more optimisation axes are back with accepted gains, the main agent plans and starts the
+  merge unasked (the system prompt, the proxy-merge and proxy-optimize skills,
+  `spawn_agent`'s answer say so); the user still decides a choice of method in a conflict
+  and a kernel that lost its gain. `proxy_merge(op='start')` no longer needs a sub-agent's
+  copy: in the workspace it checks out a branch of its own, `mimir/merge-<stamp>`, and the
+  workspace goes back to the user's branch, with the session active before, once the
+  merge is measured or paused; `next` and `drop` take it to the merge's branch again. It
+  refuses a tree with changes git tracks, a run under way on its files, a proxy store git
+  tracks, and another merge on the workspace; while a merge holds it, the other sessions'
+  runs, profiles and resets are refused. Sub-agents merge only when several combinations
+  are compared at once, one copy each. The code map's **Merge** says so.
 - **A profile reads at a glance on the code map.** "Where time goes" holds the profile
   once, no longer repeated in the step's card: whose profile it is (tool, samples, case),
   then each list with a bar under each row on its largest — files, functions (their file
@@ -122,6 +134,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **Two merges started in the same second no longer collide.** Both took
+  `merge-<stamp>` and the second failed as already registered; a merge without a name
+  now takes `-2`, `-3`… when its stamp is taken.
 - **The code map stays where you are looking.** A refresh (⟳, a re-map after a run, a
   pick) threw the page back to the top; the page, the map and the charts sideways and
   the side pane's lists now keep their scroll. The session strip and the merge graph were

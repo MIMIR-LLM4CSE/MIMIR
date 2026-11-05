@@ -228,8 +228,9 @@ with one more rule: every variant starts from the request's tree,
 map-request skill has the protocol.
 
 Axes optimised in parallel, each by a sub-agent on its own proxy and branch, are put
-together and measured with `proxy_merge`: the proxy-merge skill has the protocol. Never
-assemble their files by hand: a combination nobody measured can run and mean nothing.
+together and measured with `proxy_merge`, by you, as soon as two or more are back with
+accepted gains: the proxy-merge skill has the protocol. Never assemble their files by
+hand: a combination nobody measured can run and mean nothing.
 
 ## Invariants of the loop
 

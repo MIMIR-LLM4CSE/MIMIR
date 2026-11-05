@@ -52,7 +52,7 @@ export function mergePrompt(names: string[]): string {
   const list = names.map((n) => "'" + n + "'").join(", ");
   return "Merge the kept optimisations of the proxies " + names.join(", ") + " with git and measure the whole: "
     + "proxy_merge(op='plan', proxies=[" + list + "]), then follow the proxy-merge skill. The merge runs "
-    + "in a sub-agent's copy of its own; my workspace stays as it is until I merge its branch. Resolve the "
+    + "on a branch of its own in my workspace, which comes back to my branch once it is measured. Resolve the "
     + "trivial conflicts, ask me about a choice of method.";
 }
 

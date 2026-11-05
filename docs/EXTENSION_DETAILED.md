@@ -685,7 +685,9 @@ cursor. Escape and a click outside close the list, the arrows move through it. T
 sent with its `refresh` (`proxy`, `combined` or `proxies`), which the host forwards on
 the `code_map` message; it never moves the agent's active session. **Merge** under the
 list, with two proxies ticked or more, puts `proxy_merge(op='plan', …)` to the chat with
-the proxy-merge skill (`picker.mergePrompt`): what cannot be merged is the agent's to say.
+the proxy-merge skill (`picker.mergePrompt`): the merge runs on a branch of its own in
+the workspace, which comes back to the user's branch once measured; what cannot be merged
+is the agent's to say.
 Above the strip, `merge.ts` draws a merge: each proxy's gain alone, the files two of them
 share as arcs (a conflict dashed red until it is resolved, then green with its resolution
 in its tooltip), a link to the whole coloured by what the proxy's worst kernel did in it
@@ -697,7 +699,7 @@ ticked and not merged it draws the server's `forecast` the same way, unmeasured,
 the conflicts to resolve and its own **Merge** for every proxy ticked. Its title names
 the proxies ("Merge of pa + pb"). A merge has no step until the whole is measured: until
 then the map outlines the files of the proxies merged so far, and fainter those still to
-merge (`merge.mergeFiles`). Two proxies that ran at the same time in one tree (`together`) are named in the summary
+merge (`mergeFiles` in `merge.ts`). Two proxies that ran at the same time in one tree (`together`) are named in the summary
 ("ran together") and their arc's tooltip says why it matters. The legend names
 only what the graph draws. A merge frozen before merges were git's is read through
 `tab.merge_view` as done. The tab watches `merge.json` with the ledgers (`BENCH_GLOB`),

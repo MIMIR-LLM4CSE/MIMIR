@@ -528,6 +528,9 @@ async def proxy_exec(
 
 _EVAL_OPS = ("init", "configure", "run", "profile", "stop", "reset", "reset_to_best",
              "reset_to_request", "rebaseline", "end")
+# The ops that run the files on disk or write them: refused for another session while a
+# merge holds the workspace on its branch (merge.held_against).
+_EVAL_ON_FILES = ("init", "run", "profile", "reset", "reset_to_best", "reset_to_request", "rebaseline")
 
 # op='run' waits for the run it launched, so the default 120 s tool wall would cut it
 # off mid-measurement. Sits above eval_session's own wait budget, which detaches the
@@ -706,6 +709,9 @@ async def proxy_eval(
         return _unknown_op(op, _EVAL_OPS)
     if not confirm:
         return err("Not confirmed.", hint="Set confirm=True to proceed.")
+    held = merge.held_against(proxy_name) if op in _EVAL_ON_FILES else None
+    if held:
+        return held
 
     if op == "init":
         missing = _missing_args(op, proxy_name=proxy_name, benchmark_name=benchmark_name,
@@ -934,6 +940,9 @@ def proxy_slurm(
                                       mem, wall_time, account, target=target,
                                       comment=comment, scheduler=scheduler))
     # op == "eval"
+    held = merge.held_against(proxy_name)
+    if held:
+        return held
     return slurm.submit_eval(partition, proxy_name, background, gpus, cpus_per_task,
                              mem, wall_time, account, job_name or "proxy_opt",
                              target=target, comment=comment,
@@ -1051,7 +1060,7 @@ def proxy_merge(
     measure the whole.
 
     A proxy brings its patch from its baseline to its best accepted tree, read from the
-    snapshot store. In the merge's copy each patch is picked as a commit, a three-way
+    snapshot store. On the merge's own branch each patch is picked as a commit, a three-way
     merge whose base is that proxy's own baseline; a conflict stops the merge with both
     sides and what each proxy was doing. The merged code is then a new proxy measured on
     every source's own cases: each kernel against its gain alone, the whole as the total
@@ -1060,13 +1069,17 @@ def proxy_merge(
 
     Operations:
       plan     -> each proxy's gain alone and files, the files two of them share and
-                  their conflicts, and the brief to hand to spawn_agent. Read-only
+                  their conflicts, and the brief to hand to spawn_agent when several
+                  combinations are compared at once. Read-only
                   (requires: proxies, or ["*"] for every proxy)
-      start    -> in the merge's copy (a sub-agent's): register the merge proxy
-                  `merge-<stamp>` over this copy, its suite of every source's cases, and
-                  open its session (requires: proxies)
+      start    -> put the workspace on a branch of its own, mimir/merge-<stamp> (a clean
+                  tree and no run under way needed; in a sub-agent's copy, that copy's
+                  branch), register the merge proxy `merge-<stamp>`, its suite of every
+                  source's cases, and open its session (requires: proxies)
       next     -> the next step: names the run to launch, merges the next proxy, shows a
-                  conflict to resolve, says when it is done
+                  conflict to resolve, says when it is done. Once measured, and on a
+                  pause, the workspace goes back to its branch; next and drop take it
+                  to the merge's again
       resolved -> the conflict shown is resolved in the files: commit it and go on
                   (requires: resolution, how and why)
       pause    -> stop for the user's answer: a pending conflict is undone and the
