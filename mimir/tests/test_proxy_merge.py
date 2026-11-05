@@ -1,6 +1,6 @@
-"""Merging proxies: each one's kept patch, the conflicts between them, the gain they
-promise together, and the merge measured all at once, then one at a time when the whole
-falls short."""
+"""Merging proxies with git: each one's kept patch as a commit, the conflicts between
+them stopped on and resolved, the merged code measured per kernel and as a whole, what
+the merge leaves behind, and the warnings and views the plan and the map give."""
 
 import json
 import os

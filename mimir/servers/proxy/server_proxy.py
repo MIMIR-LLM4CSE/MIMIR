@@ -1124,8 +1124,8 @@ def proxy_code_map_steps(proxy_name: str = "", combined: bool = False,
         combined: Every proxy's steps together, in the order they settled, each value a
             multiple of its own proxy's baseline (lower is better).
         proxies: Two proxies or more to draw together the same way, with what merging
-            them promises (`forecast`: each one's gain alone, the files they share, their
-            conflicts and the gain expected together).
+            them promises (`forecast`: each one's gain alone, the files they share, the
+            conflicts to resolve, and whether two ran together in one tree).
     """
     return ok(code_map_tab.answer(proxy_name, combined, proxies))
 

@@ -102,7 +102,7 @@ def _read(snapshot_id: str, rel: str) -> str | None:
 
 def merge3(ours: str | None, base: str | None, theirs: str | None) -> str | None:
     """One file merged three ways: the result (None for a deleted file), or raises
-    ``Conflict`` when the two sides cannot both be kept."""
+    ``Conflict`` where git would stop for a resolution (the forecast's dry run)."""
     if ours == theirs or theirs == base:
         return ours
     if ours == base:
