@@ -14,7 +14,7 @@ MAX_MODULES = 15
 _FOLDED = frozenset({"include", "inc", "src", "source", "sources"})
 # Code around the code: drawn as components, but it does not decide where the code starts.
 _AROUND = frozenset({"test", "tests", "testing", "example", "examples", "bench", "benchmarks",
-                     "doc", "docs", "script", "scripts", "tools"})
+                     "doc", "docs", "script", "scripts", "tools", "proxy_bench"})
 _TESTS = frozenset({"test", "tests", "testing"})
 
 

@@ -80,7 +80,8 @@ merge's branch and carries it on.
 ## 3. The measurement
 
 Once every patch is merged, `next` names one run of the merged code on every source's
-cases. The report gives, per kernel (each source's case):
+cases, each measured three times by default, on the machine the tree untouched ran on: a
+run elsewhere compares to nothing, and `next` names it again. The report gives, per kernel (each source's case):
 
 - `alone`: its gain in its own proxy (best / baseline);
 - `in_merge`: its gain here, against the tree untouched;

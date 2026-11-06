@@ -243,6 +243,30 @@ class MergeRunTests(_MergeFixture):
         self.assertEqual(merged["pc"]["conflicts"], ["a.py"])
         self.assertIn("method choice", merged["pc"]["resolution"])
 
+    def test_a_baseline_that_measured_nothing_is_measured_again(self) -> None:
+        with mock.patch.object(merge, "_in_copy", return_value=True):
+            server_proxy.proxy_merge(op="start", proxies=["*"], proxy_name="merge-t", confirm=True)
+        server_proxy.proxy_merge(op="next", confirm=True)
+        self._complete("merge-t", {"pa/a": 10.0, "pc/a": 10.0, "pb/a": 10.0}, passed=False)
+        res = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(res["status"], "error", res)
+        self.assertIn("did not pass", res["error"])
+        self.assertIn("merge: baseline", server_proxy.proxy_merge(op="next", confirm=True)["next_step"])
+
+    def test_a_merge_measured_on_another_machine_is_measured_again(self) -> None:
+        self._merge()
+        self._resolve_keeping_pa()
+        cfg = eval_session.load_opt_config("merge-t")
+        eval_session.save_opt_config({**cfg, "machine": {"machine_signature": "here"}})
+        self._complete("merge-t", {"pa/a": 8.0, "pc/a": 9.0, "pb/a": 9.5})
+        write_json(os.path.join(procs.opt_active_run_dir("merge-t"), "machine.json"),
+                   {"machine_signature": "there", "host": "node7"})
+        res = server_proxy.proxy_merge(op="next", confirm=True)
+        self.assertEqual(res["status"], "error", res)
+        self.assertIn("node7", res["error"])
+        self.assertIsNone(merge._load("merge-t")["whole"])
+        self.assertIn("proxy_eval(op='run'", server_proxy.proxy_merge(op="next", confirm=True)["next_step"])
+
     def test_drop_takes_a_source_back_out_and_measures_again(self) -> None:
         self._merge()
         self._resolve_keeping_pa()

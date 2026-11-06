@@ -286,9 +286,9 @@ def start(names: list[str], name: str = "") -> dict:
             return err(f"The workspace is on the branch of the merge {held}.",
                        hint=f"Carry it on or pause it (proxy_merge(op='next'|'pause', proxy_name='{held}', "
                             "confirm=True)), then start this one.")
-        refusal = _switch_refusal()
-        if refusal:
-            return refusal
+        blocked = _switch_refusal()
+        if blocked:
+            return blocked
     here = workspace_root()
     configs = {s["proxy"]: load_opt_config(s["proxy"]) or {} for s in sources}
     roots = {p: merge_sources.root_of(c) for p, c in configs.items()}
@@ -331,7 +331,7 @@ def start(names: list[str], name: str = "") -> dict:
     # source's requirements.
     cases = []
     for s in sources:
-        for case in suites[s["proxy"]].get("cases") or []:
+        for case in (suites[s["proxy"]] or {}).get("cases") or []:
             c = _moved(copy.deepcopy(case), roots[s["proxy"]], here)
             cases.append({**c, "case_id": _case_id(s["proxy"], case.get("case_id", "")),
                           "proxy_name": entry_name(name, s["proxy"]),
@@ -355,12 +355,12 @@ def start(names: list[str], name: str = "") -> dict:
         if not merge_sources.already_in(s):
             continue
         sha, why = merge_sources.kept_commit(s)
-        out = merge_sources.git("revert", "--no-edit", sha) if sha else None
-        if out is None or out.returncode != 0:
+        taken_out = merge_sources.git("revert", "--no-edit", sha) if sha else None
+        if taken_out is None or taken_out.returncode != 0:
             merge_sources.git("revert", "--abort")
             _undo(name, entries, head, back)
             return err(f"{s['proxy']}'s work is already on this branch and cannot be taken out to "
-                       f"measure the code without it: {why or out.stderr.strip()[-300:]}")
+                       f"measure the code without it: {why or (taken_out.stderr.strip()[-300:] if taken_out else '')}")
         unapplied.append(s["proxy"])
     res = eval_session.init(
         name, name, [], harness, paths,
@@ -444,8 +444,10 @@ def _baseline(name: str, state: dict, row: dict | None) -> dict | None:
         state.update(phase="merging", pending=None)
         return None
     if row:
+        state["pending"] = None
+        _save(name, state)
         return err("The baseline run of the untouched tree did not pass: nothing can be compared to it.",
-                   hint="proxy_eval_status(op='results') says why.")
+                   hint="proxy_eval_status(op='results') says why; proxy_merge(op='next', confirm=True) measures it again.")
     return _run(name, state, "baseline", "merge: baseline",
                 "Measuring the tree untouched first: every kernel is judged against it.")
 
@@ -463,7 +465,8 @@ def _hunks(path: str) -> list[str]:
             lines = fh.read().splitlines()
     except OSError:
         return []
-    out, i = [], 0
+    out: list[str] = []
+    i = 0
     while i < len(lines) and len(out) < _MAX_HUNKS:
         if lines[i].startswith("<<<<<<< "):
             end = next((j for j in range(i, len(lines)) if lines[j].startswith(">>>>>>> ")), len(lines) - 1)
@@ -577,6 +580,12 @@ def _measure(name: str, state: dict, row: dict | None) -> dict | None:
         kept = [m["proxy"] for m in state["merged"] if m["proxy"] not in state["dropped"]]
         return _run(name, state, "measure", "merge: " + " + ".join(kept),
                     "Every kept patch is merged: measuring the whole on every source's cases.")
+    if row.get("verdict") == "incomparable":
+        state["pending"] = None
+        _save(name, state)
+        return err(f"The merged code ran on {row.get('machine') or 'another machine'}, not where its baseline ran: "
+                   "its times compare to nothing.",
+                   hint="proxy_merge(op='next', confirm=True) names the run again: launch it where the baseline ran.")
     cfg = load_opt_config(name) or {}
     base = baseline_value(cfg, read_ledger(name))
     state["kernels"] = _kernels(name, state, row)

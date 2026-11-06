@@ -577,6 +577,8 @@ class RatchetVerdictTests(unittest.TestCase):
 
     def test_infeasible_without_incumbent_is_none(self) -> None:
         self.assertIsNone(ratchet.ratchet_verdict(False, 4.0, None, "min"))
+        # Feasible, but it measured no value: nothing to keep as the best.
+        self.assertIsNone(ratchet.ratchet_verdict(True, None, None, "min"))
 
 
 class RatchetStoreTests(_TmpStorageTest):

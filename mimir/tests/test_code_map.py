@@ -397,6 +397,16 @@ class ScanTests(unittest.TestCase):
                     "out/CMakeCache.txt": "", "out/gen2.c": ""}) as root:
             self.assertEqual([f["id"] for f in code_map.scan(root)["files"]], ["src/a.c"])
 
+    def test_a_harness_is_read_and_the_runs_outputs_are_not(self) -> None:
+        with _tree({"src/a.py": "", "proxy_bench/harnesses/h.py": "",
+                    "proxy_bench/opt_runs/p/20240101/postrun.py": "",
+                    "proxy_bench/runs/p/20240101/postrun.py": ""}) as root:
+            self.assertEqual(code_map.walk(root), ["proxy_bench/harnesses/h.py", "src/a.py"])
+
+    def test_harnesses_do_not_decide_where_the_code_starts(self) -> None:
+        files = ["pkg/core/a.py", "pkg/io/b.py", *(f"proxy_bench/harnesses/h{i}.py" for i in range(5))]
+        self.assertEqual(code_map.layout.source_root(files), "pkg")
+
 
 if __name__ == "__main__":
     unittest.main()

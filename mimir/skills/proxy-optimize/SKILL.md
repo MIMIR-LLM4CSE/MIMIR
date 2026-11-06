@@ -106,6 +106,8 @@ field naming the exact next call — follow it.
 4. **Measure the baseline first.** Run once with `optimize_paths` untouched, before any
    edit. Until that run is on record the ratchet refuses to accept anything: with no
    measurement of the original, every later number is an assertion, not a comparison.
+   A run that gave no value of the metric is no baseline: fix the harness and run again,
+   or, when the original itself cannot run, fix it and `proxy_eval(op='rebaseline', confirm=True)`.
 
 ### Numerical invariants (correctness gates)
 

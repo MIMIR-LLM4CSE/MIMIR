@@ -290,6 +290,7 @@ def _measure_replicates(plan: _Plan, case: dict, case_entry: dict, idx: int,
     """Run one sweep *repeat* times; stop at the first error. Returns the last case dir,
     the last row and each replicate's metrics."""
     case_id = case.get("case_id", "?")
+    metric = ratchet.replicate_metric(plan.primary_metric)
     tag = f"opt_{plan.proxy_name}_{case_id}_{idx}"
     replicates: list[dict] = []
     run_case_dir: str = ""
@@ -316,7 +317,7 @@ def _measure_replicates(plan: _Plan, case: dict, case_entry: dict, idx: int,
         replicates.append(rep_metrics)
         if plan.repeat > 1:
             _log(f"[proxy_runner] case={case_id} sweep={idx} replicate={rep} "
-                 f"{plan.primary_metric}={rep_metrics.get(plan.primary_metric)}")
+                 f"{metric}={rep_metrics.get(metric)}")
     return run_case_dir, row, replicates
 
 
@@ -343,7 +344,7 @@ def _measure_sweep(plan: _Plan, tally: _Tally, case: dict, case_entry: dict, idx
     # With replicates, the median of each metric, never the best: the minimum of
     # several draws measures how lucky the node was, not the code.
     case_metrics = _aggregate_replicates(replicates)
-    spread = _relative_spread(replicates, plan.primary_metric)
+    spread = _relative_spread(replicates, ratchet.replicate_metric(plan.primary_metric))
     if spread is not None:
         case_metrics["primary_spread"] = spread
 
@@ -519,7 +520,8 @@ def main() -> None:
     verdict = _settle_ratchet(proxy_name, run_dir, output)
     # The baseline and every kept run, or a run asked to: the map's time bars stay current
     # where the code moved, and a ruled-out attempt costs no extra execution.
-    if verdict == "accept" or cfg.get("profile"):
+    baseline = (store.load_opt_config(proxy_name) or {}).get("baseline_run_id")
+    if verdict == "accept" or cfg.get("profile") or baseline == os.path.basename(run_dir):
         _profile_phase(plan, reg, entry, run_dir, tally)
 
     if all_passed:

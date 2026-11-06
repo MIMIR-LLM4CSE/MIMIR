@@ -39,8 +39,8 @@ def case_times(results: list[tuple[str, bool, float | None]]) -> dict[str, float
     """Each case at its fastest passing configuration; None for a case that has none."""
     best: dict[str, float | None] = {}
     for case_id, passed, time_s in results:
-        best.setdefault(case_id, None)
-        if passed and time_s is not None and (best[case_id] is None or time_s < best[case_id]):
+        held = best.setdefault(case_id, None)
+        if passed and time_s is not None and (held is None or time_s < held):
             best[case_id] = time_s
     return best
 
@@ -50,9 +50,8 @@ def total_time(results: list[tuple[str, bool, float | None]]) -> float | None:
     summed; None when a case has none. What a merge of several kernels is judged on,
     where the fastest case alone would speak for one of them."""
     best = case_times(results)
-    if not best or any(t is None for t in best.values()):
-        return None
-    return sum(best.values())
+    times = [t for t in best.values() if t is not None]
+    return sum(times) if best and len(times) == len(best) else None
 
 
 def run_case_times(run_dir: str) -> dict[str, float | None]:
@@ -106,14 +105,14 @@ def _within_noise(new, old, goal: str, margin: float) -> bool:
 def ratchet_verdict(feasible: bool, primary_value, best: dict | None,
                      goal: str, min_improvement: float = 0.0, neutral: bool = False) -> str | None:
     """``"accept"`` (feasible and better by *min_improvement*, or first), ``"reject"``, or None
-    (infeasible with no incumbent). With *neutral* (a refactor), feasible and no worse than
+    (no incumbent, and infeasible or without a value). With *neutral* (a refactor), feasible and no worse than
     the best beyond the same margin is enough: a refactor changes the code's shape, not
     its speed, and is kept when it costs nothing measurable.
     """
     if not feasible:
         return "reject" if best is not None else None
     if best is None:
-        return "accept"
+        return "accept" if primary_value is not None else None
     best_val = best.get("primary_value")
     if is_improvement(primary_value, best_val, goal, min_improvement):
         return "accept"
@@ -214,12 +213,20 @@ def baseline_value(cfg: dict, rows: list[dict]):
 # shared node is the whole reason this file needed a notion of noise; an accuracy metric
 # against a sealed reference is reproducible to the bit, and repeating it buys nothing.
 NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per_s",
-                  "bandwidth_gbytes_per_s")
+                  "bandwidth_gbytes_per_s", "best_time_s", "total_time_s")
+
+# Run-level metrics summed up from the cases' ``time_s``: a replicate of a case holds that.
+_FROM_CASE_TIMES = ("best_time_s", "total_time_s")
 
 # Replicates per case when the primary metric is a noisy one and the caller expressed no
 # preference. Three is the smallest number with a middle — enough for a median to mean
 # something, cheap enough to be the default.
 _AUTO_REPEAT = 3
+
+
+def replicate_metric(primary_metric: str) -> str:
+    """The metric a case's replicates hold for *primary_metric*, which their spread is read on."""
+    return "time_s" if primary_metric in _FROM_CASE_TIMES else primary_metric
 
 
 def effective_repeat(cfg: dict) -> int:

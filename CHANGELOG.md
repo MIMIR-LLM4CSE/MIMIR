@@ -144,6 +144,20 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **A merge is measured against the machine's noise.** `total_time_s`, its metric, and
+  `best_time_s` counted as reproducible: each case of a merge ran once against gains taken
+  on a median of three, no noise floor was ever set, so `flagged` stood on the first
+  source's configured margin, and no machine was pinned. Both are timing metrics now,
+  three replicates by default with their spread read on the cases' `time_s`, and a merged
+  run taken on another machine is named again rather than reported.
+- **A run that measured nothing is no baseline.** It opened the launch gate, so the next
+  edit was accepted with nothing to compare it to, and a merge went on past a tree that
+  never ran. Without a value of the metric the gate stays closed, a feasible run is not
+  kept as the best and counts no stall, and a merge measures its tree again. A measured
+  baseline that fails its requirements is now profiled, as every baseline is.
+- **The code map leaves out the runs' outputs.** `proxy_bench/`'s runs, optimisation
+  state, references, suites and history were scanned, so a Slurm run's `postrun.py` was
+  drawn as code. The harnesses stay, and no longer weigh on where the code starts.
 - **The scientific-computing drawer remembers the sections you folded.** Each opening
   of the drawer opened every section again; the folded ones are now kept in the
   webview's storage, across openings and reloads of the window.

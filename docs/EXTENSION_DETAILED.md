@@ -675,10 +675,10 @@ to it first. Each module a request targets carries an `R3` pill coloured by
 status, and the strip's chips name a step's request (`R3.2`).
 
 **The tab follows the session on its own.** A tool that may change what the map draws
-declares `CODE_MAP_MOVES` (`proxy_eval`, `proxy_eval_status`, `proxy_request`: a run
-settled, a background run's results read, a request recorded), narrowed by
+declares `CODE_MAP_MOVES` (`proxy_eval`, `proxy_eval_status`, `proxy_request`, `proxy_merge`: a
+run settled, a background run's results read, a request recorded, a merge moved), narrowed by
 `map_moves_when` to the ops that write (`proxy_eval_status` only for `results`,
-`proxy_request` only for `open` and `update`: a status poll while a run goes re-maps
+`proxy_request` only for `open` and `update`, `proxy_merge` not for `plan` nor `report`: a status poll while a run goes re-maps
 nothing); after each such successful call the client's dispatch emits `code_map_stale`, the chat passes it to the host
 (`codeMapStale`), and an open tab maps the code again with its own pick of proxy, as ⟳
 does and saying so. A sub-agent's run reaches no dispatch of this window (a detached one

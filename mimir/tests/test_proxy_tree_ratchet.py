@@ -335,6 +335,12 @@ class NoiseFloorTests(unittest.TestCase):
         # An accuracy metric against a sealed reference is bit-reproducible.
         self.assertEqual(ratchet.effective_repeat({"primary_metric": "l2_rel"}), 1)
 
+    def test_a_run_level_time_is_noisy_as_its_cases_are(self) -> None:
+        for metric in ("best_time_s", "total_time_s"):
+            self.assertEqual(ratchet.effective_repeat({"primary_metric": metric}), 3)
+            self.assertEqual(ratchet.replicate_metric(metric), "time_s")
+        self.assertEqual(ratchet.replicate_metric("l2_rel"), "l2_rel")
+
     def test_an_explicit_repeat_is_obeyed(self) -> None:
         self.assertEqual(
             ratchet.effective_repeat({"primary_metric": "time_s", "repeat": 1}), 1)

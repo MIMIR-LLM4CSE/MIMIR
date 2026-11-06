@@ -19,6 +19,7 @@ from mimir.servers.proxy._lib.profiling import Frame, cpu, frames, gpu, memory
 from mimir.servers.proxy import server_proxy
 from mimir.servers.proxy._ops import eval_session
 from mimir.tests.support.proxy import _TmpStorageTest, _eval
+from mimir.servers.proxy._lib.ratchet import load_best
 from mimir.shared.atomic import read_json
 
 _PYSPY = """\
@@ -136,7 +137,8 @@ class ReadingTests(unittest.TestCase):
 
     def _harness_waiting(self, perf_ok: tuple[bool, str], native: list | None = None) -> dict:
         """A Python harness whose code runs in a compiled child: py-spy sees it wait."""
-        resolve = lambda p: p.removeprefix("/ws/") if p.startswith("/ws/") else None
+        def resolve(p):
+            return p.removeprefix("/ws/") if p.startswith("/ws/") else None
         waiting = [([Frame("/ws/bench/h.py", "<module>", 2), Frame("libc.so.6", "wait4")], 5)]
         with mock.patch.object(cpu, "_pyspy", return_value=profiling.attribute(waiting, resolve)), \
              mock.patch.object(cpu, "perf_allowed", return_value=perf_ok), \
@@ -161,7 +163,8 @@ class ReadingTests(unittest.TestCase):
     def test_a_py_spy_profile_that_saw_the_run_is_kept(self) -> None:
         seen = {"samples": 400, "files": {"src/k.py": 1.0}, "outside": {}}
         with mock.patch.object(cpu, "_pyspy", return_value=seen), mock.patch.object(cpu, "_perf") as perf:
-            outside_ws = lambda p: None
+            def outside_ws(p):
+                return None
             self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", outside_ws, None, None, wall_s=2.0), seen)
             self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", outside_ws, None, None), seen)
         perf.assert_not_called()
@@ -239,7 +242,8 @@ class SymbolTests(unittest.TestCase):
         self.assertEqual(prof["lines"], {})
 
     def test_a_harness_left_holding_the_time_is_profiled_by_perf(self) -> None:
-        resolve = lambda p: p.removeprefix("/ws/") if p.startswith("/ws/") else None
+        def resolve(p):
+            return p.removeprefix("/ws/") if p.startswith("/ws/") else None
         held = {"samples": 500, "files": {"bench/h.py": 1.0}, "outside": {}}
         native = [([Frame("/usr/bin/python3.12"), Frame("/ws/src/solver.f90", "relax")], 1)] * 900
         with mock.patch.object(cpu, "_pyspy", return_value=held), \
@@ -250,7 +254,8 @@ class SymbolTests(unittest.TestCase):
         self.assertIn("py-spy left 100% of the run on bench/h.py", prof["note"])
 
     def test_a_harness_left_holding_the_peak_is_traced_by_the_native_profiler(self) -> None:
-        resolve = lambda p: p if p.startswith("src/") or p == "bench/h.py" else None
+        def resolve(p):
+            return p if p.startswith("src/") or p == "bench/h.py" else None
         heaps = {"memray": (40 * 2**20, [([Frame("bench/h.py", "<module>", 2), Frame("_solver.so", "")], 40 * 2**20)]),
                  "heaptrack": (40 * 2**20, [([Frame("src/solver.f90", "relax", 4)], 40 * 2**20)])}
         with mock.patch.object(memory, "choose", return_value=("memray", "")), \
@@ -608,8 +613,10 @@ class MemoryTests(unittest.TestCase):
 
     def _python_harness(self, native: tuple[str, str], heaps: dict) -> dict:
         """A Python harness whose code allocates in a child: its own heap is small."""
-        resolve = lambda p: p if p.startswith("src/") else None
-        taken = lambda tool, *_a: heaps[tool]
+        def resolve(p):
+            return p if p.startswith("src/") else None
+        def taken(tool, *_a):
+            return heaps[tool]
         with mock.patch.object(memory, "choose", return_value=("memray", "")), \
              mock.patch.object(memory, "choose_native", return_value=native), \
              mock.patch.object(memory, "_take", side_effect=taken):
@@ -938,6 +945,36 @@ class RunnerProfilesTests(_TmpStorageTest):
         self.assertIsNone(read_json(profiling.profile_path(second)))
         third = self._run(profile=True)
         self.assertIsNotNone(read_json(profiling.profile_path(third)))
+
+    def _configure(self, **fields) -> None:
+        cfg = eval_session.load_opt_config("fast")
+        eval_session.save_opt_config({**cfg, **fields})
+
+    def test_a_baseline_that_fails_its_requirements_is_profiled(self) -> None:
+        self._configure(requirements=[{"metric": "time_s", "operator": "lt", "threshold": 1e-9}])
+        base = self._run()
+        self.assertEqual(eval_session.load_opt_config("fast")["baseline_run_id"], os.path.basename(base))
+        self.assertIsNotNone(read_json(profiling.profile_path(base)))
+
+    def test_a_run_that_measured_nothing_is_no_baseline(self) -> None:
+        self._configure(primary_metric="no_such_metric")
+        self._run()
+        cfg = eval_session.load_opt_config("fast")
+        self.assertFalse(cfg["baseline_run_id"])
+        self.assertIsNone(load_best("fast"))
+        self.assertEqual(cfg["stall"], 0)
+        # The gate stays closed: an edit still has nothing to be compared to.
+        with open(cfg["optimize_paths"][0], "a") as fh:
+            fh.write("EDITED = 1\n")
+        _cfg, error, _dir, _notice = eval_session.prepare_run("fast", "", False)
+        self.assertIn("No baseline run on record", (error or {}).get("error", ""))
+
+    def test_a_run_level_time_sets_the_noise_floor(self) -> None:
+        self._configure(primary_metric="total_time_s")
+        base = self._run()
+        results = read_json(os.path.join(base, "metrics.json"))["results"]
+        self.assertTrue(all(isinstance(r["metrics"]["primary_spread"], float) for r in results))
+        self.assertIsInstance(eval_session.load_opt_config("fast")["noise_floor"], float)
 
     def test_results_say_where_the_time_goes(self) -> None:
         self._run()

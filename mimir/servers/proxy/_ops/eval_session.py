@@ -370,7 +370,8 @@ def prepare_run(
                 "No baseline run on record, and the tracked files have already been "
                 "edited — this run would have nothing to be compared against.",
                 hint="Restore the original with proxy_eval(op='reset', confirm=True), "
-                     "run once to measure it, then optimize from there."), "", ""
+                     "run once to measure it, then optimize from there. When the original "
+                     "itself cannot run, fix it and proxy_eval(op='rebaseline', confirm=True)."), "", ""
 
     notice = _resume_notice(cfg, name, paths)
 

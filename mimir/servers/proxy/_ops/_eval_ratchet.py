@@ -133,11 +133,12 @@ def _ratchet_settle_locked(
                                     primary_value, wall_value, primary_metric, goal,
                                     max_stall, best)
 
-    # The baseline is the one run whose spread describes the machine rather than the
-    # change, so it is where the noise floor comes from — recorded once, then applied
-    # to every comparison after it.
+    # The first run that measured the metric is the baseline. A run without a value leaves
+    # the launch gate closed: nothing could be compared to it. Its spread describes the
+    # machine rather than the change, so it sets the noise floor every comparison uses.
     spread = run_primary_value(final_metrics, "primary_spread")
-    if not cfg.get("baseline_run_id") and isinstance(spread, (int, float)):
+    is_baseline = not cfg.get("baseline_run_id") and primary_value is not None
+    if is_baseline and isinstance(spread, (int, float)):
         cfg["noise_floor"] = float(spread)
 
     min_improvement, margin_source = effective_min_improvement(cfg)
@@ -151,10 +152,10 @@ def _ratchet_settle_locked(
     memory = {k: final_metrics[k] for k in ("peak_rss_mb", "peak_rss_total_mb") if final_metrics.get(k) is not None}
     memory_warning = _memory_warning(verdict, primary_metric, best, memory)
 
-    # The launch gate in prepare_run guarantees the first run measured the untouched
-    # tree; this records which run that was, so the gate opens exactly once.
+    # The launch gate in prepare_run guarantees this run measured the untouched tree;
+    # recording it opens the gate, exactly once.
     baseline_run = cfg.get("baseline_run_id", "")
-    if not baseline_run:
+    if is_baseline:
         cfg["baseline_run_id"] = baseline_run = run_id
         if machine.get("machine_signature"):
             cfg["machine"] = machine
@@ -164,7 +165,7 @@ def _ratchet_settle_locked(
         save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value, memory=memory)
         best  = load_best(name)
         stall = 0
-    elif feasible:
+    elif feasible and primary_value is not None:
         stall += 1  # feasible but not an improvement — a stalled iteration
 
     if feasible and stall >= max_stall:

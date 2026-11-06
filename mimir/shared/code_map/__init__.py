@@ -31,6 +31,10 @@ _CYTHON = (".pyx", ".pxd", ".pxi")
 _SKIPPED_DIRS = frozenset({"node_modules", "__pycache__", "venv", "site-packages", "dist",
                            "build", "_build", "builds", "install"})
 _BUILD_DIR_RE = re.compile(r"^(build|cmake-build)[-_.]", re.I)
+# What the proxy server generates in its store. The harnesses beside them are code: the
+# profiles of the runs read them as the workspace's.
+_BENCH_DIR = "proxy_bench"
+_BENCH_OUTPUT = frozenset({"runs", "opt_runs", "references", "suites", "history", "opt.git"})
 MAX_FILES = 20000
 # What a ``CODE_MAP`` tool is called with to answer the whole map rather than its summary.
 FULL_ARGS = {"detail": "full"}
@@ -90,14 +94,15 @@ def _is_build_file(name: str) -> bool:
 
 
 def walk(root: str) -> list[str]:
-    """The workspace's source and build files, relative, skipping hidden directories and
-    build trees (a directory holding a CMakeCache.txt, or named like one)."""
+    """The workspace's source and build files, relative, skipping hidden directories, build
+    trees (a directory holding a CMakeCache.txt, or named like one) and the runs' outputs."""
     out: list[str] = []
     for d, dirs, names in os.walk(root):
         if "CMakeCache.txt" in names and d != root:
             dirs[:] = []
             continue
-        dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x not in _SKIPPED_DIRS
+        generated = _BENCH_OUTPUT if os.path.basename(d) == _BENCH_DIR else frozenset()
+        dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x not in _SKIPPED_DIRS | generated
                          and not _BUILD_DIR_RE.match(x) and not x.endswith(".egg-info"))
         rel_d = os.path.relpath(d, root).replace(os.sep, "/")
         for n in sorted(names):

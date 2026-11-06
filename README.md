@@ -206,8 +206,9 @@ is documented in [`SETUP.md`](docs/SETUP.md).
 │                                                                             │
 │  proxy/                                                                     │
 │  ┌───────────────────────────────────────────┐                               │
-│  │ proxy  (7 op-dispatched tools: registry,  │                               │
-│  │  refs, runs, suites, eval loop, Slurm)    │                               │
+│  │ proxy  (11 tools: registry,               │                               │
+│  │  refs, runs, suites, eval loop, Slurm,    │                               │
+│  │  requests, merge, panel and map reports)  │                               │
 │  │  _ops/ (op bodies) + _lib/ (helpers)      │                               │
 │  └───────────────────────────────────────────┘                               │
 └─────────────────────────────────────────────────────────────────────────────┘
