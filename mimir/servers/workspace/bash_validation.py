@@ -145,9 +145,8 @@ _DENIAL_HINTS = {
     "cluster": (
         "'{name}' submits or cancels a Slurm job, which goes through the cluster tools "
         "instead: submitting returns a job handle this session tracks, resuming on its "
-        "own when the job ends, and cancelling takes one job of yours at a time. A job "
-        "submitted from a shell is tracked by nothing. 'squeue'/'sinfo'/'sacct' are "
-        "available here for inspection."
+        "own when the job ends, and cancelling takes one job of yours at a time. "
+        "'squeue'/'sinfo'/'sacct' are available here for inspection."
     ),
 }
 

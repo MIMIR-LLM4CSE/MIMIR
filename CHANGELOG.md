@@ -152,6 +152,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **A job started by a `.sh` is tracked as the cluster job it is.** A script run through
+  `bash_run` read as a local process with a PID, or as finished once its `sbatch`
+  returned. Its jobs are now found from the ids it prints, or, for a script naming
+  `sbatch`, `srun` or `salloc` or running one, from what entered the queue during its run:
+  an `exec ssh "$FRONTEND" "srun …"` is read in the run's own processes, which give the
+  host a script keeps in a variable, and that scheduler is learned. A detached run
+  stays open until they end, sits on the cluster's row with its job, node and partition,
+  ends on their verdict, and stopping it cancels them; a blocking run hands them over to
+  be watched. They are the session's own, for `slurm_cancel` and the unwatched-jobs
+  reminder.
 - **An opened run keeps a build's line inside its card.** The phase held the line of the
   bar and could not shrink, so a compilation's `[ 42%] Building CXX object …` ran past the
   card and the drawer. The bar and its percentage keep their line, and the phase wraps

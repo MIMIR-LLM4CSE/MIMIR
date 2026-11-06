@@ -15,6 +15,7 @@ EXIT_CODE = "exit_code"            # written by a shell job's trap as it leaves
 META = "meta.json"                 # a shell job's pid, command and start time
 SLURM_JOB_ID = "slurm_job_id"      # a submission's id, written once at submission
 SLURM_STATE = "slurm_state"        # a submission's terminal word, written by a poll
+SHELL_SLURM_JOBS = "slurm_jobs.json"  # the Slurm jobs a shell job started: id, host, directory
 WATCHER_FILE = "watcher.json"      # the descriptor of a run its own server watches
 REPORTED = "reported"              # the run's ending was handed to a turn
 WAKE_BASELINE = ".wake_baseline"   # a session's runs were scanned once already
@@ -58,6 +59,16 @@ def recorded_terminal_state(job_dir: str) -> str:
     except OSError:
         return ""
     return word if is_terminal(word) else ""
+
+
+def follows_open_slurm_job(job_dir: str) -> bool:
+    """Whether the shell job in *job_dir* started a Slurm job no poll has settled yet."""
+    try:
+        with open(os.path.join(job_dir, SHELL_SLURM_JOBS), encoding="utf-8") as fh:
+            filed = json.load(fh).get("jobs") or {}
+        return any(not recorded_terminal_state(job.get("dir", "")) for job in filed.values())
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 # ── Descriptors ──────────────────────────────────────────────────────────────

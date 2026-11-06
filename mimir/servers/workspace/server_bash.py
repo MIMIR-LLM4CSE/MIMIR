@@ -25,7 +25,7 @@ from ...shared.capabilities import (
     DIVERTIBLE,
 )
 from ...shared.responses import err, ok
-from . import bash_exec, bash_jobs
+from . import bash_exec, bash_jobs, bash_slurm
 from ...shared.jobs import shell_descriptor
 from ...shared.slurm_site import (
     SLURM_COMMANDS,
@@ -122,7 +122,8 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
       text as a quoted argument. No substitution or subshell, and '&' stays refused:
       to detach a run, pass background=True rather than backgrounding it in the shell.
     - no job submission (sbatch/salloc): the cluster tools return a handle this session
-      tracks. No 'dd'/'shred'. These are absent by design: report the limitation
+      tracks. A script that submits is followed onto its jobs once it prints their ids
+      or they appear in the queue. No 'dd'/'shred'. These are absent by design: report the limitation
       instead of trying another spelling.
     - 'sed -i' rewrites in place (prefer the file-edit tools); a bare 'pip install'
       provisions the interpreter MIMIR itself runs under.
@@ -162,7 +163,9 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
 
     requested_timeout = timeout
     timeout = max(1, min(timeout, _MAX_TIMEOUT))
+    started_at = time.time()
     result = bash_exec.run_blocking(command, cwd, timeout, preamble=preamble, segments=validation["segments"])
+    bash_slurm.hand_over(result, command, cwd, started_at)
     if timeout != requested_timeout:
         result["timeout_clamped"] = True
         result["requested_timeout"] = requested_timeout

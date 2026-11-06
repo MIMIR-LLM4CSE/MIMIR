@@ -875,7 +875,7 @@ confinement, with the no-substitution model kept load-bearing. This is also the
 (`grep`/`rg`) — there is no dedicated grep tool; a leading `grep`/`rg` classifies
 read-only, so it needs no approval and feeds the same discovery signals a tool would.
 
-The server holds the tools and the validation call. Running a command — its environment, the blocking run with its cap and divert, the result it reports, the detached launch — is `workspace/bash_exec.py`; a job's directory and how a read of it is answered are `workspace/bash_jobs.py`.
+The server holds the tools and the validation call. Running a command — its environment, the blocking run with its cap and divert, the result it reports, the detached launch — is `workspace/bash_exec.py`; a job's directory and how a read of it is answered are `workspace/bash_jobs.py`; the Slurm jobs a command started without showing it are `workspace/bash_slurm.py`.
 
 Tools:
 - `bash_run` — takes `background=True` for a run that does not fit the 120 s cap (see
@@ -908,6 +908,12 @@ Tools:
   **red** one from the change to the environment (a build to configure, a package, a dataset,
   an allocation). It never makes the run green — it stays reported as not completed — it only
   stops it being charged as a defect. Unclaimed, a red exit drives the repair ladder as before.
+
+### A script that reaches Slurm (`bash_slurm.py`)
+
+`./submit.sh` names no scheduler on its command line, so a validator cannot tell it from a build. Its jobs are found by what it leaves: the ids it prints (`Submitted batch job N`, `srun: job N …`, `salloc: Granted job allocation N`), else, when the file it executes names `sbatch`, `srun` or `salloc` or a process of the run is running one, what entered the queue during its run and while no other session ran a command (`slurm_site.queued_submissions`, `shell_activity.submitted_by_this_session`). `--parsable` and an `srun` granted at once print no id, which is why the queue is read. The processes are read from the run's session (`processes.session_argvs`), since a script's `exec ssh "$FRONTEND" "srun …"` shows its host nowhere else: the `ssh` argv holds the value the variable took. Candidates are looked up on every known scheduler, on the hosts the command `ssh`es to and on those its processes reached, and a host that knows the job joins the inventory. An id already recorded, or a job already over (an old log `cat`ed back), is left out.
+
+A job found is filed as a submission (`slurm_site.record_job_dir`, not adopted), so `slurm_cancel` takes it and it is never reported as unwatched. A detached run keeps one handle: `bash_jobs.state` overlays its jobs (`follow`), the run stays going while any of them is, and reports `job_id`, `scheduler`, `nodes` and `partitions`, which is what the panel places and labels a run by, so the pid gives way without a change to the client. It ends on the worst word of its process and its jobs, each job settled on disk; a scheduler that does not answer gives an empty state, which the watcher retries and gives up on as unknown. `bash_job_stop` cancels the jobs first. Each filed job carries the shell handle in `watcher.json`, and `jobs_on_disk` reads a shell job as live while one is open, so a restart finds one run, not an ended script and a stray job. A blocking run has returned by then: it hands its jobs over as `background_jobs` (`hand_over`).
 
 ### Detached runs (`bash_jobs.py`)
 

@@ -49,3 +49,25 @@ def is_running(pid: object, expected_starttime: int | None = None) -> bool:
         if actual is not None and actual != expected_starttime:
             return False
     return True
+
+
+def session_argvs(session: int) -> list[list[str]]:
+    """The argv of every process of *session* (its leader's pid); [] without ``/proc``."""
+    try:
+        pids = [int(name) for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return []
+    out = []
+    for pid in pids:
+        fields = _stat_fields(pid)
+        if not fields or len(fields) < 4 or fields[3] != str(session):
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        argv = [word.decode(errors="replace") for word in raw.split(b"\0")[:-1]]
+        if argv:
+            out.append(argv)
+    return out

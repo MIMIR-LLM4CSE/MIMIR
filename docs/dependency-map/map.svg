@@ -26,7 +26,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 </style>
 <rect class="bg" width="1155" height="958"/>
 <text class="head" x="14" y="26">MIMIR dependency map</text>
-<text class="meta" x="14" y="44">62 units · 278 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
+<text class="meta" x="14" y="44">62 units · 279 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
 <rect class="band" x="8" y="60" width="966" height="48" rx="4"/>
 <text class="label" x="14" y="82">rank 11</text>
 <text class="label" x="14" y="96">front-ends</text>
@@ -333,11 +333,12 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,692 C1082.5,777 339,777 339,862" stroke-width="2.6"><title>servers.workspace → shared.build_progress · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 275,723 275,754" stroke-width="3.3"><title>servers.workspace → shared.capabilities · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 376.5,723 376.5,754" stroke-width="2.6"><title>servers.workspace → shared.code_map · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,723 757,723 757,754" stroke-width="3"><title>servers.workspace → shared.jobs · 3 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,723 757,723 757,754" stroke-width="3.3"><title>servers.workspace → shared.jobs · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 614.5,777 614.5,862" stroke-width="2"><title>servers.workspace → shared.module_env · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,723 924,723 924,754" stroke-width="2"><title>servers.workspace → shared.processes · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,723 924,723 924,754" stroke-width="2.6"><title>servers.workspace → shared.processes · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 1018,723 1018,754" stroke-width="4.2"><title>servers.workspace → shared.responses · 8 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,743 307.5,743 307.5,794" stroke-width="3"><title>servers.workspace → shared.shell_paths · 3 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,777 730,777 730,862" stroke-width="2"><title>servers.workspace → shared.shell_activity · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,743 307.5,743 307.5,794" stroke-width="3.3"><title>servers.workspace → shared.shell_paths · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 961.5,777 961.5,862" stroke-width="2.6"><title>servers.workspace → shared.slurm_site · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,743 517.5,743 517.5,794" stroke-width="3.8"><title>servers.workspace → shared.state_paths · 6 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,743 651,743 651,794" stroke-width="2"><title>servers.workspace → shared.trusted_read_roots · 1 import(s)</title></path>

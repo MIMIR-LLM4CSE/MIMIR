@@ -98,7 +98,16 @@ submission writes, not a job id you have read. With no descriptor nothing watche
 job, no wake is owed when it ends, and a server left running overnight has — as far as
 it can tell — nothing to do, so it stops. The job runs on; nobody is ever told.
 
-So for **every id the submission printed**, the server job and the client array alike:
+`bash_run` follows what it can see: a script run through it that prints its job ids
+(`Submitted batch job N`, `srun: job N …`), or that names `sbatch`/`srun`/`salloc` or
+runs one, here or through an `ssh` of its own, and puts a job in the queue during its
+run, is filed under those jobs without a call of yours. Its result says `slurm_jobs`; a detached run then lasts as long as they do and
+reads as them, and stopping it cancels them. A job that goes through neither, on a host
+the workspace does not reach, or submitted while another conversation ran a command, is
+not found.
+
+So for **every id that was printed and not reported in `slurm_jobs`**, the server job
+and the client array alike:
 
 - `slurm_watch(job_id, note="what this is")` — adopts it. An array's base id covers all
   of its tasks. It refuses an id Slurm has never heard of, so it is also the check that

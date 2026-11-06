@@ -17,9 +17,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ...shared import build_progress
-from ...shared.jobs import EXIT_CODE, META, shell_descriptor
+from ...shared.jobs import EXIT_CODE, META, is_terminal, shell_descriptor
 from ...shared.responses import err, ok
 from ...shared.processes import is_running, proc_starttime
+from . import bash_slurm
 
 def jobs_root() -> str:
     """This session's job root, resolved per call (the session-less fallback can move)."""
@@ -34,6 +35,9 @@ _JOB_KEY_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$")
 # leaves a mess either way; the wait is for the common case of a process that handles
 # the signal and stops cleanly.
 _TERM_GRACE_S = 5.0
+
+# How much of a job's log, from its two ends, is read for a Slurm job id on each poll.
+_SLURM_SCAN_BYTES = 256 * 1024
 
 # Popen handles for children we deliberately stopped waiting on (a diverted run).
 # Held only so the garbage collector does not warn about a still-running child; the
@@ -317,6 +321,17 @@ def _meta(job_key: str, run_dir: str = "") -> dict:
 
 
 def state(job_key: str, run_dir: str = "") -> dict:
+    """The job's status, followed onto the Slurm jobs it started (``bash_slurm``)."""
+    payload = _process_state(job_key, run_dir)
+    meta = _meta(job_key, run_dir)
+    if not meta or meta.get("ephemeral"):
+        return payload
+    text, _ = _clip(log_path(job_key, run_dir), _SLURM_SCAN_BYTES, "ends")
+    bash_slurm.follow(payload, _job_dir(job_key, run_dir), meta, text)
+    return payload
+
+
+def _process_state(job_key: str, run_dir: str = "") -> dict:
     """The job's state: running, done (exit 0), crashed (non-zero), or unknown (no own status).
 
     Unknown covers a missing exit code and a recorded signal (128+signum).
@@ -441,12 +456,22 @@ def listing() -> list[dict]:
 
 
 def stop(job_key: str, run_dir: str = "") -> dict:
+    """Cancel the Slurm jobs the run started, then stop its process."""
+    cancelled = bash_slurm.cancel(_job_dir(job_key, run_dir))
+    out = _stop_process(job_key, run_dir)
+    if not cancelled:
+        return out
+    return {**out, **state(job_key, run_dir), "cancelled_slurm_jobs": cancelled,
+            "note": f"Slurm jobs cancelled: {', '.join(cancelled)}."}
+
+
+def _stop_process(job_key: str, run_dir: str = "") -> dict:
     """SIGTERM the job's process group, escalating to SIGKILL.
 
     The group, not the pid: the shell forks, and signalling only the shell leaves the
     compiler it launched running — the same reason ``proc_run`` kills groups on timeout.
     """
-    payload = state(job_key, run_dir)
+    payload = _process_state(job_key, run_dir)
     if payload.get("error"):
         return payload
     if payload["state"] != "running":
@@ -469,11 +494,11 @@ def stop(job_key: str, run_dir: str = "") -> dict:
         while waited < deadline:
             time.sleep(0.2)
             waited += 0.2
-            if state(job_key, run_dir)["state"] != "running":
-                out = state(job_key, run_dir)
+            out = _process_state(job_key, run_dir)
+            if out["state"] != "running":
                 out["stopped"] = "sigterm" if sig == signal.SIGTERM else "sigkill"
                 return out
-    out = state(job_key, run_dir)
+    out = _process_state(job_key, run_dir)
     out["stopped"] = "sigkill"
     return out
 
@@ -511,7 +536,7 @@ def with_live_descriptors(payload: dict, jobs: list[dict], run_dir: str = "") ->
     live = [shell_descriptor(j["job_key"],
                             run_dir or job_dir(j["job_key"]))
             for j in jobs
-            if isinstance(j, dict) and j.get("state") == "running" and j.get("job_key")]
+            if isinstance(j, dict) and not is_terminal(j.get("state")) and j.get("job_key")]
     if live:
         payload["background_jobs"] = live
     return payload

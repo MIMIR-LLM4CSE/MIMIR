@@ -66,6 +66,11 @@ _LOCAL_PROBE_TIMEOUT = 10
 # knows rather than the one this process runs as.
 _QUEUED_IDS_COMMAND = "squeue -h -u $USER -o '%i'"
 
+# The same, with each job's submit time turned into epoch seconds where it is known.
+_QUEUED_SUBMISSIONS_COMMAND = (
+    "squeue -h -u $USER -o '%i|%V' | while IFS='|' read -r job at; "
+    'do echo "$job|$(date -d "$at" +%s)"; done')
+
 # ``BatchMode=yes`` is not optional: a poller that can be asked for a password hangs for
 # its timeout on every tick instead of answering. No ssh *options* beyond that pair — an
 # identity file, a port, a jump host are ``~/.ssh/config``'s business, which is a
@@ -92,11 +97,11 @@ def exec_argv(argv: list[str], *, host: str = LOCAL,
     return argv_for(shlex.join(argv), host=host, piped=piped)
 
 
-def queued_ids(timeout: float = 15.0, *, host: str = LOCAL) -> list[str] | None:
-    """The job ids *host* has queued for this user, or None ("unknown", never "nothing")."""
+def read_lines(script: str, timeout: float = 15.0, *, host: str = LOCAL) -> list[str] | None:
+    """The non-empty lines *script* prints on *host*, or None when it could not be asked."""
     try:
         res = subprocess.run(
-            argv_for(_QUEUED_IDS_COMMAND, host=host),
+            argv_for(script, host=host),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, timeout=timeout,
         )
@@ -107,15 +112,38 @@ def queued_ids(timeout: float = 15.0, *, host: str = LOCAL) -> list[str] | None:
     return [line.strip() for line in res.stdout.splitlines() if line.strip()]
 
 
+def queued_ids(timeout: float = 15.0, *, host: str = LOCAL) -> list[str] | None:
+    """The job ids *host* has queued for this user, or None ("unknown", never "nothing")."""
+    return read_lines(_QUEUED_IDS_COMMAND, timeout, host=host)
+
+
+def queued_submissions(timeout: float = 15.0, *, host: str = LOCAL) -> dict[str, float] | None:
+    """``{job id: submit time}`` of what *host* has queued for this user, or None.
+
+    The time is read on *host*, in its own time zone, as epoch seconds.
+    """
+    lines = read_lines(_QUEUED_SUBMISSIONS_COMMAND, timeout, host=host)
+    if lines is None:
+        return None
+    out: dict[str, float] = {}
+    for line in lines:
+        job_id, _, moment = line.partition("|")
+        try:
+            out[job_id.strip()] = float(moment)
+        except ValueError:
+            continue
+    return out
+
+
 def queued_by_host(timeout: float = 15.0) -> dict[str, list[str] | None]:
     """:func:`queued_ids` for every reachable host, sequentially; None where one did not answer."""
     return {host: queued_ids(timeout, host=host) for host in hosts()}
 
 
-def slurm_host_from_ssh(argv: list[str]) -> str:
-    """The host an ``ssh`` argv reached a Slurm command on, or ""."""
+def ssh_target(argv: list[str]) -> tuple[str, list[str]]:
+    """The host an ``ssh`` argv reaches and the words it runs there; ``("", [])`` for any other."""
     if not argv or os.path.basename(argv[0]) != "ssh":
-        return ""
+        return "", []
     host = ""
     rest: list[str] = []
     index = 1
@@ -130,6 +158,12 @@ def slurm_host_from_ssh(argv: list[str]) -> str:
             continue
         rest.append(token)
         index += 1
+    return host, rest
+
+
+def slurm_host_from_ssh(argv: list[str]) -> str:
+    """The host an ``ssh`` argv reached a Slurm command on, or ""."""
+    host, rest = ssh_target(argv)
     if not host or not rest or not _runs_slurm(" ".join(rest)):
         return ""
     # A user@host target reaches the same scheduler; the account is ssh's business and
@@ -564,6 +598,22 @@ def slurm_state(job_id: str, run_lines: Callable[[str], list[str]]) -> SlurmJobS
     if accounted:                 # some other terminal word
         return SlurmJobState("crashed", sraw)
     return UNKNOWN_JOB
+
+
+def job_state_on(job_id: str, host: str, timeout: float = 15.0) -> SlurmJobState | None:
+    """:func:`slurm_state` of *job_id* on *host*, or None when nothing there answered.
+
+    One read failing says nothing: ``squeue -j`` exits non-zero on a job it has forgotten.
+    """
+    answers: list[bool] = []
+
+    def run_lines(script: str) -> list[str]:
+        lines = read_lines(script, timeout, host=host)
+        answers.append(lines is not None)
+        return lines or []
+
+    found = slurm_state(job_id, run_lines)
+    return found if any(answers) else None
 
 
 def locate_slurm_job(hint: str | None, hosts: list[str],

@@ -22,6 +22,7 @@ from ...shared.jobs import (
     exit_code_state,
     recorded_terminal_state,
     shell_descriptor,
+    follows_open_slurm_job,
     slurm_descriptor,
 )
 from ...shared.atomic import read_json
@@ -159,7 +160,8 @@ def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
         code = _read_exit_code(job_dir)
         # The recorded status wins: the trap writes it as the shell leaves, so a run
         # that got there is finished whatever its pid now looks like.
-        live = code is None and is_running(meta.get("pid"), meta.get("pid_starttime"))
+        live = ((code is None and is_running(meta.get("pid"), meta.get("pid_starttime")))
+                or follows_open_slurm_job(job_dir))
         found.append(DetachedJob(
             session_id=session_id,
             job_key=str(meta.get("job_key") or name),
