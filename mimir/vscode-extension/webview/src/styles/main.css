@@ -4526,24 +4526,51 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .science-line-label { color: var(--fg-dim); flex: 0 1 auto; max-width: 55%; }
 
-/* Which of the section's subjects it shows (the Optimisation section's proxy). */
+/* Which of the section's subjects it shows (the Optimisation section's proxy). The arrow
+   is drawn here, with room kept for it: the native one sat over the end of the name. A
+   narrow drawer puts the box under its label. */
 .science-choice {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   font-size: 12.5px;
   padding: 3px 0 5px;
 }
 
-.science-choice select {
-  flex: 1 1 0;
+.science-choice .science-line-label { flex: 0 0 auto; max-width: none; }
+
+.science-choice-select {
+  position: relative;
+  flex: 1 1 140px;
   min-width: 0;
+}
+
+.science-choice-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 2px 22px 2px 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   background: var(--vscode-dropdown-background, var(--bg));
   color: var(--vscode-dropdown-foreground, var(--fg));
   border: 1px solid var(--vscode-dropdown-border, var(--border, transparent));
   border-radius: 3px;
-  padding: 2px 4px;
   font: inherit;
+  cursor: pointer;
+}
+
+.science-choice-select::after {
+  content: "▾";
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-dim);
+  pointer-events: none;
 }
 
 /* A server's table (a cluster's partitions): numbers right-aligned so they compare down

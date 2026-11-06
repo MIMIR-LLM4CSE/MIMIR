@@ -199,14 +199,17 @@ export const SciencePanel: React.FC<Props> = ({
                 {section.choice && (
                   <label className="science-choice">
                     <span className="science-line-label">{section.choice.label}</span>
-                    <select
-                      value={section.choice.value}
-                      onChange={(e) => onChoose(section.section, e.target.value)}
-                    >
-                      {section.choice.options.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
+                    <span className="science-choice-select">
+                      <select
+                        value={section.choice.value}
+                        title={section.choice.options.find((o) => o.value === section.choice!.value)?.label}
+                        onChange={(e) => onChoose(section.section, e.target.value)}
+                      >
+                        {section.choice.options.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </span>
                   </label>
                 )}
                 {section.chart && section.chart.points.length > 0 && (
