@@ -6,9 +6,10 @@ import { STYLE } from "./style";
 import { basename, esc, signed } from "./format";
 import { barWidth, cap, countersBlock, fnParts, functionsBlock, gpuBlock, kernelBlock, memoryBlock, note, overlay, pctOf,
   fnRowsOnMap, stepCard, strip, timeAt, topFunctions, type Overlay, type RowExtra, type Scope, type Session, type TimeView } from "./session";
-import { newDraft, ready, requestPrompt, sameTarget, targetLabel, touches, withTarget,
+import { newDraft, ready, requestPrompt, sameTarget, targetLabel, tiersOf, toggleComponents, touches, withTarget,
   type Draft, type Request, type Sent, type Target } from "./request";
-import { formHtml, requestDetail, requestsSection } from "./requestView";
+import { formHtml, requestDetail, requestsSection, tierButtons } from "./requestView";
+import { TargetSearch } from "./targetSearch";
 import { picked, Picker } from "./picker";
 import { mergeFiles, mergeGraph, type Forecast, type MergeState } from "./merge";
 import { barsHeight, BW, curve, derive, edgeClass, FN_N, FN_ROW, GX, LW, marked, midOf, pathOf, visible, type ModEdge, type View } from "./layout";
@@ -249,7 +250,9 @@ function renderMap(v: View, ov: Overlay | null, time: TimeView | null): void {
     const band = svg("rect", { class: "band-bg", x: 0, y: b.y, width: v.width, height: b.h, rx: 6 }, s);
     band.dataset.comp = b.c.id;
     bandRects.push(band);
-    band.addEventListener("click", () => {
+    band.addEventListener("click", (ev) => {
+      // With a request being written, Shift+click adds the component to its targets.
+      if (draft && ev.shiftKey) { addTarget({ component: b.c.id }); return; }
       sel = sel?.kind === "comp" && sel.id === b.c.id ? null : { kind: "comp", id: b.c.id };
       render();
     });
@@ -619,6 +622,12 @@ function openDraft(d: Draft): void {
   form.querySelector<HTMLElement>("#rq-idea")?.focus({ preventScroll: true });
 }
 
+const search = new TargetSearch({
+  ask: (query) => vscode.postMessage({ type: "file_search", query }),
+  add: (file) => addTarget({ file }),
+  taken: (file) => !!draft?.targets.some((t) => sameTarget(t, { file })),
+});
+
 /** *t* added to the draft's targets. */
 function addTarget(t: Target): void {
   if (!draft) return;
@@ -638,6 +647,7 @@ function sendDraft(v: View): void {
       const f = t.functions?.[x.file + "::" + x.function];
       return f ? pctOf(f.self) : null;
     }
+    if (x.file) return t.files[x.file] ? pctOf(t.files[x.file]) : null;
     const total = modulesOf(v, x).reduce((n, m) => n + moduleTime(v, m, t.files), 0);
     return total ? pctOf(total) : null;
   };
@@ -650,6 +660,7 @@ function sendDraft(v: View): void {
 
 /** The form's text fields, read into the draft as they are typed, without drawing again. */
 function bindForm(side: HTMLElement, v: View): void {
+  search.mount(side.querySelector<HTMLElement>(".tsearch"));
   if (!draft) return;
   const d = draft;
   const send = side.querySelector<HTMLButtonElement>("[data-send]");
@@ -671,6 +682,11 @@ function bindForm(side: HTMLElement, v: View): void {
   side.querySelectorAll<HTMLElement>("[data-untarget]").forEach((b) => b.addEventListener("click", () => {
     d.targets.splice(Number(b.dataset.untarget), 1); remember(); render();
   }));
+  side.querySelectorAll<HTMLElement>("[data-tier]").forEach((b) => b.addEventListener("click", () => {
+    const tier = tiersOf(map!.components).find(([n]) => n === Number(b.dataset.tier));
+    d.targets = toggleComponents(d.targets, tier?.[1] ?? []);
+    remember(); render();
+  }));
   side.querySelectorAll<HTMLElement>("[data-add-fn]").forEach((b) => b.addEventListener("click", () => addTarget(JSON.parse(b.dataset.addFn!))));
   send?.addEventListener("click", () => sendDraft(v));
   side.querySelector("[data-cancel]")?.addEventListener("click", () => { draft = null; remember(); render(); });
@@ -686,11 +702,13 @@ function renderSide(v: View): void {
   const card = session && step ? stepCard(session, step, fileRow) : "";
   const t = time();
   const request = sel?.kind === "request" ? requests.find((r) => r.id === sel!.id) : undefined;
-  const html = (draft ? formHtml(draft, suggestions(v, draft), findings(v, draft.targets)) : "")
+  const adders = draft ? search.html() + tierButtons(tiersOf(m.components), draft.targets) + suggestions(v, draft) : "";
+  const html = (draft ? formHtml(draft, adders, findings(v, draft.targets)) : "")
     + (!sel ? requestsSection(requests, sent) + card + (t ? timeSection(t) : "") + overview(m)
     : sel.kind === "request" ? BACK + (request ? requestDetail(request, targetRow, stepOfRun) : '<div class="empty">No such request.</div>')
     : sel.kind === "comp" ? componentDetail(m, v, sel.id)
     : sel.kind === "module" ? moduleDetail(m, v, sel.id) : fileDetail(m, v, sel.id));
+  search.leave();
   side.innerHTML = html;
   bindForm(side, v);
   side.querySelectorAll<HTMLElement>("[data-new]").forEach((b) => b.addEventListener("click", () => {
@@ -750,6 +768,8 @@ function onSideClick(ev: MouseEvent): void {
     openRel(id, b.dataset.line ? Number(b.dataset.line) : undefined);
     return;
   }
+  // A target the search found need not be on the map: there, it can only be opened.
+  if (!view?.byId.has(id)) { openRel(id, b.dataset.line ? Number(b.dataset.line) : undefined); return; }
   const choose = () => { sel = { kind: "file", id }; render(); };
   // From the keyboard there is no second click to wait for.
   if (ev.detail === 0) choose();
@@ -978,7 +998,8 @@ function mount(): void {
     else if (session && e.key === "ArrowLeft" && step > 0) { step--; render(); }
   });
   window.addEventListener("message", (ev: MessageEvent) => {
-    const msg = ev.data as { type?: string; map?: CodeMap; session?: Session; focus?: string; reason?: string };
+    const msg = ev.data as { type?: string; map?: CodeMap; session?: Session; focus?: string; reason?: string; query?: string; files?: string[] };
+    if (msg?.type === "file_results") { search.answer(msg.query ?? "", msg.files ?? []); return; }
     // A run settled or a request was recorded: map the code again, once for a burst.
     if (msg?.type === "stale") {
       clearTimeout(staleTimer);

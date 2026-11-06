@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { axisTag, live, newDraft, ready, requestPrompt, targetLabel, touches, variantRows, withTarget, type Request } from "./request";
-import { formHtml, requestDetail, requestsSection } from "./requestView";
+import { axisTag, live, newDraft, ready, requestPrompt, targetLabel, tiersOf, toggleComponents, touches, variantRows, withTarget, type Request } from "./request";
+import { formHtml, requestDetail, requestsSection, tierButtons } from "./requestView";
 
 const draft = () => ({
   ...newDraft([{ file: "pkg/solver.py", function: "relax", line: 12 }], "tok123"),
@@ -104,5 +104,27 @@ describe("the form", () => {
     expect(formHtml({ ...draft(), kind: "external" }, "", [])).toContain("rq-source");
     expect(formHtml(draft(), "", [])).toContain("<button class=\"open\" data-send>");
     expect(formHtml({ ...draft(), idea: "" }, "", [])).toContain("data-send disabled");
+  });
+});
+
+describe("whole tiers in the targets", () => {
+  const comps = [{ id: "low", tier: 0 }, { id: "app", tier: 2 }, { id: "ui", tier: 2 }];
+
+  it("lists the components by tier, highest first, tier 0 included", () => {
+    expect(tiersOf(comps)).toEqual([[2, ["app", "ui"]], [0, ["low"]]]);
+  });
+
+  it("adds a tier's components once, keeps the other targets, and takes them off again", () => {
+    const start = [{ file: "a.py" }, { component: "app" }];
+    const all = toggleComponents(start, ["app", "ui"]);
+    expect(all).toEqual([{ file: "a.py" }, { component: "app" }, { component: "ui" }]);
+    expect(toggleComponents(all, ["app", "ui"])).toEqual([{ file: "a.py" }]);
+  });
+
+  it("shows a button per tier, pressed when all its components are targets; none for one tier", () => {
+    const html = tierButtons(tiersOf(comps), [{ component: "low" }]);
+    expect(html).toContain('data-tier="2" aria-pressed="false" title="app, ui">Tier 2 · 2');
+    expect(html).toContain('data-tier="0" aria-pressed="true"');
+    expect(tierButtons(tiersOf(comps.slice(1)), [])).toBe("");
   });
 });

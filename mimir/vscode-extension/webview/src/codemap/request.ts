@@ -53,6 +53,24 @@ export function withTarget(targets: Target[], t: Target): Target[] {
   return targets.some((x) => sameTarget(x, t)) ? targets : targets.concat([t]);
 }
 
+/** The map's components by tier, highest first as the bands stack. */
+export function tiersOf(components: { id: string; tier: number }[]): [number, string[]][] {
+  const by = new Map<number, string[]>();
+  for (const c of components) by.set(c.tier, (by.get(c.tier) ?? []).concat([c.id]));
+  return [...by].sort((a, b) => b[0] - a[0]);
+}
+
+/** Whether every one of *components* is among *targets*. */
+export function holdsAll(targets: Target[], components: string[]): boolean {
+  return components.every((c) => targets.some((t) => sameTarget(t, { component: c })));
+}
+
+/** *targets* with the whole of *components* added, or taken off when all are there. */
+export function toggleComponents(targets: Target[], components: string[]): Target[] {
+  if (holdsAll(targets, components)) return targets.filter((t) => !components.includes(t.component ?? ""));
+  return components.reduce((ts, c) => withTarget(ts, { component: c }), targets);
+}
+
 /** How a target reads: `relax in solver.py`, a file's path, `module pkg/mesh`, `component
  *  pkg`, or `the whole code`. */
 export function targetLabel(t: Target): string {

@@ -16,6 +16,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **A code map request targets any file, or whole tiers.** The form searches the
+  workspace's files as the chat's "@" does, with the same list and ranking (arrows and
+  Enter, or a click), a file off the map included. A **Tier** button takes in all the
+  components of a tier, and a second press takes them off; Shift+click adds a band's
+  component. A file target's message gives the file's share of the time, not its module's,
+  and a target off the map opens instead of failing to show on it.
 - **The Cluster section says where every job runs, sub-agents' included.** A badge names
   the partition and the node (`gpu · gpu007`; a queued job, its partition and id):
   `slurm_job_status` and the proxy's run status now report `partitions` from the same

@@ -1,6 +1,6 @@
 ---
 name: map-request
-description: Use when a message is a request from the code map ("Request from the code map") — a numerical method, an algorithm, external code to bring in, parallelism, data layout, precision, or an analysis and refactor of the architecture (cycles, rule breaks, coupling) to study or try on named functions, modules, a component or the whole code — and when following up on one (R1, R2…); together with proxy-optimize for a request to try.
+description: Use when a message is a request from the code map ("Request from the code map") — a numerical method, an algorithm, external code to bring in, parallelism, data layout, precision, or an analysis and refactor of the architecture (cycles, rule breaks, coupling) to study or try on named functions, files, modules, components or the whole code — and when following up on one (R1, R2…); together with proxy-optimize for a request to try.
 disable-model-invocation: false
 ---
 
@@ -20,7 +20,7 @@ The same message opened twice is one request (the token).
 
 ## Study: read and propose, edit nothing
 
-1. Read the targets — the functions named, their file, and what calls them and what they
+1. Read the targets — the functions and files named, and what calls them and what they
    call (the map's neighbours).
 2. Look at where their time goes: `proxy_eval(op='profile', level='function', focus=<file>)`
    reads it from the last profile when there is one.

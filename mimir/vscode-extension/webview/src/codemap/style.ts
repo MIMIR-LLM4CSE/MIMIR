@@ -189,10 +189,10 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .hint { font-size: 11.5px; color: var(--fg-dim); font-style: normal; }
 .cap .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .fl { display: grid; gap: 3px; font-size: 11.5px; color: var(--fg-dim); }
-.fl select, .fl input, .fl textarea { font: 12.5px var(--font); color: var(--vscode-input-foreground, var(--fg));
+.fl select, .fl input, .fl textarea, .tsearch input { font: 12.5px var(--font); color: var(--vscode-input-foreground, var(--fg));
   background: var(--vscode-input-background, var(--bg)); border: 1px solid var(--vscode-input-border, var(--border));
   border-radius: 3px; padding: 4px 6px; width: 100%; resize: vertical; }
-.fl select:focus, .fl input:focus, .fl textarea:focus { outline: 1px solid var(--focus); outline-offset: -1px; }
+.fl select:focus, .fl input:focus, .fl textarea:focus, .tsearch input:focus { outline: 1px solid var(--focus); outline-offset: -1px; }
 .tchips { display: flex; flex-wrap: wrap; gap: 4px; }
 .tchip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; font: 11.5px var(--mono);
   padding: 1px 2px 1px 7px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
@@ -200,6 +200,14 @@ button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--focus)
 .tchip .x { flex-shrink: 0; }
 .tchip .x { all: unset; cursor: pointer; padding: 0 5px; color: var(--fg-dim); }
 .tchip .x:hover { color: var(--e-break); }
+.tsearch { display: grid; gap: 3px; }
+.thits:empty { display: none; }
+.thits .is-cur { outline: 1px solid var(--focus); outline-offset: -1px; border-radius: 3px; }
+.ttiers { display: flex; flex-wrap: wrap; gap: 4px; }
+.ttier { all: unset; cursor: pointer; font-size: 11.5px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 10px; color: var(--fg-dim); }
+.ttier:hover { color: var(--fg); }
+.ttier:focus-visible { outline: 1px solid var(--focus); }
+.ttier[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 .finds { margin: 0; padding-left: 16px; font-size: 11.5px; color: var(--fg); display: grid; gap: 2px; overflow-wrap: anywhere; }
 .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .actions .open { margin-top: 0; }

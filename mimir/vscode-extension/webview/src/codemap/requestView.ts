@@ -3,7 +3,7 @@
 
 import { esc, signed } from "./format";
 import {
-  dropPrompt, KINDS, kindLabel, live, ready, STATUS_LABEL, targetLabel, tryPrompt, variantRows,
+  dropPrompt, holdsAll, KINDS, kindLabel, live, ready, STATUS_LABEL, targetLabel, tryPrompt, variantRows,
   type Draft, type Request, type Sent, type Target,
 } from "./request";
 
@@ -22,9 +22,18 @@ export function statusPill(status: string): string {
   return '<span class="st st-' + esc(status) + '">' + esc(STATUS_LABEL[status] ?? status) + "</span>";
 }
 
-/** The form, filled in from *d*. *suggest* are rows offering the targets' costliest
- *  functions; *findings* what the map sees in a refactor's scope. */
-export function formHtml(d: Draft, suggest: string, findings: string[]): string {
+/** A button per tier that takes its components into the targets, pressed when all are
+ *  there; none when the code has a single tier, which is the whole code. */
+export function tierButtons(tiers: [number, string[]][], targets: Target[]): string {
+  if (tiers.length < 2) return "";
+  return '<div class="ttiers" role="group" aria-label="Whole tiers">' + tiers.map(([n, comps]) =>
+    '<button class="ttier" data-tier="' + n + '" aria-pressed="' + holdsAll(targets, comps) + '" title="' + esc(comps.join(", "))
+    + '">Tier ' + n + " · " + comps.length + "</button>").join("") + "</div>";
+}
+
+/** The form, filled in from *d*. *adders* are what add to the targets (the file search, the
+ *  tiers, the targets' costliest functions); *findings* what the map sees in a refactor's scope. */
+export function formHtml(d: Draft, adders: string, findings: string[]): string {
   // The label's end (the file, the function) is what tells two targets apart: cut at its start.
   const chips = d.targets.map((t, i) => '<span class="tchip" title="' + esc(targetLabel(t)) + '"><span class="tl"><bdi>'
     + esc(targetLabel(t)) + "</bdi></span>"
@@ -40,9 +49,9 @@ export function formHtml(d: Draft, suggest: string, findings: string[]): string 
       : "The agent implements each variant from the same start and measures it.") + "</div>"
     + field("Kind", '<select id="rq-kind">' + KINDS.map(([k, label]) => '<option value="' + k + '"'
       + (k === d.kind ? " selected" : "") + ">" + esc(label) + "</option>").join("") + "</select>")
-    + '<div class="cap">Targets <i class="hint">Shift+click a module or a function to add it</i></div>'
+    + '<div class="cap">Targets <i class="hint">Shift+click a band, a module or a function to add it</i></div>'
     + '<div class="tchips">' + (chips || '<span class="empty">none yet</span>') + "</div>"
-    + suggest
+    + adders
     + (d.kind === "refactor" && findings.length ? '<div class="cap">What the map finds there</div><ul class="finds">'
       + findings.map((f) => "<li>" + esc(f) + "</li>").join("") + "</ul>" : "")
     + field("Idea", '<textarea id="rq-idea" rows="3" placeholder="' + esc(PLACEHOLDER[d.kind] ?? "") + '">' + esc(d.idea) + "</textarea>")

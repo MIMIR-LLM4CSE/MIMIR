@@ -404,7 +404,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** One handler per message the webview posts (`HostMessage`). */
-  /** What the code map tab asks of the chat: the map again, or a request put to the agent. */
+  /** What the code map tab asks of the chat: the map again, a request put to the agent, the workspace's files. */
   private readonly mapActions: MapActions = {
     refresh: (pick) => this.forwardToServer(JSON.stringify({ type: "code_map", ...pick })),
     prompt: (text) => this.post({ type: "map_prompt", text }),
@@ -413,6 +413,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       this.view?.show?.(true);
       this.post({ type: "reveal_request", token, ...(session ? { session } : {}) });
     },
+    files: (query) => this.files.matching(query),
   };
 
   private readonly webviewHandlers: {

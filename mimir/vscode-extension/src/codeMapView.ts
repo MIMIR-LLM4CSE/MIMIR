@@ -24,18 +24,21 @@ type TabMessage =
   | { type: "refresh"; proxy?: string; combined?: boolean; proxies?: string[] }
   | { type: "open_file"; file: string; rel?: string; line?: number }
   | { type: "prompt"; text: string }
-  | { type: "reveal_in_chat"; token: string; session?: string };
+  | { type: "reveal_in_chat"; token: string; session?: string }
+  | { type: "file_search"; query: string };
 
 /** Whose steps the tab asks for: a proxy's, those ticked together, or every proxy's; the
  *  active session's without. */
 export interface StepsPick { proxy?: string; combined?: boolean; proxies?: string[] }
 
-/** What the tab can ask of the chat: the map again, or a request put to the agent. */
+/** What the tab can ask of the chat: the map again, a request put to the agent, or the
+ *  workspace's files the chat's "@" lists. */
 export interface MapActions {
   refresh: (pick: StepsPick) => void;
   prompt: (text: string) => void;
   /** Show, in the chat, the conversation of a request and the agent's answer to it. */
   reveal: (token: string, session?: string) => void;
+  files: (query: string) => Promise<string[]>;
 }
 
 /** Open the tab at once, saying it is mapping the code, while the server answers: the
@@ -91,6 +94,10 @@ function createPanel(extensionUri: vscode.Uri, actions: MapActions): void {
     else if (m?.type === "prompt" && typeof m.text === "string") actions.prompt(m.text);
     else if (m?.type === "reveal_in_chat" && typeof m.token === "string") {
       actions.reveal(m.token, typeof m.session === "string" && m.session ? m.session : undefined);
+    }
+    else if (m?.type === "file_search" && typeof m.query === "string") {
+      const { query } = m;
+      void actions.files(query).then((files) => mapPanel?.webview.postMessage({ type: "file_results", query, files }));
     }
     else if (m?.type === "open_file" && typeof m.file === "string") {
       // The server's absolute path when it exists on this machine, else the path

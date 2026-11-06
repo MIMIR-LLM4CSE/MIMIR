@@ -650,9 +650,16 @@ an analysis and refactor of the architecture. **New request…** in the detail o
 component, module or file, and **Analyse the architecture** there or in the header (the
 whole code), open a form at the top of the side pane (`codemap/request.ts`,
 `codemap/requestView.ts`): **Study** (read and propose, no edit) or **Try** (implement and
-measure), the kind, the targets (Shift+click a module on the map, or a file or function
-in the pane, to add one; the targets' costliest functions are offered), the idea, the
+measure), the kind, the targets, the idea, the
 variants (each measured from the same start), a source for external code, constraints.
+A target is added by Shift+click (a band or a module on the map, a file or function in the
+pane), by the form's file search, or by a tier's button; the targets' costliest functions
+are offered. The file search (`codemap/targetSearch.ts`) lists the workspace's files as the
+chat's "@" does: the tab's `file_search` goes to the host's one `WorkspaceFiles`
+(`MapActions.files`) and its `file_results` echoes the query, so a file off the map
+(a header, an input deck) can be a target; its row in a request opens it. A **Tier** button
+takes all the tier's components in as `component` targets, and takes them off again when
+they are all there: a band is a component, and a tier may hold several.
 A refactor's form lists what the map finds in its scope: module cycles, rule breaks, the
 most coupled modules. Opening the form brings it into view when it is out of sight (a narrow tab stacks the
 pane under the map), pulses it once and puts the cursor in its idea; the header's button
