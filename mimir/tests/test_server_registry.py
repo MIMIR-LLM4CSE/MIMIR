@@ -80,6 +80,15 @@ class PublishAndReadTests(_RegistryCase):
         self.assertEqual(back["model"], "m")
         self.assertEqual(back["protocol"], server_registry.PROTOCOL)
 
+    def test_only_this_user_can_read_the_token(self):
+        server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1, token="t")
+        self.assertEqual(os.stat(server_registry.registry_path()).st_mode & 0o777, 0o600)
+
+    def test_an_update_keeps_the_token(self):
+        server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1, token="t")
+        server_registry.claim(["s"], "auto")
+        self.assertEqual(server_registry.read()["token"], "t")
+
     def test_the_entry_records_this_process_start_time_too(self):
         # Without it a recycled pid reads as the same server.
         server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1)

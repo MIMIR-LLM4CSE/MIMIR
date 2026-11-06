@@ -205,7 +205,7 @@ EOF
 else
   cat <<'EOF'
   # or start the WS server for the VS Code extension:
-  mimir-server --host 0.0.0.0 --port 8765
+  mimir-server --port 8765
 EOF
 fi
 

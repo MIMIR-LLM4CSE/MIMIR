@@ -42,6 +42,8 @@ export interface ServerEntry {
   detached?: boolean;
   /** Where its output continues, once it no longer has a pipe to write to. */
   log?: string | null;
+  /** What a connection presents; absent from a server that asks for none. */
+  token?: string;
 }
 
 /** `<basename>-<sha1(realpath)[:8]>` — must match `state_paths.workspace_id`. */
@@ -68,8 +70,8 @@ export function stateDir(workspaceRoot: string, env: NodeJS.ProcessEnv = process
   return path.resolve(path.join(home, workspaceId(workspaceRoot)));
 }
 
-export function registryPath(workspaceRoot: string): string {
-  return path.join(stateDir(workspaceRoot), "server.json");
+export function registryPath(workspaceRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(stateDir(workspaceRoot, env), "server.json");
 }
 
 /** Where a server started by this extension, with *env*, writes its output. */
@@ -89,11 +91,12 @@ export function logPath(
 export async function waitForServer(
   workspaceRoot: string,
   ourPid: number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
   { timeoutMs = 120000, intervalMs = 250 }: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<ServerEntry | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const entry = readEntry(workspaceRoot);
+    const entry = readEntry(workspaceRoot, env);
     if (entry) {
       if (ourPid !== undefined && entry.pid === ourPid) return entry;
       // Somebody else's, and alive: ours lost the lock and stood down.
@@ -105,9 +108,11 @@ export async function waitForServer(
 }
 
 /** The recorded entry, or undefined when there is none we can understand. */
-export function readEntry(workspaceRoot: string): ServerEntry | undefined {
+export function readEntry(
+  workspaceRoot: string, env: NodeJS.ProcessEnv = process.env,
+): ServerEntry | undefined {
   try {
-    const raw = fs.readFileSync(registryPath(workspaceRoot), "utf8");
+    const raw = fs.readFileSync(registryPath(workspaceRoot, env), "utf8");
     const entry = JSON.parse(raw) as ServerEntry;
     if (!entry || typeof entry !== "object") return undefined;
     // Connecting to a server whose contract has changed is worse than deciding there
@@ -197,11 +202,22 @@ export function serverAnswers(
  * without opening a socket, and the probe rules out one whose listener has gone.
  */
 export async function findLiveServer(
-  workspaceRoot: string,
+  workspaceRoot: string, env: NodeJS.ProcessEnv = process.env,
 ): Promise<ServerEntry | undefined> {
-  const entry = readEntry(workspaceRoot);
+  const entry = readEntry(workspaceRoot, env);
   if (!entry) return undefined;
   if (!processAlive(entry)) return undefined;
   if (!(await serverAnswers(entry))) return undefined;
   return entry;
+}
+
+/** *entry*'s token when *url* dials that server on this machine; no other host gets it. */
+export function tokenFor(url: string, entry: ServerEntry | undefined): string | undefined {
+  try {
+    const { hostname, port } = new URL(url);
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+    return local && Number(port) === entry?.port ? entry.token : undefined;
+  } catch {
+    return undefined;
+  }
 }

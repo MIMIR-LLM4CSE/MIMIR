@@ -15,6 +15,23 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- **A connection to the server must present its token.** The server took any client that
+  reached its port, whatever its origin: another user of a login node, or a page open in
+  a browser on the same machine, could drive an agent that runs commands. Each server now
+  generates a token, kept in its `server.json` (mode `0600`), and refuses a handshake
+  without `Authorization: Bearer <token>` with a 401; a browser cannot send that header on
+  a WebSocket. The extension does this on its own for a server of the workspace. **A
+  server on another host needs a change:** set `MIMIR_WS_TOKEN` there and the new
+  `mimir.wsToken` setting here. A non-loopback bind prints a warning, and `install.sh` no
+  longer suggests `--host 0.0.0.0`: `ws://` is not encrypted, so use an SSH tunnel.
+  An extension older than the server is refused too: reload the window when offered.
+
+### Fixed
+- **`MIMIR_STATE_HOME` set through `mimir.server.env` works.** The server published its
+  address in that directory while the extension looked in the default one, so it waited
+  120 s and gave up. The extension reads the registry from the server's own environment.
+
 ## [1.14.0] — 2026-11-06
 
 ### Added

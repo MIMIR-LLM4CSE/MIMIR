@@ -5,7 +5,12 @@ const registry: { live: { pid: number; url: string } | undefined } = { live: und
 
 vi.mock("vscode", () => ({
   Uri: { joinPath: () => ({}) },
-  workspace: { getConfiguration: () => ({ get: (_key: string, fallback?: unknown) => fallback }) },
+  workspace: {
+    getConfiguration: () => ({
+      get: (_key: string, fallback?: unknown) => fallback,
+      inspect: () => undefined,
+    }),
+  },
   window: {
     activeTextEditor: undefined,
     state: { focused: true },

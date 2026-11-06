@@ -524,6 +524,11 @@ python3 -m mimir.client.ui.ws.server.main --port 8765 \
 #            --ray-base-url --ray-api-key --ollama-base-url
 ```
 
+A client must present the server's token. The extension reads it for a server of this
+workspace; for one on another host, set `MIMIR_WS_TOKEN` there and `mimir.wsToken` here.
+`ws://` is not encrypted, so keep the default address and go through an SSH tunnel
+(`ssh -L 8765:localhost:8765 <host>`) rather than binding `0.0.0.0`.
+
 The panel is the only place you configure a connection — a working setup needs no
 `.vscode/settings.json`. The interpreter is found on its own (`install.sh` records a
 launcher in `~/.mimir/python` that starts the venv built for this machine's platform;

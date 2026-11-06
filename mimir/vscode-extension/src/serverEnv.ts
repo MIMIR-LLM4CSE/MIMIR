@@ -116,6 +116,11 @@ export const SERVER_ENV_SETTINGS: readonly EnvSetting[] = [
 /** Free-form variables for anything without a setting of its own. */
 export const EXTRA_ENV_SETTING = "server.env";
 
+/** A server's environment as this window starts it: what locates its state directory. */
+export function configuredServerEnv(): NodeJS.ProcessEnv {
+  return { ...mimirServerEnv(), ...settingsEnv() };
+}
+
 /**
  * The environment the settings give the server. Only a value the user set counts, so a
  * variable exported in the shell still reaches the server unless a setting overrides it;

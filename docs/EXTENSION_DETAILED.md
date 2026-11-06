@@ -109,8 +109,12 @@ and is greeted with a fresh `ready`; `ServerConnection`'s close handler ignores 
 it no longer holds, so the replaced one drives no retry. A startup connect also
 keeps the "MIMIR Server" output channel closed instead of popping it over the editor.
 
-The host starts the server with `--port 0` and reads the address from its
-`Listening on ws://…` line. With `localhost`, the server binds 127.0.0.1 and ::1 on two
+The host starts the server with `--port 0` and reads the address and the token from the
+`<STATE_DIR>/server.json` it publishes, in the state directory the server's own environment resolves
+(`mimir.server.env` included). `ServerConnection` presents the token on every connect, and a
+401 stops the retries with a message naming `mimir.wsToken`; `tokenFor` gives a `mimir.wsUrl`
+this workspace's token only when it dials that server on this machine. With `localhost`, the
+server binds 127.0.0.1 and ::1 on two
 different ports. The line names the literal address of one socket, never `localhost`, so
 the host dials the port that socket owns. It names the IPv4 socket when there is one:
 `no_proxy` rarely lists `::1`, and a client that honours the proxy variables sent

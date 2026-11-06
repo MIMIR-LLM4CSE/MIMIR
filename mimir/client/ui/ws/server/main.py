@@ -16,7 +16,9 @@ import sys
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MIMIR WebSocket server")
-    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--host", default="localhost",
+                        help="Address to bind. ws:// is not encrypted: to reach the server "
+                             "from another host, keep the default and tunnel over SSH.")
     parser.add_argument("--port", type=int, default=8765,
                         help="Port to bind. 0 lets the OS pick a free one — the chosen "
                              "port is then printed on the 'Listening on ws://…' line.")

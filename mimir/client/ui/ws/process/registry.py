@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 PROTOCOL = 1
 
 # Where the server answers its liveness probe with its pid, as plain HTTP (serving's
-# _answer_probe; ALIVE_PATH in the extension's serverRegistry.ts).
+# _gate; ALIVE_PATH in the extension's serverRegistry.ts).
 ALIVE_PATH = "/alive"
 
 # How long to wait for the answer: a round trip through the server's event loop, which a
@@ -94,7 +94,8 @@ def registry_path() -> str:
 def publish(*, url: str, host: str, port: int, **extra) -> dict | None:
     """Record this process as the workspace's server, atomically, once bound; return the entry.
 
-    Never raises: a failure costs discoverability, not the server.
+    ``write_json`` leaves the file ``0600``: it holds the server's token. Never raises: a
+    failure costs discoverability, not the server.
     """
     pid = os.getpid()
     entry = {

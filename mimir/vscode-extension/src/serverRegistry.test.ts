@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   ALIVE_PATH, PROTOCOL, findLiveServer, processAlive, readEntry, registryPath,
-  serverAnswers, stateDir, workspaceId,
+  serverAnswers, stateDir, tokenFor, type ServerEntry, workspaceId,
 } from "./serverRegistry";
 
 let tmp: string;
@@ -281,5 +281,39 @@ describe("findLiveServer", () => {
     } finally {
       close();
     }
+  });
+});
+
+describe("a state directory the settings moved", () => {
+  it("is where the entry is read from", () => {
+    const env = { ...process.env, MIMIR_STATE_HOME: path.join(tmp, "moved") };
+    const dir = stateDir(tmp, env);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "server.json"), JSON.stringify(baseEntry({ port: 7 })));
+    expect(readEntry(tmp, env)?.port).toBe(7);
+    expect(readEntry(tmp)).toBeUndefined();
+  });
+});
+
+describe("tokenFor", () => {
+  const entry = baseEntry({ port: 8765, token: "secret" }) as unknown as ServerEntry;
+
+  it("gives the token to an address of this machine that dials the server", () => {
+    expect(tokenFor("ws://localhost:8765", entry)).toBe("secret");
+    expect(tokenFor("ws://127.0.0.1:8765", entry)).toBe("secret");
+    expect(tokenFor("ws://[::1]:8765", entry)).toBe("secret");
+  });
+
+  it("never gives it to another host", () => {
+    expect(tokenFor("ws://cluster.example:8765", entry)).toBeUndefined();
+  });
+
+  it("never gives it to another port", () => {
+    expect(tokenFor("ws://127.0.0.1:9000", entry)).toBeUndefined();
+  });
+
+  it("has nothing to give without an entry or a URL", () => {
+    expect(tokenFor("ws://127.0.0.1:8765", undefined)).toBeUndefined();
+    expect(tokenFor("not a url", entry)).toBeUndefined();
   });
 });

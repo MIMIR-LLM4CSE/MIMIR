@@ -14,7 +14,8 @@ import { fetchModels, type DiscoverableBackend } from "./modelList";
 import { ModelProbe } from "./modelProbe";
 import { Notifier } from "./notifications";
 import { serverChannel } from "./serverChannel";
-import { findLiveServer, type ServerEntry } from "./serverRegistry";
+import { findLiveServer, readEntry, tokenFor, type ServerEntry } from "./serverRegistry";
+import { configuredServerEnv } from "./serverEnv";
 import { DEFAULT_BACKEND, DEFAULT_OLLAMA_URL, DEFAULT_OPENAI_URL } from "./shared/defaults";
 import type { HostMessage, HostMessageOf } from "./shared/hostMessages";
 import { codeMapStale, codeMapUnavailable, openCodeMap, showCodeMap, type MapActions } from "./codeMapView";
@@ -210,7 +211,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
 
     let entry: ServerEntry | undefined;
     try {
-      entry = await findLiveServer(workspaceRoot());
+      entry = await findLiveServer(workspaceRoot(), configuredServerEnv());
     } catch {
       return false;   // advisory, never authoritative
     }
@@ -232,7 +233,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // So a webview that mounts after this shows "connecting" rather than the form.
     this.pendingAutoConnect = { backend: "", baseUrl: entry.url, model: entry.model ?? "" };
     this.announceAutoConnect();
-    this.connection.connect(entry.url);
+    this.connection.connect(entry.url, entry.token);
     return true;
   }
 
@@ -321,7 +322,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // to say "it is still here".
     let running: ServerEntry | undefined;
     try {
-      running = await findLiveServer(workspaceRoot());
+      running = await findLiveServer(workspaceRoot(), configuredServerEnv());
     } catch {
       running = undefined;
     }
@@ -377,7 +378,9 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       );
       this.connection.attachLog = attachLog;
       this.teardownServer();
-      this.connection.connect(override);
+      const token = (vscode.workspace.getConfiguration("mimir").get<string>("wsToken") ?? "").trim()
+        || tokenFor(override, readEntry(workspaceRoot(), configuredServerEnv()));
+      this.connection.connect(override, token);
       return;
     }
     // A spawned connect is not attached to anything.
@@ -400,7 +403,7 @@ export class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       this.post({ type: "ws_closed" });
       return;
     }
-    this.connection.connect(outcome.url);
+    this.connection.connect(outcome.url, outcome.token);
   }
 
   /** One handler per message the webview posts (`HostMessage`). */

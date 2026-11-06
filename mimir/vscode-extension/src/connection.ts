@@ -28,6 +28,8 @@ export class ServerConnection {
    * from the `mimir.wsUrl` override. Every reconnect goes through this.
    */
   private url: string | undefined;
+  /** What the server at `url` asks of a connection; every reconnect presents it. */
+  private token: string | undefined;
   /**
    * Log channel of an attach (to `mimir.wsUrl`, or to a server the workspace already
    * had), or undefined when this window spawned the server. Kept so a failed attach can
@@ -42,9 +44,10 @@ export class ServerConnection {
     return this.ws !== undefined;
   }
 
-  /** Connect to *url*, superseding any attempt still retrying. */
-  connect(url: string): void {
+  /** Connect to *url* with its *token*, superseding any attempt still retrying. */
+  connect(url: string, token?: string): void {
     this.url = url;
+    this.token = token;
     this.attempt(url, 0);
   }
 
@@ -96,8 +99,10 @@ export class ServerConnection {
     const myGen = gen ?? ++this.gen;
     if (myGen !== this.gen) return; // superseded while this retry waited
 
-    const ws = new WebSocket(url);
+    const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
+    const ws = new WebSocket(url, { headers });
     this.ws = ws;
+    let refused = false;
 
     ws.on("open", () => {
       if (myGen !== this.gen) {
@@ -122,7 +127,14 @@ export class ServerConnection {
       // A socket replaced on purpose (`reopen`) must not drive the retry/teardown of
       // the one that took its place.
       if (myGen !== this.gen || this.ws !== ws) return;
-      if (retryCount < maxRetries && this.hooks.serverStarting()) {
+      if (refused) {
+        const message =
+          `MIMIR: the server at ${url} refused this window's token. For a server you run ` +
+          `yourself, set "mimir.wsToken" to its MIMIR_WS_TOKEN.`;
+        this.attachLog?.appendLine(message);
+        void showToast("error", message);
+        this.hooks.post({ type: "ws_closed" });
+      } else if (retryCount < maxRetries && this.hooks.serverStarting()) {
         // Server still starting up — retry after 2 seconds
         setTimeout(() => this.attempt(url, retryCount + 1, myGen), 2000);
       } else {
@@ -138,8 +150,9 @@ export class ServerConnection {
       }
     });
 
-    ws.on("error", () => {
+    ws.on("error", (err: Error) => {
       if (myGen !== this.gen) return;
+      refused = err.message.includes("401");
       // close fires right after error and handles reconnect/teardown; this is the
       // distinct signal the webview shows an error state on.
       this.hooks.post({ type: "ws_error" });

@@ -358,6 +358,7 @@ most of the others from its settings ([6d](#6d-optional-settings)).
 | `RAY_API_KEY` | `EMPTY` | API key for the Ray Serve router |
 | `MIMIR_RAY_MAX_MODEL_LEN` | *(unset)* | Context window to use when the Ray router does not report `max_model_len` |
 | `ANTHROPIC_API_KEY` | *(none)* | Key for the `anthropic` backend |
+| `MIMIR_WS_TOKEN` | *(generated)* | The token a client must present to the WebSocket server. Set it for a server another machine reaches, with the same value in `mimir.wsToken`; otherwise each server generates its own and writes it to `<STATE_DIR>/server.json` (mode `0600`) |
 | `MIMIR_PYTHON` | *(none)* | Interpreter the VS Code extension starts the WS server with, when `~/.mimir/python` is absent or wrong |
 | `MIMIR_MAX_LIVE_SESSIONS` | `3` | How many conversations may hold an agent at once. The constraint is processes — each agent spawns some nineteen MCP servers — so lower it on a shared login node. Past the cap a turn waits for a slot and is told its place in line; conversations you only open or read cost nothing |
 | `MIMIR_SESSION_IDLE_TTL` | `600` | Seconds a conversation's agent may sit unused before it is released, servers included (minimum 30). Never one that is busy, parked on a question, watching a background job, or on screen |
@@ -532,6 +533,7 @@ variable exported in your shell then still applies.
 | | `mimir.anthropicAvailableModels` | — (models offered for the Anthropic backend) |
 | | `mimir.vllmVerifySsl` | `VLLM_VERIFY_SSL=0` when unticked |
 | | `mimir.wsUrl` | — (attach to a server you run yourself) |
+| | `mimir.wsToken` | the value of `MIMIR_WS_TOKEN` on that server; a server on this machine needs none |
 | Model | `mimir.maxModelLen` | `MIMIR_VLLM_MAX_MODEL_LEN`, `MIMIR_RAY_MAX_MODEL_LEN` |
 | | `mimir.vllmTokenize` | `MIMIR_VLLM_TOKENIZE=0` when unticked |
 | | `mimir.ollama.numCtx` | `MIMIR_OLLAMA_NUM_CTX` |

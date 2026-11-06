@@ -1731,6 +1731,15 @@ nothing is listening at. It is removed on a clean shutdown and deliberately left
 crash, since a reader checks liveness rather than the file's existence; `clear()` refuses to
 delete a stranger's entry, because that would make a perfectly good server undiscoverable.
 
+**Who may connect.** The server runs commands as its user, and a loopback port is open to
+every other user of a login node and to any page a browser shows. So every handshake must
+carry `Authorization: Bearer <token>`, a header a browser cannot put on a WebSocket; anything
+else gets 401 before the handshake, and only `/alive` answers without it. The token is
+generated at start (or comes from `MIMIR_WS_TOKEN`, then removed from the environment so the
+tools do not inherit it) and is published in `<STATE_DIR>/server.json`, which `write_json` leaves `0600`.
+It is never on a command line or in a log. A non-loopback bind prints a warning: `ws://` is
+not encrypted, and an SSH tunnel is the way to reach a server on another host.
+
 The extension reads the same file through `src/serverRegistry.ts`, and `workspaceId` there
 must stay byte-identical to `state_paths.workspace_id` — disagree and each end looks in a
 different file while both conclude there is no server. `serverRegistry.test.ts` pins it

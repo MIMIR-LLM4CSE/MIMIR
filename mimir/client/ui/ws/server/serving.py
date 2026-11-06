@@ -7,8 +7,11 @@ documented there.
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import logging
 import os
+import secrets
 import signal
 import sys
 from typing import Any, Callable
@@ -33,6 +36,10 @@ except ImportError as exc:
 __all__ = ["serve"]
 
 
+# Sets the token of a server whose clients cannot read its registry entry (another host).
+TOKEN_ENV = "MIMIR_WS_TOKEN"
+
+
 # Ceiling on an inbound frame. Sized for the client transcript, the only message that
 # can get large: a long session's tool rows, diffs and clipped command output. The
 # extension holds back any frame past it (MAX_FRAME_BYTES in
@@ -43,14 +50,32 @@ _MAX_FRAME_BYTES = 32 * 1024 * 1024
 _LOCK_WAIT_SECS = 60.0
 
 
-def _answer_probe(connection: Any, request: Any) -> Any:
-    """Answer the liveness probe (registry.ALIVE_PATH) with this process's pid.
+def _server_token() -> str:
+    """This server's token: ``MIMIR_WS_TOKEN``, else a fresh one.
 
-    Plain HTTP before any handshake; the pid tells us from a stranger on the port.
+    Taken out of the environment, so nothing this process starts inherits it.
     """
-    if request.path == server_registry.ALIVE_PATH:
-        return connection.respond(200, str(os.getpid()))
-    return None
+    return os.environ.pop(TOKEN_ENV, "").strip() or secrets.token_urlsafe(32)
+
+
+def _gate(token: str) -> Callable[[Any, Any], Any]:
+    """The ``process_request``: a handshake needs ``Authorization: Bearer <token>``.
+
+    A loopback port is open to every local user and to any page a browser shows, and no
+    browser can send that header on a WebSocket. Only the liveness probe
+    (registry.ALIVE_PATH) answers without it, with the pid.
+    """
+    expected = f"Bearer {token}".encode()
+
+    def gate(connection: Any, request: Any) -> Any:
+        if request.path == server_registry.ALIVE_PATH:
+            return connection.respond(200, str(os.getpid()))
+        given = request.headers.get_all("Authorization")
+        if len(given) == 1 and hmac.compare_digest(given[0].encode(), expected):
+            return None
+        return connection.respond(401, "MIMIR: a valid token is required.\n")
+
+    return gate
 
 
 def _announced_address(sockets: Any) -> tuple[str, int]:
@@ -58,6 +83,11 @@ def _announced_address(sockets: Any) -> tuple[str, int]:
     names = [s.getsockname() for s in sockets]
     addr, port = next((n for n in names if ":" not in n[0]), names[0])[:2]
     return addr, int(port)
+
+
+def _is_loopback(addr: str) -> bool:
+    """Whether *addr*, a literal socket address, stays on this machine."""
+    return ipaddress.ip_address(addr).is_loopback
 
 
 def _announced_url(sockets: Any) -> str:
@@ -106,6 +136,7 @@ async def serve(
     model: str | None = None,
 ) -> None:
     """Start the WebSocket server (runs forever)."""
+    token = _server_token()
     ensure_router_installed()
     # Model resolution: explicit arg > MIMIR_DEFAULT_MODEL env var > DEFAULT_MODEL config
     _model = model or os.environ.get("MIMIR_DEFAULT_MODEL", "").strip() or DEFAULT_MODEL
@@ -192,7 +223,7 @@ async def serve(
     # carries diffs and command output, and an oversized frame closes the connection
     # rather than failing the one message.
     async with websockets.serve(_handler, host, port, max_size=_MAX_FRAME_BYTES,
-                                process_request=_answer_probe) as server:
+                                process_request=_gate(token)) as server:
         # Read the port back off the socket rather than echoing the argument: with
         # --port 0 the argument is a placeholder, and this line is the contract the
         # VS Code extension parses to learn where to connect.
@@ -205,7 +236,13 @@ async def serve(
         # workspace" actually comes from.
         _addr = _announced_address(server.sockets)
         server_registry.publish(url=url, host=_addr[0], port=_addr[1],
-                                model=pool.model)
+                                model=pool.model, token=token)
+        print(f"Clients authenticate with the token in {server_registry.registry_path()}.",
+              file=ORIGINAL_STDOUT, flush=True)
+        if not _is_loopback(_addr[0]):
+            print("WARNING: ws:// is not encrypted, so the token and the conversation "
+                  "cross this network in clear. Bind localhost and tunnel over SSH.",
+                  file=ORIGINAL_STDOUT, flush=True)
         def _retire() -> None:
             # First thing on the way out, before the agents are closed: closing them
             # takes seconds, and a window opened meanwhile must not find this address and

@@ -9,7 +9,7 @@ import * as path from "path";
 import { describeDiskFull, diagnoseDiskFull } from "./diskFull";
 import { serverChannel } from "./serverChannel";
 import { findLiveServer, logPath, stateDir, waitForServer } from "./serverRegistry";
-import { mimirServerEnv, noProxyFor, resolvePython, settingsEnv } from "./serverEnv";
+import { configuredServerEnv, mimirServerEnv, noProxyFor, resolvePython, settingsEnv } from "./serverEnv";
 import { workspaceRoot } from "./workspace";
 import { showToast } from "./notifications";
 
@@ -26,7 +26,7 @@ export interface SpawnRequest {
 
 /** How a spawn ended: listening at *url*, given up on, or replaced while it started. */
 export type SpawnOutcome =
-  | { kind: "listening"; url: string }
+  | { kind: "listening"; url: string; token?: string }
   | { kind: "gave_up" }
   | { kind: "superseded" };
 
@@ -200,7 +200,7 @@ export class LocalServer {
     // pipe to read it from, so it is taken from the registry the server publishes once
     // its socket is bound. Everything before that — MCP handshakes, model resolution —
     // can take a while on a cold start.
-    const entry = await waitForServer(cwd, spawned.pid);
+    const entry = await waitForServer(cwd, spawned.pid, env);
     listening = entry !== undefined;
     if (this.child !== spawned && entry === undefined) return { kind: "superseded" };
     if (!entry) {
@@ -219,7 +219,7 @@ export class LocalServer {
       this.child = undefined;
       this.attachedPid = entry.pid;
     }
-    return { kind: "listening", url: entry.url };
+    return { kind: "listening", url: entry.url, token: entry.token };
   }
 
   /**
@@ -274,7 +274,7 @@ export class LocalServer {
    * asking may not be connected to it; SIGTERM, so its exit reaps the MCP servers.
    */
   async stopFromCommand(): Promise<void> {
-    const entry = await findLiveServer(workspaceRoot());
+    const entry = await findLiveServer(workspaceRoot(), configuredServerEnv());
     if (!entry) {
       showToast(
         "info",
