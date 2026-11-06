@@ -10,7 +10,6 @@ import {
   kindLabel,
   originKind,
   originLabel,
-  progressLabel,
   sectionRunCounts,
   toggle,
 } from "./panelGroupUtils";
@@ -120,13 +119,7 @@ describe("who launched it", () => {
   });
 });
 
-describe("how far along, and how long", () => {
-  it("reports whatever the run's own output said", () => {
-    expect(progressLabel(run({ phase: "linking", percent: 61.6 }))).toBe("linking · 62%");
-    expect(progressLabel(run({ phase: "linking" }))).toBe("linking");
-    expect(progressLabel(run())).toBe("");
-  });
-
+describe("how long", () => {
   it("says the elapsed time as a person would", () => {
     expect(elapsedLabel(run({ elapsed_s: 42 }))).toBe("42s");
     expect(elapsedLabel(run({ elapsed_s: 125 }))).toBe("2m 5s");

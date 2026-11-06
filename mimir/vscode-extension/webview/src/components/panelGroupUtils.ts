@@ -114,14 +114,6 @@ export function originLabel(origin: RunOrigin | undefined): string {
   return origin.label ? `sub-agent: ${origin.label}` : "a sub-agent";
 }
 
-/** How far along, when the run's own output said so. "" when it did not. */
-export function progressLabel(run: WatchedRun): string {
-  const parts: string[] = [];
-  if (run.phase) parts.push(run.phase);
-  if (typeof run.percent === "number") parts.push(`${Math.round(run.percent)}%`);
-  return parts.join(" · ");
-}
-
 /** Elapsed time as a person would say it. "" when it is not known. */
 export function elapsedLabel(run: WatchedRun): string {
   const secs = run.elapsed_s;

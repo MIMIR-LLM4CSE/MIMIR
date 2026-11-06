@@ -144,6 +144,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `slurm_queue(user_only=False)` say that only the user's own jobs are visible.
 
 ### Fixed
+- **An opened run keeps a build's line inside its card.** The phase held the line of the
+  bar and could not shrink, so a compilation's `[ 42%] Building CXX object …` ran past the
+  card and the drawer. The bar and its percentage keep their line, and the phase wraps
+  under them.
 - **A merge is measured against the machine's noise.** `total_time_s`, its metric, and
   `best_time_s` counted as reproducible: each case of a merge ran once against gains taken
   on a median of three, no noise floor was ever set, so `flagged` stood on the first

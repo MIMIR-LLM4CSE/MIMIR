@@ -139,6 +139,17 @@ describe("the runs on a machine", () => {
     expect(html).toContain("this conversation");
   });
 
+  it("gives a build's count and its line each their place", () => {
+    const build: WatchedRun = {
+      job_key: "k1", kind: "shell-command", state: "running", pid: 4242,
+      phase: "[ 42%] Building CXX object src/solver/CMakeFiles/solver.dir/kernel.cpp.o",
+      percent: 41.6,
+    };
+    const html = tree({ [badgeKey(build)]: true }, [{ ...host, badges: [build] }]);
+    expect(html).toContain('<span class="science-run-percent">42%</span>');
+    expect(html).toContain(`<div class="science-run-phase">${build.phase}</div>`);
+  });
+
   it("offers to stop it only when its server said how", () => {
     const opened = { [badgeKey(run)]: true };
     const without = tree(opened, [{ ...host, badges: [run] }]);

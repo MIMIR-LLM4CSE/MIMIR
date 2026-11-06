@@ -4944,12 +4944,15 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .science-run-state.is-unreadable { color: var(--vscode-charts-yellow, #d7a441); }
 
 .science-run-progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin: 2px 0 6px;
   font-size: 11.5px;
   color: var(--fg-dim);
+}
+
+.science-run-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .science-run-bar {
@@ -4967,7 +4970,17 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   transition: width var(--motion-fast);
 }
 
-.science-run-phase { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.science-run-percent { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+/* The phase under the bar, wrapped: a build's line names an object path that the
+   drawer's width cannot hold, and has nowhere to break but inside it. */
+.science-run-phase {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 
 /* The command whole, wrapped: it is what the reader opened the run to see. */
 .science-run-command {

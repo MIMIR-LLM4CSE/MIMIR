@@ -191,14 +191,14 @@ const RunDetail: React.FC<{ run: WatchedRun; onCancel: (jobKey: string) => void 
       {(run.phase || percent !== null) && (
         <div className="science-run-progress">
           {percent !== null && (
-            <div className="science-run-bar" aria-hidden="true">
-              <span style={{ width: `${percent}%` }} />
+            <div className="science-run-count">
+              <div className="science-run-bar" aria-hidden="true">
+                <span style={{ width: `${percent}%` }} />
+              </div>
+              <span className="science-run-percent">{Math.round(percent)}%</span>
             </div>
           )}
-          <span className="science-run-phase">
-            {[run.phase, percent !== null ? `${Math.round(percent)}%` : ""]
-              .filter(Boolean).join(" · ")}
-          </span>
+          {run.phase && <div className="science-run-phase">{run.phase}</div>}
         </div>
       )}
       {run.command && <code className="science-run-command">{run.command}</code>}
