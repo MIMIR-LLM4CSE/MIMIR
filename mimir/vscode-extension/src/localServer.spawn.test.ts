@@ -83,6 +83,8 @@ describe("spawning the server", () => {
     expect(options.stdio).toBe("ignore");
     expect(command).toMatch(/>> '\/state\/logs\/server-[^']+\.log' 2>&1$/);
     expect(command).toContain("--backend vllm --vllm-base-url http://node:8000/v1");
+    expect(options.cwd).toBe("/ext");
+    expect(command).toMatch(/--cwd '[^']+' --port 0/);
     expect(made).toContain("/state/logs");
     expect((options.env as NodeJS.ProcessEnv).PYTHONUNBUFFERED).toBe("1");
     expect(server.childRunning).toBe(true);

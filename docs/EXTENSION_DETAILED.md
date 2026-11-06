@@ -109,6 +109,13 @@ and is greeted with a fresh `ready`; `ServerConnection`'s close handler ignores 
 it no longer holds, so the replaced one drives no retry. A startup connect also
 keeps the "MIMIR Server" output channel closed instead of popping it over the editor.
 
+The host starts the server from the extension's directory, never the workspace: `python -m`
+puts the current directory first on `sys.path`, where a project's file named after a standard
+module would run.
+`--cwd` then moves it to the workspace. The extension declares `untrustedWorkspaces`
+unsupported, so it stays off in Restricted Mode: a workspace's plugins and tool
+servers under `.mimir/`, and `mimir.pythonPath`, run code by design, and that takes a trusted folder.
+
 The host starts the server with `--port 0` and reads the address and the token from the
 `<STATE_DIR>/server.json` it publishes, in the state directory the server's own environment resolves
 (`mimir.server.env` included). `ServerConnection` presents the token on every connect, and a

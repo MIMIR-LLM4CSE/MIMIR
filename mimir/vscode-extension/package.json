@@ -9,6 +9,12 @@
   "bugs": { "url": "https://github.com/MIMIR-LLM4CSE/MIMIR/issues" },
   "homepage": "https://github.com/MIMIR-LLM4CSE/MIMIR#readme",
   "engines": { "vscode": "^1.85.0" },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "MIMIR runs a workspace's plugins and tool servers, and starts the interpreter its settings name, so it needs a folder you trust."
+    }
+  },
   "categories": ["AI", "Chat"],
   "keywords": ["agent", "llm", "vllm", "ollama", "ray", "claude", "mcp", "hpc", "slurm"],
   "icon": "images/mimir-logo-dark.png",

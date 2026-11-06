@@ -137,6 +137,32 @@ class ServerTokenTests(unittest.TestCase):
 
 
 class EntryPointTests(unittest.TestCase):
+    def test_a_project_file_does_not_shadow_a_module_of_the_server(self) -> None:
+        """Started outside the workspace and sent there by ``--cwd``, as the extension does."""
+        import subprocess
+        import sys
+        import tempfile
+        repository = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with tempfile.TemporaryDirectory() as scratch:
+            workspace = os.path.join(scratch, "project")
+            elsewhere = os.path.join(scratch, "elsewhere")
+            os.makedirs(workspace)
+            os.makedirs(elsewhere)
+            marker = os.path.join(scratch, "ran")
+            planted = f"open({marker!r}, 'w').close()\n"
+            for module in ("argparse", "secrets", "hmac", "signal", "websockets"):
+                with open(os.path.join(workspace, f"{module}.py"), "w", encoding="utf-8") as handle:
+                    handle.write(planted)
+            # No endpoint answers, so the server stops once its modules are imported.
+            done = subprocess.run(
+                [sys.executable, "-m", "mimir.client.ui.ws.server.main", "--cwd", workspace,
+                 "--backend", "vllm", "--vllm-base-url", "http://127.0.0.1:9"],
+                cwd=elsewhere, capture_output=True, text=True, timeout=60,
+                env={**os.environ, "PYTHONPATH": repository,
+                     "MIMIR_STATE_DIR": os.path.join(scratch, "state")})
+            self.assertIn("did not answer", done.stderr + done.stdout)
+            self.assertFalse(os.path.exists(marker))
+
     def test_the_entry_point_resolves_no_workspace_before_main(self) -> None:
         """``--cwd`` is applied in ``main``; anything that resolved the workspace root
         while the entry module was imported would have resolved the launch directory.

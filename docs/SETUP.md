@@ -181,7 +181,8 @@ Then point the agent at it:
 mimir-server \
     --backend vllm \
     --vllm-base-url http://<host>:8000
-    # `python -m mimir.client.ui.ws.server.main ...` also works if not pip-installed
+    # `python -m mimir.client.ui.ws.server.main ...` also works if not pip-installed, but
+    # run it outside the project: `-m` puts the current directory first on `sys.path`
     # --model is optional; omit it to use whatever the endpoint serves
 ```
 

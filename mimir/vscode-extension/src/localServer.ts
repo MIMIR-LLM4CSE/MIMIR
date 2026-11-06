@@ -30,6 +30,17 @@ export type SpawnOutcome =
   | { kind: "gave_up" }
   | { kind: "superseded" };
 
+/** *value* as one word of a bash command line. */
+const shellQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`;
+
+/**
+ * The command that starts a server on *workspace*. It runs from the extension's directory:
+ * `python -m` puts the current directory first on `sys.path`, where a project's `argparse.py`
+ * would run. `--cwd` moves the server to the workspace, away from `sys.path`.
+ */
+const serverCommand = (python: string, workspace: string, args: string): string =>
+  `exec ${python} -m mimir.client.ui.ws.server.main --cwd ${shellQuote(workspace)} ${args}`;
+
 export class LocalServer {
   private child: cp.ChildProcess | undefined;
   /**
@@ -149,16 +160,14 @@ export class LocalServer {
     // `--port 0`: the OS picks a free port, which the server publishes. `exec` makes
     // `kill()` reach python itself. Output goes to a file: a pipe held by this host
     // would SIGPIPE a server meant to outlive the window.
-    const quotedLog = `'${serverLog.replace(/'/g, "'\\''")}'`;
-    const spawnCmd =
-      `exec ${pythonPath} -m mimir.client.ui.ws.server.main --port 0` +
-      `${req.model ? ` --model ${req.model}` : ""}${backendArgs} >> ${quotedLog} 2>&1`;
+    const spawnCmd = serverCommand(pythonPath, cwd,
+      `--port 0${req.model ? ` --model ${req.model}` : ""}${backendArgs} >> ${shellQuote(serverLog)} 2>&1`);
     // The command only: the Claude API key goes through the environment below, so it
     // never lands in the output channel.
     outputChannel.appendLine(`Starting server: ${spawnCmd}`);
 
     const spawned = cp.spawn("bash", ["-c", spawnCmd], {
-      cwd,
+      cwd: this.extensionRoot,
       env,
       // Its own process session, from birth. Nothing about this window's teardown can
       // then reach it implicitly — not a process-group signal, not a SIGHUP, not the
@@ -240,13 +249,13 @@ export class LocalServer {
 
     const cwd = workspaceRoot();
     // `exec` so the process we track — and later kill — is the server, not the shell.
-    const spawnCmd = `exec ${pythonPath} -m mimir.client.ui.ws.server.main --port 8765`;
+    const spawnCmd = serverCommand(pythonPath, cwd, "--port 8765");
 
     // A child of our own from here on: whatever pid we were attached to before is not
     // the server this window is responsible for any more.
     this.attachedPid = undefined;
     const child = cp.spawn("bash", ["-c", spawnCmd], {
-      cwd,
+      cwd: this.extensionRoot,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
       // root to the opened workspace, regardless of the process cwd. Same
       // python-env isolation and settings as the connect path (see mimirServerEnv).

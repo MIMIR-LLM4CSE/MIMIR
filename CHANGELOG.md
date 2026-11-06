@@ -26,6 +26,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `mimir.wsToken` setting here. A non-loopback bind prints a warning, and `install.sh` no
   longer suggests `--host 0.0.0.0`: `ws://` is not encrypted, so use an SSH tunnel.
   An extension older than the server is refused too: reload the window when offered.
+- **Opening a folder runs nothing of it.** The extension started `python -m` from the
+  workspace, which puts that folder first on `sys.path`: a project's `argparse.py` ran as
+  the server started, before any approval. The server now starts from the extension's
+  directory and moves to the workspace with `--cwd`. MIMIR also needs a trusted folder:
+  in VS Code's Restricted Mode it stays off, since a workspace's `.mimir/plugins`,
+  `.mimir/servers` and `mimir.pythonPath` run code by design. Started by hand, prefer
+  `mimir-server`, which is safe from any directory.
 
 ### Fixed
 - **`MIMIR_STATE_HOME` set through `mimir.server.env` works.** The server published its
