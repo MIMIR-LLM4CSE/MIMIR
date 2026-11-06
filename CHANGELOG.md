@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-11-06
+
 ### Added
 - **A code map request targets any file, or whole tiers.** The form searches the
   workspace's files as the chat's "@" does, with the same list and ranking (arrows and
@@ -1752,6 +1754,6 @@ in it. The main points:
 
 Initial public release.
 
-[Unreleased]: https://github.com/MIMIR-LLM4CSE/MIMIR/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/MIMIR-LLM4CSE/MIMIR/compare/v1.14.0...HEAD
 [1.0.0]: https://github.com/MIMIR-LLM4CSE/MIMIR/releases/tag/v1.0.0
 [0.1.0]: https://github.com/MIMIR-LLM4CSE/MIMIR/commits/main
