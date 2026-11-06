@@ -125,6 +125,33 @@ def read_fortran(text: str, *, fixed: bool) -> Facts:
     return facts
 
 
+_END_MODULE_RE = re.compile(r"^end\s*(?:module|submodule)\b", re.I)
+
+
+def definitions(text: str, *, fixed: bool) -> list[tuple[str, str, int]]:
+    """The procedures a Fortran file defines, as ``(name, module, line)``: the name lower
+    case as compilers mangle it, the module ("" outside one, the parent of a submodule),
+    and each ``bind(c)`` symbol as a name of its own, case kept."""
+    out: list[tuple[str, str, int]] = []
+    module, depth = "", 0
+    for line, st in statements(text, fixed=fixed):
+        if _INTERFACE_RE.match(st):
+            depth += 1
+        elif _END_INTERFACE_RE.match(st):
+            depth = max(0, depth - 1)
+        elif _END_MODULE_RE.match(st):
+            module = ""
+        elif (m := _MODULE_RE.match(st)) and m.group(1).lower() != "procedure":
+            module = m.group(1).lower()
+        elif m := _SUBMODULE_RE.match(st):
+            module = m.group(1).lower()
+        elif not depth and (m := _PROC_RE.match(st)) and not st.lower().startswith("end"):
+            out.append((m.group(2).lower(), module, line))
+            if bind := _BIND_RE.search(st):
+                out.append((bind.group(1) or m.group(2).lower(), "", line))
+    return out
+
+
 def read_pyf(text: str) -> Facts:
     """An f2py signature file: the Python module it defines and the procedures it wraps."""
     facts = Facts("pyf", text.count("\n") + 1)

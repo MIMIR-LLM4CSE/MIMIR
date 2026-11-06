@@ -333,6 +333,53 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(edges, {("a.c", "b.f90", "binding", "by_name")})
 
 
+class DefinitionTests(unittest.TestCase):
+    """The native functions a file defines, with their module or class and line: what a
+    profile's symbol is placed by."""
+
+    def test_fortran_procedures_with_their_module_and_c_symbol(self) -> None:
+        text = textwrap.dedent("""\
+            module solver
+            contains
+              subroutine relax(n)
+              end subroutine
+              real function norm(x) bind(c, name="c_norm")
+              end function
+            end module
+            submodule (solver) impl
+            contains
+              module subroutine sweep()
+              end subroutine
+            end submodule
+            subroutine ext(a)
+              interface
+                subroutine cb() bind(c)
+                end subroutine
+              end interface
+            end subroutine
+            """)
+        self.assertEqual(code_map.definitions("a.f90", text),
+                         [("relax", "solver", 3), ("norm", "solver", 5), ("c_norm", "", 5),
+                          ("sweep", "solver", 10), ("ext", "", 13)])
+
+    def test_c_and_cpp_functions_with_their_scope(self) -> None:
+        text = textwrap.dedent("""\
+            // void commented(int x) {}
+            double Grid::step(int n) const {
+              if (n) { return 1; }
+            }
+            static void helper(double* x, int n)
+            {
+            }
+            auto f(int a) -> double { return a; }
+            Solver::Solver(int n) : n_(n) {}
+            void declared(int);
+            """)
+        self.assertEqual(code_map.definitions("a.cpp", text),
+                         [("step", "Grid", 2), ("helper", "", 5), ("f", "", 8), ("Solver", "Solver", 9)])
+        self.assertEqual(code_map.definitions("a.py", "def f(): pass\n"), [])
+
+
 class ScanTests(unittest.TestCase):
     def test_the_map_says_the_root_its_paths_are_relative_to(self) -> None:
         with _tree({"a.py": ""}) as root:

@@ -117,17 +117,29 @@ def perf_stacks(text: str) -> list[tuple[list[Frame], int]]:
 def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], str | None]) -> dict:
     """Shares of the samples per workspace file, function and line (the deepest workspace
     frame of each stack; a function's total counts every stack it is on, once) and, for
-    stacks with none, per outside package or library."""
+    stacks with none, per outside package or library. A native frame lands by its symbol
+    when its file does not (``resolve.symbol``), opened where its function is defined."""
     files: Counter = Counter()
     own: Counter = Counter()
     under: Counter = Counter()
     lines: Counter = Counter()
     at: Counter = Counter()
     out: Counter = Counter()
+    defs: dict[str, int] = {}
     total = 0
+    by_symbol = getattr(resolve, "symbol", None)
+
+    def home_of(f: Frame) -> str | None:
+        home = resolve(f.where)
+        if home or not by_symbol:
+            return home
+        hit = by_symbol(f.func, f.where)
+        if hit:
+            defs[f"{hit[0]}::{f.func}"] = hit[1]
+        return hit[0] if hit else None
     for frames, count in stacks:
         total += count
-        homes = [(home, f) for f in frames if (home := resolve(f.where))]
+        homes = [(home, f) for f in frames if (home := home_of(f))]
         if not homes:
             out[outside(frames[-1].where if frames else "")] += count
             continue
@@ -145,7 +157,7 @@ def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], st
         return {"samples": 0, "files": {}, "outside": {}}
     return {"samples": total,
             "files": {f: round(n / total, 4) for f, n in files.most_common()},
-            "functions": _functions(own, under, total, _costliest_lines(at)),
+            "functions": _functions(own, under, total, {**defs, **_costliest_lines(at)}),
             "lines": {k: round(n / total, 4) for k, n in lines.most_common(LINES_KEPT)},
             "outside": {k: round(n / total, 4) for k, n in out.most_common(12)}}
 
@@ -272,35 +284,42 @@ def _uncore_events() -> tuple[str, ...]:
 
 def sample(tool: str, argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
            log: TextIO, timeout: float | None, wall_s: float | None = None) -> dict:
-    """Run *argv* once under *tool* and attribute its samples; a py-spy profile that saw
-    less than half of *wall_s*, the run's measured time, is taken again by perf."""
-    if tool == "py-spy":
-        found = _pyspy(argv, out_dir, resolve, log, timeout)
-        seen = found.get("samples", 0) / PYSPY_HZ
-        if not wall_s or seen >= SEEN_ENOUGH * wall_s:
-            return found
-        missed = (f"py-spy saw {seen:.1f} s of the run's {wall_s:.1f} s: the rest ran in a process "
-                  "it cannot read (a compiled program the command starts)")
-        ok, why = perf_allowed()
-        if not ok:
-            return {**found, "note": f"{missed}; perf would see it, but {why}"}
-        native = _perf_sample(argv, out_dir, resolve, log, timeout)
-        if _workspace_s(native, PERF_HZ) <= _workspace_s(found, PYSPY_HZ):
-            return {**found, "note": f"{missed}; perf saw no more of the workspace"}
-        return {**native, "tool": "perf",
-                "note": "; ".join(filter(None, [f"{missed}, so perf profiled it: Python's frames are "
-                                                "the interpreter's there", native.get("note")]))}
+    """Run *argv* once under *tool* and attribute its samples. A py-spy profile that saw
+    less than half of *wall_s* (the run's measured time), or put more than half of it on
+    the command's own script (the harness, whose native callee it could not read), is taken
+    again by perf, and the one that puts more seconds in the workspace's code is kept."""
     if tool == "cprofile":
         dump = os.path.join(out_dir, "profile.pstats")
         proc_run.run([argv[0], "-m", "cProfile", "-o", dump, *argv[1:]], stdout=log,
                      stderr=subprocess.STDOUT, timeout=timeout)
         return cprofile_files(dump, resolve)
-    return _perf_sample(argv, out_dir, resolve, log, timeout)
+    if tool != "py-spy":
+        return _perf_sample(argv, out_dir, resolve, log, timeout)
+    found = _pyspy(argv, out_dir, resolve, log, timeout)
+    script = resolve(argv[1]) if len(argv) > 1 else None
+    seen = found.get("samples", 0) / PYSPY_HZ
+    if wall_s and seen < SEEN_ENOUGH * wall_s:
+        missed = (f"py-spy saw {seen:.1f} s of the run's {wall_s:.1f} s: the rest ran in a process "
+                  "it cannot read (a compiled program the command starts)")
+    elif script and (found.get("files") or {}).get(script, 0) > SEEN_ENOUGH:
+        missed = (f"py-spy left {found['files'][script]:.0%} of the run on {script}, the command's own "
+                  "script: in native code it calls that py-spy could not place")
+    else:
+        return found
+    ok, why = perf_allowed()
+    if not ok:
+        return {**found, "note": f"{missed}; perf would see it, but {why}"}
+    native = _perf_sample(argv, out_dir, resolve, log, timeout)
+    if _workspace_s(native, PERF_HZ, script) <= _workspace_s(found, PYSPY_HZ, script):
+        return {**found, "note": f"{missed}; perf saw no more of the workspace"}
+    return {**native, "tool": "perf",
+            "note": "; ".join(filter(None, [f"{missed}, so perf profiled it: Python's frames are "
+                                            "the interpreter's there", native.get("note")]))}
 
 
-def _workspace_s(found: dict, hz: int) -> float:
-    """The seconds a sampled profile puts in the workspace's files."""
-    return found.get("samples", 0) / hz * sum((found.get("files") or {}).values())
+def _workspace_s(found: dict, hz: int, but: str | None = None) -> float:
+    """The seconds a sampled profile puts in the workspace's files, *but* one (the harness)."""
+    return found.get("samples", 0) / hz * sum(v for k, v in (found.get("files") or {}).items() if k != but)
 
 
 def _pyspy(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],

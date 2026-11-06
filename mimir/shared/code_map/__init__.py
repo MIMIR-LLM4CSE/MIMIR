@@ -17,6 +17,7 @@ from collections import Counter, defaultdict
 from typing import Callable, Iterable
 
 from . import build_files, layout
+from . import c_reader, fortran_reader
 from .c_reader import read_c
 from .facts import Facts
 from .fortran_reader import FIXED_FORM, read_fortran, read_pyf
@@ -68,6 +69,17 @@ def parse(rel: str, text: str) -> Facts:
     if lang == "fortran":
         return read_fortran(text, fixed=posixpath.splitext(rel.lower())[1] in FIXED_FORM)
     return read_c(text, is_c=lang == "c")
+
+
+def definitions(rel: str, text: str) -> list[tuple[str, str, int]]:
+    """The native functions a file defines, ``(name, scope, line)``: a Fortran procedure
+    with its module, a C/C++/CUDA function with its class or namespace; none for Python."""
+    lang = language_of(rel)
+    if lang == "fortran":
+        return fortran_reader.definitions(text, fixed=posixpath.splitext(rel.lower())[1] in FIXED_FORM)
+    if lang in ("c", "cpp"):
+        return c_reader.definitions(text)
+    return []
 
 
 def _is_build_file(name: str) -> bool:

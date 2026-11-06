@@ -48,6 +48,21 @@ def _block_end(text: str, start: int) -> int:
     return len(text)
 
 
+# A function's body opening after its parameters: `name(...) const noexcept override {`,
+# `Scope::name(...) {`, `name(...) -> T {`.
+_DEF_RE = re.compile(
+    r"(?:\b([A-Za-z_]\w*)\s*::\s*)?(~?\b[A-Za-z_]\w*)\s*\([^;{}()]*(?:\([^()]*\)[^;{}()]*)*\)"
+    r"(?:\s*(?:const|noexcept|override|final|volatile|&&?|->\s*[\w:<>,\s\*&]+))*\s*(?::[^;{}]*)?\{")
+
+
+def definitions(text: str) -> list[tuple[str, str, int]]:
+    """The functions a C/C++/CUDA file defines, as ``(name, scope, line)``: the scope the
+    class or namespace a ``Scope::name`` definition names, "" otherwise."""
+    code = _blank_comments(text)
+    return [(m.group(2), m.group(1) or "", _line(code, m.start(2))) for m in _DEF_RE.finditer(code)
+            if m.group(2) not in _KEYWORDS and m.group(1) not in _KEYWORDS]
+
+
 def read_c(text: str, *, is_c: bool) -> Facts:
     """What a C/C++/CUDA file includes, exports and calls; *is_c* for plain C, where every
     top-level function has C linkage."""

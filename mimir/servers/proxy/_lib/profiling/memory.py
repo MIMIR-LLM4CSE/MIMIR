@@ -131,7 +131,7 @@ def _massif_tree(lines: list[str]) -> list[tuple[list[Frame], int]]:
         elif site and depth:
             loc = site.group("loc") or ""
             if loc.startswith("in "):
-                frame = Frame(loc[3:])
+                frame = Frame(loc[3:], fortran_name(site.group("func"), ""))
             else:
                 where, _, lineno = loc.rpartition(":")
                 frame = Frame(where, fortran_name(site.group("func"), where), int(lineno) if lineno.isdigit() else 0)
@@ -162,20 +162,27 @@ def profile(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
     mem_dir = os.path.join(out_dir, "memory")
     os.makedirs(mem_dir, exist_ok=True)
     peak, stacks = _take(tool, argv, mem_dir, log, timeout)
+    found = attribute(stacks, resolve)
     notes = []
+    script = resolve(argv[1]) if is_python(argv) and len(argv) > 1 else None
     if is_python(argv) and measured_mb and peak / 2**20 < 0.5 * measured_mb:
+        missed = (f"{tool} traced {peak / 2**20:.0f} of the {measured_mb:.0f} MB measured "
+                  "(a process the command starts)")
+    elif script and (found.get("files") or {}).get(script, 0) > 0.5:
+        missed = f"{tool} left {found['files'][script]:.0%} of the peak on {script}, the command's own script"
+    else:
+        missed = ""
+    if missed:
         native, why = choose_native()
-        if native:
-            more = _take(native, argv, os.path.join(mem_dir, native), log, timeout)
-            if more[0] > peak:
-                notes.append(f"{tool} traced {peak / 2**20:.0f} of the {measured_mb:.0f} MB measured, "
-                             f"so {native} profiled the processes the command starts")
-                tool, (peak, stacks) = native, more
+        more = _take(native, argv, os.path.join(mem_dir, native), log, timeout) if native else (0, [])
+        again = attribute(more[1], resolve) if more[1] else {}
+        if native and (_workspace_bytes(again, more[0], script), more[0]) > (_workspace_bytes(found, peak, script), peak):
+            notes.append(f"{missed}, so {native} profiled it with the processes it starts")
+            tool, peak, stacks, found = native, more[0], more[1], again
         else:
-            notes.append(f"the processes the command starts are not followed: {why}")
+            notes.append(f"{missed}; " + (f"{native} saw no more of the workspace" if native else why))
     if not stacks:
         return {"tool": tool, "unavailable": f"{tool} recorded no allocation (see profile.log)"}
-    found = attribute(stacks, resolve)
     found.pop("samples", None)
     result = {"tool": tool, "peak_mb": round(peak / 2**20, 1), **found}
     if tool == "tracemalloc":
@@ -190,6 +197,11 @@ def profile(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
     if notes:
         result["note"] = "; ".join(notes)
     return result
+
+
+def _workspace_bytes(found: dict, peak: int, but: str | None) -> float:
+    """The bytes of the peak a profile puts in the workspace's files, *but* one (the harness)."""
+    return peak * sum(v for k, v in (found.get("files") or {}).items() if k != but)
 
 
 def _take(tool: str, argv: list[str], mem_dir: str, log: TextIO,

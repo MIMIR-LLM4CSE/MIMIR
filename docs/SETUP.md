@@ -125,8 +125,10 @@ Optional extras (declared in `pyproject.toml`):
   and for a Python harness whose code allocates in a process it starts;
   massif, valgrind's tool, is many times slower. The memory controllers' traffic in
   `level='counters'` needs `kernel.perf_event_paranoid` at 0 or below (or root);
-  otherwise it is estimated from cache misses. Compile with `-g` (and
-  `-fno-omit-frame-pointer`) for profiles by file, function and line.
+  otherwise it is estimated from cache misses. Code built without `-g` is still placed by
+  function, whatever binds it to the harness (a program it starts, f2py, pybind11, ctypes,
+  cffi; Cython needs `-g`): each symbol lands on the source file that defines it. Compile with `-g`
+  (and `-fno-omit-frame-pointer`) for the time per line and whole call stacks.
 
 > **Requirements file.** `pip install -r mimir/requirements.txt` installs
 > the same core dependencies, but it does **not** register the `mimir` /

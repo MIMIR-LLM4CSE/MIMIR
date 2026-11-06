@@ -161,8 +161,9 @@ class ReadingTests(unittest.TestCase):
     def test_a_py_spy_profile_that_saw_the_run_is_kept(self) -> None:
         seen = {"samples": 400, "files": {"src/k.py": 1.0}, "outside": {}}
         with mock.patch.object(cpu, "_pyspy", return_value=seen), mock.patch.object(cpu, "_perf") as perf:
-            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", None, None, None, wall_s=2.0), seen)
-            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", None, None, None), seen)
+            outside_ws = lambda p: None
+            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", outside_ws, None, None, wall_s=2.0), seen)
+            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", outside_ws, None, None), seen)
         perf.assert_not_called()
 
     def test_perf_stat_gives_instructions_per_cycle_and_miss_rates(self) -> None:
@@ -180,6 +181,90 @@ class ReadingTests(unittest.TestCase):
             self.assertEqual(resolve("/build/tree/lib/k.cpp"), "lib/k.cpp")
             self.assertIsNone(resolve("util.h"))
             self.assertIsNone(resolve("/usr/lib/python3/os.py"))
+
+
+_F90_NATIVE = """\
+module solver
+contains
+  subroutine relax(n)
+  end subroutine
+end module
+subroutine ext(a)
+end subroutine
+"""
+
+
+class SymbolTests(unittest.TestCase):
+    """A native frame without a source line lands on the file defining its symbol, whatever
+    binding reached it: a binary the harness starts, an extension module it loads."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.files = {"src/solver.f90": _F90_NATIVE,
+                      "src/grid.cpp": "namespace k {\ndouble Grid::step(int n) const {\n  return n;\n}\n}\n",
+                      "src/a/util.c": "int twice(int x) {\n  return 2 * x;\n}\n",
+                      "src/b/util.c": "int twice(int x) {\n  return x + x;\n}\n",
+                      "bench/h.py": "pass\n"}
+        _write_files(self.root, self.files)
+        self.symbol = frames.symbols(self.root, sorted(self.files))
+
+    def test_each_language_s_symbols(self) -> None:
+        build = self.root + "/build/solver"
+        self.assertEqual(self.symbol(frames.fortran_name("__solver_MOD_relax"), build), ("src/solver.f90", 3))
+        self.assertEqual(self.symbol(frames.fortran_name("solver_mp_relax_"), build), ("src/solver.f90", 3))
+        self.assertEqual(self.symbol("ext_", "_solver.cpython-312-x86_64-linux-gnu.so"), ("src/solver.f90", 6))
+        self.assertEqual(self.symbol("k::Grid::step(int) const", build), ("src/grid.cpp", 2))
+        self.assertEqual(self.symbol("k::Grid::step(int) [clone .cold]", build), ("src/grid.cpp", 2))
+        self.assertEqual(self.symbol("Grid::step<double>", build), ("src/grid.cpp", 2))
+
+    def test_the_system_s_ambiguous_and_python_s_are_not_placed(self) -> None:
+        self.assertIsNone(self.symbol("relax_", "/usr/lib/x86_64-linux-gnu/libc.so.6"))
+        self.assertIsNone(self.symbol("relax_", "/usr/bin/python3.12"))
+        self.assertIsNone(self.symbol("twice", self.root + "/build/app"))   # two files define it
+        self.assertIsNone(self.symbol("relax", "bench/h.py"))
+        self.assertIsNone(self.symbol("unknown_fn", "libx.so"))
+
+    def test_a_binary_without_debug_information_lands_on_its_sources(self) -> None:
+        resolve = frames.resolver(self.root, self.root, sorted(self.files))
+        exe = self.root + "/build/solver"
+        stacks = [([Frame("/usr/bin/python3.12", "main"), Frame(exe, "MAIN__"),
+                    Frame(exe, "solver::relax")], 9),
+                  ([Frame("/usr/bin/python3.12", "main"), Frame("/usr/lib/libc.so.6", "memcpy")], 1)]
+        prof = profiling.attribute(stacks, resolve)
+        self.assertEqual(prof["files"], {"src/solver.f90": 0.9})
+        # Opened where it is defined; no line of its own was sampled.
+        self.assertEqual(prof["functions"]["src/solver.f90::solver::relax"], {"self": 0.9, "total": 0.9, "line": 3})
+        self.assertEqual(prof["lines"], {})
+
+    def test_a_harness_left_holding_the_time_is_profiled_by_perf(self) -> None:
+        resolve = lambda p: p.removeprefix("/ws/") if p.startswith("/ws/") else None
+        held = {"samples": 500, "files": {"bench/h.py": 1.0}, "outside": {}}
+        native = [([Frame("/usr/bin/python3.12"), Frame("/ws/src/solver.f90", "relax")], 1)] * 900
+        with mock.patch.object(cpu, "_pyspy", return_value=held), \
+             mock.patch.object(cpu, "perf_allowed", return_value=(True, "")), \
+             mock.patch.object(cpu, "_perf", return_value=native):
+            prof = cpu.sample("py-spy", ["python3", "/ws/bench/h.py"], "/tmp", resolve, None, None, wall_s=2.0)
+        self.assertEqual((prof["tool"], prof["files"]), ("perf", {"src/solver.f90": 1.0}))
+        self.assertIn("py-spy left 100% of the run on bench/h.py", prof["note"])
+
+    def test_a_harness_left_holding_the_peak_is_traced_by_the_native_profiler(self) -> None:
+        resolve = lambda p: p if p.startswith("src/") or p == "bench/h.py" else None
+        heaps = {"memray": (40 * 2**20, [([Frame("bench/h.py", "<module>", 2), Frame("_solver.so", "")], 40 * 2**20)]),
+                 "heaptrack": (40 * 2**20, [([Frame("src/solver.f90", "relax", 4)], 40 * 2**20)])}
+        with mock.patch.object(memory, "choose", return_value=("memray", "")), \
+             mock.patch.object(memory, "choose_native", return_value=("heaptrack", "")), \
+             mock.patch.object(memory, "_take", side_effect=lambda tool, *_a: heaps[tool]):
+            found = memory.profile(["python3", "bench/h.py"], self.root, resolve, None, None, measured_mb=40)
+        self.assertEqual((found["tool"], found["files"]), ("heaptrack", {"src/solver.f90": 1.0}))
+        self.assertIn("left 100% of the peak on bench/h.py", found["note"])
+
+    def test_massif_keeps_the_function_of_a_frame_without_source(self) -> None:
+        text = ("snapshot=0\nmem_heap_B=100\nheap_tree=peak\nn1: 100 (heap allocation functions) malloc/new/new[], --alloc-fns, etc.\n"
+                " n0: 100 0x4011: __solver_MOD_relax (in /ws/build/solver)\n")
+        _peak, stacks = memory.massif_peak(text)
+        self.assertEqual(stacks[0][0][0], Frame("/ws/build/solver", "solver::relax"))
 
 
 class ChoiceTests(unittest.TestCase):
@@ -535,13 +620,13 @@ class MemoryTests(unittest.TestCase):
                  "heaptrack": (80 * 2**20, [([Frame("src/grid.c", "build", 4)], 80 * 2**20)])}
         found = self._python_harness(("heaptrack", ""), heaps)
         self.assertEqual((found["tool"], found["files"], found["peak_mb"]), ("heaptrack", {"src/grid.c": 1.0}, 80.0))
-        self.assertIn("memray traced 1 of the 80 MB measured, so heaptrack profiled", found["note"])
+        self.assertIn("memray traced 1 of the 80 MB measured (a process the command starts), so heaptrack", found["note"])
 
     def test_a_python_harness_s_child_untraced_says_why(self) -> None:
         heaps = {"memray": (2**20, [([Frame("src/h.py", "<module>", 2)], 2**20)])}
         found = self._python_harness(("", "neither heaptrack nor valgrind is installed"), heaps)
         self.assertEqual(found["tool"], "memray")
-        self.assertIn("not followed: neither heaptrack nor valgrind", found["note"])
+        self.assertIn("starts); neither heaptrack nor valgrind is installed", found["note"])
 
     def test_the_memory_view_is_files_then_the_lines_of_one(self) -> None:
         prof = {"tool": "py-spy", "files": {}, "memory": {
@@ -632,6 +717,39 @@ int main(void) { double *x = build(2000000); printf("%f\\n", x[7]); free(x); ret
 """
 
 
+_F90_BOUND = """\
+module solver
+  use iso_c_binding
+contains
+  subroutine relax(n) bind(c, name="relax")
+    integer(c_int), value :: n
+    integer :: i, k
+    real(c_double) :: s
+    s = 0
+    do k = 1, 60
+      do i = 1, n
+        s = s + sqrt(dble(i * k))
+      end do
+    end do
+    if (s < 0) print *, s
+  end subroutine
+  subroutine smooth(n)
+    integer :: n, i
+    real(8), allocatable :: b(:)
+    allocate(b(n)); b = 1
+    do i = 1, 50
+      b = b * 1.0000001d0
+    end do
+    print *, b(1)
+  end subroutine
+end module
+program main
+  use solver
+  call smooth(4000000)
+end program
+"""
+
+
 class RealProfileTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -701,6 +819,40 @@ class RealProfileTests(unittest.TestCase):
             self.skipTest(prof["unavailable"])
         self.assertGreater(prof["files"].get("pkg/work.py", 0), 0.5)
         self.assertLess(prof["files"].get("bench/h.py", 0), 0.1)
+
+    def _fortran_without_debug_info(self, *flags: str) -> str:
+        if not shutil.which("gfortran"):
+            self.skipTest("gfortran is not installed")
+        _write_files(self.root, {"src/solver.f90": _F90_BOUND})
+        out = os.path.join(self.root, "libsolver.so" if "-shared" in flags else "solver")
+        subprocess.run(["gfortran", "-O1", *flags, "-o", out, "src/solver.f90"], cwd=self.root,
+                       check=True, capture_output=True)
+        return out
+
+    @unittest.skipUnless(shutil.which("py-spy"), "py-spy is not installed")
+    def test_a_fortran_library_loaded_without_debug_information_is_placed(self) -> None:
+        lib = self._fortran_without_debug_info("-fPIC", "-shared")
+        _write_files(self.root, {"bench/h.py": f"import ctypes\nctypes.CDLL({lib!r}).relax(ctypes.c_int(4000000))\n"})
+        out = os.path.join(self.root, "out")
+        os.makedirs(out, exist_ok=True)
+        prof = profiling.profile([sys.executable, os.path.join(self.root, "bench/h.py")], out, self.root,
+                                 ["src/solver.f90", "bench/h.py"], timeout=120)
+        if prof.get("unavailable") or not prof.get("files"):
+            self.skipTest(prof.get("unavailable") or "py-spy recorded no native frame here")
+        self.assertGreater(prof["files"].get("src/solver.f90", 0), 0.5)
+        self.assertEqual(prof["functions"]["src/solver.f90::relax"]["line"], 4)
+
+    def test_massif_places_a_started_fortran_binary_without_debug_information(self) -> None:
+        if not shutil.which("valgrind"):
+            self.skipTest("valgrind is not installed")
+        exe = self._fortran_without_debug_info()
+        _write_files(self.root, {"bench/h.py": f"import subprocess\nsubprocess.run([{exe!r}], check=True)\n"})
+        with mock.patch.object(memory, "_has_memray", return_value=False), \
+             mock.patch.object(memory, "choose_native", return_value=("massif", "")):
+            found = profiling.profile([sys.executable, os.path.join(self.root, "bench/h.py")], self.root, self.root,
+                                      ["src/solver.f90", "bench/h.py"], level="memory", timeout=300, peak_mb=32)["memory"]
+        self.assertEqual(next(iter(found["functions"])), "src/solver.f90::solver::smooth")
+        self.assertEqual(found["functions"]["src/solver.f90::solver::smooth"]["line"], 16)
 
     def test_tracemalloc_finds_the_line_that_allocates(self) -> None:
         _write_files(self.root, {"pkg/store.py": "def build(n):\n    return [float(i) for i in range(n)]\n",

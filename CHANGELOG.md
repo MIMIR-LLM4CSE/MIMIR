@@ -166,6 +166,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   heaptrack or massif, which follow child processes, trace it again. massif now keeps
   every snapshot detailed, so a heap that never shrinks still has its peak's stacks, and
   tracemalloc watches the heap every 10 ms instead of 50, so a short peak is not missed.
+- **Compiled code is profiled whatever binds it to the harness, with or without `-g`.**
+  A native frame without a source line (a Fortran program the harness starts, an f2py,
+  pybind11, nanobind, ctypes or cffi module it loads) fell back on the harness,
+  so a Python bench script driving Fortran held all the time and memory, and the map's
+  boxes no function. Each symbol now lands on the workspace file that defines it, opened
+  at its definition: `module::procedure` for gfortran and Intel, external and `bind(c)`
+  procedures, C++ methods by their class. A py-spy profile that still leaves more than
+  half the run on the harness's own script is taken again by perf, and the memory view
+  likewise by heaptrack or massif.
 - **The code map's Functions toggle no longer grows empty boxes.** The boxes grew for
   three functions whenever the profile had any, even when none was in the module's files;
   they grow by the rows the fullest module needs, and when no function of the map's files
