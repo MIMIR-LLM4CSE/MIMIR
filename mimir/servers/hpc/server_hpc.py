@@ -22,10 +22,10 @@ from ...shared.capabilities import (
     PANEL_REPORT,
 )
 from ...shared.responses import err, ok
-from ...shared import slurm_site
+from ...shared import cluster_site
 from . import slurm_digest
 from .slurm_nodes import aggregate_node_types, out_of_service, parse_pipe_table, usable_nodes
-from ...shared.slurm_script import sbatch_header, validate_target
+from ...shared.job_script import validate_target
 from ...shared import cpu_facts
 from . import cli
 from .cli import (
@@ -58,8 +58,8 @@ mcp = FastMCP(
 
 
 # ── Which scheduler a call goes to ────────────────────────────────────────────
-# The inventory is ``shared/slurm_site``. A tool that acts resolves a host from its
-# arguments (``slurm_site.resolve_host``) and refuses when the choice is open; one acting on an
+# The inventory is ``shared/cluster_site``. A tool that acts resolves a host from its
+# arguments (``cluster_site.resolve_host``) and refuses when the choice is open; one acting on an
 # existing job finds where it is (``locate_job``). Every Slurm command goes through
 # ``slurm_argv``/``slurm_exec_argv``.
 
@@ -90,8 +90,9 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
     without its hardware rather than making the whole listing an error.
 
     Args:
-        add: A host to add, verified before it is recorded — ``sbatch`` must answer
-            there. Not needed for a host you have already reached over ssh.
+        add: A host to add, verified before it is recorded — ``sbatch`` or ``bsub``
+            must answer there, which also says whether it is Slurm or LSF. Not needed
+            for a host you have already reached over ssh.
         forget: A host to drop, with its cached hardware and its node profiles: one
             that was a typo, or a cluster you no longer have. The local scheduler
             cannot be dropped, being a fact rather than a record.
@@ -99,31 +100,36 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
     added: dict | None = None
     if add.strip():
         host = add.strip()
-        if not slurm_site.valid_host(host):
+        if not cluster_site.valid_host(host):
             return err(f"{host!r} is not a host name: a scheduler is a name, an address "
                        "or user@host, and cannot start with \"-\". Nothing was recorded.")
-        probe = cli.run_bash("command -v sbatch", TIMEOUT_READ, host=host)
-        if probe.get("status") != "ok":
-            return err(f"No Slurm on {host}: {probe.get('stderr') or probe.get('error') or 'sbatch did not answer'}",
+        probe = cli.run_bash("command -v sbatch >/dev/null && echo slurm && exit; "
+                             "command -v bsub >/dev/null && echo lsf && exit; exit 1",
+                             TIMEOUT_READ, host=host)
+        kind = (probe.get("stdout") or "").strip().splitlines()[-1:] or [""]
+        if probe.get("status") != "ok" or kind[0] not in ("slurm", "lsf"):
+            return err(f"No Slurm or LSF on {host}: {probe.get('stderr') or probe.get('error') or 'neither sbatch nor bsub answered'}",
                        hint="Nothing was recorded. Check the host answers "
                             f"— ssh {host} \"squeue -u $USER\" — and that ssh needs no "
                             "password: a scheduler that can ask for one hangs every "
                             "poll. Keys and ports belong in ~/.ssh/config.")
-        slurm_site.record_host(host)
+        cluster_site.record_host(host, kind[0])
         # The explicit re-probe: a host named again is one the user may have changed.
         slurm_digest.forget_cluster_digest(host)
-        added = {"scheduler": host, "note": f"sbatch answers on {host}; added."}
+        added = {"scheduler": host, "kind": kind[0],
+                 "note": f"{cluster_site.scheduler_for(host).submit_command} answers on "
+                         f"{host}; added."}
 
     dropped: dict | None = None
     if forget.strip():
         host = forget.strip()
-        if host == slurm_site.LOCAL_NAME:
+        if host == cluster_site.LOCAL_NAME:
             dropped = {"scheduler": host,
                        "note": "The local scheduler is not a record to drop: it is "
                                "this host answering sbatch, and it would be back on "
                                "the next call."}
         else:
-            gone = slurm_site.forget_host(host)
+            gone = cluster_site.forget_host(host)
             slurm_digest.forget_cluster_digest(host)
             node_profiles.forget_node_profiles(host)
             panel.forget(host)
@@ -131,11 +137,12 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
                        "note": f"{host} dropped." if gone
                                else f"{host} was not in this workspace's schedulers."}
 
-    known = slurm_site.hosts()
+    known = cluster_site.hosts()
     listed = [{
-        "scheduler": slurm_site.name_of(host),
+        "scheduler": cluster_site.name_of(host),
         "local": not host,
-        "reached": "Slurm answers on this host" if not host
+        "kind": cluster_site.kind_of(host),
+        "reached": f"{cluster_site.scheduler_for(host).label} answers on this host" if not host
                    else f"over ssh to {host}",
         **hardware_of(host),
     } for host in known]
@@ -151,7 +158,7 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
             "and it is learned, or name it with slurm_schedulers(add=\"<host>\").")
     elif len(known) == 1:
         payload["note"] = (f"One, so scheduler= can be omitted: "
-                           f"{slurm_site.name_of(known[0])}.")
+                           f"{cluster_site.name_of(known[0])}.")
     else:
         payload["note"] = ("More than one, so every submission names its scheduler. "
                            "The choice follows the job's resources — the hardware on "
@@ -214,9 +221,9 @@ def slurm_partitions(scheduler: str = "", all_partitions: bool = False) -> dict:
         return refusal
     rows = slurm_digest.read_partitions(host, TIMEOUT_READ, states=True)
     if rows is None:
-        return err(f"sinfo did not answer on {slurm_site.name_of(host)}.", hint=no_scheduler_hint(host))
+        return err(f"sinfo did not answer on {cluster_site.name_of(host)}.", hint=no_scheduler_hint(host))
     digest = slurm_digest.cached_cluster_digest(host)
-    payload: dict = {"scheduler": slurm_site.name_of(host)}
+    payload: dict = {"scheduler": cluster_site.name_of(host)}
     usable = slurm_digest.usable_set(digest)
     if not all_partitions and usable is not None:
         rows = [row for row in rows if row["partition"] in usable]
@@ -268,7 +275,7 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
         return refusal
     read, source = slurm_digest.read_nodes(host, TIMEOUT_READ)
     if not read:
-        return err(f"Neither scontrol nor sinfo listed nodes on {slurm_site.name_of(host)}.",
+        return err(f"Neither scontrol nor sinfo listed nodes on {cluster_site.name_of(host)}.",
                    hint=no_scheduler_hint(host))
     nodes = read
 
@@ -303,7 +310,7 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
         payload["left_out"] = left_out
     if source == "sinfo":
         payload["degraded"] = slurm_digest.DEGRADED
-    payload["scheduler"] = slurm_site.name_of(host)
+    payload["scheduler"] = cluster_site.name_of(host)
     return ok(payload)
 
 
@@ -338,20 +345,20 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
     )
     # Which rows this workspace watches: a job is tracked by its descriptor, keyed by host
     # (ids are per cluster). The unwatched set goes to the client for its end-of-turn nudge.
-    recorded = slurm_site.recorded_jobs()
+    recorded = cluster_site.recorded_jobs()
     ids = [str(row.get("job_id") or "") for row in rows]
     for row, job_id in zip(rows, ids):
-        row["watched"] = slurm_site.covered_by(job_id, recorded, host)
-    payload = {"jobs": rows, "count": len(rows), "scheduler": slurm_site.name_of(host)}
+        row["watched"] = cluster_site.covered_by(job_id, recorded, host)
+    payload = {"jobs": rows, "count": len(rows), "scheduler": cluster_site.name_of(host)}
     if not user_only and slurm_digest.cached_cluster_digest(host).get("private_jobs"):
         payload["note"] = _PRIVATE_JOBS_NOTE
     # Per row above, by array here: eight task rows name one descriptor to write, and
     # listing them one by one would ask for eight calls that all land on "already
     # recorded".
-    missing = slurm_site.unwatched(ids, host=host)
+    missing = cluster_site.unwatched(ids, host=host)
     if missing:
         payload["unwatched"] = missing
-        payload["unwatched_hint"] = slurm_site.unwatched_hint({host: missing})
+        payload["unwatched_hint"] = cluster_site.unwatched_hint({host: missing})
     return ok(payload)
 
 
@@ -561,7 +568,8 @@ def sbatch_submit(
     confirm: bool = False,
     scheduler: str = "",
 ) -> dict:
-    """Submit *command* as a non-blocking Slurm batch job (sensitive, backgroundable).
+    """Submit *command* as a non-blocking batch job (sensitive, backgroundable): Slurm's
+    ``sbatch``, or ``bsub`` when the scheduler is LSF (`partition` is then the queue).
 
     Unlike salloc_submit (synchronous, interactive), this returns immediately with a
     ``job_id`` and a ``background_job`` descriptor so the run can be tracked off the
@@ -574,7 +582,7 @@ def sbatch_submit(
     the kind of node it is for (``constraint``/``nodelist``) with ``exclusive=True``:
     a neighbour's job on the same node is measured along with the code. The job's
     output lands in ``log`` and is not recorded as a measurement: a timing meant to
-    count goes through ``srun`` in the shell or through the proxy's Slurm route.
+    count goes through ``srun`` in the shell or through ``proxy_cluster``.
 
     Args:
         command: The shell command line to run inside the batch job.
@@ -654,7 +662,7 @@ def sbatch_submit(
                         "nodes share — the run's own tree, or a scratch filesystem.")
 
     try:
-        header = sbatch_header(
+        header = cluster_site.scheduler_for(host).header(
             job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
             wall_time=wall_time, log_file=os.path.join(work_dir, LOG_NAME),
             work_dir=work_dir, mem=mem, gpus=gpus, account=account,
@@ -763,8 +771,8 @@ def slurm_node_profile(partition: str = "", node: str = "",
     read, source = slurm_digest.read_nodes(sched_host, TIMEOUT_READ)
     # The hardware is the question, and only scontrol gives the architecture.
     if read is None or source != "scontrol":
-        return err(f"scontrol did not list the nodes on {slurm_site.name_of(sched_host)}.",
-                   hint=f"Needs Slurm's scontrol on {slurm_site.name_of(sched_host)}.")
+        return err(f"scontrol did not list the nodes on {cluster_site.name_of(sched_host)}.",
+                   hint=f"Needs Slurm's scontrol on {cluster_site.name_of(sched_host)}.")
     all_nodes = read
     by_name = {n["node"]: n for n in all_nodes}
     pending = harvest_probes(by_name, sched_host)

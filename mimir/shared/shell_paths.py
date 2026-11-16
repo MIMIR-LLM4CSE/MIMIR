@@ -165,8 +165,9 @@ DESTRUCTIVE_COMMANDS = frozenset({
 # Job submission has one route: the typed HPC tools, which return the background-job
 # descriptor the client's watcher polls. A second route through bash would submit jobs
 # nothing tracks. Cancellation goes the same way, to a tool that takes one job the user
-# owns: `scancel -u me` or `--partition` would cancel far more than one card shows.
-CLUSTER_SUBMIT_COMMANDS = frozenset({"sbatch", "salloc", "scancel"})
+# owns: `scancel -u me` or `bkill 0` would cancel far more than one card shows. LSF's
+# `bsub` (interactive `-I`/`-Is` included) and `bkill` are the same acts.
+CLUSTER_SUBMIT_COMMANDS = frozenset({"sbatch", "salloc", "scancel", "bsub", "bkill"})
 
 DENIED_COMMANDS = (
     SHELL_INTERPRETERS | DESTRUCTIVE_COMMANDS | CLUSTER_SUBMIT_COMMANDS

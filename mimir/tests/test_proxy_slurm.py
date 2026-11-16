@@ -15,8 +15,8 @@ from mimir.tests.support.proxy import (
     server_proxy,
     store,
 )
-from mimir.shared import jobs as shared_jobs, slurm_site
-from mimir.shared.slurm_site import SlurmJobState
+from mimir.shared import jobs as shared_jobs, cluster_site
+from mimir.shared.schedulers import JobState
 from mimir.shared.atomic import read_json
 
 
@@ -102,7 +102,7 @@ class SubmitSbatchTests(_TmpStorageTest):
         self._fake_sbatch("#!/bin/sh\necho 'Submitted batch job 4242'\n")
         os.environ["PATH"] = self.bin_dir
         d = procs.new_run_dir(self.root)
-        job_id, error = procs.submit_sbatch(d, "#!/bin/bash\ntrue\n")
+        job_id, error = procs.submit_batch(d, "#!/bin/bash\ntrue\n")
         self.assertIsNone(error)
         self.assertEqual(job_id, 4242)
         self.assertEqual(procs._read_slurm_id(d), 4242)
@@ -113,7 +113,7 @@ class SubmitSbatchTests(_TmpStorageTest):
         self._fake_sbatch("#!/bin/sh\necho 'Submitted batch job 4243'\n")
         os.environ["PATH"] = self.bin_dir
         d = procs.new_run_dir(self.root)
-        job_id, error = procs.submit_sbatch(
+        job_id, error = procs.submit_batch(
             d, "#!/bin/bash\ntrue\n",
             script_name="build_batch_script.sh", id_file="build_slurm_job_id")
         self.assertIsNone(error)
@@ -128,14 +128,14 @@ class SubmitSbatchTests(_TmpStorageTest):
         self._fake_sbatch("#!/bin/sh\necho 'bad partition' >&2\nexit 1\n")
         os.environ["PATH"] = self.bin_dir
         d = procs.new_run_dir(self.root)
-        job_id, error = procs.submit_sbatch(d, "#!/bin/bash\ntrue\n")
+        job_id, error = procs.submit_batch(d, "#!/bin/bash\ntrue\n")
         self.assertIsNone(job_id)
         self.assertIn("sbatch failed", error["error"])
 
     def test_sbatch_missing_suggests_local_alternative(self) -> None:
         os.environ["PATH"] = self.bin_dir  # empty dir: no sbatch
         d = procs.new_run_dir(self.root)
-        job_id, error = procs.submit_sbatch(
+        job_id, error = procs.submit_batch(
             d, "#!/bin/bash\ntrue\n",
             local_alternative="proxy_exec(op='run', confirm=True)",
         )
@@ -145,11 +145,11 @@ class SubmitSbatchTests(_TmpStorageTest):
 
 
 class SubmitEvalTests(_FakeSbatchTest):
-    """proxy_slurm(op='eval') must not lose what prepare_run wrote."""
+    """proxy_cluster(op='eval') must not lose what prepare_run wrote."""
 
     def test_submitted_run_keeps_the_convergence_config(self) -> None:
         self._session(convergence={"h_param": "n", "error_metric": "l2_rel"})
-        res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
+        res = server_proxy.proxy_cluster(op="eval", partition="debug", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
 
         cfg = read_json(os.path.join(res["run_dir"], "config.json"))
@@ -162,7 +162,7 @@ class SubmitEvalTests(_FakeSbatchTest):
     def test_without_a_build_partition_it_is_still_one_job(self) -> None:
         """The non-regression that matters: nothing splits unless asked."""
         self._session(metadata={"build_cmd": "make all"})
-        res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
+        res = server_proxy.proxy_cluster(op="eval", partition="debug", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
 
         scripts = self._submitted_scripts()
@@ -175,7 +175,7 @@ class SubmitEvalTests(_FakeSbatchTest):
 
     def test_build_partition_splits_into_two_chained_jobs(self) -> None:
         self._session(metadata={"build_cmd": "make all"})
-        res = server_proxy.proxy_slurm(
+        res = server_proxy.proxy_cluster(
             op="eval", partition="gpu_simu", constraint="a100",
             build_partition="compile", build_cpus_per_task=32, confirm=True,
         )
@@ -212,7 +212,7 @@ class SubmitEvalTests(_FakeSbatchTest):
         """The ratchet submits the same run hundreds of times; it is declared once."""
         self._session(metadata={"build_cmd": "make all", "build_partition": "compile",
                                 "build_mem": "128G"})
-        res = server_proxy.proxy_slurm(op="eval", partition="gpu_simu", confirm=True)
+        res = server_proxy.proxy_cluster(op="eval", partition="gpu_simu", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
         build_script, _run = self._submitted_scripts()
         self.assertIn("#SBATCH --partition=compile", build_script)
@@ -222,7 +222,7 @@ class SubmitEvalTests(_FakeSbatchTest):
     def test_a_proxy_with_no_build_is_never_split(self) -> None:
         """Nothing to build means nothing to place: one job, whatever was asked."""
         self._session()  # no build_cmd
-        res = server_proxy.proxy_slurm(
+        res = server_proxy.proxy_cluster(
             op="eval", partition="gpu_simu", build_partition="compile", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
         self.assertEqual(len(self._submitted_scripts()), 1)
@@ -231,11 +231,11 @@ class SubmitEvalTests(_FakeSbatchTest):
     def test_a_failed_build_makes_the_pending_run_read_as_crashed(self) -> None:
         """Otherwise the run sits PENDING until Slurm gets around to it."""
         self._session(metadata={"build_cmd": "make all", "build_partition": "compile"})
-        res = server_proxy.proxy_slurm(op="eval", partition="gpu_simu", confirm=True)
+        res = server_proxy.proxy_cluster(op="eval", partition="gpu_simu", confirm=True)
         run_dir = res["run_dir"]
         # squeue is not on PATH here; force the state the guard is about and assert
         # the build report alone settles it.
-        with mock.patch.object(procs, "_slurm_job_state", return_value=SlurmJobState("pending")):
+        with mock.patch.object(procs, "_batch_job_state", return_value=JobState("pending")):
             self.assertEqual(procs.run_state(run_dir)["state"], "pending")
             build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                           "error": "build exited 2", "duration_s": 1.0}])
@@ -244,14 +244,14 @@ class SubmitEvalTests(_FakeSbatchTest):
     def test_a_live_run_says_where_it_is_and_a_finished_one_does_not(self) -> None:
         """The proxy's status op is what its watcher polls, so its badge can say it."""
         self._session()
-        res = server_proxy.proxy_slurm(op="eval", partition="gpu_simu", confirm=True)
+        res = server_proxy.proxy_cluster(op="eval", partition="gpu_simu", confirm=True)
         run_dir = res["run_dir"]
-        running = SlurmJobState("running", "RUNNING", ["gpu007"], ["gpu_simu"])
-        with mock.patch.object(procs, "_slurm_job_state", return_value=running):
+        running = JobState("running", "RUNNING", ["gpu007"], ["gpu_simu"])
+        with mock.patch.object(procs, "_batch_job_state", return_value=running):
             state = procs.run_state(run_dir)
         self.assertEqual((state["partitions"], state["nodes"]), (["gpu_simu"], ["gpu007"]))
         self.assertIn("scheduler", state)
-        with mock.patch.object(procs, "_slurm_job_state", return_value=SlurmJobState("done")):
+        with mock.patch.object(procs, "_batch_job_state", return_value=JobState("done")):
             state = procs.run_state(run_dir)
         self.assertNotIn("partitions", state)
         self.assertNotIn("nodes", state)
@@ -259,7 +259,7 @@ class SubmitEvalTests(_FakeSbatchTest):
     def test_comment_reaches_both_jobs_of_a_split_run(self) -> None:
         """The comment labels the submission, so either job answers 'what was this'."""
         self._session(metadata={"build_cmd": "make all", "build_partition": "compile"})
-        res = server_proxy.proxy_slurm(
+        res = server_proxy.proxy_cluster(
             op="eval", partition="gpu_simu", comment="ratchet iter 12", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
         build_script, run_script = self._submitted_scripts()
@@ -271,13 +271,13 @@ class SubmitEvalTests(_FakeSbatchTest):
 
     def test_no_comment_leaves_the_directive_out(self) -> None:
         self._session()
-        res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
+        res = server_proxy.proxy_cluster(op="eval", partition="debug", confirm=True)
         self.assertEqual(res.get("status"), "ok", msg=res)
         self.assertNotIn("--comment", self._submitted_scripts()[0])
 
     def test_a_refused_comment_submits_nothing(self) -> None:
         self._session()
-        res = server_proxy.proxy_slurm(
+        res = server_proxy.proxy_cluster(
             op="eval", partition="debug",
             comment="baseline\n#SBATCH --partition=everything", confirm=True)
         self.assertEqual(res.get("status"), "error", msg=res)
@@ -286,7 +286,7 @@ class SubmitEvalTests(_FakeSbatchTest):
     def test_a_refused_argument_submits_nothing(self) -> None:
         """validate_slurm_token covers the refusal; this covers its timing."""
         self._session()
-        res = server_proxy.proxy_slurm(
+        res = server_proxy.proxy_cluster(
             op="eval", partition="debug",
             constraint="a100\n#SBATCH --partition=everything", confirm=True)
         self.assertEqual(res.get("status"), "error", msg=res)
@@ -304,27 +304,27 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
     def _submitted(self, **kwargs) -> tuple[str, int]:
         run_dir = os.path.join(store.runs_dir(), "run-0001")
         os.makedirs(run_dir, exist_ok=True)
-        job_id, failure = procs.submit_sbatch(run_dir, "#!/bin/bash\necho hi\n",
+        job_id, failure = procs.submit_batch(run_dir, "#!/bin/bash\necho hi\n",
                                                **kwargs)
         self.assertIsNone(failure)
         return run_dir, job_id
 
     def test_the_run_is_filed_where_the_workspace_accounts_for_its_jobs(self) -> None:
         _, job_id = self._submitted()
-        self.assertIn(("", str(job_id)), slurm_site.recorded_jobs())
+        self.assertIn(("", str(job_id)), cluster_site.recorded_jobs())
 
     def test_so_it_is_not_named_as_work_nobody_is_watching(self) -> None:
         _, job_id = self._submitted()
-        self.assertEqual(slurm_site.unwatched([str(job_id)], host=""), [])
+        self.assertEqual(cluster_site.unwatched([str(job_id)], host=""), [])
 
     def test_both_halves_of_a_split_submission_are_accounted_for(self) -> None:
         """A build job sits in the same queue and is just as much somebody's row."""
         run_dir, run_id = self._submitted()
-        build_id, failure = procs.submit_sbatch(
+        build_id, failure = procs.submit_batch(
             run_dir, "#!/bin/bash\nmake\n",
             script_name="build_batch.sh", id_file="build_slurm_job_id")
         self.assertIsNone(failure)
-        recorded = {job for _, job in slurm_site.recorded_jobs()}
+        recorded = {job for _, job in cluster_site.recorded_jobs()}
         self.assertEqual({str(run_id), str(build_id)} - recorded, set())
 
     def test_the_descriptor_names_the_watcher_this_server_runs(self) -> None:
@@ -346,7 +346,7 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
         run_dir, _ = self._submitted()
         with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
             fh.write("{}")
-        with mock.patch.object(procs, "_slurm_job_state", return_value=SlurmJobState("done")):
+        with mock.patch.object(procs, "_batch_job_state", return_value=JobState("done")):
             self.assertEqual(procs.run_state(run_dir)["state"], "done")
         self.assertEqual(
             shared_jobs.recorded_terminal_state(procs._workspace_job_dir(run_dir)), "done")
@@ -358,15 +358,15 @@ class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
         finished, which is the middle of the run rather than its result.
         """
         run_dir, run_id = self._submitted()
-        procs.submit_sbatch(run_dir, "#!/bin/bash\nmake\n",
+        procs.submit_batch(run_dir, "#!/bin/bash\nmake\n",
                              script_name="build_batch.sh",
                              id_file="build_slurm_job_id")
         procs.background_descriptor(
             run_dir, kind="proxy-eval",
             status_op={"tool": "proxy_eval_status", "args": {"proxy_name": "solver"}},
             summary_op={})
-        dirs = [os.path.join(slurm_site.jobs_dir(), n)
-                for n in os.listdir(slurm_site.jobs_dir())]
+        dirs = [os.path.join(cluster_site.jobs_dir(), n)
+                for n in os.listdir(cluster_site.jobs_dir())]
         carried = [d for d in dirs
                    if os.path.exists(os.path.join(d, shared_jobs.WATCHER_FILE))]
         self.assertEqual(len(dirs), 2)

@@ -9,7 +9,7 @@ _SERVERS = Path(__file__).resolve().parents[1] / "servers"
 
 from mimir.servers.hpc import cli, slurm_digest, slurm_nodes
 from mimir.tests.support.stubs import stub_attr
-from mimir.shared import slurm_site
+from mimir.shared import cluster_site
 
 from mimir.tests.support.scheduler import local_slurm
 
@@ -143,7 +143,7 @@ class DigestTests(_DigestTestCase):
         for by the inventory, so the local branch is decided before any probe.
         """
         local_slurm(self, False)
-        digest = slurm_digest.cluster_digest(slurm_site.LOCAL)
+        digest = slurm_digest.cluster_digest(cluster_site.LOCAL)
         self.assertEqual(digest["scheduler"], "local")
         self.assertEqual(digest["source"], "")
         self.assertEqual(self.capture.scripts, [])

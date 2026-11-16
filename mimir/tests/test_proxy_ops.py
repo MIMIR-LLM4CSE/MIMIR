@@ -18,7 +18,7 @@ class DispatchTests(_TmpStorageTest):
             (server_proxy.proxy_manage, {"confirm": True}),
             (server_proxy.proxy_exec, {"confirm": True}),
             (server_proxy.proxy_eval, {"confirm": True}),
-            (server_proxy.proxy_slurm, {"partition": "p", "confirm": True}),
+            (server_proxy.proxy_cluster, {"partition": "p", "confirm": True}),
         ):
             with self.subTest(tool=tool.__name__):
                 res = _call(tool, op="bogus", **kwargs)
@@ -45,7 +45,7 @@ class DispatchTests(_TmpStorageTest):
             (server_proxy.proxy_manage, {"op": "unregister", "name": "x"}),
             (server_proxy.proxy_exec, {"op": "run", "proxy_name": "x"}),
             (server_proxy.proxy_eval, {"op": "run"}),
-            (server_proxy.proxy_slurm, {"op": "run", "partition": "p", "proxy_name": "x"}),
+            (server_proxy.proxy_cluster, {"op": "run", "partition": "p", "proxy_name": "x"}),
         ):
             with self.subTest(tool=tool.__name__):
                 res = _call(tool, **kwargs)
@@ -54,12 +54,12 @@ class DispatchTests(_TmpStorageTest):
                 self.assertIn("confirm=True", res["hint"])
 
     def test_slurm_resource_validation_before_submission(self) -> None:
-        res = server_proxy.proxy_slurm(op="run", partition="p", proxy_name="x",
+        res = server_proxy.proxy_cluster(op="run", partition="p", proxy_name="x",
                                        mem="lots", confirm=True)
         self.assertEqual(res.get("status"), "error")
         self.assertIn("Invalid mem format", res["error"])
 
-        res = server_proxy.proxy_slurm(op="run", partition="", proxy_name="x", confirm=True)
+        res = server_proxy.proxy_cluster(op="run", partition="", proxy_name="x", confirm=True)
         self.assertIn("partition is required", res["error"])
 
 

@@ -1,4 +1,4 @@
-"""What the server measures of a run where no MIMIR process waits for it (a Slurm job):
+"""What the server measures of a run where no MIMIR process waits for it (a batch job):
 its exit code, wall time, largest process's peak memory and the sum of every process's,
 written beside its output for the post-run step to read, as a local run hands them over."""
 from __future__ import annotations
@@ -29,11 +29,11 @@ def main(args: list[str]) -> int:
         code = 127
     wall_ms = int((time.monotonic() - t0) * 1000)
     total, processes = getattr(proc, "peak_rss_total_kb", None), getattr(proc, "processes", None)
-    # Ranks srun starts belong to Slurm's step daemons, not to this process, on whatever
-    # node: Slurm's own accounting is what sees all of them.
-    steps = slurm_steps(os.environ.get("SLURM_JOB_ID", ""))
+    # Ranks srun or blaunch starts belong to the scheduler's daemons, not to this
+    # process, on whatever node: the scheduler's own accounting is what sees them all.
+    steps = scheduler_memory(os.environ)
     if steps and steps[0] > (total or 0):
-        total, processes = steps
+        total, processes = steps[0], steps[1] or processes
     # A signal is -N here and 128+N to the shell, which is what the job script reads.
     code = code if code >= 0 else 128 - code
     for name, value in (("returncode", code), ("wall_time_ms", wall_ms),
@@ -43,6 +43,36 @@ def main(args: list[str]) -> int:
             with open(os.path.join(run_dir, name), "w") as fh:
                 fh.write(f"{value}\n")
     return code
+
+
+def scheduler_memory(env) -> tuple[int, int | None] | None:
+    """The job's summed peak memory (KB) and task count, from the accounting of the
+    scheduler *env* is a job of; None outside a job or without accounting."""
+    if env.get("SLURM_JOB_ID"):
+        return slurm_steps(env["SLURM_JOB_ID"])
+    if env.get("LSB_JOBID"):
+        return lsf_max_mem(env["LSB_JOBID"])
+    return None
+
+
+def lsf_max_mem(job_id: str) -> tuple[int, None] | None:
+    """LSF's peak memory of the whole job, over all its hosts (KB); it counts no tasks."""
+    try:
+        out = subprocess.run(["bjobs", "-noheader", "-o", "max_mem", job_id],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = lsf_mem_kb(out)
+    return (found, None) if found else None
+
+
+_LSF_UNITS = {"K": 1, "M": 1024, "G": 1024**2, "T": 1024**3}
+
+
+def lsf_mem_kb(text: str) -> int | None:
+    """``1.5 Gbytes`` (bjobs' MAX_MEM) in KB; None for ``-`` or anything else."""
+    m = re.search(r"([\d.]+)\s*([KMGT])bytes", text or "")
+    return int(float(m.group(1)) * _LSF_UNITS[m.group(2)]) if m else None
 
 
 def slurm_steps(job_id: str) -> tuple[int, int] | None:

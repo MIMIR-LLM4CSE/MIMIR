@@ -990,7 +990,7 @@ class BlockingWaitGuardTests(unittest.TestCase):
         self.assertFalse(self._waits(agent, "sleep 60", name="bash_job"))
 
 
-# ── 3b. proxy_slurm(op='eval', background=True) attaches the descriptor ─────────
+# ── 3b. proxy_cluster(op='eval', background=True) attaches the descriptor ─────────
 
 class ProxySlurmBackgroundTests(_TmpStorageTest):
     def setUp(self) -> None:
@@ -1025,8 +1025,8 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         from unittest import mock
         from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
-        with mock.patch.object(slurm_ops, "submit_sbatch", return_value=(4242, None)):
-            res = server_proxy.proxy_slurm(op="eval", partition="cpu",
+        with mock.patch.object(slurm_ops, "submit_batch", return_value=(4242, None)):
+            res = server_proxy.proxy_cluster(op="eval", partition="cpu",
                                            proxy_name="fast", background=True,
                                            confirm=True)
         self.assertEqual(res.get("status"), "ok")
@@ -1041,8 +1041,8 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         from unittest import mock
         from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
-        with mock.patch.object(slurm_ops, "submit_sbatch", return_value=(4243, None)):
-            res = server_proxy.proxy_slurm(op="eval", partition="cpu",
+        with mock.patch.object(slurm_ops, "submit_batch", return_value=(4243, None)):
+            res = server_proxy.proxy_cluster(op="eval", partition="cpu",
                                            proxy_name="fast", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         job = res.get("background_job")
@@ -1050,7 +1050,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         self.assertEqual(job["job_key"], os.path.basename(res["run_dir"]))
 
     def test_submitted_run_attaches_descriptor(self) -> None:
-        """proxy_slurm(op='run') hands over a handle a watcher can poll.
+        """proxy_cluster(op='run') hands over a handle a watcher can poll.
 
         Its status op must report a single run's ``state`` at the top level — the one
         shape the watcher tests for a terminal value.
@@ -1058,8 +1058,8 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         from unittest import mock
         from mimir.tests.support.proxy import slurm as slurm_ops
         self._init_session()
-        with mock.patch.object(slurm_ops, "submit_sbatch", return_value=(4244, None)):
-            res = server_proxy.proxy_slurm(op="run", partition="cpu",
+        with mock.patch.object(slurm_ops, "submit_batch", return_value=(4244, None)):
+            res = server_proxy.proxy_cluster(op="run", partition="cpu",
                                            proxy_name="fast", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         job = res.get("background_job")

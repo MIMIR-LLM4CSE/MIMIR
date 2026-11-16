@@ -465,7 +465,7 @@ class WorkspaceTests(_MergeFixture):
             res = _eval(op=op, proxy_name="pa", confirm=True)
             self.assertEqual(res["status"], "error", op)
             self.assertIn("mimir/merge-w", res["error"])
-        slurm = server_proxy.proxy_slurm(op="eval", partition="cpu", proxy_name="pa", confirm=True)
+        slurm = server_proxy.proxy_cluster(op="eval", partition="cpu", proxy_name="pa", confirm=True)
         self.assertIn("mimir/merge-w", slurm.get("error", ""))
         self.assertIsNone(merge.held_against("merge-w"))
         server_proxy.proxy_merge(op="pause", question="later", confirm=True)

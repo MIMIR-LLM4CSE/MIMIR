@@ -15,7 +15,7 @@ from ...shared.jobs import slurm_descriptor
 from ...shared.responses import err, ok
 from ...shared.launcher import launch_argv
 from ...shared.state_paths import state_dir
-from ...shared.slurm_site import (
+from ...shared.cluster_site import (
     LOCAL as _LOCAL_HOST,
     LOCAL_NAME as _LOCAL_NAME,
     name_of as _host_name,
@@ -29,7 +29,7 @@ from .slurm_nodes import (
     as_int as _as_int,
     hardware_key,
 )
-from ...shared.slurm_script import node_python_lines, sbatch_header
+from ...shared.job_script import node_python_lines, sbatch_header
 from ...shared import cpu_facts
 from . import cli
 from .cli import (

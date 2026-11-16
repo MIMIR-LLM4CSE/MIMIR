@@ -35,7 +35,7 @@ _METADATA_DEFAULTS: dict = {
     "build_cwd": "",
     "build_timeout_s": 0.0,
     # Where the build is submitted on a cluster: a build_partition splits
-    # proxy_slurm(op='eval') into a build job and a run job. Zero/empty values mean "as the
+    # proxy_cluster(op='eval') into a build job and a run job. Zero/empty values mean "as the
     # run phase". build_env: variables pinned for the build over the server's environment.
     "build_env": {},
     "build_partition": "",

@@ -40,9 +40,9 @@ class OpConfusionRedirectTests(unittest.TestCase):
         self.assertNotIn("belongs to", r["hint"])
 
     def test_shared_op_lists_all_owners(self) -> None:
-        # 'eval' is a proxy_slurm op, unknown on proxy_exec → redirect names slurm.
+        # 'eval' is a proxy_cluster op, unknown on proxy_exec → redirect names slurm.
         r = asyncio.run(server_proxy.proxy_exec(op="eval", confirm=True))
-        self.assertIn("proxy_slurm", r["hint"])
+        self.assertIn("proxy_cluster", r["hint"])
 
 
 

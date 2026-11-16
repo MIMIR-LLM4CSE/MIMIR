@@ -25,7 +25,7 @@ from .slurm_nodes import (
     usable_nodes,
     usable_partitions,
 )
-from ...shared.slurm_site import LOCAL, name_of, slurm_is_local
+from ...shared.cluster_site import LOCAL, kind_of, name_of, slurm_is_local
 from ...shared.clock import utc_stamp
 from . import cli
 
@@ -117,7 +117,8 @@ def cluster_digest(host: str = LOCAL, *, timeout: int = _TIMEOUT) -> dict:
     and partitions this user can submit to are kept; ``left_out`` counts the rest.
     ``private_jobs`` is True where squeue shows this user only their own jobs.
     """
-    if host == LOCAL and not slurm_is_local():
+    # The node and partition listings are Slurm's; an LSF scheduler has no digest.
+    if (host == LOCAL and not slurm_is_local()) or kind_of(host) != "slurm":
         return _empty(host)
 
     digest = _empty(host)

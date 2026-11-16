@@ -11,7 +11,7 @@ from ...shared import build_progress, run_channel, shell_activity
 from ...shared.jobs import shell_descriptor
 from ...shared.module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 from ...shared.responses import err, ok
-from ...shared.slurm_site import slurm_host_from_ssh
+from ...shared.cluster_site import scheduler_from_ssh
 from ...shared.shell_paths import ShellParseError as _ShellParseError, parse_segments as _parse_segments
 from . import bash_jobs
 from .bash_validation import REAL_HOME
@@ -117,12 +117,12 @@ def _is_clean_no_match(segments: list[list[str]] | None, returncode: int, stdout
 
 
 def _ssh_scheduler(command: str) -> str:
-    """The host whose Slurm *command* runs through ``ssh``, or "" (local, or no Slurm)."""
+    """The host whose scheduler *command* runs through ``ssh``, or "" (local, or none)."""
     try:
         segments = _parse_segments(command)
     except _ShellParseError:
         return ""
-    return next((host for seg in segments if (host := slurm_host_from_ssh(seg.argv))), "")
+    return next((host for seg in segments if (host := scheduler_from_ssh(seg.argv)[0])), "")
 
 
 def _output_targets(command: str) -> list[str]:

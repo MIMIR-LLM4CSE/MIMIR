@@ -1,8 +1,8 @@
 """Process and run-state helpers for the proxy server.
 
 Owns everything about a run directory's *liveness*: pid/starttime bookkeeping
-(with PID-recycling and zombie detection), Slurm job state, the detached-launch
-/ sbatch-submit / cancel lifecycle, and log access.  Pure storage layout lives
+(with PID-recycling and zombie detection), batch job state, the detached-launch
+/ batch-submit / cancel lifecycle, and log access.  Pure storage layout lives
 in ``store``; this module only adds process semantics on top of it.
 """
 
@@ -22,11 +22,12 @@ from ....shared import build_progress
 from ....shared.responses import err
 from ....shared import jobs
 from ....shared.jobs import WATCHER_FILE as _WATCHER_FILE
-from ....shared.slurm_site import (
-    UNKNOWN_JOB as _UNKNOWN_JOB,
-    SlurmJobState as _SlurmJobState,
-    locate_slurm_job as _locate_on_schedulers,
-    slurm_state as _read_slurm_state,
+from ....shared.schedulers import UNKNOWN_JOB as _UNKNOWN_JOB, JobState as _JobState
+from ....shared.cluster_site import (
+    locate_job as _locate_on_schedulers,
+    job_state as _read_job_state,
+    kind_of as _scheduler_kind,
+    scheduler_for as _scheduler_for,
     record_job_dir as _record_job_dir,
     HOST_FILE as _SLURM_HOST_FILE,
     LOCAL as _SLURM_LOCAL,
@@ -126,15 +127,15 @@ def _write_slurm_host(run_dir: str, host: str) -> None:
         pass
 
 
-# Where this run's Slurm job is filed as a job *of the workspace*. A run is both: its
-# own state machine here, and a job in a queue that every reader of ``slurm_site`` has
+# Where this run's batch job is filed as a job *of the workspace*. A run is both: its
+# own state machine here, and a job in a queue that every reader of ``cluster_site`` has
 # to be able to account for. Kept as a pointer rather than re-derived, because the
 # descriptor's directory is named by the moment it was made and nothing else knows it.
 _WORKSPACE_JOB_DIR = "workspace_job_dir"
 
 
 def _record_workspace_job(run_dir: str, job_id: int, host: str) -> None:
-    """File this run's Slurm job with the workspace's jobs, so nothing reads it as unwatched."""
+    """File this run's batch job with the workspace's jobs, so nothing reads it as unwatched."""
     try:
         job_dir = _record_job_dir(str(job_id), **{_SLURM_HOST_FILE: host})
         with open(os.path.join(run_dir, _WORKSPACE_JOB_DIR), "w") as fh:
@@ -151,7 +152,7 @@ def _workspace_job_dir(run_dir: str) -> str:
         return ""
 
 
-def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, dict]:
+def _locate_batch_job(run_dir: str, job_id: int) -> tuple[str, dict]:
     """The state of *job_id* on whichever scheduler knows it, its recorded one first, and
     where it is (``scheduler``, ``partitions``, ``nodes``, for a badge to say).
 
@@ -160,9 +161,9 @@ def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, dict]:
     """
     unreachable: list[str] = []
 
-    def state_on(host: str) -> _SlurmJobState:
+    def state_on(host: str) -> _JobState:
         try:
-            return _slurm_job_state(job_id, host)
+            return _batch_job_state(job_id, host)
         except (subprocess.TimeoutExpired, OSError):
             unreachable.append(host)
             return _UNKNOWN_JOB
@@ -180,13 +181,13 @@ def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, dict]:
     return ("unknown" if len(unreachable) == len(asked) else "forgotten"), {}
 
 
-def _slurm_job_state(job_id: int, host: str) -> _SlurmJobState:
-    """``shared.slurm_site.slurm_state`` of *job_id* on *host*; raises when the scheduler
+def _batch_job_state(job_id: int, host: str) -> _JobState:
+    """``shared.cluster_site.job_state`` of *job_id* on *host*; raises when the scheduler
     cannot be asked."""
     def run_lines(script: str) -> list[str]:
-        res = _slurm_run(shlex.split(script), 10, host=host)
+        res = _scheduler_run(shlex.split(script), 10, host=host)
         return [line.strip() for line in res.stdout.splitlines() if line.strip()]
-    return _read_slurm_state(str(job_id), run_lines)
+    return _read_job_state(str(job_id), run_lines, host)
 
 
 def _read_build_slurm_id(run_dir: str) -> int | None:
@@ -211,9 +212,10 @@ def read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
 
 # ── process state ─────────────────────────────────────────────────────────────
 
-def _slurm_run(argv: list[str], timeout: int, stdin: str | None = None, *,
+def _scheduler_run(argv: list[str], timeout: int, stdin: str | None = None, *,
                host: str = _SLURM_LOCAL):
-    """Run one Slurm command on *host* through ``shared/slurm_site`` (argv; *stdin* for ``sbatch``)."""
+    """Run one scheduler command on *host* through ``shared/cluster_site`` (argv; *stdin* for
+    the submitter)."""
     return subprocess.run(
         _slurm_exec_argv(argv, host=host, piped=stdin is not None),
         input=stdin,
@@ -267,7 +269,7 @@ def _build_job_failed(run_dir: str) -> bool:
 
 
 def run_state(run_dir: str) -> dict:
-    """Return state dict with keys: state, pid, slurm_job_id, elapsed_s; and, for a Slurm
+    """Return state dict with keys: state, pid, slurm_job_id, elapsed_s; and, for a batch
     job queued or running, where it is (scheduler, partitions, nodes)."""
     metrics_path = os.path.join(run_dir, "metrics.json")
     job_id = _read_slurm_id(run_dir)
@@ -277,20 +279,20 @@ def run_state(run_dir: str) -> dict:
         # Wherever it is: a run's scheduler is read from its own directory, so the
         # ~15 callers of this keep asking the same question and get the right answer
         # for a job on any of them.
-        slurm_state, where = _locate_slurm_job(run_dir, job_id)
-        if slurm_state == "forgotten":
+        batch_state, where = _locate_batch_job(run_dir, job_id)
+        if batch_state == "forgotten":
             # Left the queue with no accounting to say how: its own files decide.
-            slurm_state = "done" if os.path.isfile(metrics_path) else "crashed"
-        if slurm_state == "done" and not os.path.isfile(metrics_path):
-            slurm_state = "crashed"
+            batch_state = "done" if os.path.isfile(metrics_path) else "crashed"
+        if batch_state == "done" and not os.path.isfile(metrics_path):
+            batch_state = "crashed"
         # A split submission holds the run job PENDING behind the build. When the
-        # build has already failed, that pending job is never going to start — Slurm
+        # build has already failed, that pending job is never going to start — the scheduler
         # will get around to killing it, but "eventually" is not an answer for
-        # something being waited on, and the run is over eitherway.
-        if (build_job_id is not None and slurm_state in ("pending", "running")
+        # something being waited on, and the run is over either way.
+        if (build_job_id is not None and batch_state in ("pending", "running")
                 and _build_job_failed(run_dir)):
-            slurm_state = "crashed"
-        state = slurm_state
+            batch_state = "crashed"
+        state = batch_state
         if state in ("done", "crashed"):
             # Settled where the workspace's job scan reads it, so the run stops
             # counting as live once it is over.
@@ -345,7 +347,7 @@ def background_descriptor(run_dir: str, *, kind: str, status_op: dict, summary_o
     descriptor = jobs.descriptor(server="proxy", kind=kind, job_key=os.path.basename(run_dir),
                                  run_dir=run_dir, status_op=status_op, summary_op=summary_op,
                                  cancel_op=cancel_op)
-    # Recorded beside the job id when this run is a Slurm job, so a window that closes
+    # Recorded beside the job id when this run is a batch job, so a window that closes
     # and comes back re-arms *this* watcher rather than a stock poll beside it: two
     # watchers on one run are two wakes for one result.
     job_dir = _workspace_job_dir(run_dir)
@@ -424,47 +426,51 @@ def launch_detached(argv: list[str], run_dir: str, log_file: str | None = None,
     return proc.pid
 
 
-def submit_sbatch(
+def submit_batch(
     run_dir: str, script: str, *, local_alternative: str = "",
     script_name: str = "batch_script.sh", id_file: str = "slurm_job_id",
     host: str = _SLURM_LOCAL,
 ) -> tuple[int | None, dict | None]:
-    """Write the batch script, submit it to *host* and record the id: ``(job_id, None)`` or ``(None, err)``.
+    """Write the batch script, submit it to *host*'s scheduler and record the id:
+    ``(job_id, None)`` or ``(None, err)``.
 
     *script_name*/*id_file* keep two jobs of a split run apart; *local_alternative* is the
-    call suggested when sbatch is missing.
+    call suggested when the submitter is missing.
     """
+    sched = _scheduler_for(host)
+    submit = sched.submit_command
     batch_path = os.path.join(run_dir, script_name)
     with open(batch_path, "w") as fh:
         fh.write(script)
     os.chmod(batch_path, 0o755)
 
     try:
-        # The script goes on sbatch's stdin, not as a path: it is kept on disk for a
-        # reader asking what was submitted, but nothing of ours then has to exist on
-        # the host running the scheduler.
-        res = _slurm_run(["sbatch"], 30, stdin=script, host=host)
+        # The script goes on the submitter's stdin, not as a path (sbatch and bsub both
+        # read it there): it is kept on disk for a reader asking what was submitted,
+        # but nothing of ours then has to exist on the host running the scheduler.
+        res = _scheduler_run([submit], 30, stdin=script, host=host)
     except FileNotFoundError:
-        hint = "Slurm is not available."
+        hint = f"{sched.label} is not available."
         if local_alternative:
             hint += f" Use {local_alternative} instead."
-        return None, err("sbatch not found.", hint=hint)
+        return None, err(f"{submit} not found.", hint=hint)
     except subprocess.TimeoutExpired:
-        return None, err("sbatch timed out.", hint="Check Slurm availability on this host.")
+        return None, err(f"{submit} timed out.",
+                         hint=f"Check {sched.label} availability on this host.")
 
     if res.returncode != 0:
-        return None, err(f"sbatch failed: {res.stderr.strip()}",
-                         hint="Check partition name, account, and resource limits.")
-    m = re.search(r"(\d+)", res.stdout)
-    if not m:
-        return None, err(f"Could not parse job ID from sbatch output: {res.stdout.strip()}")
-    job_id = int(m.group(1))
+        return None, err(f"{submit} failed: {res.stderr.strip()}",
+                         hint="Check partition (queue), account, and resource limits.")
+    found = sched.submitted_id(res.stdout)
+    if not found:
+        return None, err(f"Could not parse job ID from {submit} output: {res.stdout.strip()}")
+    job_id = int(found)
     with open(os.path.join(run_dir, id_file), "w") as fh:
         fh.write(str(job_id))
     _write_slurm_host(run_dir, host)
     if host:
         # A submission that succeeded is proof this host reaches that scheduler.
-        _record_slurm_host(host)
+        _record_slurm_host(host, sched.kind)
     # Only the run job carries the pointer: a split build/run submission files both, so
     # neither is reported as unaccounted for, but the run is the one whose end is the
     # run's end and therefore the one a watcher is re-armed on.
@@ -478,23 +484,25 @@ def submit_sbatch(
     return job_id, None
 
 
-def cancel_slurm_job(job_id: int, *, host: str = _SLURM_LOCAL,
+def cancel_batch_job(job_id: int, *, host: str = _SLURM_LOCAL,
              owned: dict[str, set[str]] | None = None) -> str | None:
     """Cancel one job this session (or a sub-agent) submitted on *host*; an error message or None."""
     if not _owns_slurm_job(str(job_id), host, owned):
-        return (f"Slurm job {job_id} was not submitted by this conversation or its "
+        return (f"Job {job_id} was not submitted by this conversation or its "
                 "sub-agents; it is not this conversation's to cancel.")
+    cancel = _scheduler_for(host).cancel_command
     try:
-        res = _slurm_run(["scancel", str(job_id)], 15, host=host)
+        res = _scheduler_run([cancel, str(job_id)], 15, host=host)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return f"scancel failed: {exc}"
+        return f"{cancel} failed: {exc}"
     if res.returncode != 0:
-        return f"scancel returned {res.returncode}: {res.stderr.strip()}"
+        return f"{cancel} returned {res.returncode}: {res.stderr.strip()}"
     return None
 
 
 def cancel_run(run_dir: str) -> dict:
-    """Cancel the process owning *run_dir*: scancel for Slurm, else SIGTERM→SIGKILL.
+    """Cancel the process owning *run_dir*: the scheduler's cancel for a batch job, else
+    SIGTERM→SIGKILL.
 
     Returns a plain payload dict (an ``"error"`` key signals failure); callers
     wrap it in ``ok()``/``err()``.
@@ -517,11 +525,11 @@ def cancel_run(run_dir: str) -> dict:
         # could land on the same id elsewhere, which is somebody else's job.
         hosts = _owned_job_hosts(str(job_id), owned)
         if not hosts:
-            return {"error": f"Slurm job {job_id} of {run_dir} was not submitted by "
+            return {"error": f"Job {job_id} of {run_dir} was not submitted by "
                               "this conversation or its sub-agents; it is not this "
                               "conversation's to cancel."}
         if len(hosts) > 1:
-            return {"error": f"Slurm job {job_id} of {run_dir} was submitted here on "
+            return {"error": f"Job {job_id} of {run_dir} was submitted here on "
                              "several schedulers (" + ", ".join(sorted(hosts))
                              + "); cancel it with slurm_cancel(scheduler=...)."}
         host = next(iter(hosts))
@@ -529,13 +537,13 @@ def cancel_run(run_dir: str) -> dict:
         # All or nothing: never leave half of a split submission cancelled.
         foreign = [jid for jid in jids if not _owns_slurm_job(str(jid), host, owned)]
         if foreign:
-            return {"error": f"Slurm job {foreign[0]} was not submitted by this "
+            return {"error": f"Job {foreign[0]} was not submitted by this "
                               "conversation or its sub-agents; nothing was cancelled."}
         for jid in jids:
-            error = cancel_slurm_job(jid, host=host, owned=owned)
+            error = cancel_batch_job(jid, host=host, owned=owned)
             if error:
                 return {"error": error}
-        payload = {"cancelled": "slurm", "job_id": job_id}
+        payload = {"cancelled": _scheduler_kind(host), "job_id": job_id}
         if build_job_id is not None:
             payload["build_job_id"] = build_job_id
         return payload

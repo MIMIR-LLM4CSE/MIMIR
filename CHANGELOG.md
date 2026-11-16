@@ -15,7 +15,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **LSF, beside Slurm.** The optimization loop can now send its runs to an LSF cluster
+  from a login node. `proxy_cluster` submits them with `bsub`, and a build sent to its
+  own queue runs ahead of the measurement (`-w "done()"`, `-ti`). `sbatch_submit`,
+  `slurm_job_status`, `slurm_watch` and `slurm_cancel` work on LSF too, through `bsub`,
+  `bjobs`, `bhist` and `bkill`, and so does a script that runs `bsub` itself. The
+  arguments keep Slurm's names: `partition` is the queue. A remote LSF login node is
+  learned after one `ssh <host> bjobs`, or with `slurm_schedulers(add=...)`, which now
+  says which scheduler it found. The partition and node listings stay Slurm-only.
+- **LSF allocations are recognised.** A host with `bjobs` is a login node, and a shell
+  inside a `bsub -Is` allocation is that node (`execution_context` says
+  `scheduler: lsf`), where `proxy_eval(op='run')` measures on the node.
+
+### Changed
+- **`proxy_slurm` is now `proxy_cluster`**, since it submits to LSF as well.
+
 ### Security
+- **`bsub` and `bkill` are refused in the shell**, like `sbatch` and `scancel`. An LSF
+  job submitted from bash was neither held until a local check passed nor tracked, and
+  `bkill 0` cancels every job of yours.
 - **MIMIR's state is private.** `~/.mimir` followed the umask, so on a login node other
   users could read transcripts, plans and job records. The state directories are made
   `0700` when MIMIR starts, and `install.sh` creates them so.

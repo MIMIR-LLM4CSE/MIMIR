@@ -238,10 +238,10 @@ class PolicyManagerTests(unittest.TestCase):
     def test_cluster_submit_allowed_when_validated_locally(self) -> None:
         """With local-validation evidence (validated_files), the submit is not held."""
         agent = _FakeAgent()
-        agent.tool_owner["proxy_slurm"] = "proxy"
+        agent.tool_owner["proxy_cluster"] = "proxy"
         result = policy_manager_module.evaluate_tool_preconditions(
             agent=agent,
-            tool_name="proxy_slurm",
+            tool_name="proxy_cluster",
             arguments={"op": "run", "proxy_name": "p", "confirm": True},
             execution_context=build_execution_context(validated_files={"solver.py"}),
         )

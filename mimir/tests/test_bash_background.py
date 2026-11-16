@@ -17,7 +17,7 @@ from pathlib import Path
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 
 from mimir.shared import run_channel
-from mimir.shared import slurm_site
+from mimir.shared import cluster_site
 
 from mimir.tests.support.scheduler import local_slurm
 from mimir.servers.workspace import bash_jobs
@@ -772,7 +772,7 @@ class LearnedSchedulersTests(unittest.TestCase):
         # Every reachable scheduler is asked, and each answers for itself; the tests
         # here have one host in play, so one entry says it.
         server_bash.slurm_queued_by_host = lambda *_a, **_k: {
-            host: queued for host in (slurm_site.hosts() or [""])}
+            host: queued for host in (cluster_site.hosts() or [""])}
         server_bash._QUEUE_ASKED_AT = 0.0
         try:
             server_bash._note_scheduler([argv], result)
@@ -783,7 +783,7 @@ class LearnedSchedulersTests(unittest.TestCase):
     def _host_after(self, argv: list[str], *, ok: bool = True) -> str:
         """The one remote scheduler learned, or "" — the shape most cases assert."""
         self._ran(argv, ok=ok)
-        remote = [host for host in slurm_site.hosts() if host]
+        remote = [host for host in cluster_site.hosts() if host]
         return remote[0] if len(remote) == 1 else ",".join(remote)
 
     def test_a_successful_remote_queue_read_records_the_host(self) -> None:
@@ -811,13 +811,13 @@ class LearnedSchedulersTests(unittest.TestCase):
 
     def test_it_is_remembered_across_calls_and_written_once(self) -> None:
         self._ran(["ssh", "host-a", "squeue"])
-        path = os.path.join(slurm_site.state_dir(), "slurm_hosts")
+        path = os.path.join(cluster_site.state_dir(), "slurm_hosts")
         before = os.stat(path).st_mtime_ns
         self._ran(["ssh", "host-a", "sinfo"])
         self.assertEqual(os.stat(path).st_mtime_ns, before,
                          "a scheduler already known is re-recorded on every queue "
                          "listing otherwise")
-        self.assertEqual(slurm_site.hosts(), ["host-a"])
+        self.assertEqual(cluster_site.hosts(), ["host-a"])
 
     def test_another_host_is_added_rather_than_substituted(self) -> None:
         """One conversation, two clusters — a reference run on one, a sweep on the other.
@@ -828,13 +828,13 @@ class LearnedSchedulersTests(unittest.TestCase):
         """
         self._ran(["ssh", "host-a", "squeue"])
         self._ran(["ssh", "host-b", "sacct -j 1"])
-        self.assertEqual(slurm_site.hosts(), ["host-a", "host-b"])
+        self.assertEqual(cluster_site.hosts(), ["host-a", "host-b"])
 
     def test_a_host_with_its_own_slurm_keeps_it_first(self) -> None:
         """A machine with its own scheduler keeps it first, whatever was learned."""
         self._local(True)
         self._ran(["ssh", "host-b", "squeue -u $USER"])
-        self.assertEqual(slurm_site.hosts(), ["", "host-b"])
+        self.assertEqual(cluster_site.hosts(), ["", "host-b"])
 
     def test_the_sessions_of_one_workspace_share_the_schedulers(self) -> None:
         """The inventory belongs to the workspace: job descriptors are read across its
@@ -842,15 +842,15 @@ class LearnedSchedulersTests(unittest.TestCase):
         """
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-local"}, clear=False):
             self._ran(["ssh", "host-a", "squeue"])
-            self.assertEqual(slurm_site.hosts(), ["host-a"])
+            self.assertEqual(cluster_site.hosts(), ["host-a"])
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-other"}, clear=False):
-            self.assertEqual(slurm_site.hosts(), ["host-a"],
+            self.assertEqual(cluster_site.hosts(), ["host-a"],
                              "a sibling's scheduler is reachable before this "
                              "conversation has made a call of its own")
             self._ran(["ssh", "host-b", "squeue"])
-            self.assertEqual(slurm_site.hosts(), ["host-a", "host-b"])
+            self.assertEqual(cluster_site.hosts(), ["host-a", "host-b"])
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-local"}, clear=False):
-            self.assertEqual(slurm_site.hosts(), ["host-a", "host-b"],
+            self.assertEqual(cluster_site.hosts(), ["host-a", "host-b"],
                              "and the learning goes both ways")
 
 
@@ -861,7 +861,7 @@ class LearnedSchedulersTests(unittest.TestCase):
         not having been learned yet would make the learning a gate rather than a
         shortcut. It joins the inventory when a command actually succeeds there.
         """
-        host, refusal = slurm_site.resolve_host("never-seen")
+        host, refusal = cluster_site.resolve_host("never-seen")
         self.assertEqual(host, "never-seen")
         self.assertEqual(refusal, "")
 
@@ -869,13 +869,13 @@ class LearnedSchedulersTests(unittest.TestCase):
         # Said rather than silently sent over ssh to nothing: "local" means this host,
         # and this host has no scheduler.
         self._ran(["ssh", "host-a", "squeue"])
-        host, refusal = slurm_site.resolve_host("local")
+        host, refusal = cluster_site.resolve_host("local")
         self.assertEqual(host, "")
         self.assertIn("no local scheduler", refusal)
         self.assertIn("host-a", refusal)
 
     def test_nothing_reachable_says_how_to_reach_something(self) -> None:
-        host, refusal = slurm_site.resolve_host()
+        host, refusal = cluster_site.resolve_host()
         self.assertEqual(host, "")
         self.assertIn("squeue -u $USER", refusal)
         self.assertIn("slurm_schedulers", refusal)
@@ -888,7 +888,7 @@ class LearnedSchedulersTests(unittest.TestCase):
         """
         self._local(True)
         self._ran(["ssh", "host-b", "squeue"])
-        host, refusal = slurm_site.resolve_host()
+        host, refusal = cluster_site.resolve_host()
         self.assertEqual(host, "")
         self.assertIn("local, host-b", refusal)
         self.assertIn("GPUs", refusal)
@@ -944,11 +944,11 @@ class SlurmThroughSshTests(unittest.TestCase):
                      ["ssh", "-p", "2222", "cluster", "timeout 600 srun ./solver"],
                      ["ssh", "cluster", "squeue", "-u", "me"]):
             with self.subTest(argv=argv):
-                self.assertEqual(slurm_site.slurm_host_from_ssh(argv), "cluster")
+                self.assertEqual(cluster_site.scheduler_from_ssh(argv)[0], "cluster")
 
     def test_a_remote_command_without_slurm_is_not_a_scheduler(self) -> None:
-        self.assertEqual(slurm_site.slurm_host_from_ssh(["ssh", "cluster", "ls -la"]), "")
-        self.assertEqual(slurm_site.slurm_host_from_ssh(["srun", "./solver"]), "")
+        self.assertEqual(cluster_site.scheduler_from_ssh(["ssh", "cluster", "ls -la"])[0], "")
+        self.assertEqual(cluster_site.scheduler_from_ssh(["srun", "./solver"])[0], "")
 
     def test_the_launch_names_the_host_it_runs_on(self) -> None:
         from mimir.servers.workspace import bash_exec

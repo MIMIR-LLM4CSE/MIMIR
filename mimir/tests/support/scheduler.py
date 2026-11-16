@@ -1,4 +1,4 @@
-"""Pin whether this machine has its own Slurm, for the rest of one test.
+"""Pin which scheduler this machine has of its own, for the rest of one test.
 
 Scheduler resolution starts from a probe of the local machine, made once at import.
 A test that does not pin it depends on the host it runs on.
@@ -7,14 +7,19 @@ from __future__ import annotations
 
 import unittest
 
-from mimir.shared import slurm_site
+from mimir.shared import cluster_site
 
 
 def local_slurm(case: unittest.TestCase, present: bool = True) -> None:
-    """Answer the local-Slurm probe with *present* until *case* ends."""
-    original = slurm_site._HAS_SLURM
-    slurm_site._HAS_SLURM = present
-    case.addCleanup(setattr, slurm_site, "_HAS_SLURM", original)
+    """Answer the local-scheduler probe with Slurm, or none, until *case* ends."""
+    local_scheduler(case, "slurm" if present else "")
+
+
+def local_scheduler(case: unittest.TestCase, kind: str) -> None:
+    """Answer the local-scheduler probe with *kind* (``slurm``, ``lsf`` or "") until *case* ends."""
+    original = cluster_site._LOCAL_KIND
+    cluster_site._LOCAL_KIND = kind
+    case.addCleanup(setattr, cluster_site, "_LOCAL_KIND", original)
 
 
 def reads_through_stubs(case: unittest.TestCase) -> None:

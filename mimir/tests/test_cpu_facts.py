@@ -10,7 +10,7 @@ from pathlib import Path
 _SHARED = Path(__file__).resolve().parents[1] / "shared"
 
 from mimir.shared import cpu_facts
-from mimir.shared import slurm_script
+from mimir.shared import job_script
 from mimir.shared.shell_paths import allocates_cluster
 
 
@@ -114,10 +114,34 @@ class ExecutionContextTests(unittest.TestCase):
         self.assertEqual(ctx["context"], "login")
         self.assertEqual(ctx["job_id"], "77")
 
+    def test_lsf_login_node(self) -> None:
+        ctx = cpu_facts.execution_context({}, "login1", has_slurm=False, has_lsf=True)
+        self.assertEqual(ctx, {"context": "login", "scheduler": "lsf"})
+
+    def test_inside_an_lsf_allocation_on_the_node(self) -> None:
+        """`bsub -Is`: the shell runs on the first host of LSB_MCPU_HOSTS."""
+        env = {"LSB_JOBID": "4242", "LSB_MCPU_HOSTS": "c01.site 8 c02.site 8"}
+        ctx = cpu_facts.execution_context(env, "c01", has_slurm=False, has_lsf=True)
+        self.assertEqual(ctx["context"], "in_allocation")
+        self.assertEqual(ctx["scheduler"], "lsf")
+        self.assertEqual(ctx["job_id"], "4242")
+        self.assertEqual(ctx["nodelist"], "c01.site,c02.site")
+
+    def test_lsf_hosts_without_the_slot_counts(self) -> None:
+        env = {"LSB_JOBID": "1", "LSB_HOSTS": "c07 c07 c07 c09"}
+        self.assertEqual(cpu_facts.lsf_hosts(env), ["c07", "c09"])
+        ctx = cpu_facts.execution_context(env, "c09.site", has_slurm=False, has_lsf=True)
+        self.assertEqual(ctx["context"], "in_allocation")
+
+    def test_lsf_job_held_from_a_login_node(self) -> None:
+        env = {"LSB_JOBID": "1", "LSB_MCPU_HOSTS": "c01 4"}
+        ctx = cpu_facts.execution_context(env, "login1", has_slurm=False, has_lsf=True)
+        self.assertEqual(ctx["context"], "login")
+
 
 class SbatchHeaderTests(unittest.TestCase):
     def test_targeting_lines(self) -> None:
-        lines = slurm_script.sbatch_header(
+        lines = job_script.sbatch_header(
             job_name="j", partition="cpu", cpus_per_task=4, wall_time="00:10:00",
             log_file="/tmp/x.log", constraint="icelake", nodelist="n[01-02]",
             exclusive=True, nodes=1, ntasks=8)
@@ -126,7 +150,7 @@ class SbatchHeaderTests(unittest.TestCase):
             self.assertIn(want, lines)
 
     def test_defaults_add_nothing(self) -> None:
-        lines = slurm_script.sbatch_header(
+        lines = job_script.sbatch_header(
             job_name="j", partition="cpu", cpus_per_task=1, wall_time="1:00:00",
             log_file="/tmp/x.log")
         self.assertFalse([ln for ln in lines if any(
@@ -134,17 +158,17 @@ class SbatchHeaderTests(unittest.TestCase):
                               "--exclusive", "--mem", "--gres", "--account"))])
 
     def test_validation_refuses_injection(self) -> None:
-        self.assertIsNone(slurm_script.validate_target("skylake&ib", "n[01-04],g7"))
-        self.assertIsNotNone(slurm_script.validate_target("a; rm -rf ~"))
-        self.assertIsNotNone(slurm_script.validate_target(nodelist="n01 n02"))
-        self.assertIsNotNone(slurm_script.validate_target(ntasks=0))
+        self.assertIsNone(job_script.validate_target("skylake&ib", "n[01-04],g7"))
+        self.assertIsNotNone(job_script.validate_target("a; rm -rf ~"))
+        self.assertIsNotNone(job_script.validate_target(nodelist="n01 n02"))
+        self.assertIsNotNone(job_script.validate_target(ntasks=0))
 
     def test_node_python_prefers_the_nodes_own_venv(self) -> None:
-        script = "\n".join(slurm_script.node_python_lines())
+        script = "\n".join(job_script.node_python_lines())
         self.assertIn(".venv-", script)
         self.assertIn("$(uname -m)", script)
         self.assertIn(sys.executable, script)   # last resort, still tried
-        self.assertEqual(slurm_script.node_python_lines(explicit="/opt/py"),
+        self.assertEqual(job_script.node_python_lines(explicit="/opt/py"),
                          ["_MIMIR_PY=/opt/py"])
 
 
@@ -158,6 +182,13 @@ class ShellAllocationTests(unittest.TestCase):
 
     def test_srun_inside_an_allocation_does_not(self) -> None:
         self.assertFalse(allocates_cluster("srun -n 4 ./a.out", {"SLURM_JOB_ID": "9"}))
+
+    def test_lsf_submission_is_denied_in_bash(self) -> None:
+        """`bsub` and `bkill` are cluster acts, refused like `sbatch` and `scancel`."""
+        from mimir.shared.shell_paths import denied_command
+        for name in ("bsub", "/opt/lsf/bin/bsub", "bkill"):
+            self.assertIsNotNone(denied_command(name), name)
+        self.assertIsNone(denied_command("bjobs"))
 
     def test_srun_as_a_word_is_not_a_command(self) -> None:
         for cmd in ("echo srun", "cat srun.log", "grep srun notes.txt", "make -j"):

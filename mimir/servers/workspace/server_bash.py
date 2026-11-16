@@ -27,9 +27,9 @@ from ...shared.capabilities import (
 from ...shared.responses import err, ok
 from . import bash_exec, bash_jobs, bash_slurm
 from ...shared.jobs import shell_descriptor
-from ...shared.slurm_site import (
-    SLURM_COMMANDS,
-    slurm_host_from_ssh,
+from ...shared.cluster_site import (
+    SCHEDULER_COMMANDS,
+    scheduler_from_ssh,
     queued_by_host as slurm_queued_by_host,
     record_host,
     unwatched_by_host as slurm_unwatched_by_host,
@@ -193,9 +193,9 @@ def _note_scheduler(segments: list[list[str]], result: dict) -> None:
     if not reached:
         return
     for segment in segments:
-        host = slurm_host_from_ssh(segment)
+        host, kind = scheduler_from_ssh(segment)
         if host:
-            record_host(host)
+            record_host(host, kind)
             break
     now = time.monotonic()
     if now - _QUEUE_ASKED_AT < _QUEUE_EVERY:
@@ -212,12 +212,12 @@ def _note_scheduler(segments: list[list[str]], result: dict) -> None:
 
 
 def _reaches_slurm(argv: list[str]) -> bool:
-    """Whether this one command runs a Slurm tool, here or on the far side of an ssh."""
+    """Whether this one command runs a scheduler's tool, here or on the far side of an ssh."""
     if not argv:
         return False
-    if os.path.basename(argv[0]) in SLURM_COMMANDS:
+    if os.path.basename(argv[0]) in SCHEDULER_COMMANDS:
         return True
-    return bool(slurm_host_from_ssh(argv))
+    return bool(scheduler_from_ssh(argv)[0])
 
 
 _JOB_OPS = ("status", "output", "list")

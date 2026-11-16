@@ -364,9 +364,9 @@ class CancelOwnershipTests(_TmpStorageTest):
         pin_local_scheduler(self)
         os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
         self.scancels: list[list[str]] = []
-        orig = procs._slurm_run
-        procs._slurm_run = self._fake_slurm
-        self.addCleanup(setattr, procs, "_slurm_run", orig)
+        orig = procs._scheduler_run
+        procs._scheduler_run = self._fake_slurm
+        self.addCleanup(setattr, procs, "_scheduler_run", orig)
 
     def _fake_slurm(self, argv, timeout, *, stdin=None, host=""):
         if argv[0] == "scancel":
@@ -382,7 +382,7 @@ class CancelOwnershipTests(_TmpStorageTest):
         self.addCleanup(lambda: procs.is_running(pid) and os.kill(pid, 9))
         return d, pid
 
-    def _slurm_run(self, session: str, job_id: int, build_id: int | None = None) -> str:
+    def _scheduler_run(self, session: str, job_id: int, build_id: int | None = None) -> str:
         with unittest.mock.patch.dict(os.environ, {"MIMIR_SESSION_ID": session}):
             d = procs.new_run_dir(os.path.join(self.root, "runs", "p"))
             for name, jid in (("slurm_job_id", job_id), ("build_slurm_job_id", build_id)):
@@ -417,18 +417,18 @@ class CancelOwnershipTests(_TmpStorageTest):
         self.assertTrue(procs.is_running(pid))
 
     def test_own_slurm_run_is_cancelled_build_first(self) -> None:
-        d = self._slurm_run("s-a", 9001, build_id=9000)
+        d = self._scheduler_run("s-a", 9001, build_id=9000)
         result = procs.cancel_run(d)
         self.assertEqual(result.get("cancelled"), "slurm")
         self.assertEqual(self.scancels, [["scancel", "9000"], ["scancel", "9001"]])
 
     def test_another_sessions_slurm_run_is_not_cancelled(self) -> None:
-        d = self._slurm_run("s-b", 9101, build_id=9100)
+        d = self._scheduler_run("s-b", 9101, build_id=9100)
         self.assertIn("error", procs.cancel_run(d))
         self.assertEqual(self.scancels, [])
 
     def test_a_foreign_build_job_cancels_nothing(self) -> None:
-        d = self._slurm_run("s-a", 9201)
+        d = self._scheduler_run("s-a", 9201)
         with open(os.path.join(d, "build_slurm_job_id"), "w") as fh:
             fh.write("9200")
         self.assertIn("error", procs.cancel_run(d))
@@ -448,7 +448,7 @@ class CancelOwnershipTests(_TmpStorageTest):
         # Its own refusal: the job IS this conversation's, so saying it was not
         # submitted here sent the reader looking for a conversation that does not
         # exist. What it needs is the scheduler named.
-        d = self._slurm_run("s-a", 9401)
+        d = self._scheduler_run("s-a", 9401)
         procs._record_job_dir("9401", **{procs._SLURM_HOST_FILE: "cluster-b"})
         error = procs.cancel_run(d)["error"]
         self.assertIn("several schedulers", error)
@@ -456,18 +456,22 @@ class CancelOwnershipTests(_TmpStorageTest):
         self.assertEqual(self.scancels, [])
 
     def test_scancel_refuses_an_unrecorded_job(self) -> None:
-        self.assertIsNotNone(procs.cancel_slurm_job(9300, host=""))
+        self.assertIsNotNone(procs.cancel_batch_job(9300, host=""))
         self.assertEqual(self.scancels, [])
 
 
-class ScancelHasTwoCallersTests(unittest.TestCase):
-    def test_only_the_guarded_paths_run_scancel(self) -> None:
+class CancelHasThreeCallersTests(unittest.TestCase):
+    def test_only_the_guarded_paths_cancel_a_job(self) -> None:
+        """scancel and bkill are spelled once, in shared/schedulers; these are the paths
+        that send them, each behind its own ownership check."""
         servers = Path(__file__).resolve().parents[1] / "servers"
         callers = sorted(
             str(p.relative_to(servers)) for p in servers.rglob("*.py")
-            if '["scancel"' in p.read_text(encoding="utf-8")
+            if any(word in p.read_text(encoding="utf-8")
+                   for word in ('["scancel"', '["bkill"', "cancel_command"))
         )
-        self.assertEqual(callers, ["hpc/jobs.py", "proxy/_lib/procs.py"])
+        self.assertEqual(callers, ["hpc/jobs.py", "proxy/_lib/procs.py",
+                                   "workspace/bash_slurm.py"])
 
 
 class FieldNormsTests(unittest.TestCase):

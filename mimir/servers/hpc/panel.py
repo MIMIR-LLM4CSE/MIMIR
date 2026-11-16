@@ -18,7 +18,7 @@ import time
 from typing import Any, Callable
 
 from ...shared.responses import ok
-from ...shared.slurm_site import hosts as slurm_hosts, name_of as host_name
+from ...shared.cluster_site import hosts as slurm_hosts, name_of as host_name
 from .node_profiles import hardware_of, profile_host_dir, read_node_profile
 from .slurm_digest import (
     cached_cluster_digest as cluster_digest,

@@ -182,23 +182,47 @@ def expand_hostlist(expr: str) -> list[str]:
 
 
 def execution_context(env: Mapping[str, str] | None = None, hostname: str = "",
-                      has_slurm: bool | None = None) -> dict:
-    """Where this process sits relative to the scheduler: ``none``, ``login`` or ``in_allocation``."""
+                      has_slurm: bool | None = None, has_lsf: bool | None = None) -> dict:
+    """Where this process sits relative to the scheduler: ``none``, ``login`` or ``in_allocation``.
+
+    Slurm and LSF both count; ``scheduler`` names the one found.
+    """
     env = os.environ if env is None else env
     hostname = hostname or socket.gethostname()
+    short = hostname.split(".")[0]
     if has_slurm is None:
         has_slurm = shutil.which("sinfo") is not None or bool(env.get("SLURM_JOB_ID"))
-    if not has_slurm:
-        return {"context": "none"}
-    job_id = env.get("SLURM_JOB_ID", "")
-    nodelist = env.get("SLURM_JOB_NODELIST") or env.get("SLURM_NODELIST") or ""
-    if not job_id:
-        return {"context": "login"}
-    short = hostname.split(".")[0]
-    on_node = (env.get("SLURMD_NODENAME") in (hostname, short)
-               or short in expand_hostlist(nodelist))
-    return {"context": "in_allocation" if on_node else "login",
-            "job_id": job_id, "nodelist": nodelist}
+    if has_slurm:
+        job_id = env.get("SLURM_JOB_ID", "")
+        nodelist = env.get("SLURM_JOB_NODELIST") or env.get("SLURM_NODELIST") or ""
+        if not job_id:
+            return {"context": "login", "scheduler": "slurm"}
+        on_node = (env.get("SLURMD_NODENAME") in (hostname, short)
+                   or short in expand_hostlist(nodelist))
+        return {"context": "in_allocation" if on_node else "login", "scheduler": "slurm",
+                "job_id": job_id, "nodelist": nodelist}
+    if has_lsf is None:
+        has_lsf = shutil.which("bjobs") is not None or bool(env.get("LSB_JOBID"))
+    if has_lsf:
+        job_id = env.get("LSB_JOBID", "")
+        if not job_id:
+            return {"context": "login", "scheduler": "lsf"}
+        hosts = lsf_hosts(env)
+        on_node = short in {h.split(".")[0] for h in hosts}
+        return {"context": "in_allocation" if on_node else "login", "scheduler": "lsf",
+                "job_id": job_id, "nodelist": ",".join(hosts)}
+    return {"context": "none"}
+
+
+def lsf_hosts(env: Mapping[str, str]) -> list[str]:
+    """The hosts of an LSF allocation, in order and once each.
+
+    ``LSB_MCPU_HOSTS`` pairs each host with its slot count (``n01 4 n02 4``);
+    ``LSB_HOSTS`` repeats a host once per slot.
+    """
+    words = (env.get("LSB_MCPU_HOSTS") or "").split()
+    names = words[0::2] if words else (env.get("LSB_HOSTS") or "").split()
+    return list(dict.fromkeys(names))
 
 
 # ── machine signature ─────────────────────────────────────────────────────────

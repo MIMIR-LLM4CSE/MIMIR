@@ -37,7 +37,8 @@ def _build_profile() -> dict:
         "timestamp": utc_stamp(),
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
-        "execution_context": execution_context(has_slurm=host_probe.cmd_exists("sinfo")),
+        "execution_context": execution_context(has_slurm=host_probe.cmd_exists("sinfo"),
+                                               has_lsf=host_probe.cmd_exists("bjobs")),
         "machine_signature": machine_signature(
             cpu.get("arch", ""), cpu, [d.get("name", "") for d in gpu.get("devices", [])]),
         "os": local_os(),
@@ -62,10 +63,10 @@ def platform_probe() -> dict:
     catalogue's summary if one already exists but never builds it — use
     platform_search to search the modules themselves.
 
-    `execution_context` says what this host is to the scheduler: `none` (no Slurm —
-    this host is the only machine), `login` (a login node: the compute nodes are
-    other machines, described by the HPC node-profile tool, not by this one), or
-    `in_allocation` (this host is an allocated compute node, so this profile is that
+    `execution_context` says what this host is to the scheduler, Slurm or LSF
+    (`scheduler`): `none` (no scheduler — this host is the only machine), `login` (a
+    login node: the compute nodes are other machines, described by the HPC
+    node-profile tool, not by this one), or `in_allocation` (this host is an allocated compute node, so this profile is that
     node's). `march` is the name `-march=native` resolves to here; pass that name, not
     `native`, when building on one machine for another.
     """

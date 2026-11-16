@@ -1,4 +1,4 @@
-"""Parameter-file rendering and run/sbatch command building.
+"""Parameter-file rendering and run/batch-script command building.
 
 Registered proxies are launched from ``run_cmd_template`` with placeholders
 ``{executable}``, ``{output_file}``, ``{param_file}``, ``{extra_params}``;
@@ -14,7 +14,8 @@ import re
 import shlex
 
 from . import procs
-from ....shared.slurm_script import node_python_lines, sbatch_header
+from ....shared.schedulers import SLURM, Scheduler
+from ....shared.job_script import node_python_lines
 
 PARAM_EXT: dict[str, str] = {
     "text":              "txt",
@@ -95,7 +96,7 @@ def _expand_cmd_template(
 ) -> str:
     """Render the param file and expand ``run_cmd_template`` into a command string.
 
-    Single source of truth for the local and sbatch launch paths.
+    Single source of truth for the local and batch launch paths.
     """
     output_file = os.path.join(run_dir, f"output.{output_ext(entry.get('output_format', 'npz'))}")
     param_file  = _render_param_file(entry, run_dir, output_file, param_overrides) or ""
@@ -116,10 +117,11 @@ def build_run_cmd(
     return shlex.split(_expand_cmd_template(entry, run_dir, extra_params, param_overrides))
 
 
-# ── sbatch script building ────────────────────────────────────────────────────
+# ── batch script building ─────────────────────────────────────────────────────
 
-def sbatch_header_lines(
+def batch_header_lines(
     *,
+    scheduler: Scheduler = SLURM,
     job_name: str,
     partition: str,
     cpus_per_task: int,
@@ -133,20 +135,20 @@ def sbatch_header_lines(
     nodelist: str = "",
     exclusive: bool = False,
     comment: str = "",
-    dependency: str = "",
-    kill_on_invalid_dep: bool = False,
+    after_ok: str = "",
 ) -> list[str]:
-    """The ``#SBATCH`` lines of a proxy job: one node, directives from ``shared/slurm_script``."""
-    return sbatch_header(
+    """The directive lines of a proxy job on *scheduler*: one node. A job *after_ok* waits
+    for that one to succeed, and is killed once it cannot (``shared/schedulers``)."""
+    extra = {"after_ok": after_ok, "kill_on_invalid_dep": True} if after_ok else {}
+    return scheduler.header(
         job_name=job_name, partition=partition, nodes=1, ntasks=ntasks,
         cpus_per_task=cpus_per_task, wall_time=wall_time, mem=mem, log_file=log_file,
         gpus=gpus, account=account, constraint=constraint, nodelist=nodelist,
-        exclusive=exclusive, comment=comment, dependency=dependency,
-        kill_on_invalid_dep=kill_on_invalid_dep,
+        exclusive=exclusive, comment=comment, **extra,
     )
 
 
-def build_sbatch(
+def build_batch_script(
     entry: dict,
     run_dir: str,
     extra_params: str,
@@ -163,12 +165,15 @@ def build_sbatch(
     param_overrides: dict | None = None,
     target: dict | None = None,
     comment: str = "",
+    scheduler: Scheduler = SLURM,
 ) -> str:
+    """The batch script of one proxy run on *scheduler*: its header, then the measured
+    command and the post-run step, which are the same whatever the scheduler."""
     log_file = procs.run_log_path(run_dir)
     cmd_str  = shlex.join(shlex.split(
         _expand_cmd_template(entry, run_dir, extra_params, param_overrides)))
-    lines = sbatch_header_lines(
-        job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
+    lines = batch_header_lines(
+        scheduler=scheduler, job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
         comment=comment,
         **(target or {}),
@@ -179,7 +184,7 @@ def build_sbatch(
     rc_path   = os.path.join(run_dir, "returncode")
     wall_path = os.path.join(run_dir, "wall_time_ms")
     # The post-run step runs on the node too, so the Python is chosen there, not here
-    # (see slurm_script.node_python_lines).
+    # (see job_script.node_python_lines).
     lines += [""] + node_python_lines(explicit=python_exe)
     load = f"import sys; sys.path.insert(0, {PACKAGE_PARENT!r}); from mimir.servers.proxy._lib.measure import main"
     lines += [

@@ -1,6 +1,7 @@
-"""Talking to a Slurm scheduler, local or over ssh: the one seam every call goes through.
+"""Talking to a batch scheduler (Slurm or LSF), local or over ssh: the one seam every call
+goes through.
 
-Every command reaches Slurm through ``run_bash``, ``run_argv`` or ``capture``, called by
+Every command reaches the scheduler through ``run_bash``, ``run_argv`` or ``capture``, called by
 attribute (``cli.run_bash``) so a test replaces it in one place."""
 from __future__ import annotations
 
@@ -9,10 +10,11 @@ import re
 import subprocess
 from ...shared.responses import err, ok
 from ...shared.secret_env import without_secrets
-from ...shared.slurm_site import (
+from ...shared.cluster_site import (
     LOCAL as _LOCAL_HOST,
     InvalidHost,
     hosts as slurm_hosts,
+    kind_of,
     name_of as _host_name,
     resolve_host as _resolve_host,
     argv_for as slurm_argv,
@@ -39,6 +41,11 @@ def no_scheduler_hint(host: str = _LOCAL_HOST) -> str:
     scheduler over ``ssh`` once, which adds it.
     """
     known = slurm_hosts()
+    if kind_of(host) == "lsf":
+        return (f"{_host_name(host)} runs LSF: the partition, node and queue listings "
+                "here read Slurm. Read 'bqueues -l', 'bhosts' and 'bjobs' through the "
+                "shell; sbatch_submit, slurm_job_status, slurm_watch and slurm_cancel work "
+                "there as on Slurm.")
     if host:
         return (f"That went to {host}; check the host answers — "
                 "slurm_schedulers() lists what this workspace reaches.")
@@ -57,7 +64,7 @@ def chosen_host(scheduler: str) -> tuple[str, dict | None]:
 
     The refusal is the useful half: with two schedulers reachable, "which one" is a
     decision about the work — where the inputs are, which has the GPUs — and this says
-    so rather than picking one. See ``slurm_site.resolve_host``.
+    so rather than picking one. See ``cluster_site.resolve_host``.
     """
     host, refusal = _resolve_host(scheduler)
     return host, (err(refusal) if refusal else None)

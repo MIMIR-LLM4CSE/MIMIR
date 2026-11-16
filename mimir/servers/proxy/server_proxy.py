@@ -1,7 +1,7 @@
 """MCP Proxy Server: registration, benchmarking and iterative optimization of proxy codes.
 
 Read-only ``proxy_get``, ``proxy_runs``, ``proxy_eval_status``; confirmed ``proxy_manage``,
-``proxy_exec``, ``proxy_eval``; cluster ``proxy_slurm``. Templates, the metrics block,
+``proxy_exec``, ``proxy_eval``; cluster ``proxy_cluster``. Templates, the metrics block,
 storage and the ratchet flow are in docs/SERVERS_DETAILED.md, "proxy".
 """
 
@@ -30,7 +30,7 @@ from ...shared.capabilities import (
 from ...shared.responses import err, ok
 from ._lib.execute import DEFAULT_MAX_OUTPUT_MB, REF_RUN_TIMEOUT
 from ._lib.procs import validate_slurm_args, validate_slurm_comment, validate_slurm_token
-from ...shared.slurm_script import validate_target
+from ...shared.job_script import validate_target
 from ._ops import (
     eval_observe,
     eval_session,
@@ -350,11 +350,11 @@ def proxy_manage(
             invalidates the other's artifacts. build_timeout_s defaults to 7200.
             build_partition (with build_constraint, build_cpus_per_task,
             build_mem, build_wall_time) says WHERE the build is submitted:
-            naming one splits proxy_slurm(op='eval') into a build job and a run
+            naming one splits proxy_cluster(op='eval') into a build job and a run
             job chained behind it, so a compile does not run on a node
             dedicated to simulation. It belongs here rather than on each call
             because the ratchet submits the same run hundreds of times;
-            proxy_slurm can still override it per call.
+            proxy_cluster can still override it per call.
         cases: For suite_define/suite_update: list of case dicts (see schema above).
         proxy_path: For 'scaffold': absolute path to the proxy source file.
         component_hint: For 'scaffold': function/subroutine/class name to target.
@@ -460,7 +460,7 @@ async def proxy_exec(
     detaches up front: both hand it to a watcher that resumes you with the result —
     end your turn when told to, do not poll.
 
-    For Slurm submission of the same work, use proxy_slurm instead.
+    For Slurm submission of the same work, use proxy_cluster instead.
 
     Args:
         proxy_name: Name of a registered proxy.
@@ -761,7 +761,7 @@ _TOOL_BY_OPS: dict[tuple[str, ...], str] = {
     _MANAGE_OPS: "proxy_manage",
     _EXEC_OPS: "proxy_exec",
     _EVAL_OPS: "proxy_eval",
-    _SLURM_OPS: "proxy_slurm",
+    _SLURM_OPS: "proxy_cluster",
     _REQUEST_OPS: "proxy_request",
     _MERGE_OPS: "proxy_merge",
 }
@@ -777,9 +777,9 @@ _OP_OWNERS: dict[str, list[str]] = _build_op_owners()
 
 
 @mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
-                      label="Proxy Slurm: {op}",
-                      risk_note="Submits Slurm batch jobs that consume cluster allocation hours."))
-def proxy_slurm(
+                      label="Proxy cluster: {op}",
+                      risk_note="Submits Slurm or LSF batch jobs that consume cluster allocation hours."))
+def proxy_cluster(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
         json_schema_extra={"enum": list(_SLURM_OPS)},
@@ -811,7 +811,9 @@ def proxy_slurm(
     scheduler: str = "",
     confirm: bool = False,
 ) -> dict:
-    """Submit proxy work as Slurm batch jobs (sensitive, non-blocking, expensive).
+    """Submit proxy work as batch jobs (sensitive, non-blocking, expensive): Slurm's
+    sbatch, or bsub when the scheduler is LSF. The arguments are Slurm's, translated for
+    LSF: ``partition`` is the queue, ``constraint`` a ``select[]``, ``account`` a project.
 
     Validate the workload locally with proxy_exec first — a failed batch job
     still consumes allocation hours.
@@ -837,7 +839,7 @@ def proxy_slurm(
     aggregate it yourself with proxy_get(op='report', ...) once they are done.)
 
     Args:
-        partition: Slurm partition (required for every op).
+        partition: Slurm partition or LSF queue (required for every op).
         proxy_name: For 'run' (required) and 'eval' (defaults to the
             most-recently initialized session).
         suite_name: For 'suite': suite to submit.
@@ -863,8 +865,8 @@ def proxy_slurm(
         build_partition: For 'eval': send the build to this partition instead of
             building on the node that measures. A node dedicated to GPU
             simulation is not a node to compile on. Setting it splits the run
-            into a build job and a run job chained behind it with
-            --dependency=afterok, both sharing one run directory — so the build
+            into a build job and a run job chained behind it (Slurm's
+            --dependency=afterok, LSF's -w done()), both sharing one run directory — so the build
             node and the run node must see the same filesystem. A failed build
             kills the run job rather than leaving it queued. Defaults to the
             proxy's registered 'build_partition' metadata; empty on both means

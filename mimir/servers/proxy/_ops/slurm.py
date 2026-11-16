@@ -1,4 +1,5 @@
-"""Slurm submission ops: single run, per-case suite jobs, and eval-session runs."""
+"""Batch submission ops (Slurm or LSF, by the scheduler named): single run, per-case
+suite jobs, and eval-session runs."""
 
 from __future__ import annotations
 
@@ -10,16 +11,16 @@ from ....shared.launcher import launch_argv
 from . import with_next, err, ok
 from .._lib import build as build_mod
 from .._lib import placement
-from .._lib.command import build_sbatch, sbatch_header_lines
-from ....shared.slurm_script import node_python_lines
+from .._lib.command import batch_header_lines, build_batch_script
+from ....shared.job_script import node_python_lines
 from .._lib.procs import (
     run_log_path,
-    cancel_slurm_job,
+    cancel_batch_job,
     background_descriptor,
     new_run_dir,
     write_run_config,
     update_run_config,
-    submit_sbatch,
+    submit_batch,
     update_active_link,
     update_opt_active_link,
 )
@@ -33,20 +34,20 @@ from .._lib.store import (
 )
 from .eval_common import eval_background_descriptor
 from .eval_session import prepare_run
-from ....shared.slurm_site import resolve_host as _slurm_resolve_host
+from ....shared.cluster_site import resolve_host as _slurm_resolve_host, scheduler_for
 from .suites import prevalidate_suite
 
 _OPT_RUNNER = "mimir.servers.proxy._proxy_runner"
 
 
 def _resolve_scheduler(scheduler: str) -> tuple[str, dict | None]:
-    """``(host, None)`` for a submission, or ``("", refusal)`` (``slurm_site.resolve_host``)."""
+    """``(host, None)`` for a submission, or ``("", refusal)`` (``cluster_site.resolve_host``)."""
     host, refusal = _slurm_resolve_host(scheduler)
     return host, (err(refusal) if refusal else None)
 
 
 def _run_background_descriptor(run_dir: str) -> dict:
-    """The watcher handle of a plain submitted run (always attached: sbatch returns at once)."""
+    """The watcher handle of a plain submitted run (always attached: a submission returns at once)."""
     return background_descriptor(
         run_dir, kind="proxy-slurm-run",
         status_op={"tool": "proxy_runs", "args": {"op": "status", "run_id": run_dir}},
@@ -71,7 +72,7 @@ def submit_run(
     comment: str = "",
     scheduler: str = "",
 ) -> dict:
-    """Submit a single proxy run as a Slurm batch job (non-blocking)."""
+    """Submit a single proxy run as a batch job (non-blocking)."""
     entry, error = entry_or_err(proxy_name)
     if error:
         return error
@@ -98,16 +99,17 @@ def submit_run(
         "started_at":           datetime.now(timezone.utc).isoformat(),
     })
 
-    script = build_sbatch(
+    sched = scheduler_for(host)
+    script = build_batch_script(
         entry, run_dir, extra_params,
         partition=partition, gpus=gpus, cpus_per_task=cpus_per_task,
         mem=mem, wall_time=wall_time, account=account,
         job_name=job_name or f"proxy_{proxy_name}",
         compare_to_reference=compare_to_reference,
         param_overrides=param_overrides,
-        target=target, comment=comment,
+        target=target, comment=comment, scheduler=sched,
     )
-    job_id, error = submit_sbatch(
+    job_id, error = submit_batch(
         run_dir, script,
         local_alternative="proxy_exec(op='run', confirm=True)",
         host=host,
@@ -124,7 +126,7 @@ def submit_run(
         "compare_to_reference": compare_to_reference or None,
         "comment":              comment or None,
         "background_job":       _run_background_descriptor(run_dir),
-        "note": f"Slurm job {job_id} submitted to partition '{partition}'; "
+        "note": f"{sched.label} job {job_id} submitted to '{partition}'; "
                 "this call returns while it is still queued.",
     }, "end your turn — you are resumed when the job finishes"))
 
@@ -141,10 +143,11 @@ def submit_suite(
     comment: str = "",
     scheduler: str = "",
 ) -> dict:
-    """Submit one Slurm job per (case × sweep point) in a suite (non-blocking)."""
+    """Submit one batch job per (case × sweep point) in a suite (non-blocking)."""
     host, refusal = _resolve_scheduler(scheduler)
     if refusal:
         return refusal
+    sched = scheduler_for(host)
     suite = load_suite(suite_name)
     if suite is None:
         return err(f"Suite '{suite_name}' not found.",
@@ -191,13 +194,13 @@ def submit_suite(
                 "started_at":           datetime.now(timezone.utc).isoformat(),
             })
 
-            script = build_sbatch(
+            script = build_batch_script(
                 entry, run_dir, extra_params,
                 partition=partition, gpus=gpus, cpus_per_task=cpus_per_task,
                 mem=mem, wall_time=wall_time, account=account, job_name=job_name,
                 compare_to_reference=reference_name,
                 param_overrides=sweep_overrides,
-                target=target, comment=comment,
+                target=target, comment=comment, scheduler=sched,
             )
 
             # Record pointer before submission
@@ -206,10 +209,10 @@ def submit_suite(
             with open(os.path.join(ptr_dir, "run_dir"), "w") as fh:
                 fh.write(run_dir)
 
-            job_id, error = submit_sbatch(run_dir, script, host=host)
+            job_id, error = submit_batch(run_dir, script, host=host)
             if error:
                 errors.append({"case_id": case_id, "sweep": sweep_overrides,
-                               "error": error.get("error", "sbatch failed")})
+                               "error": error.get("error", "submission failed")})
                 continue
             update_active_link(proxy_name, run_dir)
 
@@ -245,10 +248,12 @@ def _build_log_stdout_path(run_dir: str) -> str:
 
 def _runner_script(
     place: dict, *, job_name: str, log_file: str, run_dir: str,
-    python_executable: str, phase: str, dependency: str = "",
+    python_executable: str, phase: str, host: str, after_ok: str = "",
 ) -> str:
-    """One sbatch script that runs _proxy_runner.py over *run_dir* for one phase."""
-    lines = sbatch_header_lines(
+    """One batch script that runs _proxy_runner.py over *run_dir* for one phase, on
+    *host*'s scheduler; *after_ok* is the job it waits for."""
+    lines = batch_header_lines(
+        scheduler=scheduler_for(host),
         job_name=job_name,
         partition=place["partition"],
         cpus_per_task=place["cpus_per_task"],
@@ -262,8 +267,7 @@ def _runner_script(
         nodelist=place.get("nodelist", ""),
         exclusive=place.get("exclusive", False),
         comment=place.get("comment", ""),
-        dependency=dependency,
-        kill_on_invalid_dep=bool(dependency),
+        after_ok=after_ok,
     )
     argv = launch_argv(_OPT_RUNNER, "--run-dir", run_dir)
     if phase != "all":
@@ -298,7 +302,7 @@ def submit_eval(
     build_gpus: int = 0,
     scheduler: str = "",
 ) -> dict:
-    """Submit an optimization run as one Slurm job, or two (build, then run) with a build partition.
+    """Submit an optimization run as one batch job, or two (build, then run) with a build partition.
 
     *background* is accepted and ignored: a submission is always detached.
     """
@@ -331,7 +335,7 @@ def submit_eval(
     ) if has_build else None
 
     # prepare_run already wrote the full config (convergence included); only the
-    # placement is Slurm-specific, so merge it in rather than rewriting the file.
+    # placement is the batch job's own, so merge it in rather than rewriting the file.
     update_run_config(run_dir, {
         "partition": partition,
         "placement": {"run": run_place, "build": build_place},
@@ -350,10 +354,10 @@ def submit_eval(
         build_log = _build_log_stdout_path(run_dir)
         build_script = _runner_script(
             build_place, job_name=f"{job_name}_build"[:60], log_file=build_log,
-            run_dir=run_dir, phase="build",
+            run_dir=run_dir, phase="build", host=host,
             python_executable=cfg.get("python_executable", ""),
         )
-        build_job_id, error = submit_sbatch(
+        build_job_id, error = submit_batch(
             run_dir, build_script,
             local_alternative="proxy_eval(op='run', confirm=True)",
             script_name="build_batch_script.sh", id_file="build_slurm_job_id",
@@ -371,10 +375,10 @@ def submit_eval(
     script = _runner_script(
         run_place, job_name=job_name, log_file=log_file, run_dir=run_dir,
         python_executable=cfg.get("python_executable", ""),
-        phase="run" if build_place is not None else "all",
-        dependency=f"afterok:{build_job_id}" if build_job_id is not None else "",
+        phase="run" if build_place is not None else "all", host=host,
+        after_ok=str(build_job_id) if build_job_id is not None else "",
     )
-    job_id, error = submit_sbatch(
+    job_id, error = submit_batch(
         run_dir, script,
         local_alternative="proxy_eval(op='run', confirm=True)",
         host=host,
@@ -384,7 +388,7 @@ def submit_eval(
         # exist. Cancelling it is the only thing between this failure and a node
         # spending an hour on work nobody will read.
         if build_job_id is not None:
-            cancel_err = cancel_slurm_job(build_job_id, host=host)
+            cancel_err = cancel_batch_job(build_job_id, host=host)
             error["hint"] = (
                 (error.get("hint", "") + " ") if error.get("hint") else ""
             ) + (f"The build job {build_job_id} could not be cancelled "
@@ -401,11 +405,11 @@ def submit_eval(
             f"succeeds. A failed build kills the run job instead of leaving it queued."
         )
     else:
-        payload["note"] = f"Slurm job {job_id} submitted to '{partition}'."
+        payload["note"] = f"{scheduler_for(host).label} job {job_id} submitted to '{partition}'."
     if resume_notice:
         payload["resume_notice"] = resume_notice
     # Attached whatever *background* said. It distinguishes "wait for it here" from
-    # "detach it" for the local run, and sbatch has no first option: the call returns
+    # "detach it" for the local run, and a submission has no first option: the call returns
     # with the job still queued either way. Honouring the flag here only decided
     # whether anything was left watching the job — and on the False side, nothing was.
     payload["background_job"] = eval_background_descriptor(name, run_dir)

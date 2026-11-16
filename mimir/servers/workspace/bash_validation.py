@@ -143,10 +143,11 @@ _DENIAL_HINTS = {
         "checked."
     ),
     "cluster": (
-        "'{name}' submits or cancels a Slurm job, which goes through the cluster tools "
+        "'{name}' submits or cancels a cluster job, which goes through the cluster tools "
         "instead: submitting returns a job handle this session tracks, resuming on its "
         "own when the job ends, and cancelling takes one job of yours at a time. "
-        "'squeue'/'sinfo'/'sacct' are available here for inspection."
+        "'squeue'/'sinfo'/'sacct' and 'bjobs'/'bqueues'/'bhosts' are available here for "
+        "inspection. The same tools submit to LSF, with bsub."
     ),
 }
 

@@ -1946,7 +1946,7 @@ class ToolSchemaContractTests(unittest.IsolatedAsyncioTestCase):
                 "proxy_get": "_GET_OPS", "proxy_runs": "_RUNS_OPS",
                 "proxy_eval_status": "_EVAL_STATUS_OPS", "proxy_manage": "_MANAGE_OPS",
                 "proxy_exec": "_EXEC_OPS", "proxy_eval": "_EVAL_OPS",
-                "proxy_slurm": "_SLURM_OPS",
+                "proxy_cluster": "_SLURM_OPS",
             }),
             ("mimir.servers.external.server_system", {"system": "_SYSTEM_OPS"}),
             ("mimir.servers.utilities.server_strings", {"string_op": "_STRING_OPS"}),

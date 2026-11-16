@@ -2,7 +2,8 @@
 
 Every submission or adoption leaves a directory under the session's state: the id, the
 scheduler that runs it, the log, and the terminal state once a poll settles it.
-``normalized_job_state`` reads squeue then sacct and answers in one of three words."""
+``normalized_job_state`` asks the job's scheduler (``shared/schedulers``: squeue then sacct,
+or bjobs then bhist) and answers in one of three words."""
 from __future__ import annotations
 
 import os
@@ -13,13 +14,13 @@ from ...shared import shell_activity
 from ...shared.state_paths import sessions_root
 from typing import Any
 
-from ...shared import build_progress, slurm_site
+from ...shared import build_progress, cluster_site
 from ...shared.jobs import (SLURM_JOB_ID, is_terminal, record_terminal_state, recorded_terminal_state,
                             slurm_descriptor)
-from ...shared.slurm_site import (
-    UNKNOWN_JOB,
-    SlurmJobState,
-    slurm_state,
+from ...shared.schedulers import UNKNOWN_JOB, JobState
+from ...shared.cluster_site import (
+    job_state,
+    scheduler_for,
     HOST_FILE as _HOST_FILE,
     LOCAL as _LOCAL_HOST,
     hosts as slurm_hosts,
@@ -127,7 +128,7 @@ def record_job_host(job_dir: str, host: str) -> None:
 
 
 def locate_job(job_id: str, requested: str = "",
-                job_dir: str = "") -> tuple[str, SlurmJobState]:
+                job_dir: str = "") -> tuple[str, JobState]:
     """``(host, state)`` of *job_id*: its recorded host first, then every scheduler.
 
     *requested* skips the search; *job_dir* avoids a second walk. ``("", UNKNOWN_JOB)``
@@ -151,11 +152,11 @@ def locate_job(job_id: str, requested: str = "",
     return "", UNKNOWN_JOB
 
 
-def normalized_job_state(job_id: str, *, host: str = _LOCAL_HOST) -> SlurmJobState:
+def normalized_job_state(job_id: str, *, host: str = _LOCAL_HOST) -> JobState:
     """A job's state on *host*: running, pending, done, crashed or unknown, with where it
-    is (``shared.slurm_site.slurm_state``)."""
-    return slurm_state(job_id, lambda script: lines_of(cli.run_bash(script, TIMEOUT_READ,
-                                                                    host=host)))
+    is (``shared.cluster_site.job_state``)."""
+    return job_state(job_id, lambda script: lines_of(cli.run_bash(script, TIMEOUT_READ,
+                                                                  host=host)), host)
 
 
 # A job, or one task of a job array. Anything wider — a user, a partition, a name — is
@@ -211,18 +212,20 @@ def salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int,
 def sbatch_on(host: str, script: str, hint: str) -> tuple[str, dict | None]:
     """Submit *script* to the scheduler on *host*: its job id, or the error answer.
 
-    On stdin, not by path: ``sbatch`` reads its script from standard input when given no
-    file, so nothing of ours has to exist on the host running it — the one thing a
-    scheduler behind ``ssh`` cannot promise.
+    On stdin, not by path: ``sbatch`` and ``bsub`` read their script from standard input
+    when given no file, so nothing of ours has to exist on the host running it — the one
+    thing a scheduler behind ``ssh`` cannot promise.
     """
-    res = cli.run_bash("sbatch", TIMEOUT_SUBMIT, stdin=script, host=host)
+    sched = scheduler_for(host)
+    submit = sched.submit_command
+    res = cli.run_bash(submit, TIMEOUT_SUBMIT, stdin=script, host=host)
     if res.get("status") != "ok":
-        return "", err(res.get("stderr") or res.get("error", "sbatch failed"), hint=hint)
-    match = re.search(r"(\d+)", res.get("stdout", ""))
-    if not match:
-        return "", err("Could not parse a job id from sbatch output.",
-                       hint=f"sbatch said: {res.get('stdout', '').strip()[:200]}")
-    return match.group(1), None
+        return "", err(res.get("stderr") or res.get("error", f"{submit} failed"), hint=hint)
+    job_id = sched.submitted_id(res.get("stdout", ""))
+    if not job_id:
+        return "", err(f"Could not parse a job id from {submit} output.",
+                       hint=f"{submit} said: {res.get('stdout', '').strip()[:200]}")
+    return job_id, None
 
 
 def submit_batch(host: str, work_dir: str, command: str, header: list[str], *,
@@ -294,7 +297,8 @@ def launched_from_this_session(job_id: str, requested: str = "") -> str | None:
     host, found = locate_job(job_id, requested)
     if found.state == "unknown":
         return None
-    queued = cli.run_argv(["squeue", "-h", "-j", job_id, "-o", "%V"], TIMEOUT_READ, host=host)
+    queued = cli.run_argv(shlex.split(scheduler_for(host).submit_time_command(job_id)),
+                          TIMEOUT_READ, host=host)
     stamp = (queued.get("stdout") or "").strip().splitlines()
     if queued.get("status") != "ok" or not stamp:
         return None
@@ -309,7 +313,7 @@ def launched_from_this_session(job_id: str, requested: str = "") -> str | None:
 # ── the job tools' bodies: status, adoption, cancellation ──────────────────────
 
 
-def _add_placement(payload: dict, found: SlurmJobState) -> None:
+def _add_placement(payload: dict, found: JobState) -> None:
     """Where the job is, for a watcher to keep and a badge to say: its partitions while it
     is queued or running, its nodes once it runs (a pending one has none yet, and Slurm's
     own column there is the reason it is waiting)."""
@@ -332,7 +336,7 @@ def status(job_id: str, scheduler: str = "") -> dict:
     state = found.state
     payload: dict[str, Any] = {"job_id": job_id, "state": state, "raw_state": found.raw}
     if host or state != "unknown":
-        payload["scheduler"] = slurm_site.name_of(host)
+        payload["scheduler"] = cluster_site.name_of(host)
     _add_placement(payload, found)
     if job_dir:
         payload["job_dir"] = job_dir
@@ -414,19 +418,19 @@ def adopt(job_id: str, note: str = "", scheduler: str = "") -> dict:
     host, found = locate_job(job_id, scheduler)
     state = found.state
     if state == "unknown":
-        known = ", ".join(slurm_site.name_of(h) for h in slurm_site.hosts()) or "none reachable"
+        known = ", ".join(cluster_site.name_of(h) for h in cluster_site.hosts()) or "none reachable"
         return err(f"No scheduler this workspace reaches knows job {job_id} ({known}).",
-                   hint="Check the id with slurm_queue(). A job that has already left "
-                        "both squeue and sacct cannot be watched, and one on a "
+                   hint="Check the id with slurm_queue(). A job its scheduler has "
+                        "already forgotten cannot be watched, and one on a "
                         "scheduler not listed above needs it added — "
                         "slurm_schedulers(add=\"<host>\").")
 
     try:
         # The host beside the id, so the watcher's polls go straight to it. A cache,
         # not a binding: a poll that finds it wrong sweeps again and rewrites it.
-        job_dir = slurm_site.record_job_dir(job_id, **{
-            slurm_site.ADOPTED_FILE: f"{note}\n" if note else "\n",
-            slurm_site.HOST_FILE: host,
+        job_dir = cluster_site.record_job_dir(job_id, **{
+            cluster_site.ADOPTED_FILE: f"{note}\n" if note else "\n",
+            cluster_site.HOST_FILE: host,
         })
     except OSError as exc:
         return err(f"Could not record the job: {exc}")
@@ -436,7 +440,7 @@ def adopt(job_id: str, note: str = "", scheduler: str = "") -> dict:
         "state": state,
         "raw_state": found.raw,
         "job_dir": job_dir,
-        "scheduler": slurm_site.name_of(host),
+        "scheduler": cluster_site.name_of(host),
         "note": note or None,
     }
     _add_placement(payload, found)
@@ -452,7 +456,7 @@ def adopt(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # that promises a resume it does not perform produces a model that ends its turn on
     # a guarantee nobody is holding — which is what the front-ends without a watcher
     # hook were handing out here.
-    payload["headline"] = (f"Slurm job {job_id} ({state}) is recorded as this "
+    payload["headline"] = (f"{scheduler_for(host).label} job {job_id} ({state}) is recorded as this "
                            "conversation's, and handed over to be watched.")
     # The plural key, like a status answer and unlike a submission: this call launched
     # nothing, it hands over a run already going. Singular says "this call started it",
@@ -469,16 +473,16 @@ def adopt(job_id: str, note: str = "", scheduler: str = "") -> dict:
 def cancel(job_id: str, scheduler: str = "") -> dict:
     """Cancel *job_id* when this conversation or its sub-agents submitted it (``slurm_cancel``)."""
     # Same Unix user is not ownership: other conversations and workspaces share it.
-    owned = slurm_site.owned_job_hosts(job_id)
+    owned = cluster_site.owned_job_hosts(job_id)
     if scheduler:
         scheduler = scheduler.strip()
-        owned &= {slurm_site.LOCAL if scheduler == slurm_site.LOCAL_NAME else scheduler}
+        owned &= {cluster_site.LOCAL if scheduler == cluster_site.LOCAL_NAME else scheduler}
     if not owned:
         # Submitted outside the cluster tools — by a launcher or a script — yet while a
         # command of this conversation ran, and no other conversation's did.
         named = scheduler.strip() if scheduler else ""
         launched = launched_from_this_session(
-            job_id, "" if named in ("", slurm_site.LOCAL_NAME) else named)
+            job_id, "" if named in ("", cluster_site.LOCAL_NAME) else named)
         if launched is not None:
             owned = {launched}
     if not owned:
@@ -489,21 +493,21 @@ def cancel(job_id: str, scheduler: str = "") -> dict:
                         "ask the user to cancel them where they were started.")
     if len(owned) > 1:
         return err(f"Job {job_id} was submitted here on several schedulers: "
-                   + ", ".join(slurm_site.name_of(h) for h in sorted(owned)) + ".",
+                   + ", ".join(cluster_site.name_of(h) for h in sorted(owned)) + ".",
                    hint="Name the one to cancel on with scheduler=.")
     # Only the scheduler it was submitted to: the same id elsewhere is another job.
     host = next(iter(owned))
     located = normalized_job_state(job_id, host=host)
     if located.state == "unknown":
-        return err(f"{slurm_site.name_of(host)} no longer knows job {job_id}, "
+        return err(f"{cluster_site.name_of(host)} no longer knows job {job_id}, "
                    "so there is nothing to cancel.",
                    hint="List what is running with slurm_queue(scheduler=...).")
 
-    q = cli.run_argv(["squeue", "-h", "-j", job_id, "-o", "%u|%T"], TIMEOUT_READ,
-                  host=host)
+    sched = scheduler_for(host)
+    q = cli.run_argv(shlex.split(sched.owner_command(job_id)), TIMEOUT_READ, host=host)
     line = (q.get("stdout") or "").strip().splitlines()
     if q.get("status") != "ok" or not line:
-        return err(f"Job {job_id} is not in {slurm_site.name_of(host)}'s queue, so there is "
+        return err(f"Job {job_id} is not in {cluster_site.name_of(host)}'s queue, so there is "
                    "nothing to cancel.",
                    hint=f"Its last known state: {located.raw or located.state}.")
     owner, _, queued_state = line[0].partition("|")
@@ -512,13 +516,13 @@ def cancel(job_id: str, scheduler: str = "") -> dict:
         return err(f"Job {job_id} belongs to '{owner.strip()}', not to you ('{user}').",
                    hint="Only your own jobs can be cancelled from here.")
 
-    res = cli.run_argv(["scancel", job_id], TIMEOUT_SUBMIT, host=host)
+    res = cli.run_argv([sched.cancel_command, job_id], TIMEOUT_SUBMIT, host=host)
     if res.get("status") != "ok":
-        return err(res.get("stderr") or res.get("error", "scancel failed"))
+        return err(res.get("stderr") or res.get("error", f"{sched.cancel_command} failed"))
     return ok({
         "job_id": job_id,
         "was": queued_state.strip(),
-        "scheduler": slurm_site.name_of(host),
-        "note": f"Slurm job {job_id} cancelled on {slurm_site.name_of(host)} "
+        "scheduler": cluster_site.name_of(host),
+        "note": f"{sched.label} job {job_id} cancelled on {cluster_site.name_of(host)} "
                 f"(it was {queued_state.strip().lower()}).",
     })

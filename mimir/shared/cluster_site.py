@@ -1,13 +1,15 @@
-"""Which Slurm schedulers this workspace reaches, learned from successful calls.
+"""Which batch schedulers (Slurm, LSF) this workspace reaches, learned from successful calls.
 
-The bash server records a host whenever an ``ssh <host> <slurm command>`` succeeds
-(from its own parse, never from text); the hpc server sends its commands there.
-Several hosts at once, filed per workspace; job directories are per session.
+The bash server records a host whenever an ``ssh <host> <scheduler command>`` succeeds
+(from its own parse, never from text), with the kind of scheduler the command proved;
+the hpc and proxy servers send their commands there, spelled by that kind
+(``shared/schedulers``). Several hosts at once, filed per workspace; job directories
+are per session.
 """
 
 from __future__ import annotations
 
-from typing import Callable, NamedTuple
+from typing import Callable
 
 import os
 import re
@@ -15,18 +17,16 @@ import shlex
 import subprocess
 import time
 
-from . import cpu_facts
+from . import schedulers
 from .jobs import SLURM_JOB_ID
+from .schedulers import UNKNOWN_JOB, JobState, Scheduler, array_base
 from .shell_paths import ShellParseError, parse_segments, unwrap_argv
 from .state_paths import session_family, session_state_dir, sessions_root, state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
 # of these, and that succeeded, proves the far side has a scheduler — no other host
-# would have answered it.
-SLURM_COMMANDS = frozenset({
-    "squeue", "sbatch", "sacct", "sinfo", "scontrol", "salloc", "scancel", "sstat",
-    "sacctmgr", "sprio", "sshare", "srun",
-})
+# would have answered it — and which kind.
+SCHEDULER_COMMANDS = schedulers.ALL_COMMANDS
 
 # ``ssh`` options that take a separate value, so the host is not mistaken for one of
 # them. Only what ssh actually defines — an unknown flag is left to the fallback of
@@ -44,33 +44,24 @@ LOCAL = ""
 # What the model spells to mean LOCAL, since "" at a tool boundary is "unspecified".
 LOCAL_NAME = "local"
 
-# The workspace's registry of reachable schedulers, one host per line.
+# The workspace's registry of reachable schedulers, one host per line, then its kind
+# when it is not Slurm (``login2 lsf``).
 _FILENAME = "slurm_hosts"
 
-# In a job descriptor: the scheduler that job is on. Empty contents mean LOCAL, and an
-# absent file means a descriptor written before the host was recorded with it — see
-# :func:`job_host`, which answers None there rather than guessing.
+# In a job descriptor: the host of the scheduler that job is on. Empty contents mean
+# LOCAL, and an absent file means a descriptor written before the host was recorded
+# with it — see :func:`job_host`, which answers None there rather than guessing.
 HOST_FILE = "slurm_host"
 
-# Whether this host has Slurm, memoised: asked on every call that reaches a scheduler,
-# and the answer cannot change under a running process. Named apart from ``LOCAL``,
-# which is a host and not a yes/no.
-_HAS_SLURM: bool | None = None
+# The kind of scheduler this host answers for (``""`` for none), memoised: asked on
+# every call that reaches a scheduler, and the answer cannot change under a running
+# process. None until probed.
+_LOCAL_KIND: str | None = None
 
 # Short, because this runs inside a tool call the user is waiting on, and a login shell
 # that takes longer than this to answer "command -v" is not going to be this server's
 # fast path anyway.
 _LOCAL_PROBE_TIMEOUT = 10
-
-# How :func:`queued_ids` asks: ids only, unheadered, and ``$USER`` left for the far
-# side's shell to expand, because the account that matters is the one the scheduler
-# knows rather than the one this process runs as.
-_QUEUED_IDS_COMMAND = "squeue -h -u $USER -o '%i'"
-
-# The same, with each job's submit time turned into epoch seconds where it is known.
-_QUEUED_SUBMISSIONS_COMMAND = (
-    "squeue -h -u $USER -o '%i|%V' | while IFS='|' read -r job at; "
-    'do echo "$job|$(date -d "$at" +%s)"; done')
 
 # ``BatchMode=yes`` is not optional: a poller that can be asked for a password hangs for
 # its timeout on every tick instead of answering. No ssh *options* beyond that pair — an
@@ -136,7 +127,7 @@ def read_lines(script: str, timeout: float = 15.0, *, host: str = LOCAL) -> list
 
 def queued_ids(timeout: float = 15.0, *, host: str = LOCAL) -> list[str] | None:
     """The job ids *host* has queued for this user, or None ("unknown", never "nothing")."""
-    return read_lines(_QUEUED_IDS_COMMAND, timeout, host=host)
+    return read_lines(scheduler_for(host).queued_ids_command, timeout, host=host)
 
 
 def queued_submissions(timeout: float = 15.0, *, host: str = LOCAL) -> dict[str, float] | None:
@@ -144,7 +135,7 @@ def queued_submissions(timeout: float = 15.0, *, host: str = LOCAL) -> dict[str,
 
     The time is read on *host*, in its own time zone, as epoch seconds.
     """
-    lines = read_lines(_QUEUED_SUBMISSIONS_COMMAND, timeout, host=host)
+    lines = read_lines(scheduler_for(host).queued_submissions_command, timeout, host=host)
     if lines is None:
         return None
     out: dict[str, float] = {}
@@ -183,18 +174,18 @@ def ssh_target(argv: list[str]) -> tuple[str, list[str]]:
     return host, rest
 
 
-def slurm_host_from_ssh(argv: list[str]) -> str:
-    """The host an ``ssh`` argv reached a Slurm command on, or ""."""
+def scheduler_from_ssh(argv: list[str]) -> tuple[str, str]:
+    """``(host, kind)`` of the scheduler an ``ssh`` argv reached, or ``("", "")``."""
     host, rest = ssh_target(argv)
-    if not host or not rest or not _runs_slurm(" ".join(rest)):
-        return ""
+    kind = scheduler_named(" ".join(rest)) if host and rest else ""
     # A user@host target reaches the same scheduler; the account is ssh's business and
     # is kept, so the recorded target is exactly what worked.
-    return host
+    return (host, kind) if kind else ("", "")
 
 
-def _runs_slurm(remote: str) -> bool:
-    """Whether the command line *remote* runs a Slurm command anywhere in its chain.
+def scheduler_named(remote: str) -> str:
+    """The kind of scheduler the command line *remote* runs a command of, anywhere in
+    its chain, or "".
 
     Anywhere, not first: ``cd run && module load x && srun ./solver`` is the ordinary
     shape. A command behind a wrapper counts, and ``srun`` is itself one.
@@ -202,7 +193,7 @@ def _runs_slurm(remote: str) -> bool:
     try:
         segments = parse_segments(remote)
     except ShellParseError:
-        return False
+        return ""
     for segment in segments:
         if not segment.argv:
             continue
@@ -210,9 +201,11 @@ def _runs_slurm(remote: str) -> bool:
         heads = [os.path.basename(w) for w in wrappers]
         if inner:
             heads.append(os.path.basename(inner[0]))
-        if any(head in SLURM_COMMANDS for head in heads):
-            return True
-    return False
+        for head in heads:
+            kind = schedulers.kind_of_command(head)
+            if kind:
+                return kind
+    return ""
 
 
 def _path() -> str:
@@ -225,20 +218,34 @@ def _path() -> str:
     return os.path.join(state_dir(), _FILENAME)
 
 
-def slurm_is_local() -> bool:
-    """Whether Slurm answers on this host through a login shell (probed once; failure means no)."""
-    global _HAS_SLURM
-    if _HAS_SLURM is None:
+def local_kind() -> str:
+    """The scheduler answering on this host through a login shell: ``slurm``, ``lsf`` or ""
+    (probed once; failure means none). Slurm first, where a site has both."""
+    global _LOCAL_KIND
+    if _LOCAL_KIND is None:
+        script = ('command -v sbatch >/dev/null && echo slurm && exit; '
+                  'command -v bsub >/dev/null && echo lsf; true')
         try:
             res = subprocess.run(
-                ["bash", "-lc", "command -v sbatch"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, timeout=_LOCAL_PROBE_TIMEOUT,
+                ["bash", "-lc", script],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, text=True, timeout=_LOCAL_PROBE_TIMEOUT,
             )
-            _HAS_SLURM = res.returncode == 0
+            found = res.stdout.strip().splitlines()
+            _LOCAL_KIND = found[-1] if found and found[-1] in schedulers.BY_KIND else ""
         except (OSError, subprocess.SubprocessError):
-            _HAS_SLURM = False
-    return _HAS_SLURM
+            _LOCAL_KIND = ""
+    return _LOCAL_KIND
+
+
+def scheduler_is_local() -> bool:
+    """Whether a scheduler, of any kind, answers on this host."""
+    return bool(local_kind())
+
+
+def slurm_is_local() -> bool:
+    """Whether the scheduler answering on this host is Slurm."""
+    return local_kind() == schedulers.SLURM.kind
 
 
 def name_of(host: str) -> str:
@@ -251,31 +258,53 @@ def name_of(host: str) -> str:
     return LOCAL_NAME if not host else host
 
 
-def hosts() -> list[str]:
-    """Every reachable scheduler: the local one first (by probe), then the learned ones in order."""
-    out = [LOCAL] if slurm_is_local() else []
+def _registry() -> dict[str, str]:
+    """``{host: kind}`` of the learned schedulers, in the order they were learned."""
     try:
         with open(_path()) as fh:
             lines = fh.read().splitlines()
     except OSError:
         lines = []
+    out: dict[str, str] = {}
     for line in lines:
-        host = line.strip()
-        if valid_host(host) and host not in out:
-            out.append(host)
+        words = line.split()
+        if not words or not valid_host(words[0]) or words[0] in out:
+            continue
+        kind = words[1] if len(words) > 1 else schedulers.SLURM.kind
+        out[words[0]] = kind if kind in schedulers.BY_KIND else schedulers.SLURM.kind
     return out
 
 
-def record_host(host: str) -> None:
-    """Add *host* to the workspace's schedulers if new (never raises)."""
+def hosts() -> list[str]:
+    """Every reachable scheduler: the local one first (by probe), then the learned ones in order."""
+    out = [LOCAL] if scheduler_is_local() else []
+    return out + [host for host in _registry() if host not in out]
+
+
+def kind_of(host: str) -> str:
+    """The kind of the scheduler on *host*: the local probe's, else the registry's, else Slurm."""
+    if not host:
+        return local_kind() or schedulers.SLURM.kind
+    return _registry().get(host, schedulers.SLURM.kind)
+
+
+def scheduler_for(host: str) -> Scheduler:
+    """How to speak to the scheduler on *host* (``shared/schedulers``)."""
+    return schedulers.BY_KIND[kind_of(host)]
+
+
+def record_host(host: str, kind: str = schedulers.SLURM.kind) -> None:
+    """Add *host* to the workspace's schedulers if new (never raises); a Slurm host is
+    written bare, the way a line with no kind reads."""
     host = (host or "").strip()
-    if not valid_host(host) or host in hosts():
+    if not valid_host(host) or host in hosts() or kind not in schedulers.BY_KIND:
         return
     path = _path()
+    line = host if kind == schedulers.SLURM.kind else f"{host} {kind}"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as fh:
-            fh.write(host + "\n")
+            fh.write(line + "\n")
     except OSError:
         pass
 
@@ -289,11 +318,11 @@ def forget_host(host: str) -> bool:
             lines = [line.strip() for line in fh.read().splitlines() if line.strip()]
     except OSError:
         return False
-    if host not in lines:
+    if host not in [line.split()[0] for line in lines]:
         return False
     try:
         with open(path, "w") as fh:
-            fh.write("".join(f"{h}\n" for h in lines if h != host))
+            fh.write("".join(f"{line}\n" for line in lines if line.split()[0] != host))
     except OSError:
         return False
     return True
@@ -308,9 +337,9 @@ def resolve_host(requested: str = "") -> tuple[str, str]:
     requested = (requested or "").strip()
     known = hosts()
     if requested == LOCAL_NAME:
-        if not slurm_is_local():
-            return "", ("No Slurm command answers on this host, so there is no local "
-                        "scheduler to use. " + _choices(known))
+        if not scheduler_is_local():
+            return "", ("No Slurm or LSF command answers on this host, so there is no "
+                        "local scheduler to use. " + _choices(known))
         return LOCAL, ""
     if requested:
         return (requested, "") if valid_host(requested) else ("", _invalid(requested))
@@ -319,8 +348,8 @@ def resolve_host(requested: str = "") -> tuple[str, str]:
     if not known:
         return "", ("No scheduler answers on this host and none has been reached over "
                     "ssh yet. Read a queue through the shell once — "
-                    "ssh <host> \"squeue -u $USER\" — and it is learned, or name one "
-                    "with slurm_schedulers(add=\"<host>\").")
+                    "ssh <host> \"squeue -u $USER\" (or \"bjobs\" under LSF) — and it "
+                    "is learned, or name one with slurm_schedulers(add=\"<host>\").")
     return "", (f"This workspace reaches more than one scheduler ({_listed(known)}), "
                 "so where this goes is a choice rather than a default: pass "
                 "scheduler=. "
@@ -440,7 +469,7 @@ def _owned_jobs_roots() -> list[str]:
 
 
 def owned_jobs() -> dict[str, set[str]]:
-    """``{job id: hosts}`` this session and its sub-agents submitted: the gate of every ``scancel``.
+    """``{job id: hosts}`` this session and its sub-agents submitted: the gate of every cancellation.
 
     Adopted jobs and descriptors without a host are left out.
     """
@@ -464,7 +493,7 @@ def owned_job_hosts(job_id: str, owned: dict[str, set[str]] | None = None) -> se
         return set()
     if owned is None:
         owned = owned_jobs()
-    return (owned.get(job_id, set()) | owned.get(job_id.split("_", 1)[0], set()))
+    return (owned.get(job_id, set()) | owned.get(array_base(job_id), set()))
 
 
 def owns_job(job_id: str, host: str,
@@ -487,7 +516,7 @@ def covered_by(job_id: str, recorded: set[tuple[str | None, str]],
     """Whether *recorded* covers *job_id* on *host*, an array's tasks by their base id."""
     if not job_id:
         return False
-    ids = {job_id, job_id.split("_", 1)[0]}
+    ids = {job_id, array_base(job_id)}
     for rec_host, rec_id in recorded:
         if rec_id in ids and (host is None or rec_host is None or rec_host == host):
             return True
@@ -514,7 +543,7 @@ def unwatched(queued_ids, *, host: str) -> list[str]:
     out: dict[str, None] = {}
     for job_id in queued_ids:
         if job_id and not covered_by(job_id, recorded, host):
-            out.setdefault(job_id.split("_", 1)[0], None)
+            out.setdefault(array_base(job_id), None)
     return list(out)
 
 
@@ -549,83 +578,18 @@ def unwatched_hint(by_host: dict[str, list[str]]) -> str:
             + " — so name it: slurm_watch(job_id, scheduler=...).")
 
 
-# ── A job's state, read into the run words ────────────────────────────────────────────────────────────────────
-_ACTIVE = ("RUNNING", "COMPLETING")
-_WAITING = ("PENDING", "CONFIGURING", "REQUEUED")
-# Prefixes, because Slurm qualifies some words ("CANCELLED by 1234").
-_CRASH_PREFIXES = ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
-                   "BOOT_FAIL", "DEADLINE", "PREEMPTED")
-_DONE_PREFIXES = ("COMPLETED",)
+# ── A job's state, read into the run words ─────────────────────────────────────
+
+def job_state(job_id: str, run_lines, host: str) -> JobState:
+    """The :class:`JobState` of a job on *host*'s scheduler; *run_lines* runs a command there."""
+    return scheduler_for(host).state(job_id, run_lines)
 
 
-def _crashed(word: str) -> bool:
-    return word.startswith(_CRASH_PREFIXES)
+def job_state_on(job_id: str, host: str, timeout: float = 15.0) -> JobState | None:
+    """:func:`job_state` of *job_id* on *host*, or None when nothing there answered.
 
-
-def _done(word: str) -> bool:
-    return word.startswith(_DONE_PREFIXES)
-
-
-class SlurmJobState(NamedTuple):
-    """What the scheduler says of a job: its run word, Slurm's own words, where it is.
-
-    *nodes* only while it runs; *partitions* while it is queued or running (a pending job
-    submitted to several lists them all).
-    """
-
-    state: str
-    raw: str = ""
-    nodes: list[str] = []
-    partitions: list[str] = []
-
-
-UNKNOWN_JOB = SlurmJobState("unknown")
-
-
-def slurm_state(job_id: str, run_lines: Callable[[str], list[str]]) -> SlurmJobState:
-    """The :class:`SlurmJobState` of a job; *run_lines* runs a command on its scheduler.
-
-    ``squeue``, then ``sacct``. For an array, any live element keeps it live and the
-    verdict is the worst element's. An ended word in squeue settles the job without sacct,
-    all a site without accounting has. Names keep Slurm's case: the panel matches sinfo's.
-    """
-    queued, where, parts = [], [], []
-    for row in run_lines(f"squeue -j {shlex.quote(job_id)} -h -o '%T|%R|%P'"):
-        word, _, rest = row.partition("|")
-        reason_or_node, _, partition = rest.partition("|")
-        queued.append(word.strip().upper())
-        where.append(reason_or_node.strip())
-        parts.append(partition.strip())
-    raw = ",".join(sorted(set(queued)))
-    live = [p for word, p in zip(queued, parts) if word in _ACTIVE or word in _WAITING]
-    partitions = sorted({name for p in live for name in p.split(",") if name})
-    if any(word in _ACTIVE for word in queued):
-        nodes = sorted({node for word, expr in zip(queued, where) if word in _ACTIVE
-                        for node in cpu_facts.expand_hostlist(expr) if node})
-        return SlurmJobState("running", raw, nodes, partitions)
-    if queued and all(word in _WAITING for word in queued):
-        return SlurmJobState("pending", raw, [], partitions)
-    if queued and all(_done(w) or _crashed(w) for w in queued):
-        return SlurmJobState("crashed" if any(_crashed(w) for w in queued) else "done", raw)
-
-    accounted = [line.strip().upper()
-                 for line in run_lines(f"sacct -j {shlex.quote(job_id)} -n -X -o State")]
-    sraw = ",".join(sorted(set(accounted)))
-    if any(_crashed(word) for word in accounted):
-        return SlurmJobState("crashed", sraw)
-    if accounted and all(_done(word) for word in accounted):
-        return SlurmJobState("done", sraw)
-    if queued:                    # in the queue under a non-standard active word
-        return SlurmJobState("running", raw, [], partitions)
-    if accounted:                 # some other terminal word
-        return SlurmJobState("crashed", sraw)
-    return UNKNOWN_JOB
-
-
-def job_state_on(job_id: str, host: str, timeout: float = 15.0) -> SlurmJobState | None:
-    """:func:`slurm_state` of *job_id* on *host*, or None when nothing there answered.
-
-    One read failing says nothing: ``squeue -j`` exits non-zero on a job it has forgotten.
+    One read failing says nothing: ``squeue -j`` and ``bjobs`` exit non-zero on a job
+    they have forgotten.
     """
     answers: list[bool] = []
 
@@ -634,13 +598,13 @@ def job_state_on(job_id: str, host: str, timeout: float = 15.0) -> SlurmJobState
         answers.append(lines is not None)
         return lines or []
 
-    found = slurm_state(job_id, run_lines)
+    found = job_state(job_id, run_lines, host)
     return found if any(answers) else None
 
 
-def locate_slurm_job(hint: str | None, hosts: list[str],
-                     state_on: Callable[[str], SlurmJobState]
-                     ) -> tuple[str | None, SlurmJobState]:
+def locate_job(hint: str | None, hosts: list[str],
+               state_on: Callable[[str], JobState]
+               ) -> tuple[str | None, JobState]:
     """``(host, state_on(host))`` for the first scheduler that knows the job, its recorded
     *hint* first; ``(None, UNKNOWN_JOB)`` when none does."""
     order = ([hint] if hint is not None else []) + [h for h in hosts if h != hint]

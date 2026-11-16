@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mimir.shared import jobs, slurm_site
+from mimir.shared import jobs, cluster_site
 from mimir.shared.processes import session_argvs
-from mimir.shared.slurm_site import SlurmJobState
+from mimir.shared.schedulers import JobState
 from mimir.tests.support.scheduler import local_slurm
 from mimir.servers.workspace import bash_exec, bash_jobs, bash_slurm, bash_validation, server_bash
 
@@ -21,13 +21,13 @@ class Cluster:
     """A scheduler reduced to what the code reads of it."""
 
     def __init__(self) -> None:
-        self.states: dict[str, SlurmJobState] = {}
+        self.states: dict[str, JobState] = {}
         self.submitted: dict[str, float] = {}
         self.silent = False
         self.scancelled: list[str] = []
 
     def job_state_on(self, job_id: str, host: str, timeout: float = 15.0):
-        return None if self.silent else self.states.get(job_id, slurm_site.UNKNOWN_JOB)
+        return None if self.silent else self.states.get(job_id, cluster_site.UNKNOWN_JOB)
 
     def queued_submissions(self, timeout: float = 15.0, *, host: str = ""):
         return dict(self.submitted)
@@ -54,7 +54,7 @@ class ScriptJobTests(unittest.TestCase):
         local_slurm(self)
         self.cluster = Cluster()
         for name in ("job_state_on", "queued_submissions", "read_lines"):
-            stub = patch.object(slurm_site, name, getattr(self.cluster, name))
+            stub = patch.object(cluster_site, name, getattr(self.cluster, name))
             stub.start()
             self.addCleanup(stub.stop)
 
@@ -78,7 +78,7 @@ class ScriptJobTests(unittest.TestCase):
         return bash_jobs.state(key)
 
     def test_a_detached_script_reads_as_its_job_on_the_node(self):
-        self.cluster.states["42"] = SlurmJobState("running", "RUNNING", ["n012"], ["gpu"])
+        self.cluster.states["42"] = JobState("running", "RUNNING", ["n012"], ["gpu"])
         key = self._launch(self._script('echo "Submitted batch job 42"'))["job_key"]
         status = self._status_once_exited(key)
         self.assertEqual(status["state"], "running")
@@ -88,23 +88,23 @@ class ScriptJobTests(unittest.TestCase):
         self.assertEqual(status["scheduler"], "local")
 
     def test_the_run_ends_with_its_job_and_on_its_verdict(self):
-        self.cluster.states["42"] = SlurmJobState("pending", "PENDING")
+        self.cluster.states["42"] = JobState("pending", "PENDING")
         key = self._launch(self._script('echo "Submitted batch job 42"'))["job_key"]
         self.assertEqual(self._status_once_exited(key)["state"], "pending")
-        self.cluster.states["42"] = SlurmJobState("crashed", "FAILED")
+        self.cluster.states["42"] = JobState("crashed", "FAILED")
         self.assertEqual(bash_jobs.state(key)["state"], "crashed")
         # Settled on disk: the scheduler is not asked again, and may have forgotten it.
         self.cluster.states.clear()
         self.assertEqual(bash_jobs.state(key)["state"], "crashed")
 
     def test_srun_waiting_in_the_queue_is_recognised(self):
-        self.cluster.states["7"] = SlurmJobState("running", "RUNNING", ["n1"])
+        self.cluster.states["7"] = JobState("running", "RUNNING", ["n1"])
         key = self._launch(self._script(
             'echo "srun: job 7 queued and waiting for resources" >&2'))["job_key"]
         self.assertEqual(self._status_once_exited(key)["job_id"], "7")
 
     def test_a_silent_script_is_found_in_the_queue(self):
-        self.cluster.states["9_1"] = SlurmJobState("running", "RUNNING", ["n3"])
+        self.cluster.states["9_1"] = JobState("running", "RUNNING", ["n3"])
         self.cluster.states["9"] = self.cluster.states["9_1"]
         script = self._script("sbatch --parsable job.sbatch >/dev/null")
         self.cluster.submitted["9_1"] = time.time()
@@ -112,7 +112,7 @@ class ScriptJobTests(unittest.TestCase):
         self.assertEqual(self._status_once_exited(key)["slurm_jobs"], ["9"])
 
     def test_a_submission_outside_the_run_is_left_out(self):
-        self.cluster.states["5"] = SlurmJobState("running", "RUNNING", ["n3"])
+        self.cluster.states["5"] = JobState("running", "RUNNING", ["n3"])
         self.cluster.submitted["5"] = time.time() - 3600
         key = self._launch(self._script("sbatch --parsable job.sbatch >/dev/null || true"))["job_key"]
         status = self._status_once_exited(key)
@@ -120,7 +120,7 @@ class ScriptJobTests(unittest.TestCase):
         self.assertNotIn("job_id", status)
 
     def test_a_script_that_names_no_slurm_never_asks_the_queue(self):
-        with patch.object(slurm_site, "queued_submissions") as asked:
+        with patch.object(cluster_site, "queued_submissions") as asked:
             key = self._launch(self._script("echo built"))["job_key"]
             status = self._status_once_exited(key)
         self.assertEqual(status["state"], "done")
@@ -135,16 +135,16 @@ class ScriptJobTests(unittest.TestCase):
         self.assertNotIn("job_id", status)
 
     def test_an_id_read_back_from_an_old_log_is_not_a_job_of_this_run(self):
-        self.cluster.states["3"] = SlurmJobState("done", "COMPLETED")
+        self.cluster.states["3"] = JobState("done", "COMPLETED")
         Path(self.work, "old.out").write_text("Submitted batch job 3\n")
         key = self._launch("cat old.out")["job_key"]
         status = self._status_once_exited(key)
         self.assertEqual(status["state"], "done")
         self.assertNotIn("job_id", status)
-        self.assertEqual(slurm_site.recorded_jobs(), set())
+        self.assertEqual(cluster_site.recorded_jobs(), set())
 
     def test_a_silent_scheduler_is_no_verdict(self):
-        self.cluster.states["42"] = SlurmJobState("running", "RUNNING")
+        self.cluster.states["42"] = JobState("running", "RUNNING")
         key = self._launch(self._script('echo "Submitted batch job 42"'))["job_key"]
         self._status_once_exited(key)
         self.cluster.silent = True
@@ -153,14 +153,14 @@ class ScriptJobTests(unittest.TestCase):
         self.assertEqual(bash_jobs.state(key)["state"], "running")
 
     def test_a_job_found_is_the_session_s_own(self):
-        self.cluster.states["42"] = SlurmJobState("running", "RUNNING")
+        self.cluster.states["42"] = JobState("running", "RUNNING")
         key = self._launch(self._script('echo "Submitted batch job 42"'))["job_key"]
         self._status_once_exited(key)
-        self.assertEqual(slurm_site.owned_job_hosts("42"), {""})
-        self.assertEqual(slurm_site.unwatched(["42"], host=""), [])
+        self.assertEqual(cluster_site.owned_job_hosts("42"), {""})
+        self.assertEqual(cluster_site.unwatched(["42"], host=""), [])
 
     def test_stopping_the_run_cancels_its_jobs(self):
-        self.cluster.states["42"] = SlurmJobState("running", "RUNNING")
+        self.cluster.states["42"] = JobState("running", "RUNNING")
         key = self._launch(self._script('echo "Submitted batch job 42"; sleep 30'))["job_key"]
         deadline = time.time() + 10
         while "job_id" not in bash_jobs.state(key) and time.time() < deadline:
@@ -170,7 +170,7 @@ class ScriptJobTests(unittest.TestCase):
         self.assertEqual(stopped["cancelled_slurm_jobs"], ["42"])
 
     def test_a_restart_sees_a_run_its_job_keeps_going(self):
-        self.cluster.states["42"] = SlurmJobState("running", "RUNNING")
+        self.cluster.states["42"] = JobState("running", "RUNNING")
         key = self._launch(self._script('echo "Submitted batch job 42"'))["job_key"]
         self._status_once_exited(key)
         job_dir = bash_jobs.job_dir(key)
@@ -182,11 +182,11 @@ class ScriptJobTests(unittest.TestCase):
         self.assertEqual(watcher["job_key"], key)
 
     def test_a_blocking_script_hands_its_job_over(self):
-        self.cluster.states["42"] = SlurmJobState("pending", "PENDING")
+        self.cluster.states["42"] = JobState("pending", "PENDING")
         result = server_bash.bash_run(self._script('echo "Submitted batch job 42"'))
         self.assertEqual(result["slurm_jobs"], ["42"])
         self.assertEqual([d["job_key"] for d in jobs.handed_over(result)], ["42"])
-        self.assertEqual(slurm_site.owned_job_hosts("42"), {""})
+        self.assertEqual(cluster_site.owned_job_hosts("42"), {""})
 
     def test_a_scheduler_reached_through_ssh_is_learned(self):
         self.assertEqual(
@@ -197,7 +197,7 @@ class ScriptJobTests(unittest.TestCase):
         # The host is a variable of the script and srun prints nothing: only the running
         # process says where the job went.
         local_slurm(self, False)
-        self.cluster.states["777"] = SlurmJobState("running", "RUNNING", ["node017"], ["gpu"])
+        self.cluster.states["777"] = JobState("running", "RUNNING", ["node017"], ["gpu"])
         stubs = os.path.join(self.root, "stubs")
         os.makedirs(stubs)
         Path(stubs, "ssh").write_text("#!/bin/bash\nexec -a ssh sleep 30\n")
@@ -217,7 +217,7 @@ class ScriptJobTests(unittest.TestCase):
         self.assertEqual(status["job_id"], "777")
         self.assertEqual(status["scheduler"], "front1")
         self.assertEqual(status["nodes"], ["node017"])
-        self.assertIn("front1", slurm_site.hosts())
+        self.assertIn("front1", cluster_site.hosts())
 
     def test_the_processes_of_a_run_are_read_from_its_session(self):
         key = self._launch(self._script("sleep 30", "wait.sh"))["job_key"]
@@ -242,22 +242,22 @@ class ScriptJobTests(unittest.TestCase):
     def test_a_script_is_read_where_the_chain_runs_it(self):
         os.makedirs(os.path.join(self.work, "sub"))
         self._script("srun ./a.out", "sub/go.sh")
-        self.assertTrue(bash_slurm.runs_slurm_script("cd sub && ./go.sh", self.work))
-        self.assertFalse(bash_slurm.runs_slurm_script("./go.sh", self.work))
-        self.assertTrue(bash_slurm.runs_slurm_script("timeout 60 ./sub/go.sh", self.work))
-        self.assertTrue(bash_slurm.runs_slurm_script("python3 -u sub/go.sh", self.work))
+        self.assertTrue(bash_slurm.runs_batch_script("cd sub && ./go.sh", self.work))
+        self.assertFalse(bash_slurm.runs_batch_script("./go.sh", self.work))
+        self.assertTrue(bash_slurm.runs_batch_script("timeout 60 ./sub/go.sh", self.work))
+        self.assertTrue(bash_slurm.runs_batch_script("python3 -u sub/go.sh", self.work))
 
 
 class StateOnTests(unittest.TestCase):
     def test_a_forgotten_job_is_not_a_silent_scheduler(self):
         answers = iter([None, ["42|COMPLETED|0:0"]])
-        with patch.object(slurm_site, "read_lines", lambda *a, **k: next(answers)):
-            found = slurm_site.job_state_on("42", "")
+        with patch.object(cluster_site, "read_lines", lambda *a, **k: next(answers)):
+            found = cluster_site.job_state_on("42", "")
         self.assertIsNotNone(found)
 
     def test_nothing_answering_is_none(self):
-        with patch.object(slurm_site, "read_lines", lambda *a, **k: None):
-            self.assertIsNone(slurm_site.job_state_on("42", ""))
+        with patch.object(cluster_site, "read_lines", lambda *a, **k: None):
+            self.assertIsNone(cluster_site.job_state_on("42", ""))
 
 
 if __name__ == "__main__":

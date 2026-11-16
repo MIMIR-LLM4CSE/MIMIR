@@ -545,14 +545,14 @@ class ProxySlurmScriptTests(_RatchetFixture):
         pin_local_scheduler(self)
 
     def test_header_keeps_one_node_and_adds_targeting(self) -> None:
-        from mimir.servers.proxy._lib.command import sbatch_header_lines
-        plain = sbatch_header_lines(job_name="j", partition="p", cpus_per_task=8,
+        from mimir.servers.proxy._lib.command import batch_header_lines
+        plain = batch_header_lines(job_name="j", partition="p", cpus_per_task=8,
                                wall_time="01:00:00", mem="32G", log_file="/x/log")
         self.assertIn("#SBATCH --nodes=1", plain)
         self.assertIn("#SBATCH --ntasks=1", plain)
         self.assertIn("#SBATCH --mem=32G", plain)
         self.assertFalse([ln for ln in plain if "--exclusive" in ln or "--constraint" in ln])
-        aimed = sbatch_header_lines(job_name="j", partition="p", cpus_per_task=8,
+        aimed = batch_header_lines(job_name="j", partition="p", cpus_per_task=8,
                                wall_time="01:00:00", mem="32G", log_file="/x/log",
                                constraint="icelake", exclusive=True, ntasks=4)
         for want in ("#SBATCH --constraint=icelake", "#SBATCH --exclusive", "#SBATCH --ntasks=4"):
@@ -567,13 +567,13 @@ class ProxySlurmScriptTests(_RatchetFixture):
             seen["script"] = script
             return "321", None
 
-        orig = slurm_ops.submit_sbatch
-        slurm_ops.submit_sbatch = fake_submit
+        orig = slurm_ops.submit_batch
+        slurm_ops.submit_batch = fake_submit
         try:
-            res = server_proxy.proxy_slurm(op="eval", partition="cpu", constraint="icelake",
+            res = server_proxy.proxy_cluster(op="eval", partition="cpu", constraint="icelake",
                                            confirm=True)
         finally:
-            slurm_ops.submit_sbatch = orig
+            slurm_ops.submit_batch = orig
         self.assertEqual(res.get("status"), "ok")
         script = seen["script"]
         self.assertIn("#SBATCH --exclusive", script)          # a timing: default on
@@ -590,16 +590,16 @@ class ProxySlurmScriptTests(_RatchetFixture):
             seen["s"] = script
             return "1", None
 
-        orig = slurm_ops.submit_sbatch
-        slurm_ops.submit_sbatch = fake_submit
+        orig = slurm_ops.submit_batch
+        slurm_ops.submit_batch = fake_submit
         try:
-            server_proxy.proxy_slurm(op="run", partition="cpu", proxy_name="tiny", confirm=True)
+            server_proxy.proxy_cluster(op="run", partition="cpu", proxy_name="tiny", confirm=True)
         finally:
-            slurm_ops.submit_sbatch = orig
+            slurm_ops.submit_batch = orig
         self.assertNotIn("--exclusive", seen["s"])
         self.assertIn('"$_MIMIR_PY"', seen["s"])              # post-run step on the node
 
     def test_bad_constraint_is_refused(self) -> None:
-        res = server_proxy.proxy_slurm(op="run", partition="cpu", proxy_name="tiny",
+        res = server_proxy.proxy_cluster(op="run", partition="cpu", proxy_name="tiny",
                                        constraint="x y", confirm=True)
         self.assertEqual(res.get("status"), "error")

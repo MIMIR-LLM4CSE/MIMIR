@@ -613,7 +613,7 @@ tools, so you can ask MIMIR to submit, monitor and cancel *your* jobs. See
 
 | MIMIR runs on | What it detects | Target machine by default |
 |---|---|---|
-| A workstation, no Slurm | `none` | this machine |
+| A workstation, no Slurm or LSF | `none` | this machine |
 | A login node | `login` | a compute node, or this machine if you say so |
 | A compute node, inside an allocation | `in_allocation` | this node |
 
@@ -622,7 +622,7 @@ does not know a node's CPU model, SIMD flags or native `-march`. MIMIR reads the
 the node with a short job (a few seconds, one approval). It keeps the result until
 Slurm's description of that node changes.
 
-The job, and the proxy's Slurm runs, need a MIMIR Python that starts on the node.
+The job, and the proxy's batch runs, need a MIMIR Python that starts on the node.
 They try, in order: `~/.mimir/bin/python` (the launcher `install.sh` writes), then
 `.venv-<os>-<arch>` in the checkout, then the server's own interpreter. A node with
 another OS or CPU than the login node needs its own install: run `install.sh` once
@@ -632,6 +632,40 @@ through the shell, but not toolchains or Python environments.
 A `srun` that MIMIR runs from a login node counts as a job submission. It asks for
 approval, and waits until a local check has passed if MIMIR edited code this session.
 Inside an allocation, `srun` only starts a step and asks nothing more.
+
+### LSF
+
+MIMIR recognises LSF the same way: `bjobs` on the `PATH` makes a host `login`, and
+`LSB_JOBID` with this host in `LSB_MCPU_HOSTS` makes it `in_allocation`. The
+`execution_context` says `scheduler: lsf`.
+
+From a login node, the agent submits to LSF through the same tools as to Slurm.
+`proxy_cluster` sends the optimization loop's runs, and `sbatch_submit` sends any
+other command. Both write a `#BSUB` script and pass it to `bsub`. `slurm_job_status`,
+`slurm_watch` and `slurm_cancel` follow the job with `bjobs` and `bhist`, and cancel
+it with `bkill`. The arguments keep Slurm's names: `partition` is the queue,
+`constraint` becomes a `select[]`, `account` a project (`-P`), and `wall_time` is
+rounded up to the minute. A build sent to its own queue runs ahead of the measurement:
+the run job waits on `-w "done(<build>)"`, and `-ti` kills it if the build fails. A
+remote LSF login node is learned like a Slurm one, after one `ssh <host> bjobs`, or
+with `slurm_schedulers(add=...)`. The partition and node listings (`slurm_partitions`,
+`slurm_nodes`, node profiles) read Slurm only. On LSF, the agent reads `bqueues` and
+`bhosts` through the shell. In the shell, `bsub` and `bkill` are refused, like
+`sbatch` and `scancel`, so every submission is tracked.
+
+You can also work from an allocation you open, with MIMIR started inside it:
+
+```bash
+bsub -Is -q <queue> -n 32 -x -W 8:00 bash      # an exclusive node, interactively
+export MIMIR_WS_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')
+python -m mimir.client.ui.ws.server.main --port 8765 --cwd <workspace>
+```
+
+From your machine, `ssh -J <login> -L 8765:localhost:8765 <node>` (the server stays
+bound to the node's loopback), then point `mimir.wsUrl` at `ws://localhost:8765` and
+`mimir.wsToken` at the token. There, `proxy_eval(op='run')` measures on the node. A
+session keeps its baseline across allocations as long as the nodes have the same
+hardware: it compares the machine signature, not the host name.
 
 ### Sub-agents on the cluster
 

@@ -24,7 +24,7 @@ from ...shared.cpu_facts import (
     parse_march,
     parse_nvidia_csv,
 )
-from ...shared.slurm_site import hosts as slurm_hosts, name_of as _host_name
+from ...shared.cluster_site import hosts as slurm_hosts, name_of as _host_name
 from .slurm_digest import cached_cluster_digest
 
 

@@ -28,7 +28,7 @@ SENSITIVE_TOOLS = {
     "delete_file", "bash_run", "bash_job_stop", "http_post",
     "salloc_submit", "sbatch_submit", "slurm_cancel", "slurm_probe_node", "memory_delete",
     "memory_clear", "memory_add", "memory_update", "todo_delete_plan",
-    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm", "proxy_merge",
+    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_cluster", "proxy_merge",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
@@ -38,14 +38,14 @@ PLAN_BLOCKED_TOOLS = {
     "append_file", "bash_job_stop", "delete_file", "replace_in_file",
     "replace_all_in_file", "replace_lines", "write_file",
     "http_post", "memory_delete", "memory_clear",
-    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm", "proxy_merge",
+    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_cluster", "proxy_merge",
     "salloc_submit", "sbatch_submit", "slurm_cancel",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
 NON_BATCH_TOOLS = {
     "bash_job_stop",
-    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
+    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_cluster",
     "salloc_submit", "sbatch_submit", "slurm_cancel", "slurm_probe_node",
     "bash_run", "http_post", "memory_delete",
     "memory_clear", "memory_add", "memory_update", "todo_delete_plan",
@@ -55,21 +55,21 @@ NON_BATCH_TOOLS = {
 # slurm_probe_node is not here: it runs no user code, so the "validate locally before
 # submitting" hold has nothing to wait for. It is still irreversible, hence approved.
 CLUSTER_SUBMIT_TOOLS = {
-    "salloc_submit", "sbatch_submit", "proxy_slurm",
+    "salloc_submit", "sbatch_submit", "proxy_cluster",
 }
 
 # Launchers of long detached runs a client watcher can track to completion. The
 # status ops that report such a run as still in flight are deliberately NOT here:
 # re-arming a watcher reads a descriptor's shape, not a reader's capabilities.
 BACKGROUNDABLE_TOOLS = {
-    "bash_run", "proxy_eval", "proxy_exec", "proxy_slurm", "sbatch_submit", "slurm_probe_node",
+    "bash_run", "proxy_eval", "proxy_exec", "proxy_cluster", "sbatch_submit", "slurm_probe_node",
     # A sub-agent the caller detaches: same handle, same watcher, same resume.
     "spawn_agent",
 }
 
 # Tools that publish a run channel while they block, so the user can move the run
 # they are waiting on to the background mid-flight. A strict subset of the above:
-# proxy_slurm and sbatch_submit return the moment they have submitted, so there is
+# proxy_cluster and sbatch_submit return the moment they have submitted, so there is
 # never a wait of theirs to divert.
 DIVERTIBLE_TOOLS = {
     "bash_run", "proxy_eval", "proxy_exec",
@@ -230,7 +230,7 @@ RISK_NOTE_TOOLS = {
     "bash_run", "bash_job_stop", "http_get", "http_post",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
     "salloc_submit", "sbatch_submit", "slurm_cancel", "memory_delete",
-    "memory_clear", "todo_delete_plan", "proxy_slurm", "slurm_probe_node",
+    "memory_clear", "todo_delete_plan", "proxy_cluster", "slurm_probe_node",
     "memory_add", "memory_update",
 }
 

@@ -26,7 +26,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 </style>
 <rect class="bg" width="1155" height="1026"/>
 <text class="head" x="14" y="26">MIMIR dependency map</text>
-<text class="meta" x="14" y="44">64 units · 288 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
+<text class="meta" x="14" y="44">65 units · 292 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
 <rect class="band" x="8" y="60" width="966" height="48" rx="4"/>
 <text class="label" x="14" y="82">rank 11</text>
 <text class="label" x="14" y="96">front-ends</text>
@@ -308,16 +308,17 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,296 C1082.5,579 339,579 339,862" stroke-width="2"><title>servers.hpc → shared.build_progress · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 275,525 275,754" stroke-width="3"><title>servers.hpc → shared.capabilities · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 437,579 437,862" stroke-width="3.3"><title>servers.hpc → shared.clock · 4 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,579 517,579 517,862" stroke-width="3.3"><title>servers.hpc → shared.cpu_facts · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,579 528,579 528,862" stroke-width="4"><title>servers.hpc → shared.cluster_site · 7 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,579 633,579 633,862" stroke-width="3.3"><title>servers.hpc → shared.cpu_facts · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 453,525 453,754" stroke-width="2.6"><title>servers.hpc → shared.embed · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,579 730.5,579 730.5,862" stroke-width="2.6"><title>servers.hpc → shared.job_script · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 757,525 757,754" stroke-width="2.6"><title>servers.hpc → shared.jobs · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 833.5,525 833.5,754" stroke-width="2"><title>servers.hpc → shared.launcher · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,579 614.5,579 614.5,862" stroke-width="2"><title>servers.hpc → shared.module_env · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,579 831.5,579 831.5,862" stroke-width="2"><title>servers.hpc → shared.module_env · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 1018,525 1018,754" stroke-width="4"><title>servers.hpc → shared.responses · 7 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,579 932.5,579 932.5,862" stroke-width="2"><title>servers.hpc → shared.schedulers · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,613 331.5,613 331.5,930" stroke-width="2"><title>servers.hpc → shared.secret_env · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,579 730,579 730,862" stroke-width="2"><title>servers.hpc → shared.shell_activity · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,579 853,579 853,862" stroke-width="2.6"><title>servers.hpc → shared.slurm_script · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,579 961.5,579 961.5,862" stroke-width="4"><title>servers.hpc → shared.slurm_site · 7 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,579 1048,579 1048,862" stroke-width="2"><title>servers.hpc → shared.shell_activity · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,545 517.5,545 517.5,794" stroke-width="3.3"><title>servers.hpc → shared.state_paths · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,395 C1082.5,574.5 275,574.5 275,754" stroke-width="2"><title>servers.interaction → shared.capabilities · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,395 C1082.5,574.5 1018,574.5 1018,754" stroke-width="2"><title>servers.interaction → shared.responses · 1 import(s)</title></path>
@@ -325,16 +326,17 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,494 C1082.5,624 180.5,624 180.5,754" stroke-width="4.5"><title>servers.proxy → shared.atomic · 34 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 339,678 339,862" stroke-width="3"><title>servers.proxy → shared.build_progress · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 275,624 275,754" stroke-width="2"><title>servers.proxy → shared.capabilities · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,678 528,678 528,862" stroke-width="2.6"><title>servers.proxy → shared.cluster_site · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 376.5,624 376.5,754" stroke-width="3.3"><title>servers.proxy → shared.code_map · 4 import(s)</title></path>
-<path class="edge deferred" d="M1082.5,494 C1082.5,678 517,678 517,862" stroke-width="2.6"><title>servers.proxy → shared.cpu_facts · 2 import(s)</title></path>
+<path class="edge deferred" d="M1082.5,494 C1082.5,678 633,678 633,862" stroke-width="2.6"><title>servers.proxy → shared.cpu_facts · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 536.5,624 536.5,754" stroke-width="2"><title>servers.proxy → shared.exec_seals · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,678 730.5,678 730.5,862" stroke-width="3"><title>servers.proxy → shared.job_script · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 757,624 757,754" stroke-width="2.6"><title>servers.proxy → shared.jobs · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 833.5,624 833.5,754" stroke-width="3.6"><title>servers.proxy → shared.launcher · 5 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 924,624 924,754" stroke-width="2"><title>servers.proxy → shared.processes · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,712 212.5,712 212.5,930" stroke-width="2"><title>servers.proxy → shared.protected_paths · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 1018,624 1018,754" stroke-width="3.8"><title>servers.proxy → shared.responses · 6 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,678 853,678 853,862" stroke-width="3"><title>servers.proxy → shared.slurm_script · 3 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,678 961.5,678 961.5,862" stroke-width="2.6"><title>servers.proxy → shared.slurm_site · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,678 932.5,678 932.5,862" stroke-width="2.6"><title>servers.proxy → shared.schedulers · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,644 517.5,644 517.5,794" stroke-width="3.3"><title>servers.proxy → shared.state_paths · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,593 C1082.5,673.5 275,673.5 275,754" stroke-width="3.3"><title>servers.utilities → shared.capabilities · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,593 C1082.5,673.5 1018,673.5 1018,754" stroke-width="3.3"><title>servers.utilities → shared.responses · 4 import(s)</title></path>
@@ -342,30 +344,32 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,692 C1082.5,723 180.5,723 180.5,754" stroke-width="2"><title>servers.workspace → shared.atomic · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 339,777 339,862" stroke-width="2.6"><title>servers.workspace → shared.build_progress · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 275,723 275,754" stroke-width="3.3"><title>servers.workspace → shared.capabilities · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,777 528,777 528,862" stroke-width="2.6"><title>servers.workspace → shared.cluster_site · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 376.5,723 376.5,754" stroke-width="2.6"><title>servers.workspace → shared.code_map · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 757,723 757,754" stroke-width="3.3"><title>servers.workspace → shared.jobs · 4 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,777 614.5,777 614.5,862" stroke-width="2"><title>servers.workspace → shared.module_env · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,777 831.5,777 831.5,862" stroke-width="2"><title>servers.workspace → shared.module_env · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 924,723 924,754" stroke-width="2.6"><title>servers.workspace → shared.processes · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 1018,723 1018,754" stroke-width="4.2"><title>servers.workspace → shared.responses · 8 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,777 730,777 730,862" stroke-width="2"><title>servers.workspace → shared.shell_activity · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,777 932.5,777 932.5,862" stroke-width="2"><title>servers.workspace → shared.schedulers · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,743 307.5,743 307.5,794" stroke-width="3.3"><title>servers.workspace → shared.shell_paths · 4 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,777 961.5,777 961.5,862" stroke-width="2.6"><title>servers.workspace → shared.slurm_site · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,743 517.5,743 517.5,794" stroke-width="3.8"><title>servers.workspace → shared.state_paths · 6 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,743 651,743 651,794" stroke-width="2"><title>servers.workspace → shared.trusted_read_roots · 1 import(s)</title></path>
 <path class="edge" d="M209,862 C209,841 517.5,841 517.5,820" stroke-width="2"><title>shared.approved_roots → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M339,862 C339,841 307.5,841 307.5,820" stroke-width="2"><title>shared.build_progress → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M528,862 C528,821 757,821 757,780" stroke-width="2"><title>shared.cluster_site → shared.jobs · 1 import(s)</title></path>
+<path class="edge" d="M528,862 C528,842 932.5,842 932.5,862" stroke-width="2.6"><title>shared.cluster_site → shared.schedulers · 2 import(s)</title></path>
+<path class="edge" d="M528,862 C528,841 307.5,841 307.5,820" stroke-width="2"><title>shared.cluster_site → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M528,862 C528,841 517.5,841 517.5,820" stroke-width="2"><title>shared.cluster_site → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M536.5,754 C536.5,734 180.5,734 180.5,754" stroke-width="2"><title>shared.exec_seals → shared.atomic · 1 import(s)</title></path>
 <path class="edge" d="M536.5,780 C536.5,787 517.5,787 517.5,794" stroke-width="2"><title>shared.exec_seals → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M198.5,794 C198.5,787 180.5,787 180.5,780" stroke-width="2"><title>shared.run_channel → shared.atomic · 1 import(s)</title></path>
 <path class="edge" d="M198.5,794 C198.5,787 924,787 924,780" stroke-width="2"><title>shared.run_channel → shared.processes · 1 import(s)</title></path>
 <path class="edge" d="M198.5,794 C198.5,774 517.5,774 517.5,794" stroke-width="2"><title>shared.run_channel → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M730,862 C730,821 757,821 757,780" stroke-width="2"><title>shared.shell_activity → shared.jobs · 1 import(s)</title></path>
-<path class="edge" d="M730,862 C730,821 924,821 924,780" stroke-width="2"><title>shared.shell_activity → shared.processes · 1 import(s)</title></path>
-<path class="edge" d="M730,862 C730,841 517.5,841 517.5,820" stroke-width="2"><title>shared.shell_activity → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M961.5,862 C961.5,842 517,842 517,862" stroke-width="2"><title>shared.slurm_site → shared.cpu_facts · 1 import(s)</title></path>
-<path class="edge" d="M961.5,862 C961.5,821 757,821 757,780" stroke-width="2"><title>shared.slurm_site → shared.jobs · 1 import(s)</title></path>
-<path class="edge" d="M961.5,862 C961.5,841 307.5,841 307.5,820" stroke-width="2"><title>shared.slurm_site → shared.shell_paths · 1 import(s)</title></path>
-<path class="edge" d="M961.5,862 C961.5,841 517.5,841 517.5,820" stroke-width="2"><title>shared.slurm_site → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M932.5,862 C932.5,842 633,842 633,862" stroke-width="2"><title>shared.schedulers → shared.cpu_facts · 1 import(s)</title></path>
+<path class="edge" d="M932.5,862 C932.5,842 730.5,842 730.5,862" stroke-width="2"><title>shared.schedulers → shared.job_script · 1 import(s)</title></path>
+<path class="edge" d="M1048,862 C1048,821 757,821 757,780" stroke-width="2"><title>shared.shell_activity → shared.jobs · 1 import(s)</title></path>
+<path class="edge" d="M1048,862 C1048,821 924,821 924,780" stroke-width="2"><title>shared.shell_activity → shared.processes · 1 import(s)</title></path>
+<path class="edge" d="M1048,862 C1048,841 517.5,841 517.5,820" stroke-width="2"><title>shared.shell_activity → shared.state_paths · 1 import(s)</title></path>
 </g>
 <g class="node engine"><title>client.agent_core</title><rect x="517.5" y="180" width="89" height="26" rx="4"/><text x="562" y="197" text-anchor="middle">agent_core</text></g>
 <g class="node found"><title>client.config</title><rect x="488" y="666" width="61" height="26" rx="4"/><text x="518.5" y="683" text-anchor="middle">config</text></g>
@@ -410,24 +414,25 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <g class="node shared"><title>shared.build_progress — How far along a build says it is, parsed from its output (never tracked).</title><rect x="280" y="862" width="118" height="26" rx="4"/><text x="339" y="879" text-anchor="middle">build_progress</text></g>
 <g class="node shared"><title>shared.capabilities — The server side of tool capabilities: :func:`tool_caps` declares what a tool means.</title><rect x="223" y="754" width="104" height="26" rx="4"/><text x="275" y="771" text-anchor="middle">capabilities</text></g>
 <g class="node shared"><title>shared.clock — The current time in UTC, in the three forms the servers write.</title><rect x="410" y="862" width="54" height="26" rx="4"/><text x="437" y="879" text-anchor="middle">clock</text></g>
+<g class="node shared"><title>shared.cluster_site — Which batch schedulers (Slurm, LSF) this workspace reaches, learned from successful calls.</title><rect x="476" y="862" width="104" height="26" rx="4"/><text x="528" y="879" text-anchor="middle">cluster_site</text></g>
 <g class="node shared"><title>shared.code_map — A workspace&#x27;s code as a map: its Python, C/C++ and Fortran files, the dependencies between</title><rect x="339" y="754" width="75" height="26" rx="4"/><text x="376.5" y="771" text-anchor="middle">code_map</text></g>
-<g class="node shared"><title>shared.cpu_facts — What a machine is, parsed the same way by the platform server, a Slurm probe and the</title><rect x="476" y="862" width="82" height="26" rx="4"/><text x="517" y="879" text-anchor="middle">cpu_facts</text></g>
+<g class="node shared"><title>shared.cpu_facts — What a machine is, parsed the same way by the platform server, a Slurm probe and the</title><rect x="592" y="862" width="82" height="26" rx="4"/><text x="633" y="879" text-anchor="middle">cpu_facts</text></g>
 <g class="node shared"><title>shared.embed — Backend-aware text embedding, with ``None`` (lexical fallback) on any failure.</title><rect x="426" y="754" width="54" height="26" rx="4"/><text x="453" y="771" text-anchor="middle">embed</text></g>
 <g class="node shared"><title>shared.exec_seals — Files a server seals for a conversation: not to be run directly, only through its tools.</title><rect x="492" y="754" width="89" height="26" rx="4"/><text x="536.5" y="771" text-anchor="middle">exec_seals</text></g>
 <g class="node shared"><title>shared.extension_paths — The user-extension directories under ``.mimir/`` and their resolution order.</title><rect x="593" y="754" width="125" height="26" rx="4"/><text x="655.5" y="771" text-anchor="middle">extension_paths</text></g>
+<g class="node shared"><title>shared.job_script — Building blocks of the batch scripts MIMIR submits.</title><rect x="686" y="862" width="89" height="26" rx="4"/><text x="730.5" y="879" text-anchor="middle">job_script</text></g>
 <g class="node shared"><title>shared.jobs — A detached run as the client and every server see it.</title><rect x="730" y="754" width="54" height="26" rx="4"/><text x="757" y="771" text-anchor="middle">jobs</text></g>
 <g class="node shared"><title>shared.launcher — How a bundled server or helper script is started: through ``servers/_launch.py``.</title><rect x="796" y="754" width="75" height="26" rx="4"/><text x="833.5" y="771" text-anchor="middle">launcher</text></g>
-<g class="node shared"><title>shared.module_env — Shared helpers for Environment Modules / Lmod shell initialization.</title><rect x="570" y="862" width="89" height="26" rx="4"/><text x="614.5" y="879" text-anchor="middle">module_env</text></g>
+<g class="node shared"><title>shared.module_env — Shared helpers for Environment Modules / Lmod shell initialization.</title><rect x="787" y="862" width="89" height="26" rx="4"/><text x="831.5" y="879" text-anchor="middle">module_env</text></g>
 <g class="node shared"><title>shared.processes — Whether a recorded pid is still the process that was recorded.</title><rect x="883" y="754" width="82" height="26" rx="4"/><text x="924" y="771" text-anchor="middle">processes</text></g>
 <g class="node shared"><title>shared.protected_paths — Workspace paths whose contents run later: a write there is asked about like leaving it.</title><rect x="150" y="930" width="125" height="26" rx="4"/><text x="212.5" y="947" text-anchor="middle">protected_paths</text></g>
 <g class="node shared"><title>shared.responses — The shape of every tool answer: ``{&quot;status&quot;: &quot;ok&quot;, ...}`` or ``{&quot;status&quot;: &quot;error&quot;, ...}``.</title><rect x="977" y="754" width="82" height="26" rx="4"/><text x="1018" y="771" text-anchor="middle">responses</text></g>
 <g class="node shared"><title>shared.run_channel — The user&#x27;s channel into a blocking run: two files under ``&lt;session_state_dir&gt;/runs/&lt;channel&gt;/``.</title><rect x="150" y="794" width="97" height="26" rx="4"/><text x="198.5" y="811" text-anchor="middle">run_channel</text></g>
+<g class="node shared"><title>shared.schedulers — What each batch scheduler MIMIR drives is: its commands, its script header, its words.</title><rect x="888" y="862" width="89" height="26" rx="4"/><text x="932.5" y="879" text-anchor="middle">schedulers</text></g>
 <g class="node shared"><title>shared.secret_env — The environment without its secrets: what a child process is given by default.</title><rect x="287" y="930" width="89" height="26" rx="4"/><text x="331.5" y="947" text-anchor="middle">secret_env</text></g>
-<g class="node shared"><title>shared.shell_activity — When this session&#x27;s shell commands ran: the evidence that a Slurm job submitted outside</title><rect x="671" y="862" width="118" height="26" rx="4"/><text x="730" y="879" text-anchor="middle">shell_activity</text></g>
+<g class="node shared"><title>shared.shell_activity — When this session&#x27;s shell commands ran: the evidence that a Slurm job submitted outside</title><rect x="989" y="862" width="118" height="26" rx="4"/><text x="1048" y="879" text-anchor="middle">shell_activity</text></g>
 <g class="node shared"><title>shared.shell_paths — How a shell command splits into commands, and which paths its arguments name.</title><rect x="259" y="794" width="97" height="26" rx="4"/><text x="307.5" y="811" text-anchor="middle">shell_paths</text></g>
 <g class="node shared"><title>shared.skill_file — Reading a skill: ``&lt;skills_dir&gt;/&lt;name&gt;/SKILL.md``, front-matter then body.</title><rect x="368" y="794" width="89" height="26" rx="4"/><text x="412.5" y="811" text-anchor="middle">skill_file</text></g>
-<g class="node shared"><title>shared.slurm_script — Building blocks of the batch scripts MIMIR submits.</title><rect x="801" y="862" width="104" height="26" rx="4"/><text x="853" y="879" text-anchor="middle">slurm_script</text></g>
-<g class="node shared"><title>shared.slurm_site — Which Slurm schedulers this workspace reaches, learned from successful calls.</title><rect x="917" y="862" width="89" height="26" rx="4"/><text x="961.5" y="879" text-anchor="middle">slurm_site</text></g>
 <g class="node shared"><title>shared.state_paths — The agent&#x27;s state directories, server-side: one source of truth.</title><rect x="469" y="794" width="97" height="26" rx="4"/><text x="517.5" y="811" text-anchor="middle">state_paths</text></g>
 <g class="node shared"><title>shared.trusted_read_roots — The out-of-workspace roots read without approval: the state dir, where MIMIR keeps its</title><rect x="578" y="794" width="146" height="26" rx="4"/><text x="651" y="811" text-anchor="middle">trusted_read_roots</text></g>
 <g class="node shared"><title>shared.user_question — How long a question put to the user stays open before the agent is told to decide for</title><rect x="736" y="794" width="111" height="26" rx="4"/><text x="791.5" y="811" text-anchor="middle">user_question</text></g>

@@ -147,7 +147,7 @@ these requirements.
 ## Optimizing for the compute nodes
 
 When MIMIR runs on a login node and the code is meant for the compute nodes, the
-whole session runs there: `proxy_slurm(op='eval', partition=..., constraint=...)`
+whole session runs there: `proxy_cluster(op='eval', partition=..., constraint=...)`
 instead of `proxy_eval(op='run')`. The job builds, runs the cases and times them on
 the node. A baseline measured on the login node describes the login node.
 
@@ -163,6 +163,8 @@ the node. A baseline measured on the login node describes the login node.
   (`proxy_eval(op='reset')`), then `proxy_eval(op='rebaseline')`, and run on the node.
 - **Inside an allocation**, MIMIR already runs on the node: `proxy_eval(op='run')` is
   the node run.
+- **Under LSF** (`execution_context.scheduler` is `lsf`), `proxy_cluster` submits with
+  `bsub` instead of `sbatch`. The arguments are the same: `partition` is the queue.
 
 ## Optimization loop
 
@@ -259,7 +261,7 @@ hand: a combination nobody measured can run and mean nothing.
 
 ## On a cluster
 
-The loop is the same; only where a run happens changes. `proxy_slurm(op='eval',
+The loop is the same; only where a run happens changes. `proxy_cluster(op='eval',
 partition=..., confirm=True)` submits it instead of running it here, and returns while
 the job is still queued — end your turn, you are resumed when it lands. Picking the
 partition and the node type, and building for the node rather than for the login host,
@@ -276,7 +278,7 @@ you wanted the measurement from. Give the proxy a `build_partition` at registrat
         'build_cmd': 'make -j32', 'build_partition': 'compile',
         'build_cpus_per_task': 32}, confirm=True)
 
-From then on every `proxy_slurm(op='eval', partition='<the hardware you are measuring>')`
+From then on every `proxy_cluster(op='eval', partition='<the hardware you are measuring>')`
 sends the compile to `compile` and the measurement to the partition you named, as two
 chained jobs. Declare it once rather than repeating it per call — you will submit this
 run many times, and that is where it goes wrong. `constraint='a100'` narrows a partition

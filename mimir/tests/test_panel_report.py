@@ -32,7 +32,7 @@ def _load(name: str, path: Path):
 def _report(hpc, **kwargs) -> dict:
     return asyncio.run(hpc.hpc_panel_report(**kwargs))
 
-from mimir.shared import slurm_site
+from mimir.shared import cluster_site
 from mimir.servers.hpc import panel
 
 from mimir.client.tools.capabilities import PANEL_REPORT, ToolCaps, panel_sections
@@ -497,9 +497,9 @@ def test_forgetting_a_cluster_drops_its_record_its_digest_and_its_profiles(tmp_p
     (host_dir / "n01.json").write_text("{}")
     panel._CACHE["load:hpc1"] = {"at": 0, "value": {}}
     panel._CACHE["load:hpc2"] = {"at": 0, "value": {}}
-    with mock.patch.object(hpc.slurm_site, "forget_host", return_value=True) as dropped, \
+    with mock.patch.object(hpc.cluster_site, "forget_host", return_value=True) as dropped, \
          mock.patch.object(hpc.slurm_digest, "forget_cluster_digest") as digest, \
-         mock.patch.object(hpc.slurm_site, "hosts", return_value=[]), \
+         mock.patch.object(hpc.cluster_site, "hosts", return_value=[]), \
          mock.patch.object(hpc.node_profiles, "profile_host_dir",
                            return_value=str(host_dir)):
         payload = hpc.slurm_schedulers(forget="hpc1")
@@ -830,8 +830,8 @@ def test_the_section_s_own_line_is_the_user_s_queue():
                                           "gpu|up|1-00|6|alloc|32|64000\n"}
 
     with mock.patch.object(hpc.cli, "run_bash", _bash), \
-            mock.patch.object(slurm_site, "_HAS_SLURM", True), \
-            mock.patch.object(hpc.slurm_site, "recorded_jobs", return_value={}), \
+            mock.patch.object(cluster_site, "_LOCAL_KIND", "slurm"), \
+            mock.patch.object(hpc.cluster_site, "recorded_jobs", return_value={}), \
             mock.patch.object(panel, "_host_tree", return_value=[]):
         out = _report(hpc)
     values = {line["label"]: line["value"] for line in out["lines"]}

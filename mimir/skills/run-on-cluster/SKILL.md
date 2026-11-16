@@ -17,7 +17,11 @@ same modules loaded, and do not have the same devices.
    (`ssh <host> "squeue -u $USER"`), that one call is enough — MIMIR notes where the
    scheduler is — for the whole workspace, so a cluster another conversation reached is
    one you can submit to without reaching it again. Only a site where neither answers is
-   one where this skill does not apply; run the work locally and say so.
+   one where this skill does not apply; run the work locally and say so. Under LSF
+   (`execution_context.scheduler` is `lsf`, or `bjobs` answers over ssh) the same
+   tools submit, watch and cancel with `bsub`, `bjobs` and `bkill`; `partition` is
+   the queue. `slurm_partitions` and `slurm_nodes` read Slurm only: on LSF, read
+   `bqueues -l` and `bhosts` through the shell instead.
 2. `slurm_schedulers()` — which clusters this workspace can submit to, and what each
    one is **made of**: how many node types, their architectures, the GPU models, how
    many partitions. One reachable and there is nothing to choose; the calls below may
@@ -126,15 +130,15 @@ turn you were about to adopt it in, their night goes to a run nothing is watchin
 
 ## When the work belongs to a registered proxy
 
-A proxy under measurement does not go through `sbatch_submit`. `proxy_slurm` submits it
+A proxy under measurement does not go through `sbatch_submit`. `proxy_cluster` submits it
 instead, and the difference is not convenience — it is whether the result counts.
 
-- `proxy_slurm(op='eval', partition=..., confirm=True)` for an optimization-session run:
+- `proxy_cluster(op='eval', partition=..., confirm=True)` for an optimization-session run:
   it submits the ratchet's own run, so the sealed references, the numerical invariants
   and the accept/reject margin apply to what comes back. A hand-submitted run of the
   same code measures the same seconds and establishes nothing, because nothing compared
   it to the baseline or checked it against the reference.
-- `proxy_slurm(op='run', proxy_name=..., ...)` for a single run outside a session, and
+- `proxy_cluster(op='run', proxy_name=..., ...)` for a single run outside a session, and
   `op='suite'` for one job per case×sweep point of a benchmark suite — aggregate that
   one yourself with `proxy_get(op='report', ...)`, since it submits many jobs.
 - Say where the **build** goes, separately from the run: `build_partition` (with
@@ -147,7 +151,7 @@ instead, and the difference is not convenience — it is whether the result coun
 - Validate locally with `proxy_exec` before submitting. A batch job that fails on a
   missing module consumed its allocation to tell you that.
 
-Every `proxy_slurm` op returns while the job is still queued and is watched from there:
+Every `proxy_cluster` op returns while the job is still queued and is watched from there:
 **end your turn**, and you are resumed with the results.
 
 While an optimization session is active, running the proxy directly through the shell is

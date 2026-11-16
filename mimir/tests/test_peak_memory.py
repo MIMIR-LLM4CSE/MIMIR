@@ -128,7 +128,7 @@ class SlurmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as run_dir:
             entry = {"name": "t", "executable_path": "/bin/true", "output_format": "npz",
                      "run_cmd_template": f"{sys.executable} -c \"{_ALLOC}\""}
-            script = command.build_sbatch(entry, run_dir, "", partition="p", gpus=0, cpus_per_task=1,
+            script = command.build_batch_script(entry, run_dir, "", partition="p", gpus=0, cpus_per_task=1,
                                           mem="1G", wall_time="00:10:00", account="", job_name="j",
                                           compare_to_reference="", python_exe=sys.executable)
             # The job's body, without Slurm's header or the post-run parse.
@@ -142,7 +142,7 @@ class SlurmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as run_dir:
             entry = {"name": "t", "executable_path": "/bin/true", "output_format": "npz",
                      "run_cmd_template": "true"}
-            script = command.build_sbatch(entry, run_dir, "", partition="p", gpus=0, cpus_per_task=1,
+            script = command.build_batch_script(entry, run_dir, "", partition="p", gpus=0, cpus_per_task=1,
                                           mem="1G", wall_time="00:10:00", account="", job_name="j",
                                           compare_to_reference="", python_exe="/nonexistent/python")
             body = "\n".join(line for line in script.splitlines()
