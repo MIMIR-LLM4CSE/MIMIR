@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.17.0] — 2026-11-16
+
 ### Added
 - **The measured region on a GPU.** Kernels run asynchronously, so a region could close
   before they finished and the time came out too short. Each mark now waits for the GPU
@@ -1911,6 +1913,6 @@ in it. The main points:
 
 Initial public release.
 
-[Unreleased]: https://github.com/MIMIR-LLM4CSE/MIMIR/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/MIMIR-LLM4CSE/MIMIR/compare/v1.17.0...HEAD
 [1.0.0]: https://github.com/MIMIR-LLM4CSE/MIMIR/releases/tag/v1.0.0
 [0.1.0]: https://github.com/MIMIR-LLM4CSE/MIMIR/commits/main
