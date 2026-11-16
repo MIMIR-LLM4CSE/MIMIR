@@ -142,11 +142,13 @@ def describe(argv: list[str], fingerprint: dict | None = None, languages: set[st
     fp = fingerprint or {}
     programs = [os.path.basename(p) for p in fp.get("programs") or []]
     t.runtimes = set(fp.get("runtimes") or [])
-    t.python = (any(_PYTHON_RE.match(os.path.basename(w)) or w.endswith(".py") for w in words)
-                or any(_PYTHON_RE.match(p) for p in programs) or any(r.startswith("python") for r in t.runtimes))
+    python_program = any(_PYTHON_RE.match(os.path.basename(w)) or w.endswith(".py") for w in words)
+    t.python = (python_program or any(_PYTHON_RE.match(p) for p in programs)
+                or any(r.startswith("python") for r in t.runtimes))
     langs = set(languages or ())
     t.native = {lang for lang in langs if lang in ("c", "cpp", "fortran", "cuda")}
-    if t.runtimes & _FORTRAN_RT or any(r.startswith("flang") for r in t.runtimes):
+    # A Python program's libgfortran is its libraries' (NumPy's OpenBLAS), not the code's.
+    if not python_program and (t.runtimes & _FORTRAN_RT or any(r.startswith("flang") for r in t.runtimes)):
         t.native.add("fortran")
     if not t.python and command and not t.native:
         t.native.add("c")        # a compiled program of unknown language

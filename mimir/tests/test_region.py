@@ -267,6 +267,8 @@ class TargetTests(_Tmp):
         t = describe(["./driver"], {"programs": ["driver", "python3.12"], "runtimes": ["python3.12", "gfortran"]})
         self.assertTrue(t.python)
         self.assertEqual(t.native, {"fortran"})
+        t = describe(["python3", "h.py"], {"programs": ["python3"], "runtimes": ["python3.10", "gfortran"]}, {"python"})
+        self.assertEqual((t.python, t.native), (True, set()))
         t = describe(["python3", "h.py"], None, {"python", "c"})
         self.assertEqual((t.python, t.native, t.script), (True, {"c"}, "h.py"))
         self.assertTrue(describe(["bash", "-c", "python3 run.py"]).python)
@@ -461,8 +463,9 @@ class GpuTests(_Tmp):
             if not shutil.which(compiler):
                 continue
             exe = os.path.join(self.dir, "h_" + compiler.replace("+", "p"))
+            # The harness calls dlopen itself, which lives in libdl before glibc 2.34.
             subprocess.run([compiler, "-Wall", "-Wextra", "-Werror", *flags, "-I", helpers.HERE,
-                            self._write("h.c", _C_GPU), "-o", exe], check=True)
+                            self._write("h.c", _C_GPU), "-o", exe, "-ldl"], check=True)
             self.assertEqual(self._calls([exe, lib]), _GPU_CALLS, compiler)
 
     def test_the_python_helper_waits_for_cuda(self) -> None:
