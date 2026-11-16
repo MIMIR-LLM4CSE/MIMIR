@@ -15,6 +15,29 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **The harness counts for nothing.** A harness can now mark the call to the code it
+  measures, and the server measures that region itself: `region_time_s`,
+  `region_peak_rss_mb`, `region_peak_rss_total_mb` and `region_extra_mb` (what the
+  code itself allocated). When it marks one, `time_s` is that time, and a `time_s` the
+  harness prints is set aside. The helpers are in `mimir/servers/proxy/region/`:
+  `mimir_region.py`, `mimir_region.h` (C, C++) and `mimir_region.f90` (Fortran). Any
+  other language writes two lines to the FIFO named by `MIMIR_REGION`. Outside MIMIR they
+  do nothing. `proxy_manage(op='scaffold')` copies the Python helper and marks its
+  harnesses. A harness that marks nothing is measured as before, and `results` says so
+  (`harness_counted`).
+- **Profiles set the harness apart.** What only the harness does (its inputs, its check,
+  the libraries it calls for them) is reported as `harness`, and the other shares are of
+  the rest. With a marked region, perf and callgrind record that region alone
+  (`window: measured region`).
+- **The profiler fits what runs.** It is chosen from what the measured run actually
+  loaded (Python, libgfortran, libcudart…) and the language of the code. Python with
+  native code is profiled by perf when py-spy is missing, with Python's frames named
+  from Python 3.12. Under `mpirun`, `srun`, `mpiexec`, `aprun` or `jsrun`, rank 0 is
+  profiled. Wrappers (`env`, `uv run`, `conda run`, `taskset`…) and shell scripts are
+  looked through. perf is tried for real before it is chosen, and callgrind takes over
+  where perf is blocked: it needs no privilege, and counts instructions rather than time.
+
 ## [1.15.0] — 2026-11-16
 
 ### Added

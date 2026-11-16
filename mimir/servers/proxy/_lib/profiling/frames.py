@@ -42,10 +42,13 @@ class Frame(NamedTuple):
     line: int = 0
 
 
-def resolver(root: str, cwd: str, files: list[str]) -> Callable[[str], str | None]:
+def resolver(root: str, cwd: str, files: list[str], code: list[str] | None = None,
+             harness: list[str] | None = None) -> Callable[[str], str | None]:
     """A function giving a frame's file as a workspace path, or None outside it: absolute
     under *root*, relative to *cwd*, else the one workspace file it is a suffix of. Its
-    ``symbol`` gives a native function's defining file and line (``symbols``)."""
+    ``symbol`` gives a native function's defining file and line (``symbols``), its
+    ``role`` whether a workspace file is the code optimized (*code*: files or
+    directories) or the harness that measures it (*harness*)."""
     root = os.path.realpath(root)
     known = set(files)
     by_base: dict[str, list[str]] = {}
@@ -71,7 +74,34 @@ def resolver(root: str, cwd: str, files: list[str]) -> Callable[[str], str | Non
                 if f == clean or clean.endswith("/" + f) or f.endswith("/" + clean)]
         return hits[0] if len(hits) == 1 else None
     resolve.symbol = symbols(root, files)  # type: ignore[attr-defined]
+    resolve.role = roles(root, code or [], harness or [])  # type: ignore[attr-defined]
     return resolve
+
+
+def roles(root: str, code: list[str], harness: list[str]) -> Callable[[str], str]:
+    """A function giving a workspace file's role: "harness" (a *harness* file, or under a
+    *harness* directory), "code" (likewise *code*), else "". The harness wins: its
+    directory may hold the code only when the code is named inside it."""
+    root = os.path.realpath(root)
+
+    def rel(p: str) -> str:
+        full = os.path.realpath(p if os.path.isabs(p) else os.path.join(root, p))
+        return os.path.relpath(full, root).replace(os.sep, "/")
+    code_rel = [r for r in map(rel, code) if not r.startswith("..")]
+    harness_rel = [r for r in map(rel, harness) if not r.startswith("..")]
+
+    def under(path: str, tops: list[str]) -> bool:
+        return any(path == t or path.startswith(t.rstrip("/") + "/") or t == "." for t in tops)
+
+    def role(path: str) -> str:
+        if not path:
+            return ""
+        if path in code_rel:
+            return "code"
+        if under(path, harness_rel):
+            return "harness"
+        return "code" if under(path, code_rel) else ""
+    return role
 
 
 # Where the system's own code lives: a symbol there is never the workspace's, even one

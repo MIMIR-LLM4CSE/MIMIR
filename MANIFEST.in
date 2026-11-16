@@ -1,6 +1,7 @@
 include README.md CHANGELOG.md docs/POLICY.md docs/CLIENT_DETAILED.md docs/SERVERS_DETAILED.md docs/SETUP.md LICENSE
 include mimir/requirements.txt
 recursive-include mimir/servers *.py *.json
+include mimir/servers/proxy/region/*.h mimir/servers/proxy/region/*.f90
 recursive-include mimir/skills *.md
 recursive-include mimir/client/config *.json
 recursive-include mimir/examples *.py *.md

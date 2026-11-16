@@ -168,6 +168,17 @@ take it. It answers "does this run there at all", which is the question that act
 fails, and it answers it in minutes instead of after a night in the queue. Scale the
 problem only once a small case has come back clean.
 
+## Profiling an MPI run
+
+A profile of a command under `mpirun`, `mpiexec`, `srun`, `aprun` or `jsrun` profiles
+rank 0: the profiler goes after the launcher's options, in front of the rank whose rank
+variable (`OMPI_COMM_WORLD_RANK`, `PMI_RANK`, `PMIX_RANK`, `SLURM_PROCID`, ...) is 0, and
+the other ranks run as they are; the profile's note says `rank 0 of the MPI run`. The
+measured region of an MPI harness may be marked by every rank: the region is open while
+any rank's is, and only ranks on the node that runs the harness's launcher are seen.
+Where perf is blocked on the nodes, callgrind takes over (slow, and counting
+instructions); a site may offer perf, py-spy or valgrind as modules (`module avail`).
+
 ## Reading what came back
 
 A Slurm job that ended with state `COMPLETED` ran to its end. That is all it says. Read

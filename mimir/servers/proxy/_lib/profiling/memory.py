@@ -1,10 +1,9 @@
 """Where a run's memory goes: the allocations live at its heap's peak, each given to the
-deepest workspace frame of the stack that made it, by file, function and line, as shares
-of the bytes live then.
+deepest workspace frame of the stack that made it, by file, function and line.
 
-memray (or tracemalloc, near the peak) for a Python command; heaptrack, else valgrind's
-massif, for a compiled one, or for a Python one whose traced heap is under half the
-measured peak (its child processes, which only they follow), read through one reader.
+memray (or tracemalloc) for Python; heaptrack, else valgrind's massif, for native code,
+and for a Python run whose traced heap is under half the measured peak (its children).
+The harness's own allocations are counted apart (``cpu.attribute``).
 """
 from __future__ import annotations
 
@@ -17,7 +16,8 @@ import subprocess
 from typing import Callable, TextIO
 
 from .. import proc_run
-from .cpu import attribute, is_python
+from .target import Target, missing
+from .cpu import attribute
 from .frames import Frame, fortran_name, is_fortran
 
 _NODE_RE = re.compile(r"^(?P<indent> *)n(?P<kids>\d+): (?P<bytes>\d+) (?P<rest>.*)$")
@@ -75,12 +75,17 @@ def _has_memray(python: str) -> bool:
         return False
 
 
-def choose(argv: list[str]) -> tuple[str, str]:
-    """The allocation profiler for *argv* here, or "" with the reason none fits."""
-    if is_python(argv):
-        if _has_memray(argv[0]):
+def choose(target: Target) -> tuple[str, str]:
+    """The allocation profiler for *target* here, or "" with the reason none fits: for a
+    Python command, memray (whose ``--native`` follows the code a binding calls) or
+    tracemalloc, the native ones when the code is native and memray is missing."""
+    if target.python and target.interpreter:
+        if _has_memray(target.interpreter):
             return "memray", ""
-        if len(argv) > 1 and argv[1] != "-c":
+        native, _ = choose_native()
+        if target.native and native:
+            return native, ""
+        if len(target.command) > 1 and target.command[1] != "-c":
             return "tracemalloc", ""
         return "", "memray is not installed (pip install memray) and tracemalloc cannot run a `-c` command"
     return choose_native()
@@ -92,7 +97,7 @@ def choose_native() -> tuple[str, str]:
         return "heaptrack", ""
     if shutil.which("valgrind"):
         return "massif", ""
-    return "", "neither heaptrack nor valgrind is installed"
+    return "", f"{missing('heaptrack')} and neither is valgrind"
 
 
 # ── reading what a profiler wrote ────────────────────────────────────────────
@@ -152,29 +157,30 @@ def json_stacks(data: dict) -> tuple[int, list[tuple[list[Frame], int]]]:
 
 # ── taking one ───────────────────────────────────────────────────────────────
 
-def profile(argv: list[str], out_dir: str, resolve: Callable[[str], str | None], log: TextIO,
+def profile(target: Target, out_dir: str, resolve: Callable[[str], str | None], log: TextIO,
             timeout: float | None, measured_mb: float | None = None) -> dict:
-    """Run *argv* once under the allocation profiler that fits and say where its peak's
+    """Run *target* once under the allocation profiler that fits and say where its peak's
     bytes were allocated; *measured_mb* is the run's measured peak, for comparison."""
-    tool, why = choose(argv)
+    tool, why = choose(target)
     if not tool:
         return {"unavailable": why}
     mem_dir = os.path.join(out_dir, "memory")
     os.makedirs(mem_dir, exist_ok=True)
-    peak, stacks = _take(tool, argv, mem_dir, log, timeout)
+    peak, stacks = _take(tool, target, mem_dir, log, timeout)
     found = attribute(stacks, resolve)
     notes = []
-    script = resolve(argv[1]) if is_python(argv) and len(argv) > 1 else None
-    if is_python(argv) and measured_mb and peak / 2**20 < 0.5 * measured_mb:
+    script = resolve(target.script) if target.python and target.script else None
+    left = found.get("harness", 0) + (found.get("files") or {}).get(script or "", 0)
+    if tool in ("memray", "tracemalloc") and measured_mb and peak / 2**20 < 0.5 * measured_mb:
         missed = (f"{tool} traced {peak / 2**20:.0f} of the {measured_mb:.0f} MB measured "
                   "(a process the command starts)")
-    elif script and (found.get("files") or {}).get(script, 0) > 0.5:
-        missed = f"{tool} left {found['files'][script]:.0%} of the peak on {script}, the command's own script"
+    elif tool in ("memray", "tracemalloc") and left > 0.5:
+        missed = f"{tool} left {left:.0%} of the peak on the harness"
     else:
         missed = ""
     if missed:
         native, why = choose_native()
-        more = _take(native, argv, os.path.join(mem_dir, native), log, timeout) if native else (0, [])
+        more = _take(native, target, os.path.join(mem_dir, native), log, timeout) if native else (0, [])
         again = attribute(more[1], resolve) if more[1] else {}
         if native and (_workspace_bytes(again, more[0], script), more[0]) > (_workspace_bytes(found, peak, script), peak):
             notes.append(f"{missed}, so {native} profiled it with the processes it starts")
@@ -189,6 +195,8 @@ def profile(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
         notes.append("tracemalloc: Python's allocations near the peak, by file and line")
     if tool == "massif":
         notes.append("massif runs the program on a simulated CPU, many times slower")
+    if target.mpi:
+        notes.append("rank 0 of the MPI run")
     if any(is_fortran(f) for f in found.get("files") or {}):
         notes.append("Fortran's automatic arrays live on the stack, not the heap, and are not counted")
     if measured_mb and peak and peak / 2**20 < 0.5 * measured_mb:
@@ -200,23 +208,26 @@ def profile(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
 
 
 def _workspace_bytes(found: dict, peak: int, but: str | None) -> float:
-    """The bytes of the peak a profile puts in the workspace's files, *but* one (the harness)."""
-    return peak * sum(v for k, v in (found.get("files") or {}).items() if k != but)
+    """The bytes of the peak a profile puts in the workspace's files, *but* one (the
+    harness), the harness's own allocations left out."""
+    return peak * (1 - found.get("harness", 0)) * sum(v for k, v in (found.get("files") or {}).items() if k != but)
 
 
-def _take(tool: str, argv: list[str], mem_dir: str, log: TextIO,
+def _take(tool: str, target: Target, mem_dir: str, log: TextIO,
           timeout: float | None) -> tuple[int, list[tuple[list[Frame], int]]]:
     os.makedirs(mem_dir, exist_ok=True)
+    python = target.interpreter
     if tool in ("memray", "tracemalloc"):
         out = os.path.join(mem_dir, "peak.json")
         if tool == "memray":
             capture = os.path.join(mem_dir, "memray.bin")
-            proc_run.run([argv[0], "-m", "memray", "run", "--native", "--force", "-o", capture, *argv[1:]],
+            proc_run.run(target.wrap([python, "-m", "memray", "run", "--native", "--force", "-o", capture],
+                                     mem_dir, inside=True),
                          stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
-            proc_run.run([argv[0], "-c", _MEMRAY_READER, capture, out],
+            proc_run.run([python, "-c", _MEMRAY_READER, capture, out],
                          stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         else:
-            proc_run.run([argv[0], "-c", _TRACEMALLOC_BOOT, out, *argv[1:]],
+            proc_run.run(target.wrap([python, "-c", _TRACEMALLOC_BOOT, out], mem_dir, inside=True),
                          stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         try:
             with open(out) as fh:
@@ -224,14 +235,15 @@ def _take(tool: str, argv: list[str], mem_dir: str, log: TextIO,
         except (OSError, ValueError):
             return 0, []                 # the run failed under it: profile.log says why
     if tool == "heaptrack":
-        proc_run.run(["heaptrack", "-o", os.path.join(mem_dir, "heaptrack"), *argv],
+        proc_run.run(target.wrap(["heaptrack", "-o", os.path.join(mem_dir, "heaptrack")], mem_dir),
                      stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         for i, data in enumerate(sorted(glob.glob(os.path.join(mem_dir, "heaptrack*.*z*")))):
             proc_run.run(["heaptrack_print", "-f", data, "--print-massif", os.path.join(mem_dir, f"massif.out.{i}"),
                           "--massif-detailed-freq", "1"], stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     else:
-        proc_run.run(["valgrind", "--tool=massif", "--trace-children=yes", "--threshold=0.5", "--detailed-freq=1",
-                      f"--massif-out-file={os.path.join(mem_dir, 'massif.out.%p')}", *argv],
+        proc_run.run(target.wrap(["valgrind", "--tool=massif", "--trace-children=yes", "--threshold=0.5",
+                                  "--detailed-freq=1", f"--massif-out-file={os.path.join(mem_dir, 'massif.out.%p')}"],
+                                 mem_dir),
                      stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
     # One file per process the run started: the one whose peak is largest is the run's.
     best: tuple[int, list] = (0, [])

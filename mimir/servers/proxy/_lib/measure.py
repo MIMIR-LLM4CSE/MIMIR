@@ -1,8 +1,10 @@
 """What the server measures of a run where no MIMIR process waits for it (a batch job):
 its exit code, wall time, largest process's peak memory and the sum of every process's,
-written beside its output for the post-run step to read, as a local run hands them over."""
+its measured regions and what it ran, written beside its output for the post-run step to
+read, as a local run hands them over."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -42,6 +44,11 @@ def main(args: list[str]) -> int:
         if value is not None:
             with open(os.path.join(run_dir, name), "w") as fh:
                 fh.write(f"{value}\n")
+    for name, value in ((proc_run.REGION_FILE, getattr(proc, "region", None)),
+                        (proc_run.PROCESSES_FILE, getattr(proc, "fingerprint", None))):
+        if value:
+            with open(os.path.join(run_dir, name), "w") as fh:
+                json.dump(value, fh)
     return code
 
 

@@ -8,6 +8,7 @@ import re
 
 from . import with_next, err, ok
 from .._lib.store import scaffolds_dir
+from .. import region
 
 
 def scaffold(
@@ -86,6 +87,7 @@ def scaffold(
     ref_content  = _ref_harness(found_name, found_signature, abs_proxy, harness_type)
     test_content = _test_harness(found_name, found_signature, ref_path, harness_type)
 
+    region.install(out_dir, ("python",))
     with open(ref_path, "w", encoding="utf-8") as fh:
         fh.write(ref_content)
     with open(test_path, "w", encoding="utf-8") as fh:
@@ -147,6 +149,7 @@ def scaffold(
 
 def _metrics_block_footer(found_name: str) -> str:
     return (
+        "    mark('end')\n"
         "    elapsed = time.perf_counter() - t0\n"
         "    # Save output field\n"
         "    np.savez(output_file, field=result)\n"
@@ -207,6 +210,7 @@ def _harness(name: str, harness_type: str, docstring: str,
     return (
         f'"""{docstring}"""\n'
         + "".join(f"import {m}\n" for m in imports)
+        + _REGION_IMPORT
         + "\n"
         + preamble
         + reader
@@ -216,6 +220,20 @@ def _harness(name: str, harness_type: str, docstring: str,
         + _metrics_block_footer(name)
         + '\n\nif __name__ == "__main__":\n    main()\n'
     )
+
+
+# The helper sits beside the harness (scaffold copies it there); without it, nothing is
+# marked and the run's wall time is measured instead.
+_REGION_IMPORT = (
+    "import os as _os\n"
+    "import sys as _sys\n"
+    "_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))\n"
+    "try:\n"
+    "    from mimir_region import mark\n"
+    "except ImportError:\n"
+    "    def mark(word: str) -> None:\n"
+    "        pass\n"
+)
 
 
 def _ref_preamble(name: str, proxy_path: str) -> str:
@@ -242,6 +260,8 @@ def _ref_harness(name: str, sig: str, proxy_path: str, harness_type: str) -> str
     imports = (["argparse", "sys", "time", "numpy as np"] if harness_type == "kernel"
                else ["sys", "time", "numpy as np"])
     compute = (f'    # TODO: set up inputs and call the original {kind}\n'
+               f'    # Only what lies between mark(\'begin\') and mark(\'end\') is measured.\n'
+               f'    mark(\'begin\')\n'
                f'    t0 = time.perf_counter()\n'
                f'    result = np.zeros((n, n))  # TODO: replace with real call\n'
                f'    # result = {name}(n, ...)  # \u2190 call the original here\n')
@@ -273,6 +293,7 @@ def _test_harness(name: str, sig: str, ref_path: str, harness_type: str) -> str:
         f'\n'
         f'\n'
     )
-    compute = (f'    t0 = time.perf_counter()\n'
+    compute = (f'    mark(\'begin\')\n'
+               f'    t0 = time.perf_counter()\n'
                f'    result = {name}_new_method(n)\n')
     return _harness(name, harness_type, doc, imports, preamble, compute)

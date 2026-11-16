@@ -1,20 +1,26 @@
 """Run a subprocess under a timeout that kills its whole process group.
 
-``subprocess.run`` kills only its child; what that child forked (bash forks for a
-compound script) survives and corrupts later measurements. The child gets its own
-session; SIGTERM, then SIGKILL after a grace. A measured run also reports its memory:
-the largest process's peak, from ``wait4``, and the sum of every process's own peak (an
-MPI run's ranks), sampled from ``/proc`` while it runs.
+``subprocess.run`` kills only its child; what that child forked survives and corrupts
+later measurements, so the child gets its own session: SIGTERM, then SIGKILL. A measured
+run also reports its memory (the largest process's peak and every process's summed), what
+its processes run (``fingerprint``) and its measured regions (``region``).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
-from typing import Any
+import time
+from typing import Any, Callable
+
+from .region import Regions
+
+# What a measured run leaves beside its output where no MIMIR process waits for it.
+REGION_FILE, PROCESSES_FILE = "region.json", "processes.json"
 
 # How long a process group gets to exit on SIGTERM before SIGKILL. Short: this runs
 # after a timeout the caller has already waited out.
@@ -42,17 +48,18 @@ def _terminate_group(proc: subprocess.Popen) -> None:
             continue
 
 
-def run(argv: list[str], *, timeout: float | None = None, rusage: bool = False, **kwargs: Any):
-    """:func:`subprocess.run`, but a timeout kills the child's process group.
-
-    ``stdin`` is ``DEVNULL`` (a server's stdin is its MCP pipe), or a pipe of ours for
-    ``input``. With *rusage* (output to files), ``peak_rss_kb`` is the tree's peak.
+def run(argv: list[str], *, timeout: float | None = None, rusage: bool = False,
+        region: Callable[[str, list[str]], None] | None = None, **kwargs: Any):
+    """:func:`subprocess.run`, but a timeout kills the child's process group; ``stdin`` is
+    ``DEVNULL`` (a server's is its MCP pipe) unless ``input`` is given. With *rusage*
+    (output to files): ``peak_rss_kb``, ``region``, ``fingerprint``. *region* is told
+    ``"begin"``/``"end"`` and the run's pids as the run's regions open and close.
     """
     given = kwargs.pop("input", None)
     kwargs.setdefault("start_new_session", True)
     kwargs.setdefault("stdin", subprocess.PIPE if given is not None else subprocess.DEVNULL)
-    if rusage and hasattr(os, "wait4"):
-        return _run_measured(argv, timeout, kwargs)
+    if (rusage or region) and hasattr(os, "wait4"):
+        return _run_measured(argv, timeout, kwargs, region)
     with subprocess.Popen(argv, **kwargs) as proc:
         try:
             stdout, stderr = proc.communicate(given, timeout=timeout)
@@ -72,14 +79,31 @@ def run(argv: list[str], *, timeout: float | None = None, rusage: bool = False, 
         return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
-def _run_measured(argv: list[str], timeout: float | None, kwargs: dict):
+def _run_measured(argv: list[str], timeout: float | None, kwargs: dict,
+                  on_mark: Callable[[str, list[str]], None] | None = None):
     """:func:`run` reaping the child with ``wait4``, whose ``ru_maxrss`` covers the child
     and every descendant it reaped: the largest process of the tree (``peak_rss_kb``);
-    and the sum of each process's own peak (``peak_rss_total_kb``, over ``processes``)."""
+    and the sum of each process's own peak (``peak_rss_total_kb``, over ``processes``).
+    The run marks its regions on the FIFO ``MIMIR_REGION`` names (``region``)."""
     if subprocess.PIPE in (kwargs.get("stdout"), kwargs.get("stderr")):
         raise ValueError("a measured run writes its output to files: a pipe would need draining")
     reaped: dict = {}
     spawner = _own_peak_kb()
+    tree = SessionMemory(0)
+    regions = Regions(tree.pids, tree.note, on_mark)
+    marked = regions.env()
+    if marked:
+        kwargs["env"] = {**(kwargs.get("env") or os.environ), **marked}
+    try:
+        done = _reap(argv, timeout, kwargs, tree, reaped, spawner)
+    finally:
+        regions.close()
+    done.region = regions.summary()  # type: ignore[attr-defined]
+    return done
+
+
+def _reap(argv: list[str], timeout: float | None, kwargs: dict, tree: "SessionMemory",
+          reaped: dict, spawner: int):
     with subprocess.Popen(argv, **kwargs) as proc:
         def reap() -> None:
             _pid, status, usage = os.wait4(proc.pid, 0)
@@ -88,7 +112,7 @@ def _run_measured(argv: list[str], timeout: float | None, kwargs: dict):
         waiter.start()
         # The child leads its own session, so its session id is its pid: every process
         # the run starts, MPI ranks included, carries it unless it leaves on purpose.
-        tree = SessionMemory(proc.pid)
+        tree.sid = proc.pid
         tree.start()
         try:
             waiter.join(timeout)
@@ -114,6 +138,7 @@ def _run_measured(argv: list[str], timeout: float | None, kwargs: dict):
         if tree.peaks:
             done.peak_rss_total_kb = max(sum(tree.peaks.values()), done.peak_rss_kb)  # type: ignore[attr-defined]
             done.processes = len(tree.peaks)  # type: ignore[attr-defined]
+        done.fingerprint = tree.fingerprint()  # type: ignore[attr-defined]
         return done
 
 
@@ -126,15 +151,27 @@ def _own_peak_kb() -> int:
         return 0
 
 
+# The runtimes a process can load that say what runs: an interpreter, a language's
+# runtime, a parallel or a GPU one, a math library.
+_RUNTIME_RE = re.compile(r"/lib(python\d[\d.]*|gfortran|ifcore|ifport|flang\w*|stdc\+\+|c\+\+|gomp|iomp5|omp|"
+                         r"mpi\w*|cudart|cuda|nvrtc|amdhip64|hiprtc|tbb|openblas|mkl_core|julia)[.\-][^/]*$")
+_MAPS_EVERY_S = 1.0
+
+
 class SessionMemory:
     """Each process of a session's own peak resident set (``VmHWM``), sampled from
-    ``/proc`` while the session runs; nothing where there is no ``/proc``."""
+    ``/proc`` while the session runs, and what each runs (its program and the runtimes
+    it loads, ``fingerprint``); nothing where there is no ``/proc``."""
 
     INTERVAL_S = 0.1
 
     def __init__(self, sid: int) -> None:
         self.sid = sid
         self.peaks: dict[tuple[str, bytes], int] = {}
+        self.programs: dict[tuple[str, bytes], str] = {}
+        self.runtimes: set[str] = set()
+        self._maps_read: dict[tuple[str, bytes], float] = {}
+        self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -154,7 +191,12 @@ class SessionMemory:
             if self._stop.wait(self.INTERVAL_S):
                 return
 
-    def sample(self) -> None:
+    def _members(self) -> list[tuple[str, bytes]]:
+        """The session's processes now, each as (pid, start time): a recycled pid is
+        another process."""
+        found = []
+        if not self.sid or not os.path.isdir("/proc"):
+            return found
         for name in os.listdir("/proc"):
             if not name.isdigit():
                 continue
@@ -163,15 +205,56 @@ class SessionMemory:
                     stat = fh.read()
                 # After the command's ")": state, ppid, pgrp, session, ..., starttime (20th).
                 fields = stat[stat.rindex(b")") + 2:].split()
-                if int(fields[3]) != self.sid:
-                    continue
+                if int(fields[3]) == self.sid:
+                    found.append((name, fields[19]))
+            except (OSError, ValueError, IndexError):
+                continue                # gone between the listing and the read
+        return found
+
+    def pids(self) -> list[str]:
+        return [pid for pid, _ in self._members()]
+
+    def note(self, pid: str, hwm: int) -> None:
+        """Keep *hwm* as *pid*'s peak if it is above the one known (before a region
+        restarts the mark, which would hide it from the next sample)."""
+        key = next((k for k in self._members() if k[0] == pid), None)
+        if key:
+            with self._lock:
+                if hwm > self.peaks.get(key, 0):
+                    self.peaks[key] = hwm
+
+    def sample(self) -> None:
+        now = time.monotonic()
+        for key in self._members():
+            name = key[0]
+            try:
                 with open(f"/proc/{name}/status") as fh:
                     hwm = next((int(line.split()[1]) for line in fh if line.startswith("VmHWM:")), 0)
             except (OSError, ValueError, IndexError):
-                continue                # gone between the listing and the read
-            key = (name, fields[19])    # a recycled pid is another process
-            if hwm > self.peaks.get(key, 0):
-                self.peaks[key] = hwm
+                continue
+            with self._lock:
+                if hwm > self.peaks.get(key, 0):
+                    self.peaks[key] = hwm
+            if now - self._maps_read.get(key, -_MAPS_EVERY_S) >= _MAPS_EVERY_S:
+                # Read again later: an exec changes the program, an import loads a runtime.
+                self._maps_read[key] = now
+                self._what_runs(key)
+
+    def _what_runs(self, key: tuple[str, bytes]) -> None:
+        try:
+            self.programs[key] = os.path.basename(os.readlink(f"/proc/{key[0]}/exe"))
+            with open(f"/proc/{key[0]}/maps") as fh:
+                for line in fh:
+                    m = _RUNTIME_RE.search(line.rstrip())
+                    if m:
+                        self.runtimes.add(m.group(1))
+        except OSError:
+            pass
+
+    def fingerprint(self) -> dict:
+        """What the session ran: its programs and the runtimes they loaded."""
+        return {"programs": sorted(set(self.programs.values())), "runtimes": sorted(self.runtimes),
+                "processes": len(self.peaks)}
 
 
 def _end_group(pid: int, waiter: threading.Thread) -> None:

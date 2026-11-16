@@ -16,6 +16,7 @@ from unittest import mock
 
 from mimir.servers.proxy._lib import procs, profiling
 from mimir.servers.proxy._lib.profiling import Frame, cpu, frames, gpu, memory
+from mimir.servers.proxy._lib.profiling import describe as T
 from mimir.servers.proxy import server_proxy
 from mimir.servers.proxy._ops import eval_session
 from mimir.tests.support.proxy import _TmpStorageTest, _eval
@@ -113,11 +114,11 @@ class ReadingTests(unittest.TestCase):
         whole = [([Frame("/ws/src/main.c", "main"), Frame("/ws/src/k.c", "relax")], 10)]
         calls = []
 
-        def perf(argv, out_dir, log, timeout, unwind):
+        def perf(target, out_dir, log, timeout, unwind, *_):
             calls.append(unwind)
             return cut if unwind == "fp" else whole
         with mock.patch.object(cpu, "_perf", side_effect=perf):
-            prof = cpu.sample("perf", ["./solver"], "/tmp", lambda p: p if p.startswith("/ws/src") else None,
+            prof = cpu.sample("perf", T(["./solver"]), "/tmp", lambda p: p if p.startswith("/ws/src") else None,
                               None, None)
         self.assertEqual(calls, ["fp", "dwarf"])
         self.assertEqual(prof["functions"]["/ws/src/main.c::main"]["total"], 1.0)
@@ -126,7 +127,7 @@ class ReadingTests(unittest.TestCase):
     def test_a_binary_without_debug_information_is_named(self) -> None:
         bare = [([Frame("/ws/build/solver", "relax"), Frame("/ws/build/solver", "main")], 10)]
         with mock.patch.object(cpu, "_perf", return_value=bare):
-            prof = cpu.sample("perf", ["/ws/build/solver"], "/tmp", lambda p: None, None, None)
+            prof = cpu.sample("perf", T(["/ws/build/solver"]), "/tmp", lambda p: None, None, None)
         self.assertIn("add -g", prof["note"])
 
     def test_py_spy_s_process_frames_are_not_frames(self) -> None:
@@ -143,7 +144,7 @@ class ReadingTests(unittest.TestCase):
         with mock.patch.object(cpu, "_pyspy", return_value=profiling.attribute(waiting, resolve)), \
              mock.patch.object(cpu, "perf_allowed", return_value=perf_ok), \
              mock.patch.object(cpu, "_perf", return_value=native or []):
-            return cpu.sample("py-spy", ["python3", "h.py"], "/tmp", resolve, None, None, wall_s=2.0)
+            return cpu.sample("py-spy", T(["python3", "h.py"]), "/tmp", resolve, None, None, wall_s=2.0)
 
     def test_a_harness_seen_waiting_on_a_compiled_child_is_profiled_by_perf(self) -> None:
         native = [([Frame("/usr/bin/python3.12"), Frame("/ws/src/main.c", "main", 20)], 1)] * 900
@@ -165,8 +166,8 @@ class ReadingTests(unittest.TestCase):
         with mock.patch.object(cpu, "_pyspy", return_value=seen), mock.patch.object(cpu, "_perf") as perf:
             def outside_ws(p):
                 return None
-            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", outside_ws, None, None, wall_s=2.0), seen)
-            self.assertEqual(cpu.sample("py-spy", ["python3", "h.py"], "/tmp", outside_ws, None, None), seen)
+            self.assertEqual(cpu.sample("py-spy", T(["python3", "h.py"]), "/tmp", outside_ws, None, None, wall_s=2.0), seen)
+            self.assertEqual(cpu.sample("py-spy", T(["python3", "h.py"]), "/tmp", outside_ws, None, None), seen)
         perf.assert_not_called()
 
     def test_perf_stat_gives_instructions_per_cycle_and_miss_rates(self) -> None:
@@ -249,9 +250,9 @@ class SymbolTests(unittest.TestCase):
         with mock.patch.object(cpu, "_pyspy", return_value=held), \
              mock.patch.object(cpu, "perf_allowed", return_value=(True, "")), \
              mock.patch.object(cpu, "_perf", return_value=native):
-            prof = cpu.sample("py-spy", ["python3", "/ws/bench/h.py"], "/tmp", resolve, None, None, wall_s=2.0)
+            prof = cpu.sample("py-spy", T(["python3", "/ws/bench/h.py"]), "/tmp", resolve, None, None, wall_s=2.0)
         self.assertEqual((prof["tool"], prof["files"]), ("perf", {"src/solver.f90": 1.0}))
-        self.assertIn("py-spy left 100% of the run on bench/h.py", prof["note"])
+        self.assertIn("py-spy left 100% of the run on the harness", prof["note"])
 
     def test_a_harness_left_holding_the_peak_is_traced_by_the_native_profiler(self) -> None:
         def resolve(p):
@@ -261,9 +262,9 @@ class SymbolTests(unittest.TestCase):
         with mock.patch.object(memory, "choose", return_value=("memray", "")), \
              mock.patch.object(memory, "choose_native", return_value=("heaptrack", "")), \
              mock.patch.object(memory, "_take", side_effect=lambda tool, *_a: heaps[tool]):
-            found = memory.profile(["python3", "bench/h.py"], self.root, resolve, None, None, measured_mb=40)
+            found = memory.profile(T(["python3", "bench/h.py"]), self.root, resolve, None, None, measured_mb=40)
         self.assertEqual((found["tool"], found["files"]), ("heaptrack", {"src/solver.f90": 1.0}))
-        self.assertIn("left 100% of the peak on bench/h.py", found["note"])
+        self.assertIn("left 100% of the peak on the harness", found["note"])
 
     def test_massif_keeps_the_function_of_a_frame_without_source(self) -> None:
         text = ("snapshot=0\nmem_heap_B=100\nheap_tree=peak\nn1: 100 (heap allocation functions) malloc/new/new[], --alloc-fns, etc.\n"
@@ -275,23 +276,41 @@ class SymbolTests(unittest.TestCase):
 class ChoiceTests(unittest.TestCase):
     def test_python_prefers_py_spy_then_cprofile(self) -> None:
         with mock.patch.object(cpu.shutil, "which", return_value="/bin/py-spy"):
-            self.assertEqual(profiling.choose(["python3", "run.py"]), ("py-spy", ""))
+            self.assertEqual(profiling.choose(T(["python3", "run.py"])), ("py-spy", ""))
         with mock.patch.object(cpu.shutil, "which", return_value=None):
-            self.assertEqual(profiling.choose(["python3", "run.py"]), ("cprofile", ""))
-            tool, why = profiling.choose(["python3", "-c", "x"])
+            self.assertEqual(profiling.choose(T(["python3", "run.py"])), ("cprofile", ""))
+            tool, why = profiling.choose(T(["python3", "-c", "x"]))
             self.assertEqual(tool, "")
             self.assertIn("cProfile", why)
 
-    def test_a_compiled_run_needs_perf_and_says_how_to_allow_it(self) -> None:
+    def test_a_compiled_run_takes_perf_else_callgrind_and_says_how_to_allow_perf(self) -> None:
         with mock.patch.object(cpu, "perf_allowed", return_value=(True, "")):
-            self.assertEqual(profiling.choose(["./solver"]), ("perf", ""))
-        with mock.patch.object(cpu.shutil, "which", return_value="/usr/bin/perf"), \
-             mock.patch.object(cpu.os, "geteuid", return_value=1000), \
-             mock.patch("builtins.open", mock.mock_open(read_data="4\n")):
-            tool, why = profiling.choose(["./solver"])
-        self.assertEqual(tool, "")
+            self.assertEqual(profiling.choose(T(["./solver"])), ("perf", ""))
+        self.addCleanup(setattr, cpu, "_perf_checked", None)
+        for valgrind, expected in (("/usr/bin/valgrind", "callgrind"), (None, "")):
+            cpu._perf_checked = None
+            with mock.patch.object(cpu.shutil, "which", side_effect=lambda t: valgrind if t == "valgrind"
+                                   else "/usr/bin/" + t), \
+                 mock.patch.object(cpu.os, "geteuid", return_value=1000), \
+                 mock.patch("builtins.open", mock.mock_open(read_data="4\n")):
+                tool, why = profiling.choose(T(["./solver"]))
+                self.assertIn("perf_event_paranoid = 4", cpu.perf_allowed()[1])
+            self.assertEqual(tool, expected)
         self.assertIn("perf_event_paranoid = 4", why)
         self.assertIn("sysctl", why)
+
+    def test_perf_is_tried_for_real_once(self) -> None:
+        self.addCleanup(setattr, cpu, "_perf_checked", None)
+        cpu._perf_checked = None
+        refused = subprocess.CompletedProcess([], 255, "", "Error:\nAccess to performance monitoring is denied.\n")
+        with mock.patch.object(cpu.shutil, "which", return_value="/usr/bin/perf"), \
+             mock.patch.object(cpu.os, "geteuid", return_value=1000), \
+             mock.patch("builtins.open", mock.mock_open(read_data="1\n")), \
+             mock.patch.object(cpu.subprocess, "run", return_value=refused) as probe:
+            self.assertEqual(cpu.perf_allowed(), (False, "perf cannot open its events here: "
+                                                         "Access to performance monitoring is denied."))
+            cpu.perf_allowed()
+        self.assertEqual(probe.call_count, 1)
 
 
 _PROFILE = {
@@ -503,14 +522,14 @@ class GpuReadingTests(unittest.TestCase):
 class GpuChoiceTests(unittest.TestCase):
     def test_the_vendor_comes_from_the_libraries_then_the_job_s_devices(self) -> None:
         with mock.patch.object(gpu, "_linked", return_value="libcudart.so.12 => /usr/lib/libcudart.so.12"):
-            self.assertEqual(gpu.gpu_vendor(["./solver"]), "nvidia")
+            self.assertEqual(gpu.gpu_vendor(T(["./solver"])), "nvidia")
         with mock.patch.object(gpu, "_linked", return_value=""), mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(gpu.gpu_vendor(["python3", "x.py"], ["amdhip64"]), "amd")
-            self.assertEqual(gpu.gpu_vendor(["python3", "x.py"], ["numpy"]), "")
+            self.assertEqual(gpu.gpu_vendor(T(["python3", "x.py"]), ["amdhip64"]), "amd")
+            self.assertEqual(gpu.gpu_vendor(T(["python3", "x.py"]), ["numpy"]), "")
         with mock.patch.object(gpu, "_linked", return_value=""), \
              mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0"}, clear=True), \
              mock.patch.object(gpu.shutil, "which", return_value=None):
-            self.assertEqual(gpu.gpu_vendor(["./solver"]), "nvidia")
+            self.assertEqual(gpu.gpu_vendor(T(["./solver"])), "nvidia")
 
     def test_a_missing_tracer_says_to_load_it(self) -> None:
         with mock.patch.object(gpu.shutil, "which", return_value=None):
@@ -604,12 +623,12 @@ class MemoryTests(unittest.TestCase):
 
     def test_the_tool_that_fits(self) -> None:
         with mock.patch.object(memory, "_has_memray", return_value=False):
-            self.assertEqual(memory.choose(["python3", "run.py"]), ("tracemalloc", ""))
-            self.assertEqual(memory.choose(["python3", "-c", "x"])[0], "")
+            self.assertEqual(memory.choose(T(["python3", "run.py"])), ("tracemalloc", ""))
+            self.assertEqual(memory.choose(T(["python3", "-c", "x"]))[0], "")
         with mock.patch.object(memory.shutil, "which", side_effect=lambda t: "/usr/bin/valgrind" if t == "valgrind" else None):
-            self.assertEqual(memory.choose(["./solver"]), ("massif", ""))
+            self.assertEqual(memory.choose(T(["./solver"])), ("massif", ""))
         with mock.patch.object(memory.shutil, "which", return_value=None):
-            self.assertIn("heaptrack", memory.choose(["./solver"])[1])
+            self.assertIn("heaptrack", memory.choose(T(["./solver"]))[1])
 
     def _python_harness(self, native: tuple[str, str], heaps: dict) -> dict:
         """A Python harness whose code allocates in a child: its own heap is small."""
@@ -620,7 +639,7 @@ class MemoryTests(unittest.TestCase):
         with mock.patch.object(memory, "choose", return_value=("memray", "")), \
              mock.patch.object(memory, "choose_native", return_value=native), \
              mock.patch.object(memory, "_take", side_effect=taken):
-            return memory.profile(["python3", "h.py"], self.root, resolve, None, None, measured_mb=80)
+            return memory.profile(T(["python3", "h.py"]), self.root, resolve, None, None, measured_mb=80)
 
     def test_a_python_harness_s_child_is_traced_by_the_native_profiler(self) -> None:
         heaps = {"memray": (2**20, [([Frame("bench/h.py", "<module>", 2)], 2**20)]),
@@ -674,9 +693,10 @@ class MemoryTests(unittest.TestCase):
              mock.patch.object(memory, "choose_native", return_value=("massif", "")):
             found = profiling.profile([sys.executable, os.path.join(self.root, "h.py")], self.root, self.root,
                                       ["src/grid.c", "h.py"], level="memory", timeout=300, peak_mb=16)["memory"]
+        # The code is C: the native profiler is taken at once, no Python tracer first.
         self.assertEqual(found["tool"], "massif")
         self.assertEqual(next(iter(found["functions"])), "src/grid.c::build")
-        self.assertIn("tracemalloc traced", found["note"])
+        self.assertNotIn("tracemalloc", found.get("note", ""))
 
     def test_massif_finds_the_fortran_allocation(self) -> None:
         exe = self._build("solver.f90", _F90_ALLOC, "gfortran")
@@ -897,10 +917,12 @@ class RunnerProfilesTests(_TmpStorageTest):
         exe = self.exe = os.path.join(self.root, "fast.py")
         with open(exe, "w") as fh:
             fh.write(textwrap.dedent("""\
-                import sys
+                import os, sys
                 import numpy as np
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                import tracked
                 out = sys.argv[1] if sys.argv[1].endswith('.npz') else sys.argv[1] + '.npz'
-                total = sum(i * i for i in range(200000))
+                total = tracked.work()
                 np.savez(out, field=np.ones(4))
                 print('PROXY_METRICS_BEGIN')
                 print('time_s=0.01')
@@ -914,7 +936,7 @@ class RunnerProfilesTests(_TmpStorageTest):
                                   cases=[{"case_id": "a", "proxy_name": "fast"}], confirm=True)
         tracked = os.path.join(self.root, "tracked.py")
         with open(tracked, "w") as fh:
-            fh.write("TUNABLE = 1\n")
+            fh.write("TUNABLE = 1\n\n\ndef work():\n    return sum(i * i for i in range(200000))\n")
         res = _eval(op="init", proxy_name="fast", benchmark_name="fastb", proxy_source_path=exe,
                     optimize_paths=[tracked], primary_metric="time_s",
                     requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}], confirm=True)
@@ -939,7 +961,7 @@ class RunnerProfilesTests(_TmpStorageTest):
         base = self._run()
         prof = read_json(profiling.profile_path(base))
         self.assertEqual(prof["tool"], "cprofile")
-        self.assertIn("fast.py", prof["files"])
+        self.assertIn("tracked.py", prof["files"])
         # The same time again is no improvement: rejected, so not profiled.
         second = self._run()
         self.assertIsNone(read_json(profiling.profile_path(second)))
@@ -980,7 +1002,7 @@ class RunnerProfilesTests(_TmpStorageTest):
         self._run()
         res = server_proxy.proxy_eval_status(op="results", proxy_name="fast")
         self.assertEqual(res["verdict"], "accept")
-        self.assertIn("fast.py", res["where_time_goes"]["files"])
+        self.assertIn("tracked.py", res["where_time_goes"]["files"])
 
     def test_profiling_the_current_tree_files_it_with_the_run_that_measured_it(self) -> None:
         base = self._run()
@@ -999,17 +1021,17 @@ class RunnerProfilesTests(_TmpStorageTest):
             res = _eval(op="profile", proxy_name="fast", confirm=True)
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["profiled"], os.path.basename(base))
-        self.assertIn("fast.py", res["where_time_goes"]["files"])
+        self.assertIn("tracked.py", res["where_time_goes"]["files"])
         self.assertIsNotNone(read_json(profiling.profile_path(base)))
 
     def test_a_deeper_view_of_a_profiled_tree_runs_nothing(self) -> None:
         base = self._run()
         with mock.patch.object(eval_session.proc_run, "run", side_effect=AssertionError("ran")):
-            res = _eval(op="profile", proxy_name="fast", level="function", focus="fast.py", confirm=True)
+            res = _eval(op="profile", proxy_name="fast", level="function", focus="tracked.py", confirm=True)
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["from_profile_of"], os.path.basename(base))
         self.assertTrue(res["where_time_goes"]["functions"])
-        self.assertTrue(all(k.startswith("fast.py::") for k in res["where_time_goes"]["functions"]))
+        self.assertTrue(all(k.startswith("tracked.py::") for k in res["where_time_goes"]["functions"]))
 
     def test_a_memory_profile_joins_the_run_s_and_is_read_again_without_a_run(self) -> None:
         base = self._run()
@@ -1059,7 +1081,7 @@ class RunnerProfilesTests(_TmpStorageTest):
         self.assertIn("unavailable", res["where_time_goes"])
         kept = read_json(profiling.profile_path(base))
         self.assertEqual((kept["memory"], kept["counters"]["ipc"]), (found, 0.7))
-        self.assertIn("fast.py", kept["files"])
+        self.assertIn("tracked.py", kept["files"])
 
     def test_an_unknown_level_in_the_list_is_named(self) -> None:
         self._run()
@@ -1080,7 +1102,7 @@ class RunnerProfilesTests(_TmpStorageTest):
         self.assertEqual(res["where_time_goes"], {"tool": "perf stat", "ipc": 0.7})
         kept = read_json(profiling.profile_path(base))
         self.assertEqual(kept["counters"], {"tool": "perf stat", "ipc": 0.7})
-        self.assertIn("fast.py", kept["files"])
+        self.assertIn("tracked.py", kept["files"])
 
 
 if __name__ == "__main__":

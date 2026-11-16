@@ -22,8 +22,12 @@ NUMERICAL_INVARIANT_METRICS = frozenset({
 # ``wall_time_s`` is the server's own wall-clock measurement — the tamper-proof twin of
 # a self-reported ``time_s`` — and ``peak_rss_mb`` / ``peak_rss_total_mb`` its memory
 # high-water marks (the largest process's; every process's summed, as MPI counts ranks),
-# with ``processes``, how many there were. Reserved,
+# with ``processes``, how many there were; ``region_*`` and ``regions`` the same taken
+# over the harness's measured regions only (``region.py``). Reserved,
 # but measurements rather than correctness invariants, hence absent from
 # NUMERICAL_INVARIANT_METRICS: a run that reports only a cost has proved nothing about
 # the answer.
-RESERVED_METRICS = NUMERICAL_INVARIANT_METRICS | {"wall_time_s", "peak_rss_mb", "peak_rss_total_mb", "processes"}
+REGION_METRICS = frozenset({"region_time_s", "regions", "region_peak_rss_mb", "region_peak_rss_total_mb",
+                            "region_extra_mb"})
+RESERVED_METRICS = (NUMERICAL_INVARIANT_METRICS | REGION_METRICS
+                    | {"wall_time_s", "peak_rss_mb", "peak_rss_total_mb", "processes"})

@@ -19,7 +19,7 @@ from typing import NoReturn
 
 from ._lib import build as build_mod
 from ._lib.build_files import read_report
-from ._lib import command, execute, metrics, profiling, ratchet, store, tree_snapshot
+from ._lib import command, execute, metrics, proc_run, profiling, ratchet, store, tree_snapshot
 from ...shared.atomic import read_json
 
 
@@ -436,21 +436,43 @@ def _profile_phase(plan: _Plan, reg: dict, entry: dict, run_dir: str, tally: _Ta
         _write_phase(run_dir, "profile", f"profiling case {longest['case_id']} ({level})")
         root = store.workspace_root()
         measured = longest["metrics"].get("time_s")
-        spent = float(measured or 600.0)
-        # A kernel profiler replays each launch, massif simulates the CPU: far slower than the run.
-        slower = {"kernel": 20, "memory": 60}.get(level)
+        wall = longest["metrics"].get("wall_time_s") or measured
+        spent = float(wall or 600.0)
+        # A kernel profiler replays each launch, massif and callgrind simulate the CPU: far
+        # slower than the run.
+        slower = {"kernel": 20, "memory": 60}.get(level) or (60 if not profiling.perf_allowed()[0] else None)
         timeout = max(300.0, slower * spent) if slower else max(120.0, 5 * spent)
+        code, harness = _roles(plan.proxy_name, root)
+        fingerprint = read_json(os.path.join(longest.get("run_dir") or "", proc_run.PROCESSES_FILE)) \
+            if longest.get("run_dir") else None
         result = profiling.profile(argv, out_dir, root, code_map.walk(root), timeout=timeout,
                                    case=str(longest["case_id"]), level=level, focus=focus,
-                                   wall_s=float(measured) if measured else None,
+                                   wall_s=float(wall) if wall else None,
                                    peak_mb=longest["metrics"].get("peak_rss_mb"),
-                                   peak_gbytes_per_s=case_entry.get("peak_bandwidth_gbytes_per_s"))
+                                   peak_gbytes_per_s=case_entry.get("peak_bandwidth_gbytes_per_s"),
+                                   code=code, harness=harness, fingerprint=fingerprint,
+                                   regions=bool(longest["metrics"].get("regions")))
         top = profiling.top(result, level=level)
         _log(f"[proxy_runner] profile tool={result.get('tool') or 'none'} "
              + (f"unavailable={top['unavailable']}" if "unavailable" in top
                 else " ".join(f"{f}={s:.0%}" for f, s in (top.get("files") or {}).items())))
     except Exception as exc:
         _log(f"[proxy_runner] WARNING: profile failed: {exc}")
+
+
+def _roles(proxy_name: str, root: str) -> tuple[list[str], list[str]]:
+    """The code optimized and the harness measuring it, as the session names them: the
+    harness is its file, and its directory when that holds none of the code and is not
+    the workspace itself (``proxy_bench/harnesses``)."""
+    cfg = store.load_opt_config(proxy_name) or {}
+    code = list(cfg.get("optimize_paths") or [])
+    source = cfg.get("proxy_source_path") or ""
+    harness = [source] if source else []
+    folder = os.path.dirname(os.path.realpath(source)) if source else ""
+    if folder and os.path.realpath(root) != folder and not any(
+            os.path.realpath(p).startswith(folder + os.sep) for p in code):
+        harness.append(folder)
+    return code, harness
 
 
 def main() -> None:
@@ -499,7 +521,8 @@ def main() -> None:
     build_report = read_report(run_dir) or {}
     # The run's memory is its largest case's: a constraint on it is a ceiling, not a mean.
     peaks = {k: [r["metrics"][k] for r in tally.results if isinstance((r.get("metrics") or {}).get(k), (int, float))]
-             for k in ("peak_rss_mb", "peak_rss_total_mb")}
+             for k in ("peak_rss_mb", "peak_rss_total_mb", "region_peak_rss_mb", "region_peak_rss_total_mb",
+                       "region_extra_mb")}
     output = {
         "proxy_name": proxy_name,
         "benchmark_name": benchmark_name,

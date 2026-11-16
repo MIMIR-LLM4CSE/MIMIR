@@ -1,16 +1,16 @@
-"""The CPU side of a profile: py-spy (``--native``: the C/C++ frames of a Python process
-too; ``--subprocesses``: the Python processes it starts) or cProfile for a Python command,
-perf for a compiled one, each sample given to the deepest workspace frame of its stack, by
-file, function and line; and perf's hardware counters for a compiled command, on request.
-
-A Python harness that runs the code in a program py-spy cannot read (a compiled solver it
-starts) leaves py-spy with the harness waiting: when py-spy saw less than half the run,
-perf profiles it again, and the profile that puts more seconds in the workspace is kept."""
+"""The CPU side of a profile: py-spy (``--native --subprocesses``) or cProfile for Python,
+perf for compiled code and Python calling it (Python's frames named from 3.12), else
+callgrind; each sample given to the deepest workspace frame of its stack; perf's hardware
+counters on request. A py-spy profile that saw under half the run, or left it on the
+harness, is taken again by perf, and the one with more seconds in the code is kept. perf
+and callgrind record a marked region alone.
+"""
 from __future__ import annotations
 
 import os
 import pstats
 import re
+import select
 import shutil
 import subprocess
 import time
@@ -18,11 +18,12 @@ from collections import Counter
 from typing import Callable, TextIO
 
 from .. import proc_run
+from . import callgrind
+from .target import Target, missing, python_exposes_frames
 from .frames import Frame, fortran_name, outside
 
 FUNCTIONS_KEPT, LINES_KEPT = 50, 200
 
-_PYTHON_RE = re.compile(r"^(python|pypy)[\d.]*$")
 _PYSPY_FRAME_RE = re.compile(r"^(?P<name>.*?) \((?P<where>[^()]*)\)$")
 # The root frames ``--subprocesses`` gives each stack: the process, then its parents'.
 _PYSPY_PROCESS_RE = re.compile(r'^(?:process \d+:"(?:[^"\\]|\\.)*";)+')
@@ -35,38 +36,56 @@ _PERF_EVENTS = ("cycles", "instructions", "cache-references", "cache-misses", "b
 _LLC_EVENTS = ("LLC-loads", "LLC-load-misses")
 
 
-def is_python(argv: list[str]) -> bool:
-    """Whether a command runs Python: an interpreter, or a script it runs."""
-    return bool(argv) and (bool(_PYTHON_RE.match(os.path.basename(argv[0]))) or argv[0].endswith(".py"))
+_perf_checked: tuple[bool, str] | None = None
 
 
 def perf_allowed() -> tuple[bool, str]:
-    """Whether perf may profile here, and why not when it may not."""
+    """Whether perf may profile here, and why not when it may not: its events opened for
+    real once (a container or a seccomp filter blocks what the kernel setting allows)."""
+    global _perf_checked
     if not shutil.which("perf"):
-        return False, "perf is not installed"
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        return True, ""
+        return False, missing("perf")
+    if _perf_checked is not None:
+        return _perf_checked
+    level = None
     try:
         with open("/proc/sys/kernel/perf_event_paranoid") as fh:
             level = int(fh.read().strip())
     except (OSError, ValueError):
-        return True, ""
-    if level > 2:
-        return False, (f"perf is blocked here (kernel.perf_event_paranoid = {level}); an admin can "
-                       "allow it with `sudo sysctl kernel.perf_event_paranoid=1`")
-    return True, ""
+        pass
+    root = hasattr(os, "geteuid") and os.geteuid() == 0
+    if level is not None and level > 2 and not root:
+        _perf_checked = (False, f"perf is blocked here (kernel.perf_event_paranoid = {level}); an admin can "
+                                "allow it with `sudo sysctl kernel.perf_event_paranoid=1`")
+        return _perf_checked
+    try:
+        probe = subprocess.run(["perf", "stat", "-x,", "-e", "task-clock", "--", "true"],
+                               capture_output=True, text=True, timeout=30)
+        said = (probe.stderr or "").strip().splitlines()
+        _perf_checked = (True, "") if probe.returncode == 0 else (
+            False, "perf cannot open its events here" + (f": {said[-1]}" if said else ""))
+    except (OSError, subprocess.SubprocessError) as exc:
+        _perf_checked = (False, f"perf could not run: {exc}")
+    return _perf_checked
 
 
-def choose(argv: list[str]) -> tuple[str, str]:
-    """The profiler for *argv* here, or "" with the reason none fits."""
-    if is_python(argv):
+def choose(target: Target) -> tuple[str, str]:
+    """The profiler for *target* here, or "" with the reason none fits."""
+    if target.python:
         if shutil.which("py-spy"):
             return "py-spy", ""
-        if len(argv) > 1 and argv[1] != "-c":
+        ok, why = perf_allowed()
+        if target.native and ok:
+            return "perf", ""            # the code is native: perf sees it, py-spy is missing
+        if target.interpreter and len(target.command) > 1 and target.command[1] != "-c":
             return "cprofile", ""
-        return "", "py-spy is not installed and cProfile cannot run a `-c` command"
+        return "", f"{missing('py-spy')} and cProfile cannot run this command (no interpreter and script)"
     ok, why = perf_allowed()
-    return ("perf", "") if ok else ("", why)
+    if ok:
+        return "perf", ""
+    if shutil.which("valgrind"):
+        return "callgrind", ""
+    return "", f"{why}; and valgrind (callgrind, which needs no privilege) is not installed either"
 
 
 # ── reading what a profiler wrote ────────────────────────────────────────────
@@ -110,15 +129,22 @@ def perf_stacks(text: str) -> list[tuple[list[Frame], int]]:
         hexed = _HEX_RE.match(line)
         if hexed:
             sym = re.sub(r"\+0x[0-9a-f]+$", "", hexed.group("sym") or "")
-            frames.append(Frame(hexed.group("dso"), "" if sym == "[unknown]" else sym))
+            if sym.startswith("py::"):
+                # Python's own frame, as 3.12's perf support names it: py::function:file.
+                func, _, where = sym[4:].partition(":")
+                frames.append(Frame(where, func))
+            else:
+                frames.append(Frame(hexed.group("dso"), "" if sym == "[unknown]" else sym))
     return out
 
 
 def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], str | None]) -> dict:
     """Shares of the samples per workspace file, function and line (the deepest workspace
-    frame of each stack; a function's total counts every stack it is on, once) and, for
-    stacks with none, per outside package or library. A native frame lands by its symbol
-    when its file does not (``resolve.symbol``), opened where its function is defined."""
+    frame; a function's total counts each stack it is on once), the rest per outside
+    package or library; a native frame lands by its symbol (``resolve.symbol``). A stack
+    through the harness and not the code (``resolve.role``) is counted apart as
+    ``harness``, the other shares being of the rest; one through no workspace file
+    stays outside, as a thread pool may be the code's."""
     files: Counter = Counter()
     own: Counter = Counter()
     under: Counter = Counter()
@@ -128,6 +154,8 @@ def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], st
     defs: dict[str, int] = {}
     total = 0
     by_symbol = getattr(resolve, "symbol", None)
+    role = getattr(resolve, "role", None)
+    harness = 0
 
     def home_of(f: Frame) -> str | None:
         home = resolve(f.where)
@@ -140,6 +168,11 @@ def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], st
     for frames, count in stacks:
         total += count
         homes = [(home, f) for f in frames if (home := home_of(f))]
+        if role and homes:
+            kinds = {role(h) for h, _ in homes}
+            if "harness" in kinds and "code" not in kinds:
+                harness += count
+                continue
         if not homes:
             out[outside(frames[-1].where if frames else "")] += count
             continue
@@ -155,17 +188,24 @@ def attribute(stacks: list[tuple[list[Frame], int]], resolve: Callable[[str], st
             under[key] += count
     if not total:
         return {"samples": 0, "files": {}, "outside": {}}
+    left = total - harness
+    apart = {"harness": round(harness / total, 4)} if round(harness / total, 4) else {}
+    if not left:
+        return {"samples": total, "files": {}, "outside": {}, **apart}
     return {"samples": total,
-            "files": {f: round(n / total, 4) for f, n in files.most_common()},
-            "functions": _functions(own, under, total, {**defs, **_costliest_lines(at)}),
-            "lines": {k: round(n / total, 4) for k, n in lines.most_common(LINES_KEPT)},
-            "outside": {k: round(n / total, 4) for k, n in out.most_common(12)}}
+            "files": {f: round(n / left, 4) for f, n in files.most_common()},
+            "functions": _functions(own, under, left, {**defs, **_costliest_lines(at)}),
+            "lines": {k: round(n / left, 4) for k, n in lines.most_common(LINES_KEPT)},
+            "outside": {k: round(n / left, 4) for k, n in out.most_common(12)}, **apart}
 
 
 def cprofile_files(path: str, resolve: Callable[[str], str | None]) -> dict:
     """A cProfile dump's self time per workspace file and function (with its cumulative
-    time), the rest per outside package."""
+    time), the rest per outside package; the harness's own self time apart (``harness``),
+    the libraries it calls left outside, which cProfile cannot tell from the code's."""
     stats = pstats.Stats(path).stats  # type: ignore[attr-defined]
+    role = getattr(resolve, "role", None)
+    harness = 0.0
     files: Counter = Counter()
     own: Counter = Counter()
     under: Counter = Counter()
@@ -173,7 +213,9 @@ def cprofile_files(path: str, resolve: Callable[[str], str | None]) -> dict:
     defs: dict[str, int] = {}
     for (filename, line, func), (_cc, _nc, tottime, cumtime, _callers) in stats.items():
         home = resolve(filename) if filename and filename[0] not in "<~" else None
-        if home:
+        if home and role and role(home) == "harness":
+            harness += tottime
+        elif home:
             files[home] += tottime
             own[f"{home}::{func}"] += tottime
             under[f"{home}::{func}"] += cumtime
@@ -182,9 +224,10 @@ def cprofile_files(path: str, resolve: Callable[[str], str | None]) -> dict:
         else:
             out["built-ins" if filename == "~" else "python" if filename.startswith("<") else outside(filename)] += tottime
     total = sum(files.values()) + sum(out.values())
+    apart = {"harness": round(harness / (total + harness), 4)} if harness else {}
     if not total:
-        return {"samples": 0, "files": {}, "outside": {}}
-    return {"samples": len(stats),
+        return {"samples": 0, "files": {}, "outside": {}, **apart}
+    return {"samples": len(stats), **apart,
             "files": {f: round(t / total, 4) for f, t in files.most_common() if t / total >= 5e-5},
             "functions": _functions(own, under, total, defs),
             "outside": {k: round(t / total, 4) for k, t in out.most_common(12) if t / total >= 5e-5},
@@ -282,75 +325,94 @@ def _uncore_events() -> tuple[str, ...]:
 
 # ── taking one ───────────────────────────────────────────────────────────────
 
-def sample(tool: str, argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
-           log: TextIO, timeout: float | None, wall_s: float | None = None) -> dict:
-    """Run *argv* once under *tool* and attribute its samples. A py-spy profile that saw
-    less than half of *wall_s* (the run's measured time), or put more than half of it on
-    the command's own script (the harness, whose native callee it could not read), is taken
-    again by perf, and the one that puts more seconds in the workspace's code is kept."""
+def sample(tool: str, target: Target, out_dir: str, resolve: Callable[[str], str | None],
+           log: TextIO, timeout: float | None, wall_s: float | None = None,
+           regions: bool = False) -> dict:
+    """Run *target* once under *tool* and attribute its samples. A py-spy profile that saw
+    less than half of *wall_s* (the run's measured time), or left more than half of it on
+    the harness (whose native callee it could not read), is taken again by perf, and the
+    one that puts more seconds in the code is kept. *regions*: the harness marks its
+    measured region, which perf and callgrind then record alone."""
     if tool == "cprofile":
         dump = os.path.join(out_dir, "profile.pstats")
-        proc_run.run([argv[0], "-m", "cProfile", "-o", dump, *argv[1:]], stdout=log,
-                     stderr=subprocess.STDOUT, timeout=timeout)
+        proc_run.run(target.wrap([target.command[0], "-m", "cProfile", "-o", dump], out_dir, inside=True),
+                     stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         return cprofile_files(dump, resolve)
+    if tool == "callgrind":
+        return callgrind.sample(target, out_dir, resolve, log, timeout, regions)
     if tool != "py-spy":
-        return _perf_sample(argv, out_dir, resolve, log, timeout)
-    found = _pyspy(argv, out_dir, resolve, log, timeout)
-    script = resolve(argv[1]) if len(argv) > 1 else None
+        return _perf_sample(target, out_dir, resolve, log, timeout, regions)
+    found = _pyspy(target, out_dir, resolve, log, timeout)
+    script = resolve(target.script) if target.script else None
     seen = found.get("samples", 0) / PYSPY_HZ
+    left = found.get("harness", 0) + (found.get("files") or {}).get(script or "", 0)
     if wall_s and seen < SEEN_ENOUGH * wall_s:
         missed = (f"py-spy saw {seen:.1f} s of the run's {wall_s:.1f} s: the rest ran in a process "
                   "it cannot read (a compiled program the command starts)")
-    elif script and (found.get("files") or {}).get(script, 0) > SEEN_ENOUGH:
-        missed = (f"py-spy left {found['files'][script]:.0%} of the run on {script}, the command's own "
-                  "script: in native code it calls that py-spy could not place")
+    elif left > SEEN_ENOUGH:
+        missed = (f"py-spy left {left:.0%} of the run on the harness: in native code it calls that "
+                  "py-spy could not place")
     else:
         return found
     ok, why = perf_allowed()
     if not ok:
         return {**found, "note": f"{missed}; perf would see it, but {why}"}
-    native = _perf_sample(argv, out_dir, resolve, log, timeout)
+    native = _perf_sample(target, out_dir, resolve, log, timeout, regions)
     if _workspace_s(native, PERF_HZ, script) <= _workspace_s(found, PYSPY_HZ, script):
         return {**found, "note": f"{missed}; perf saw no more of the workspace"}
+    frames_ = ("Python's frames are named" if native.get("python_frames")
+               else "Python's frames are the interpreter's there")
     return {**native, "tool": "perf",
-            "note": "; ".join(filter(None, [f"{missed}, so perf profiled it: Python's frames are "
-                                            "the interpreter's there", native.get("note")]))}
+            "note": "; ".join(filter(None, [f"{missed}, so perf profiled it: {frames_}", native.get("note")]))}
 
 
 def _workspace_s(found: dict, hz: int, but: str | None = None) -> float:
-    """The seconds a sampled profile puts in the workspace's files, *but* one (the harness)."""
-    return found.get("samples", 0) / hz * sum(v for k, v in (found.get("files") or {}).items() if k != but)
+    """The seconds a sampled profile puts in the workspace's files, *but* one (the
+    harness), the harness's own samples left out."""
+    kept = found.get("samples", 0) * (1 - found.get("harness", 0))
+    return kept / hz * sum(v for k, v in (found.get("files") or {}).items() if k != but)
 
 
-def _pyspy(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
+def _pyspy(target: Target, out_dir: str, resolve: Callable[[str], str | None],
            log: TextIO, timeout: float | None) -> dict:
     raw = os.path.join(out_dir, "profile.raw")
     base = ["py-spy", "record", "--format", "raw", "--rate", str(PYSPY_HZ), "-o", raw]
     # --native is not supported everywhere, and an older py-spy lacks the others.
     for flags in (["--native", "--subprocesses", "--full-filenames"], ["--subprocesses", "--full-filenames"], []):
-        proc_run.run([*base, *flags, "--", *argv], stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+        proc_run.run(target.wrap([*base, *flags, "--"], out_dir), stdout=log, stderr=subprocess.STDOUT,
+                     timeout=timeout)
         if os.path.isfile(raw):
             break
     with open(raw, encoding="utf-8", errors="replace") as rf:
         return attribute(pyspy_stacks(rf.read()), resolve)
 
 
-def _perf_sample(argv: list[str], out_dir: str, resolve: Callable[[str], str | None],
-                 log: TextIO, timeout: float | None) -> dict:
-    """perf's profile of *argv* and the children it starts."""
-    stacks = _perf(argv, out_dir, log, timeout, "fp")
+def _perf_sample(target: Target, out_dir: str, resolve: Callable[[str], str | None],
+                 log: TextIO, timeout: float | None, regions: bool = False) -> dict:
+    """perf's profile of *target* and the children it starts, its measured region alone
+    when it marks one (and the whole run when perf cannot be switched on there)."""
+    notes = []
+    python_frames = target.python and python_exposes_frames(target.interpreter or "python3")
+    stacks = _perf(target, out_dir, log, timeout, "fp", regions, python_frames)
+    if regions and not stacks:
+        notes.append("perf could not be limited to the measured region here: the whole run is profiled")
+        regions = False
+        stacks = _perf(target, out_dir, log, timeout, "fp", False, python_frames)
     if stacks and shallow(stacks) > SHALLOW:
         # No frame pointers (an optimised build): unwind from the stack's own copy instead.
-        deeper = _perf(argv, out_dir, log, timeout, "dwarf")
+        deeper = _perf(target, out_dir, log, timeout, "dwarf", regions, python_frames)
         if deeper and shallow(deeper) < shallow(stacks):
             stacks = deeper
     result = attribute(stacks, resolve)
-    notes = []
+    if regions:
+        result["window"] = "measured region"
+    if python_frames:
+        result["python_frames"] = True
     if stacks and shallow(stacks) > SHALLOW:
         notes.append("stacks are cut short, so a function's total time is understated: build with "
                      "-fno-omit-frame-pointer")
-    binary = os.path.basename(argv[0])
-    if not is_python(argv) and (result.get("outside") or {}).get(binary, 0) > 0.3:
+    binary = os.path.basename(target.command[0]) if target.command else ""
+    if binary and not target.python and (result.get("outside") or {}).get(binary, 0) > 0.3:
         notes.append(f"{binary} has no debug information, so its time is not on its source files: "
                      "add -g to the build (it does not change the generated code)")
     if notes:
@@ -368,28 +430,68 @@ def shallow(stacks: list[tuple[list[Frame], int]]) -> float:
     return sum(n for frames, n in stacks if len(frames) <= 1) / total if total else 0.0
 
 
-def _perf(argv: list[str], out_dir: str, log: TextIO, timeout: float | None, unwind: str) -> list:
-    """perf's stacks of one run of *argv*, unwound by frame pointer ("fp") or DWARF."""
+class PerfControl:
+    """perf's control FIFOs: perf starts with its events off (``-D -1``) and the region's
+    marks turn them on and off (``--control``, perf 5.11 and later)."""
+
+    def __init__(self, out_dir: str) -> None:
+        self.ctl, self.ack = os.path.join(out_dir, "perf.ctl"), os.path.join(out_dir, "perf.ack")
+        for path in (self.ctl, self.ack):
+            if os.path.exists(path):
+                os.unlink(path)
+            os.mkfifo(path, 0o600)
+
+    def args(self) -> list[str]:
+        return ["-D", "-1", "--control", f"fifo:{self.ctl},{self.ack}"]
+
+    def __call__(self, word: str, _pids: list[str] | None = None) -> None:
+        try:
+            fd = os.open(self.ctl, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            return                       # perf is not reading: it did not start, or is gone
+        try:
+            ack = os.open(self.ack, os.O_RDONLY | os.O_NONBLOCK)
+            try:
+                os.write(fd, b"enable\n" if word == "begin" else b"disable\n")
+                select.select([ack], [], [], 2.0)
+            finally:
+                os.close(ack)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+
+def _perf(target: Target, out_dir: str, log: TextIO, timeout: float | None, unwind: str,
+          regions: bool = False, python_frames: bool = False) -> list:
+    """perf's stacks of one run of *target*, unwound by frame pointer ("fp") or DWARF;
+    its measured region alone with *regions*; Python's frames named with *python_frames*."""
     data = os.path.join(out_dir, "perf.data")
+    if os.path.exists(data):
+        os.unlink(data)
     graph = ["-g"] if unwind == "fp" else ["--call-graph", "dwarf,16384"]
-    proc_run.run(["perf", "record", *graph, "-F", str(PERF_HZ), "-o", data, "--", *argv],
-                 stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+    control = PerfControl(out_dir) if regions else None
+    env = ["env", "PYTHONPERFSUPPORT=1"] if python_frames else []
+    tool = ["perf", "record", *graph, "-F", str(PERF_HZ), "-o", data, *(control.args() if control else []), "--", *env]
+    proc_run.run(target.wrap(tool, out_dir), stdout=log, stderr=subprocess.STDOUT, timeout=timeout, region=control)
+    if not os.path.isfile(data):
+        return []
     script = proc_run.run(["perf", "script", "-i", data, "-F", "ip,sym,dso,srcline"],
                           stdout=subprocess.PIPE, stderr=log, text=True, timeout=timeout)
     return perf_stacks(script.stdout or "")
 
 
-def counters(argv: list[str], out_dir: str, log: TextIO, timeout: float | None,
+def counters(target: Target, out_dir: str, log: TextIO, timeout: float | None,
              peak_gbytes_per_s: float | None = None) -> dict:
-    """The hardware counters of one run of a compiled *argv*, its DRAM traffic against
+    """The hardware counters of one run of a compiled *target*, its DRAM traffic against
     *peak_gbytes_per_s*, or why there are none."""
-    if is_python(argv):
+    if target.python and not target.native:
         return {"unavailable": "counters are for compiled code; this command runs Python"}
     ok, why = perf_allowed()
     if not ok:
         return {"unavailable": why}
     stat, ustat = os.path.join(out_dir, "perf.stat"), os.path.join(out_dir, "perf.uncore")
-    cmd = ["perf", "stat", "-x,", "-o", stat, "-e", ",".join(_PERF_EVENTS + _LLC_EVENTS), "--", *argv]
+    cmd = target.wrap(["perf", "stat", "-x,", "-o", stat, "-e", ",".join(_PERF_EVENTS + _LLC_EVENTS), "--"], out_dir)
     uncore = _uncore_events()
     if uncore:
         # The memory controllers belong to the machine, not the process: an outer,

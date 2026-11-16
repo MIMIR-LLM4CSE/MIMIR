@@ -84,13 +84,25 @@ def strip_reserved_metrics(metrics: dict) -> list[str]:
     return forged
 
 
-def normalize_time_metrics(metrics: dict, wall_s: float) -> None:
-    """Record the measured wall time; an impossible ``time_s`` moves to ``time_s_ignored``.
-
-    ``time_s`` is the ratchet's default objective, so a forged timer must not count.
+def normalize_time_metrics(metrics: dict, wall_s: float, region: dict | None = None) -> None:
+    """Record the measured wall time and ``time_s``, the ratchet's default objective: the
+    time the server measured over the harness's regions when it marked any (what the
+    harness reported then moves to ``time_s_ignored``), else the harness's own report
+    when it is possible, else the wall time. A forged timer must not count.
     """
     metrics["wall_time_s"] = wall_s
     reported = metrics.get("time_s")
+    if region and region.get("count"):
+        metrics["region_time_s"] = round(float(region["time_s"]), 6)
+        metrics["regions"] = int(region["count"])
+        if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+            metrics["time_s_ignored"] = float(reported)
+        metrics["time_s"] = metrics["region_time_s"]
+        for key, kb in (("region_peak_rss_mb", "peak_kb"), ("region_peak_rss_total_mb", "peak_total_kb"),
+                        ("region_extra_mb", "extra_kb")):
+            if region.get(kb) is not None:
+                metrics[key] = round(max(int(region[kb]), 0) / 1024, 1)
+        return
     if isinstance(reported, (int, float)) and not isinstance(reported, bool):
         # 2% + 50 ms slack for timer granularity; wall time always includes startup.
         if 0 < reported <= wall_s * 1.02 + 0.05:

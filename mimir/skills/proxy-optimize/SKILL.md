@@ -103,6 +103,21 @@ field naming the exact next call — follow it.
    accuracy constraints hold for the copy and say nothing about what ships — `init`
    refuses that shape rather than warning about it.
 
+   **Mark the measured region.** The harness starts, makes or reads inputs, checks the
+   answer: none of that is the code, and unmarked it counts in the time and the memory.
+   Bracket only the call to the code, in the harness's language, with the helper copied
+   beside it from `mimir/servers/proxy/region/` (`proxy_manage(op='scaffold')` does both
+   for Python):
+   - Python: `from mimir_region import region` … `with region(): out = solve(data)`
+   - C / C++: `#include "mimir_region.h"` … `mimir_region_begin(); solve(); mimir_region_end();`
+   - Fortran: compile `mimir_region.f90` with the harness, `use mimir_region` …
+     `call mimir_region_begin()` … `call mimir_region_end()`
+   - Any other language: write `begin` then `end` lines to the FIFO named by
+     `MIMIR_REGION`, each followed by reading one byte from `$MIMIR_REGION.ack`.
+   Outside MIMIR they do nothing. Several regions in turn (repetitions inside the
+   harness) add their times. Do it before the baseline: the harness never changes
+   during a session, and a `harness_counted` note in `results` says when it was not done.
+
 4. **Measure the baseline first.** Run once with `optimize_paths` untouched, before any
    edit. Until that run is on record the ratchet refuses to accept anything: with no
    measurement of the original, every later number is an assertion, not a comparison.
@@ -121,12 +136,19 @@ accepted:
   proxy to register a `conserved_metric` and emit it).
 - `convergence_order` — observed order of accuracy fitted across a resolution sweep
   (pass `convergence={"h_param": "<sweep param>", "error_metric": "l2_rel"}` to `init`).
-- `wall_time_s` — server-measured wall time of the solver process. `time_s` stays
-  proxy-reported (a kernel may exclude startup/IO), but a claim exceeding the
-  measured wall time is discarded (`time_s_ignored`) and replaced by it, and an
-  accepted `time_s` improvement whose wall time regressed raises a
-  `timing_warning` — never silence it by editing the timer; fix the code or
-  optimize `primary_metric='wall_time_s'`.
+- `wall_time_s` — server-measured wall time of the solver process.
+- `region_time_s`, `regions` — server-measured time inside the harness's marked
+  regions (summed). When the harness marks any, `time_s` **is** `region_time_s` and a
+  `time_s` the harness prints is set aside (`time_s_ignored`). Without a region,
+  `time_s` stays proxy-reported, but a claim exceeding the measured wall time is
+  discarded (`time_s_ignored`) and replaced by it, and an accepted `time_s` improvement
+  whose wall time regressed raises a `timing_warning` — never silence it by editing the
+  timer; fix the code or optimize `primary_metric='wall_time_s'`.
+- `region_peak_rss_mb`, `region_peak_rss_total_mb`, `region_extra_mb` — the peak memory
+  inside the regions (largest process, all summed) and how much the region added to
+  what the harness already held: the code's own memory. A memory requirement or
+  objective is best put on these when the harness marks a region; `memory_warning`
+  compares them first.
 - `peak_rss_mb` and `peak_rss_total_mb` — server-measured peak memory: of the case's
   largest process, and of all its processes summed, each at its own peak, over
   `processes` of them. For MPI, the total is the ranks' memory: on one node from the
@@ -185,7 +207,12 @@ the node. A baseline measured on the login node describes the login node.
    - **accept** → new best. Read the source and try a further improvement, then run again.
    - `where_time_goes` — the baseline and every accepted run are profiled after their
      verdict: the workspace files that take the time, and the share spent outside the
-     workspace. Choose the next edit there, not where the code looks expensive. To go
+     workspace. What only the harness does (and the libraries it calls for that) is
+     `harness`, a share of the whole run left out of the others: never act on it.
+     `window: measured region` says the profiler recorded the marked region alone. The
+     tool fits what runs: py-spy (with native frames) or cProfile for Python, perf for
+     compiled code and for Python calling it, callgrind where perf is blocked (it counts
+     instructions, `unit: instructions`, not time), rank 0 under an MPI launcher. Choose the next edit there, not where the code looks expensive. To go
      deeper into the costliest file, `proxy_eval(op='profile', level='function',
      focus=<that file>, confirm=True)`, then `level='line'`: both are read from the
      profile already taken, so they run nothing. For compiled code, `level='counters'`

@@ -1,10 +1,9 @@
 """Where a run's time goes, by the workspace's source files: one profiled execution of a
-case, each sample given to the deepest workspace frame of its stack, by file, function
-and line; a GPU's kernels and copies traced when the run uses one; on request, hardware
-counters, one kernel's, or the allocations live at the heap's peak.
-
-A profile is never a measurement: taken after the verdict, it moves nothing. When no
-profiler can run here, the profile says why.
+case, each sample given to the deepest workspace frame of its stack; a GPU's kernels and
+copies when it uses one; on request, hardware counters, one kernel's, or the heap's peak.
+The tools fit what runs (``target``); what only the harness does is counted apart
+(``harness``); a marked region is recorded alone where the tool allows it.
+A profile is never a measurement: taken after the verdict, it moves nothing.
 """
 from __future__ import annotations
 
@@ -15,7 +14,8 @@ import subprocess
 from .....shared.atomic import write_json
 from .....shared.atomic import read_json
 from . import cpu, gpu, memory
-from .cpu import attribute, choose, cprofile_files, is_python, perf_allowed, perf_stacks, pyspy_stacks
+from .target import Target, describe
+from .cpu import attribute, choose, cprofile_files, perf_allowed, perf_stacks, pyspy_stacks
 from .frames import Frame, resolver
 
 PROFILE_DIR, PROFILE_FILE = "profile", "profile.json"
@@ -34,40 +34,45 @@ def profile_path(run_dir: str) -> str:
 def profile(argv: list[str], out_dir: str, root: str, files: list[str], *,
             timeout: float | None = None, case: str = "", level: str = "file", focus: str = "",
             wall_s: float | None = None, peak_mb: float | None = None,
-            peak_gbytes_per_s: float | None = None) -> dict:
+            peak_gbytes_per_s: float | None = None, code: list[str] | None = None,
+            harness: list[str] | None = None, fingerprint: dict | None = None,
+            regions: bool = False) -> dict:
     """Run *argv* under the profiler *level* asks for, write ``profile.json`` in *out_dir*
-    and return it; never raises. A sampled level keeps file, function and line together,
-    and the GPU's kernels and copies (as shares of *wall_s*, the run's measured time) when
-    the run uses one; ``counters``, ``kernel`` (of the kernel *focus*) and ``memory``
-    (against *peak_mb*, the run's measured peak) add their section to the profile there."""
+    and return it; never raises. *code* and *harness* (files or directories) name the
+    code optimized and the harness measuring it; *fingerprint* is what the measured run
+    ran, *regions* whether it marked its region; *wall_s* and *peak_mb* its measures."""
     log = os.path.join(out_dir, "profile.log")
+    resolve = resolver(root, os.getcwd(), files, code, harness)
+    target = describe(argv, fingerprint, _languages(files, resolve))
     if level in SECTION:
         kept = read_json(os.path.join(out_dir, PROFILE_FILE)) or {"case": case}
         try:
             with open(log, "a") as fh:
                 if level == "counters":
-                    found = cpu.counters(argv, out_dir, fh, timeout, peak_gbytes_per_s)
+                    found = cpu.counters(target, out_dir, fh, timeout, peak_gbytes_per_s)
                 elif level == "memory":
-                    found = memory.profile(argv, out_dir, resolver(root, os.getcwd(), files), fh, timeout, peak_mb)
+                    found = memory.profile(target, out_dir, resolve, fh, timeout, peak_mb)
                 else:
-                    found = _kernel(argv, out_dir, focus, kept, fh, timeout)
+                    found = _kernel(target, out_dir, focus, kept, fh, timeout)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             found = {"unavailable": f"{level} profiling failed: {exc}"}
         return _write(out_dir, {**kept, SECTION[level]: found})
-    tool, why = choose(argv)
+    tool, why = choose(target)
     result: dict = {"tool": tool, "case": case}
     if not tool:
         result["unavailable"] = why
     else:
         try:
             with open(log, "w") as fh:
-                result.update(cpu.sample(tool, argv, out_dir, resolver(root, os.getcwd(), files), fh, timeout, wall_s))
+                result.update(cpu.sample(tool, target, out_dir, resolve, fh, timeout, wall_s, regions))
             if not result.get("samples"):
                 result["unavailable"] = f"{tool} recorded nothing (see profile.log)"
+            elif target.mpi:
+                result["note"] = "; ".join(filter(None, [result.get("note"), "rank 0 of the MPI run"]))
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             result["unavailable"] = f"{tool} failed: {exc}"
     # The GPU side is traced even when the CPU side could not be: the tools differ.
-    traced = _gpu(argv, out_dir, root, files, list(result.get("outside") or {}), timeout, wall_s)
+    traced = _gpu(target, out_dir, root, files, list(result.get("outside") or {}), timeout, wall_s)
     if traced:
         result["gpu"] = traced
     if (not traced or traced.get("unavailable")) and any(
@@ -77,10 +82,20 @@ def profile(argv: list[str], out_dir: str, root: str, files: list[str], *,
     return _write(out_dir, result)
 
 
-def _gpu(argv: list[str], out_dir: str, root: str, files: list[str], seen: list[str],
+def _languages(files: list[str], resolve) -> set[str]:
+    """The languages of the code optimized (of every workspace file but the harness's
+    when the code is not named)."""
+    from .....shared import code_map
+    role = getattr(resolve, "role", None)
+    picked = [f for f in files if role and role(f) == "code"] or \
+        [f for f in files if not (role and role(f) == "harness")]
+    return {lang for f in picked if (lang := code_map.language_of(f))}
+
+
+def _gpu(target: Target, out_dir: str, root: str, files: list[str], seen: list[str],
          timeout: float | None, wall_s: float | None) -> dict | None:
     """The GPU section of a run that uses one, or None for a run that does not."""
-    vendor = gpu.gpu_vendor(argv, seen)
+    vendor = gpu.gpu_vendor(target, seen)
     if not vendor:
         return None
     tool, why = gpu.choose_gpu(vendor)
@@ -89,21 +104,21 @@ def _gpu(argv: list[str], out_dir: str, root: str, files: list[str], seen: list[
     try:
         with open(os.path.join(out_dir, "profile.log"), "a") as fh:
             return {"tool": tool, "vendor": vendor,
-                    **gpu.trace(tool, argv, out_dir, root, files, fh, timeout, wall_s)}
+                    **gpu.trace(tool, target, out_dir, root, files, fh, timeout, wall_s)}
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         return {"tool": tool, "vendor": vendor, "unavailable": f"{tool} failed: {exc}"}
 
 
-def _kernel(argv: list[str], out_dir: str, name: str, kept: dict, log, timeout: float | None) -> dict:
+def _kernel(target: Target, out_dir: str, name: str, kept: dict, log, timeout: float | None) -> dict:
     """One kernel's hardware counters, or why there are none."""
     known = list(((kept.get("gpu") or {}).get("kernels") or {}))
     if not name:
         return {"unavailable": "name the kernel with focus=" + (f"; known: {', '.join(known[:10])}" if known else "")}
-    vendor = (kept.get("gpu") or {}).get("vendor") or gpu.gpu_vendor(argv, list(kept.get("outside") or {}))
+    vendor = (kept.get("gpu") or {}).get("vendor") or gpu.gpu_vendor(target, list(kept.get("outside") or {}))
     tool, why = gpu.choose_gpu(vendor, detail=True)
     if not tool:
         return {"unavailable": why}
-    return gpu.kernel_detail(tool, argv, out_dir, name, log, timeout)
+    return gpu.kernel_detail(tool, target, out_dir, name, log, timeout)
 
 
 def _write(out_dir: str, result: dict) -> dict:
@@ -134,7 +149,8 @@ def top(profile_: dict | None, n: int = 5, level: str = "file", focus: str = "")
     if not profile_ or profile_.get("unavailable"):
         return {"unavailable": (profile_ or {}).get("unavailable", "no profile"),
                 **({"gpu": _gpu_top(g, n)} if g and level == "file" else {})}
-    head = {"tool": profile_.get("tool"), **({"case": profile_["case"]} if profile_.get("case") else {})}
+    head = {"tool": profile_.get("tool"), **({"case": profile_["case"]} if profile_.get("case") else {}),
+            **{k: profile_[k] for k in ("harness", "window", "unit") if profile_.get(k)}}
     note = {"note": profile_["note"]} if profile_.get("note") else {}
     if level == "file":
         files = list((profile_.get("files") or {}).items())[:n]
@@ -158,7 +174,8 @@ def _memory_top(m: dict, n: int, focus: str) -> dict:
     workspace, or the functions and lines of the file *focus*."""
     if m.get("unavailable"):
         return {"unavailable": m["unavailable"]}
-    head = {"tool": m.get("tool"), "peak_mb": m.get("peak_mb"), **({"note": m["note"]} if m.get("note") else {})}
+    head = {"tool": m.get("tool"), "peak_mb": m.get("peak_mb"), **({"harness": m["harness"]} if m.get("harness") else {}),
+            **({"note": m["note"]} if m.get("note") else {})}
     if not focus:
         return {**head, "files": dict(list((m.get("files") or {}).items())[:n]),
                 "outside": round(sum((m.get("outside") or {}).values()), 4)}
@@ -179,6 +196,6 @@ def _gpu_top(g: dict, n: int) -> dict:
             **({"note": g["note"]} if g.get("note") else {})}
 
 
-__all__ = ["Frame", "LEVELS", "PROFILE_DIR", "PROFILE_FILE", "SAMPLED", "SECTION", "attribute", "choose", "cprofile_files",
-           "has", "is_python", "perf_allowed", "perf_stacks", "profile", "profile_path", "pyspy_stacks",
-           "resolver", "top"]
+__all__ = ["Frame", "LEVELS", "PROFILE_DIR", "PROFILE_FILE", "SAMPLED", "SECTION", "Target", "attribute", "choose",
+           "cprofile_files", "describe", "has", "perf_allowed", "perf_stacks", "profile", "profile_path",
+           "pyspy_stacks", "resolver", "top"]

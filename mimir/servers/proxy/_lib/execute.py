@@ -17,7 +17,7 @@ from ....shared.responses import err
 from . import proc_run
 
 from . import command, metrics as metrics_mod, procs, report, store
-from ....shared.atomic import read_json
+from ....shared.atomic import read_json, write_json
 
 DEFAULT_MAX_OUTPUT_MB = 512
 REF_RUN_TIMEOUT       = 3600         # seconds
@@ -27,7 +27,7 @@ REF_RUN_TIMEOUT       = 3600         # seconds
 
 def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None,
                     peak_rss_kb: int | None = None, peak_rss_total_kb: int | None = None,
-                    processes: int | None = None) -> dict:
+                    processes: int | None = None, region: dict | None = None) -> dict:
     """Parse a run's metrics block and apply the purge + timing guard.
 
     Every launch path funnels through here so a forged reserved metric or an
@@ -38,7 +38,7 @@ def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None,
     if forged:
         run_metrics["reserved_metrics_ignored"] = forged
     if wall_s is not None:
-        metrics_mod.normalize_time_metrics(run_metrics, wall_s)
+        metrics_mod.normalize_time_metrics(run_metrics, wall_s, region)
     if peak_rss_kb:
         run_metrics["peak_rss_mb"] = round(peak_rss_kb / 1024, 1)
     if peak_rss_total_kb:
@@ -50,9 +50,20 @@ def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None,
 
 
 def _memory(proc) -> tuple:
-    """A measured run's memory: its largest process's peak, every process's summed, and
-    how many processes there were."""
-    return tuple(getattr(proc, k, None) for k in ("peak_rss_kb", "peak_rss_total_kb", "processes"))
+    """A measured run's memory: its largest process's peak, every process's summed, how
+    many processes there were, and what its measured regions took."""
+    return tuple(getattr(proc, k, None) for k in ("peak_rss_kb", "peak_rss_total_kb", "processes", "region"))
+
+
+def keep_fingerprint(run_dir: str, proc) -> None:
+    """Write what a measured run ran (``proc_run``'s ``fingerprint``) beside its output,
+    for its profile to choose its tools by."""
+    found = getattr(proc, "fingerprint", None)
+    if found and found.get("programs"):
+        try:
+            write_json(os.path.join(run_dir, proc_run.PROCESSES_FILE), found)
+        except OSError:
+            pass
 
 
 def _binary_fingerprint(path: str) -> dict:
@@ -203,6 +214,7 @@ def run_benchmark_case(
 
     stdout = procs.read_log(run_dir)
 
+    keep_fingerprint(run_dir, proc)
     run_metrics = _settle_metrics(stdout, elapsed, proc.returncode, *_memory(proc))
 
     proxy_out_key = run_metrics.pop("output_file", None)
@@ -363,7 +375,8 @@ def _post_run_finalize(
     stdout = procs.read_log(run_dir)
     run_metrics = _settle_metrics(stdout, wall_s, returncode,
                                   *(procs.read_int_file(os.path.join(run_dir, name))
-                                    for name in ("peak_rss_kb", "peak_rss_total_kb", "processes")))
+                                    for name in ("peak_rss_kb", "peak_rss_total_kb", "processes")),
+                                  region=read_json(os.path.join(run_dir, proc_run.REGION_FILE)))
 
     # The registry entry only carries conserved_metric here; a missing or
     # unreadable registry just means no conservation residual, not a failure.

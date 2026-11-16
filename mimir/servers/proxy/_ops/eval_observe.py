@@ -332,6 +332,7 @@ def results(proxy_name: str = "") -> dict:
 
     tried = axes_tried(proxy_name)
     prof = read_json(profiling.profile_path(run_dir))
+    counted = harness_counted(final_metrics)
 
     return ok(with_next({
         "run_dir":        run_dir,
@@ -356,7 +357,20 @@ def results(proxy_name: str = "") -> dict:
         **({"where_time_goes": profiling.top(prof)} if prof else {}),
         **({"timing_warning": r["timing_warning"]} if r.get("timing_warning") else {}),
         **({"memory_warning": r["memory_warning"]} if r.get("memory_warning") else {}),
+        **({"harness_counted": counted} if counted else {}),
     }, next_step))
+
+
+def harness_counted(final_metrics: dict | None) -> str:
+    """What a run's figures include of its harness, when the harness marks no measured
+    region (``_lib/region.py``); "" when it does."""
+    results = [r for r in (final_metrics or {}).get("results") or [] if isinstance(r.get("metrics"), dict)]
+    if not results or any(r["metrics"].get("regions") for r in results):
+        return ""
+    return ("The harness marks no measured region, so time_s (unless it reports its own) and the "
+            "peak memory include its start, its inputs and its checks. A harness written for the "
+            "next session should mark the call to the code: mimir_region.py, .h or .f90 "
+            "(servers/proxy/region), copied beside it.")
 
 
 def _long_build_note(build_s: float) -> str:

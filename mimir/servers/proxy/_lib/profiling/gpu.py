@@ -22,7 +22,7 @@ from typing import Callable, TextIO
 
 from .....shared import code_map
 from .. import proc_run
-from .cpu import is_python
+from .target import Target
 from .frames import FORTRAN_EXT, fortran_name, is_fortran
 
 KERNELS_KEPT = 20
@@ -45,11 +45,12 @@ _GENERATED = (
 
 # ── which GPU, which tool ────────────────────────────────────────────────────
 
-def _linked(argv: list[str]) -> str:
-    """The shared libraries a compiled *argv* links, as ldd prints them; "" otherwise."""
-    if not argv or is_python(argv):
+def _linked(target: Target) -> str:
+    """The shared libraries a compiled *target*'s program links, as ldd prints them; ""
+    otherwise."""
+    if not target.command or target.python:
         return ""
-    exe = shutil.which(argv[0]) or argv[0]
+    exe = shutil.which(target.command[0]) or target.command[0]
     if not os.path.isfile(exe) or not shutil.which("ldd"):
         return ""
     try:
@@ -58,10 +59,13 @@ def _linked(argv: list[str]) -> str:
         return ""
 
 
-def gpu_vendor(argv: list[str], seen_outside: list[str] | tuple[str, ...] = ()) -> str:
-    """"nvidia" or "amd" when the run uses a GPU, else "": from the libraries it links,
-    those its CPU profile ran into, then the devices the job was given."""
-    hints = " ".join([_linked(argv), *seen_outside])
+def gpu_vendor(target: Target, seen_outside: list[str] | tuple[str, ...] = ()) -> str:
+    """"nvidia" or "amd" when the run uses a GPU, else "": from the runtimes its measured
+    run loaded, the libraries it links, those its CPU profile ran into, then the devices
+    the job was given."""
+    if target.gpu:
+        return target.gpu
+    hints = " ".join([_linked(target), *seen_outside])
     if _AMD_RE.search(hints):
         return "amd"
     if _NVIDIA_RE.search(hints):
@@ -320,9 +324,9 @@ def summarize(summary: dict, wall_s: float, home: Callable[[str], tuple[str, int
 
 # ── taking one ───────────────────────────────────────────────────────────────
 
-def trace(tool: str, argv: list[str], out_dir: str, root: str, files: list[str],
+def trace(tool: str, target: Target, out_dir: str, root: str, files: list[str],
           log: TextIO, timeout: float | None, wall_s: float | None) -> dict:
-    """Run *argv* once under the GPU tracer *tool* and summarize its kernels and copies
+    """Run *target* once under the GPU tracer *tool* and summarize its kernels and copies
     against *wall_s*, the run's measured time (else the traced run's own)."""
     gpu_dir = os.path.join(out_dir, "gpu")
     os.makedirs(gpu_dir, exist_ok=True)
@@ -331,8 +335,9 @@ def trace(tool: str, argv: list[str], out_dir: str, root: str, files: list[str],
     if tool == "nsys":
         rep = os.path.join(gpu_dir, "trace")
         with device:
-            proc_run.run(["nsys", "profile", "-t", "cuda,osrt", "-s", "none", "--force-overwrite", "true",
-                          "-o", rep, "--", *argv], stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+            proc_run.run(target.wrap(["nsys", "profile", "-t", "cuda,osrt", "-s", "none", "--force-overwrite",
+                                      "true", "-o", rep, "--"], out_dir),
+                         stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         spent = time.monotonic() - start
         report = next((p for p in (rep + ".nsys-rep", rep + ".qdrep") if os.path.isfile(p)), "")
         if not report:
@@ -343,8 +348,8 @@ def trace(tool: str, argv: list[str], out_dir: str, root: str, files: list[str],
         summary = nsys_summary(rep)
     else:
         with device:
-            proc_run.run(["rocprofv3", "--kernel-trace", "--memory-copy-trace", "--stats",
-                          "--output-format", "csv", "-d", gpu_dir, "--", *argv],
+            proc_run.run(target.wrap(["rocprofv3", "--kernel-trace", "--memory-copy-trace", "--stats",
+                                      "--output-format", "csv", "-d", gpu_dir, "--"], out_dir),
                          stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         spent = time.monotonic() - start
         summary = rocprof_summary(gpu_dir)
@@ -468,7 +473,7 @@ def bound(detail: dict) -> str:
     return "memory" if dram > sm else "compute"
 
 
-def kernel_detail(tool: str, argv: list[str], out_dir: str, name: str, log: TextIO,
+def kernel_detail(tool: str, target: Target, out_dir: str, name: str, log: TextIO,
                   timeout: float | None) -> dict:
     """One launch of the kernel *name* under its vendor's kernel profiler."""
     gpu_dir = os.path.join(out_dir, "gpu")
@@ -476,13 +481,15 @@ def kernel_detail(tool: str, argv: list[str], out_dir: str, name: str, log: Text
     regex = re.escape(kernel_base(name) or name)
     if tool == "ncu":
         out = os.path.join(gpu_dir, "ncu.csv")
-        proc_run.run(["ncu", "--csv", "--page", "raw", "--log-file", out, "--kernel-name", f"regex:{regex}",
-                      "--launch-count", "1", "--metrics", ",".join(_NCU_METRICS.values()), "--", *argv],
+        proc_run.run(target.wrap(["ncu", "--csv", "--page", "raw", "--log-file", out, "--kernel-name",
+                                  f"regex:{regex}", "--launch-count", "1", "--metrics",
+                                  ",".join(_NCU_METRICS.values()), "--"], out_dir),
                      stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         found = ncu_detail(out, name)
     else:
-        proc_run.run(["rocprofv3", "--kernel-include-regex", regex, "--pmc", *_ROCPROF_COUNTERS.values(),
-                      "--output-format", "csv", "-d", gpu_dir, "--", *argv],
+        proc_run.run(target.wrap(["rocprofv3", "--kernel-include-regex", regex, "--pmc",
+                                  *_ROCPROF_COUNTERS.values(), "--output-format", "csv", "-d", gpu_dir, "--"],
+                                 out_dir),
                      stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         found = rocprof_detail(gpu_dir, name)
     return {"tool": tool, **found, "bound": bound(found)}

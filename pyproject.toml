@@ -81,6 +81,8 @@ mimir = [
     "requirements.txt",
     "servers/**/*.py",
     "servers/**/*.json",
+    "servers/proxy/region/*.h",
+    "servers/proxy/region/*.f90",
     "skills/**/*.md",
     "client/config/*.json",
     "examples/*.md",

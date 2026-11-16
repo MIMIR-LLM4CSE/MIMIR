@@ -53,14 +53,12 @@ def ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict)
 
 
 def _timing_warning(verdict: str | None, primary_metric: str, best: dict | None,
-                    wall_value) -> str | None:
-    """Why an accepted time_s gain may not be one.
-
-    A self-reported time that improved while the wall time the server measured
-    regressed is plausible I/O noise — and also the exact signature of a tampered
-    timer. The ratchet cannot tell them apart, so it says so rather than choosing.
+                    wall_value, measured: bool = False) -> str | None:
+    """Why an accepted time_s gain may not be one: a self-reported time that improved
+    while the measured wall time regressed is noise or a tampered timer, and the ratchet
+    cannot tell which. A time *measured* over the harness's regions raises no doubt.
     """
-    if verdict != "accept" or primary_metric != "time_s" or best is None:
+    if verdict != "accept" or primary_metric != "time_s" or best is None or measured:
         return None
     prev_wall = best.get("wall_value")
     if not (isinstance(wall_value, (int, float))
@@ -76,16 +74,18 @@ def _timing_warning(verdict: str | None, primary_metric: str, best: dict | None,
 # How much more memory an accepted run may take than the best it replaces before the
 # reply says so: allocators and page rounding move a peak by a few percent on their own.
 MEMORY_GROWTH_WARNED = 0.25
+# The peaks a warning compares, the code's own first.
+MEMORY_KEYS = ("region_peak_rss_total_mb", "region_peak_rss_mb", "peak_rss_total_mb", "peak_rss_mb")
 
 
 def _memory_warning(verdict: str | None, primary_metric: str, best: dict | None, memory: dict) -> str | None:
     """Why an accepted gain may have a cost the objective does not see: a peak memory
-    well above the best's it replaces; every process's summed (an MPI run's ranks) when
-    both runs have it, else the largest process's."""
-    key = "peak_rss_total_mb" if (best or {}).get("peak_rss_total_mb") and memory.get("peak_rss_total_mb") \
-        else "peak_rss_mb"
+    well above the best's it replaces; over the harness's regions when both runs have
+    them (the harness's own memory is not the code's), every process's summed (an MPI
+    run's ranks) before the largest process's."""
+    key = next((k for k in MEMORY_KEYS if (best or {}).get(k) and memory.get(k)), "peak_rss_mb")
     peak, before = memory.get(key), (best or {}).get(key)
-    if (verdict != "accept" or primary_metric in ("peak_rss_mb", "peak_rss_total_mb")
+    if (verdict != "accept" or primary_metric in MEMORY_KEYS
             or not isinstance(peak, (int, float)) or not isinstance(before, (int, float)) or before <= 0
             or peak <= before * (1 + MEMORY_GROWTH_WARNED)):
         return None
@@ -148,8 +148,9 @@ def _ratchet_settle_locked(
     kept_neutral = (neutral and verdict == "accept" and best is not None
                     and not is_improvement(primary_value, best.get("primary_value"), goal, min_improvement))
 
-    timing_warning = _timing_warning(verdict, primary_metric, best, wall_value)
-    memory = {k: final_metrics[k] for k in ("peak_rss_mb", "peak_rss_total_mb") if final_metrics.get(k) is not None}
+    measured = any((r.get("metrics") or {}).get("regions") for r in final_metrics.get("results") or [])
+    timing_warning = _timing_warning(verdict, primary_metric, best, wall_value, measured)
+    memory = {k: final_metrics[k] for k in MEMORY_KEYS if final_metrics.get(k) is not None}
     memory_warning = _memory_warning(verdict, primary_metric, best, memory)
 
     # The launch gate in prepare_run guarantees this run measured the untouched tree;
