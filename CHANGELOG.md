@@ -15,6 +15,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **The measured region on a GPU.** Kernels run asynchronously, so a region could close
+  before they finished and the time came out too short. Each mark now waits for the GPU
+  first. The C, C++ and Python helpers find CUDA or HIP among the libraries the process
+  has already loaded (CuPy, PyTorch, Numba, a binding, the CUDA runtime), with nothing
+  extra to link. The Fortran helper waits under CUDA Fortran and OpenACC. Under CUDA the
+  region is also Nsight's range: Nsight Systems traces the region alone, and its shares
+  are of the region's time. Nsight Compute profiles a kernel's first launch inside the
+  region. Both go back to the whole run when nothing was captured. A new
+  `region_peak_device_mb` gives the GPU memory the run's own processes held during the
+  region.
+
 ## [1.16.0] — 2026-11-16
 
 ### Added

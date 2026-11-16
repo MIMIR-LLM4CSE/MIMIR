@@ -28,6 +28,6 @@ NUMERICAL_INVARIANT_METRICS = frozenset({
 # NUMERICAL_INVARIANT_METRICS: a run that reports only a cost has proved nothing about
 # the answer.
 REGION_METRICS = frozenset({"region_time_s", "regions", "region_peak_rss_mb", "region_peak_rss_total_mb",
-                            "region_extra_mb"})
+                            "region_extra_mb", "region_peak_device_mb"})
 RESERVED_METRICS = (NUMERICAL_INVARIANT_METRICS | REGION_METRICS
                     | {"wall_time_s", "peak_rss_mb", "peak_rss_total_mb", "processes"})

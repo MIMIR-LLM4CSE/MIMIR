@@ -451,13 +451,20 @@ def _profile_phase(plan: _Plan, reg: dict, entry: dict, run_dir: str, tally: _Ta
                                    peak_mb=longest["metrics"].get("peak_rss_mb"),
                                    peak_gbytes_per_s=case_entry.get("peak_bandwidth_gbytes_per_s"),
                                    code=code, harness=harness, fingerprint=fingerprint,
-                                   regions=bool(longest["metrics"].get("regions")))
+                                   regions=bool(longest["metrics"].get("regions")),
+                                   region_s=_one_region_s(longest["metrics"]))
         top = profiling.top(result, level=level)
         _log(f"[proxy_runner] profile tool={result.get('tool') or 'none'} "
              + (f"unavailable={top['unavailable']}" if "unavailable" in top
                 else " ".join(f"{f}={s:.0%}" for f, s in (top.get("files") or {}).items())))
     except Exception as exc:
         _log(f"[proxy_runner] WARNING: profile failed: {exc}")
+
+
+def _one_region_s(case: dict) -> float | None:
+    """How long one of a case's regions took: a tracer records the first."""
+    count, total = case.get("regions"), case.get("region_time_s")
+    return float(total) / int(count) if count and isinstance(total, (int, float)) else None
 
 
 def _roles(proxy_name: str, root: str) -> tuple[list[str], list[str]]:

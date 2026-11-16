@@ -394,6 +394,156 @@ class CallgrindRunTests(_Tmp):
                     self.assertGreater(prof["harness"], 0.5)
 
 
+_FAKE_CUDA = """\
+#include <stdio.h>
+#include <stdlib.h>
+static void say(const char *w) { FILE *f = fopen(getenv("FAKE_CUDA_LOG"), "a"); fprintf(f, "%s\\n", w); fclose(f); }
+int cuCtxSynchronize(void) { say("sync"); return 0; }
+int cuProfilerStart(void) { say("start"); return 0; }
+int cuProfilerStop(void) { say("stop"); return 0; }
+int cuDeviceGetCount(int *n) { *n = 2; return 0; }
+int cuDeviceGet(int *d, int i) { *d = i; return 0; }
+int cuDevicePrimaryCtxGetState(int d, unsigned *f, int *a) { *f = 0; *a = d == 1; return 0; }
+int cuDevicePrimaryCtxRetain(void **c, int d) { *c = (void *)(long)(d + 1); say("retain"); return 0; }
+int cuDevicePrimaryCtxRelease_v2(int d) { (void)d; say("release"); return 0; }
+int cuCtxPushCurrent_v2(void *c) { (void)c; say("push"); return 0; }
+int cuCtxPopCurrent_v2(void **c) { (void)c; say("pop"); return 0; }
+"""
+_C_GPU = """\
+#include <dlfcn.h>
+#include <stdio.h>
+#include "mimir_region.h"
+int main(int argc, char **argv) {
+    (void)argc;
+    dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);       /* as a CUDA runtime loads the driver */
+    mimir_region_begin(); puts("work"); mimir_region_end();
+    return 0;
+}
+"""
+_PY_GPU = """\
+import ctypes, sys
+sys.path.insert(0, sys.argv[1])
+ctypes.CDLL(sys.argv[2])
+from mimir_region import region
+with region():
+    pass
+"""
+# Each mark waits for the GPU (this thread's context, then device 1's, the active one),
+# the region is the profiler's range, and the clocks are read inside it.
+_GPU_CALLS = ["sync", "retain", "push", "sync", "pop", "release", "start",
+              "sync", "retain", "push", "sync", "pop", "release", "stop"]
+
+
+class GpuTests(_Tmp):
+    """A GPU's work is asynchronous: the region waits for it, is the profiler's range,
+    and weighs the GPU memory its processes hold."""
+
+    def _libcuda(self) -> str:
+        if not shutil.which("gcc"):
+            self.skipTest("gcc is not installed")
+        lib = os.path.join(self.dir, "libcuda.so.1")
+        subprocess.run(["gcc", "-shared", "-fPIC", "-Wl,-soname,libcuda.so.1", "-o", lib,
+                        self._write("fake.c", _FAKE_CUDA)], check=True)
+        return lib
+
+    def _calls(self, argv: list[str]) -> list[str]:
+        log = os.path.join(self.dir, "calls")
+        open(log, "w").close()
+        with open(os.devnull, "w") as out:
+            done = proc_run.run(argv, rusage=True, timeout=60, stdout=out, env={**os.environ, "FAKE_CUDA_LOG": log})
+        self.assertEqual(done.region["count"], 1)
+        with open(log) as fh:
+            return fh.read().split()
+
+    def test_the_c_and_c_plus_plus_helper_waits_for_cuda(self) -> None:
+        lib = self._libcuda()
+        for compiler, flags in (("gcc", ["-std=c99"]), ("g++", ["-x", "c++"])):
+            if not shutil.which(compiler):
+                continue
+            exe = os.path.join(self.dir, "h_" + compiler.replace("+", "p"))
+            subprocess.run([compiler, "-Wall", "-Wextra", "-Werror", *flags, "-I", helpers.HERE,
+                            self._write("h.c", _C_GPU), "-o", exe], check=True)
+            self.assertEqual(self._calls([exe, lib]), _GPU_CALLS, compiler)
+
+    def test_the_python_helper_waits_for_cuda(self) -> None:
+        lib = self._libcuda()
+        self.assertEqual(self._calls([sys.executable, self._write("h.py", _PY_GPU), helpers.HERE, lib]), _GPU_CALLS)
+
+    def test_without_cuda_nothing_is_called(self) -> None:
+        done = self._measure([sys.executable, self._write("h.py", _PY), helpers.HERE])
+        self.assertNotIn("device_peak_mb", done.region)
+
+    def test_the_region_weighs_the_gpu_memory_of_its_own_processes(self) -> None:
+        from mimir.servers.proxy._lib import region as reader
+        seen = iter([{"42": 300.0, "7": 9000.0}, {"42": 900.0, "7": 9000.0}] + [{"42": 400.0}] * 50)
+        with mock.patch.object(reader, "sample_device", side_effect=lambda vendor: next(seen)), \
+             mock.patch.object(reader, "_clear_peak", return_value=True):
+            r = reader.Regions(lambda: ["42"], gpu=lambda: "nvidia")
+            r._mark("begin", 0.0)
+            import time
+            time.sleep(0.3)
+            r._mark("end", 1.0)
+        self.assertEqual((r.summary()["device_peak_mb"], r.summary()["device_scope"]), (900.0, "process"))
+        m = {}
+        metrics.normalize_time_metrics(m, 2.0, r.summary())
+        self.assertEqual(m["region_peak_device_mb"], 900.0)
+
+    def _fake_nsys(self, captures: bool) -> None:
+        """An nsys whose report holds _NSYS_KERN; under --capture-range, only when the run
+        was given MIMIR_REGION (its helpers open the range) and *captures*."""
+        from mimir.tests.test_profiling import _NSYS_KERN
+        kern = self._write("kern.csv", _NSYS_KERN)
+        bindir = os.path.join(self.dir, "bin")
+        os.makedirs(bindir)
+        self._write("bin/nsys", textwrap.dedent(f"""\
+            #!{sys.executable}
+            import os, shutil, sys
+            args = sys.argv[1:]
+            if args[0] == "profile":
+                rep = args[args.index("-o") + 1]
+                ranged = "--capture-range=cudaProfilerApi" in args
+                with open({os.path.join(self.dir, "nsys.calls")!r}, "a") as fh:
+                    fh.write(("ranged" if ranged else "whole") + " " + str("MIMIR_REGION" in os.environ) + "\\n")
+                if not ranged or ({captures!r} and "MIMIR_REGION" in os.environ):
+                    open(rep + ".nsys-rep", "w").close()
+            else:
+                shutil.copy({kern!r}, args[args.index("--output") + 1] + "_cuda_gpu_kern_sum.csv")
+            """))
+        os.chmod(os.path.join(bindir, "nsys"), 0o755)
+        patcher = mock.patch.dict(os.environ, {"PATH": bindir + os.pathsep + os.environ["PATH"]})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _trace(self, region_s):
+        from mimir.servers.proxy._lib.profiling import gpu
+        with mock.patch.object(gpu, "sample_device", return_value=None), open(os.devnull, "w") as log:
+            return gpu.trace("nsys", describe(["true"]), self.dir, self.dir, [], log, 60, 20.0, region_s)
+
+    def test_nsys_traces_the_region_alone(self) -> None:
+        self._fake_nsys(captures=True)
+        out = self._trace(10.0)
+        self.assertEqual(out["window"], "measured region")
+        self.assertEqual(out["busy"], 1.0)              # 10 s of kernels in a 10 s region
+        with open(os.path.join(self.dir, "nsys.calls")) as fh:
+            self.assertEqual(fh.read().split(), ["ranged", "True"])
+
+    def test_a_region_nsys_could_not_trace_alone_is_traced_whole(self) -> None:
+        self._fake_nsys(captures=False)
+        out = self._trace(10.0)
+        self.assertNotIn("window", out)
+        self.assertEqual(out["busy"], 0.5)              # against the run's 20 s
+        self.assertIn("whole run", out["note"])
+        with open(os.path.join(self.dir, "nsys.calls")) as fh:
+            self.assertEqual(fh.read().split(), ["ranged", "True", "whole", "False"])
+
+    def test_without_a_region_nsys_traces_the_run(self) -> None:
+        self._fake_nsys(captures=True)
+        out = self._trace(None)
+        self.assertNotIn("window", out)
+        with open(os.path.join(self.dir, "nsys.calls")) as fh:
+            self.assertEqual(fh.read().split(), ["whole", "False"])
+
+
 class SessionTests(_TmpStorageTest):
     """Through the runner: the objective is the region's time, the profile the code's."""
 

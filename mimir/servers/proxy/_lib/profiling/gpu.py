@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import csv
 import glob
-import json
 import os
 import re
 import shutil
@@ -22,6 +21,7 @@ from typing import Callable, TextIO
 
 from .....shared import code_map
 from .. import proc_run
+from ..device_memory import sample_device
 from .target import Target
 from .frames import FORTRAN_EXT, fortran_name, is_fortran
 
@@ -324,28 +324,53 @@ def summarize(summary: dict, wall_s: float, home: Callable[[str], tuple[str, int
 
 # ── taking one ───────────────────────────────────────────────────────────────
 
+def _marked(_word: str, _pids: list[str]) -> None:
+    """A run given ``MIMIR_REGION``, so its helpers open the profiler's range."""
+
+
+def _nsys(target: Target, rep: str, out_dir: str, log: TextIO, timeout: float | None,
+          window: bool) -> dict:
+    """Nsight Systems' summary of one run, of its marked region alone with *window*
+    (the helpers' cuProfilerStart/Stop); {} when it wrote no report."""
+    for old in glob.glob(rep + ".*"):
+        os.unlink(old)
+    capture = ["--capture-range=cudaProfilerApi", "--capture-range-end=stop"] if window else []
+    proc_run.run(target.wrap(["nsys", "profile", "-t", "cuda,osrt", "-s", "none", *capture, "--force-overwrite",
+                              "true", "-o", rep, "--"], out_dir),
+                 stdout=log, stderr=subprocess.STDOUT, timeout=timeout, region=_marked if window else None)
+    report = next((p for p in (rep + ".nsys-rep", rep + ".qdrep") if os.path.isfile(p)), "")
+    if not report:
+        return {}
+    proc_run.run(["nsys", "stats", "--report", "cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,cuda_gpu_mem_size_sum",
+                  "--format", "csv", "--force-export", "true", "--output", rep, report],
+                 stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+    return nsys_summary(rep)
+
+
 def trace(tool: str, target: Target, out_dir: str, root: str, files: list[str],
-          log: TextIO, timeout: float | None, wall_s: float | None) -> dict:
+          log: TextIO, timeout: float | None, wall_s: float | None,
+          region_s: float | None = None) -> dict:
     """Run *target* once under the GPU tracer *tool* and summarize its kernels and copies
-    against *wall_s*, the run's measured time (else the traced run's own)."""
+    against *wall_s*, the run's measured time (else the traced run's own); with
+    *region_s* (the harness marks its region, that long), Nsight traces the region alone."""
     gpu_dir = os.path.join(out_dir, "gpu")
     os.makedirs(gpu_dir, exist_ok=True)
     device = DeviceMemory("nvidia" if tool == "nsys" else "amd")
+    notes: list[str] = []
+    window = False
     start = time.monotonic()
     if tool == "nsys":
         rep = os.path.join(gpu_dir, "trace")
         with device:
-            proc_run.run(target.wrap(["nsys", "profile", "-t", "cuda,osrt", "-s", "none", "--force-overwrite",
-                                      "true", "-o", rep, "--"], out_dir),
-                         stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+            summary = _nsys(target, rep, out_dir, log, timeout, bool(region_s))
+            window = bool(region_s) and bool(summary.get("kernels"))
+            if region_s and not window:
+                notes.append("the region could not be traced alone (the process holds no CUDA context at its "
+                             "marks, or nsys predates --capture-range): the whole run is")
+                summary = _nsys(target, rep, out_dir, log, timeout, False)
         spent = time.monotonic() - start
-        report = next((p for p in (rep + ".nsys-rep", rep + ".qdrep") if os.path.isfile(p)), "")
-        if not report:
+        if not summary:
             raise ValueError("nsys wrote no report (see profile.log)")
-        proc_run.run(["nsys", "stats", "--report", "cuda_gpu_kern_sum,cuda_gpu_mem_time_sum,cuda_gpu_mem_size_sum",
-                      "--format", "csv", "--force-export", "true", "--output", rep, report],
-                     stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
-        summary = nsys_summary(rep)
     else:
         with device:
             proc_run.run(target.wrap(["rocprofv3", "--kernel-trace", "--memory-copy-trace", "--stats",
@@ -353,16 +378,21 @@ def trace(tool: str, target: Target, out_dir: str, root: str, files: list[str],
                          stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
         spent = time.monotonic() - start
         summary = rocprof_summary(gpu_dir)
-    result = summarize(summary, wall_s or spent, kernel_homes(root, files))
+        if region_s:
+            notes.append("rocprofv3 traces the whole run, the harness's kernels included")
+    result = summarize(summary, (region_s if window else wall_s) or spent, kernel_homes(root, files))
+    if window:
+        result["window"] = "measured region"
     if summary.get("memcpy_bytes"):
         result["memcpy_mb"] = {k: round(v / 2**20, 1) for k, v in summary["memcpy_bytes"].items()}
     if device.peak_mb is not None:
         result["peak_device_mb"] = round(device.peak_mb, 1)
-        if device.note:
-            result["note"] = "; ".join(filter(None, [result.get("note"), device.note]))
-    if not wall_s:
-        result["note"] = (result.get("note", "") + "; " if result.get("note") else "") + \
-            "shares of the traced run's wall time, the tracer's start-up included"
+        notes.append(device.note)
+    if not (wall_s or window):
+        notes.append("shares of the traced run's wall time, the tracer's start-up included")
+    note = "; ".join(filter(None, [result.get("note"), *notes]))
+    if note:
+        result["note"] = note
     return result
 
 
@@ -404,27 +434,6 @@ class DeviceMemory:
         # The run's processes are the ones that were not there before it and are gone after.
         others = set(self.before) | set(after or {})
         self.peak_mb = max(sum(mb for pid, mb in s.items() if pid not in others) for s in self.samples)
-
-
-def sample_device(vendor: str) -> dict[str, float] | None:
-    """GPU memory in use now, in MB: per process for NVIDIA, per device for AMD."""
-    try:
-        if vendor == "nvidia":
-            out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory",
-                                  "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
-            used: defaultdict[str, float] = defaultdict(float)
-            for line in out.splitlines():
-                pid, _, mb = line.partition(",")
-                if mb.strip().replace(".", "", 1).isdigit():
-                    used[pid.strip()] += float(mb)
-            return dict(used)
-        out = subprocess.run(["rocm-smi", "--showmeminfo", "vram", "--json"],
-                             capture_output=True, text=True, timeout=5).stdout
-        cards = json.loads(out or "{}")
-        return {"device": sum(_number(c.get("VRAM Total Used Memory (B)", "0")) for c in cards.values()
-                              if isinstance(c, dict)) / 2**20}
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
 
 
 _NCU_METRICS = {"sm_pct": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
@@ -474,18 +483,29 @@ def bound(detail: dict) -> str:
 
 
 def kernel_detail(tool: str, target: Target, out_dir: str, name: str, log: TextIO,
-                  timeout: float | None) -> dict:
-    """One launch of the kernel *name* under its vendor's kernel profiler."""
+                  timeout: float | None, regions: bool = False) -> dict:
+    """One launch of the kernel *name* under its vendor's kernel profiler: its first in
+    the marked region with *regions* (Nsight Compute), else its first in the run."""
     gpu_dir = os.path.join(out_dir, "gpu")
     os.makedirs(gpu_dir, exist_ok=True)
     regex = re.escape(kernel_base(name) or name)
     if tool == "ncu":
         out = os.path.join(gpu_dir, "ncu.csv")
-        proc_run.run(target.wrap(["ncu", "--csv", "--page", "raw", "--log-file", out, "--kernel-name",
-                                  f"regex:{regex}", "--launch-count", "1", "--metrics",
-                                  ",".join(_NCU_METRICS.values()), "--"], out_dir),
-                     stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
-        found = ncu_detail(out, name)
+        found = None
+        for window in ([True, False] if regions else [False]):
+            if os.path.exists(out):
+                os.unlink(out)
+            proc_run.run(target.wrap(["ncu", "--csv", "--page", "raw", "--log-file", out, "--kernel-name",
+                                      f"regex:{regex}", "--launch-count", "1", "--metrics",
+                                      ",".join(_NCU_METRICS.values()),
+                                      *(["--profile-from-start", "off"] if window else []), "--"], out_dir),
+                         stdout=log, stderr=subprocess.STDOUT, timeout=timeout, region=_marked if window else None)
+            try:
+                found = {**ncu_detail(out, name), **({"window": "measured region"} if window else {})}
+                break
+            except ValueError:
+                if not window:
+                    raise
     else:
         proc_run.run(target.wrap(["rocprofv3", "--kernel-include-regex", regex, "--pmc",
                                   *_ROCPROF_COUNTERS.values(), "--output-format", "csv", "-d", gpu_dir, "--"],

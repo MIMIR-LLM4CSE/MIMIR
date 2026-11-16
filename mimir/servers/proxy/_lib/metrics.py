@@ -102,6 +102,8 @@ def normalize_time_metrics(metrics: dict, wall_s: float, region: dict | None = N
                         ("region_extra_mb", "extra_kb")):
             if region.get(kb) is not None:
                 metrics[key] = round(max(int(region[kb]), 0) / 1024, 1)
+        if region.get("device_peak_mb") is not None:
+            metrics["region_peak_device_mb"] = float(region["device_peak_mb"])
         return
     if isinstance(reported, (int, float)) and not isinstance(reported, bool):
         # 2% + 50 ms slack for timer granularity; wall time always includes startup.

@@ -115,7 +115,12 @@ field naming the exact next call — follow it.
    - Any other language: write `begin` then `end` lines to the FIFO named by
      `MIMIR_REGION`, each followed by reading one byte from `$MIMIR_REGION.ack`.
    Outside MIMIR they do nothing. Several regions in turn (repetitions inside the
-   harness) add their times. Do it before the baseline: the harness never changes
+   harness) add their times. On a GPU, each mark first waits for the device (CUDA or
+   HIP found among the process's libraries, from C, C++ or Python: CuPy, PyTorch,
+   Numba, a binding; CUDA Fortran and OpenACC through their compilers), so the region
+   holds the kernels it launched; under CUDA it is also Nsight's range, and the GPU
+   memory its processes hold is `region_peak_device_mb`. A Fortran harness calling CUDA C
+   through a binding calls `cudaDeviceSynchronize` itself before each mark. Do it before the baseline: the harness never changes
    during a session, and a `harness_counted` note in `results` says when it was not done.
 
 4. **Measure the baseline first.** Run once with `optimize_paths` untouched, before any
@@ -221,7 +226,9 @@ the node. A baseline measured on the login node describes the login node.
      by the kernel, no profiler for this command, cProfile keeping no lines); work from
      what there is and say what is missing.
    - `where_time_goes.gpu` — when the run uses a GPU: `busy` (kernels), `memcpy` and
-     `idle` as shares of the run's time, and the costliest kernels. A high `idle` is the
+     `idle` as shares of the run's time (of the region's with `window: measured
+     region`: Nsight then traced it alone, the harness's kernels left out), and the
+     costliest kernels. A high `idle` is the
      CPU and GPU waiting on each other (synchronisation, no overlap): fix that first. High
      `memcpy` is data moving between host and device: keep it on the device before tuning
      a kernel. Otherwise work on the costliest kernel; `op='profile', level='kernel',

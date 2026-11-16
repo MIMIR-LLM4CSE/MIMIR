@@ -9,6 +9,11 @@
 !
 ! Outside MIMIR (no MIMIR_REGION), both do nothing. Several regions in turn add their
 ! times. Plain Fortran 2008: compile it with the harness.
+!
+! A GPU's work is asynchronous: compiled as CUDA Fortran (nvfortran -cuda), each mark
+! first waits for the device and the region is the profiler's range, which Nsight
+! records alone; compiled with OpenACC, it waits for the queues. A Fortran harness that
+! calls CUDA C through a binding waits itself (cudaDeviceSynchronize) before each mark.
 module mimir_region
   implicit none
   private
@@ -18,7 +23,9 @@ module mimir_region
   logical, save :: tried = .false., open_ = .false.
 contains
   subroutine mark(word)
+!@cuf use cudafor
     character(len=*), intent(in) :: word
+!@cuf integer :: istat
     character(len=4096) :: path
     character(len=1) :: c
     integer :: n, stat
@@ -39,9 +46,13 @@ contains
       end if
     end if
     if (open_) then
+!$acc wait
+!@cuf istat = cudaDeviceSynchronize()
+!@cuf if (word == "end") istat = cudaProfilerStop()
       write(unit_out, iostat=stat) word//achar(10)
       flush(unit_out)
       read(unit_ack, iostat=stat) c
+!@cuf if (word == "begin") istat = cudaProfilerStart()
     end if
   end subroutine mark
 

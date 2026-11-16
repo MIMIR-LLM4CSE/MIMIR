@@ -17,6 +17,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from .device_memory import vendor_of
 from .region import Regions
 
 # What a measured run leaves beside its output where no MIMIR process waits for it.
@@ -90,7 +91,7 @@ def _run_measured(argv: list[str], timeout: float | None, kwargs: dict,
     reaped: dict = {}
     spawner = _own_peak_kb()
     tree = SessionMemory(0)
-    regions = Regions(tree.pids, tree.note, on_mark)
+    regions = Regions(tree.pids, tree.note, on_mark, tree.gpu)
     marked = regions.env()
     if marked:
         kwargs["env"] = {**(kwargs.get("env") or os.environ), **marked}
@@ -250,6 +251,12 @@ class SessionMemory:
                         self.runtimes.add(m.group(1))
         except OSError:
             pass
+
+    def gpu(self) -> str:
+        """The GPU vendor the session's processes use now (their runtimes read again)."""
+        for key in self._members():
+            self._what_runs(key)
+        return vendor_of(self.runtimes)
 
     def fingerprint(self) -> dict:
         """What the session ran: its programs and the runtimes they loaded."""

@@ -12,6 +12,8 @@ import shlex
 import subprocess
 from dataclasses import dataclass, field
 
+from ..device_memory import vendor_of
+
 _PYTHON_RE = re.compile(r"^(python|pypy)[\d.]*$")
 LAUNCHERS = {"mpirun", "mpiexec", "mpiexec.hydra", "orterun", "srun", "aprun", "jsrun", "prun", "ibrun"}
 # Launcher options that take a value as the next word (a word with "=" carries its own).
@@ -148,10 +150,7 @@ def describe(argv: list[str], fingerprint: dict | None = None, languages: set[st
         t.native.add("fortran")
     if not t.python and command and not t.native:
         t.native.add("c")        # a compiled program of unknown language
-    if t.runtimes & {"cudart", "cuda", "nvrtc"}:
-        t.gpu = "nvidia"
-    elif t.runtimes & {"amdhip64", "hiprtc"}:
-        t.gpu = "amd"
+    t.gpu = vendor_of(t.runtimes)
     return t
 
 

@@ -36,11 +36,12 @@ def profile(argv: list[str], out_dir: str, root: str, files: list[str], *,
             wall_s: float | None = None, peak_mb: float | None = None,
             peak_gbytes_per_s: float | None = None, code: list[str] | None = None,
             harness: list[str] | None = None, fingerprint: dict | None = None,
-            regions: bool = False) -> dict:
+            regions: bool = False, region_s: float | None = None) -> dict:
     """Run *argv* under the profiler *level* asks for, write ``profile.json`` in *out_dir*
     and return it; never raises. *code* and *harness* (files or directories) name the
     code optimized and the harness measuring it; *fingerprint* is what the measured run
-    ran, *regions* whether it marked its region; *wall_s* and *peak_mb* its measures."""
+    ran, *regions* whether it marked its region (*region_s* long); *wall_s* and *peak_mb*
+    its measures."""
     log = os.path.join(out_dir, "profile.log")
     resolve = resolver(root, os.getcwd(), files, code, harness)
     target = describe(argv, fingerprint, _languages(files, resolve))
@@ -53,7 +54,7 @@ def profile(argv: list[str], out_dir: str, root: str, files: list[str], *,
                 elif level == "memory":
                     found = memory.profile(target, out_dir, resolve, fh, timeout, peak_mb)
                 else:
-                    found = _kernel(target, out_dir, focus, kept, fh, timeout)
+                    found = _kernel(target, out_dir, focus, kept, fh, timeout, regions)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             found = {"unavailable": f"{level} profiling failed: {exc}"}
         return _write(out_dir, {**kept, SECTION[level]: found})
@@ -72,7 +73,8 @@ def profile(argv: list[str], out_dir: str, root: str, files: list[str], *,
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             result["unavailable"] = f"{tool} failed: {exc}"
     # The GPU side is traced even when the CPU side could not be: the tools differ.
-    traced = _gpu(target, out_dir, root, files, list(result.get("outside") or {}), timeout, wall_s)
+    traced = _gpu(target, out_dir, root, files, list(result.get("outside") or {}), timeout, wall_s,
+                  region_s if regions else None)
     if traced:
         result["gpu"] = traced
     if (not traced or traced.get("unavailable")) and any(
@@ -93,7 +95,7 @@ def _languages(files: list[str], resolve) -> set[str]:
 
 
 def _gpu(target: Target, out_dir: str, root: str, files: list[str], seen: list[str],
-         timeout: float | None, wall_s: float | None) -> dict | None:
+         timeout: float | None, wall_s: float | None, region_s: float | None = None) -> dict | None:
     """The GPU section of a run that uses one, or None for a run that does not."""
     vendor = gpu.gpu_vendor(target, seen)
     if not vendor:
@@ -104,12 +106,13 @@ def _gpu(target: Target, out_dir: str, root: str, files: list[str], seen: list[s
     try:
         with open(os.path.join(out_dir, "profile.log"), "a") as fh:
             return {"tool": tool, "vendor": vendor,
-                    **gpu.trace(tool, target, out_dir, root, files, fh, timeout, wall_s)}
+                    **gpu.trace(tool, target, out_dir, root, files, fh, timeout, wall_s, region_s)}
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         return {"tool": tool, "vendor": vendor, "unavailable": f"{tool} failed: {exc}"}
 
 
-def _kernel(target: Target, out_dir: str, name: str, kept: dict, log, timeout: float | None) -> dict:
+def _kernel(target: Target, out_dir: str, name: str, kept: dict, log, timeout: float | None,
+            regions: bool = False) -> dict:
     """One kernel's hardware counters, or why there are none."""
     known = list(((kept.get("gpu") or {}).get("kernels") or {}))
     if not name:
@@ -118,7 +121,7 @@ def _kernel(target: Target, out_dir: str, name: str, kept: dict, log, timeout: f
     tool, why = gpu.choose_gpu(vendor, detail=True)
     if not tool:
         return {"unavailable": why}
-    return gpu.kernel_detail(tool, target, out_dir, name, log, timeout)
+    return gpu.kernel_detail(tool, target, out_dir, name, log, timeout, regions)
 
 
 def _write(out_dir: str, result: dict) -> dict:

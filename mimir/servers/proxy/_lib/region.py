@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Callable
 
+from .device_memory import sample_device
+
 ENV, ACK = "MIMIR_REGION", ".ack"
 
 
@@ -26,6 +28,41 @@ def _status(pid: str) -> dict[str, int]:
                     if k in ("VmRSS", "VmHWM")}
     except (OSError, ValueError, IndexError):
         return {}
+
+
+class _DeviceWatch:
+    """The GPU memory a region's processes hold, sampled from its opening to its close:
+    per process for NVIDIA, the whole device above its opening for AMD."""
+
+    INTERVAL_S = 0.2
+
+    def __init__(self, vendor: str) -> None:
+        self.vendor = vendor
+        self.samples: list[dict[str, float]] = []
+        self._stop = threading.Event()
+        self._take()
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+        self._thread.start()
+
+    def _take(self) -> None:
+        found = sample_device(self.vendor)
+        if found is not None:
+            self.samples.append(found)
+
+    def _watch(self) -> None:
+        while not self._stop.wait(self.INTERVAL_S):
+            self._take()
+
+    def close(self, pids: set[str]) -> float | None:
+        """The region's peak, in MB, over *pids* (NVIDIA)."""
+        self._stop.set()
+        self._thread.join(5)
+        self._take()
+        if not self.samples:
+            return None
+        if self.vendor == "amd":
+            return max(0.0, max(s.get("device", 0.0) for s in self.samples) - self.samples[0].get("device", 0.0))
+        return max(sum(mb for pid, mb in s.items() if pid in pids) for s in self.samples)
 
 
 def _clear_peak(pid: str) -> bool:
@@ -42,14 +79,21 @@ class Regions:
     """The FIFO a run marks its regions on, and what the server read at each mark.
     *processes* gives the run's pids; *before_reset* is told each one's peak before it
     is restarted, so the run's own peak survives; *on_mark* is told the mark and the
-    pids (a profiler's switch). Without ``/proc`` or a FIFO, ``env()`` is empty."""
+    pids (a profiler's switch); *gpu* names the GPU vendor the run uses, whose memory
+    is then sampled. Without ``/proc`` or a FIFO, ``env()`` is empty."""
 
     def __init__(self, processes: Callable[[], list[str]] | None = None,
                  before_reset: Callable[[str, int], None] | None = None,
-                 on_mark: Callable[[str, list[str]], None] | None = None) -> None:
+                 on_mark: Callable[[str, list[str]], None] | None = None,
+                 gpu: Callable[[], str] | None = None) -> None:
         self._processes = processes or (lambda: [])
         self._before_reset = before_reset
         self._on_mark = on_mark
+        self._gpu = gpu
+        self._device: _DeviceWatch | None = None
+        self._pids: set[str] = set()
+        self.device_peak_mb: float | None = None
+        self.device_scope = "process"
         self._dir = ""
         self._fd = self._ack = -1
         self._stop = threading.Event()
@@ -110,7 +154,9 @@ class Regions:
             return None
         return {"time_s": round(self.time_s, 6), "count": self.count,
                 **({"peak_kb": self.peak_kb, "peak_total_kb": self.peak_total_kb,
-                    "extra_kb": self.extra_kb} if self.weighed and self.peak_kb else {})}
+                    "extra_kb": self.extra_kb} if self.weighed and self.peak_kb else {}),
+                **({"device_peak_mb": round(self.device_peak_mb, 1), "device_scope": self.device_scope}
+                   if self.device_peak_mb is not None else {})}
 
     # ── reading the marks ────────────────────────────────────────────────────
 
@@ -158,6 +204,9 @@ class Regions:
             self._base[pid] = st.get("VmRSS", 0)
             if not _clear_peak(pid):
                 self.weighed = False
+        self._pids = set(pids)
+        vendor = self._gpu() if self._gpu else ""
+        self._device = _DeviceWatch(vendor) if vendor else None
         if self._on_mark:
             self._on_mark("begin", pids)
         # From the answer on: the reading above is the server's time, not the code's.
@@ -169,6 +218,12 @@ class Regions:
             self._on_mark("end", pids)
         self.time_s += now - self._opened
         self.count += 1
+        if self._device:
+            held = self._device.close(self._pids | set(pids))
+            if held is not None:
+                self.device_peak_mb = max(self.device_peak_mb or 0.0, held)
+                self.device_scope = "device" if self._device.vendor == "amd" else "process"
+            self._device = None
         peaks = {pid: st.get("VmHWM", 0) for pid in pids if (st := _status(pid))}
         if self._before_reset:
             for pid, hwm in peaks.items():
