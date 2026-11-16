@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-11-16
+
 ### Added
 - **LSF, beside Slurm.** The optimization loop can now send its runs to an LSF cluster
   from a login node. `proxy_cluster` submits them with `bsub`, and a build sent to its
@@ -1872,6 +1874,6 @@ in it. The main points:
 
 Initial public release.
 
-[Unreleased]: https://github.com/MIMIR-LLM4CSE/MIMIR/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/MIMIR-LLM4CSE/MIMIR/compare/v1.15.0...HEAD
 [1.0.0]: https://github.com/MIMIR-LLM4CSE/MIMIR/releases/tag/v1.0.0
 [0.1.0]: https://github.com/MIMIR-LLM4CSE/MIMIR/commits/main
