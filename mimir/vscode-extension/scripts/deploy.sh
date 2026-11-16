@@ -33,6 +33,8 @@ if [ -n "$ext" ]; then
   cp -R dist/. "$ext/dist/"
   cp images/* "$ext/images/"
   cp package.json "$ext/package.json"
+  # VS Code keeps scanned manifests here; without this, new settings stay invisible.
+  rm -f "$(dirname "$(dirname "$ext")")"/data/CachedProfilesData/*/extensions.user*.cache
   echo "==> Updated $ext"
   echo "    Reload the VS Code window to pick it up (Ctrl+Shift+P → Developer: Reload Window)."
   exit 0

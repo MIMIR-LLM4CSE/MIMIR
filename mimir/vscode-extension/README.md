@@ -121,7 +121,7 @@ your shell still applies.
 | Model | `mimir.maxModelLen`, `mimir.vllmTokenize`, `mimir.ollama.numCtx`, `mimir.anthropic.effort`, `mimir.anthropic.thinking`, `mimir.anthropic.maxTokens`, `mimir.anthropic.maxInputTokens` |
 | Embeddings | `mimir.embeddings.model` (required for semantic search on vLLM and Ray Serve), `mimir.embeddings.baseUrl`, `mimir.embeddings.timeout` |
 | Sessions and Server | `mimir.sessions.maxLive`, `mimir.sessions.idleTimeout`, `mimir.sessions.initTimeout`, `mimir.sessions.backendWaitTimeout`, `mimir.sessions.backendPollInterval`, `mimir.subagents.maxConcurrent`, `mimir.server.idleTimeout`, `mimir.server.detachGrace` |
-| Customization | `mimir.customization.systemPromptFile`, `mimir.customization.skillsDir`, `mimir.customization.pluginsDir`, `mimir.customization.serversDir`, `mimir.workspace.extraReadRoots` |
+| Customization | `mimir.customization.systemPromptFile`, `mimir.customization.skillsDir`, `mimir.customization.pluginsDir`, `mimir.customization.serversDir`, `mimir.workspace.extraReadRoots`, `mimir.workspace.stateHome` (where sessions and memory live, default `~/.mimir`) |
 | HPC | `mimir.hpc.moduleIndexBudget`, `mimir.hpc.slurmStaleAfter` |
 | Installation | `mimir.pythonPath` (see below), `mimir.releaseHome` |
 | Notifications | `mimir.notifications.enabled`, `mimir.notifications.duration` |
@@ -129,7 +129,8 @@ your shell still applies.
 
 **Which Python runs the server.** The extension looks in this order:
 `mimir.pythonPath`, then the `MIMIR_PYTHON` environment variable, then
-`~/.mimir/python` (written by `install.sh`), then `python3` on `PATH`.
+`~/.mimir/python` (written by `install.sh`; it stays there when
+`mimir.workspace.stateHome` moves the sessions), then `python3` on `PATH`.
 `~/.mimir/python` points at a launcher that starts the venv installed for this
 machine's platform. So one home directory shared by several kinds of machines
 still starts the right Python. If this platform has no install, the *MIMIR Server*

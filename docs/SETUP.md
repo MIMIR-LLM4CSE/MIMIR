@@ -531,7 +531,7 @@ variable exported in your shell then still applies.
 
 The settings that say where to connect, which release to install from and which
 directories the agent may use without asking (`mimir.wsUrl`, `mimir.releaseHome`,
-`mimir.workspace.scratchDir`, `mimir.subagents.copiesDir`, `mimir.customization.pluginsDir`,
+`mimir.workspace.scratchDir`, `mimir.workspace.stateHome`, `mimir.subagents.copiesDir`, `mimir.customization.pluginsDir`,
 `serversDir` and `skillsDir`) are read from your user settings only, not from a workspace's
 `.vscode/settings.json`: a repository could otherwise send your conversation elsewhere,
 install an extension, or open your home to the agent. The state directory
@@ -569,6 +569,7 @@ install an extension, or open your home to the agent. The state directory
 | | `mimir.customization.serversDir` | `MIMIR_SERVERS_DIR` |
 | | `mimir.workspace.extraReadRoots` | `MIMIR_EXTRA_FILE_ROOTS` |
 | | `mimir.workspace.scratchDir` | `MIMIR_SCRATCH_DIR` |
+| | `mimir.workspace.stateHome` | `MIMIR_STATE_HOME` (state root, default `~/.mimir`) |
 | HPC | `mimir.hpc.moduleIndexBudget` | `MIMIR_MODULE_INDEX_BUDGET` |
 | | `mimir.hpc.slurmStaleAfter` | `MIMIR_SLURM_STALE_AFTER` |
 | Installation | `mimir.pythonPath` | — (see below) |
@@ -589,7 +590,9 @@ The interpreter is therefore resolved in this order:
 2. the `MIMIR_PYTHON` environment variable;
 3. `~/.mimir/python` — **written by `install.sh`**. It points at the launcher
    `~/.mimir/bin/python`, which picks this machine's platform. That is why a plain
-   `./install.sh` needs no configuration at all;
+   `./install.sh` needs no configuration at all. It stays there when the state home is
+   moved (`mimir.workspace.stateHome`, or `MIMIR_STATE_HOME`): only sessions, memory,
+   plans and logs move;
 4. `python3` from `PATH`.
 
 A consequence of (2): a variable you export in `.bashrc` only reaches MIMIR if it was

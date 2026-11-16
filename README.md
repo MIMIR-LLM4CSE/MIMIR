@@ -448,7 +448,8 @@ drop-in path *your* workspace resolves, and the shipped template for the type. A
 "what can I extend, and where does the file go?" is the one-call version.
 
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,
-override `MIMIR_STATE_DIR`): memory, sessions, plans, todos, and the module catalogue. One
+override `MIMIR_STATE_DIR`; move the whole `~/.mimir` root with `mimir.workspace.stateHome`
+(`MIMIR_STATE_HOME`)): memory, sessions, plans, todos, and the module catalogue. One
 tier above it, `~/.mimir/global/` (override `MIMIR_GLOBAL_STATE_DIR`) holds what belongs to
 *you* rather than to one repository — today the **global memory**, shared by every workspace
 on the machine, so a preference or a correction is stored once instead of once per project.

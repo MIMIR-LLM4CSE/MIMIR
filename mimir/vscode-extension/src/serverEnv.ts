@@ -8,8 +8,8 @@ import { sharedReleasePython } from "./selfUpdate";
 /**
  * Interpreter that runs the WS server, spawned directly: no shell profile runs first, so
  * `python3` from PATH is rarely the right one. In order: `mimir.pythonPath`, `MIMIR_PYTHON`,
- * `<releaseHome>/current/PYTHON_COMMAND` (a shared site release), `<state home>/python`
- * (written by install.sh), then `python3` from PATH.
+ * `<releaseHome>/current/PYTHON_COMMAND` (a shared site release), `~/.mimir/python`
+ * (written by install.sh, wherever the state home is), then `python3` from PATH.
  */
 export function resolvePython(extensionRoot: string): string {
   const configured = vscode.workspace.getConfiguration("mimir").get<string>("pythonPath");
@@ -23,9 +23,8 @@ export function resolvePython(extensionRoot: string): string {
   if (shared) {
     return shared;
   }
-  const stateHome = process.env.MIMIR_STATE_HOME || path.join(os.homedir(), ".mimir");
   try {
-    const interpreter = fs.readFileSync(path.join(stateHome, "python"), "utf8").trim();
+    const interpreter = fs.readFileSync(path.join(os.homedir(), ".mimir", "python"), "utf8").trim();
     if (interpreter && fs.existsSync(interpreter)) {
       return interpreter;
     }
@@ -71,6 +70,16 @@ const positive = (...names: string[]) => (value: unknown): Env =>
 const text = (name: string) => (value: unknown): Env =>
   typeof value === "string" && value.trim() ? { [name]: value.trim() } : {};
 
+/** A directory: set when not blank, a leading `~` expanded (the server does not expand it). */
+const dir = (name: string) => (value: unknown): Env => {
+  if (typeof value !== "string" || !value.trim()) return {};
+  const trimmed = value.trim();
+  const expanded = trimmed === "~" || trimmed.startsWith("~/")
+    ? path.join(os.homedir(), trimmed.slice(1))
+    : trimmed;
+  return { [name]: expanded };
+};
+
 /** A switch on by default: set to *offValue* only when turned off. */
 const offAs = (name: string, offValue: string) => (value: unknown): Env =>
   value === false ? { [name]: offValue } : {};
@@ -113,6 +122,7 @@ export const SERVER_ENV_SETTINGS: readonly EnvSetting[] = [
   { key: "customization.serversDir", env: text("MIMIR_SERVERS_DIR") },
   { key: "workspace.extraReadRoots", env: pathList("MIMIR_EXTRA_FILE_ROOTS") },
   { key: "workspace.scratchDir", env: text("MIMIR_SCRATCH_DIR") },
+  { key: "workspace.stateHome", env: dir("MIMIR_STATE_HOME") },
   { key: "hpc.moduleIndexBudget", env: positive("MIMIR_MODULE_INDEX_BUDGET") },
   { key: "hpc.slurmStaleAfter", env: positive("MIMIR_SLURM_STALE_AFTER") },
 ];

@@ -18,6 +18,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.17.0] — 2026-11-16
 
 ### Added
+- **`mimir.workspace.stateHome` moves MIMIR's state.** Sessions, memory, plans and server
+  logs live under `~/.mimir`; this setting (user settings only) puts them elsewhere, as
+  `MIMIR_STATE_HOME` did through `mimir.server.env`. A leading `~` is expanded. Existing
+  state is not moved: copy the workspace folders and `global` to keep it.
+
+### Changed
+- **The installation stays in `~/.mimir`.** `install.sh` no longer follows
+  `MIMIR_STATE_HOME`: uv, the portable Python and the launcher (`bin`, `python`,
+  `python.d`, `pythons`) are always under `~/.mimir`, where the extension looks for
+  them. Only sessions, memory, plans and logs move with the state home.
 - **The measured region on a GPU.** Kernels run asynchronously, so a region could close
   before they finished and the time came out too short. Each mark now waits for the GPU
   first. The C, C++ and Python helpers find CUDA or HIP among the libraries the process

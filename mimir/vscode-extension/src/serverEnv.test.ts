@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,6 +63,15 @@ describe("the settings the server takes as environment", () => {
   it("leave a value the server already defaults to unset", () => {
     userSettings = { "vllmVerifySsl": true, "maxModelLen": 0, "embeddings.model": "  " };
     expect(settingsEnv()).toEqual({});
+  });
+
+  it("move the state home, expanding a leading ~", () => {
+    userSettings = { "workspace.stateHome": " /data/me/mimir " };
+    expect(settingsEnv()).toEqual({ MIMIR_STATE_HOME: "/data/me/mimir" });
+    userSettings = { "workspace.stateHome": "~/mimir-state" };
+    expect(settingsEnv()).toEqual({ MIMIR_STATE_HOME: path.join(os.homedir(), "mimir-state") });
+    userSettings = { "workspace.stateHome": "~other/mimir" };
+    expect(settingsEnv()).toEqual({ MIMIR_STATE_HOME: "~other/mimir" });
   });
 
   it("let the free-form variables win over a setting", () => {

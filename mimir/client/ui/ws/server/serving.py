@@ -197,7 +197,7 @@ async def serve(
         print(f"Cannot write this workspace's state directory ({exc}). MIMIR keeps its "
               f"state, lock and logs there: make {os.path.dirname(server_registry.lock_path())} "
               f"writable by this user, or point MIMIR_STATE_HOME (setting "
-              f"mimir.server.env) at a directory you own.",
+              f"mimir.workspace.stateHome) at a directory you own.",
               file=ORIGINAL_STDOUT, flush=True)
         raise SystemExit(1)
     if not locked:

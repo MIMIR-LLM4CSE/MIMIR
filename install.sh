@@ -25,7 +25,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 platform="$(mimir_platform)"
 venv="${MIMIR_VENV:-$here/.venv-$platform}"
 extras="${MIMIR_EXTRAS:-vllm,anthropic}"
-state_home="${MIMIR_STATE_HOME:-$HOME/.mimir}"
+# Fixed, unlike the state home (MIMIR_STATE_HOME): the extension finds the interpreter here.
+install_home="$HOME/.mimir"
 
 # --- Python -----------------------------------------------------------------
 # By default, a standalone CPython fetched by uv. A Python compiled on the machine
@@ -37,19 +38,19 @@ if [ -n "${PYTHON:-}" ]; then
 else
   uv="$(command -v uv || true)"
   if [ -z "$uv" ]; then
-    uv="$state_home/bin/uv"
+    uv="$install_home/bin/uv"
     if [ ! -x "$uv" ]; then
-      echo "==> Installing uv into $state_home/bin"
+      echo "==> Installing uv into $install_home/bin"
       command -v curl >/dev/null 2>&1 \
         || { echo "error: curl is needed to fetch uv. Or set PYTHON=... (Python >= 3.10)." >&2; exit 1; }
       curl -LsSf https://astral.sh/uv/install.sh \
-        | env UV_INSTALL_DIR="$state_home/bin" UV_NO_MODIFY_PATH=1 sh >/dev/null
+        | env UV_INSTALL_DIR="$install_home/bin" UV_NO_MODIFY_PATH=1 sh >/dev/null
     fi
   fi
   # System certificates: behind a TLS-inspecting proxy, uv's bundled roots reject
   # the download that curl just accepted. (UV_NATIVE_TLS is the older uv's name.)
   # No link in ~/.local/bin: the interpreter is for MIMIR, not for the user's PATH.
-  export UV_PYTHON_INSTALL_DIR="$state_home/pythons" UV_PYTHON_INSTALL_BIN=0 \
+  export UV_PYTHON_INSTALL_DIR="$install_home/pythons" UV_PYTHON_INSTALL_BIN=0 \
          UV_SYSTEM_CERTS=1 UV_NATIVE_TLS=1
   echo "==> Fetching a portable Python 3.10"
   "$uv" python install 3.10
@@ -96,25 +97,25 @@ fi
 # --- Record the interpreter for the VS Code extension ------------------------
 # The extension spawns the WS server through `bash -c`, which sources no profile,
 # so `python3` from its PATH is rarely this venv. install.sh leaves a launcher
-# path in $state_home/python, and the extension finds it on its own.
+# path in $install_home/python, and the extension finds it on its own.
 #
 # The home directory is often shared by machines that cannot run the same
 # binaries. So each platform records its own venv in python.d/<os>-<arch>, and the
 # launcher starts the one matching the machine it runs on. Written before the
 # smoke test, so an interrupted check does not leave the extension on the system
 # Python.
-launcher="$state_home/bin/python"
-# Private: conversations, plans and job records are written beneath it, and on a login
-# node anyone could read a directory made with the default umask.
-if (umask 077 && mkdir -p "$state_home/python.d" "$state_home/bin") 2>/dev/null \
-    && chmod 700 "$state_home" 2>/dev/null; then
-  printf '%s\n' "$venv/bin/python" > "$state_home/python.d/$platform"
+launcher="$install_home/bin/python"
+# Private: by default the state home too, where conversations, plans and job records go,
+# and on a login node anyone could read a directory made with the default umask.
+if (umask 077 && mkdir -p "$install_home/python.d" "$install_home/bin") 2>/dev/null \
+    && chmod 700 "$install_home" 2>/dev/null; then
+  printf '%s\n' "$venv/bin/python" > "$install_home/python.d/$platform"
   cat > "$launcher" <<EOF
 #!/bin/sh
 # Written by MIMIR's install.sh; run it again rather than editing this file.
 # Starts the interpreter install.sh recorded for this machine's platform.
 key="\$(uname -s | tr '[:upper:]' '[:lower:]')-\$(uname -m)"
-target="\$(cat "$state_home/python.d/\$key" 2>/dev/null)"
+target="\$(cat "$install_home/python.d/\$key" 2>/dev/null)"
 if [ -z "\$target" ] || [ ! -x "\$target" ]; then
   echo "MIMIR: no interpreter installed for \$key. Run ./install.sh on this machine." >&2
   exit 127
@@ -122,10 +123,10 @@ fi
 exec "\$target" "\$@"
 EOF
   chmod +x "$launcher"
-  printf '%s\n' "$launcher" > "$state_home/python"
-  echo "==> Interpreter recorded for $platform in $state_home/python.d"
+  printf '%s\n' "$launcher" > "$install_home/python"
+  echo "==> Interpreter recorded for $platform in $install_home/python.d"
 else
-  echo "warning: could not write $state_home/python — set MIMIR_PYTHON or" >&2
+  echo "warning: could not write $install_home/python — set MIMIR_PYTHON or" >&2
   echo "         mimir.pythonPath if the extension picks the wrong interpreter." >&2
 fi
 

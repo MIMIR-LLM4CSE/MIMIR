@@ -346,6 +346,13 @@
             "default": "",
             "markdownDescription": "The agent's scratchpad, where it writes throwaway scripts and test files without asking. Empty uses `$SCRATCH/mimir-<uid>-<workspace>`, else the same under the local temp directory. On a cluster, pick a directory the compute nodes see, so a job can run what the agent wrote there. Give it a directory of its own, such as `$SCRATCH/mimir-scratch`: everything under it is writable without approval. Sets `MIMIR_SCRATCH_DIR` for the server.",
             "order": 6
+          },
+          "mimir.workspace.stateHome": {
+            "scope": "machine",
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Root of MIMIR's state: each workspace's sessions, memory, plans, todos and server logs, plus the global memory. Empty uses `~/.mimir`. Pick a directory you own, such as one on a larger or faster filesystem than your home. Moving it starts from empty state: copy the workspace folders and `global` from `~/.mimir` there to keep your sessions. MIMIR's installation (`bin`, `python`, `python.d`, `pythons`) stays in `~/.mimir`. Sets `MIMIR_STATE_HOME` for the server.",
+            "order": 7
           }
         }
       },

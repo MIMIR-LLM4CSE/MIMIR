@@ -159,7 +159,7 @@ export class LocalServer {
       const message =
         `MIMIR cannot create its state directory ${path.dirname(serverLog)} ` +
         `(${(err as Error).message}). Make it writable by this user, or point ` +
-        "MIMIR_STATE_HOME (setting mimir.server.env) at a directory you own.";
+        "the setting mimir.workspace.stateHome at a directory you own.";
       outputChannel.appendLine(message);
       void showToast("error", message);
       return { kind: "gave_up" };
