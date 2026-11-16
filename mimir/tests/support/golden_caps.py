@@ -27,7 +27,7 @@ _BUILD_DESCRIPTOR_PARAMS = frozenset(inspect.signature(srv.build_descriptor).par
 SENSITIVE_TOOLS = {
     "delete_file", "bash_run", "bash_job_stop", "http_post",
     "salloc_submit", "sbatch_submit", "slurm_cancel", "slurm_probe_node", "memory_delete",
-    "memory_clear", "todo_delete_plan",
+    "memory_clear", "memory_add", "memory_update", "todo_delete_plan",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm", "proxy_merge",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
@@ -48,7 +48,7 @@ NON_BATCH_TOOLS = {
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "salloc_submit", "sbatch_submit", "slurm_cancel", "slurm_probe_node",
     "bash_run", "http_post", "memory_delete",
-    "memory_clear", "todo_delete_plan",
+    "memory_clear", "memory_add", "memory_update", "todo_delete_plan",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
@@ -207,7 +207,7 @@ PREVIEW_KIND_BY_TOOL = {
 }
 
 # scope kind a tool declares to narrow session "always" approvals (and, for `host`,
-# to drive the conditional URL-sensitivity gate). Keyed off the live declaration so a
+# to make every fetch asked once per host). Keyed off the live declaration so a
 # missing/renamed scope spec — including http_get's, the one fail-open surface —
 # fails this gate loudly.
 SCOPE_KIND_BY_TOOL = {
@@ -218,6 +218,8 @@ SCOPE_KIND_BY_TOOL = {
     "env_pip_uninstall": "packages",
     "env_create": "basename",
     "env_delete": "basename",
+    "memory_add": "value",
+    "memory_update": "value",
 }
 
 # Every tool that surfaces a custom risk sentence in the approval prompt. Guards
@@ -229,6 +231,7 @@ RISK_NOTE_TOOLS = {
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
     "salloc_submit", "sbatch_submit", "slurm_cancel", "memory_delete",
     "memory_clear", "todo_delete_plan", "proxy_slurm", "slurm_probe_node",
+    "memory_add", "memory_update",
 }
 
 #: capability constant -> golden member set

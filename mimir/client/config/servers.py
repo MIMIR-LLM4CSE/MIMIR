@@ -36,6 +36,19 @@ SERVERS: dict[str, str] = {
     "interaction": SERVER_BASE + "interaction/server_interaction.py",
 }
 
+# The secrets of the environment a bundled server is given; every other one is removed
+# (shared/secret_env), so a command run by the bash server cannot print a key. The
+# embedding readers need the endpoint's key, the sub-agent server its model's, GitHub
+# its token. A user's own server gets none.
+_EMBED_KEYS = ("VLLM_API_KEY", "RAY_API_KEY")
+SERVER_SECRETS: dict[str, tuple[str, ...]] = {
+    "github": ("GITHUB_TOKEN", "GH_TOKEN"),
+    "memory": _EMBED_KEYS,
+    "hpc": _EMBED_KEYS,
+    "web": _EMBED_KEYS,
+    "agent": (*_EMBED_KEYS, "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"),
+}
+
 # One-line, human-readable purpose per server. Surfaced as tooltips in the
 # server/skill toggle panel (the WebSocket server's `toggles_list`). Keyed by SERVERS name.
 SERVER_DESCRIPTIONS: dict[str, str] = {

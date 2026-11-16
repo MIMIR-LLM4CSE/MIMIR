@@ -725,3 +725,20 @@ class ProtectedWorkspacePathTests(_TmpStateDir):
         self.assertEqual(boundary_tag(root, ["/etc/passwd"]), OUTSIDE_TAG)
         self.assertEqual(boundary_tag(root, [os.path.join(root, ".git/x"), "/etc/x"]),
                          OUTSIDE_TAG)
+
+
+class ServerRegistryTests(_TmpStateDir):
+    """The server's registry holds its connection token: no tool reads it, asked or not."""
+
+    def test_reading_the_registry_is_refused(self) -> None:
+        registry = os.path.join(paths.STATE_DIR, paths.SERVER_REGISTRY_FILENAME)
+        reader = _FakeAgent(approval_mod.ApprovalManager(sensitive_tools=set()),
+                            cap=READ, script=(True, True))
+        self.assertIn("connection token",
+                      gates.check_secret_paths(reader, "read_file_lines", {"path": registry}))
+        shell = _FakeExecAgent(approval_mod.ApprovalManager(sensitive_tools=set()),
+                               script=(True, True))
+        self.assertIsNotNone(gates.check_secret_paths(
+            shell, "run_shell", {"command": f"cat {registry}"}))
+        self.assertIsNone(gates.check_secret_paths(
+            reader, "read_file_lines", {"path": os.path.join(paths.STATE_DIR, "x.json")}))

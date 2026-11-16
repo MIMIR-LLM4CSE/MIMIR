@@ -28,6 +28,17 @@ module in its package and keeps the current directory, the user's workspace, off
 `sys.path`, so no file of the project can shadow a module a server imports. A server
 of the user's own (`.mimir/servers/`) is still started by its path.
 
+### What a server's environment holds
+
+A server is started with the client's environment minus every secret, judged by name
+(`shared/secret_env`: a `KEY`, `TOKEN`, `SECRET`, `PASSWORD` or `CREDENTIALS` word), plus
+the few it needs (`config.servers.SERVER_SECRETS`: GitHub its token, the embedding readers
+the endpoint's key, the sub-agent server its model's). A key in the bash server's
+environment was a key in every command it ran, through `/proc/$PPID/environ` if not
+`env`; proxy runs inherit the proxy server's environment, so they hold none either, and
+`sbatch` is run without the embedding key the hpc server keeps, since Slurm exports the
+submitting environment into the job and its log. A user's own server gets no secret.
+
 ## Tool catalogue
 
 Every `@mcp.tool` the bundled servers expose — 70 tools
@@ -611,6 +622,15 @@ Tools:
 - `parse_json`
 - `json_extract`
 
+`http_get` is asked once per host (POLICY, *Sensitive tool approval*): a URL carries data
+out as well as a body does. What it may reach is filtered twice. `_safe_url` refuses any
+scheme but http(s) and any name with an internal address among its records (private,
+loopback, link-local, carrier-grade NAT `100.64.0.0/10`, `198.18.0.0/15`, reserved). Then
+the connection itself checks the address it connects to (`_checked_socket`), since a name
+resolved twice can answer differently the second time; behind a proxy the proxy resolves
+the name and only the first check applies. A redirect is checked the same way, and the
+caller's headers do not follow it to another host.
+
 Three ceilings, because a fetch can go wrong in three different ways.
 
 | ceiling | value | what it defends |
@@ -708,6 +728,11 @@ it is ever seen.
 ## external/server_github.py
 
 Purpose: read-only GitHub repository inspection.
+
+`GITHUB_TOKEN` is the one secret this server is started with (`config.servers.SERVER_SECRETS`),
+and it goes only to `https` GitHub hosts: a file's raw URL comes from the API's answer,
+which could point anywhere. `owner` and `repo` are quoted as one path segment each, and an
+API answer is read up to 4 MB.
 
 Tools:
 - `github_repo_info`

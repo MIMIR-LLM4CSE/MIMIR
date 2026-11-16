@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 from ...shared.responses import err, ok
+from ...shared.secret_env import without_secrets
 from ...shared.slurm_site import (
     LOCAL as _LOCAL_HOST,
     InvalidHost,
@@ -66,7 +67,10 @@ def _exec(argv: list[str], timeout: int, stdin: str | None = None) -> subprocess
     """*argv* run with *stdin* on a pipe of ours, or no stdin at all: the server's own
     stdin is its MCP pipe. Raises as ``subprocess.run`` does."""
     return subprocess.run(argv, input=stdin, stdin=None if stdin is not None else subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+                          # sbatch exports this environment to the job, whose log the
+                          # model reads: the embedding key this server holds stays here.
+                          env=without_secrets(os.environ))
 
 
 def _answer(argv: list[str], timeout: int, stdin: str | None = None) -> dict:

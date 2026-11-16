@@ -99,19 +99,20 @@ Gates run in this fixed order. The first one that objects stops the call.
 | # | Gate | What it does | `manual` | `auto` | `auto_all` |
 |---|---|---|:--:|:--:|:--:|
 | 1 | registry | unknown tool name | blocks | blocks | blocks |
-| 2 | pack `pre_mutation` | application rules, before the built-ins | blocks | blocks | blocks |
-| 3 | cluster-submit | holds a cluster job until something was checked locally | blocks | blocks | blocks |
-| 4 | sealed-exec | forbids running directly a file a server sealed (the proxy under optimisation) | blocks | blocks | blocks |
-| 5 | state guard | refuses edits to a file that exhausted its retry budget | blocks | blocks | blocks |
-| 6 | write policy | read-before-overwrite, delete evidence, anti-thrashing | blocks | blocks | blocks |
-| 7 | pack `pre_approval` | application rules, just before the prompt | blocks | blocks | blocks |
-| 8 | out-of-workspace | any path outside the workspace root | **asks** | **asks** | granted |
-| 9 | sensitive approval | anything not `reversible` | **asks** | granted | granted |
+| 2 | secret path | names the server's registry, which holds its connection token | blocks | blocks | blocks |
+| 3 | pack `pre_mutation` | application rules, before the built-ins | blocks | blocks | blocks |
+| 4 | cluster-submit | holds a cluster job until something was checked locally | blocks | blocks | blocks |
+| 5 | sealed-exec | forbids running directly a file a server sealed (the proxy under optimisation) | blocks | blocks | blocks |
+| 6 | state guard | refuses edits to a file that exhausted its retry budget | blocks | blocks | blocks |
+| 7 | write policy | read-before-overwrite, delete evidence, anti-thrashing | blocks | blocks | blocks |
+| 8 | pack `pre_approval` | application rules, just before the prompt | blocks | blocks | blocks |
+| 9 | out-of-workspace | any path outside the workspace root | **asks** | **asks** | granted |
+| 10 | sensitive approval | anything not `reversible` | **asks** | granted | granted |
 
 The command spells the last mode `all` (`/approvals manual|auto|all`); the stored value is
 `auto_all`.
 
-An auto mode removes the **question**, never the policy. Gates 1–7 are unaffected, and so
+An auto mode removes the **question**, never the policy. Gates 1–8 are unaffected, and so
 are the bash denylist and the servers' own path and redirection validation. A card that is
 already on screen when the user switches mode is still answered by the user: "auto" does
 not mean "auto, starting after you clear this one". A refusal the denial ladder has
@@ -1089,6 +1090,11 @@ previewable write cannot slip past it.
 - paths already approved `always` this session;
 - the scratchpad, which the system grants rather than the user.
 
+One file is refused outright rather than asked about, whatever the mode
+(`gates.check_secret_paths`): the server's registry in the state directory, which holds
+its connection token. The state directory is read without asking, and a token in a tool
+result is one fetch away from whoever would drive the agent with it.
+
 One kind of path **inside** the workspace is kept instead, for a call that writes: a path
 whose contents run later (`mimir/shared/protected_paths.py`). `.mimir` holds the plugins and
 servers MIMIR loads at its next start, `.git` the configuration and hooks git runs (its
@@ -1363,14 +1369,20 @@ its siblings, but raises no approval prompt.
 prompt is declared per tool (`risk_note=...`), not held in a client dictionary. A tool with
 a `confirm_gate` arg-role is read-only when that argument is falsy and sensitive when it is
 truthy — the gate can *add* sensitivity to an unclassified tool but never downgrade one
-declared sensitive. A URL-narrowing tool is sensitive only when its host argument targets
-an authenticated or mutating endpoint.
+declared sensitive. A URL-narrowing tool (a declared `host` scope: `http_get`) is always
+sensitive: its URL and headers carry whatever the model puts in them to that host, and a
+query string sends a secret out as well as a POST body does. It is asked once per host,
+which is what *always* then covers. Writing a memory (`memory_add`, `memory_update`) is
+`recoverable` for the same kind of reason: a memory is read back into every later
+conversation that shares it, so a line a fetched page put there would steer them all; the
+system prompt also introduces the index as notes, not instructions.
 
 **`always` grants are scope-narrowed.** A tool may declare a `scope` spec so that choosing
 *always* narrows the grant to a per-call token rather than the whole tool. The kinds are
 generic and reused: `command_prefix` (the first two argv tokens, skipping `cd` and
 connectors, so `cd /work && python3 …` and `python3 …` share one scope), `host` (URL
-netloc), `basename`, `packages` (sorted set), `lang_target`. An argless or kindless spec is
+netloc), `basename`, `packages` (sorted set), `lang_target`, `value` (the argument itself,
+for a choice among a few: a memory's scope). An argless or kindless spec is
 dropped, and a tool without one keeps the coarse `server:tool` scope. This lets the user
 grant "always for *this* command family" without re-approving every unrelated call.
 

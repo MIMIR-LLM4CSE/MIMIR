@@ -372,8 +372,14 @@ def _semantic_search(query: str, candidates: list, limit: int) -> list | None:
 
 # Writing memory is MAIN_ONLY: it is shared by every session of this workspace, and
 # what is worth keeping is the user's call made in front of them — not something a
-# child run decides on its own. Reading (search, list) stays grantable.
-@mcp.tool(**tool_caps(kind="memory", caps=[MAIN_ONLY]))
+# child run decides on its own. Reading (search, list) stays grantable. And it is asked:
+# a memory is read back into every later conversation, so a line a fetched page put
+# there would steer them all. "Always" covers one scope.
+@mcp.tool(**tool_caps(kind="memory",
+    caps=[MAIN_ONLY], reversibility=RECOVERABLE, non_batch=True,
+    scope={"args": ["scope"], "kind": "value"},
+    risk_note="is read back into every later conversation that shares this memory",
+))
 def memory_add(text: str, scope: str = "", description: str | None = None, tags: list | None = None) -> dict:
     """Store a fact as its own timestamped Markdown memory file.
 
@@ -545,7 +551,11 @@ def memory_list_all(scope: str = "all") -> dict:
     return ok({"memory": memory, "count": len(memory)})
 
 
-@mcp.tool(**tool_caps(kind="memory", caps=[MAIN_ONLY]))
+@mcp.tool(**tool_caps(kind="memory",
+    caps=[MAIN_ONLY], reversibility=RECOVERABLE, non_batch=True,
+    scope={"args": ["scope"], "kind": "value"},
+    risk_note="is read back into every later conversation that shares this memory",
+))
 def memory_update(
     name: str,
     text: str | None = None,

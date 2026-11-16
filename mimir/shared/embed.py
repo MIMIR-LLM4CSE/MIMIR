@@ -49,13 +49,14 @@ def _timeout() -> float:
 
 
 def verify_ssl() -> bool:
-    """Whether to verify TLS for an OpenAI-compatible endpoint (``VLLM_VERIFY_SSL``, default off).
+    """Whether to verify TLS for an OpenAI-compatible endpoint (``VLLM_VERIFY_SSL``, default on).
 
-    Internal endpoints often use a private CA; the chat backend and the embedder both read
-    this one switch.
+    Unverified, the endpoint's key and every prompt go to whoever answers in its place.
+    An internal endpoint behind a private CA sets ``VLLM_VERIFY_SSL=0``; the chat backend
+    and the embedder both read this one switch.
     """
-    val = os.environ.get("VLLM_VERIFY_SSL", "0").strip().lower()
-    return val in ("1", "true", "yes", "on")
+    val = os.environ.get("VLLM_VERIFY_SSL", "1").strip().lower()
+    return val not in ("0", "false", "no", "off")
 
 
 # ── embedding backends ──────────────────────────────────────────────────────────

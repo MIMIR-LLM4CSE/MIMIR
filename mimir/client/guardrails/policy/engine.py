@@ -11,6 +11,7 @@ from .gates import (
     mode_denied_payload,
     check_cluster_submit,
     check_out_of_workspace_access,
+    check_secret_paths,
     check_sealed_exec,
     check_skill_pull,
     out_of_workspace_targets,
@@ -158,6 +159,11 @@ def _write_gate(call: _PolicyCall) -> PolicyEvaluation | None:
     return call.refuse(violation, "write_policy") if violation is not None else None
 
 
+def _secret_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    violation = check_secret_paths(call.agent, call.tool_name, call.arguments)
+    return call.refuse(violation, "secret_path") if violation is not None else None
+
+
 def _workspace_gate(call: _PolicyCall) -> PolicyEvaluation | None:
     """Ask about targets outside the workspace first, and keep them on the call.
 
@@ -209,6 +215,7 @@ def _approval_gate(call: _PolicyCall) -> PolicyEvaluation | None:
 # PolicyChecks of that stage run.
 _PIPELINE: tuple = (
     _registry_gate,
+    _secret_gate,
     "pre_mutation",
     _cluster_gate,
     _sealed_gate,

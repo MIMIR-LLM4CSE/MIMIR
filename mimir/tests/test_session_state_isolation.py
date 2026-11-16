@@ -229,6 +229,25 @@ class AgentCarriesItsSessionTests(_StateDirCase):
         agent.session_id = None
         self.assertEqual(server_manager.server_environment(agent)["MIMIR_SESSION_ID"], "")
 
+    def test_a_server_gets_the_secrets_it_needs_and_no_other(self):
+        """A key in the bash server's environment is readable by every command it runs
+        (``cat /proc/$PPID/environ``): each server gets only its own."""
+        from mimir.client.integration import server_manager
+        agent = fake_agent(session_id="s", model="m", backend="vllm",
+                           workspace_root="/w", server_env={})
+        secrets = {"ANTHROPIC_API_KEY": "a", "GITHUB_TOKEN": "g", "VLLM_API_KEY": "v",
+                   "AWS_SECRET_ACCESS_KEY": "s", "MIMIR_VLLM_TOKENIZE": "1"}
+        with patch.dict(os.environ, secrets):
+            bash = server_manager.server_environment(agent, "bash")
+            github = server_manager.server_environment(agent, "github")
+            child = server_manager.server_environment(agent, "agent")
+        for name in ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "VLLM_API_KEY", "AWS_SECRET_ACCESS_KEY"):
+            self.assertNotIn(name, bash, name)
+        self.assertEqual(bash["MIMIR_VLLM_TOKENIZE"], "1")   # a setting, not a token
+        self.assertEqual(github["GITHUB_TOKEN"], "g")
+        self.assertNotIn("ANTHROPIC_API_KEY", github)
+        self.assertEqual(child["ANTHROPIC_API_KEY"], "a")
+
 
 class GlobalStateDirTests(unittest.TestCase):
     """The machine-wide state tier, and where it must not land: the user's real home, or

@@ -150,21 +150,35 @@ class SensitivityGateTests(unittest.TestCase):
         manager = _ApprovalManager({"danger"}, tool_caps=reg)
         self.assertTrue(manager.is_sensitive("danger", {"confirm": False}))
 
-    def test_http_get_auth_url_is_sensitive(self) -> None:
-        # The fail-OPEN surface: http_get is sensitive only via its declared `host`
-        # scope. This exercises the REAL declaration, so a missing/renamed scope spec
-        # would flip these to non-sensitive and fail here.
+    def test_http_get_is_sensitive_whatever_its_url(self) -> None:
+        # A query string carries data out as well as a POST body does: a plain page and
+        # an exfiltrating URL look alike, so every host is asked about once. This
+        # exercises the REAL declaration: a missing or renamed `host` scope fails here.
         manager = _manager()
         for url in (
+            "https://example.com/index.html",
+            "https://attacker.example/x?d=c2VjcmV0",
             "https://example.com/api/token",
-            "https://host/oauth/authorize",
-            "https://h/v1/secret/x",
         ):
             self.assertTrue(manager.is_sensitive("http_get", {"url": url}), url)
 
-    def test_http_get_plain_url_not_sensitive(self) -> None:
+    def test_writing_a_memory_is_asked_and_always_covers_one_scope(self) -> None:
+        # A memory is read back into every later conversation: a line a fetched page
+        # planted there would steer them all, in every workspace for the global one.
         manager = _manager()
-        self.assertFalse(manager.is_sensitive("http_get", {"url": "https://example.com/index.html"}))
+        for tool in ("memory_add", "memory_update"):
+            self.assertTrue(manager.is_sensitive(tool, {"scope": "global"}), tool)
+        workspace = manager._approval_scope("memory_add", "memory", {"scope": "workspace"})
+        glob = manager._approval_scope("memory_add", "memory", {"scope": "global"})
+        self.assertNotEqual(workspace, glob)
+
+    def test_always_on_http_get_covers_one_host(self) -> None:
+        manager = _manager()
+        a = manager._approval_scope("http_get", "web", {"url": "https://docs.python.org/3/"})
+        b = manager._approval_scope("http_get", "web", {"url": "https://docs.python.org/x?y"})
+        c = manager._approval_scope("http_get", "web", {"url": "https://evil.example/?d=1"})
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
 
     def test_http_post_always_sensitive(self) -> None:
         manager = _manager()

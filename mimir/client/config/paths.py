@@ -61,6 +61,11 @@ STATE_DIR = os.path.abspath(
     or os.path.join(STATE_HOME, workspace_id(WORKSPACE_ROOT))
 )
 
+# Where a WS server publishes its address and its token (ui/ws/process/registry). Named
+# here because the policy refuses every call naming it: the token lets whoever holds it
+# drive the agent, and the model reads this directory without asking.
+SERVER_REGISTRY_FILENAME = "server.json"
+
 # The third tier: state shared by EVERY workspace, <STATE_HOME>/global/. Resolved here
 # rather than left to the servers because the client is the end that knows STATE_HOME —
 # MIMIR_STATE_DIR goes only into the server subprocesses' environment, never this one —

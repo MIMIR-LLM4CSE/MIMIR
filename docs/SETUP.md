@@ -198,9 +198,10 @@ The address is used exactly as given. If the endpoint is on the same machine,
 `http://127.0.0.1:8000` is fine.
 
 > **HTTPS behind a private CA.** Internal routes often carry a certificate the
-> system trust store doesn't know. Certificate verification is off by default
-> (`VLLM_VERIFY_SSL=0`); set `VLLM_VERIFY_SSL=1` when your endpoint has a publicly
-> trusted certificate. The extension exposes this as `mimir.vllmVerifySsl`.
+> system trust store doesn't know. Certificate verification is on by default: an
+> unverified endpoint receives the API key and every prompt from whoever answers in its
+> place. Set `VLLM_VERIFY_SSL=0` for an endpoint behind a private CA you trust, or point
+> `SSL_CERT_FILE` at that CA. The extension exposes this as `mimir.vllmVerifySsl`.
 
 `--tool-call-parser` and `--reasoning-parser` are yours to choose here: MIMIR never
 sends them, it only reads what your server produces. Consult vLLM's own docs for the

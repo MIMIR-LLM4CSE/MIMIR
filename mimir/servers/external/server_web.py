@@ -6,6 +6,7 @@ Only http:// and https:// schemes are accepted.
 Requests to loopback / link-local / private RFC-1918 addresses are blocked.
 """
 
+import http.client
 import ipaddress
 from html.parser import HTMLParser
 import json
@@ -34,6 +35,8 @@ _BLOCKED_NETS = [
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("169.254.0.0/16"),   # link-local
+    ipaddress.ip_network("100.64.0.0/10"),    # carrier-grade NAT, some clouds' metadata
+    ipaddress.ip_network("198.18.0.0/15"),    # benchmarking, used inside some networks
     ipaddress.ip_network("fc00::/7"),          # ULA IPv6
 ]
 
@@ -115,12 +118,72 @@ def _safe_url(url: str) -> str:
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Validate each redirect target before allowing urllib to follow it."""
+    """Validate each redirect target before following it; the caller's headers stay
+    with the host they were written for."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         resolved = urllib.parse.urljoin(req.full_url, newurl)
         _safe_url(resolved)
-        return super().redirect_request(req, fp, code, msg, headers, resolved)
+        new = super().redirect_request(req, fp, code, msg, headers, resolved)
+        if new is not None and (urllib.parse.urlparse(resolved).netloc.lower()
+                                != urllib.parse.urlparse(req.full_url).netloc.lower()):
+            new.headers = {}
+        return new
+
+
+def _checked_socket(host: str, port: int, timeout) -> socket.socket:
+    """A socket to *host* at an address that passes the filter.
+
+    The address checked is the address connected: a name resolved once by
+    :func:`_safe_url` and again here could answer differently the second time.
+    """
+    last: OSError | None = None
+    for family, kind, proto, _, sockaddr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        ip = ipaddress.ip_address(sockaddr[0])
+        if _is_blocked_ip(ip):
+            raise ValueError(f"Requests to internal/non-routable addresses are blocked: ['{ip}']")
+        sock = socket.socket(family, kind, proto)
+        if isinstance(timeout, (int, float)):
+            sock.settimeout(timeout)
+        try:
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last = exc
+            sock.close()
+    raise last or OSError(f"Could not connect to {host}:{port}")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = _checked_socket(self.host, self.port, self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        sock = _checked_socket(self.host, self.port, self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_PinnedHTTPSConnection, req, context=self._context)
+
+
+def _opener(url: str) -> urllib.request.OpenerDirector:
+    """Connections checked at the address they reach, unless a proxy takes the request:
+    the proxy resolves the name then, and only the check of :func:`_safe_url` applies."""
+    scheme = urllib.parse.urlparse(url).scheme
+    host = urllib.parse.urlparse(url).hostname or ""
+    if scheme in urllib.request.getproxies() and not urllib.request.proxy_bypass(host):
+        return urllib.request.build_opener(_SafeRedirectHandler())
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _PinnedHTTPHandler,
+                                       _PinnedHTTPSHandler, _SafeRedirectHandler())
 
 
 class _TextExtractor(HTMLParser):
@@ -561,8 +624,7 @@ def _http_request(method: str, url: str, headers: dict | None = None, data: byte
                   raw: bool = False, contains: str = "", offset: int = 0) -> dict:
     safe_url = _safe_url(url)
     req = urllib.request.Request(safe_url, headers=headers or {}, data=data, method=method)
-    opener = urllib.request.build_opener(_SafeRedirectHandler())
-    with opener.open(req, timeout=_TIMEOUT) as resp:
+    with _opener(safe_url).open(req, timeout=_TIMEOUT) as resp:
         # One byte past the cap, so a body that exactly fills it can be told from
         # one that was cut off.
         raw_bytes = resp.read(_MAX_BYTES + 1)
@@ -599,13 +661,12 @@ def _http_request(method: str, url: str, headers: dict | None = None, data: byte
 # ── tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool(**tool_caps(kind="web",
-    # Not unconditionally sensitive: a GET is read-only, but the client treats it as
-    # sensitive when the URL targets an authenticated/mutating endpoint. The `host`
-    # scope (which arg carries the URL) is what drives that conditional gate and
-    # narrows any "always" approval to one destination host.
+    # A GET reads, but its URL and headers carry whatever the model puts in them to the
+    # host: the client asks once per host (the `host` scope), and "always" covers that
+    # host alone.
     caps=[EXTERNAL_FETCH],
     scope={"args": ["url"], "kind": "host"},
-    risk_note="fetches from an authenticated or otherwise sensitive endpoint",
+    risk_note="sends this URL and its headers to a host on the internet",
     label="Fetching {url}",
 ))
 def http_get(url: str, headers: dict | None = None, raw: bool = False,

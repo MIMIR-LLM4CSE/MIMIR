@@ -37,24 +37,37 @@ _MAX_WALK_UP = 4
 _TOKEN = os.environ.get("GITHUB_TOKEN")
 
 
-def _headers() -> dict:
+# The hosts the token goes to. A file's raw URL comes from the API's answer, and a
+# token sent wherever that answer points is a token handed to it.
+_TOKEN_HOSTS = ("api.github.com", "raw.githubusercontent.com", "github.com")
+# What one API answer may weigh: a listing or a search, never a download.
+_MAX_API_BYTES = 4 * 1024 * 1024
+
+
+def _headers(url: str = _API_BASE) -> dict:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "mcp-github-server",
     }
-    if _TOKEN:
+    if _TOKEN and (urllib.parse.urlparse(url).hostname or "") in _TOKEN_HOSTS \
+            and urllib.parse.urlparse(url).scheme == "https":
         headers["Authorization"] = f"Bearer {_TOKEN}"
     return headers
+
+
+def _repo_path(owner: str, repo: str) -> str:
+    """``/repos/<owner>/<repo>``, each a single path segment whatever it holds."""
+    return f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}"
 
 
 def _request(path: str, params: dict | None = None) -> dict:
     url = _API_BASE + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers=_headers(), method="GET")
+    req = urllib.request.Request(url, headers=_headers(url), method="GET")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
+            body = resp.read(_MAX_API_BYTES).decode("utf-8", errors="replace")
             return ok({"data": json.loads(body)})
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
@@ -82,7 +95,7 @@ def github_repo_info(owner: str, repo: str) -> dict:
         owner: GitHub owner or organization name.
         repo: Repository name.
     """
-    result = _request(f"/repos/{owner}/{repo}")
+    result = _request(_repo_path(owner, repo))
     if result["status"] != "ok":
         return result
     data = result["data"]
@@ -110,7 +123,7 @@ def github_list_branches(owner: str, repo: str, limit: int = 20) -> dict:
         limit: Maximum number of branches to return.
     """
     limit = max(1, min(limit, _MAX_RESULTS))
-    result = _request(f"/repos/{owner}/{repo}/branches", {"per_page": limit})
+    result = _request(f"{_repo_path(owner, repo)}/branches", {"per_page": limit})
     if result["status"] != "ok":
         return result
     branches = [
@@ -134,7 +147,7 @@ def github_list_issues(owner: str, repo: str, state: str = "open", limit: int = 
     """
     limit = max(1, min(limit, _MAX_RESULTS))
     result = _request(
-        f"/repos/{owner}/{repo}/issues",
+        f"{_repo_path(owner, repo)}/issues",
         {"state": state, "per_page": limit},
     )
     if result["status"] != "ok":
@@ -160,7 +173,7 @@ def _list_directory(owner: str, repo: str, dirpath: str, ref: str) -> list[str] 
     """Names in one repository directory, or None when it is not a listable directory."""
     params = {"ref": ref} if ref else None
     quoted = "/".join(urllib.parse.quote(part) for part in dirpath.split("/") if part)
-    result = _request(f"/repos/{owner}/{repo}/contents/{quoted}", params)
+    result = _request(f"{_repo_path(owner, repo)}/contents/{quoted}", params)
     if result["status"] != "ok" or not isinstance(result["data"], list):
         return None
     return [entry.get("name", "") for entry in result["data"]]
@@ -201,7 +214,7 @@ def _raw_text(url: str) -> str:
     if not url:
         return ""
     try:
-        req = urllib.request.Request(url, headers=_headers(), method="GET")
+        req = urllib.request.Request(url, headers=_headers(url), method="GET")
         with urllib.request.urlopen(req, timeout=15) as resp:
             return resp.read(_MAX_RAW_BYTES).decode("utf-8", errors="replace")
     except Exception:
@@ -252,7 +265,7 @@ def github_get_file(owner: str, repo: str, path: str, ref: str = "",
     """
     params = {"ref": ref} if ref else None
     quoted_path = "/".join(urllib.parse.quote(part) for part in path.split("/"))
-    result = _request(f"/repos/{owner}/{repo}/contents/{quoted_path}", params)
+    result = _request(f"{_repo_path(owner, repo)}/contents/{quoted_path}", params)
     if result["status"] != "ok":
         if result.get("http_status") == 404:
             return _not_found(owner, repo, path, ref, result)

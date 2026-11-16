@@ -16,6 +16,30 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- **`http_get` asks once per host.** It went out unasked to any URL that did not look like
+  an API, so a query string could carry a secret away, in plan mode too. *Always* covers
+  that host. The address checked is now the one connected to (a name that rebinds to
+  `127.0.0.1` is refused at connect), `100.64.0.0/10` and `198.18.0.0/15` are blocked,
+  and headers do not follow a redirect to another host.
+- **No server holds a key it does not need.** Every MCP server inherited the API keys, so
+  `cat /proc/$PPID/environ` from a shell command printed them, and proxy runs and Slurm
+  jobs carried them into their logs. A server now gets the environment without its
+  secrets, plus its own (GitHub its token, the embedding readers the endpoint's key, the
+  sub-agent server its model's). **A user server that read a key from the environment no
+  longer finds it.**
+- **Writing a memory asks.** A memory is read back into every later conversation that
+  shares it, so a line a fetched page wrote there steered them all; `memory_add` and
+  `memory_update` are `recoverable` now, and *always* covers one scope. The prompt calls
+  the index notes, not instructions.
+- **No tool reads the server's token.** `server.json` sits in the state directory, which
+  is read without asking; a call naming it is refused.
+- **TLS to vLLM and Ray Serve is verified by default.** `mimir.vllmVerifySsl` was on, but
+  the server only verified when told `VLLM_VERIFY_SSL=1`: the endpoint's key and every
+  prompt went to whoever answered. **An endpoint behind a private CA needs
+  `VLLM_VERIFY_SSL=0` (or the setting unchecked), or `SSL_CERT_FILE` pointing at the CA.**
+- **The GitHub token goes to GitHub only.** A file's raw URL comes from the API's answer;
+  the token now goes to `https` GitHub hosts alone, `owner` and `repo` are quoted, and an
+  answer is read up to 4 MB.
 - **A command that reads no longer runs or writes unasked.** A read-only shell command is
   waived from approval in every mode, and several read while doing more: `sed -n '1e cmd'`
   and `sed 'w ~/.bashrc'`, `git -c core.fsmonitor=… status`, `git log --output=…`,

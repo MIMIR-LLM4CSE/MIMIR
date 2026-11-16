@@ -8,6 +8,9 @@ as ready, and what counts as never going to be ready.
 from __future__ import annotations
 
 import asyncio
+import os
+import unittest
+from unittest import mock
 import queue
 
 import httpx
@@ -196,3 +199,16 @@ def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
         worker = bare_worker("m", sid)
         asyncio.run(worker._setup())
     assert probes == [1]
+
+
+class TlsVerificationDefaultTests(unittest.TestCase):
+    """Unverified, an endpoint's key and prompts go to whoever answers in its place."""
+
+    def test_verified_unless_turned_off(self) -> None:
+        from mimir.shared.embed import verify_ssl
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VLLM_VERIFY_SSL", None)
+            self.assertTrue(verify_ssl())
+            for off in ("0", "false", "off", "no"):
+                os.environ["VLLM_VERIFY_SSL"] = off
+                self.assertFalse(verify_ssl(), off)

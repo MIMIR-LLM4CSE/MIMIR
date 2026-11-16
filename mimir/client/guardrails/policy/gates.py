@@ -154,6 +154,41 @@ def _call_base(agent: PolicyAgent, tool_name: str, arguments: dict) -> tuple[str
     return root, base
 
 
+def _named_paths(agent: PolicyAgent, tool_name: str, arguments: dict) -> tuple[str, list[str]]:
+    """``(root, paths)``: the workspace root, and every path this call names, as given."""
+    root, call_base = _call_base(agent, tool_name, arguments)
+    raw: list[str] = []
+    try:
+        raw.extend(agent.get_tool_file_targets(tool_name, arguments) or [])
+    except Exception:
+        logger.debug("_named_paths: a best-effort step failed and was skipped", exc_info=True)
+    # A declared cwd is itself a place the call goes.
+    for a in arg_role(tool_name, "cwd", agent.tool_caps):
+        v = arguments.get(a)
+        if isinstance(v, str) and v.strip():
+            raw.append(v)
+    raw.extend(_shell_path_targets(agent, tool_name, arguments, call_base))
+    return root, raw
+
+
+def check_secret_paths(agent: PolicyAgent, tool_name: str, arguments: dict) -> str | None:
+    """Refuse a call naming the server's registry, which holds its connection token.
+
+    Not a question: the state directory is read without asking, and the token in a
+    tool result is one fetch away from whoever would drive the agent with it.
+    """
+    registry = os.path.realpath(os.path.join(paths.STATE_DIR, paths.SERVER_REGISTRY_FILENAME))
+    root, raw = _named_paths(agent, tool_name, arguments)
+    if not any(os.path.realpath(absolute_workspace_path(p, cwd=root)) == registry for p in raw):
+        return None
+    return json_error_payload(
+        "This file holds the connection token of MIMIR's own server and is not readable "
+        "by a tool.",
+        hint="Nothing a task needs is in it; leave it alone.",
+        tool=tool_name,
+    )
+
+
 def _call_writes(agent: PolicyAgent, tool_name: str, arguments: dict) -> bool:
     """Whether this call may write what it names: a file tool that writes, or a shell
     command that is not read-only."""
@@ -170,19 +205,7 @@ def out_of_workspace_targets(agent: PolicyAgent, tool_name: str, arguments: dict
     roots excluded. A path inside the workspace whose contents run later
     (``shared/protected_paths``) counts as outside for a call that writes.
     """
-    root, call_base = _call_base(agent, tool_name, arguments)
-
-    raw: list[str] = []
-    try:
-        raw.extend(agent.get_tool_file_targets(tool_name, arguments) or [])
-    except Exception:
-        logger.debug("out_of_workspace_targets: a best-effort step failed and was skipped", exc_info=True)
-    # A declared cwd is itself a place the call goes.
-    for a in arg_role(tool_name, "cwd", agent.tool_caps):
-        v = arguments.get(a)
-        if isinstance(v, str) and v.strip():
-            raw.append(v)
-    raw.extend(_shell_path_targets(agent, tool_name, arguments, call_base))
+    root, raw = _named_paths(agent, tool_name, arguments)
 
     is_read = has_cap(tool_name, READ, agent.tool_caps) and not (
         agent.is_write_tool(tool_name)

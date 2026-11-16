@@ -21,8 +21,10 @@ from ..tools.capabilities import infer_tool_caps
 from ..protocol.tool_call import DOING_ARG
 from ..config import paths
 from ..config.paths import GLOBAL_STATE_DIR, SERVER_BASE
+from ..config.servers import SERVER_SECRETS
 from ...shared.launcher import launch_argv
 from ..config.limits import USER_QUESTION_TIMEOUT_SECS
+from ...shared.secret_env import without_secrets
 from ...shared.state_paths import scratch_home
 from ..core.ports import ConnectorAgent
 
@@ -280,15 +282,16 @@ def _make_elicitation_callback(agent: ConnectorAgent):
     return _callback
 
 
-def server_environment(agent: ConnectorAgent) -> dict[str, str]:
-    """The environment a server of *agent* is started with, frozen at spawn."""
+def server_environment(agent: ConnectorAgent, name: str = "") -> dict[str, str]:
+    """The environment server *name* of *agent* is started with, frozen at spawn: this
+    process's without its secrets, but those the server needs (``SERVER_SECRETS``)."""
     # What a server is told at spawn, frozen in its environment: the workspace root, the state
     # dir, the scratchpad (vetted once by the client), MIMIR_SESSION_ID (an agent serves one
     # session for life; empty for the CLI and tests) and MIMIR_DEFAULT_MODEL. ``agent.server_env``
     # goes last and wins: a sub-agent's own session and roots.
     root = agent.workspace_root or os.getcwd()
     return {
-        **os.environ,
+        **without_secrets(os.environ, SERVER_SECRETS.get(name, ())),
         "MCP_FILES_ROOT": root,
         "SEARCH_ROOT": root,
         "MIMIR_STATE_DIR": paths.STATE_DIR,
@@ -310,7 +313,7 @@ async def _spawn_session(*, agent: ConnectorAgent, name: str, script: str) -> An
         raise ValueError("Server script must be a .py or .js file")
 
     command = sys.executable if script.endswith(".py") else "node"
-    server_env = server_environment(agent)
+    server_env = server_environment(agent, name)
     params = StdioServerParameters(command=command, args=server_args(script), env=server_env)
 
     transport = await agent.exit_stack.enter_async_context(stdio_client(params))

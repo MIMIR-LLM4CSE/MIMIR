@@ -32,7 +32,7 @@ ALIVE_PATH = "/alive"
 # busy turn can hold for a moment. A dead address is refused at once and does not wait.
 _PROBE_TIMEOUT = 2.0
 
-_FILENAME = "server.json"
+_FILENAME = paths.SERVER_REGISTRY_FILENAME
 _LOCKNAME = "server.lock"
 
 # Held for the life of the winning process. A module global because that is what its

@@ -92,6 +92,11 @@ def _scope_basename(arguments: dict, args: tuple[str, ...]) -> str:
     return os.path.basename(target) if target else ""
 
 
+def _scope_value(arguments: dict, args: tuple[str, ...]) -> str:
+    """The argument's own value, as a choice among a few (a memory's scope)."""
+    return _first(arguments, args).lower()
+
+
 def _scope_packages(arguments: dict, args: tuple[str, ...]) -> str:
     """Sorted, space-joined package set."""
     key = (args or ("packages",))[0]
@@ -116,6 +121,7 @@ _SCOPE_KINDS: dict[str, tuple[Callable[[dict, tuple[str, ...]], str], str]] = {
     "command_prefix": (_scope_command_prefix, "this command family"),
     "host": (_scope_host, "this destination host"),
     "basename": (_scope_basename, "this target file"),
+    "value": (_scope_value, "calls with this value"),
     "packages": (_scope_packages, "these packages"),
     "lang_target": (_scope_lang_target, "this code job"),
 }
@@ -279,22 +285,13 @@ class ApprovalManager:
         if tool_name in self.sensitive_tools:
             return True
 
-        # A tool that narrows by URL host (e.g. an HTTP GET) is sensitive only when the
-        # URL targets an authenticated/mutating endpoint. Keyed on the declared `host`
-        # scope kind, not the tool name.
+        # A tool that narrows by URL host (an HTTP GET) carries whatever its URL and
+        # headers hold to that host: a query string is as good a channel out as a POST
+        # body. Asked once per host, which is what "always" then covers. Keyed on the
+        # declared `host` scope kind, not the tool name.
         spec = scope_spec(tool_name, self.tool_caps)
         if spec and spec.get("kind") == "host":
-            url = _first(arguments, tuple(spec.get("args") or ("url",))).lower()
-            parsed = urlparse(url)
-            path_parts = set(parsed.path.strip("/").split("/"))
-            # Specific patterns that unambiguously indicate authenticated/mutating endpoints.
-            if any(t in url for t in ("/api/", "oauth", "bearer", "/authorize", "apikey")):
-                return True
-            # Segment-level check for words that are sensitive only as path components,
-            # not as substrings of hostnames or parameter names.
-            if path_parts & {"token", "auth", "login", "secret", "credential", "password"}:
-                return True
-            return False
+            return True
 
         return False
 
