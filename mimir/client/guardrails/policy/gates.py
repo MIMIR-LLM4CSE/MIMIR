@@ -20,10 +20,11 @@ from ....shared.shell_paths import (
     parse_segments,
     segment_path_operands,
 )
+from ....shared.protected_paths import PROTECTED_TAG, boundary_tag, is_protected
 from ....shared.trusted_read_roots import trusted_read_roots
 from ...config import paths
 from ...config.servers import SKILL_LOAD_TOOL
-from ...tools.bash_classify import segment_program, shell_segments
+from ...tools.bash_classify import bash_command_is_readonly, segment_program, shell_segments
 from ...tools.capabilities import (
     CLUSTER_SUBMIT,
     EDIT,
@@ -34,6 +35,7 @@ from ...tools.capabilities import (
     has_cap,
     label_for,
     shell_command_args,
+    shell_command_of,
 )
 from ...context.paths import absolute_workspace_path, scratch_roots
 from ...core.ports import PolicyAgent
@@ -152,11 +154,21 @@ def _call_base(agent: PolicyAgent, tool_name: str, arguments: dict) -> tuple[str
     return root, base
 
 
+def _call_writes(agent: PolicyAgent, tool_name: str, arguments: dict) -> bool:
+    """Whether this call may write what it names: a file tool that writes, or a shell
+    command that is not read-only."""
+    if agent.is_write_tool(tool_name) or has_cap(tool_name, EDIT, agent.tool_caps):
+        return True
+    command = shell_command_of(tool_name, arguments, agent.tool_caps)
+    return bool(command) and not bash_command_is_readonly(command)
+
+
 def out_of_workspace_targets(agent: PolicyAgent, tool_name: str, arguments: dict) -> list[str]:
     """Absolute target paths of this call outside the workspace and not yet approved.
 
     File targets, a declared ``cwd``, and the paths inside a shell command; trusted read
-    roots excluded.
+    roots excluded. A path inside the workspace whose contents run later
+    (``shared/protected_paths``) counts as outside for a call that writes.
     """
     root, call_base = _call_base(agent, tool_name, arguments)
 
@@ -179,11 +191,20 @@ def out_of_workspace_targets(agent: PolicyAgent, tool_name: str, arguments: dict
     trusted = _trusted_read_roots()
 
     scratch = scratch_roots()
+    writes: bool | None = None
 
     out: list[str] = []
     for p in raw:
         full = os.path.realpath(absolute_workspace_path(p, cwd=root))
         if _is_under(root, full):
+            if not is_protected(root, full):
+                continue
+            if writes is None:
+                writes = _call_writes(agent, tool_name, arguments)
+            if not writes or agent.approvals.paths.covers(full):
+                continue
+            if full not in out:
+                out.append(full)
             continue
         # The scratchpad is outside the workspace by design, and prompting for it
         # would defeat its purpose — it exists precisely so throwaway work has a
@@ -235,6 +256,14 @@ def check_out_of_workspace_access(
     # usual tool description ("Running: …") instead of bare paths.
     approved, always = agent.request_path_approval(targets, tool_name, arguments)
     if not approved:
+        if boundary_tag(_call_base(agent, tool_name, arguments)[0], targets) == PROTECTED_TAG:
+            return json_error_payload(
+                f"Writing where code runs later was not approved: {_name_paths(targets)}.",
+                hint=("These files are run later, by MIMIR, git or the editor, without a "
+                      "further question. Leave them as they are unless the user asks for "
+                      "the change."),
+                tool=tool_name,
+            )
         return json_error_payload(
             f"Access outside the workspace was not approved: {_name_paths(targets)}.",
             hint=("These paths are outside the workspace root. Ask the user to approve "

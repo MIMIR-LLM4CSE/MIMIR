@@ -1,6 +1,7 @@
 """Load a plugins directory's packs into one ``ExtensionSet``, once per directory per process.
 
-Every ``*.py`` but ``_``-prefixed helpers; a pack that fails to import is logged and skipped.
+Every ``*.py`` but ``_``-prefixed helpers, once accepted (``trust``); a pack that fails to
+import is logged and skipped.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import threading
 
 from ..config.paths import PLUGINS_DIRNAME, PLUGINS_DIR_ENV, resolve_extension_dir
 from ..core.extension_set import AMBIENT, ExtensionSet, registering_into
+from .trust import trusted_only
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +40,11 @@ def _import_packs(directory: str) -> ExtensionSet:
     extensions = ExtensionSet(parent=AMBIENT)
     if not os.path.isdir(directory):
         return extensions
+    candidates = [os.path.join(directory, entry) for entry in sorted(os.listdir(directory))
+                  if entry.endswith(".py") and not entry.startswith("_")]
     with registering_into(extensions):
-        for entry in sorted(os.listdir(directory)):
-            if not entry.endswith(".py") or entry.startswith("_"):
-                continue
-            path = os.path.join(directory, entry)
+        for path in trusted_only(candidates):
+            entry = os.path.basename(path)
             # Unique per directory, so two workspaces' same-named packs stay apart.
             stem = os.path.splitext(entry)[0]
             mod_name = f"mimir_plugin_{abs(hash(directory)):x}_{stem}"

@@ -96,6 +96,48 @@ class BashCommandReadonlyTests(unittest.TestCase):
         ]:
             self.assertFalse(bash_command_is_readonly(cmd), cmd)
 
+    def test_a_reading_head_that_runs_or_writes_is_not_read_only(self):
+        """A read-only head is exempt from approval, so its arguments must keep it one.
+
+        Each of these runs a program or writes outside the workspace while its head
+        reads: GNU sed's ``e``/``w``/``r``, git's configuration and output options, a
+        deletion, an environment that loads code.
+        """
+        for cmd in [
+            "sed -n '1e touch /tmp/x' README.md",
+            "sed '1!G;h;$!d;e id' f",
+            "sed -ne '1e id' f",
+            "sed 's/a/b/e' f", "sed 's/a/b/w out' f",
+            "sed -n 'w /home/u/.bashrc' README.md",
+            "sed -n '/x/{r /etc/passwd\n}' f",
+            "sed -f script.sed f",
+            "find . -exec sed -n '1e id' {} ;",
+            "find . -delete",
+            "git -c core.fsmonitor=x status", "git -c diff.external=x diff",
+            "git --git-dir=/elsewhere log",
+            "git log --output=/home/u/.bashrc --format=x", "git diff --output=x",
+            "git grep -Ox foo", "git grep --open-files-in-pager=x foo",
+            "git branch -D main", "git branch new", "git tag v1",
+            "git reflog expire --all", "git remote add o URL",
+            "env GIT_EXTERNAL_DIFF=x git diff", "GIT_EXTERNAL_DIFF=x git diff",
+            "env LD_PRELOAD=x cat f", "env -S 'bash -c id'",
+            "sort --compress-program=./x f",
+            "cat list | xargs sed -n p",
+        ]:
+            self.assertFalse(bash_command_is_readonly(cmd), cmd)
+
+    def test_reading_with_those_heads_stays_read_only(self):
+        for cmd in [
+            "sed -n '1,20p' f.py", "sed 's|/a|/b|g' f", "sed -n '/start/,/end/p' f",
+            "sed -n '5p;10p' f", "sed '1!G;h;$!d' f", "sed -E 's/(a)\\1/x/2' f",
+            "git branch", "git branch -a", "git branch --list 'feat*'",
+            "git branch --contains abc", "git tag -l 'v*'", "git remote -v",
+            "git remote show origin", "git reflog",
+            "find . -exec grep -l x {} ;", "env LC_ALL=C sort f",
+            "cat list | xargs grep -l x",
+        ]:
+            self.assertTrue(bash_command_is_readonly(cmd), cmd)
+
     def test_fd_redirection_stays_read_only(self):
         # Silencing or merging a stream adds no side effect, so it must not push a
         # discovery command out of plan mode. `which X 2>/dev/null [|| true]` is the

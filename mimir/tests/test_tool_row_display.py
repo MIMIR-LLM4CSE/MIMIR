@@ -488,7 +488,7 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         from mimir.client.core.human import TerminalHuman
         out = io.StringIO()
         with mock.patch("builtins.input", return_value="n"), contextlib.redirect_stdout(out):
-            TerminalHuman().approve_paths(types.SimpleNamespace(tool_caps={}),
+            TerminalHuman().approve_paths(types.SimpleNamespace(tool_caps={}, workspace_root=""),
                                           ["/far/away/data.csv"], "t", {})
         self.assertIn("  /far/away/data.csv", out.getvalue())
 

@@ -112,9 +112,14 @@ keeps the "MIMIR Server" output channel closed instead of popping it over the ed
 The host starts the server from the extension's directory, never the workspace: `python -m`
 puts the current directory first on `sys.path`, where a project's file named after a standard
 module would run.
-`--cwd` then moves it to the workspace. The extension declares `untrustedWorkspaces`
-unsupported, so it stays off in Restricted Mode: a workspace's plugins and tool
+`--cwd` then moves it to the workspace. It is spawned without a shell (`serverArgs`): the
+model name comes from the endpoint's own model list, which whoever listens on its port
+writes, and each value reaches python as one argument whatever it holds. The log is a file
+opened `0600` and handed to the child as its stdout and stderr. The extension declares
+`untrustedWorkspaces` unsupported, so it stays off in Restricted Mode: a workspace's plugins and tool
 servers under `.mimir/`, and `mimir.pythonPath`, run code by design, and that takes a trusted folder.
+The server is told so (`MIMIR_WORKSPACE_TRUSTED=1`), and loads them without the
+terminal's question (PLUGINS_DETAILED, *Workspace code is accepted first*).
 
 The host starts the server with `--port 0` and reads the address and the token from the
 `<STATE_DIR>/server.json` it publishes, in the state directory the server's own environment resolves

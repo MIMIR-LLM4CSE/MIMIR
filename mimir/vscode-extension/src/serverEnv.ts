@@ -6,8 +6,8 @@ import * as path from "path";
 import { sharedReleasePython } from "./selfUpdate";
 
 /**
- * Interpreter that runs the WS server: `bash -c` sources no profile, so `python3` from
- * PATH is rarely the right one. In order: `mimir.pythonPath`, `MIMIR_PYTHON`,
+ * Interpreter that runs the WS server, spawned directly: no shell profile runs first, so
+ * `python3` from PATH is rarely the right one. In order: `mimir.pythonPath`, `MIMIR_PYTHON`,
  * `<releaseHome>/current/PYTHON_COMMAND` (a shared site release), `<state home>/python`
  * (written by install.sh), then `python3` from PATH.
  */
@@ -46,6 +46,10 @@ export function mimirServerEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUNBUFFERED: "1" };
   delete env.PYTHONHOME;
   delete env.PYTHONPATH;
+  // VS Code has asked whether this folder is trusted, so the server does not ask again
+  // before loading the workspace's own plugins and servers (client/extensions/trust.py).
+  delete env.MIMIR_WORKSPACE_TRUSTED;
+  if (vscode.workspace.isTrusted) env.MIMIR_WORKSPACE_TRUSTED = "1";
   return env;
 }
 

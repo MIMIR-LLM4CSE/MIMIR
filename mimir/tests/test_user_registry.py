@@ -22,6 +22,7 @@ def _write(path: str, content: str) -> None:
         f.write(content)
 
 
+@mock.patch.dict(os.environ, {"MIMIR_WORKSPACE_TRUSTED": "1"})
 class DiscoverUserServersTests(unittest.TestCase):
     def test_discovers_and_normalizes_names(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -70,6 +71,7 @@ Body for {name}.
 """
 
 
+@mock.patch.dict(os.environ, {"MIMIR_WORKSPACE_TRUSTED": "1"})
 class UserSkillLoadingTests(unittest.TestCase):
     def _agent(self):
         # Import lazily so a construction failure surfaces here, not at collection.

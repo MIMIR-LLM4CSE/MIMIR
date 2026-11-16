@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Callable, NamedTuple
 
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -77,6 +78,25 @@ _QUEUED_SUBMISSIONS_COMMAND = (
 # configuration mechanism the user already has and we have no business duplicating.
 _SSH_BASE = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 
+# What a host may be: a name, an address or ``user@host``, never an ssh option. A
+# leading "-" would make ``ssh`` read the "host" as one (``-oProxyCommand=…`` runs a
+# local command), and a scheduler named by the model reaches ssh unasked.
+_HOST_SHAPE = re.compile(r"[A-Za-z0-9_\[][A-Za-z0-9_.@:%\[\]-]*")
+
+
+class InvalidHost(ValueError):
+    """A scheduler name that cannot be an ssh destination."""
+
+
+def valid_host(host: str) -> bool:
+    """Whether *host* can only be read by ``ssh`` as a destination."""
+    return bool(_HOST_SHAPE.fullmatch(host or ""))
+
+
+def _invalid(host: str) -> str:
+    return (f"{host!r} is not a host name: a scheduler is a name, an address or "
+            "user@host, and cannot start with \"-\".")
+
 
 def argv_for(script: str, *, host: str = LOCAL, piped: bool = False) -> list[str]:
     """The argv running *script* on *host* (``LOCAL`` or over ``ssh``) in a login shell.
@@ -85,8 +105,10 @@ def argv_for(script: str, *, host: str = LOCAL, piped: bool = False) -> list[str
     """
     if not host:
         return ["bash", "-lc", script]
+    if not valid_host(host):
+        raise InvalidHost(_invalid(host))
     base = _SSH_BASE if piped else [*_SSH_BASE[:1], "-n", *_SSH_BASE[1:]]
-    return base + [host, "bash", "-lc", shlex.quote(script)]
+    return base + ["--", host, "bash", "-lc", shlex.quote(script)]
 
 
 def exec_argv(argv: list[str], *, host: str = LOCAL,
@@ -105,7 +127,7 @@ def read_lines(script: str, timeout: float = 15.0, *, host: str = LOCAL) -> list
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, timeout=timeout,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, InvalidHost):
         return None
     if res.returncode != 0:
         return None
@@ -239,7 +261,7 @@ def hosts() -> list[str]:
         lines = []
     for line in lines:
         host = line.strip()
-        if host and host not in out:
+        if valid_host(host) and host not in out:
             out.append(host)
     return out
 
@@ -247,7 +269,7 @@ def hosts() -> list[str]:
 def record_host(host: str) -> None:
     """Add *host* to the workspace's schedulers if new (never raises)."""
     host = (host or "").strip()
-    if not host or host in hosts():
+    if not valid_host(host) or host in hosts():
         return
     path = _path()
     try:
@@ -291,7 +313,7 @@ def resolve_host(requested: str = "") -> tuple[str, str]:
                         "scheduler to use. " + _choices(known))
         return LOCAL, ""
     if requested:
-        return requested, ""
+        return (requested, "") if valid_host(requested) else ("", _invalid(requested))
     if len(known) == 1:
         return known[0], ""
     if not known:

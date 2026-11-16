@@ -2,7 +2,8 @@ import { EventEmitter } from "events";
 import { describe, expect, it, vi } from "vitest";
 
 const children: EventEmitter[] = [];
-const spawned: { command: string; options: Record<string, unknown> }[] = [];
+const spawned: { command: string; args: string[]; options: Record<string, unknown> }[] = [];
+const opened: { file: string; mode: unknown }[] = [];
 const channels: string[] = [];
 const lines: string[] = [];
 const errors: string[] = [];
@@ -26,8 +27,8 @@ vi.mock("vscode", () => ({
 }));
 
 vi.mock("child_process", () => ({
-  spawn: (_shell: string, args: string[], options: Record<string, unknown>) => {
-    spawned.push({ command: args[1], options });
+  spawn: (command: string, args: string[], options: Record<string, unknown>) => {
+    spawned.push({ command, args, options });
     const child = Object.assign(new EventEmitter(), { pid: 4242, killed: false, unref() {}, kill() {} });
     children.push(child);
     return child;
@@ -42,6 +43,11 @@ vi.mock("fs", async (importOriginal) => {
       if (disk.denied) throw new Error(`EACCES: permission denied, mkdir '${dir}'`);
       made.push(dir);
     },
+    openSync: (file: string, _flags: string, mode: unknown) => {
+      opened.push({ file, mode });
+      return 99;
+    },
+    closeSync: () => {},
   };
 });
 
@@ -76,15 +82,18 @@ describe("spawning the server", () => {
       () => {},
     );
     expect(outcome).toEqual({ kind: "listening", url: "ws://127.0.0.1:5555" });
-    const { command, options } = spawned[0];
+    const { command, args, options } = spawned[0];
     // Its own session and no pipe: nothing about this window closing reaches it, and a
     // server meant to outlive the window does not die on its first write to a dead pipe.
     expect(options.detached).toBe(true);
-    expect(options.stdio).toBe("ignore");
-    expect(command).toMatch(/>> '\/state\/logs\/server-[^']+\.log' 2>&1$/);
-    expect(command).toContain("--backend vllm --vllm-base-url http://node:8000/v1");
+    expect(options.stdio).toEqual(["ignore", 99, 99]);
+    expect(opened[0].file).toMatch(/^\/state\/logs\/server-[^/]+\.log$/);
+    expect(opened[0].mode).toBe(0o600);
+    expect(command).toBe("python3");
+    expect(args.slice(0, 2)).toEqual(["-m", "mimir.client.ui.ws.server.main"]);
+    expect(args.join(" ")).toContain("--backend vllm --vllm-base-url http://node:8000/v1");
     expect(options.cwd).toBe("/ext");
-    expect(command).toMatch(/--cwd '[^']+' --port 0/);
+    expect(args[args.indexOf("--cwd") + 2]).toBe("--port");
     expect(made).toContain("/state/logs");
     expect((options.env as NodeJS.ProcessEnv).PYTHONUNBUFFERED).toBe("1");
     expect(server.childRunning).toBe(true);
@@ -122,9 +131,23 @@ describe("spawning the server", () => {
       { model: "claude", backend: "anthropic", baseUrl: "", anthropicApiKey: "sk-secret", silent: true },
       () => {},
     );
-    const { command, options } = spawned[0];
-    expect(command).not.toContain("sk-secret");
+    const { args, options } = spawned[0];
+    expect(args.join(" ")).not.toContain("sk-secret");
     expect((options.env as Record<string, string>).ANTHROPIC_API_KEY).toBe("sk-secret");
+  });
+
+  it("passes a model name and an endpoint as words, never as shell", async () => {
+    // The model list is whatever answers on the endpoint's port, which another user of
+    // a login node can serve: a name is one argument, whatever it holds.
+    spawned.length = 0;
+    const model = "x; touch /tmp/pwned #";
+    const baseUrl = "http://127.0.0.1:8000/v1$(id)";
+    await new LocalServer("/ext").spawn(
+      { model, backend: "vllm", baseUrl, anthropicApiKey: "", silent: true }, () => {});
+    const { command, args } = spawned[0];
+    expect(command).not.toBe("bash");
+    expect(args[args.indexOf("--model") + 1]).toBe(model);
+    expect(args[args.indexOf("--vllm-base-url") + 1]).toBe(baseUrl);
   });
 
   it("names an exceeded quota in its output when the server dies before it listens", async () => {

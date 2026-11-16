@@ -96,7 +96,7 @@ export const GlobalApprovalBar: React.FC<Props> = ({ approval, onRespond }) => {
       {oowPaths.length > 0 && (
         <div className="ap-reason">
           <span className="ap-reason-tag">
-            outside workspace{oowPaths.length > 1 ? ` (${oowPaths.length})` : ""}
+            {approval.path_tag ?? "outside workspace"}{oowPaths.length > 1 ? ` (${oowPaths.length})` : ""}
           </span>
           {/* One row per path: a command names several, and they are approved
               together — hiding all but the first would ask for consent to a

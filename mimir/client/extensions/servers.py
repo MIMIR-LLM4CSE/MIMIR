@@ -11,6 +11,7 @@ import os
 
 from ..config.servers import SERVER_DESCRIPTIONS, SERVERS
 from ..config.paths import SERVERS_DIR_ENV, SERVERS_DIRNAME, resolve_extension_dir
+from .trust import trusted_only
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,9 @@ def _server_name_from_filename(filename: str) -> str:
 def discover_user_servers(servers_dir: str | None = None) -> dict[str, str]:
     """Return ``{name: abspath}`` for user MCP servers under the servers dir.
 
-    Scans ``*.py``/``*.js`` (skips ``_``-prefixed). A discovered name that collides
-    with a bundled server is skipped with a warning (the core is protected).
+    Scans ``*.py``/``*.js`` (skips ``_``-prefixed), keeping those accepted (``trust``). A
+    discovered name that collides with a bundled server is skipped with a warning (the
+    core is protected).
     """
     directory = servers_dir or resolve_servers_dir()
     if not os.path.isdir(directory):
@@ -54,7 +56,8 @@ def discover_user_servers(servers_dir: str | None = None) -> dict[str, str]:
             logger.warning("Duplicate user server name '%s'; keeping first.", name)
             continue
         found[name] = os.path.join(directory, entry)
-    return found
+    allowed = set(trusted_only(list(found.values())))
+    return {name: path for name, path in found.items() if path in allowed}
 
 
 def all_servers() -> dict[str, str]:

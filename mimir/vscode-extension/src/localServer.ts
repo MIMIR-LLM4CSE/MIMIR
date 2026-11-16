@@ -30,16 +30,27 @@ export type SpawnOutcome =
   | { kind: "gave_up" }
   | { kind: "superseded" };
 
-/** *value* as one word of a bash command line. */
-const shellQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`;
-
 /**
- * The command that starts a server on *workspace*. It runs from the extension's directory:
+ * The arguments that start a server on *workspace*. It runs from the extension's directory:
  * `python -m` puts the current directory first on `sys.path`, where a project's `argparse.py`
  * would run. `--cwd` moves the server to the workspace, away from `sys.path`.
+ *
+ * Spawned without a shell: the model name comes from the endpoint's own answer, which
+ * whoever listens on its port writes, and an argv element is never read as a command.
  */
-const serverCommand = (python: string, workspace: string, args: string): string =>
-  `exec ${python} -m mimir.client.ui.ws.server.main --cwd ${shellQuote(workspace)} ${args}`;
+export const serverArgs = (workspace: string, args: string[]): string[] =>
+  ["-m", "mimir.client.ui.ws.server.main", "--cwd", workspace, ...args];
+
+/** The flags naming the backend a connect asked for, and its endpoint. */
+const backendArgs = (backend: string, baseUrl: string): string[] =>
+  backend === "vllm" ? ["--backend", "vllm", "--vllm-base-url", baseUrl]
+  : backend === "ray" ? ["--backend", "ray", "--ray-base-url", baseUrl]
+  : backend === "ollama" ? ["--backend", "ollama", "--ollama-base-url", baseUrl]
+  : backend === "anthropic" ? ["--backend", "anthropic"]
+  : [];
+
+/** *argv* as it reads in the output channel. */
+const shown = (argv: string[]): string => argv.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : JSON.stringify(a))).join(" ");
 
 export class LocalServer {
   private child: cp.ChildProcess | undefined;
@@ -118,12 +129,6 @@ export class LocalServer {
     if (!req.silent) outputChannel.show();
 
     const { backend, baseUrl } = req;
-    const backendArgs =
-      backend === "vllm" ? ` --backend vllm --vllm-base-url ${baseUrl}`
-      : backend === "ray" ? ` --backend ray --ray-base-url ${baseUrl}`
-      : backend === "ollama" ? ` --backend ollama --ollama-base-url ${baseUrl}`
-      : backend === "anthropic" ? " --backend anthropic"
-      : "";
     // An HTTP proxy silently swallows requests to an on-prem endpoint, so
     // ws_server would hang on model resolution before ever binding its port.
     const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
@@ -146,8 +151,10 @@ export class LocalServer {
     // The log sits in the state dir the server's own environment resolves. Made here:
     // a directory that cannot be created leaves no log to say why, so it is said here.
     const serverLog = logPath(cwd, new Date().toISOString().replace(/[:.]/g, "-"), env);
+    let logFd: number;
     try {
-      fs.mkdirSync(path.dirname(serverLog), { recursive: true });
+      fs.mkdirSync(path.dirname(serverLog), { recursive: true, mode: 0o700 });
+      logFd = fs.openSync(serverLog, "a", 0o600);
     } catch (err) {
       const message =
         `MIMIR cannot create its state directory ${path.dirname(serverLog)} ` +
@@ -157,16 +164,15 @@ export class LocalServer {
       void showToast("error", message);
       return { kind: "gave_up" };
     }
-    // `--port 0`: the OS picks a free port, which the server publishes. `exec` makes
-    // `kill()` reach python itself. Output goes to a file: a pipe held by this host
-    // would SIGPIPE a server meant to outlive the window.
-    const spawnCmd = serverCommand(pythonPath, cwd,
-      `--port 0${req.model ? ` --model ${req.model}` : ""}${backendArgs} >> ${shellQuote(serverLog)} 2>&1`);
+    // `--port 0`: the OS picks a free port, which the server publishes. Output goes to a
+    // file: a pipe held by this host would SIGPIPE a server meant to outlive the window.
+    const args = serverArgs(cwd, [
+      "--port", "0", ...(req.model ? ["--model", req.model] : []), ...backendArgs(backend, baseUrl)]);
     // The command only: the Claude API key goes through the environment below, so it
     // never lands in the output channel.
-    outputChannel.appendLine(`Starting server: ${spawnCmd}`);
+    outputChannel.appendLine(`Starting server: ${shown([pythonPath, ...args])}`);
 
-    const spawned = cp.spawn("bash", ["-c", spawnCmd], {
+    const spawned = cp.spawn(pythonPath, args, {
       cwd: this.extensionRoot,
       env,
       // Its own process session, from birth. Nothing about this window's teardown can
@@ -177,8 +183,10 @@ export class LocalServer {
       // not already being a group leader, and a detachment that quietly does not hold
       // is worse than none.
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", logFd, logFd],
     });
+    // The child holds its own copy of the descriptor.
+    fs.closeSync(logFd);
     this.child = spawned;
     // So this window's exit is not waited on by Node for a process it no longer owns.
     spawned.unref();
@@ -187,6 +195,12 @@ export class LocalServer {
     this.tailLog(outputChannel, serverLog);
 
     let listening = false;
+    spawned.on("error", (err) => {
+      if (this.child !== spawned) return;
+      outputChannel.appendLine(`\nCould not start ${pythonPath}: ${err.message}`);
+      this.child = undefined;
+      onExit();
+    });
     spawned.on("exit", (code) => {
       if (this.child !== spawned) return;
       outputChannel.appendLine(`\nServer exited (code ${code}) — see ${serverLog}`);
@@ -248,13 +262,12 @@ export class LocalServer {
     outputChannel.show();
 
     const cwd = workspaceRoot();
-    // `exec` so the process we track — and later kill — is the server, not the shell.
-    const spawnCmd = serverCommand(pythonPath, cwd, "--port 8765");
+    const args = serverArgs(cwd, ["--port", "8765"]);
 
     // A child of our own from here on: whatever pid we were attached to before is not
     // the server this window is responsible for any more.
     this.attachedPid = undefined;
-    const child = cp.spawn("bash", ["-c", spawnCmd], {
+    const child = cp.spawn(pythonPath, args, {
       cwd: this.extensionRoot,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
       // root to the opened workspace, regardless of the process cwd. Same
@@ -266,6 +279,10 @@ export class LocalServer {
 
     child.stdout?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
     child.stderr?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
+    child.on("error", (err) => {
+      outputChannel.appendLine(`\nCould not start ${pythonPath}: ${err.message}`);
+      this.child = undefined;
+    });
     child.on("exit", (code) => {
       outputChannel.appendLine(`\nServer exited (code ${code})`);
       this.child = undefined;

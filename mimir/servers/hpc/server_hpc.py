@@ -99,6 +99,9 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
     added: dict | None = None
     if add.strip():
         host = add.strip()
+        if not slurm_site.valid_host(host):
+            return err(f"{host!r} is not a host name: a scheduler is a name, an address "
+                       "or user@host, and cannot start with \"-\". Nothing was recorded.")
         probe = cli.run_bash("command -v sbatch", TIMEOUT_READ, host=host)
         if probe.get("status") != "ok":
             return err(f"No Slurm on {host}: {probe.get('stderr') or probe.get('error') or 'sbatch did not answer'}",

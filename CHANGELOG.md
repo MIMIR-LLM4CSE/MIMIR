@@ -16,6 +16,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- **A command that reads no longer runs or writes unasked.** A read-only shell command is
+  waived from approval in every mode, and several read while doing more: `sed -n '1e cmd'`
+  and `sed 'w ~/.bashrc'`, `git -c core.fsmonitor=… status`, `git log --output=…`,
+  `env GIT_EXTERNAL_DIFF=… git diff`, `find -delete`, `git branch -D`. A reading head is
+  now read-only only with arguments that keep it so; the others ask like any run.
+- **A scheduler name is never read as an ssh option.** `scheduler="-oProxyCommand=…"`
+  ran a local command from cluster tools that ask nothing. A host is a name, an address or
+  `user@host`, anything else is refused, and `--` ends ssh's options before it.
+- **The extension starts the server without a shell.** The model name, taken from the
+  endpoint's own list, went into a `bash -c` line: another user of a login node serving
+  `/v1/models` on the default port while yours was down could run a command as you, and
+  without a click on a remembered connection. Every value is now one argument; the log is
+  opened `0600`.
+- **Writing where code runs later asks, in every mode.** `.mimir/` (plugins and servers
+  MIMIR loads), `.git/` (hooks, `core.fsmonitor`), `.vscode/` and `proxy_bench/registry.json`
+  get the out-of-workspace card, tagged *runs code later*, even in `auto`. MIMIR's own git
+  calls run no hook and no fsmonitor.
+- **A workspace's own plugins and servers are accepted first.** In a terminal, MIMIR lists
+  the `.mimir/plugins` and `.mimir/servers` files not yet accepted and asks once; accepting
+  records their SHA-256, so a changed file is asked about again, and nobody at the
+  terminal loads nothing new. In VS Code the folder's trust answers.
 - **A connection to the server must present its token.** The server took any client that
   reached its port, whatever its origin: another user of a login node, or a page open in
   a browser on the same machine, could drive an agent that runs commands. Each server now

@@ -131,6 +131,280 @@ def _has_write_flag(argv: list[str]) -> bool:
     return False
 
 
+# ── Arguments that make a read run a program or write a file ───────────────────
+# A read-only head is read-only only with arguments that keep it so: GNU sed's ``e``
+# runs a command and ``w`` writes a file, ``git -c core.fsmonitor=…`` runs one, ``find
+# -delete`` deletes. Anything this section cannot vouch for reads as a run, which is
+# what the approval exemption and plan mode rely on.
+
+# sed commands taking no argument, and those whose argument is a label or a number.
+_SED_PLAIN = frozenset("=dDgGhHlnNpPxzF")
+_SED_LABELLED = frozenset("btT:")
+_SED_NUMBERED = frozenset("qQlL")
+# Commands that run a program, or touch a file other than the input.
+_SED_UNSAFE = frozenset("ewWrRv")
+# Flags of ``s///`` that only change what is matched or printed.
+_SED_SAFE_S_FLAGS = frozenset("gpiImM0123456789")
+_SED_VALUE_FLAGS = frozenset({"-l", "--line-length", "-e", "--expression"})
+
+
+def _sed_regex_end(script: str, i: int, delim: str) -> int:
+    """The index just past the regex starting at *i*, delimited by *delim*; -1 if unterminated.
+
+    Only a backslash escapes, as in GNU sed: a delimiter inside brackets still ends it.
+    """
+    n = len(script)
+    while i < n:
+        c = script[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "\n" or c == delim:
+            return i + 1 if c == delim else -1
+        i += 1
+    return -1
+
+
+def _sed_address_end(script: str, i: int) -> int:
+    """The index past an address at *i* (none: *i*); -1 when it cannot be read."""
+    n = len(script)
+    if i < n and (script[i].isdigit() or script[i] == "$"):
+        i += 1
+        while i < n and (script[i].isdigit() or script[i] == "~"):
+            i += 1
+        return i
+    if i < n and script[i] in "/\\":
+        if script[i] == "\\":
+            if i + 1 >= n:
+                return -1
+            delim, i = script[i + 1], i + 2
+        else:
+            delim, i = "/", i + 1
+        i = _sed_regex_end(script, i, delim)
+        while 0 <= i < n and script[i] in "IM":
+            i += 1
+        return i
+    if i < n and script[i] in "+~":
+        i += 1
+        while i < n and script[i].isdigit():
+            i += 1
+    return i
+
+
+def _sed_script_is_readonly(script: str) -> bool:
+    """Whether a sed *script* only prints: no ``e``, ``w``, ``r`` or ``s///e``/``w``.
+
+    Parsed as GNU sed reads it, command by command. A script this cannot read is not
+    read-only.
+    """
+    i, n = 0, len(script)
+    while i < n:
+        c = script[i]
+        if c in " \t\n;{}!":
+            i += 1
+            continue
+        if c == "#":
+            while i < n and script[i] != "\n":
+                i += 1
+            continue
+        i = _sed_address_end(script, i)
+        if i < 0:
+            return False
+        if i < n and script[i] == ",":
+            i = _sed_address_end(script, i + 1)
+            if i < 0:
+                return False
+        while i < n and script[i] in " \t!":
+            i += 1
+        if i >= n:
+            return False
+        c = script[i]
+        i += 1
+        if c in _SED_UNSAFE:
+            return False
+        if c in _SED_PLAIN or c in "{}":
+            continue
+        if c in _SED_LABELLED or c in "aic":
+            # A label, a number or text: the rest of the command, harmless as words.
+            stop = "\n" if c in "aic:" else ";\n"
+            while i < n and script[i] not in stop:
+                i += 1
+            continue
+        if c in _SED_NUMBERED:
+            while i < n and (script[i].isdigit() or script[i] in " \t"):
+                i += 1
+            continue
+        if c in "sy":
+            if i >= n or script[i] in "\n\\":
+                return False
+            delim = script[i]
+            i = _sed_regex_end(script, i + 1, delim)
+            if i < 0:
+                return False
+            i = _sed_regex_end(script, i, delim)
+            if i < 0:
+                return False
+            if c == "s":
+                while i < n and script[i] not in " \t\n;}":
+                    if script[i] not in _SED_SAFE_S_FLAGS:
+                        return False
+                    i += 1
+            continue
+        return False
+    return True
+
+
+def _sed_is_readonly(argv: list[str]) -> bool:
+    """Whether a ``sed`` call only reads: every script it is given only prints."""
+    scripts: list[str] = []
+    positional: list[str] = []
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-f", "--file") or arg.startswith("--file=") or (
+                arg.startswith("-f") and not arg.startswith("--")):
+            return False
+        if arg in ("-e", "--expression"):
+            if i + 1 >= len(argv):
+                return False
+            scripts.append(argv[i + 1])
+            i += 2
+            continue
+        if arg.startswith("--expression="):
+            scripts.append(arg.split("=", 1)[1])
+        elif arg.startswith("-e") and not arg.startswith("--"):
+            scripts.append(arg[2:])
+        elif arg in _SED_VALUE_FLAGS:
+            i += 2
+            continue
+        elif arg == "--" or not arg.startswith("-") or arg == "-":
+            positional.append(arg)
+        elif not arg.startswith("--") and "e" in arg[1:]:
+            # A cluster whose last letter takes the script: ``-ne '1e id'``.
+            return False
+        i += 1
+    if not scripts:
+        if not positional:
+            return False
+        scripts = [positional[0]]
+    return all(_sed_script_is_readonly(script) for script in scripts)
+
+
+# git's global options that bring configuration, another repository or another program
+# with them. ``-C`` is not among them: its directory is a path operand, confined.
+_GIT_UNSAFE_GLOBALS = ("-c", "--config-env", "--exec-path", "--git-dir", "--work-tree")
+# Options of a reading subcommand that run a program or write a file.
+_GIT_UNSAFE_OPTIONS = ("--output", "-O", "--open-files-in-pager", "--ext-diff",
+                       "--textconv")
+# The subcommands that list by default but create, delete or rewrite with an argument.
+_GIT_LISTING_ONLY = frozenset({"branch", "tag", "remote", "reflog"})
+_GIT_LIST_VALUE_FLAGS = frozenset({"--contains", "--no-contains", "--merged",
+                                   "--no-merged", "--points-at", "--sort", "--format"})
+_GIT_LIST_FLAGS = frozenset({"-l", "--list"})
+_GIT_REMOTE_READS = frozenset({"show", "get-url"})
+_GIT_REFLOG_WRITES = frozenset({"expire", "delete"})
+
+
+def _git_option_matches(arg: str, options: tuple[str, ...]) -> bool:
+    return any(arg == o or arg.startswith(o + "=")
+               or (len(o) == 2 and arg.startswith(o) and not arg.startswith("--"))
+               for o in options)
+
+
+def _git_lists_only(sub: str, args: list[str]) -> bool:
+    """Whether a ``branch``/``tag``/``remote``/``reflog`` call only lists."""
+    positionals: list[str] = []
+    listing = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in _GIT_LIST_VALUE_FLAGS:
+            i += 2
+            continue
+        if arg in _GIT_LIST_FLAGS:
+            listing = True
+        elif arg.startswith("-"):
+            if sub in ("branch", "tag") and arg not in (
+                    "-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose",
+                    "--show-current", "--column", "--no-column", "-i", "--ignore-case",
+                    "--omit-empty") and not arg.startswith(("--sort=", "--format=",
+                    "--contains=", "--no-contains=", "--merged=", "--no-merged=",
+                    "--points-at=", "--color", "--no-color", "-n")):
+                return False
+        else:
+            positionals.append(arg)
+        i += 1
+    if sub == "remote":
+        return not positionals or positionals[0] in _GIT_REMOTE_READS
+    if sub == "reflog":
+        return not positionals or positionals[0] not in _GIT_REFLOG_WRITES
+    # A name given to branch or tag creates one, unless the call lists by pattern.
+    return not positionals or listing
+
+
+def _git_is_readonly(argv: list[str], sub: str) -> bool:
+    """Whether a reading ``git`` subcommand stays one with these arguments."""
+    try:
+        at = argv.index(sub, 1)
+    except ValueError:
+        return False
+    if any(_git_option_matches(a, _GIT_UNSAFE_GLOBALS) for a in argv[1:at]):
+        return False
+    args = argv[at + 1:]
+    if any(_git_option_matches(a, _GIT_UNSAFE_OPTIONS) for a in args):
+        return False
+    if sub in _GIT_LISTING_ONLY:
+        return _git_lists_only(sub, args)
+    return True
+
+
+# What an ``env`` wrapper may set and still leave a read a read: locale and display.
+# Anything else may load code (LD_PRELOAD), name a program (GIT_EXTERNAL_DIFF, PAGER)
+# or change what the command reads.
+_ENV_SAFE_NAMES = re.compile(r"^(?:LC_[A-Z]+|LANG|LANGUAGE|TZ|COLUMNS|NO_COLOR|TERM)$")
+# The heads ``xargs`` may run and stay read-only: their options cannot run a program,
+# whatever the input appends to them.
+_XARGS_SAFE_HEADS = frozenset({
+    "cat", "head", "tail", "wc", "nl", "ls", "stat", "file", "du", "grep",
+    "md5sum", "sha256sum", "cksum",
+})
+
+
+def _wrappers_keep_readonly(argv: list[str], inner: list[str], wrappers: list[str]) -> bool:
+    """Whether the wrappers around *inner* leave its kind unchanged."""
+    names = {os.path.basename(w) for w in wrappers}
+    if "xargs" in names and inner and inner[0] not in _XARGS_SAFE_HEADS:
+        return False
+    if "env" not in names:
+        return True
+    prefix = argv[:len(argv) - len(inner)]
+    for tok in prefix:
+        if tok in ("-S", "--split-string") or tok.startswith(("-S", "--split-string=")):
+            return False
+        if ENV_ASSIGN_RE.match(tok) and not _ENV_SAFE_NAMES.match(tok.split("=", 1)[0]):
+            return False
+    return True
+
+
+def _find_is_readonly(argv: list[str]) -> bool:
+    """``find -delete`` deletes; nested ``-exec`` commands are judged as segments of their own."""
+    return "-delete" not in argv[1:]
+
+
+def _readonly_arguments(argv: list[str]) -> bool:
+    """Whether *argv*'s arguments keep its read-only head read-only."""
+    head = argv[0]
+    if any(a == "--output" or a.startswith("--output=") for a in argv[1:]):
+        return False
+    if head == "sed":
+        return _sed_is_readonly(argv)
+    if head == "sort":
+        return not any(a.startswith("--compress-program") for a in argv[1:])
+    if head == "find":
+        return _find_is_readonly(argv)
+    return True
+
+
 def _looks_like_path(token: str) -> bool:
     """Heuristic: a positional that plausibly names a file/dir, not an option/value.
 
@@ -280,8 +554,11 @@ def _classify_segment(argv: list[str]) -> Segment:
     """Map one command's argv to a Segment. Never None: an unplaced head is UNKNOWN."""
     # `timeout 60 pytest -q` is a pytest run: the wrapper is stripped before anything
     # else reads the head, so kind, effect and operands are the inner command's.
-    argv, _wrappers = unwrap_argv(argv)
+    raw = argv
+    argv, wrappers = unwrap_argv(argv)
     head = argv[0]
+    if not _wrappers_keep_readonly(raw, argv, wrappers):
+        return Segment(Kind.UNKNOWN, _file_operands(argv), head, effect=EFFECT_RUN)
 
     # A workspace-local executable (./a.out) is an execution. Same test the server
     # uses to decide an argv0 names a program by path rather than by name.
@@ -307,13 +584,16 @@ def _classify_segment(argv: list[str]) -> Segment:
         return Segment(Kind.EXEC, _exec_operands(argv), exec_head, effect=effect)
     if head in WRITE_COMMANDS:
         return Segment(Kind.WRITE, _destination_operands(argv))
+    if head in READ_COMMANDS and _has_write_flag(argv):
+        return Segment(Kind.WRITE, _write_operand(argv))
+    if (head in SEARCH_COMMANDS or head in INSPECT_COMMANDS or head in READ_COMMANDS) \
+            and not _readonly_arguments(argv):
+        return Segment(Kind.UNKNOWN, _file_operands(argv), head, effect=EFFECT_RUN)
     if head in SEARCH_COMMANDS:
         return Segment(Kind.SEARCH, _search_patterns(argv))
     if head in INSPECT_COMMANDS:
         return Segment(Kind.INSPECT, _inspect_operands(argv))
     if head in READ_COMMANDS:
-        if _has_write_flag(argv):
-            return Segment(Kind.WRITE, _write_operand(argv))
         return Segment(Kind.READ, _read_operands(argv))
     if head in NEUTRAL_COMMANDS:
         return Segment(Kind.NEUTRAL, [])
@@ -349,7 +629,7 @@ def _git_segment(argv: list[str]) -> Segment:
     everything else stays UNKNOWN (a run).
     """
     sub = _git_subcommand(argv)
-    if sub in GIT_READ_SUBCOMMANDS:
+    if sub in GIT_READ_SUBCOMMANDS and _git_is_readonly(argv, sub):
         return Segment(Kind.INSPECT, _inspect_operands(argv))
     return Segment(Kind.UNKNOWN, _file_operands(argv), "git", effect=EFFECT_RUN)
 

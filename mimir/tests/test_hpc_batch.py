@@ -1201,6 +1201,26 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
         self.assertEqual([a for a in argv if a == "-o"], ["-o", "-o"])
         self.assertEqual(argv.count("host-a"), 1)
 
+    def test_a_host_is_never_read_as_an_ssh_option(self) -> None:
+        # ``ssh -oProxyCommand=…`` runs a local command, and a scheduler named by the
+        # model reaches ssh without approval: such a name is refused, and ``--`` ends
+        # ssh's options before the host in any case.
+        for bad in ("-oProxyCommand=touch /tmp/x", "-F/tmp/cfg", "host a", "a\nb", ""):
+            with self.subTest(bad=bad):
+                self.assertFalse(slurm_site.valid_host(bad))
+        with self.assertRaises(slurm_site.InvalidHost):
+            slurm_site.argv_for("squeue", host="-oProxyCommand=touch /tmp/x")
+        argv = slurm_site.argv_for("squeue", host="user@host-a.example")
+        self.assertEqual(argv[argv.index("--") + 1], "user@host-a.example")
+
+    def test_a_scheduler_shaped_as_an_option_is_refused_by_the_tools(self) -> None:
+        bad = "-oProxyCommand=touch /tmp/x"
+        host, refusal = slurm_site.resolve_host(bad)
+        self.assertEqual(host, "")
+        self.assertIn("cannot start with", refusal)
+        self.assertEqual(server_hpc.slurm_schedulers(add=bad)["status"], "error")
+        self.assertEqual(hpc_cli.run_bash("squeue", 5, host=bad)["status"], "error")
+
     def test_an_interactive_allocation_is_refused_over_ssh(self) -> None:
         """``salloc`` over ssh is refused: with no terminal it would give the allocation straight
         back and report success.

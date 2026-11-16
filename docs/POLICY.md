@@ -1089,6 +1089,17 @@ previewable write cannot slip past it.
 - paths already approved `always` this session;
 - the scratchpad, which the system grants rather than the user.
 
+One kind of path **inside** the workspace is kept instead, for a call that writes: a path
+whose contents run later (`mimir/shared/protected_paths.py`). `.mimir` holds the plugins and
+servers MIMIR loads at its next start, `.git` the configuration and hooks git runs (its
+fsmonitor setting fires on a plain `git status`), `.vscode` what the editor applies, and
+the registry under `proxy_bench` the command `proxy_exec` runs. Writing there is running code,
+deferred, so it gets the same card, tagged `runs code later`, and asks in `auto` as leaving
+the workspace does. A file tool that writes, or a shell command that is not read-only,
+counts as writing; reading those files asks nothing. MIMIR's own git calls in a workspace
+repository (a sub-agent's commit, a proxy merge) pass `protected_paths.GIT_INERT`,
+so a `.git/config` that slipped through still runs no hook and no fsmonitor.
+
 Behaviour:
 
 - **One card per call, whatever it names.** Every out-of-workspace path of a call travels
@@ -1362,6 +1373,18 @@ connectors, so `cd /work && python3 …` and `python3 …` share one scope), `ho
 netloc), `basename`, `packages` (sorted set), `lang_target`. An argless or kindless spec is
 dropped, and a tool without one keeps the coarse `server:tool` scope. This lets the user
 grant "always for *this* command family" without re-approving every unrelated call.
+
+**A read-only shell command is waived in every mode, so read-only has to be proved.**
+`bash_command_is_readonly` places a command by its head, and a reading head stays
+read-only only with arguments that keep it so (`bash_classify._readonly_arguments`): a
+`sed` whose every script only prints, parsed command by command as GNU sed reads it (no
+`e`, `w`, `W`, `r`, `R`, `v`, no `s///e` or `s///w`, no `-f`); a `git` reading subcommand
+without `-c`, `--config-env`, `--exec-path`, `--git-dir`, `--work-tree`, `--output`, `-O`,
+`--ext-diff` or `--textconv`, and `branch`/`tag`/`remote`/`reflog` only when they list; a
+`find` without `-delete`; a `sort` without `--compress-program`; no `--output=` on any
+head; an `env` wrapper setting nothing but locale and display variables; an `xargs`
+running only a head whose options cannot run a program. Each of these ran a command or
+wrote outside the workspace unasked while it read as discovery.
 
 The registry also carries two per-tool declarations the loop reads instead of holding
 name-keyed tables: `timeout_secs` (the tool's own per-call wall, clamped globally) and

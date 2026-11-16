@@ -17,6 +17,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .....shared.protected_paths import boundary_tag
 from ....protocol import human_pause
 from ....tools.capabilities import (
     IRREVERSIBLE,
@@ -414,6 +415,8 @@ class HumanBridge:
             # Same family (and so the same icon) as the row for this call.
             "kind": kind_for(tool_name, agent.tool_caps),
             "oow_paths": list(paths),
+            # Why they hold the call: outside the workspace, or where code runs later.
+            "path_tag": boundary_tag(agent.workspace_root or os.getcwd(), paths),
             # Kept alongside the list so a client built against the single-path payload
             # still renders a path rather than nothing.
             "oow_path": paths[0],

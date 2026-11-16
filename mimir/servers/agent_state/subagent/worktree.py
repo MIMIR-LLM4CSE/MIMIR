@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from ....shared.atomic import write_json
+from ....shared.protected_paths import GIT_INERT
 from ....shared.jobs import SLURM_JOB_ID, recorded_terminal_state
 from ....shared.state_paths import ensure_private_dir, scratch_home, site_scratch
 
@@ -51,7 +52,7 @@ def git(args: list[str], cwd: str) -> tuple[bool, str]:
     """Run one git command. Returns (ok, output) and never raises."""
     try:
         done = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True,
+            ["git", *GIT_INERT, *args], cwd=cwd, capture_output=True, text=True,
             timeout=GIT_TIMEOUT_SECS,
         )
     except Exception as exc:

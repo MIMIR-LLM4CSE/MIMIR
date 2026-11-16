@@ -42,6 +42,9 @@ export interface ApprovalMessage extends Attributed {
   oow_paths?: string[];
   /** First of `oow_paths`, kept for a card built by an older server. */
   oow_path?: string;
+  /** Why `oow_paths` hold the call: "outside workspace", or "runs code later" for a
+   *  write under .mimir/, .git/, .vscode/ or the proxy registry. */
+  path_tag?: string;
 }
 
 export interface QuestionOption {

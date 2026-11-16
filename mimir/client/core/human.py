@@ -6,8 +6,11 @@ agent: a terminal, and nobody at all.
 """
 from __future__ import annotations
 
+import os
+
 from typing import Any
 
+from ...shared.protected_paths import PROTECTED_TAG, boundary_tag
 from ..protocol import human_pause
 from ..tools.capabilities import label_for
 from ..tools.display import shorten_display_args
@@ -40,9 +43,10 @@ class TerminalHuman:
         short_args = shorten_display_args(tool_name, arguments or {}, agent.tool_caps)
         what = label_for(tool_name, short_args, agent.tool_caps) or tool_name
         listed = "\n".join(f"  {p}" for p in paths)
+        why = ("writes where code runs later" if boundary_tag(agent.workspace_root or os.getcwd(), paths)
+               == PROTECTED_TAG else "needs access outside the workspace")
         try:
-            print(f"\n⚠ {what}\n  needs access outside the workspace:\n{listed}",
-                  flush=True)
+            print(f"\n⚠ {what}\n  {why}:\n{listed}", flush=True)
             # Waiting on the user, not on the tool (see human_pause).
             with human_pause.human_pause():
                 reply = input("  Allow once [y] / always [a] / deny [N]? ").strip().lower()

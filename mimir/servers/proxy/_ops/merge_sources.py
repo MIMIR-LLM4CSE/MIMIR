@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 
+from ....shared.protected_paths import GIT_INERT
 from .._lib import history, tree_snapshot
 from .._lib.ratchet import baseline_value, load_best, read_ledger, relative
 from .._lib.store import load_opt_config, opt_git_dir, opt_sessions, workspace_root
@@ -188,7 +189,7 @@ def git(*args: str, index: str = "", stdin: str | None = None) -> subprocess.Com
     """git in the workspace's own repository (where the merge runs), *index* as its index
     when given, never a shell."""
     env = {**os.environ, **({"GIT_INDEX_FILE": index} if index else {})}
-    return subprocess.run(["git", "-c", "user.name=MIMIR merge", "-c", "user.email=merge@mimir.invalid",
+    return subprocess.run(["git", *GIT_INERT, "-c", "user.name=MIMIR merge", "-c", "user.email=merge@mimir.invalid",
                            "-c", "commit.gpgsign=false", *args],
                           cwd=workspace_root(), env=env, input=stdin, capture_output=True,
                           text=True, timeout=_GIT_TIMEOUT_S)

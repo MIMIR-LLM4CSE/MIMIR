@@ -280,6 +280,7 @@ class PostToolPluginTests(ExtensionRegistryResetMixin):
         self.assertEqual(ec.edits.dirty_written_files, {"solver.py"})
 
 
+@mock.patch.dict(os.environ, {"MIMIR_WORKSPACE_TRUSTED": "1"})
 class LoaderTests(ExtensionRegistryResetMixin):
     def test_directory_scan_imports_pack(self) -> None:
         pack = (

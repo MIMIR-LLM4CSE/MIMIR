@@ -70,6 +70,22 @@ bodies are not. A user skill whose name matches a bundled one **overrides** it. 
 
 ---
 
+## Workspace code is accepted first
+
+`.mimir/plugins/*.py` is imported into MIMIR itself and `.mimir/servers/*` is started with
+your rights, so a cloned repository that ships them would run its code the moment MIMIR
+starts there. Before loading them, `mimir/client/extensions/trust.py` asks:
+
+- **In VS Code**, the folder's trust answers: the extension only runs in a trusted folder
+  and starts the server with `MIMIR_WORKSPACE_TRUSTED=1`.
+- **At a terminal**, the files not yet accepted are listed and one `y` loads them all. Their
+  SHA-256 is kept in `<global state>/trusted_extensions.json` (mode `0600`), so they load
+  unasked afterwards, until one of them changes.
+- **Nobody at the terminal** (stdin not a tty) loads only what was accepted before.
+
+A write by the model to `.mimir/` asks too, in every mode (POLICY, *Out-of-workspace access
+approval*).
+
 ## MCP servers
 
 A custom server is any stdio MCP server; MIMIR auto-connects it at startup. The tool

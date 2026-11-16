@@ -10,6 +10,7 @@ import subprocess
 from ...shared.responses import err, ok
 from ...shared.slurm_site import (
     LOCAL as _LOCAL_HOST,
+    InvalidHost,
     hosts as slurm_hosts,
     name_of as _host_name,
     resolve_host as _resolve_host,
@@ -82,12 +83,20 @@ def run_bash(script: str, timeout: int, stdin: str | None = None, *,
               host: str = _LOCAL_HOST) -> dict:
     """Run *script* on *host*'s scheduler through a login shell; ``sbatch`` gets its
     script through *stdin*."""
-    return _answer(slurm_argv(script, host=host, piped=stdin is not None), timeout, stdin)
+    try:
+        argv = slurm_argv(script, host=host, piped=stdin is not None)
+    except InvalidHost as e:
+        return err(str(e))
+    return _answer(argv, timeout, stdin)
 
 
 def run_argv(argv: list[str], timeout: int, *, host: str = _LOCAL_HOST) -> dict:
     """Run *argv* on *host* without a shell (over ``ssh``, each element quoted)."""
-    return _answer(slurm_exec_argv(argv, host=host), timeout)
+    try:
+        full = slurm_exec_argv(argv, host=host)
+    except InvalidHost as e:
+        return err(str(e))
+    return _answer(full, timeout)
 
 
 def capture(script: str, timeout: int, *, host: str = _LOCAL_HOST) -> str | None:
@@ -95,7 +104,7 @@ def capture(script: str, timeout: int, *, host: str = _LOCAL_HOST) -> str | None
     which no answer's size limit may cut."""
     try:
         res = _exec(slurm_argv(script, host=host), timeout)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, InvalidHost):
         return None
     return res.stdout if res.returncode == 0 else None
 

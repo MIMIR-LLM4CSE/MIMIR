@@ -648,3 +648,80 @@ class UnattendedModeTests(_TmpStateDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeWriteAgent(_FakeAgent):
+    """A file tool that writes, in a workspace at a temporary root."""
+
+    def __init__(self, mgr, *, root, script) -> None:
+        super().__init__(mgr, cap=EDIT, script=script)
+        self.workspace_root = root
+        self.tool_caps = {"write_file": ToolCaps(name="write_file",
+                                                  capabilities=frozenset({EDIT}))}
+
+    def is_write_tool(self, tool_name):
+        return True
+
+
+class ProtectedWorkspacePathTests(_TmpStateDir):
+    """A write where code runs later is asked about, in manual and in auto mode.
+
+    ``.mimir/plugins`` runs at the next start, ``.git/config`` on the next ``git
+    status``: writing there is running code, deferred.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._root = tempfile.mkdtemp(dir=self._tmp.name)
+
+    def _writer(self, script=(False, False), mode="manual"):
+        mgr = approval_mod.ApprovalManager(sensitive_tools=set())
+        mgr.approval_mode = mode
+        return _FakeWriteAgent(mgr, root=self._root, script=script)
+
+    def _shell(self, script=(False, False)):
+        agent = _FakeExecAgent(approval_mod.ApprovalManager(sensitive_tools=set()),
+                               script=script)
+        agent.workspace_root = self._root
+        return agent
+
+    def test_writing_a_plugin_or_git_config_is_asked_even_in_auto(self) -> None:
+        for mode in ("manual", "auto"):
+            for rel in (".mimir/plugins/x.py", ".git/config", ".vscode/tasks.json",
+                        "proxy_bench/registry.json", "sub/.git/hooks/pre-commit"):
+                with self.subTest(mode=mode, rel=rel):
+                    agent = self._writer(mode=mode)
+                    out = gates.check_out_of_workspace_access(
+                        agent, "write_file", {"path": os.path.join(self._root, rel)}, {})
+                    self.assertIsNotNone(out)
+                    self.assertIn("code runs later", out)
+                    self.assertEqual(agent.prompt_calls, 1)
+
+    def test_an_ordinary_write_and_a_read_are_not(self) -> None:
+        agent = self._writer()
+        self.assertIsNone(gates.check_out_of_workspace_access(
+            agent, "write_file", {"path": os.path.join(self._root, "src/a.py")}, {}))
+        reader = _FakeAgent(approval_mod.ApprovalManager(sensitive_tools=set()),
+                            cap=READ, script=(False, False))
+        reader.workspace_root = self._root
+        self.assertIsNone(gates.check_out_of_workspace_access(
+            reader, "read_file_lines", {"path": os.path.join(self._root, ".git/config")}, {}))
+        self.assertEqual(agent.prompt_calls + reader.prompt_calls, 0)
+
+    def test_a_shell_write_is_asked_and_a_shell_read_is_not(self) -> None:
+        agent = self._shell()
+        out = gates.check_out_of_workspace_access(
+            agent, "run_shell", {"command": "echo x > .git/config"}, {})
+        self.assertIsNotNone(out)
+        quiet = self._shell()
+        self.assertIsNone(gates.check_out_of_workspace_access(
+            quiet, "run_shell", {"command": "cat .git/config"}, {}))
+        self.assertEqual(quiet.prompt_calls, 0)
+
+    def test_the_card_says_why(self) -> None:
+        from mimir.shared.protected_paths import PROTECTED_TAG, OUTSIDE_TAG, boundary_tag
+        root = os.path.realpath(self._root)
+        self.assertEqual(boundary_tag(root, [os.path.join(root, ".mimir/x")]), PROTECTED_TAG)
+        self.assertEqual(boundary_tag(root, ["/etc/passwd"]), OUTSIDE_TAG)
+        self.assertEqual(boundary_tag(root, [os.path.join(root, ".git/x"), "/etc/x"]),
+                         OUTSIDE_TAG)
