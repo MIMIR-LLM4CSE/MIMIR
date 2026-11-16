@@ -599,7 +599,8 @@ class SessionTests(_TmpStorageTest):
         self.assertEqual(prof["tool"], "cprofile")
         self.assertIn("tracked.py", prof["files"])
         self.assertNotIn("bench/h.py", prof["files"])
-        self.assertGreater(prof["harness"], 0.1)
+        # Twice tracked's work; a fixed share would depend on how long NumPy takes to import.
+        self.assertGreater(prof["harness"], prof["files"]["tracked.py"])
 
 
 if __name__ == "__main__":
