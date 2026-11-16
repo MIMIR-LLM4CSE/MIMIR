@@ -742,3 +742,17 @@ class ServerRegistryTests(_TmpStateDir):
             shell, "run_shell", {"command": f"cat {registry}"}))
         self.assertIsNone(gates.check_secret_paths(
             reader, "read_file_lines", {"path": os.path.join(paths.STATE_DIR, "x.json")}))
+
+
+class LinkThenUseTests(_TmpStateDir):
+    """Paths are checked before a command runs: a link it makes can then lead anywhere."""
+
+    def test_a_link_followed_by_more_is_flagged(self) -> None:
+        agent = _FakeExecAgent(approval_mod.ApprovalManager(sensitive_tools=set()),
+                               script=(True, False))
+        self.assertTrue(gates.links_then_continues(
+            agent, "run_shell", {"command": "ln -s ../../.. r && cat r/etc/x"}))
+        self.assertFalse(gates.links_then_continues(
+            agent, "run_shell", {"command": "ln -s build/out latest"}))
+        self.assertFalse(gates.links_then_continues(
+            agent, "run_shell", {"command": "make && ./a.out"}))

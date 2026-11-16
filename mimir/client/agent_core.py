@@ -13,6 +13,7 @@ from pydantic import AnyUrl
 from ..shared.state_paths import (
     TODO_FILENAME,
     ensure_scratch_home,
+    make_state_private,
     scratch_home,
     session_state_dir,
 )
@@ -25,6 +26,7 @@ from .config import (
         SERVERS,
         SKILL_BASE,
         STATE_DIR,
+        STATE_HOME,
         THINKING_DEPTH_BUDGETS,
         WORKSPACE_ROOT,
 )
@@ -119,6 +121,10 @@ class MimirAgent:
         # `os.environ`, so everything session-scoped reads it from here; servers get it at spawn
         # (integration/server_manager). None for the CLI, the runner and tests.
         self.session_id: str | None = session_id
+        # The state this agent writes is private before anything is written to it.
+        for refused in make_state_private(STATE_HOME, STATE_DIR, GLOBAL_STATE_DIR):
+            logger.warning("state directory %s could not be made private (not ours, or "
+                           "the home directory itself): other users may read it", refused)
         # Neither the model nor the session goes to os.environ: they travel per server. The
         # scratchpad home is resolved and vetted once, here, then published for every process; a
         # refused /tmp falls back to the private state dir.

@@ -1,3 +1,4 @@
+import * as crypto from "crypto";
 import * as vscode from "vscode";
 
 /** The chat webview's page: the React bundle, under a nonce-locked CSP. */
@@ -49,11 +50,5 @@ export function getWebviewHtml(
 
 /** A random token for a page's script-src nonce. */
 export function getNonce(): string {
-  let text = "";
-  const possible =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+  return crypto.randomBytes(24).toString("base64url");
 }

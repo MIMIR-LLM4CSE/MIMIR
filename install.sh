@@ -104,7 +104,10 @@ fi
 # smoke test, so an interrupted check does not leave the extension on the system
 # Python.
 launcher="$state_home/bin/python"
-if mkdir -p "$state_home/python.d" "$state_home/bin" 2>/dev/null; then
+# Private: conversations, plans and job records are written beneath it, and on a login
+# node anyone could read a directory made with the default umask.
+if (umask 077 && mkdir -p "$state_home/python.d" "$state_home/bin") 2>/dev/null \
+    && chmod 700 "$state_home" 2>/dev/null; then
   printf '%s\n' "$venv/bin/python" > "$state_home/python.d/$platform"
   cat > "$launcher" <<EOF
 #!/bin/sh

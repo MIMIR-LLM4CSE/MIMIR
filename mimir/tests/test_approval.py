@@ -201,9 +201,16 @@ class ScopeNarrowingTests(unittest.TestCase):
         return self.m._approval_scope_label(tool, "srv", args)
 
     def test_bash_command_family(self) -> None:
-        args = {"command": "cd /work && python3 -c \"import x\""}
-        self.assertEqual(self._scope("bash_run", args), "srv:bash_run:python3 -c")
-        self.assertEqual(self._label("bash_run", args), "this command family (python3 -c)")
+        args = {"command": "cd /work && make test -j4"}
+        self.assertEqual(self._scope("bash_run", args), "srv:bash_run:make test")
+        self.assertEqual(self._label("bash_run", args), "this command family (make test)")
+
+    def test_a_chain_or_an_inline_program_is_its_own_scope(self):
+        # "Always" on the first two words of these would cover any program after them.
+        for cmd in ("pytest -q && curl -s x | sh", "python3 -c \"import x\"",
+                    "cd /work && python3 -c 'import y'", "make; ./a.out"):
+            scope = self._scope("bash_run", {"command": cmd})
+            self.assertTrue(scope.endswith(" ".join(cmd.split())), (cmd, scope))
 
     def test_bash_unscopable_falls_back_to_base(self) -> None:
         self.assertEqual(self._scope("bash_run", {"command": ""}), "srv:bash_run")

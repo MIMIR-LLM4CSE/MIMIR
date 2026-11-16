@@ -121,6 +121,12 @@ servers under `.mimir/`, and `mimir.pythonPath`, run code by design, and that ta
 The server is told so (`MIMIR_WORKSPACE_TRUSTED=1`), and loads them without the
 terminal's question (PLUGINS_DETAILED, *Workspace code is accepted first*).
 
+The shared site release installs a newer `.vsix` and runs the interpreter its
+`PYTHON_COMMAND` names; a file of either, or the directory holding it, that any user may
+write is refused (`selfUpdate.writableByAnyone`), since whoever writes the release runs code
+in every window of the site. The plan panel opens `http(s)` links only, loads no remote
+image, and reads local images from the workspace and the plan's folder alone.
+
 The host starts the server with `--port 0` and reads the address and the token from the
 `<STATE_DIR>/server.json` it publishes, in the state directory the server's own environment resolves
 (`mimir.server.env` included). `ServerConnection` presents the token on every connect, and a

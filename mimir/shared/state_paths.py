@@ -177,9 +177,14 @@ def standing_roots(base: str | None = None) -> list[str]:
 def ensure_private_dir(path: str) -> bool:
     """Create *path* ``0700``, or vet the one there: ours, a real directory, private.
 
-    For a directory under a root others can write (``/tmp``, a project's scratch): one
-    made first at our name by someone else would hand them what we put in it.
+    Under a root others can write (``/tmp``), one made first at our name by someone else
+    would hand them what we put in it. The home directory and its ancestors are refused:
+    a private root is one an agent may write in whole.
     """
+    real = os.path.realpath(path)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if real == home or home.startswith(real.rstrip(os.sep) + os.sep):
+        return False
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -201,6 +206,16 @@ def ensure_private_dir(path: str) -> bool:
         except OSError:
             return False
     return True
+
+
+def make_state_private(*dirs: str) -> list[str]:
+    """Make each state directory ``0700``; the ones that could not be, for a warning.
+
+    Transcripts, journals, plans and job records are written with the default umask
+    beneath them, which on a login node lets every user read them: closing the
+    directories closes all of it at once.
+    """
+    return [d for d in dirs if d and not ensure_private_dir(d)]
 
 
 def ensure_scratch_home() -> str:

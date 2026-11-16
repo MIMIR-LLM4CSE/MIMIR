@@ -360,7 +360,7 @@ most of the others from its settings ([6d](#6d-optional-settings)).
 | `RAY_API_KEY` | `EMPTY` | API key for the Ray Serve router |
 | `MIMIR_RAY_MAX_MODEL_LEN` | *(unset)* | Context window to use when the Ray router does not report `max_model_len` |
 | `ANTHROPIC_API_KEY` | *(none)* | Key for the `anthropic` backend |
-| `MIMIR_WS_TOKEN` | *(generated)* | The token a client must present to the WebSocket server. Set it for a server another machine reaches, with the same value in `mimir.wsToken`; otherwise each server generates its own and writes it to `<STATE_DIR>/server.json` (mode `0600`) |
+| `MIMIR_WS_TOKEN` | *(generated)* | The token a client must present to the WebSocket server. Set it for a server another machine reaches, with the same value in `mimir.wsToken`; at least 32 characters (`python -c 'import secrets; print(secrets.token_urlsafe(32))'`), or the server does not start; otherwise each server generates its own and writes it to `<STATE_DIR>/server.json` (mode `0600`) |
 | `MIMIR_PYTHON` | *(none)* | Interpreter the VS Code extension starts the WS server with, when `~/.mimir/python` is absent or wrong |
 | `MIMIR_MAX_LIVE_SESSIONS` | `3` | How many conversations may hold an agent at once. The constraint is processes — each agent spawns some nineteen MCP servers — so lower it on a shared login node. Past the cap a turn waits for a slot and is told its place in line; conversations you only open or read cost nothing |
 | `MIMIR_SESSION_IDLE_TTL` | `600` | Seconds a conversation's agent may sit unused before it is released, servers included (minimum 30). Never one that is busy, parked on a question, watching a background job, or on screen |
@@ -528,6 +528,14 @@ by section; each setting the server reads names the variable of
 when it starts it, so a running server keeps the old values until it is stopped
 (*MIMIR: Stop Detached Server*). A setting left at its default sets nothing: a
 variable exported in your shell then still applies.
+
+The settings that say where to connect, which release to install from and which
+directories the agent may use without asking (`mimir.wsUrl`, `mimir.releaseHome`,
+`mimir.workspace.scratchDir`, `mimir.subagents.copiesDir`, `mimir.customization.pluginsDir`,
+`serversDir` and `skillsDir`) are read from your user settings only, not from a workspace's
+`.vscode/settings.json`: a repository could otherwise send your conversation elsewhere,
+install an extension, or open your home to the agent. The state directory
+(`~/.mimir` by default) is made `0700` when MIMIR starts.
 
 | Section | Setting | Variable |
 |---|---|---|

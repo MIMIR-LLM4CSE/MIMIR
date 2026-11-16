@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compareVersions, loadSiteConfig, resolveReleaseRoot } from "./release";
+import { compareVersions, loadSiteConfig, releaseWriters, resolveReleaseRoot } from "./release";
 
 describe("compareVersions", () => {
   it("orders identical versions as equal", () => {
@@ -83,5 +83,14 @@ describe("resolveReleaseRoot", () => {
 
   it("trims whitespace and trailing slashes before the existence probe", () => {
     expect(resolveReleaseRoot("  /shared/mimir/  ", undefined)).toBe("/shared/mimir");
+  });
+});
+
+describe("releaseWriters", () => {
+  it("names who besides the owner may rewrite a release file", () => {
+    expect(releaseWriters(0o100644)).toBe("owner");
+    expect(releaseWriters(0o100664)).toBe("group");
+    expect(releaseWriters(0o100666)).toBe("anyone");
+    expect(releaseWriters(0o041777)).toBe("anyone");
   });
 });

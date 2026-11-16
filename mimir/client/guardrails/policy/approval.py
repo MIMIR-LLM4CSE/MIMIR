@@ -7,6 +7,7 @@ import shlex
 from typing import Callable
 from urllib.parse import urlparse
 
+from ....shared.shell_paths import ShellParseError, parse_segments
 from ...protocol import human_pause
 from ...config.settings import APPROVAL_MODES
 from ...tools.capabilities import (
@@ -47,12 +48,40 @@ def _first(arguments: dict, names: tuple[str, ...] | list[str]) -> str:
 # "always" approval. They are keyed by a generic `kind` string a tool declares
 # (the scope `kind`), never by tool identity — a new tool reuses a kind.
 
+# Interpreters whose `-c`/`-e` takes a whole program: the first two words say nothing of it.
+_INLINE_PROGRAM = frozenset({"python", "python3", "python2", "perl", "ruby", "node",
+                             "sh", "bash", "zsh"})
+
+
+def _exact_command(command: str) -> str:
+    """*command* itself, as its own scope, when its first two words would not say what it
+    runs: several commands chained, or an inline program. Else ""."""
+    try:
+        segments = [seg.argv for seg in parse_segments(command)]
+    except ShellParseError:
+        return " ".join(command.split())
+    while segments and segments[0] and segments[0][0] == "cd":
+        segments = segments[1:]
+    if len(segments) > 1:
+        return " ".join(command.split())
+    argv = segments[0] if segments else []
+    if argv and os.path.basename(argv[0]) in _INLINE_PROGRAM and any(
+            a in ("-c", "-e") for a in argv[1:3]):
+        return " ".join(command.split())
+    return ""
+
+
 def _scope_command_prefix(arguments: dict, args: tuple[str, ...]) -> str:
     """First two argv tokens of a shell command, skipping leading `cd`/connectors.
 
-    So `cd /work && python3 -c ...` and `python3 -c ...` share one scope.
+    So `cd /work && make test` and `make test` share one scope. A chain or an inline
+    program (`python3 -c …`) is its own scope: "always" on `pytest -q && curl … | sh`
+    must not cover every command that starts with `pytest -q`.
     """
     command = _first(arguments, args or ("command",))
+    exact = _exact_command(command) if command else ""
+    if exact:
+        return exact
     first_line = command.splitlines()[0] if command else ""
     first_segment = first_line.split("|", 1)[0].strip()
     try:

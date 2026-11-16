@@ -65,3 +65,17 @@ export function compareVersions(a: string, b: string): number {
   }
   return 0;
 }
+
+/** How far a release file may be trusted, from its mode: what a write to it would hand over. */
+export type ReleaseWriters = "owner" | "group" | "anyone";
+
+/**
+ * Who besides its owner can rewrite a file of the release, from its *mode*. The release
+ * tree runs in every window of every user of the site, so whoever can write it runs code
+ * as all of them: a site's own account may (that is the deployment), anyone may not.
+ */
+export function releaseWriters(mode: number): ReleaseWriters {
+  if (mode & 0o002) return "anyone";
+  if (mode & 0o020) return "group";
+  return "owner";
+}

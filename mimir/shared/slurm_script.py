@@ -58,9 +58,16 @@ def sbatch_header(
 ) -> list[str]:
     """The ``#!/bin/bash`` and ``#SBATCH`` lines of a job script; empty options are omitted.
 
-    The log goes to *work_dir*, the one directory known to be mounted on the node.
-    ``kill_on_invalid_dep`` keeps a job behind an impossible dependency from pending for ever.
+    The log goes to *work_dir*, the one directory mounted on the node for sure.
+    ``kill_on_invalid_dep`` keeps a job behind an impossible dependency from pending for
+    ever. A line break in a value (it would start the script's commands) raises ValueError.
     """
+    for name, value in (("job_name", job_name), ("partition", partition),
+                        ("wall_time", wall_time), ("mem", mem), ("account", account),
+                        ("dependency", dependency), ("comment", comment),
+                        ("work_dir", work_dir), ("log_file", log_file)):
+        if isinstance(value, str) and ("\n" in value or "\r" in value):
+            raise ValueError(f"{name} cannot hold a line break.")
     lines = [
         "#!/bin/bash",
         f"#SBATCH --job-name={job_name}",

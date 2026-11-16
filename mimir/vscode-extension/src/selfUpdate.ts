@@ -5,7 +5,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { loadSiteConfig, compareVersions, resolveReleaseRoot } from "./release";
+import { loadSiteConfig, compareVersions, releaseWriters, resolveReleaseRoot } from "./release";
 import { showToast } from "./notifications";
 
 /**
@@ -23,13 +23,39 @@ export function releaseRoot(extensionRoot: string): string {
   return root && fs.existsSync(path.join(root, "current")) ? root : "";
 }
 
-/** Interpreter recorded for the current shared release, or "" when there is none. */
+/**
+ * The first of *files* (and the directories holding them) that anyone may rewrite, or
+ * "". Each is followed to what it names, since `current` is a symlink.
+ */
+export function writableByAnyone(files: string[]): string {
+  for (const file of files) {
+    for (const p of [file, path.dirname(file)]) {
+      try {
+        const real = fs.realpathSync(p);
+        if (releaseWriters(fs.statSync(real).mode) === "anyone") return real;
+      } catch {
+        // Missing: the caller's own existence check answers for it.
+      }
+    }
+  }
+  return "";
+}
+
+/** Interpreter recorded for the current shared release, or "" when there is none or
+ *  when anyone could have rewritten it. */
 export function sharedReleasePython(extensionRoot: string): string {
   const root = releaseRoot(extensionRoot);
   if (!root) return "";
   try {
-    const p = fs.readFileSync(path.join(root, "current", "PYTHON_COMMAND"), "utf8").trim();
-    return p && fs.existsSync(p) ? p : "";
+    const record = path.join(root, "current", "PYTHON_COMMAND");
+    const p = fs.readFileSync(record, "utf8").trim();
+    if (!p || !fs.existsSync(p)) return "";
+    const open = writableByAnyone([record, p]);
+    if (open) {
+      console.warn(`MIMIR: ignoring the release interpreter: ${open} is writable by anyone`);
+      return "";
+    }
+    return p;
   } catch {
     return "";
   }
@@ -53,6 +79,15 @@ export function maybeSelfUpdate(context: vscode.ExtensionContext): void {
   const installed = String(context.extension.packageJSON.version ?? "0.0.0");
   if (!marker || compareVersions(marker, installed) <= 0) return;
   const vsix = path.join(root, "current", "vsix", `mimir-${marker}.vsix`);
+  const open = fs.existsSync(vsix) ? writableByAnyone([vsix]) : "";
+  if (open) {
+    void showToast(
+      "error",
+      `MIMIR ${marker} was not installed: ${open} is writable by any user of this machine, ` +
+      "so anyone could have changed what it installs. Ask whoever runs the site release to fix its permissions."
+    );
+    return;
+  }
   if (!fs.existsSync(vsix)) {
     void showToast(
       "info",

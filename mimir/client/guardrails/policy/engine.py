@@ -12,6 +12,7 @@ from .gates import (
     check_cluster_submit,
     check_out_of_workspace_access,
     check_secret_paths,
+    links_then_continues,
     check_sealed_exec,
     check_skill_pull,
     out_of_workspace_targets,
@@ -198,9 +199,11 @@ def _approval_gate(call: _PolicyCall) -> PolicyEvaluation | None:
         # the same card in front of the user again. From `drop_or_stop` on, the ladder
         # has already ruled out another attempt at the same goal.
         approved, note = False, "already refused; not asked again"
-    elif approvals.auto_tools():
+    elif approvals.auto_tools() and not links_then_continues(agent, call.tool_name,
+                                                             call.arguments):
         # Auto mode: the user has taken the decision for the session. Deliberately
-        # *after* the settled check — a refusal already given stands.
+        # *after* the settled check — a refusal already given stands. A command that
+        # links and goes on is still asked: its paths were checked before the link.
         approved, note = True, "auto-approved (auto mode)"
     else:
         approved, note = agent.request_tool_approval(call.tool_name, call.arguments)

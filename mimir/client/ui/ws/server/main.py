@@ -53,6 +53,11 @@ def main() -> None:
         os.environ["LLM_BACKEND"] = args.backend
     if args.vllm_base_url:
         os.environ["VLLM_BASE_URL"] = args.vllm_base_url
+    if args.vllm_api_key or args.ray_api_key:
+        # Any user of the machine reads a command line in /proc/<pid>/cmdline.
+        print("warning: an API key on the command line is visible to every user of this "
+              "machine; set VLLM_API_KEY or RAY_API_KEY in the environment instead.",
+              file=sys.stderr)
     if args.vllm_api_key:
         os.environ["VLLM_API_KEY"] = args.vllm_api_key
     if args.ray_base_url:

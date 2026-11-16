@@ -50,12 +50,23 @@ _MAX_FRAME_BYTES = 32 * 1024 * 1024
 _LOCK_WAIT_SECS = 60.0
 
 
+# A token set by hand is the one a guess could find: it must be as long as a generated one
+# writes out (``token_urlsafe(32)`` is 43 characters).
+MIN_TOKEN_CHARS = 32
+
+
 def _server_token() -> str:
     """This server's token: ``MIMIR_WS_TOKEN``, else a fresh one.
 
-    Taken out of the environment, so nothing this process starts inherits it.
+    Taken out of the environment, so nothing this process starts inherits it. A given
+    token shorter than :data:`MIN_TOKEN_CHARS` stops the server rather than guard it.
     """
-    return os.environ.pop(TOKEN_ENV, "").strip() or secrets.token_urlsafe(32)
+    given = os.environ.pop(TOKEN_ENV, "").strip()
+    if given and len(given) < MIN_TOKEN_CHARS:
+        raise SystemExit(f"{TOKEN_ENV} must be at least {MIN_TOKEN_CHARS} characters; "
+                         "python -c 'import secrets; print(secrets.token_urlsafe(32))' "
+                         "makes one.")
+    return given or secrets.token_urlsafe(32)
 
 
 def _gate(token: str) -> Callable[[Any, Any], Any]:

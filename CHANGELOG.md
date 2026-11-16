@@ -16,6 +16,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- **MIMIR's state is private.** `~/.mimir` followed the umask, so on a login node other
+  users could read transcripts, plans and job records. The state directories are made
+  `0700` when MIMIR starts, and `install.sh` creates them so.
+- **A workspace can no longer redirect MIMIR.** `mimir.wsUrl` (sent the conversation and
+  your token anywhere), `mimir.releaseHome` (installed an extension for every window),
+  `mimir.workspace.scratchDir` (`"~"` made your home writable unasked),
+  `mimir.subagents.copiesDir` and the `mimir.customization` directories are read from user
+  settings only. **A value set in a workspace's `.vscode/settings.json` is now ignored:
+  move it to your user settings.** No state or scratch directory may be the home itself.
+- **A release anyone can write is not installed.** The update and the release interpreter
+  are refused when any user of the machine could have rewritten them.
+- **"Always" on a chain covers that chain.** It covered every command sharing its first
+  two words, so *always* on `pytest -q && curl … | sh` approved any `pytest -q …`, and on
+  one `python3 -c` every inline program. In `auto`, a command that makes a link and goes on
+  is asked.
+- Smaller fixes: a line break in an `#SBATCH` field is refused, `scancel` quotes its id,
+  `proxy_eval(op='diff')` reads only the session's runs, the plan panel opens web links
+  only and loads no remote image, nonces come from `crypto`, `MIMIR_WS_TOKEN` must be 32
+  characters or more, and an API key passed as `--vllm-api-key`/`--ray-api-key` (readable
+  in `/proc` by every user) prints a warning.
 - **`http_get` asks once per host.** It went out unasked to any URL that did not look like
   an API, so a query string could carry a secret away, in plan mode too. *Always* covers
   that host. The address checked is now the one connected to (a name that rebinds to

@@ -434,8 +434,9 @@ def runs_diff(run_a: str = "", run_b: str = "", proxy_name: str = "") -> dict:
     all_runs = run_dir_names(session_dir)
 
     def _resolve(rid: str, default_idx: int) -> str:
-        rid = rid or all_runs[default_idx]
-        return rid if os.path.isabs(rid) else os.path.join(session_dir, rid)
+        # A run of this session, by its id: a path naming anything else reads nothing,
+        # since this op asks for no approval to read what it opens.
+        return os.path.join(session_dir, os.path.basename(rid or all_runs[default_idx]))
 
     payload, error = diff_run_pair(all_runs, run_a, run_b, _resolve)
     if error:

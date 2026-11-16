@@ -653,13 +653,16 @@ def sbatch_submit(
                    hint="Pass work_dir as a directory you can write and the compute "
                         "nodes share — the run's own tree, or a scratch filesystem.")
 
-    header = sbatch_header(
-        job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
-        wall_time=wall_time, log_file=os.path.join(work_dir, LOG_NAME),
-        work_dir=work_dir, mem=mem, gpus=gpus, account=account,
-        nodes=nodes or None, ntasks=ntasks or None, constraint=constraint,
-        nodelist=nodelist, exclusive=exclusive, comment=comment,
-    )
+    try:
+        header = sbatch_header(
+            job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
+            wall_time=wall_time, log_file=os.path.join(work_dir, LOG_NAME),
+            work_dir=work_dir, mem=mem, gpus=gpus, account=account,
+            nodes=nodes or None, ntasks=ntasks or None, constraint=constraint,
+            nodelist=nodelist, exclusive=exclusive, comment=comment,
+        )
+    except ValueError as e:
+        return err(str(e))
     return jobs.submit_batch(host, work_dir, command, header,
                              partition=partition, comment=comment)
 

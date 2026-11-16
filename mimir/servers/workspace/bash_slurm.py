@@ -8,6 +8,7 @@ script's ``ssh`` is only known there). Filed like a submission: this session's t
 
 import json
 import os
+import shlex
 import re
 import time
 
@@ -262,6 +263,6 @@ def cancel(job_dir: str) -> list[str]:
     for job_id, job in _load(job_dir)["jobs"].items():
         if recorded_terminal_state(job["dir"]):
             continue
-        if slurm_site.read_lines(f"scancel {job_id}", host=job["host"]) is not None:
+        if slurm_site.read_lines(f"scancel {shlex.quote(str(job_id))}", host=job["host"]) is not None:
             cancelled.append(job_id)
     return cancelled

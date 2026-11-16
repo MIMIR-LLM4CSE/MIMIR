@@ -125,9 +125,16 @@ class ServerTokenTests(unittest.TestCase):
         self.assertNotEqual(first, second)
 
     def test_the_variable_sets_it_and_nothing_started_later_inherits_it(self):
-        with mock.patch.dict(os.environ, {serving.TOKEN_ENV: " chosen "}):
-            self.assertEqual(_server_token(), "chosen")
+        chosen = "c" * serving.MIN_TOKEN_CHARS
+        with mock.patch.dict(os.environ, {serving.TOKEN_ENV: f" {chosen} "}):
+            self.assertEqual(_server_token(), chosen)
             self.assertNotIn(serving.TOKEN_ENV, os.environ)
+
+    def test_a_short_chosen_token_stops_the_server(self):
+        # A token set by hand is the one a guess could find.
+        with mock.patch.dict(os.environ, {serving.TOKEN_ENV: "short"}):
+            with self.assertRaises(SystemExit):
+                _server_token()
 
     def test_only_a_loopback_address_stays_on_the_machine(self):
         self.assertTrue(_is_loopback("127.0.0.1"))

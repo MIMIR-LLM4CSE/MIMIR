@@ -120,6 +120,7 @@
             "order": 6
           },
           "mimir.wsUrl": {
+            "scope": "machine",
             "type": "string",
             "default": "",
             "description": "Leave empty: each VS Code window starts its own MIMIR server on a free port, so several windows run side by side. Set a URL only to attach to a server you started yourself (here or on another host) — the extension then starts none.",
@@ -276,6 +277,7 @@
             "order": 6
           },
           "mimir.subagents.copiesDir": {
+            "scope": "machine",
             "type": "string",
             "default": "",
             "markdownDescription": "Directory holding the copies of the repository that working sub-agents build and run in, one per sub-agent. Pick one the compute nodes see, so a sub-agent's Slurm jobs can read their copy. Empty uses `$SCRATCH`, else the local temp directory. Sets `MIMIR_SUBAGENT_COPIES_DIR` for the server.",
@@ -309,18 +311,21 @@
             "order": 1
           },
           "mimir.customization.skillsDir": {
+            "scope": "machine",
             "type": "string",
             "default": "",
             "markdownDescription": "Directory of your skills. Empty uses `.mimir/skills`. Sets `MIMIR_SKILLS_DIR` for the server.",
             "order": 2
           },
           "mimir.customization.pluginsDir": {
+            "scope": "machine",
             "type": "string",
             "default": "",
             "markdownDescription": "Directory of your plugins. Empty uses `.mimir/plugins`. Sets `MIMIR_PLUGINS_DIR` for the server.",
             "order": 3
           },
           "mimir.customization.serversDir": {
+            "scope": "machine",
             "type": "string",
             "default": "",
             "markdownDescription": "Directory of your MCP servers. Empty uses `.mimir/servers`. Sets `MIMIR_SERVERS_DIR` for the server.",
@@ -336,6 +341,7 @@
             "order": 5
           },
           "mimir.workspace.scratchDir": {
+            "scope": "machine",
             "type": "string",
             "default": "",
             "markdownDescription": "The agent's scratchpad, where it writes throwaway scripts and test files without asking. Empty uses `$SCRATCH/mimir-<uid>-<workspace>`, else the same under the local temp directory. On a cluster, pick a directory the compute nodes see, so a job can run what the agent wrote there. Give it a directory of its own, such as `$SCRATCH/mimir-scratch`: everything under it is writable without approval. Sets `MIMIR_SCRATCH_DIR` for the server.",
@@ -376,6 +382,7 @@
             "order": 1
           },
           "mimir.releaseHome": {
+            "scope": "machine",
             "type": "string",
             "default": "",
             "description": "Shared site release root for enterprise deployments. When set, the extension takes its Python backend and its own updates from <releaseHome>/current. Leave empty to follow the path a deployment ships in the extension's own site.json. To disable the shared-release mode, point this at a path that has no current release.",

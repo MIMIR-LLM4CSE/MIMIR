@@ -8,8 +8,10 @@
  */
 import * as vscode from "vscode";
 import * as fs from "fs";
+import { workspaceRoot } from "./workspace";
 import * as path from "path";
 import { showToast } from "./notifications";
+import { getNonce } from "./webviewHtml";
 
 /** The plan panel, while it is open. */
 let planPanel: vscode.WebviewPanel | undefined;
@@ -55,9 +57,13 @@ function resolveFromPlan(ref: string, planAbs: string): string {
  */
 function rewriteImages(html: string, planAbs: string, webview: vscode.Webview): { html: string; dirs: string[] } {
   const dirs = new Set<string>();
+  // Images are read from the workspace and the plan's folder only: a plan written by the
+  // model must not open ~/.ssh to the panel by naming a file there.
+  const allowed = [path.dirname(planAbs), workspaceRoot()].filter(Boolean).map((d) => path.resolve(d));
   const out = html.replace(/(<img\b[^>]*?\bsrc=")([^"]*)(")/gi, (all, pre: string, src: string, post: string) => {
     if (!src || hasScheme(src)) return all;
     const abs = resolveFromPlan(src.replace(/&amp;/g, "&"), planAbs);
+    if (!allowed.some((root) => abs === root || abs.startsWith(root + path.sep))) return pre + post;
     dirs.add(path.dirname(abs));
     return pre + webview.asWebviewUri(vscode.Uri.file(abs)).toString() + post;
   });
@@ -68,7 +74,9 @@ function rewriteImages(html: string, planAbs: string, webview: vscode.Webview): 
 function openPlanLink(href: string): void {
   const planAbs = currentPlanPath;
   if (hasScheme(href) && !/^file:/i.test(href)) {
-    void vscode.env.openExternal(vscode.Uri.parse(href));
+    // A web page only: another scheme (vscode://, a URI handler of some extension) does
+    // whatever its handler does, from a link the model wrote.
+    if (/^https?:/i.test(href)) void vscode.env.openExternal(vscode.Uri.parse(href));
     return;
   }
   if (!planAbs) return;
@@ -140,11 +148,11 @@ async function renderPlan(): Promise<void> {
         .join("\n")
     : "";
   const csp = panel.webview.cspSource;
-  const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const nonce = getNonce();
   panel.title = `Plan — ${path.basename(abs, path.extname(abs))}`;
   panel.webview.html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; img-src ${csp} https: data:; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; img-src ${csp} data:; script-src 'nonce-${nonce}';">
 ${sheets}
 <style>body { padding: 0 26px; font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); font-size: var(--vscode-markdown-font-size, 14px); }</style>
 </head><body class="vscode-body">${images.html}

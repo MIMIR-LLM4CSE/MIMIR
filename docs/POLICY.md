@@ -1383,7 +1383,12 @@ generic and reused: `command_prefix` (the first two argv tokens, skipping `cd` a
 connectors, so `cd /work && python3 …` and `python3 …` share one scope), `host` (URL
 netloc), `basename`, `packages` (sorted set), `lang_target`, `value` (the argument itself,
 for a choice among a few: a memory's scope). An argless or kindless spec is
-dropped, and a tool without one keeps the coarse `server:tool` scope. This lets the user
+dropped, and a tool without one keeps the coarse `server:tool` scope. A shell command
+whose first two words do not say what it runs is its own scope: a chain (`pytest -q &&
+curl … | sh`) or an inline program (`python3 -c "…"`), so *always* on it covers that
+command alone. In `auto`, a command that makes a link and goes on (`ln -s … && cat …`)
+is still asked: its paths were checked before the link existed
+(`gates.links_then_continues`). This lets the user
 grant "always for *this* command family" without re-approving every unrelated call.
 
 **A read-only shell command is waived in every mode, so read-only has to be proved.**

@@ -189,6 +189,17 @@ def check_secret_paths(agent: PolicyAgent, tool_name: str, arguments: dict) -> s
     )
 
 
+def links_then_continues(agent: PolicyAgent, tool_name: str, arguments: dict) -> bool:
+    """Whether a shell command makes a link and goes on: its paths were checked before the
+    link existed, and one may now lead anywhere (``ln -s / r && cat r/etc/x``)."""
+    command = shell_command_of(tool_name, arguments, agent.tool_caps)
+    if not command:
+        return False
+    segments = shell_segments(command, allow_expansion=True) or []
+    heads = [os.path.basename(seg.argv[0]) if seg.argv else "" for seg in segments]
+    return any(h == "ln" for h in heads[:-1])
+
+
 def _call_writes(agent: PolicyAgent, tool_name: str, arguments: dict) -> bool:
     """Whether this call may write what it names: a file tool that writes, or a shell
     command that is not read-only."""
