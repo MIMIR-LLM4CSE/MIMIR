@@ -268,8 +268,7 @@ class RegistrationTests(_TmpStorageTest):
         nobody uses: build_cmd sat in the registry for the life of the server,
         documented as one word in a list, and was read as decoration.
         """
-        tool = getattr(server_proxy.proxy_manage, "fn", server_proxy.proxy_manage)
-        doc = tool.__doc__ or ""
+        doc = server_proxy.proxy_get(op="help", name="proxy_manage")["reference"]
         for key in registry._METADATA_DEFAULTS:
             self.assertIn(key, doc,
                           f"metadata key {key!r} is accepted but undocumented")

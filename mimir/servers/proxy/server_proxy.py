@@ -283,6 +283,92 @@ _MANAGE_OPS = ("register", "update", "unregister",
                "suite_define", "suite_update", "suite_delete", "scaffold", "clean")
 
 
+
+# The whole reference of proxy_manage, served by proxy_get(op='help'): the description
+# sent with every request keeps only the contract.
+_MANAGE_MANUAL = """\
+proxy_manage in full: every operation, the command template, the suite case schema and every metadata field.
+
+Manage proxy registrations and benchmark suite definitions (sensitive).
+
+Operations (set ``op``; all require confirm=True):
+  register     -> register a proxy executable (requires: name,
+                  executable_path, run_cmd_template)
+  update       -> patch registration fields; only provided fields change
+                  (requires: name)
+  unregister   -> remove a proxy from the registry; run history is kept
+                  (requires: name)
+  suite_define -> define a benchmark suite (requires: name, cases)
+  suite_update -> patch a suite definition (requires: name)
+  suite_delete -> delete a suite definition; results are kept (requires: name)
+  clean        -> delete a proxy's runs, optimisation state and snapshots
+                  (requires: name). Leaves sealed references and suites, and
+                  names what it left in the response. `unregister` removes the
+                  registry entry; `clean` removes the state behind it.
+                  The optimisation graph is kept: the session is frozen as
+                  the code map draws it before anything goes.
+  scaffold     -> generate a PYTHON reference + test harness for a source
+                  component (requires: proxy_path, component_hint). The
+                  generated harness is Python whatever the source language;
+                  for a compiled project, write the harness by hand — it
+                  only has to run the binary and print a metrics block.
+
+run_cmd_template placeholders: {executable}, {output_file}, {param_file},
+{extra_params}; other placeholders (e.g. {n}) come from param_overrides at
+run time.
+
+Suite case schema (each element of ``cases``): case_id (unique),
+proxy_name (registered), and optionally reference_name, description,
+scope ('full'|'component'), extra_params, param_sweeps (list of
+param_override dicts, one run point each; defaults to [{}]), metrics
+(extra scalar keys for the report).
+
+Parameters in detail:
+    name: Proxy name ([A-Za-z0-9_-]) or suite name, depending on op.
+    executable_path: Absolute path to the proxy executable or script.
+    run_cmd_template: Command template (see placeholders above).
+    output_format: 'npz' (register default), 'raw_float64', or 'none'.
+    param_file_template: Parameter-file content template; empty if CLI-only.
+    param_file_path: Fixed path for the rendered param file, or empty for per-run.
+    param_file_format: 'text' (register default), 'json', 'yaml',
+        'fortran_namelist', 'ini'.
+    description: Free-text description of the proxy or suite.
+    metadata: Optional fields for register/update: arch, backend,
+        parallelism, peak_gflops_per_s, peak_bandwidth_gbytes_per_s, tags,
+        version, source_url, notes, input_description, output_description,
+        usage_examples, conserved_metric — plus the build fields below.
+        build_cmd is NOT documentation: the server runs it once per
+        evaluation run, before any case, so the binary measured is the one
+        the current sources produce. It is argv, never a shell line
+        ('make -C <dir> <target>' is fine; a sequence, a module load or a
+        redirect belongs in a wrapper script named here). The target and
+        job count are fixed here — a run cannot override them — so changing
+        build_cmd changes the build for every later run: change it to fix
+        it, never to narrow one task's build. A proxy that declares a build
+        may be registered before its executable exists; the build is what
+        produces it.
+        build_cwd defaults to the workspace root and is used AS SPELLED,
+        symlinks unresolved, because CMake compares against the path it was
+        configured with. build_env pins variables for the build (e.g.
+        {'CCACHE_DIR': ..., 'CC': ...}) over the inherited environment,
+        which is the MCP server's and not the shell you build in by hand —
+        when the two disagree on the compiler or on ccache, each build
+        invalidates the other's artifacts. build_timeout_s defaults to 7200.
+        build_partition (with build_constraint, build_cpus_per_task,
+        build_mem, build_wall_time) says WHERE the build is submitted:
+        naming one splits proxy_cluster(op='eval') into a build job and a run
+        job chained behind it, so a compile does not run on a node
+        dedicated to simulation. It belongs here rather than on each call
+        because the ratchet submits the same run hundreds of times;
+        proxy_cluster can still override it per call.
+    cases: For suite_define/suite_update: list of case dicts (see schema above).
+    proxy_path: For 'scaffold': absolute path to the proxy source file.
+    component_hint: For 'scaffold': function/subroutine/class name to target.
+    harness_type: For 'scaffold': 'kernel' or 'subsystem'.
+    output_path: For 'scaffold': output directory (defaults to the scaffolds cache).
+    confirm: Must be True to apply any operation.
+"""
+
 @mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy manage: {op}"))
 def proxy_manage(
@@ -308,77 +394,41 @@ def proxy_manage(
 ) -> dict:
     """Manage proxy registrations and benchmark suite definitions (sensitive).
 
+    proxy_get(op='help', name='proxy_manage') details every operation, the suite case
+    schema and every metadata field, build_cmd and the build_* fields included.
+
     Operations (set ``op``; all require confirm=True):
-      register     -> register a proxy executable (requires: name,
-                      executable_path, run_cmd_template)
-      update       -> patch registration fields; only provided fields change
-                      (requires: name)
-      unregister   -> remove a proxy from the registry; run history is kept
-                      (requires: name)
+      register     -> register a proxy executable (requires: name, executable_path,
+                      run_cmd_template)
+      update       -> patch registration fields; only those given change (requires: name)
+      unregister   -> remove the registry entry; run history is kept (requires: name)
       suite_define -> define a benchmark suite (requires: name, cases)
       suite_update -> patch a suite definition (requires: name)
       suite_delete -> delete a suite definition; results are kept (requires: name)
-      clean        -> delete a proxy's runs, optimisation state and snapshots
-                      (requires: name). Leaves sealed references and suites, and
-                      names what it left in the response. `unregister` removes the
-                      registry entry; `clean` removes the state behind it.
-                      The optimisation graph is kept: the session is frozen as
-                      the code map draws it before anything goes.
-      scaffold     -> generate a PYTHON reference + test harness for a source
-                      component (requires: proxy_path, component_hint). The
-                      generated harness is Python whatever the source language;
-                      for a compiled project, write the harness by hand — it
-                      only has to run the binary and print a metrics block.
-
-    run_cmd_template placeholders: {executable}, {output_file}, {param_file},
-    {extra_params}; other placeholders (e.g. {n}) come from param_overrides at
-    run time.
-
-    Suite case schema (each element of ``cases``): case_id (unique),
-    proxy_name (registered), and optionally reference_name, description,
-    scope ('full'|'component'), extra_params, param_sweeps (list of
-    param_override dicts, one run point each; defaults to [{}]), metrics
-    (extra scalar keys for the report).
+      clean        -> delete a proxy's runs, optimisation state and snapshots, keeping
+                      sealed references and suites (requires: name)
+      scaffold     -> generate a PYTHON reference + test harness for a source component
+                      (requires: proxy_path, component_hint); for a compiled project,
+                      write the harness by hand: it runs the binary and prints metrics
 
     Args:
         name: Proxy name ([A-Za-z0-9_-]) or suite name, depending on op.
         executable_path: Absolute path to the proxy executable or script.
-        run_cmd_template: Command template (see placeholders above).
+        run_cmd_template: Command template; placeholders {executable}, {output_file},
+            {param_file}, {extra_params}, and others filled from param_overrides.
         output_format: 'npz' (register default), 'raw_float64', or 'none'.
         param_file_template: Parameter-file content template; empty if CLI-only.
         param_file_path: Fixed path for the rendered param file, or empty for per-run.
         param_file_format: 'text' (register default), 'json', 'yaml',
             'fortran_namelist', 'ini'.
         description: Free-text description of the proxy or suite.
-        metadata: Optional fields for register/update: arch, backend,
-            parallelism, peak_gflops_per_s, peak_bandwidth_gbytes_per_s, tags,
-            version, source_url, notes, input_description, output_description,
-            usage_examples, conserved_metric — plus the build fields below.
-            build_cmd is NOT documentation: the server runs it once per
-            evaluation run, before any case, so the binary measured is the one
-            the current sources produce. It is argv, never a shell line
-            ('make -C <dir> <target>' is fine; a sequence, a module load or a
-            redirect belongs in a wrapper script named here). The target and
-            job count are fixed here — a run cannot override them — so changing
-            build_cmd changes the build for every later run: change it to fix
-            it, never to narrow one task's build. A proxy that declares a build
-            may be registered before its executable exists; the build is what
-            produces it.
-            build_cwd defaults to the workspace root and is used AS SPELLED,
-            symlinks unresolved, because CMake compares against the path it was
-            configured with. build_env pins variables for the build (e.g.
-            {'CCACHE_DIR': ..., 'CC': ...}) over the inherited environment,
-            which is the MCP server's and not the shell you build in by hand —
-            when the two disagree on the compiler or on ccache, each build
-            invalidates the other's artifacts. build_timeout_s defaults to 7200.
-            build_partition (with build_constraint, build_cpus_per_task,
-            build_mem, build_wall_time) says WHERE the build is submitted:
-            naming one splits proxy_cluster(op='eval') into a build job and a run
-            job chained behind it, so a compile does not run on a node
-            dedicated to simulation. It belongs here rather than on each call
-            because the ratchet submits the same run hundreds of times;
-            proxy_cluster can still override it per call.
-        cases: For suite_define/suite_update: list of case dicts (see schema above).
+        metadata: For register/update: arch, backend, parallelism, peak_gflops_per_s,
+            peak_bandwidth_gbytes_per_s, tags, version, source_url, notes,
+            input_description, output_description, usage_examples, conserved_metric,
+            and the build: build_cmd (argv the server RUNS before every evaluation
+            run), build_cwd, build_env, build_timeout_s, build_partition,
+            build_constraint, build_cpus_per_task, build_mem, build_wall_time.
+        cases: For suite_define/suite_update: [{case_id, proxy_name, ...}] (see the help).
         proxy_path: For 'scaffold': absolute path to the proxy source file.
         component_hint: For 'scaffold': function/subroutine/class name to target.
         harness_type: For 'scaffold': 'kernel' or 'subsystem'.
@@ -728,8 +778,6 @@ Parameters in detail:
     confirm: Must be True to apply any operation.
 """
 
-_MANUALS: dict[str, str] = {"proxy_eval": _EVAL_MANUAL}
-
 # op='run' waits for the run it launched, so the default 120 s tool wall would cut it
 # off mid-measurement. Sits above eval_session's own wait budget, which detaches the
 # run before this is ever reached — this is the outer guard, not the normal path.
@@ -895,6 +943,97 @@ def _build_op_owners() -> dict[str, list[str]]:
 _OP_OWNERS: dict[str, list[str]] = _build_op_owners()
 
 
+
+# The whole reference of proxy_cluster, served by proxy_get(op='help'): the description
+# sent with every request keeps only the contract.
+_CLUSTER_MANUAL = """\
+proxy_cluster in full: what a submission does, every operation and every parameter.
+
+Submit proxy work as batch jobs (sensitive, non-blocking, expensive): Slurm's
+sbatch, or bsub when the scheduler is LSF. The arguments are Slurm's, translated for
+LSF: ``partition`` is the queue, ``constraint`` a ``select[]``, ``account`` a project.
+
+Validate the workload locally with proxy_exec first — a failed batch job
+still consumes allocation hours.
+
+Everything in the job runs on the compute node: the build an optimisation session
+declares, the cases, the timing. That makes this the route when the code is to be
+optimised FOR the compute nodes — measured on the login node, a speedup describes
+the login node. Aim at one kind of node (``constraint`` or ``nodelist``) when the
+partition mixes several, and keep every run of a session on that kind: the ratchet
+refuses to compare timings taken on different machines.
+
+Operations (set ``op``; all require confirm=True):
+  run   -> one job for a single proxy run (requires: proxy_name); monitor
+           with proxy_runs()
+  suite -> one job per case×sweep point of a suite (requires: suite_name);
+           aggregate afterwards with proxy_get(op='report', ...)
+  eval  -> an optimization-session run: one job, or two when the build is sent
+           to a partition of its own (see build_partition)
+
+Every op returns while its job is still queued, and a watcher tracks the job
+from there: end your turn instead of polling, and you are auto-resumed with the
+results when it finishes. ('suite' submits many jobs and is the exception —
+aggregate it yourself with proxy_get(op='report', ...) once they are done.)
+
+Parameters in detail:
+    partition: Slurm partition or LSF queue (required for every op).
+    proxy_name: For 'run' (required) and 'eval' (defaults to the
+        most-recently initialized session).
+    suite_name: For 'suite': suite to submit.
+    extra_params: For 'run': additional CLI flags forwarded to the proxy.
+    param_overrides: For 'run': key/value pairs patching the param file
+        and run_cmd_template placeholders.
+    compare_to_reference: For 'run': reference to compare against after the run.
+    gpus: GPUs per node (0 for CPU-only).
+    cpus_per_task: CPU cores to allocate (default 8).
+    mem: Memory per node in Slurm format (default '32G').
+    wall_time: Wall-clock limit HH:MM:SS or D-HH:MM:SS (default '04:00:00').
+    account: Slurm account to charge (optional).
+    job_name: Slurm job name (optional; a sensible default is derived).
+    constraint: Slurm feature expression selecting which nodes of the
+        partition may run this (e.g. 'a100', 'bigmem&avx512'). A partition
+        says which queue; this says which hardware inside it.
+    nodelist: Explicit nodes to run on (e.g. 'node[01-04]').
+    comment: Free-text label stored with the job and read back by
+        `sacct -j <id> -o Comment` or `scontrol show job <id>` — what this
+        submission was for, for whoever reads the queue later. Single line,
+        under 512 characters. For 'suite' it labels every job of the suite;
+        for 'eval' the build job carries the same text as the run job.
+    build_partition: For 'eval': send the build to this partition instead of
+        building on the node that measures. A node dedicated to GPU
+        simulation is not a node to compile on. Setting it splits the run
+        into a build job and a run job chained behind it (Slurm's
+        --dependency=afterok, LSF's -w done()), both sharing one run directory — so the build
+        node and the run node must see the same filesystem. A failed build
+        kills the run job rather than leaving it queued. Defaults to the
+        proxy's registered 'build_partition' metadata; empty on both means
+        one job that builds and measures, as before.
+    build_constraint: For 'eval': feature expression for the build job. Never
+        inherited from `constraint` — that would pin the build to the very
+        hardware the split exists to keep it off.
+    build_cpus_per_task: For 'eval': cores for the build job (0 = reuse
+        cpus_per_task). A build is usually the phase that wants many cores.
+    build_mem: For 'eval': memory for the build job ('' = reuse mem).
+    build_wall_time: For 'eval': wall-clock limit for the build job
+        ('' = reuse wall_time).
+    build_gpus: For 'eval': GPUs for the build job (default 0 — nothing
+        compiles faster for holding one).
+    background: Accepted for symmetry with proxy_eval and ignored — a
+        submitted job is detached either way, and is watched either way.
+    constraint: Slurm feature expression selecting the kind of node
+        (e.g. 'icelake', 'a100|h100').
+    nodelist: Specific node(s), as a Slurm hostlist.
+    ntasks: Tasks in the job (default 1; more for an MPI proxy).
+    exclusive: Reserve the whole node. Defaults to True for 'eval' and
+        'suite', whose timings a neighbour's job would distort, and False for 'run'.
+    scheduler: Which scheduler to submit to — 'local' for this machine's own, or
+        a hostname. With more than one reachable this is required: the choice
+        follows the job's resources and the filesystem holding the run
+        directory. slurm_schedulers() lists them.
+    confirm: Must be True to submit.
+"""
+
 @mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
                       label="Proxy cluster: {op}",
                       risk_note="Submits Slurm or LSF batch jobs that consume cluster allocation hours."))
@@ -931,87 +1070,54 @@ def proxy_cluster(
     confirm: bool = False,
 ) -> dict:
     """Submit proxy work as batch jobs (sensitive, non-blocking, expensive): Slurm's
-    sbatch, or bsub when the scheduler is LSF. The arguments are Slurm's, translated for
-    LSF: ``partition`` is the queue, ``constraint`` a ``select[]``, ``account`` a project.
+    sbatch, or bsub when the scheduler is LSF (``partition`` is the queue, ``constraint``
+    a ``select[]``, ``account`` a project).
 
-    Validate the workload locally with proxy_exec first — a failed batch job
-    still consumes allocation hours.
-
-    Everything in the job runs on the compute node: the build an optimisation session
-    declares, the cases, the timing. That makes this the route when the code is to be
-    optimised FOR the compute nodes — measured on the login node, a speedup describes
-    the login node. Aim at one kind of node (``constraint`` or ``nodelist``) when the
-    partition mixes several, and keep every run of a session on that kind: the ratchet
-    refuses to compare timings taken on different machines.
+    Validate the workload locally with proxy_exec first: a failed batch job still spends
+    allocation hours. Everything in the job runs on the compute node, build included, so
+    this is the route when the code is optimised FOR those nodes; keep every run of a
+    session on one kind of node (``constraint`` or ``nodelist``), or the ratchet refuses
+    to compare them. Every op returns while its job is queued and a watcher resumes you
+    with the results: end your turn, do not poll ('suite' excepted: aggregate it with
+    proxy_get(op='report')). proxy_get(op='help', name='proxy_cluster') details every
+    parameter.
 
     Operations (set ``op``; all require confirm=True):
-      run   -> one job for a single proxy run (requires: proxy_name); monitor
-               with proxy_runs()
-      suite -> one job per case×sweep point of a suite (requires: suite_name);
-               aggregate afterwards with proxy_get(op='report', ...)
-      eval  -> an optimization-session run: one job, or two when the build is sent
-               to a partition of its own (see build_partition)
-
-    Every op returns while its job is still queued, and a watcher tracks the job
-    from there: end your turn instead of polling, and you are auto-resumed with the
-    results when it finishes. ('suite' submits many jobs and is the exception —
-    aggregate it yourself with proxy_get(op='report', ...) once they are done.)
+      run   -> one job for a single proxy run (requires: proxy_name)
+      suite -> one job per case x sweep point of a suite (requires: suite_name)
+      eval  -> an optimisation-session run: one job, or a build job and a run job
+               chained when the build has a partition of its own (build_partition)
 
     Args:
         partition: Slurm partition or LSF queue (required for every op).
-        proxy_name: For 'run' (required) and 'eval' (defaults to the
-            most-recently initialized session).
-        suite_name: For 'suite': suite to submit.
-        extra_params: For 'run': additional CLI flags forwarded to the proxy.
-        param_overrides: For 'run': key/value pairs patching the param file
-            and run_cmd_template placeholders.
-        compare_to_reference: For 'run': reference to compare against after the run.
+        proxy_name: For 'run' (required) and 'eval' (defaults to the latest session).
+        suite_name: For 'suite': the suite to submit.
+        extra_params: For 'run': CLI flags forwarded to the proxy.
+        param_overrides: For 'run': values patching the param file and placeholders.
+        compare_to_reference: For 'run': the reference to compare against afterwards.
         gpus: GPUs per node (0 for CPU-only).
         cpus_per_task: CPU cores to allocate (default 8).
-        mem: Memory per node in Slurm format (default '32G').
+        mem: Memory per node, Slurm format (default '32G').
         wall_time: Wall-clock limit HH:MM:SS or D-HH:MM:SS (default '04:00:00').
-        account: Slurm account to charge (optional).
-        job_name: Slurm job name (optional; a sensible default is derived).
-        constraint: Slurm feature expression selecting which nodes of the
-            partition may run this (e.g. 'a100', 'bigmem&avx512'). A partition
-            says which queue; this says which hardware inside it.
-        nodelist: Explicit nodes to run on (e.g. 'node[01-04]').
-        comment: Free-text label stored with the job and read back by
-            `sacct -j <id> -o Comment` or `scontrol show job <id>` — what this
-            submission was for, for whoever reads the queue later. Single line,
-            under 512 characters. For 'suite' it labels every job of the suite;
-            for 'eval' the build job carries the same text as the run job.
-        build_partition: For 'eval': send the build to this partition instead of
-            building on the node that measures. A node dedicated to GPU
-            simulation is not a node to compile on. Setting it splits the run
-            into a build job and a run job chained behind it (Slurm's
-            --dependency=afterok, LSF's -w done()), both sharing one run directory — so the build
-            node and the run node must see the same filesystem. A failed build
-            kills the run job rather than leaving it queued. Defaults to the
-            proxy's registered 'build_partition' metadata; empty on both means
-            one job that builds and measures, as before.
-        build_constraint: For 'eval': feature expression for the build job. Never
-            inherited from `constraint` — that would pin the build to the very
-            hardware the split exists to keep it off.
-        build_cpus_per_task: For 'eval': cores for the build job (0 = reuse
-            cpus_per_task). A build is usually the phase that wants many cores.
-        build_mem: For 'eval': memory for the build job ('' = reuse mem).
-        build_wall_time: For 'eval': wall-clock limit for the build job
-            ('' = reuse wall_time).
-        build_gpus: For 'eval': GPUs for the build job (default 0 — nothing
-            compiles faster for holding one).
-        background: Accepted for symmetry with proxy_eval and ignored — a
-            submitted job is detached either way, and is watched either way.
-        constraint: Slurm feature expression selecting the kind of node
-            (e.g. 'icelake', 'a100|h100').
-        nodelist: Specific node(s), as a Slurm hostlist.
+        account: Account to charge (optional).
+        job_name: Job name (optional; a default is derived).
+        constraint: Feature expression choosing the kind of node ('a100', 'bigmem&avx512').
+        nodelist: Explicit nodes, as a Slurm hostlist ('node[01-04]').
+        comment: One line under 512 characters stored with the job: what it was for.
+        build_partition: For 'eval': build there, not on the node that measures (the two
+            must share a filesystem); defaults to the registration's build_partition.
+        build_constraint: For 'eval': feature expression for the build job (never
+            inherited from constraint).
+        build_cpus_per_task: For 'eval': cores for the build job (0 = cpus_per_task).
+        build_mem: For 'eval': memory for the build job ('' = mem).
+        build_wall_time: For 'eval': limit for the build job ('' = wall_time).
+        build_gpus: For 'eval': GPUs for the build job (default 0).
+        background: Accepted for symmetry with proxy_eval and ignored: a job is detached.
         ntasks: Tasks in the job (default 1; more for an MPI proxy).
-        exclusive: Reserve the whole node. Defaults to True for 'eval' and
-            'suite', whose timings a neighbour's job would distort, and False for 'run'.
-        scheduler: Which scheduler to submit to — 'local' for this machine's own, or
-            a hostname. With more than one reachable this is required: the choice
-            follows the job's resources and the filesystem holding the run
-            directory. slurm_schedulers() lists them.
+        exclusive: Reserve the whole node; defaults to True for 'eval' and 'suite',
+            False for 'run'.
+        scheduler: 'local' or a hostname; required with more than one reachable
+            (slurm_schedulers() lists them).
         confirm: Must be True to submit.
     """
     if op not in _SLURM_OPS:
@@ -1168,6 +1274,56 @@ def proxy_request(
     return requests_ops.list_()
 
 
+
+# The whole reference of proxy_merge, served by proxy_get(op='help'): the description
+# sent with every request keeps only the contract.
+_MERGE_MANUAL = """\
+proxy_merge in full: how the merge is built and measured, every operation and parameter.
+
+Merge the kept optimisations of several proxies (in sub-agents' copies or in this
+session, side by side or one after another) with git, resolve their conflicts, and
+measure the whole.
+
+A proxy brings its patch from its baseline to its best accepted tree, read from the
+snapshot store. On the merge's own branch each patch is picked as a commit, a three-way
+merge whose base is that proxy's own baseline; a conflict stops the merge with both
+sides and what each proxy was doing. The merged code is then a new proxy measured on
+every source's own cases: each kernel against its gain alone, the whole as the total
+time of all of them. Nothing is set aside on its own: a choice of method in a
+conflict, and a kernel that lost its gain, are the user's to decide.
+
+Operations:
+  plan     -> each proxy's gain alone and files, the files two of them share and
+              their conflicts, and the brief to hand to spawn_agent when several
+              combinations are compared at once. Read-only
+              (requires: proxies, or ["*"] for every proxy)
+  start    -> put the workspace on a branch of its own, mimir/merge-<stamp> (a clean
+              tree and no run under way needed; in a sub-agent's copy, that copy's
+              branch), register the merge proxy `merge-<stamp>`, its suite of every
+              source's cases, and open its session (requires: proxies)
+  next     -> the next step: names the run to launch, merges the next proxy, shows a
+              conflict to resolve, says when it is done. Once measured, and on a
+              pause, the workspace goes back to its branch; next and drop take it
+              to the merge's again
+  resolved -> the conflict shown is resolved in the files: commit it and go on
+              (requires: resolution, how and why)
+  pause    -> stop for the user's answer: a pending conflict is undone and the
+              question kept (requires: question)
+  drop     -> take proxies back out of the measured merge and measure again
+              (requires: proxies)
+  report   -> each kernel alone and in the merge, the whole, the conflicts and how
+              they were resolved, what was dropped
+
+Parameters in detail:
+    proxies: For plan and start: the proxies to merge, ["*"] for every proxy with
+        an accepted run; for drop: those to take back out.
+    proxy_name: For start: the merge proxy's name (`merge-<stamp>` when empty); for
+        the others: the merge session (the active one's when empty).
+    resolution: For resolved: how the conflict was resolved, and why.
+    question: For pause: the question the user is to answer.
+    confirm: Must be True for every operation but plan and report.
+"""
+
 @mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_MAP_MOVES], reversibility=RECOVERABLE,
                       label="Proxy merge: {op}",
                       map_moves_when={"arg": "op", "values": ["start", "next", "resolved", "pause", "drop"]}))
@@ -1182,36 +1338,25 @@ def proxy_merge(
     question: str = "",
     confirm: bool = False,
 ) -> dict:
-    """Merge the kept optimisations of several proxies (in sub-agents' copies or in this
-    session, side by side or one after another) with git, resolve their conflicts, and
-    measure the whole.
-
-    A proxy brings its patch from its baseline to its best accepted tree, read from the
-    snapshot store. On the merge's own branch each patch is picked as a commit, a three-way
-    merge whose base is that proxy's own baseline; a conflict stops the merge with both
-    sides and what each proxy was doing. The merged code is then a new proxy measured on
-    every source's own cases: each kernel against its gain alone, the whole as the total
-    time of all of them. Nothing is set aside on its own: a choice of method in a
-    conflict, and a kernel that lost its gain, are the user's to decide.
+    """Merge the kept optimisations of several proxies with git, resolve their conflicts,
+    and measure the whole. Each proxy brings its patch from its baseline to its best
+    accepted tree; a conflict stops the merge with both sides, and a choice of method in
+    it, like a kernel that lost its gain, is the user's to decide.
+    proxy_get(op='help', name='proxy_merge') says how the merge is built and measured.
 
     Operations:
-      plan     -> each proxy's gain alone and files, the files two of them share and
-                  their conflicts, and the brief to hand to spawn_agent when several
-                  combinations are compared at once. Read-only
-                  (requires: proxies, or ["*"] for every proxy)
-      start    -> put the workspace on a branch of its own, mimir/merge-<stamp> (a clean
-                  tree and no run under way needed; in a sub-agent's copy, that copy's
-                  branch), register the merge proxy `merge-<stamp>`, its suite of every
-                  source's cases, and open its session (requires: proxies)
-      next     -> the next step: names the run to launch, merges the next proxy, shows a
-                  conflict to resolve, says when it is done. Once measured, and on a
-                  pause, the workspace goes back to its branch; next and drop take it
-                  to the merge's again
+      plan     -> each proxy's gain alone, its files, the shared files and conflicts,
+                  and the brief for spawn_agent when combinations are compared at once.
+                  Read-only (requires: proxies, or ["*"] for every proxy)
+      start    -> put the workspace on the merge's own branch, register the merge proxy
+                  and its suite, open its session (requires: proxies; a clean tree)
+      next     -> the next step: a run to launch, the next proxy merged, a conflict to
+                  resolve, or done
       resolved -> the conflict shown is resolved in the files: commit it and go on
                   (requires: resolution, how and why)
-      pause    -> stop for the user's answer: a pending conflict is undone and the
+      pause    -> stop for the user's answer; a pending conflict is undone and the
                   question kept (requires: question)
-      drop     -> take proxies back out of the measured merge and measure again
+      drop     -> take proxies back out of the measured merge, measure again
                   (requires: proxies)
       report   -> each kernel alone and in the merge, the whole, the conflicts and how
                   they were resolved, what was dropped
@@ -1269,6 +1414,14 @@ def proxy_code_map_steps(proxy_name: str = "", combined: bool = False,
     """
     return ok(code_map_tab.answer(proxy_name, combined, proxies))
 
+
+# Each tool whose description is sent short, and its reference in full (proxy_get(op='help')).
+_MANUALS: dict[str, str] = {
+    "proxy_eval": _EVAL_MANUAL,
+    "proxy_cluster": _CLUSTER_MANUAL,
+    "proxy_manage": _MANAGE_MANUAL,
+    "proxy_merge": _MERGE_MANUAL,
+}
 
 if __name__ == "__main__":
     threading.Thread(target=code_map_tab.warm, name="code-map-warm", daemon=True).start()

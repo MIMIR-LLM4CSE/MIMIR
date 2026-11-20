@@ -27,10 +27,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against the history budget.
 - **Every tool weighs less.** The `doing` argument every tool takes is described in one
   line instead of five, about 7 k tokens less on every request with all servers on.
-- **`proxy_eval` is described by its contract.** Its description lists the operations and
-  what each parameter is, in 6.2 k characters instead of 14.8 k; the whole reference, as
-  it was, comes back from `proxy_get(op='help', name='proxy_eval')`, which needs no
-  approval, and a call missing an argument says so.
+- **The long proxy tools are described by their contract.** `proxy_eval`,
+  `proxy_cluster`, `proxy_manage` and `proxy_merge` list their operations and what each
+  parameter is (`proxy_eval` in 6.2 k characters instead of 14.8 k); the whole reference,
+  as it was, comes back from `proxy_get(op='help', name=<tool>)`, which needs no approval,
+  and a call missing an argument says so.
 
 ## [1.18.0] — 2026-11-20
 
