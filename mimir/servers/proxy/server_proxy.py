@@ -71,14 +71,18 @@ def _missing_args(op: str, **required) -> dict | None:
     """Return an err() naming the empty required args for *op*, or None."""
     missing = [k for k, v in required.items() if not v]
     if missing:
+        owners = [t for t in _OP_OWNERS.get(op, ()) if t in _MANUALS]
+        detail = (f" proxy_get(op='help', name='{owners[0]}') details each one."
+                  if len(owners) == 1 else "")
         return err(f"op '{op}' requires: {', '.join(missing)}.",
-                   hint="See the ops table in the tool description for per-op required args.")
+                   hint="See the ops table in the tool description for per-op required args."
+                        + detail)
     return None
 
 
 # ── read-only tools ───────────────────────────────────────────────────────────
 
-_GET_OPS = ("proxies", "proxy", "references", "suites", "suite", "report")
+_GET_OPS = ("proxies", "proxy", "references", "suites", "suite", "report", "help")
 
 
 @mcp.tool(**tool_caps(kind="proxy", label="Proxy info: {op}"))
@@ -99,9 +103,11 @@ def proxy_get(
       suite       -> suite definition + validation status (requires: name)
       report      -> aggregated results table of a suite run (requires: name;
                      run_timestamp optional, defaults to the latest run)
+      help        -> a proxy tool's reference in full: every operation and parameter
+                     (requires: name, the tool's name)
 
     Args:
-        name: Proxy name (op='proxy') or suite name (op='suite'/'report').
+        name: Proxy name (op='proxy'), suite name (op='suite'/'report') or tool name (op='help').
         run_timestamp: For 'report': timestamp tag of the suite run to show.
     """
     if op == "proxies":
@@ -116,7 +122,19 @@ def proxy_get(
         return _missing_args(op, name=name) or suites.inspect_suite(name)
     if op == "report":
         return _missing_args(op, name=name) or suites.report(name, run_timestamp)
+    if op == "help":
+        return _missing_args(op, name=name) or _manual(name)
     return _unknown_op(op, _GET_OPS)
+
+
+def _manual(tool: str) -> dict:
+    """*tool*'s reference in full, for proxy_get(op='help')."""
+    manual = _MANUALS.get(tool.strip())
+    if manual is None:
+        return err(f"No reference for '{tool}'.",
+                   hint=f"Available: {', '.join(sorted(_MANUALS))}; the other tools' "
+                        "descriptions are complete.")
+    return ok({"tool": tool.strip(), "reference": manual})
 
 
 _RUNS_OPS = ("list", "status", "logs", "diff", "compare", "aggregate")
@@ -538,6 +556,180 @@ _EVAL_OPS = ("init", "configure", "run", "profile", "stop", "reset", "reset_to_b
 _EVAL_ON_FILES = ("init", "run", "profile", "reset", "reset_to_best", "reset_to_request", "apply_run",
                   "rebaseline")
 
+# The whole reference of proxy_eval, served by proxy_get(op='help'): the description sent
+# with every request keeps only the contract.
+_EVAL_MANUAL = """\
+proxy_eval in full: what a session is, every operation and every parameter.
+
+Typical loop: init -> run -> edit the proxy source with the file tools ->
+run again.  ``run`` waits for the run it launched and answers with the
+ratchet verdict and the per-case results, so there is nothing to poll.
+Every response includes a ``next_step`` field.
+
+``run`` is also the build: when the proxy declares a build_cmd, the server
+runs it before the cases. So the loop has no build step of its own — do not
+call make/cmake/ninja from the shell between edits, and do not launch the
+binary by hand to check it. The run does both, and one done by hand only
+builds the same target twice. A failed build comes back in the reply as
+``build_log_tail``: read the compiler error there, fix it, run again.
+
+The session minimizes (or maximizes) ``primary_metric`` subject to the
+``requirements`` acting as pass/fail constraints.  A completed run that
+satisfies every constraint AND improves the primary metric is *accepted* and
+becomes the new best-so-far; a run that regresses (breaks a constraint, or is
+no better) is *rejected* and ``results`` steers you to revert with
+``reset_to_best``. A run better on one objective of the spec and worse on another
+is a ``tradeoff``, judged with report_verdict. After ``max_stall`` non-improving
+feasible runs the session reports ``converged`` when the best is near the
+hardware's bound (the spec's ``bound``, else the roofline of the proxy's flops and
+bytes_moved against its registered peaks); otherwise ``stalled`` first, asking for
+a review of what limits the code, and ``converged`` after one more streak.
+
+Operations (set ``op``; all require confirm=True):
+  init          -> start a session; snapshots the optimize_paths TREE as the
+                   baseline (requires: proxy_name, benchmark_name,
+                   requirements, proxy_source_path, optimize_paths)
+  configure     -> patch the spec (or requirements), benchmark_name,
+                   python_executable, max_hours without re-snapshotting. Once the
+                   session is measured, a spec change gives spec.reason, kept in
+                   its history; a best that no longer meets the constraints is
+                   retired, the last kept run that does becoming the best
+  run           -> build if the registration declares a build_cmd, then launch
+                   the run, WAIT for it, and return the verdict with the
+                   per-case results inline; errors if one is already active.
+                   A failed build ends the run with no verdict and no ledger
+                   entry. Build time is outside the measurement budget and is
+                   paid once per run, not once per `repeat`.
+                   Do not poll proxy_eval_status() around it. A run still going
+                   after the wait budget detaches itself, and background=True
+                   detaches up front: both hand it to a watcher that resumes you
+                   with the results — end your turn when told to.
+  profile       -> build the tree as it stands and run one case under a profiler,
+                   without measuring it: where the time goes, per workspace file
+                   (`where_time_goes`). The baseline and every accepted run are
+                   profiled on their own after their verdict; use this for the code
+                   as it is now, or before choosing the next axis. `level` goes
+                   deeper: 'function' and 'line' (read from a profile of the same
+                   tree when there is one, so no run), 'counters' (hardware
+                   counters of a compiled run: one more run), 'kernel' (one GPU
+                   kernel's throughput and what bounds it, under Nsight Compute
+                   or rocprofv3: a slow run, as each launch is replayed),
+                   'memory' (where the heap's peak was allocated: a slow run),
+                   'asm' (the instruction mix of a kernel's SASS under Nsight
+                   Compute, or of a function under perf annotate: what the code
+                   spends its instructions on, the calls into slow paths and the
+                   spills; the costliest kernel or function unless `focus`). A
+                   list of levels profiles them all in one call, e.g. ['file',
+                   'memory'] for time and memory. A run that uses a GPU also has
+                   its kernels, copies and idle time traced (`where_time_goes.gpu`).
+  stop          -> stop the active run (SIGTERM local / scancel Slurm)
+  reset         -> restore every optimize_paths file to the baseline tree
+  reset_to_best -> restore every optimize_paths file to the tree of the best
+                   *accepted* run (undo a regression without discarding
+                   progress). All of them or none: a per-file restore would
+                   assemble a combination that was never measured together.
+  reset_to_request -> restore every optimize_paths file to the tree the request
+                   `request_id` (proxy_request) started from: before each of its
+                   variants, so none carries another's edit
+  apply_run     -> put run `run_id`'s own edit (from the tree it was measured
+                   against to the tree it ran) onto the files as they stand: to
+                   combine near misses, then measure them together. All or
+                   nothing: an edit that no longer fits writes nothing
+  rebaseline    -> make the tree as it stands the new baseline, archiving the
+                   ledger and best-so-far under a timestamp rather than
+                   discarding them. For when the HARNESS was wrong and the
+                   baseline has to be re-measured from here — not for making a
+                   regression look like progress: every later comparison then
+                   runs against this point, and the reply says so.
+  end           -> end the session: clear the active-session pointer (source,
+                   snapshots and ledger are kept). Lifts the direct-execution
+                   guard so the proxy can be run by hand again; re-init to
+                   optimize further. Refuses while a run is still active.
+
+Parameters in detail:
+    proxy_name: Registered proxy to optimize. For ops other than 'init',
+        defaults to the most-recently initialized session.
+    benchmark_name: Name of a defined benchmark suite.
+    requirements: List of {metric, operator, threshold} dicts; operator is
+        one of lt, gt, lte, gte, eq. Numerical invariants (l2_rel, linf_rel,
+        finite, conservation_residual, convergence_order) are ordinary metrics
+        here and can gate feasibility.
+    proxy_source_path: Absolute path to the HARNESS — the program the runner
+        executes, which exercises the code and prints metrics. Any language:
+        a script, or a wrapper that builds and launches a compiled binary. It
+        is not the subject of the optimization and the ratchet never edits it.
+    optimize_paths: Absolute paths to the code the ratchet may edit — the real
+        sources the harness exercises, whether it imports them, links them or
+        loads them at run time (.py, .cpp, .h, .f90 alike). Required, inside
+        the workspace, and must not contain proxy_source_path: a harness that
+        is its own subject means optimizing a copy, and the accuracy
+        constraints then say nothing about the code that ships. All the listed
+        files are snapshotted and restored as ONE state, so a restore can
+        never mix files from different runs. For a compiled project, list the
+        sources and declare a build_cmd at registration; never list generated
+        files, which a build would rewrite under the snapshot.
+    python_executable: Python interpreter used to run MIMIR's own runner
+        process (default: server's). It has no bearing on the harness or the
+        code under optimization, which may be in any language.
+    max_hours: Hard deadline per run in hours (0.0 = 24 h).
+    primary_metric: Scalar objective the ratchet improves (default 'time_s').
+    primary_goal: 'min' or 'max' (default 'min').
+    min_improvement: Relative margin a run must beat the incumbent by to count
+        as an improvement (default 0.02, i.e. 2%). A FLOOR, not the answer: once
+        the baseline has been measured more than once, the spread across its own
+        replicates is known and the larger of the two is used.
+    max_stall: Consecutive non-improving feasible runs before 'stalled' (far from the
+        bound, or none known) or 'converged' (near it, or after one more streak).
+    repeat: How many times each case is measured before its metrics are believed;
+        the median is what the ratchet compares, never the best of them. 0
+        (default) decides from the metric — 3 for a timing metric, 1 for one
+        that is bit-reproducible against a sealed reference. Raise it on a busy
+        node, set 1 to opt out.
+    convergence: Optional {h_param, error_metric} to fit an observed order of
+        accuracy across a sweep, exposed as the 'convergence_order' metric.
+    background: For op='run', skip the wait and detach immediately, so a watcher
+        tracks completion and auto-resumes you with the results (end your turn;
+        do not poll). Use it when the run is known to be long; otherwise leave it
+        False and let the call answer directly.
+    axis: For op='run': what this run is TRYING, in a few words — "tiling",
+        "vectorise the inner loop", "cache-friendly layout". Recorded in the
+        session ledger beside the number the run produced. It is the one thing
+        about an attempt that cannot be measured, and without it the session's
+        history is a column of timings with no account of which ideas made them:
+        a later run cannot tell what has already been tried and rejected.
+    profile: For op='run': profile the run after its verdict even if it is not
+        accepted (the baseline and accepted runs always are). The profile is a
+        separate execution of the longest case and never part of the measurement.
+    level: For op='profile': 'file' (default), 'function', 'line', 'counters',
+        'kernel', 'memory' or 'asm', or a list of them (e.g. ['file', 'memory']): each is
+        its own execution where it needs one (a memory or kernel profiler distorts
+        time), one sampled run serves file, function and line, and
+        `where_time_goes` then has one view per level.
+    focus: For op='profile': at level 'function', 'line' or 'memory', the
+        workspace file whose functions or lines to show, as `where_time_goes`
+        names it; at level 'kernel', the kernel's name, as `where_time_goes.gpu`
+        names it; at level 'asm', the kernel's name or the function's (its symbol).
+        With a list of levels, it applies to each that takes one.
+    request_id: For op='reset_to_request': the request whose start to restore ("R3").
+    run_id: For op='apply_run': the run whose edit to apply.
+    spec: For op='init' or 'configure': what the session optimises and under what,
+        in place of primary_metric/primary_goal/requirements. {"objectives":
+        [{"metric", "goal"?, "tolerance"?}] (the first the primary; a secondary's
+        tolerance is the relative loss it may take), "constraints": [{"metric",
+        "operator", "threshold"?, "of_baseline"?, "precision_floor"?}] (of_baseline
+        a factor of the baseline's value, the looser of the two holding;
+        precision_floor lets an error to the reference reach what the field's type
+        allows, 1e-5 in float32: a reordered sum is not a wrong one), "directives":
+        [sentences], "declare": [{"metric", "goal", "label"?, "unit"?, "noisy"?}]
+        (the program's own metrics), "bound" and "bound_basis" (the best the
+        hardware allows for the primary, and the calculation behind it), "reason"
+        (required once measured)}. In configure, "change": [{"metric", ...}]
+        patches one entry, "remove": true drops it.
+    confirm: Must be True to apply any operation.
+"""
+
+_MANUALS: dict[str, str] = {"proxy_eval": _EVAL_MANUAL}
+
 # op='run' waits for the run it launched, so the default 120 s tool wall would cut it
 # off mid-measurement. Sits above eval_session's own wait budget, which detaches the
 # run before this is ever reached — this is the outer guard, not the normal path.
@@ -576,172 +768,57 @@ async def proxy_eval(
     spec: dict | None = None,
     confirm: bool = False,
 ) -> dict:
-    """Drive an iterative proxy-optimization session as a monotone ratchet (sensitive).
+    """Drive a proxy-optimisation session: a ratchet that keeps a version only when a measured run beats the best on record and breaks no constraint (sensitive).
 
-    Typical loop: init -> run -> edit the proxy source with the file tools ->
-    run again.  ``run`` waits for the run it launched and answers with the
-    ratchet verdict and the per-case results, so there is nothing to poll.
-    Every response includes a ``next_step`` field.
-
-    ``run`` is also the build: when the proxy declares a build_cmd, the server
-    runs it before the cases. So the loop has no build step of its own — do not
-    call make/cmake/ninja from the shell between edits, and do not launch the
-    binary by hand to check it. The run does both, and one done by hand only
-    builds the same target twice. A failed build comes back in the reply as
-    ``build_log_tail``: read the compiler error there, fix it, run again.
-
-    The session minimizes (or maximizes) ``primary_metric`` subject to the
-    ``requirements`` acting as pass/fail constraints.  A completed run that
-    satisfies every constraint AND improves the primary metric is *accepted* and
-    becomes the new best-so-far; a run that regresses (breaks a constraint, or is
-    no better) is *rejected* and ``results`` steers you to revert with
-    ``reset_to_best``. A run better on one objective of the spec and worse on another
-    is a ``tradeoff``, judged with report_verdict. After ``max_stall`` non-improving
-    feasible runs the session reports ``converged`` when the best is near the
-    hardware's bound (the spec's ``bound``, else the roofline of the proxy's flops and
-    bytes_moved against its registered peaks); otherwise ``stalled`` first, asking for
-    a review of what limits the code, and ``converged`` after one more streak.
+    Loop: init -> run -> edit the optimize_paths files with the file tools -> run again.
+    ``run`` builds (when the registration declares a build_cmd), measures, waits and
+    answers with the verdict and the per-case results: never build or launch the proxy
+    by hand, and do not poll around it. Every reply carries ``next_step``.
+    proxy_get(op='help', name='proxy_eval') details every operation and parameter.
 
     Operations (set ``op``; all require confirm=True):
-      init          -> start a session; snapshots the optimize_paths TREE as the
-                       baseline (requires: proxy_name, benchmark_name,
-                       requirements, proxy_source_path, optimize_paths)
-      configure     -> patch the spec (or requirements), benchmark_name,
-                       python_executable, max_hours without re-snapshotting. Once the
-                       session is measured, a spec change gives spec.reason, kept in
-                       its history; a best that no longer meets the constraints is
-                       retired, the last kept run that does becoming the best
-      run           -> build if the registration declares a build_cmd, then launch
-                       the run, WAIT for it, and return the verdict with the
-                       per-case results inline; errors if one is already active.
-                       A failed build ends the run with no verdict and no ledger
-                       entry. Build time is outside the measurement budget and is
-                       paid once per run, not once per `repeat`.
-                       Do not poll proxy_eval_status() around it. A run still going
-                       after the wait budget detaches itself, and background=True
-                       detaches up front: both hand it to a watcher that resumes you
-                       with the results — end your turn when told to.
-      profile       -> build the tree as it stands and run one case under a profiler,
-                       without measuring it: where the time goes, per workspace file
-                       (`where_time_goes`). The baseline and every accepted run are
-                       profiled on their own after their verdict; use this for the code
-                       as it is now, or before choosing the next axis. `level` goes
-                       deeper: 'function' and 'line' (read from a profile of the same
-                       tree when there is one, so no run), 'counters' (hardware
-                       counters of a compiled run: one more run), 'kernel' (one GPU
-                       kernel's throughput and what bounds it, under Nsight Compute
-                       or rocprofv3: a slow run, as each launch is replayed),
-                       'memory' (where the heap's peak was allocated: a slow run),
-                       'asm' (the instruction mix of a kernel's SASS under Nsight
-                       Compute, or of a function under perf annotate: what the code
-                       spends its instructions on, the calls into slow paths and the
-                       spills; the costliest kernel or function unless `focus`). A
-                       list of levels profiles them all in one call, e.g. ['file',
-                       'memory'] for time and memory. A run that uses a GPU also has
-                       its kernels, copies and idle time traced (`where_time_goes.gpu`).
-      stop          -> stop the active run (SIGTERM local / scancel Slurm)
-      reset         -> restore every optimize_paths file to the baseline tree
-      reset_to_best -> restore every optimize_paths file to the tree of the best
-                       *accepted* run (undo a regression without discarding
-                       progress). All of them or none: a per-file restore would
-                       assemble a combination that was never measured together.
-      reset_to_request -> restore every optimize_paths file to the tree the request
-                       `request_id` (proxy_request) started from: before each of its
-                       variants, so none carries another's edit
-      apply_run     -> put run `run_id`'s own edit (from the tree it was measured
-                       against to the tree it ran) onto the files as they stand: to
-                       combine near misses, then measure them together. All or
-                       nothing: an edit that no longer fits writes nothing
-      rebaseline    -> make the tree as it stands the new baseline, archiving the
-                       ledger and best-so-far under a timestamp rather than
-                       discarding them. For when the HARNESS was wrong and the
-                       baseline has to be re-measured from here — not for making a
-                       regression look like progress: every later comparison then
-                       runs against this point, and the reply says so.
-      end           -> end the session: clear the active-session pointer (source,
-                       snapshots and ledger are kept). Lifts the direct-execution
-                       guard so the proxy can be run by hand again; re-init to
-                       optimize further. Refuses while a run is still active.
+      init             start a session; snapshot optimize_paths as the baseline (requires:
+                       proxy_name, benchmark_name, requirements or spec,
+                       proxy_source_path, optimize_paths)
+      configure        patch spec or requirements, benchmark_name, python_executable,
+                       max_hours; spec.reason once the session is measured
+      run              build, measure, answer with the verdict (axis: what it tries)
+      profile          where the time goes in the tree as it stands (level, focus)
+      stop             stop the active run
+      reset            restore every optimize_paths file to the baseline
+      reset_to_best    restore them to the best accepted run
+      reset_to_request restore them to where request request_id started
+      apply_run        put run run_id's edit onto the files, to combine near misses
+      rebaseline       make the tree as it stands the baseline (the harness was wrong)
+      end              end the session; snapshots and ledger are kept
 
     Args:
-        proxy_name: Registered proxy to optimize. For ops other than 'init',
-            defaults to the most-recently initialized session.
-        benchmark_name: Name of a defined benchmark suite.
-        requirements: List of {metric, operator, threshold} dicts; operator is
-            one of lt, gt, lte, gte, eq. Numerical invariants (l2_rel, linf_rel,
-            finite, conservation_residual, convergence_order) are ordinary metrics
-            here and can gate feasibility.
-        proxy_source_path: Absolute path to the HARNESS — the program the runner
-            executes, which exercises the code and prints metrics. Any language:
-            a script, or a wrapper that builds and launches a compiled binary. It
-            is not the subject of the optimization and the ratchet never edits it.
-        optimize_paths: Absolute paths to the code the ratchet may edit — the real
-            sources the harness exercises, whether it imports them, links them or
-            loads them at run time (.py, .cpp, .h, .f90 alike). Required, inside
-            the workspace, and must not contain proxy_source_path: a harness that
-            is its own subject means optimizing a copy, and the accuracy
-            constraints then say nothing about the code that ships. All the listed
-            files are snapshotted and restored as ONE state, so a restore can
-            never mix files from different runs. For a compiled project, list the
-            sources and declare a build_cmd at registration; never list generated
-            files, which a build would rewrite under the snapshot.
-        python_executable: Python interpreter used to run MIMIR's own runner
-            process (default: server's). It has no bearing on the harness or the
-            code under optimization, which may be in any language.
+        proxy_name: Registered proxy; for ops other than 'init', defaults to the latest session.
+        benchmark_name: A defined benchmark suite.
+        requirements: [{metric, operator (lt|gt|lte|gte|eq), threshold}], each a pass/fail constraint.
+        proxy_source_path: Absolute path to the HARNESS the runner executes; never edited.
+        optimize_paths: Absolute paths of the sources the ratchet may edit: inside the
+            workspace, without the harness, never generated files; restored as one state.
+        python_executable: Interpreter for MIMIR's runner process, not for the harness.
         max_hours: Hard deadline per run in hours (0.0 = 24 h).
-        primary_metric: Scalar objective the ratchet improves (default 'time_s').
+        primary_metric: Metric the ratchet improves (default 'time_s').
         primary_goal: 'min' or 'max' (default 'min').
-        min_improvement: Relative margin a run must beat the incumbent by to count
-            as an improvement (default 0.02, i.e. 2%). A FLOOR, not the answer: once
-            the baseline has been measured more than once, the spread across its own
-            replicates is known and the larger of the two is used.
-        max_stall: Consecutive non-improving feasible runs before 'stalled' (far from the
-            bound, or none known) or 'converged' (near it, or after one more streak).
-        repeat: How many times each case is measured before its metrics are believed;
-            the median is what the ratchet compares, never the best of them. 0
-            (default) decides from the metric — 3 for a timing metric, 1 for one
-            that is bit-reproducible against a sealed reference. Raise it on a busy
-            node, set 1 to opt out.
-        convergence: Optional {h_param, error_metric} to fit an observed order of
-            accuracy across a sweep, exposed as the 'convergence_order' metric.
-        background: For op='run', skip the wait and detach immediately, so a watcher
-            tracks completion and auto-resumes you with the results (end your turn;
-            do not poll). Use it when the run is known to be long; otherwise leave it
-            False and let the call answer directly.
-        axis: For op='run': what this run is TRYING, in a few words — "tiling",
-            "vectorise the inner loop", "cache-friendly layout". Recorded in the
-            session ledger beside the number the run produced. It is the one thing
-            about an attempt that cannot be measured, and without it the session's
-            history is a column of timings with no account of which ideas made them:
-            a later run cannot tell what has already been tried and rejected.
-        profile: For op='run': profile the run after its verdict even if it is not
-            accepted (the baseline and accepted runs always are). The profile is a
-            separate execution of the longest case and never part of the measurement.
-        level: For op='profile': 'file' (default), 'function', 'line', 'counters',
-            'kernel', 'memory' or 'asm', or a list of them (e.g. ['file', 'memory']): each is
-            its own execution where it needs one (a memory or kernel profiler distorts
-            time), one sampled run serves file, function and line, and
-            `where_time_goes` then has one view per level.
-        focus: For op='profile': at level 'function', 'line' or 'memory', the
-            workspace file whose functions or lines to show, as `where_time_goes`
-            names it; at level 'kernel', the kernel's name, as `where_time_goes.gpu`
-            names it; at level 'asm', the kernel's name or the function's (its symbol).
-            With a list of levels, it applies to each that takes one.
-        request_id: For op='reset_to_request': the request whose start to restore ("R3").
-        run_id: For op='apply_run': the run whose edit to apply.
-        spec: For op='init' or 'configure': what the session optimises and under what,
-            in place of primary_metric/primary_goal/requirements. {"objectives":
-            [{"metric", "goal"?, "tolerance"?}] (the first the primary; a secondary's
-            tolerance is the relative loss it may take), "constraints": [{"metric",
-            "operator", "threshold"?, "of_baseline"?, "precision_floor"?}] (of_baseline
-            a factor of the baseline's value, the looser of the two holding;
-            precision_floor lets an error to the reference reach what the field's type
-            allows, 1e-5 in float32: a reordered sum is not a wrong one), "directives":
-            [sentences], "declare": [{"metric", "goal", "label"?, "unit"?, "noisy"?}]
-            (the program's own metrics), "bound" and "bound_basis" (the best the
-            hardware allows for the primary, and the calculation behind it), "reason"
-            (required once measured)}. In configure, "change": [{"metric", ...}]
-            patches one entry, "remove": true drops it.
+        min_improvement: Relative margin a run must beat the best by (default 0.02; the
+            baseline's own spread when larger).
+        max_stall: Non-improving feasible runs before 'stalled' or 'converged'.
+        repeat: Measurements per case, the median compared; 0 decides from the metric.
+        convergence: {h_param, error_metric}: fits 'convergence_order' across a sweep.
+        background: For 'run': detach at once; a watcher resumes you (end your turn).
+        axis: For 'run': what this run tries, in a few words; kept in the ledger.
+        profile: For 'run': profile it after its verdict even if it is not accepted.
+        level: For 'profile': 'file' (default), 'function', 'line', 'counters', 'kernel',
+            'memory' or 'asm', or a list of them.
+        focus: For 'profile': the file, kernel or function a level narrows to.
+        request_id: For 'reset_to_request': the request ("R3").
+        run_id: For 'apply_run': the run whose edit to apply.
+        spec: For 'init' or 'configure', in place of primary_metric/primary_goal/
+            requirements: objectives, constraints, directives, declare, bound,
+            bound_basis, reason (see the help).
         confirm: Must be True to apply any operation.
     """
     if op not in _EVAL_OPS:

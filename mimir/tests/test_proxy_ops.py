@@ -3,6 +3,7 @@
 """
 
 from mimir.servers.proxy._lib import layout
+import asyncio
 import os
 import unittest
 
@@ -306,6 +307,33 @@ class ReadOnlyOpsTests(_TmpStorageTest):
         self.assertEqual(res.get("status"), "ok")
         self.assertEqual(res["rows"], [])
         self.assertEqual(res["errors"][0]["error"], "directory not found")
+
+
+class ReferenceTests(_TmpStorageTest):
+    """A tool whose description keeps only the contract has its reference in full behind
+    proxy_get(op='help'): read-only, so it needs no approval and works in every mode."""
+
+    def test_the_reference_covers_every_operation_and_parameter(self) -> None:
+        import inspect
+        reference = server_proxy.proxy_get(op="help", name="proxy_eval")["reference"]
+        for op in server_proxy._EVAL_OPS:
+            self.assertIn(op, reference, op)
+        fn = getattr(server_proxy.proxy_eval, "fn", server_proxy.proxy_eval)
+        for param in inspect.signature(fn).parameters:
+            self.assertIn(param, reference, param)
+
+    def test_the_description_sends_the_model_to_it(self) -> None:
+        fn = getattr(server_proxy.proxy_eval, "fn", server_proxy.proxy_eval)
+        self.assertIn("proxy_get(op='help', name='proxy_eval')", fn.__doc__ or "")
+
+    def test_a_missing_argument_points_at_it(self) -> None:
+        res = asyncio.run(server_proxy.proxy_eval(op="apply_run", confirm=True))
+        self.assertIn("proxy_get(op='help', name='proxy_eval')", res["hint"])
+
+    def test_a_tool_without_one_is_named_as_complete(self) -> None:
+        res = server_proxy.proxy_get(op="help", name="proxy_runs")
+        self.assertEqual(res["status"], "error")
+        self.assertIn("proxy_eval", res["hint"])
 
 
 class ScaffoldTests(_TmpStorageTest):
