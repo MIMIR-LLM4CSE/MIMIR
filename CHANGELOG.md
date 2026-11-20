@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-11-20
+
 ### Added
 - **Several objectives, relative constraints, a bound.** `proxy_eval(op='init'|'configure',
   spec=...)` says what a session optimises and under what: objectives (the first the
