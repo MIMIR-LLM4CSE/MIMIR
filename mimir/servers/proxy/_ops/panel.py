@@ -65,8 +65,8 @@ def _hottest(proxy_name: str, run_id: str) -> dict | None:
 
 # How a ledger verdict is drawn on the curve: kept moves the best; not kept was measured
 # and lost; failed measured nothing; elsewhere ran on another machine than the baseline's.
-_POINT_KIND = {"accept": "kept", "reject": "not kept", "converged": "not kept",
-               "incomparable": "elsewhere"}
+_POINT_KIND = {"accept": "kept", "reject": "not kept", "converged": "not kept", "stalled": "not kept",
+               "tradeoff": "not kept", "incomparable": "elsewhere"}
 
 # The curve keeps the latest runs: a drawer a few hundred pixels wide cannot tell more apart.
 _CURVE_MAX_POINTS = 120
@@ -80,13 +80,18 @@ def _curve(rows: list[dict], cfg: dict, base, best) -> dict | None:
 
     base, best = num(base), num(best)
     incumbent, points = base, []
-    for i, row in enumerate(rows, 1):
+    for row in rows:
         value = num(row.get("primary_value"))
         kind = _POINT_KIND.get(row.get("verdict") or "", "not kept")
         if value is None or row.get("feasible") is False:
             kind = "failed" if kind != "elsewhere" else kind
-        if kind == "kept" and value is not None:
+        # A refactor kept as neutral moves the code, not the value to beat; a best retired
+        # (it no longer meets the constraints) was never a value to beat.
+        if row.get("retired"):
+            kind = "retired"
+        if kind == "kept" and value is not None and not row.get("neutral"):
             incumbent = value
+        i = len(points) + 1
         points.append({"n": i, "run": row.get("run_id", ""), "axis": row.get("axis") or "",
                        "value": value, "kind": kind, "best": incumbent})
     if not points:

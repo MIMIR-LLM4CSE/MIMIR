@@ -9,18 +9,27 @@ import os
 from datetime import datetime, timezone
 
 from .._lib.ratchet import (
+    NEAR_BOUND,
     NOISY_METRICS,
     append_ledger,
+    bound_of,
+    bound_ratio,
     effective_min_improvement,
     load_best,
-    is_improvement,
-    ratchet_verdict,
+    near_miss,
+    objectives_verdict,
+    read_ledger,
+    regression,
+    rewrite_ledger,
     run_primary_value,
     save_best,
 )
 from ....shared.atomic import write_json
+from .._lib import metric_catalog, spec as spec_lib
+from .._lib.report import resolve_roofline
 from .._lib.requests import is_refactor
-from .._lib.store import file_lock, save_opt_config
+from .._lib.store import (file_lock, load_opt_config, load_ref_metrics, load_registry, load_suite,
+                          opt_best_file, save_opt_config)
 from .._lib.layout import opt_session_runs_dir
 from ....shared.atomic import read_json
 
@@ -50,6 +59,65 @@ def ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict)
         if out is not None:
             return out
         return _ratchet_settle_locked(name, run_dir, final_metrics, cfg, outcome_path)
+
+
+_TRADEOFF_STEP = (
+    "Run {run} bettered {better} but worsened {worse} past its tolerance: it is not the best "
+    "until judged. Weigh the two against the primary objective and what was asked, then "
+    "report_verdict(run='{run}', verdict='pass' to keep it or 'rejected', reason=...); when the "
+    "call is close, ask the user first (ask_user_question, your choice first).")
+
+
+def _values_of(final_metrics: dict, cfg: dict, primary_value) -> dict:
+    """The run's value of every metric its spec names, and of its memory."""
+    names = [o["metric"] for o in spec_lib.of(cfg)["objectives"]]
+    names += [r["metric"] for r in cfg.get("requirements") or [] if r.get("metric") != "returncode"]
+    names += ["wall_time_s", *MEMORY_KEYS]
+    values = {name: run_primary_value(final_metrics, name) for name in dict.fromkeys(names)}
+    values[cfg.get("primary_metric", "time_s")] = primary_value
+    return {name: value for name, value in values.items() if value is not None}
+
+
+def _relative_broken(cfg: dict, values: dict) -> list[dict]:
+    """The constraints relative to the baseline this run breaks: each with its threshold. The
+    baseline's own value of an error to its sealed start is its replicates' spread."""
+    rel = spec_lib.relative(cfg.get("requirements") or [])
+    if not rel:
+        return []
+    run_id = cfg.get("baseline_run_id")
+    row = next((r for r in read_ledger(cfg.get("proxy_name", "")) if run_id and r.get("run_id") == run_id), {})
+    base = {**({cfg.get("primary_metric", "time_s"): row.get("primary_value")}), **(row.get("values") or {})}
+    broken = []
+    for req in rel:
+        metric, operator = req["metric"], req["operator"]
+        reference, actual, floor = base.get(metric), values.get(metric), req.get("threshold")
+        if req.get("precision_floor"):
+            floor = max(float(floor or 0.0), _precision_floor(cfg)) or None
+        bounds = [float(b) for b in (None if reference is None else float(reference) * float(req["of_baseline"]),
+                                     floor) if b is not None]
+        if not bounds or actual is None:
+            broken.append({**req, "actual": actual, "note": "no value to compare"})
+            continue
+        # With a threshold and a factor of the baseline, the looser holds: the floor a code
+        # reproducible to the bit is held to, or the spread its own replicates showed.
+        threshold = max(bounds) if operator in ("lt", "lte") else min(bounds)
+        met = {"lt": actual < threshold, "lte": actual <= threshold, "gt": actual > threshold,
+               "gte": actual >= threshold, "eq": actual == threshold}[operator]
+        if not met:
+            broken.append({**req, "threshold": threshold, "actual": actual})
+    return broken
+
+
+# How close a field reordered by an optimisation can stay to its start, by its type: summing in
+# another order moves the last bits, which a float32 field holds far fewer of.
+_PRECISION = {"float64": 1e-10, "float32": 1e-5, "float16": 1e-2}
+
+
+def _precision_floor(cfg: dict) -> float:
+    """The loosest floor the types of the session's sealed starts call for; 0 when none says."""
+    cases = (load_suite(cfg.get("benchmark_name", "")) or {}).get("cases") or []
+    found = [(load_ref_metrics(c["reference_name"]) or {}).get("dtype") for c in cases if c.get("reference_name")]
+    return max((_PRECISION.get(str(d), 0.0) for d in found), default=0.0)
 
 
 def _timing_warning(verdict: str | None, primary_metric: str, best: dict | None,
@@ -92,6 +160,16 @@ def _memory_warning(verdict: str | None, primary_metric: str, best: dict | None,
     return (f"Accepted, but its {key} grew {peak / before - 1:+.0%} ({before:.0f} -> {peak:.0f} MB). "
             f"If memory matters here, add a requirement on {key}; "
             "proxy_eval(op='profile', level='memory') shows what allocates it.")
+
+
+def _bound(name: str, cfg: dict, best: dict | None) -> tuple[float | None, str]:
+    """The session's hardware bound for the best run's cases: declared, else its roofline."""
+    best_dir = os.path.join(opt_session_runs_dir(name), str((best or {}).get("run_id") or ""))
+    try:
+        peaks = resolve_roofline(load_registry().get(name) or {})
+    except Exception:
+        peaks = (0.0, 0.0)
+    return bound_of(cfg, read_json(os.path.join(best_dir, "metrics.json")) or {}, peaks)
 
 
 def _run_axis(run_dir: str) -> str:
@@ -144,14 +222,25 @@ def _ratchet_settle_locked(
     min_improvement, margin_source = effective_min_improvement(cfg)
     # A run tagged with a refactor request's axis is kept when it costs nothing measurable.
     neutral = is_refactor(_run_axis(run_dir))
-    verdict = ratchet_verdict(feasible, primary_value, best, goal, min_improvement, neutral=neutral)
-    kept_neutral = (neutral and verdict == "accept" and best is not None
-                    and not is_improvement(primary_value, best.get("primary_value"), goal, min_improvement))
+    objectives = spec_lib.of(cfg)["objectives"]
+    values = _values_of(final_metrics, cfg, primary_value)
+    broken = [] if is_baseline else _relative_broken(cfg, values)
+    feasible = feasible and not broken
+    best_values = None if best is None else (best.get("values") or {primary_metric: best.get("primary_value")})
+    # The margin is the noise's: of the primary, and of any objective two runs of one code move.
+    margins = {o["metric"]: (min_improvement if o is objectives[0] or metric_catalog.is_noisy(cfg, o["metric"])
+                             else 0.0) for o in objectives}
+    verdict, better, worse = objectives_verdict(feasible, values, best_values, objectives, margins, neutral=neutral)
+    kept_neutral = neutral and verdict == "accept" and best is not None and not better
 
+    # A metric the spec already holds, as an objective or a constraint, is judged: no warning on it.
+    covered = {o["metric"] for o in objectives} | {r.get("metric") for r in cfg.get("requirements") or []}
     measured = any((r.get("metrics") or {}).get("regions") for r in final_metrics.get("results") or [])
-    timing_warning = _timing_warning(verdict, primary_metric, best, wall_value, measured)
+    timing_warning = (None if "wall_time_s" in covered
+                      else _timing_warning(verdict, primary_metric, best, wall_value, measured))
     memory = {k: final_metrics[k] for k in MEMORY_KEYS if final_metrics.get(k) is not None}
-    memory_warning = _memory_warning(verdict, primary_metric, best, memory)
+    memory_warning = (None if covered & set(MEMORY_KEYS)
+                      else _memory_warning(verdict, primary_metric, best, memory))
 
     # The launch gate in prepare_run guarantees this run measured the untouched tree;
     # recording it opens the gate, exactly once.
@@ -161,19 +250,55 @@ def _ratchet_settle_locked(
         if machine.get("machine_signature"):
             cfg["machine"] = machine
 
+    # A rejected run says what its code did, not whether its idea is wrong: a regression
+    # is a version to diagnose, a gain under the margin one to combine with others.
+    best_val = best.get("primary_value") if best else None
+    regressed = missed = None
+    if verdict == "reject" and feasible:
+        regressed = regression(primary_value, best_val, goal, min_improvement)
+        missed = near_miss(primary_value, best_val, goal, min_improvement)
+
     stall = int(cfg.get("stall", 0))
     if verdict == "accept":
-        save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value, memory=memory)
+        # A refactor kept as neutral moves the code, not the value to beat: the faster stays
+        # the reference, or neutral runs would let the time drift up a margin at a time.
+        if kept_neutral:
+            save_best(name, run_id, best_val, launch_tree, wall_value=best.get("wall_value"),
+                      memory=memory, measured=primary_value, values=best_values)
+        else:
+            save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value, memory=memory,
+                      values=values)
         best  = load_best(name)
         stall = 0
-    elif feasible and primary_value is not None:
-        stall += 1  # feasible but not an improvement — a stalled iteration
+        cfg["stall_reviewed"] = False
+    elif verdict != "tradeoff" and feasible and primary_value is not None:
+        stall += 1  # feasible but not an improvement; a tradeoff counts once judged
 
+    bound = basis = ratio = None
     if feasible and stall >= max_stall:
-        verdict = "converged"
+        bound, basis = _bound(name, cfg, best)
+        ratio = bound_ratio(best.get("primary_value") if best else None, bound, goal) if bound else None
+        if (ratio is not None and ratio <= NEAR_BOUND) or cfg.get("stall_reviewed"):
+            verdict = "converged"
+        else:
+            # Far from the bound, or with none known: the stop rule alone does not end the
+            # search. One more streak follows a review of what limits the code.
+            verdict = "stalled"
+            cfg["stall_reviewed"] = True
+            stall = 0
 
     cfg["stall"] = stall
     save_opt_config(cfg)
+    bound_fields = ({"bound": bound, "bound_basis": basis, "bound_ratio": ratio}
+                    if verdict in ("stalled", "converged") else {})
+    judged = {
+        "values": values,
+        **({"better": better, "worse": worse} if better or worse else {}),
+        **({"broken": broken} if broken else {}),
+        **({"regressed": regressed} if regressed is not None else {}),
+        **({"near_miss": missed} if missed is not None else {}),
+        **bound_fields,
+    }
 
     append_ledger(name, {
         "run_id":        run_id,
@@ -192,6 +317,9 @@ def _ratchet_settle_locked(
         "min_improvement": min_improvement,
         "best_run_id":   best.get("run_id") if best else None,
         **({"neutral": True} if kept_neutral else {}),
+        **judged,
+        # What the best was once this run settled: a judgement taking it back restores it.
+        **({"best_after": best} if verdict == "accept" else {}),
         **memory,
         **({"timing_warning": timing_warning} if timing_warning else {}),
         **({"memory_warning": memory_warning} if memory_warning else {}),
@@ -207,6 +335,9 @@ def _ratchet_settle_locked(
            if kept_neutral else {}),
         "stall":          stall,
         "max_stall":      max_stall,
+        **judged,
+        **({"next_step": _TRADEOFF_STEP.format(run=run_id, better=", ".join(better), worse=", ".join(worse))}
+           if verdict == "tradeoff" else {}),
         "primary_metric": primary_metric,
         "goal":           goal,
         # Said on every run, not buried in the config: the margin is what decides
@@ -272,3 +403,122 @@ def _settle_incomparable(
         pass
     outcome["best"] = best
     return outcome
+
+
+def judge(proxy_name: str, run_id: str, decision: str, reason: str) -> dict:
+    """The agent's verdict on a run (``report_verdict``): settle a ``tradeoff`` ("accept" makes it
+    the best), or take back the best ("reject" of the best, say for breaking a directive: the best
+    before it comes back). The ledger keeps the judgement and why; the user's word reaches it
+    through the agent's question."""
+    from . import err, ok
+    if decision not in ("accept", "reject"):
+        return err("decision is 'accept' or 'reject'.")
+    if not reason.strip():
+        return err("A judgement says why: give reason.")
+    cfg = load_opt_config(proxy_name)
+    if not cfg:
+        return err("No optimization session found.")
+    name = cfg.get("proxy_name") or proxy_name
+    with file_lock(os.path.join(opt_session_runs_dir(name), ".ratchet.lock")):
+        rows = read_ledger(name)
+        at = next((i for i, r in enumerate(rows) if r.get("run_id") == run_id), None)
+        if at is None:
+            return err(f"No settled run {run_id} in {name}.", hint="proxy_eval_status(op='runs') lists them.")
+        row, best = rows[at], load_best(name)
+        is_best = bool(best and best.get("run_id") == run_id)
+        if row.get("verdict") != "tradeoff" and not (decision == "reject" and is_best):
+            return err(f"{run_id} is {row.get('verdict') or 'unjudged'}: only a tradeoff is judged, "
+                       "or the best taken back.")
+        stall = int(cfg.get("stall", 0))
+        if decision == "accept":
+            best = {"run_id": run_id, "primary_value": row.get("primary_value"), "wall_value": row.get("wall_value"),
+                    **{k: row[k] for k in ("peak_rss_mb", "peak_rss_total_mb") if row.get(k) is not None},
+                    "values": row.get("values") or {}, "tree_snapshot": row.get("launch_tree") or None,
+                    "updated_at": datetime.now(timezone.utc).isoformat()}
+            stall = 0
+            row["best_after"] = best
+        else:
+            if is_best:
+                before = next((r.get("best_after") for r in reversed(rows[:at])
+                               if r.get("verdict") == "accept" and r.get("best_after")), None)
+                best = before
+            else:
+                stall += 1
+        if best is None:
+            try:
+                os.remove(opt_best_file(name))
+            except OSError:
+                pass
+        else:
+            write_json(opt_best_file(name), best, indent=2)
+        row.update({"verdict": decision, "judged_by": "agent", "reason": reason.strip()})
+        rows[at] = row
+        rewrite_ledger(name, rows)
+        cfg["stall"] = stall
+        save_opt_config(cfg)
+        frozen_path = os.path.join(opt_session_runs_dir(name), run_id, "ratchet.json")
+        frozen = read_json(frozen_path)
+        if frozen is not None:
+            frozen.update({"verdict": decision, "judged_by": "agent", "reason": reason.strip()})
+            frozen.pop("next_step", None)
+            try:
+                write_json(frozen_path, frozen, indent=2)
+            except OSError:
+                pass
+    restore = ("" if decision == "accept" and not is_best else
+               " The files still hold its code: proxy_eval(op='reset_to_best', confirm=True) puts the best back."
+               if is_best else "")
+    return ok({"run_id": run_id, "verdict": decision, "judged_by": "agent", "best": best,
+               "note": f"{run_id} judged {decision}.{restore}"})
+
+
+def retire_failing_best(name: str, cfg: dict, reason: str) -> dict | None:
+    """Under constraints just changed, retire the best that no longer meets them: the last
+    kept run before it that does is the best again, else there is none. Each kept run passed
+    over is marked ``retired`` in its ledger row, with why. None when the best still holds.
+    """
+    from .._lib import metrics as metrics_mod
+    with file_lock(os.path.join(opt_session_runs_dir(name), ".ratchet.lock")):
+        best = load_best(name)
+        if not best:
+            return None
+        rows = read_ledger(name)
+        absolute = spec_lib.absolute(cfg.get("requirements") or [])
+
+        def fails(run_id: str, values: dict) -> list[dict]:
+            met = read_json(os.path.join(opt_session_runs_dir(name), run_id, "metrics.json")) or {}
+            out = []
+            for r in met.get("results") or []:
+                checked = metrics_mod.evaluate_requirements(r.get("metrics") or {}, absolute)
+                out += [{**x, "case_id": r.get("case_id", "")} for x in checked["results"] if not x["met"]]
+            return out + _relative_broken(cfg, values)
+
+        failed = fails(best["run_id"], best.get("values") or {})
+        if not failed:
+            return None
+        # Walk back the kept runs, newest first: each accept's row holds the best it made.
+        retired, restored = {best["run_id"]: failed}, None
+        for row in reversed(rows):
+            made = row.get("best_after")
+            if row.get("verdict") != "accept" or not made or row.get("retired") or made["run_id"] in retired:
+                continue
+            why = fails(made["run_id"], made.get("values") or {})
+            if not why:
+                restored = made
+                break
+            retired[made["run_id"]] = why
+        for row in rows:
+            if row.get("run_id") in retired:
+                row["retired"] = {"reason": reason, "failed": retired[row["run_id"]][:8]}
+        rewrite_ledger(name, rows)
+        if restored is None:
+            try:
+                os.remove(opt_best_file(name))
+            except OSError:
+                pass
+        else:
+            write_json(opt_best_file(name), restored, indent=2)
+        cfg["stall"], cfg["stall_reviewed"] = 0, False
+        save_opt_config(cfg)
+    return {"retired": best["run_id"], "also_retired": sorted(set(retired) - {best["run_id"]}),
+            "failed": failed[:8], "best": restored}

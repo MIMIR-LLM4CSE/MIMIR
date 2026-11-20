@@ -15,6 +15,45 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Several objectives, relative constraints, a bound.** `proxy_eval(op='init'|'configure',
+  spec=...)` says what a session optimises and under what: objectives (the first the
+  primary, a secondary with a tolerance), constraints with a threshold, a factor of the
+  baseline's value (`of_baseline`) or both, `precision_floor` (an error may reach what the
+  sealed field's type allows, 1e-5 in float32: a reordered sum is not a wrong one),
+  directives, the program's own metrics, and the hardware's bound with how it was worked
+  out. A run better on one objective and worse on another is a `tradeoff`, judged with
+  `report_verdict`. `proxy_eval_status(op='metrics')` lists the metrics, the spec and its
+  history.
+- **A spec changes with a reason.** Once a session is measured, a change gives its reason,
+  kept in `spec_history.jsonl` with what it loosened. A best that no longer meets the
+  constraints is retired, and the last kept run that does is the best again, so a
+  correctness fix is not judged against code that was fast because it was wrong.
+  `report_verdict(verdict='rejected')` on the best takes it back when no metric can say it.
+- **`level='asm'`.** The instruction mix of a GPU kernel's SASS (Nsight Compute) or a CPU
+  function's machine code (`perf annotate`): opcodes by how often they ran, calls into slow
+  paths, spills. The kernel view also gives the FMA, ALU and LSU pipes' use, registers and
+  spilled bytes, and names the pipe that bounds it (`compute: alu`).
+- **`proxy_eval(op='apply_run', run_id=...)`** puts a run's own edit back onto the files, to
+  combine small gains and measure them together.
+
+### Changed
+- **`stalled` before `converged`.** After `max_stall` runs without a gain, a session
+  converges only when its best is near the hardware's bound (the declared bound, else the
+  roofline of the proxy's `flops` and `bytes_moved` against its peaks). Otherwise it
+  reports `stalled`, asks for the bound and a profile down to the instructions, and
+  converges after one more streak.
+- **A rejection says what its version did.** A run more than twice the margin (or 5 %)
+  slower than the best is `regressed`: it is profiled, its profile comes beside the best's,
+  and the reply asks for a diagnosis before the reset. A run better by less than the margin
+  is a `near_miss`, kept on record. `axes_tried` lists `near_misses`, `regressed` and
+  `not_kept` apart, and says a rejection rules out a version, not an idea. The code map
+  shows "not kept", "near miss" or "regressed" where it said "ruled out".
+
+### Fixed
+- **A refactor kept as neutral no longer moves the value to beat.** The faster run stays
+  the reference, so neutral runs cannot let the time drift up a margin at a time.
+
 ## [1.17.0] — 2026-11-16
 
 ### Added

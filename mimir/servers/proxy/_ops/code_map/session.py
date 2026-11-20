@@ -82,6 +82,9 @@ def _build(name: str) -> dict:
             "run_id": row.get("run_id", ""),
             "axis": row.get("axis", ""),
             "verdict": row.get("verdict", ""),
+            # What a rejection says of its idea, and a kept run that no longer counts.
+            **{k: row[k] for k in ("near_miss", "regressed") if row.get(k) is not None},
+            **({"retired": row["retired"].get("reason", "")} if row.get("retired") else {}),
             "value": row.get("primary_value"),
             "incumbent_run_id": inc.get("run_id", ""),
             "incumbent_value": inc.get("primary_value"),

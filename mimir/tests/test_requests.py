@@ -38,12 +38,14 @@ class StoreTests(_Store):
 class RefactorTests(_Store):
     def test_a_refactor_run_is_kept_when_neutral_and_only_a_refactor(self) -> None:
         from mimir.servers.proxy._lib import ratchet
-        best = {"primary_value": 10.0}
-        self.assertEqual(ratchet.ratchet_verdict(True, 10.1, best, "min", 0.02, neutral=True), "accept")
-        self.assertEqual(ratchet.ratchet_verdict(True, 10.5, best, "min", 0.02, neutral=True), "reject")
-        self.assertEqual(ratchet.ratchet_verdict(True, 10.1, best, "min", 0.02), "reject")
-        self.assertEqual(ratchet.ratchet_verdict(True, 9.9, best, "max", 0.02, neutral=True), "accept")
-        self.assertEqual(ratchet.ratchet_verdict(False, 9.0, best, "min", 0.02, neutral=True), "reject")
+        def verdict(feasible, value, goal="min", neutral=False):
+            return ratchet.objectives_verdict(feasible, {"t": value}, {"t": 10.0}, [{"metric": "t", "goal": goal}],
+                                              {"t": 0.02}, neutral=neutral)[0]
+        self.assertEqual(verdict(True, 10.1, neutral=True), "accept")
+        self.assertEqual(verdict(True, 10.5, neutral=True), "reject")
+        self.assertEqual(verdict(True, 10.1), "reject")
+        self.assertEqual(verdict(True, 9.9, "max", neutral=True), "accept")
+        self.assertEqual(verdict(False, 9.0, neutral=True), "reject")
 
     def test_only_a_refactor_request_s_axis_is_neutral(self) -> None:
         requests.add({"kind": "method"})

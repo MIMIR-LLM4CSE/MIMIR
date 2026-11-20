@@ -19,7 +19,7 @@ from typing import NoReturn
 
 from ._lib import build as build_mod
 from ._lib.build_files import read_report
-from ._lib import command, execute, metrics, proc_run, profiling, ratchet, store, tree_snapshot
+from ._lib import command, execute, metrics, proc_run, profiling, ratchet, spec, store, tree_snapshot
 from ...shared.atomic import read_json
 
 
@@ -241,7 +241,7 @@ class _Plan:
         return cls(
             proxy_name=cfg.get("proxy_name", ""),
             cases=cases,
-            requirements=cfg.get("requirements", []),
+            requirements=spec.absolute(cfg.get("requirements", [])),
             # The budget starts after the build, so compiling never eats measurement time.
             deadline=time.monotonic() + cfg.get("deadline_s", 86400.0),
             per_case_timeout_s=cfg.get("per_case_timeout_s") or None,
@@ -398,9 +398,9 @@ def _write_metrics(run_dir: str, output: dict) -> None:
         _log(f"[proxy_runner] WARNING: could not write metrics.json: {exc}")
 
 
-def _settle_ratchet(proxy_name: str, run_dir: str, output: dict) -> str:
+def _settle_ratchet(proxy_name: str, run_dir: str, output: dict) -> dict:
     """Settle the ledger and best now, so they never depend on the agent calling
-    ``results()`` (which replays the frozen outcome); the verdict, "" if none. Never fatal."""
+    ``results()`` (which replays the frozen outcome); the outcome, {} if none. Never fatal."""
     try:
         from ._ops._eval_ratchet import ratchet_state
         opt_cfg = store.load_opt_config(proxy_name)
@@ -410,10 +410,10 @@ def _settle_ratchet(proxy_name: str, run_dir: str, output: dict) -> str:
                  f"feasible={outcome.get('feasible')} stall={outcome.get('stall')}")
             if outcome.get("timing_warning"):
                 _log(f"[proxy_runner] WARNING: {outcome['timing_warning']}")
-            return str(outcome.get("verdict") or "")
+            return outcome
     except Exception as exc:
         _log(f"[proxy_runner] WARNING: ratchet settle failed: {exc}")
-    return ""
+    return {}
 
 
 def _profile_phase(plan: _Plan, reg: dict, entry: dict, run_dir: str, tally: _Tally,
@@ -547,11 +547,12 @@ def main() -> None:
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
     _write_metrics(run_dir, output)
-    verdict = _settle_ratchet(proxy_name, run_dir, output)
+    outcome = _settle_ratchet(proxy_name, run_dir, output)
     # The baseline and every kept run, or a run asked to: the map's time bars stay current
-    # where the code moved, and a ruled-out attempt costs no extra execution.
+    # where the code moved. A regression too: its profile beside the best's says why.
     baseline = (store.load_opt_config(proxy_name) or {}).get("baseline_run_id")
-    if verdict == "accept" or cfg.get("profile") or baseline == os.path.basename(run_dir):
+    if (outcome.get("verdict") == "accept" or outcome.get("regressed") is not None
+            or cfg.get("profile") or baseline == os.path.basename(run_dir)):
         _profile_phase(plan, reg, entry, run_dir, tally)
 
     if all_passed:

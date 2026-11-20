@@ -10,7 +10,7 @@ import os
 from datetime import datetime, timezone
 
 from ....shared.atomic import write_json
-from . import store
+from . import metric_catalog, store
 from ....shared.atomic import read_json
 
 
@@ -102,21 +102,110 @@ def _within_noise(new, old, goal: str, margin: float) -> bool:
     return new >= old - tol if goal == "max" else new <= old + tol
 
 
-def ratchet_verdict(feasible: bool, primary_value, best: dict | None,
-                     goal: str, min_improvement: float = 0.0, neutral: bool = False) -> str | None:
-    """``"accept"`` (feasible and better by *min_improvement*, or first), ``"reject"``, or None
-    (no incumbent, and infeasible or without a value). With *neutral* (a refactor), feasible and no worse than
-    the best beyond the same margin is enough: a refactor changes the code's shape, not
-    its speed, and is kept when it costs nothing measurable.
+def objectives_verdict(feasible: bool, values: dict, best_values: dict | None,
+                       objectives: list[dict], margins: dict, neutral: bool = False) -> tuple[str | None, list, list]:
+    """The verdict against several objectives, with those bettered (past their margin, their
+    noise) and those worsened (past their tolerance). Better on some and worse on none accepts;
+    better on none rejects, a *neutral* refactor no worse on any kept; better on one and worse on
+    another is ``tradeoff``, which waits for a judgement. One objective judges as before.
     """
+    primary = objectives[0]["metric"]
     if not feasible:
-        return "reject" if best is not None else None
-    if best is None:
-        return "accept" if primary_value is not None else None
-    best_val = best.get("primary_value")
-    if is_improvement(primary_value, best_val, goal, min_improvement):
-        return "accept"
-    return "accept" if neutral and _within_noise(primary_value, best_val, goal, min_improvement) else "reject"
+        return ("reject" if best_values is not None else None), [], []
+    if best_values is None:
+        return ("accept" if values.get(primary) is not None else None), [], []
+    if values.get(primary) is None:
+        return "reject", [], []
+    better, worse = [], []
+    for objective in objectives:
+        name, goal = objective["metric"], objective.get("goal", "min")
+        value, base = values.get(name), best_values.get(name)
+        if value is None or base is None:
+            continue
+        margin = margins.get(name, 0.0)
+        tolerance = objective.get("tolerance")
+        if is_improvement(value, base, goal, margin):
+            better.append(name)
+        elif not _within_noise(value, base, goal, max(margin, tolerance if tolerance is not None else margin)):
+            worse.append(name)
+    if better and worse:
+        return "tradeoff", better, worse
+    if better:
+        return "accept", better, worse
+    return ("accept" if neutral and not worse else "reject"), better, worse
+
+
+# A loss this much worse than the best, or twice the margin if larger, is a regression:
+# a change that should have helped and did the opposite has a cause worth finding.
+REGRESSION = 0.05
+
+
+def regression(new, best, goal: str, margin: float) -> float | None:
+    """How much worse *new* is than *best* (0.37 for 37 %) when it is a regression; else None."""
+    rel = relative(new, best, goal)
+    return round(rel - 1, 4) if rel is not None and rel - 1 > max(2 * float(margin), REGRESSION) else None
+
+
+def near_miss(new, best, goal: str, margin: float) -> float | None:
+    """The gain of a run better than *best* but within the margin (-0.028 for 2.8 %); else None.
+
+    Kept aside rather than lost: small gains on independent axes add up when combined.
+    """
+    rel = relative(new, best, goal)
+    return round(rel - 1, 4) if rel is not None and rel < 1 and not is_improvement(new, best, goal, margin) else None
+
+
+# ── hardware bound ────────────────────────────────────────────────────────────
+
+# A best within this factor of the bound is near it: a stall there is a convergence.
+NEAR_BOUND = 1.5
+
+_TIME_METRICS = ("time_s", "best_time_s", "total_time_s", "wall_time_s")
+
+
+def roofline_floor(run_metrics: dict, primary_metric: str, peaks: tuple[float, float]) -> float | None:
+    """The fastest *primary_metric* the hardware allows for the cases of *run_metrics*.
+
+    Per case, ``max(flops / peak_gflops, bytes_moved / peak_bandwidth)`` from what the
+    code reports and the proxy's registered *peaks* ``(gflops, gbytes_per_s)``,
+    aggregated as the metric is. None without both peaks, or when a case lacks a count.
+    """
+    gf, bw = peaks
+    if primary_metric not in _TIME_METRICS or not (gf > 0 and bw > 0):
+        return None
+    floors = []
+    for r in run_metrics.get("results") or []:
+        m = r.get("metrics") or {}
+        flops, moved = m.get("flops"), m.get("bytes_moved")
+        if not (isinstance(flops, (int, float)) and isinstance(moved, (int, float))):
+            return None
+        floors.append((r.get("case_id", ""), bool(r.get("passed")),
+                       max(flops / (gf * 1e9), moved / (bw * 1e9))))
+    if not floors:
+        return None
+    if primary_metric == "best_time_s":
+        return select_best_case(floors)[1]
+    if primary_metric == "total_time_s":
+        return total_time(floors)
+    return sum(f for _, _, f in floors) / len(floors)
+
+
+def bound_of(cfg: dict, best_metrics: dict, peaks: tuple[float, float]) -> tuple[float | None, str]:
+    """``(bound, basis)``: the declared bound, else the roofline floor, else ``(None, "")``."""
+    declared = cfg.get("bound")
+    if isinstance(declared, (int, float)) and declared > 0:
+        return float(declared), str(cfg.get("bound_basis") or "declared")
+    floor = roofline_floor(best_metrics, cfg.get("primary_metric", "time_s"), peaks)
+    if floor:
+        return floor, "roofline: flops and bytes_moved against the registered peaks"
+    return None, ""
+
+
+def bound_ratio(best_value, bound, goal: str) -> float | None:
+    """How far the best is from the bound: 1.0 at it, 5.7 for a time 5.7 times the floor."""
+    if not isinstance(best_value, (int, float)) or not isinstance(bound, (int, float)) or not best_value or not bound:
+        return None
+    return round(best_value / bound if goal != "max" else bound / best_value, 3)
 
 
 def run_primary_value(run_metrics: dict, primary_metric: str):
@@ -146,17 +235,22 @@ def load_best(proxy_name: str) -> dict | None:
 
 def save_best(proxy_name: str, run_id: str, primary_value: float | None,
                tree_snapshot_id: str, wall_value: float | None = None,
-               memory: dict | None = None) -> str | None:
+               memory: dict | None = None, measured: float | None = None,
+               values: dict | None = None) -> str | None:
     """Record *run_id* as best, pointing at the tree snapshot taken at its launch.
 
-    One snapshot for the whole set, so a restore is a measured combination.
+    One snapshot for the whole set, so a restore is a measured combination. *measured* is
+    the run's own value when *primary_value*, the value to beat, is another run's; *values*
+    are each objective's values to beat.
     """
     snapped = tree_snapshot_id or None
     record = {
         "run_id":        run_id,
         "primary_value": primary_value,
         "wall_value":    wall_value,
+        **({"measured_value": measured} if measured is not None else {}),
         **(memory or {}),
+        **({"values": values} if values else {}),
         "tree_snapshot": snapped,
         "updated_at":    datetime.now(timezone.utc).isoformat(),
     }
@@ -176,6 +270,15 @@ def append_ledger(proxy_name: str, entry: dict) -> None:
             fh.write(json.dumps(entry) + "\n")
     except OSError:
         pass
+
+
+def rewrite_ledger(proxy_name: str, rows: list[dict]) -> None:
+    """Write the whole ledger again: a judgement changes a row already settled."""
+    path = store.opt_ledger_file(proxy_name)
+    temp = f"{path}.{os.getpid()}.tmp"
+    with open(temp, "w", encoding="utf-8") as fh:
+        fh.writelines(json.dumps(row) + "\n" for row in rows)
+    os.replace(temp, path)
 
 
 def read_ledger(proxy_name: str) -> list[dict]:
@@ -209,11 +312,8 @@ def baseline_value(cfg: dict, rows: list[dict]):
 
 # ── measurement policy ────────────────────────────────────────────────────────
 
-# Metrics whose value moves between two runs of identical code. A timing metric on a
-# shared node is the whole reason this file needed a notion of noise; an accuracy metric
-# against a sealed reference is reproducible to the bit, and repeating it buys nothing.
-NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per_s",
-                  "bandwidth_gbytes_per_s", "best_time_s", "total_time_s")
+# Metrics whose value moves between two runs of identical code: the catalogue says which.
+NOISY_METRICS = metric_catalog.NOISY_METRICS
 
 # Run-level metrics summed up from the cases' ``time_s``: a replicate of a case holds that.
 _FROM_CASE_TIMES = ("best_time_s", "total_time_s")

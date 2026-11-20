@@ -36,6 +36,7 @@ const KIND_LABEL: Record<string, string> = {
   "not kept": "not kept",
   failed: "failed",
   elsewhere: "other machine",
+  retired: "retired: no longer meets the constraints",
 };
 
 /**

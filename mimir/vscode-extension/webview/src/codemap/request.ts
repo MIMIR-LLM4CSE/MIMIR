@@ -21,7 +21,10 @@ export interface Draft {
 }
 
 /** A run that tried a request, against the value the request started from. */
-export interface RequestStep { run_id: string; variant: number | null; axis: string; verdict: string; value: number | null; delta: number | null }
+export interface RequestStep {
+  run_id: string; variant: number | null; axis: string; verdict: string; value: number | null; delta: number | null;
+  near_miss?: number; regressed?: number; retired?: string;
+}
 
 /** A request as the server answers it, with the runs that tried it. */
 export interface Request {

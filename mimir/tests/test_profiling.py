@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from mimir.servers.proxy._lib import procs, profiling
-from mimir.servers.proxy._lib.profiling import Frame, cpu, frames, gpu, memory
+from mimir.servers.proxy._lib.profiling import Frame, asm, cpu, frames, gpu, memory
 from mimir.servers.proxy._lib.profiling import describe as T
 from mimir.servers.proxy import server_proxy
 from mimir.servers.proxy._ops import eval_session
@@ -377,6 +377,19 @@ _NCU = """\
 "","","","","%","%","%"
 "0","1234","solver","stencil_kernel","34.10","88.52","50.00"
 """
+_SASS = """\
+"Address","Source","Instructions Executed"
+"0x10","@P0 IMAD R1, R2, R3, R4","960"
+"0x20","FFMA R1, R2, R3, R1","300"
+"0x30","CALL.REL.NOINC `(__internal_0_$__cuda_sm3x_div_rn_noftz_f32_slowpath)","52"
+"0x40","LDG.E R2, [R4.64]","200"
+"""
+_ANNOTATED = """\
+ Percent |      Source code & Disassembly of solver for cycles
+    50.00 :   401a2b:  vfmadd231sd %xmm1,%xmm2,%xmm0
+    30.00 :   401a30:  vdivsd %xmm3,%xmm0,%xmm0
+    20.00 :   401a34:  vmovsd (%rax,%rcx,8),%xmm1
+"""
 _CU = """\
 #include <cuda_runtime.h>
 namespace k {
@@ -517,6 +530,25 @@ class GpuReadingTests(unittest.TestCase):
         self.assertEqual(gpu.bound(found), "memory")
         self.assertEqual(gpu.bound({"sm_pct": 80, "dram_pct": 30}), "compute")
         self.assertEqual(gpu.bound({"sm_pct": 10, "dram_pct": 12}), "latency")
+        # Integer and address arithmetic saturating the ALU reads as such, not as the maths.
+        self.assertEqual(gpu.bound({"sm_pct": 80, "dram_pct": 30, "alu_pipe_pct": 63.5, "fma_pipe_pct": 20.0}),
+                         "compute: alu")
+
+    def test_the_instructions_say_what_the_code_spends_them_on(self) -> None:
+        """What the 18th's memory profile could not see: a stencil kernel spending its
+        instructions on address arithmetic and an IEEE division routine called per point."""
+        _write_files(self.root, {"asm.csv": _SASS})
+        found = asm.mix(asm.ncu_source(os.path.join(self.root, "asm.csv")))
+        self.assertEqual(found["executed"], 1512)
+        self.assertEqual(found["classes"]["integer"], 0.6349)
+        self.assertIn("__internal_0_$__cuda_sm3x_div_rn_noftz_f32_slowpath", found["calls"])
+        said = " ".join(asm.notes(found))
+        self.assertIn("base pointer with constant offsets", said)
+        self.assertIn("reciprocal", said)
+        # perf annotate on a CPU function: shares of its samples, the divisions a slow path.
+        cpu_mix = asm.mix(asm.annotated(_ANNOTATED))
+        self.assertEqual(cpu_mix["classes"], {"floating": 0.5, "special": 0.3, "load": 0.2})
+        self.assertIn("divisions and square roots", " ".join(asm.notes(cpu_mix)))
 
 
 class GpuChoiceTests(unittest.TestCase):
@@ -565,6 +597,25 @@ class GpuChoiceTests(unittest.TestCase):
             prof = profiling.profile(["./solver"], out, out, [], level="kernel")
         self.assertIn("stencil", prof["kernel_detail"]["unavailable"])
         self.assertIn("files", profiling.top({**_PROFILE, **prof}))
+
+    def test_the_asm_view_goes_to_the_costliest_kernel_or_function(self) -> None:
+        cases = [
+            ("a CUDA kernel", {"gpu": {"vendor": "nvidia", "kernels": {"stencil": {}}}}, "sass", "stencil"),
+            ("a CPU function", {"functions": {"solver.c::sweep": {"self": 0.8}}}, "annotate", "sweep"),
+            ("an AMD kernel", {"gpu": {"vendor": "amd", "kernels": {"stencil": {}}}}, None, "amd GPUs"),
+        ]
+        for label, held, tool, named in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as out, \
+                 mock.patch.object(gpu, "choose_gpu", return_value=("ncu", "")), \
+                 mock.patch.object(profiling, "perf_allowed", return_value=(True, "")), \
+                 mock.patch.object(profiling.asm, "sass", side_effect=lambda *a, **k: {"kernel": a[2]}), \
+                 mock.patch.object(profiling.asm, "annotate", side_effect=lambda *a, **k: {"function": a[2]}):
+                _write_files(out, {"profile.json": json.dumps(held)})
+                found = profiling.profile(["./solver"], out, out, [], level="asm")["asm"]
+                if tool is None:
+                    self.assertIn(named, found["unavailable"])
+                else:
+                    self.assertEqual(found, {"kernel" if tool == "sass" else "function": named})
 
 
 _MASSIF = """\

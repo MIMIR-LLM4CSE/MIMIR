@@ -564,25 +564,22 @@ class IsImprovementTests(unittest.TestCase):
 
 
 class RatchetVerdictTests(unittest.TestCase):
-    def test_first_feasible_accepts(self) -> None:
-        self.assertEqual(ratchet.ratchet_verdict(True, 5.0, None, "min"), "accept")
-
-    def test_feasible_improvement_accepts(self) -> None:
-        best = {"primary_value": 5.0}
-        self.assertEqual(ratchet.ratchet_verdict(True, 4.0, best, "min"), "accept")
-
-    def test_feasible_no_improvement_rejects(self) -> None:
-        best = {"primary_value": 5.0}
-        self.assertEqual(ratchet.ratchet_verdict(True, 5.0, best, "min"), "reject")
-
-    def test_infeasible_with_incumbent_rejects(self) -> None:
-        best = {"primary_value": 5.0}
-        self.assertEqual(ratchet.ratchet_verdict(False, 4.0, best, "min"), "reject")
-
-    def test_infeasible_without_incumbent_is_none(self) -> None:
-        self.assertIsNone(ratchet.ratchet_verdict(False, 4.0, None, "min"))
-        # Feasible, but it measured no value: nothing to keep as the best.
-        self.assertIsNone(ratchet.ratchet_verdict(True, None, None, "min"))
+    def test_one_objective_judges_as_the_ratchet_always_did(self) -> None:
+        t = [{"metric": "t", "goal": "min"}]
+        cases = [
+            ("first feasible", True, 5.0, None, "accept"),
+            ("feasible improvement", True, 4.0, 5.0, "accept"),
+            ("feasible, no improvement", True, 5.0, 5.0, "reject"),
+            ("infeasible with an incumbent", False, 4.0, 5.0, "reject"),
+            ("infeasible without one", False, 4.0, None, None),
+            # Feasible, but it measured no value: nothing to keep as the best.
+            ("no value", True, None, None, None),
+        ]
+        for label, feasible, value, best, expected in cases:
+            with self.subTest(label):
+                found = ratchet.objectives_verdict(feasible, {"t": value} if value is not None else {},
+                                                   None if best is None else {"t": best}, t, {"t": 0.0})[0]
+                self.assertEqual(found, expected)
 
 
 class RatchetStoreTests(_TmpStorageTest):

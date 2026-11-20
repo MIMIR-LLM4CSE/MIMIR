@@ -16,7 +16,8 @@ def vendor_of(runtimes: set[str] | list[str]) -> str:
     return "nvidia" if found & _NVIDIA else "amd" if found & _AMD else ""
 
 
-def _number(text: str) -> float:
+def number(text: str) -> float:
+    """A number as a tool's CSV writes it: thousands separated by commas, empty for none."""
     return float((text or "0").replace(",", "").strip() or 0)
 
 
@@ -35,7 +36,7 @@ def sample_device(vendor: str) -> dict[str, float] | None:
         out = subprocess.run(["rocm-smi", "--showmeminfo", "vram", "--json"],
                              capture_output=True, text=True, timeout=5).stdout
         cards = json.loads(out or "{}")
-        return {"device": sum(_number(c.get("VRAM Total Used Memory (B)", "0")) for c in cards.values()
+        return {"device": sum(number(c.get("VRAM Total Used Memory (B)", "0")) for c in cards.values()
                               if isinstance(c, dict)) / 2**20}
     except (OSError, subprocess.SubprocessError, ValueError):
         return None

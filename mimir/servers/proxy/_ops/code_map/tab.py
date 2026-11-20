@@ -141,6 +141,7 @@ def requests_view() -> list[dict]:
                 continue
             mine.append({"run_id": st["run_id"], "variant": tag[1] if tag else None, "axis": st["axis"],
                          "verdict": st["verdict"], "value": st["value"],
+                         **{k: st[k] for k in ("near_miss", "regressed", "retired") if k in st},
                          "delta": delta(st["value"], start.get("value"))})
         status = row.get("status", "open")
         if mine and not row.get("conclusion") and status in ("open", "studying", "proposed"):

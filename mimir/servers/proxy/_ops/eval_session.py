@@ -4,6 +4,7 @@ reset, reset_to_best, rebaseline, end. Every response names the exact next call.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -23,22 +24,23 @@ from .._lib.procs import (
     opt_active_run_dir,
     update_opt_active_link,
 )
-from .._lib.ratchet import effective_repeat, load_best
+from .._lib.ratchet import effective_repeat, load_best, read_ledger
 from ._eval_validate import (
     check_optimize_paths,
     check_reference_requirements,
     check_requirements,
 )
 from ....shared import build_progress, run_channel
-from .._lib import proc_run, requests, tree_snapshot
+from .._lib import proc_run, requests, spec as spec_lib, tree_snapshot
 from ....shared.atomic import write_json
 from .._lib.store import (
     opt_git_dir, workspace_root, entry_or_err, load_suite, load_opt_config, save_opt_config,
     opt_ledger_file, opt_best_file, write_active_session, clear_active_session, run_dir_names,
 )
-from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name
+from .._lib.layout import cache_dir, opt_session_runs_dir, resolve_proxy_name, spec_history_file
 from ....shared.atomic import read_json
 from . import requests_ops
+from ._eval_ratchet import retire_failing_best
 from .code_map import session as code_map_session
 from .eval_common import (
     NEXT_DETACHED,
@@ -70,6 +72,9 @@ _DIVERT_CHANNEL = "proxy_eval"
 # How long op='run' waits before handing the run to the watcher: under the client's cap
 # on tool calls (TOOL_CALL_TIMEOUT_MAX_SECS, 1200 s), with room to settle and read results.
 RUN_WAIT_BUDGET_S = 1100.0
+
+
+_METRICS_HINT = "proxy_eval_status(op='metrics') lists the metrics and what each needs."
 
 
 def _workspace_branch() -> str:
@@ -153,6 +158,7 @@ def init(
     max_stall: int = 5,
     convergence: dict | None = None,
     repeat: int = 0,
+    spec: dict | None = None,
 ) -> dict:
     entry, error = entry_or_err(proxy_name)
     if error:
@@ -164,6 +170,12 @@ def init(
                    hint="Create one with proxy_exec(op='benchmark_create', ...) "
                         "or proxy_manage(op='suite_define', ...) first.")
 
+    if spec:
+        spec_err = spec_lib.check(spec, load_opt_config(proxy_name) or {}, suite, entry)
+        if spec_err:
+            return err(spec_err, hint=_METRICS_HINT)
+        held = spec_lib.apply({}, spec)
+        requirements, primary_metric, primary_goal = held["requirements"], held["primary_metric"], held["primary_goal"]
     req_err = check_requirements(requirements)
     if req_err:
         return err(req_err)
@@ -242,6 +254,8 @@ def init(
         "root":              workspace_root(),
         "initialized_at":    datetime.now(timezone.utc).isoformat(),
     }
+    if spec:
+        spec_lib.apply(cfg, spec)
     save_opt_config(cfg)
     write_active_session(proxy_name)
 
@@ -259,17 +273,33 @@ def configure(
     benchmark_name: str = "",
     python_executable: str = "",
     max_hours: float = 0.0,
+    spec: dict | None = None,
 ) -> dict:
     cfg = load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
                    hint="Call proxy_eval(op='init', ...) first.")
+    before = spec_lib.of(cfg)
 
+    # Requirements given alone are the spec's constraints said the old way.
     if requirements is not None:
-        req_err = check_requirements(requirements)
+        spec = {**(spec or {}), "constraints": requirements}
+    loosened: list[dict] = []
+    if spec:
+        # What is not said again is kept: a configure names only what changes.
+        whole = spec_lib.merged(before, spec)
+        spec_err = spec_lib.check(whole, cfg, load_suite(cfg.get("benchmark_name", "")) or {},
+                                  entry_or_err(cfg.get("proxy_name", ""))[0] or {})
+        if spec_err:
+            return err(spec_err, hint=_METRICS_HINT)
+        req_err = check_requirements(whole.get("constraints") or [])
         if req_err:
             return err(req_err)
-        cfg["requirements"] = requirements
+        reason = str(spec.get("reason") or "").strip()
+        if cfg.get("baseline_run_id") and not reason:
+            return err("Changing a measured session's spec says why: give spec.reason.")
+        spec_lib.apply(cfg, whole)
+        loosened = spec_lib.loosened(before, spec_lib.of(cfg), cfg)
 
     if benchmark_name:
         if load_suite(benchmark_name) is None:
@@ -297,7 +327,41 @@ def configure(
 
     cfg["updated_at"] = datetime.now(timezone.utc).isoformat()
     save_opt_config(cfg)
-    return ok(with_next({"config": cfg}, NEXT_RUN))
+    answer: dict = {"config": cfg, **({"loosened": loosened} if loosened else {})}
+    if spec and cfg.get("baseline_run_id"):
+        _journal_spec(cfg, before, str(spec.get("reason")).strip(), loosened)
+        # A best measured under looser constraints may not meet these: it is no value to beat.
+        retired = retire_failing_best(cfg.get("proxy_name", ""), cfg, str(spec.get("reason")).strip())
+        if retired:
+            answer["retired"] = retired
+            back = retired["best"]
+            answer["note"] = (
+                f"The best, {retired['retired']}, does not meet the constraints as they now stand, so it "
+                "is no longer the value to beat: "
+                + (f"{back['run_id']} is the best again." if back else
+                   "no kept run meets them, and the next feasible run sets the best.")
+                + " Gains from here are counted against code that meets them. Say so in your reply, "
+                "and restore a tree that meets them before the next edit"
+                + (" (reset_to_best)." if back else " (fix the code, or reset to the baseline)."))
+    if any(item["correctness"] for item in loosened):
+        answer["note"] = ((answer.get("note", "") + " ").lstrip()
+                          + "This loosens what the solution must satisfy. Say so in your reply, with why; "
+                          "it reads from the next verdict on, and runs already judged keep theirs.")
+    return ok(with_next(answer, NEXT_RUN))
+
+
+def _journal_spec(cfg: dict, before: dict, reason: str, loosened: list[dict]) -> None:
+    """A spec changed mid-session, in its history: when (after which run), why, from what to what."""
+    name = cfg.get("proxy_name", "")
+    rows = read_ledger(name)
+    entry = {"ts": datetime.now(timezone.utc).isoformat(), "after_run": rows[-1].get("run_id") if rows else "",
+             "reason": reason, "before": before, "after": spec_lib.of(cfg),
+             **({"loosened": loosened} if loosened else {})}
+    try:
+        with open(spec_history_file(name), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
 
 
 def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
@@ -675,6 +739,36 @@ def reset_to_request(request_id: str) -> dict:
     }, f"implement the variant, then proxy_eval(op='run', axis='[{row['id']}.k] <variant>', confirm=True)"))
 
 
+def apply_run(run_id: str, proxy_name: str = "") -> dict:
+    """Put a settled run's own edit onto the files as they stand: the change from the tree it
+    was measured against to the tree it ran. Small gains on independent axes are combined
+    this way, then measured together."""
+    cfg = load_opt_config(proxy_name)
+    if not cfg:
+        return err("No optimization session found.", hint="Call proxy_eval(op='init', ...) first.")
+    name = cfg.get("proxy_name", "")
+    rows = {r.get("run_id"): r for r in read_ledger(name)}
+    row = rows.get(run_id)
+    if row is None or not row.get("launch_tree"):
+        return err(f"No settled run {run_id} with a launch tree in {name}.",
+                   hint="proxy_eval_status(op='runs') lists them; axes_tried.near_misses names the ones to combine.")
+    parent = rows.get(row.get("best_run_id") or "")
+    base = (parent or {}).get("launch_tree") or ("" if parent else cfg.get("baseline_id", ""))
+    if not base:
+        return err(f"The tree {run_id} was measured against is not on record.")
+    paths = list(cfg.get("optimize_paths") or [])
+    changed, why = tree_snapshot.apply_patch(opt_git_dir(), workspace_root(), paths, base, row["launch_tree"])
+    if not changed:
+        return err(f"{run_id}'s edit does not apply to the files as they stand: {why}",
+                   hint="Nothing was written. Apply it by hand from proxy_eval_status(op='diff'), "
+                        "or start from another tree.")
+    return ok(with_next({
+        "applied": run_id, "axis": row.get("axis", ""), "files": changed,
+        "note": f"{run_id}'s edit ({row.get('axis') or 'no axis'}) is on the files, beside what they held. "
+                "Measure the combination as one run.",
+    }, f"proxy_eval(op='run', axis='combine: ...', confirm=True)"))
+
+
 def rebaseline(proxy_name: str = "") -> dict:
     """Take a new baseline from the current tree, archiving the ledger and best (never deleting)."""
     cfg = load_opt_config(proxy_name)
@@ -718,6 +812,7 @@ def rebaseline(proxy_name: str = "") -> dict:
     # The next baseline run pins the session to wherever it executes.
     cfg.pop("machine", None)
     cfg["stall"] = 0
+    cfg["stall_reviewed"] = False
     cfg["rebaselined_at"] = datetime.now(timezone.utc).isoformat()
     cfg["previous_baseline_id"] = previous
     save_opt_config(cfg)
@@ -895,7 +990,13 @@ _PROFILE_NEXT = {
                 "a high ipc compute-bound; a bandwidth_fraction above 0.7 says the DRAM is the "
                 "limit: move fewer bytes (data layout, loop fusion), not fewer operations",
     "kernel": "read where_time_goes: `bound` says whether the kernel waits on memory, on "
-              "compute, or on neither (latency: too little parallel work or occupancy)",
+              "compute (and which pipe: alu is integer and address arithmetic, fma the floating "
+              "point), or on neither (latency: too little parallel work or occupancy); "
+              "registers and spill_load_bytes say whether it spills. For what its instructions "
+              "are: op='profile', level='asm', focus=<kernel>",
+    "asm": "read where_time_goes: the instruction classes and opcodes by how often they ran, the "
+           "calls into slow paths, the spills, and what the notes make of them. Work out how many "
+           "instructions each point should take and compare: the gap is the next edit",
     "memory": "read where_time_goes: the files whose allocations are live at the peak; for "
               "the functions and lines of one, op='profile', level='memory', focus=<file>",
 }

@@ -46,6 +46,10 @@ export interface Profile {
 }
 export interface Step {
   n: number; run_id: string; axis: string; verdict: string;
+  /** A rejected run's gain under the margin, or its loss past the regression line (0.37 for 37 %). */
+  near_miss?: number; regressed?: number;
+  /** Why a kept run was retired: it no longer meets the constraints. */
+  retired?: string;
   /** The proxy it ran on, and (every proxy at once) that proxy's metric. */
   proxy?: string; metric?: string;
   value: number | null; incumbent_value: number | null; delta: number | null;
@@ -140,7 +144,16 @@ export interface Overlay {
 }
 
 export const edgeKey = (e: { from: string; to: string; kind: string }) => `${e.from}|${e.to}|${e.kind}`;
-const kept = (s: Step) => s.verdict === "accept";
+/** What a verdict line reads of a run, a step or a request's. */
+type Judged = Pick<Step, "verdict" | "near_miss" | "regressed" | "retired">;
+export const kept = (s: Judged) => s.verdict === "accept" && s.retired === undefined;
+/** How a run that is not kept went: a rejection rules out a version, not an idea. */
+const pct = (x: number) => (x > 0 ? "+" : "") + Math.round(x * 1000) / 10 + " %";
+export const notKept = (s: Judged) =>
+  s.retired !== undefined ? "retired" :
+  s.near_miss !== undefined ? "near miss " + pct(s.near_miss) :
+  s.regressed !== undefined ? "regressed " + pct(s.regressed) :
+  s.verdict === "reject" ? "not kept" : s.verdict;
 
 export function overlay(session: Session, k: number, scope: Scope): Overlay {
   const current = session.steps.find((s) => s.n === k);
@@ -230,7 +243,7 @@ export function strip(session: Session, k: number, scope: Scope, width = 760): s
   };
   const dots = dot(0, 0, base, "base", "Baseline · " + session.metric + " " + value(base))
     + session.steps.map((s, i) => dot(i + 1, s.n, s.value, kept(s) ? "kept" : "rej",
-      "#" + s.n + " " + (kept(s) ? "kept" : s.verdict.replace("reject", "ruled out")) + " · "
+      "#" + s.n + " " + (kept(s) ? "kept" : notKept(s)) + " · "
       + (session.combined && s.proxy ? s.proxy + " · " : "") + (s.delta === null ? "–" : signed(s.delta))
       + " · " + (session.combined ? (s.metric ?? "") + " × baseline " : session.metric + " ") + value(s.value)
       + (s.axis ? " · " + s.axis : ""))).join("");
@@ -474,7 +487,7 @@ export function stepCard(session: Session, k: number, fileRow: Row): string {
   return '<div class="section step"><div class="title">Step #' + s.n + "</div>"
     + '<div class="path">' + esc(s.axis || "(no axis given)") + "</div>"
     + (session.combined && s.proxy ? line("proxy", esc(s.proxy)) : "")
-    + line("verdict", kept(s) ? "✓ kept" : "✕ " + esc(s.verdict.replace("reject", "ruled out")), kept(s) ? "is-ok" : "is-danger")
+    + line("verdict", kept(s) ? "✓ kept" : "✕ " + esc(notKept(s)), kept(s) ? "is-ok" : "is-danger")
     + line(session.combined ? (s.metric ?? "metric") + " × baseline" : session.metric,
       value(s.value) + " against " + value(s.incumbent_value)
       + (s.delta === null ? "" : " (" + signed(s.delta) + ")"), better(session, s.delta) ? "is-ok" : "")

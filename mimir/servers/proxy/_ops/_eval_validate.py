@@ -54,8 +54,8 @@ def check_requirements(requirements: list[dict]) -> str | None:
         if req.get("operator") not in VALID_OPT_OPERATORS:
             return (f"requirements[{i}] has invalid operator '{req.get('operator')}'. "
                     "Use one of: lt, gt, lte, gte, eq.")
-        if req.get("threshold") is None:
-            return f"requirements[{i}] is missing 'threshold'."
+        if req.get("threshold") is None and req.get("of_baseline") is None:
+            return f"requirements[{i}] is missing 'threshold' (or 'of_baseline', a factor of the baseline's value)."
     return None
 
 

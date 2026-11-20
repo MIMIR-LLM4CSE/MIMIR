@@ -6,6 +6,7 @@ import {
   dropPrompt, holdsAll, KINDS, kindLabel, live, ready, STATUS_LABEL, targetLabel, tryPrompt, variantRows,
   type Draft, type Request, type Sent, type Target,
 } from "./request";
+import { kept, notKept } from "./session";
 
 const PLACEHOLDER: Record<string, string> = {
   method: "e.g. replace the Jacobi sweeps by a multigrid V-cycle",
@@ -85,7 +86,7 @@ export function requestDetail(r: Request, targetRow: (t: Target) => string, step
     + '</div><table class="vt">' + rows.map(({ label, step }) => {
       const n = step ? stepOf(step.run_id) : null;
       return "<tr" + (n !== null ? ' data-step-n="' + n + '" tabindex="0"' : "") + "><td>" + esc(label) + "</td><td>"
-        + (step ? (step.verdict === "accept" ? '<span class="is-ok">✓ kept</span>' : '<span class="is-danger">✕ ruled out</span>')
+        + (step ? (kept(step) ? '<span class="is-ok">✓ kept</span>' : '<span class="is-danger">✕ ' + esc(notKept(step)) + "</span>")
           : '<span class="empty">not run</span>')
         + "</td><td>" + (step ? delta(step.delta) : "") + "</td></tr>";
     }).join("") + "</table>" : "";

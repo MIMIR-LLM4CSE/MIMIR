@@ -97,7 +97,7 @@ export interface PanelChoice {
 /**
  * A run-by-run curve: each run's value and the best after it, which only a kept run moves.
  * `kind` is the server's word for how the run went ("kept", "not kept", "failed",
- * "elsewhere"); a value of null measured nothing.
+ * "elsewhere", "retired"); a value of null measured nothing.
  */
 export interface PanelChart {
   metric: string;

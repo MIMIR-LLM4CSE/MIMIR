@@ -1,5 +1,5 @@
-"""The proxy ratchet (accept, reject, converge) over fabricated completed runs: verdicts,
-best-so-far, ledger monotonicity, and ``reset_to_best``.
+"""The proxy ratchet (accept, reject, stall, converge) over fabricated completed runs:
+verdicts, best-so-far, ledger monotonicity, ``reset_to_best`` and ``apply_run``.
 """
 
 from mimir.servers.proxy._lib import layout
@@ -59,12 +59,12 @@ class _RatchetFixture(_TmpStorageTest):
             fh.write(f"VERSION = '{tag}'\n")
 
     def _complete_run(self, run_id: str, all_passed: bool, time_s: float,
-                      wall_time_s: float | None = None) -> str:
+                      wall_time_s: float | None = None, extra: dict | None = None) -> str:
         """Fabricate a finished run dir and point the active symlink at it."""
         session_dir = layout.opt_session_runs_dir("tiny")
         run_dir = os.path.join(session_dir, run_id)
         os.makedirs(run_dir, exist_ok=True)
-        case_metrics = {"time_s": time_s}
+        case_metrics = {"time_s": time_s, **(extra or {})}
         if wall_time_s is not None:
             case_metrics["wall_time_s"] = wall_time_s
         with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
@@ -142,8 +142,8 @@ class RatchetLoopTests(_RatchetFixture):
         self.assertEqual(res["verdict"], "accept")
         self.assertEqual(res["best"]["primary_value"], 3.0)
 
-        # Runs D, E: feasible but no improvement -> stall climbs; at max_stall=2
-        # the session reports converged.
+        # Runs D, E: feasible but no improvement -> stall climbs. At max_stall=2 with no
+        # bound known, the session stalls rather than converges: a review comes first.
         self._write_source("D")
         self._complete_run("20240101T000300Z", all_passed=True, time_s=3.0)
         res_d = self._results()
@@ -153,17 +153,102 @@ class RatchetLoopTests(_RatchetFixture):
         self._write_source("E")
         self._complete_run("20240101T000400Z", all_passed=True, time_s=3.0)
         res_e = self._results()
-        self.assertEqual(res_e["verdict"], "converged")
-        self.assertIn("reset_to_best", res_e["next_step"])
+        self.assertEqual((res_e["verdict"], res_e["stall"]), ("stalled", 0))
+        self.assertIn("No bound is known", res_e["recommendation"])
+        self.assertIn("bound_basis", res_e["recommendation"])
+
+        # One more streak after the review: converged, and it says how far from a bound.
+        for tag, run_id in (("F", "20240101T000500Z"), ("G", "20240101T000600Z")):
+            self._write_source(tag)
+            self._complete_run(run_id, all_passed=True, time_s=3.0)
+            res_g = self._results()
+        self.assertEqual(res_g["verdict"], "converged")
+        self.assertIn("No bound is known", res_g["recommendation"])
+        self.assertIn("reset_to_best", res_g["next_step"])
 
         # Ledger: best primary_value is monotone non-increasing (min goal).
         with open(store.opt_ledger_file("tiny")) as fh:
             entries = [json.loads(x) for x in fh if x.strip()]
-        self.assertEqual(len(entries), 5)
+        self.assertEqual(len(entries), 7)
         # best-so-far as recorded per entry never regresses
         seen_best = [e["best_run_id"] for e in entries]
         self.assertEqual(seen_best[0], "20240101T000000Z")   # A
         self.assertEqual(seen_best[-1], "20240101T000200Z")  # C stays best through the end
+
+    def test_a_stall_near_the_bound_converges_and_far_from_it_stalls(self) -> None:
+        """The stop rule ends the search only near what the hardware allows: a declared
+        bound, else the roofline of the proxy's flops and bytes against its peaks."""
+        cases = [
+            ("declared, near", {"bound": 2.5, "bound_basis": "bytes / 2 TB/s"}, None, "converged", 1.2),
+            ("declared, far", {"bound": 0.5, "bound_basis": "bytes / 2 TB/s"}, None, "stalled", 6.0),
+            # 2e9 bytes over 1000 GB/s is 2 ms of floor, 1e9 flops over 1000 GFLOP/s 1 ms.
+            ("roofline, far", None, (1e9, 2e9), "stalled", 1500.0),
+        ]
+        for label, bound, counts, verdict, ratio in cases:
+            with self.subTest(label):
+                self.tearDown()
+                self.setUp()
+                self._init(max_stall=1)
+                if bound:
+                    said = _eval(op="configure", spec=bound, confirm=True)
+                    self.assertEqual(said.get("status"), "ok", said)
+                if counts:
+                    reg = store.load_registry()
+                    reg["tiny"].update(peak_gflops_per_s=1000.0, peak_bandwidth_gbytes_per_s=1000.0)
+                    store.save_registry(reg)
+                extra = {"flops": counts[0], "bytes_moved": counts[1]} if counts else {}
+                self._write_source("A")
+                self._complete_run("20240101T000000Z", all_passed=True, time_s=3.0, extra=extra)
+                self.assertEqual(self._results()["verdict"], "accept")
+                self._write_source("B")
+                self._complete_run("20240101T000100Z", all_passed=True, time_s=3.0, extra=extra)
+                res = self._results()
+                self.assertEqual((res["verdict"], res["bound_ratio"]), (verdict, ratio))
+
+    def test_a_rejection_says_what_its_version_did(self) -> None:
+        """A regression is profiled beside the best and sent to the instructions; a gain
+        under the margin is kept on record and can be put back to combine with another."""
+        self._init(max_stall=9)
+        self._write_source("A")
+        self._complete_run("20240101T000000Z", all_passed=True, time_s=10.0)
+        self.assertEqual(self._results()["verdict"], "accept")
+        best_dir = os.path.join(layout.opt_session_runs_dir("tiny"), "20240101T000000Z")
+        from mimir.servers.proxy._lib import profiling
+        os.makedirs(os.path.dirname(profiling.profile_path(best_dir)))
+        write_json(profiling.profile_path(best_dir), {"tool": "perf", "files": {"optimized.py": 0.9}})
+
+        self._write_source("slow")
+        self._complete_run("20240101T000100Z", all_passed=True, time_s=13.7)
+        res = self._results()
+        self.assertEqual((res["verdict"], res["regressed"]), ("reject", 0.37))
+        self.assertIn("level=['kernel', 'asm']", res["recommendation"])
+        self.assertEqual(res["where_time_goes_best"]["files"], {"optimized.py": 0.9})
+
+        # Two near misses from the same best, on different lines of the code.
+        _eval(op="reset_to_best", confirm=True)
+        with open(self.optimized, "w") as fh:
+            fh.write("VERSION = 'A'\nX = 1\n")
+        self._complete_run("20240101T000200Z", all_passed=True, time_s=9.8)
+        res = self._results()
+        self.assertEqual(res["near_miss"], -0.02)
+        self.assertIn("apply_run", res["recommendation"])
+        _eval(op="reset_to_best", confirm=True)
+        with open(self.optimized, "w") as fh:
+            fh.write("Y = 2\nVERSION = 'A'\n")
+        self._complete_run("20240101T000300Z", all_passed=True, time_s=9.85)
+        self._results()
+
+        _eval(op="reset_to_best", confirm=True)
+        for run_id in ("20240101T000200Z", "20240101T000300Z"):
+            said = _eval(op="apply_run", run_id=run_id, confirm=True)
+            self.assertEqual(said.get("status"), "ok", said)
+        with open(self.optimized) as fh:
+            self.assertEqual(fh.read(), "Y = 2\nVERSION = 'A'\nX = 1\n")
+        # An edit that no longer fits writes nothing.
+        refused = _eval(op="apply_run", run_id="20240101T000200Z", confirm=True)
+        self.assertIn("does not apply", refused["error"])
+        with open(self.optimized) as fh:
+            self.assertEqual(fh.read(), "Y = 2\nVERSION = 'A'\nX = 1\n")
 
     def test_results_are_idempotent_across_polls(self) -> None:
         """Polling results() repeatedly must not move best/stall twice."""

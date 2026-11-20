@@ -15,6 +15,11 @@ best-so-far; a run that regresses (breaks a constraint, or is no better than the
 best) is **rejected**. Every eval response includes a `verdict` and a `next_step`
 field naming the exact next call — follow it.
 
+The ratchet judges a **version**, never an idea. A first version that is slower can hide a
+right idea written the wrong way: 32-bit indexing that still recomputes every address is
+slower, while one base pointer with constant offsets is 14 % faster. A rejected run's
+reply says which kind of rejection it is, and the loop below says what each asks for.
+
 ## Setup (first time only)
 
 1. Confirm a proxy is registered: `proxy_get(op='proxies')`.
@@ -38,12 +43,44 @@ field naming the exact next call — follow it.
        primary_metric="time_s",   # scalar objective the ratchet improves
        primary_goal="min",        # "min" or "max"
        min_improvement=0.02,      # FLOOR for the accept margin — the measured noise wins if it is larger
-       max_stall=5,               # non-improving feasible runs before "converged"
+       max_stall=5,               # non-improving feasible runs before "stalled" (then "converged")
        repeat=0,                  # measurements per case; 0 = 3 for a timing metric, 1 for a reproducible one
        confirm=True,
    )
    ```
    This snapshots the `optimize_paths` **tree** as the baseline.
+
+   **Several objectives, relative constraints, a bound: `spec=`.** In place of
+   `primary_metric`/`primary_goal`/`requirements`, a `spec` says it all at once:
+
+   ```
+   spec={
+       "objectives": [{"metric": "time_s"},                          # the primary
+                      {"metric": "peak_rss_mb", "tolerance": 0.1}],  # may lose 10 %
+       "constraints": [{"metric": "l2_rel", "operator": "lte",
+                        "of_baseline": 10, "precision_floor": True}],
+       "directives": ["keep the public API"],
+       "bound": 0.003, "bound_basis": "3 fields x 4 B x 512^3 per step / 2000 GB/s",
+   }
+   ```
+
+   `proxy_eval_status(op='metrics')` lists the metrics, what each needs, and whether
+   anything checks the solution. **Write fidelity as a constraint, never as a rule to
+   keep the original's order of operations.** `of_baseline` bounds an error by a factor
+   of the baseline's own value, and `precision_floor` lets it reach what the field's type
+   allows (1e-5 in float32). A reordered sum, or a constant folded into a weight (w·c/DX),
+   changes the last bits and is not wrong. A rule like "copy the reference's order"
+   forbids exactly the edits that pay. A run better on one objective and worse on another
+   past its tolerance is a **tradeoff**: judge it with `report_verdict(run=<run id>,
+   verdict='pass' or 'rejected', reason=...)`, and ask the user when it is close.
+
+   **Work out the bound before the first edit.** Count the bytes each step has to move
+   and the flops it has to do, divide by the machine's bandwidth and peak, and declare the
+   result (the spec's `bound` and `bound_basis`), or register the peaks
+   (`peak_gflops_per_s`, `peak_bandwidth_gbytes_per_s`) and have the harness print
+   `flops` and `bytes_moved`. Two codes at 21 ms per step against a 3 ms memory floor
+   are not memory-bound, however plausible "it needs TMA" sounds. The bound says which
+   resource to work on, and the ratchet uses it to tell a stall from a convergence.
 
    **Measure the baseline, then read the margin the reply gives you.** Each case is
    run `repeat` times and reduced to its **median**, never its best — the minimum of
@@ -225,6 +262,12 @@ the node. A baseline measured on the login node describes the login node.
      high `ipc` compute-bound. When a view says `unavailable`, it says why (perf blocked
      by the kernel, no profiler for this command, cProfile keeping no lines); work from
      what there is and say what is missing.
+   - `level='asm'` gives the instruction mix of a kernel's SASS (Nsight Compute) or a
+     function's machine code (`perf annotate`): the classes and opcodes by how often they
+     ran, calls into slow paths, spills, and notes. Integer arithmetic outweighing the
+     floating point means index and address computation; a `CALL` per point means an IEEE
+     division or a libm routine. A memory profile sees neither. When `kernel` says
+     `compute: alu`, this is the next view.
    - `where_time_goes.gpu` — when the run uses a GPU: `busy` (kernels), `memcpy` and
      `idle` as shares of the run's time (of the region's with `window: measured
      region`: Nsight then traced it alone, the harness's kernels left out), and the
@@ -248,9 +291,27 @@ the node. A baseline measured on the login node describes the login node.
    - Compiled code (C, C++, Fortran) needs `-g` in its build for files and lines, and
      `-fno-omit-frame-pointer` for a function's total time; neither changes the
      generated code. When a profile's note asks for them, add them to the build.
-   - **reject** → this edit regressed. `proxy_eval(op='reset_to_best', confirm=True)`,
-     then try a *different* edit and run.
-   - **converged** → `proxy_eval(op='reset_to_best', confirm=True)`, then summarize.
+   - **reject** → read which kind:
+     - `regressed` (slower than the best past twice the margin, or 5 %): the idea may be
+       right and this version wrong. **Before** `reset_to_best`, while the files still
+       hold this version, compare `where_time_goes` with `where_time_goes_best` and go down
+       to the instructions: `op='profile', level=['kernel', 'asm'], focus=<kernel>` on a
+       GPU, `level=['counters', 'asm'], focus=<function>` for compiled CPU code. When a
+       cause shows (address arithmetic recomputed per point, a division routine called per
+       point, spills, a register count that halved occupancy), fix it and try the idea
+       again as `axis='<axis> (retry: <cause>)'`.
+     - `near_miss` (better, but by less than the margin): kept on record. Two small gains
+       on independent axes add up: `reset_to_best`, then `proxy_eval(op='apply_run',
+       run_id=..., confirm=True)` for each, then one run `axis='combine: A + B'`.
+     - otherwise: `reset_to_best`, then a *different* edit, or another version of the
+       same idea if a profile says why this one did nothing.
+   - **tradeoff** → judge it with `report_verdict` (above); it is not the best until then.
+   - **stalled** → `max_stall` runs without a gain, far from the bound or with none known.
+     It is not a convergence: the picture of what limits the code is probably wrong. Work
+     out and declare the bound if there is none, profile down to `asm`, read
+     `axes_tried.regressed` and `near_misses` again, then go on. One more streak follows.
+   - **converged** → `proxy_eval(op='reset_to_best', confirm=True)`, then summarize,
+     saying how far from the bound the best stands.
    - no verdict yet (constraints not met, no best) → edit the source and run again.
 3. Editing: read the files in `optimize_paths`, understand what is slow or
    inaccurate, apply a targeted `replace_in_file(...)` to one of them, then go to
@@ -274,7 +335,15 @@ hand: a combination nobody measured can run and mean nothing.
 
 - Read the file you are about to change before every modification. Never edit blind.
 - Make one focused change per run cycle — do not batch multiple unrelated edits.
-- Trust the `verdict`: never keep an edit the ratchet rejected — reset_to_best first.
+- Trust the `verdict`: never keep an edit the ratchet rejected — reset_to_best first
+  (after diagnosing a regression, and `apply_run` is how a near miss comes back).
+- **A correctness fix is not judged against a wrong best.** When the best turns out to be
+  fast because it was wrong (a boundary not handled, a term left out), say so in the spec:
+  tighten the constraint that catches it (`configure(spec={'constraints': ..., 'reason':
+  ...})`). A best that fails it is retired, and the last kept run that meets it is the best
+  again. Gains from there are counted against correct code. When no metric can catch it,
+  take the best back with `report_verdict(run=<best run>, verdict='rejected', reason=...)`.
+  Report gains against the corrected code, not against the wrong best.
 - `reset_to_best` reverts every `optimize_paths` file to the best accepted run (keeps
   progress); `reset` reverts them all to the baseline taken at init. Both restore the
   whole set or nothing: a per-file revert would assemble a combination that was never
@@ -322,9 +391,11 @@ with no verdict, exactly as it does locally.
 
 ## When to stop
 
-Stop and summarize when the session reports `verdict="converged"` (constraints met
-and the primary metric stopped improving), after restoring the best with
-`proxy_eval(op='reset_to_best', confirm=True)`. If no feasible run was ever found,
+Stop and summarize when the session reports `verdict="converged"` (constraints met,
+the primary metric stopped improving, and the best near the bound or the search reviewed
+once), after restoring the best with `proxy_eval(op='reset_to_best', confirm=True)`.
+`stalled` is not a stop. A summary says where the best stands against the bound. "We
+are missing X" explains a gap only when the bound has been worked out. If no feasible run was ever found,
 report what was tried and what remains. When you are fully done with the proxy,
 `proxy_eval(op='end', confirm=True)` closes the session (code, snapshots and ledger are
 kept) and lifts the direct-execution guard. To discard a proxy's runs, optimization state

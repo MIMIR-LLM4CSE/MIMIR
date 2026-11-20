@@ -9,7 +9,7 @@ from ....shared.atomic import read_json
 
 # ── roofline ──────────────────────────────────────────────────────────────────
 
-def _resolve_roofline(entry: dict) -> tuple[float, float]:
+def resolve_roofline(entry: dict) -> tuple[float, float]:
     """Return (peak_gflops_per_s, peak_bandwidth_gbytes_per_s).
 
     Peaks come from the registration entry only; 0.0 means unavailable, and
@@ -69,7 +69,7 @@ def row_with_extra(
     }
     for k in extra_metrics:
         row[k] = metrics.get(k)
-    peak_gf, peak_bw = _resolve_roofline(entry)
+    peak_gf, peak_bw = resolve_roofline(entry)
     rl = _compute_roofline(metrics, peak_gf, peak_bw)
     if rl:
         row.update(rl)

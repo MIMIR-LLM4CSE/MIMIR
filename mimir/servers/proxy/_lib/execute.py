@@ -337,6 +337,13 @@ def seal_reference(
                 shutil.copy2(proxy_out, dest)
                 output_stored = dest
                 ref_metrics["output_size_mb"] = round(size / 1024 / 1024, 3)
+                # The field's type sets how close a reordered sum can stay to it (precision_floor).
+                try:
+                    field = metrics_mod.load_field(dest, output_format)
+                    if hasattr(field, "dtype"):
+                        ref_metrics["dtype"] = str(field.dtype)
+                except Exception:
+                    pass
             except OSError as exc:
                 ref_metrics["output_file_warning"] = f"Could not copy output file: {exc}"
 

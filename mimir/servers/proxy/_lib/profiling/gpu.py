@@ -21,7 +21,7 @@ from typing import Callable, TextIO
 
 from .....shared import code_map
 from .. import proc_run
-from ..device_memory import sample_device
+from ..device_memory import number, sample_device
 from .target import Target
 from .frames import FORTRAN_EXT, fortran_name, is_fortran
 
@@ -91,13 +91,13 @@ def choose_gpu(vendor: str, detail: bool = False) -> tuple[str, str]:
 
 # ── reading what a tracer wrote ──────────────────────────────────────────────
 
-def _rows(path: str) -> list[dict[str, str]]:
+def csv_rows(path: str) -> list[dict[str, str]]:
     with open(path, encoding="utf-8", errors="replace", newline="") as fh:
         lines = [ln for ln in fh if ln.strip() and not ln.startswith(("==", "#"))]
     return list(csv.DictReader(lines))
 
 
-def _column(rows: list[dict[str, str]], *patterns: str) -> str:
+def column(rows: list[dict[str, str]], *patterns: str) -> str:
     """The first header matching one of *patterns*, or ValueError naming them."""
     headers = list(rows[0]) if rows else []
     for pattern in patterns:
@@ -105,10 +105,6 @@ def _column(rows: list[dict[str, str]], *patterns: str) -> str:
         if hit:
             return hit
     raise ValueError(f"no column {' or '.join(patterns)} in {headers}")
-
-
-def _number(text: str) -> float:
-    return float((text or "0").replace(",", "").strip() or 0)
 
 
 def _direction(text: str) -> str:
@@ -123,22 +119,22 @@ def _direction(text: str) -> str:
 
 
 def _kernel_table(rows: list[dict[str, str]]) -> dict[str, tuple[float, int]]:
-    name = _column(rows, r"Name", r"Kernel[_ ]?Name")
-    ns = _column(rows, r"Total ?Time \(ns\)", r"TotalDurationNs", r"Total Time")
-    calls = _column(rows, r"Instances", r"Calls", r"Count")
+    name = column(rows, r"Name", r"Kernel[_ ]?Name")
+    ns = column(rows, r"Total ?Time \(ns\)", r"TotalDurationNs", r"Total Time")
+    calls = column(rows, r"Instances", r"Calls", r"Count")
     table: dict[str, tuple[float, int]] = {}
     for r in rows:
         t, c = table.get(r[name], (0.0, 0))
-        table[r[name]] = (t + _number(r[ns]), c + int(_number(r[calls])))
+        table[r[name]] = (t + number(r[ns]), c + int(number(r[calls])))
     return table
 
 
 def _copy_table(rows: list[dict[str, str]]) -> dict[str, float]:
-    op = _column(rows, r"Operation", r"Name")
-    ns = _column(rows, r"Total ?Time \(ns\)", r"TotalDurationNs", r"Total Time")
+    op = column(rows, r"Operation", r"Name")
+    ns = column(rows, r"Total ?Time \(ns\)", r"TotalDurationNs", r"Total Time")
     out: defaultdict[str, float] = defaultdict(float)
     for r in rows:
-        out[_direction(r[op])] += _number(r[ns])
+        out[_direction(r[op])] += number(r[ns])
     return dict(out)
 
 
@@ -148,13 +144,13 @@ _SIZE_UNITS = {"b": 1, "bytes": 1, "kb": 1e3, "kib": 2**10, "mb": 1e6, "mib": 2*
 
 def _size_table(rows: list[dict[str, str]]) -> dict[str, float]:
     """Bytes copied per direction, from a column of sizes in the unit its header names."""
-    op = _column(rows, r"Operation", r"Direction", r"Name", r"Kind")
-    size = _column(rows, r"Total(?: \(\w+\))?", r"Bytes", r"Size(?: \(\w+\))?")
+    op = column(rows, r"Operation", r"Direction", r"Name", r"Kind")
+    size = column(rows, r"Total(?: \(\w+\))?", r"Bytes", r"Size(?: \(\w+\))?")
     unit = re.search(r"\((\w+)\)", size)
     scale = _SIZE_UNITS.get(unit.group(1).lower(), 1) if unit else (2**10 if size == "Total" else 1)
     out: defaultdict[str, float] = defaultdict(float)
     for r in rows:
-        out[_direction(r[op])] += _number(r[size]) * scale
+        out[_direction(r[op])] += number(r[size]) * scale
     return {k: v for k, v in out.items() if k != "memset"}
 
 
@@ -166,8 +162,8 @@ def nsys_summary(prefix: str) -> dict:
     size = _first_file(prefix, ("cuda_gpu_mem_size_sum", "gpumemsizesum"))
     if not kern:
         raise ValueError("nsys wrote no kernel summary (did the run launch any CUDA kernel?)")
-    return {"kernels": _kernel_table(_rows(kern)), "memcpy": _copy_table(_rows(mem)) if mem and _rows(mem) else {},
-            "memcpy_bytes": _size_table(_rows(size)) if size and _rows(size) else {}}
+    return {"kernels": _kernel_table(csv_rows(kern)), "memcpy": _copy_table(csv_rows(mem)) if mem and csv_rows(mem) else {},
+            "memcpy_bytes": _size_table(csv_rows(size)) if size and csv_rows(size) else {}}
 
 
 def rocprof_summary(out_dir: str) -> dict:
@@ -177,16 +173,16 @@ def rocprof_summary(out_dir: str) -> dict:
     found = False
     for path in glob.glob(os.path.join(out_dir, "**", "*kernel_stats.csv"), recursive=True):
         found = True
-        for k, (t, c) in _kernel_table(_rows(path)).items():
+        for k, (t, c) in _kernel_table(csv_rows(path)).items():
             t0, c0 = kernels.get(k, (0.0, 0))
             kernels[k] = (t0 + t, c0 + c)
     for path in glob.glob(os.path.join(out_dir, "**", "*memory_copy_stats.csv"), recursive=True):
-        rows = _rows(path)
+        rows = csv_rows(path)
         if rows:
             copies.update(_copy_table(rows))
     moved: Counter = Counter()
     for path in glob.glob(os.path.join(out_dir, "**", "*memory_copy_trace.csv"), recursive=True):
-        rows = _rows(path)
+        rows = csv_rows(path)
         try:
             moved.update(_size_table(rows) if rows else {})
         except ValueError:
@@ -324,7 +320,7 @@ def summarize(summary: dict, wall_s: float, home: Callable[[str], tuple[str, int
 
 # ── taking one ───────────────────────────────────────────────────────────────
 
-def _marked(_word: str, _pids: list[str]) -> None:
+def marked(_word: str, _pids: list[str]) -> None:
     """A run given ``MIMIR_REGION``, so its helpers open the profiler's range."""
 
 
@@ -337,7 +333,7 @@ def _nsys(target: Target, rep: str, out_dir: str, log: TextIO, timeout: float | 
     capture = ["--capture-range=cudaProfilerApi", "--capture-range-end=stop"] if window else []
     proc_run.run(target.wrap(["nsys", "profile", "-t", "cuda,osrt", "-s", "none", *capture, "--force-overwrite",
                               "true", "-o", rep, "--"], out_dir),
-                 stdout=log, stderr=subprocess.STDOUT, timeout=timeout, region=_marked if window else None)
+                 stdout=log, stderr=subprocess.STDOUT, timeout=timeout, region=marked if window else None)
     report = next((p for p in (rep + ".nsys-rep", rep + ".qdrep") if os.path.isfile(p)), "")
     if not report:
         return {}
@@ -438,17 +434,27 @@ class DeviceMemory:
 
 _NCU_METRICS = {"sm_pct": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
                 "dram_pct": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
-                "occupancy_pct": "sm__warps_active.avg.pct_of_peak_sustained_active"}
+                "occupancy_pct": "sm__warps_active.avg.pct_of_peak_sustained_active",
+                # What the compute side is busy with: a kernel saturated by integer address
+                # arithmetic reads as compute-bound on sm_pct alone, like one doing the maths.
+                "instructions": "smsp__inst_executed.sum",
+                "fma_pipe_pct": "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active",
+                "alu_pipe_pct": "sm__inst_executed_pipe_alu.avg.pct_of_peak_sustained_active",
+                "lsu_pipe_pct": "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active",
+                "registers": "launch__registers_per_thread",
+                "spill_load_bytes": "l1tex__t_bytes_pipe_lsu_mem_local_op_ld.sum"}
+# The pipes ``bound`` names, as ncu calls them.
+_PIPES = {"fma_pipe_pct": "fma", "alu_pipe_pct": "alu", "lsu_pipe_pct": "lsu"}
 _ROCPROF_COUNTERS = {"sm_pct": "VALUBusy", "dram_pct": "MemUnitBusy"}
 
 
 def ncu_detail(csv_path: str, name: str) -> dict:
     """``ncu --csv --page raw`` output: the first profiled launch of the kernel."""
-    rows = [r for r in _rows(csv_path) if (r.get("ID") or "").strip().isdigit()]
+    rows = [r for r in csv_rows(csv_path) if (r.get("ID") or "").strip().isdigit()]
     if not rows:
         raise ValueError(f"ncu profiled no launch of {name}")
     row = rows[0]
-    found = {k: round(_number(row[m]), 2) for k, m in _NCU_METRICS.items() if row.get(m) not in (None, "")}
+    found = {k: round(number(row[m]), 2) for k, m in _NCU_METRICS.items() if row.get(m) not in (None, "")}
     return {"name": row.get("Kernel Name", name), **found}
 
 
@@ -458,14 +464,14 @@ def rocprof_detail(out_dir: str, name: str) -> dict:
     counts: Counter = Counter()
     kernel = name
     for path in glob.glob(os.path.join(out_dir, "**", "*counter_collection.csv"), recursive=True):
-        rows = _rows(path)
+        rows = csv_rows(path)
         if not rows:
             continue
-        kcol, ccol, vcol = (_column(rows, r"Kernel[_ ]?Name"), _column(rows, r"Counter[_ ]?Name"),
-                            _column(rows, r"Counter[_ ]?Value"))
+        kcol, ccol, vcol = (column(rows, r"Kernel[_ ]?Name"), column(rows, r"Counter[_ ]?Name"),
+                            column(rows, r"Counter[_ ]?Value"))
         for r in rows:
             kernel = r[kcol]
-            sums[r[ccol]] += _number(r[vcol])
+            sums[r[ccol]] += number(r[vcol])
             counts[r[ccol]] += 1
     if not counts:
         raise ValueError(f"rocprofv3 counted nothing for {name}")
@@ -473,13 +479,18 @@ def rocprof_detail(out_dir: str, name: str) -> dict:
 
 
 def bound(detail: dict) -> str:
-    """What limits a kernel, from its compute and memory throughput (% of peak)."""
+    """What limits a kernel, from its compute and memory throughput (% of peak): on the
+    compute side, the busiest pipe when ncu counted them (``compute: alu`` is integer and
+    address arithmetic, ``compute: fma`` the floating point)."""
     sm, dram = detail.get("sm_pct"), detail.get("dram_pct")
     if sm is None or dram is None:
         return "unknown"
     if max(sm, dram) < 40:
         return "latency"
-    return "memory" if dram > sm else "compute"
+    if dram > sm:
+        return "memory"
+    pipes = {name: detail[k] for k, name in _PIPES.items() if isinstance(detail.get(k), (int, float))}
+    return f"compute: {max(pipes, key=pipes.get)}" if pipes else "compute"
 
 
 def kernel_detail(tool: str, target: Target, out_dir: str, name: str, log: TextIO,
@@ -499,7 +510,7 @@ def kernel_detail(tool: str, target: Target, out_dir: str, name: str, log: TextI
                                       f"regex:{regex}", "--launch-count", "1", "--metrics",
                                       ",".join(_NCU_METRICS.values()),
                                       *(["--profile-from-start", "off"] if window else []), "--"], out_dir),
-                         stdout=log, stderr=subprocess.STDOUT, timeout=timeout, region=_marked if window else None)
+                         stdout=log, stderr=subprocess.STDOUT, timeout=timeout, region=marked if window else None)
             try:
                 found = {**ncu_detail(out, name), **({"window": "measured region"} if window else {})}
                 break

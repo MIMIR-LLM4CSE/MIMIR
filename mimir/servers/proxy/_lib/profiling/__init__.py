@@ -1,6 +1,7 @@
 """Where a run's time goes, by the workspace's source files: one profiled execution of a
 case, each sample given to the deepest workspace frame of its stack; a GPU's kernels and
-copies when it uses one; on request, hardware counters, one kernel's, or the heap's peak.
+copies when it uses one; on request, hardware counters, one kernel's, the heap's peak, or
+the instruction mix of the costliest kernel or function (``asm``).
 The tools fit what runs (``target``); what only the harness does is counted apart
 (``harness``); a marked region is recorded alone where the tool allows it.
 A profile is never a measurement: taken after the verdict, it moves nothing.
@@ -13,17 +14,17 @@ import subprocess
 
 from .....shared.atomic import write_json
 from .....shared.atomic import read_json
-from . import cpu, gpu, memory
+from . import asm, cpu, gpu, memory
 from .target import Target, describe
 from .cpu import attribute, choose, cprofile_files, perf_allowed, perf_stacks, pyspy_stacks
 from .frames import Frame, resolver
 
 PROFILE_DIR, PROFILE_FILE = "profile", "profile.json"
-LEVELS = ("file", "function", "line", "counters", "kernel", "memory")
+LEVELS = ("file", "function", "line", "counters", "kernel", "memory", "asm")
 # Levels read from the sampled stacks every profile keeps; the others take a run of their own
 # and add their section to the profile.
 SAMPLED = ("file", "function", "line")
-SECTION = {"counters": "counters", "kernel": "kernel_detail", "memory": "memory"}
+SECTION = {"counters": "counters", "kernel": "kernel_detail", "memory": "memory", "asm": "asm"}
 
 
 def profile_path(run_dir: str) -> str:
@@ -53,6 +54,8 @@ def profile(argv: list[str], out_dir: str, root: str, files: list[str], *,
                     found = cpu.counters(target, out_dir, fh, timeout, peak_gbytes_per_s)
                 elif level == "memory":
                     found = memory.profile(target, out_dir, resolve, fh, timeout, peak_mb)
+                elif level == "asm":
+                    found = _asm(target, out_dir, focus, kept, fh, timeout, regions)
                 else:
                     found = _kernel(target, out_dir, focus, kept, fh, timeout, regions)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -122,6 +125,31 @@ def _kernel(target: Target, out_dir: str, name: str, kept: dict, log, timeout: f
     if not tool:
         return {"unavailable": why}
     return gpu.kernel_detail(tool, target, out_dir, name, log, timeout, regions)
+
+
+def _asm(target: Target, out_dir: str, name: str, kept: dict, log, timeout: float | None,
+         regions: bool = False) -> dict:
+    """The instruction mix of the kernel or function *name*, by default the costliest one the
+    profile already names; or why there is none."""
+    g = kept.get("gpu") or {}
+    kernels = list(g.get("kernels") or {})
+    vendor = g.get("vendor") or gpu.gpu_vendor(target, list(kept.get("outside") or {}))
+    if vendor and (kernels or not kept.get("functions")):
+        if vendor != "nvidia":
+            return {"unavailable": f"no instruction-level profiler is wired for {vendor} GPUs"}
+        tool, why = gpu.choose_gpu(vendor, detail=True)
+        name = name or (kernels[0] if kernels else "")
+        if not tool or not name:
+            return {"unavailable": why or "name the kernel with focus= (profile at level 'file' first to list them)"}
+        return asm.sass(target, out_dir, name, log, timeout, regions)
+    allowed, why = perf_allowed()
+    if not allowed:
+        return {"unavailable": why}
+    hottest = next(iter(kept.get("functions") or {}), "")
+    name = name or hottest.split("::")[-1]
+    if not name:
+        return {"unavailable": "name the function with focus= (profile at level 'function' first to list them)"}
+    return asm.annotate(target, out_dir, name, log, timeout)
 
 
 def _write(out_dir: str, result: dict) -> dict:

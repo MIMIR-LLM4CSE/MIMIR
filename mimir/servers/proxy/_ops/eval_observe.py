@@ -3,6 +3,7 @@ log, runs, diff, config, the graph and the axes tried. Read-only."""
 
 from __future__ import annotations
 
+import json
 import os
 
 from . import with_next, err, ok
@@ -98,8 +99,9 @@ def graph(proxy_name: str = "") -> dict:
             "An edge points from the incumbent a run was measured against to the run "
             "itself. Attempts under one incumbent were each made without the others, "
             "so they are independent — candidates for being combined, never a promise "
-            "that they add up. Only a run that combines them measures that. Use the "
-            "rejected axes too: they are the ideas already ruled out on this code."
+            "that they add up. Only a run that combines them measures that. A rejected "
+            "run rules out its code, not its idea: a near miss is a gain to combine, a "
+            "regression a version to diagnose."
         ),
     })
 
@@ -119,20 +121,30 @@ def axes_tried(proxy_name: str = "") -> dict:
         return {}
     accepted = [{"run_id": r.get("run_id", ""), "axis": r.get("axis", ""),
                  "primary_value": r.get("primary_value")}
-                for r in rows if r.get("verdict") == "accept"]
-    # Names only, and deduplicated: what this is for is stopping an idea being paid
-    # for twice, so the same word said three times is one fact.
-    rejected, seen = [], set()
+                for r in rows if r.get("verdict") == "accept" and not r.get("retired")]
+    # A rejection says what one version of an idea did. A gain under the margin is kept to
+    # be combined (apply_run), a regression is a version to diagnose; the rest (no gain, or a
+    # requirement broken) is a name, deduplicated, so a version is not paid for twice.
+    near, regressed, not_kept, seen = [], [], [], set()
     for row in rows:
         axis = (row.get("axis") or "").strip()
-        if row.get("verdict") == "reject" and axis and axis not in seen:
+        if row.get("verdict") != "reject":
+            continue
+        if row.get("near_miss") is not None:
+            near.append({"run_id": row.get("run_id", ""), "axis": axis, "gain": row["near_miss"]})
+        elif row.get("regressed") is not None:
+            regressed.append({"run_id": row.get("run_id", ""), "axis": axis, "change": row["regressed"]})
+        elif axis and axis not in seen:
             seen.add(axis)
-            rejected.append(axis)
+            not_kept.append(axis)
     out = {
         "tried": len(rows),
         "accepted": accepted[-_AXES_SHOWN:],
-        "rejected": rejected[-_AXES_SHOWN:],
+        **({"near_misses": near[-_AXES_SHOWN:]} if near else {}),
+        **({"regressed": regressed[-_AXES_SHOWN:]} if regressed else {}),
+        **({"not_kept": not_kept[-_AXES_SHOWN:]} if not_kept else {}),
     }
+    notes = []
     # Attempts judged against one incumbent were each made without the others in the
     # tree, so no one of them contains another's edit.
     from_same: dict[str, list[str]] = {}
@@ -143,15 +155,20 @@ def axes_tried(proxy_name: str = "") -> dict:
     pairs = [sorted(set(axes)) for axes in from_same.values() if len(set(axes)) > 1]
     if pairs:
         out["independent"] = pairs[-_AXES_SHOWN:]
-        out["note"] = (
-            "Axes under one incumbent were each measured without the others, so none "
-            "contains another's edit — worth a run that combines them, never a promise "
-            "that they add up. The rejected ones are ideas already ruled out on this "
-            "code: choose something else rather than paying for them again."
-        )
-    elif rejected:
-        out["note"] = ("Already ruled out on this code — choose something else rather "
-                       "than paying for them again.")
+        notes.append("Axes under one incumbent were each measured without the others, so none "
+                     "contains another's edit — worth a run that combines them, never a promise "
+                     "that they add up.")
+    if near:
+        notes.append("A near miss went the right way by less than the margin: proxy_eval(op='apply_run', "
+                     "run_id=...) puts its edit on the tree, to combine with another and measure together.")
+    if regressed:
+        notes.append("A regression rules out that version, not its idea: what made it slower is worth "
+                     "finding before the idea is dropped.")
+    if not_kept:
+        notes.append("not_kept: versions with no measurable gain, or that broke a requirement. Each rules "
+                     "out that version, not its idea: another may work, if a profile says why this one did not.")
+    if notes:
+        out["note"] = " ".join(notes)
     return out
 
 
@@ -204,6 +221,24 @@ def status(proxy_name: str = "") -> dict:
     return ok(with_next(payload, next_step))
 
 
+def _diagnose(regressed: float) -> str:
+    """What to do with a regression before its tree is reset."""
+    return (f"It is {regressed:+.0%} slower than the best: the idea may be right and this version "
+            "wrong. Before reset_to_best (the files still hold this version), compare "
+            "where_time_goes with where_time_goes_best and go down to the instructions: "
+            "proxy_eval(op='profile', level=['kernel', 'asm'], focus=<kernel>) for a GPU kernel, "
+            "level=['counters', 'asm'], focus=<function> for compiled CPU code. If a fixable "
+            "cause shows, try the idea again as axis='<axis> (retry: <cause>)'.")
+
+
+def _bound_said(r: dict) -> str:
+    """Where the best stands against the hardware's bound, in a sentence."""
+    if r.get("bound_ratio"):
+        return (f"The best is {r['bound_ratio']:g}x the bound ({r['bound']:.4g}, "
+                f"{r.get('bound_basis') or 'declared'}).")
+    return "No bound is known for this code on this machine."
+
+
 def _recommend(r: dict, summary: dict, proxy_source: str) -> tuple[str, str]:
     """``(meaning, next_step)`` for the settled verdict: the loop's script."""
     verdict  = r["verdict"]
@@ -224,12 +259,30 @@ def _recommend(r: dict, summary: dict, proxy_source: str) -> tuple[str, str]:
             "this machine is the real target — re-measure the baseline here.",
             "run again where the baseline ran, or proxy_eval(op='rebaseline', "
             "confirm=True) then run on the target")
+    if verdict == "stalled":
+        return (
+            f"Stalled, not converged: {r['max_stall']} runs without a gain on {pm} (best run "
+            f"{best_id}, {pm}={best_val}). {_bound_said(r)} A stop this far from what the hardware "
+            "allows says the picture of what limits the code is likely wrong. Before the next edit: "
+            "work out the bound (bytes and flops per step against the machine's peaks) and declare "
+            "it, proxy_eval(op='configure', spec={'bound': ..., 'bound_basis': ..., 'reason': ...}); "
+            "profile down to the instructions (level 'counters' or 'kernel', then 'asm') to see what "
+            "saturates; read axes_tried.regressed and near_misses again. One more streak of "
+            f"{r['max_stall']} follows before the session converges.",
+            "work out the bound and profile, then edit and " + NEXT_RUN)
     if verdict == "converged":
+        far = "" if (r.get("bound_ratio") or 0) and r["bound_ratio"] <= 1.5 else (
+            f" {_bound_said(r)} Say in the summary how far from it the best stays.")
         return (
             f"Converged: all requirements pass and {pm} did not improve for "
-            f"{r['max_stall']} iterations (best run {best_id}, {pm}={best_val}). "
+            f"{r['max_stall']} iterations (best run {best_id}, {pm}={best_val}).{far} "
             "Restore the best implementation and summarize.",
             NEXT_RESET_BEST + ", then summarize the results.")
+    if verdict == "tradeoff":
+        return (
+            f"A tradeoff: better on {', '.join(r.get('better') or [])}, worse on "
+            f"{', '.join(r.get('worse') or [])} past its tolerance. It is not the best until judged.",
+            r.get("next_step") or "judge it with report_verdict naming this run")
     if verdict == "accept":
         return (
             f"Accepted — new best for {pm} ({pv}) with all requirements passing. "
@@ -238,9 +291,22 @@ def _recommend(r: dict, summary: dict, proxy_source: str) -> tuple[str, str]:
             f"edit '{proxy_source}' to improve {pm}, then {NEXT_RUN} "
             f"(or {NEXT_RESET_BEST} + summarize)")
     if verdict == "reject":
+        if r.get("broken"):
+            names = ", ".join(sorted({b["metric"] for b in r["broken"]}))
+            return (f"Rejected: it breaks a constraint relative to the baseline ({names}).",
+                    NEXT_RESET_BEST + f", then edit '{proxy_source}' and {NEXT_RUN}")
+        if r.get("regressed") is not None:
+            return (_diagnose(r["regressed"]),
+                    "profile this tree down to the instructions, then " + NEXT_RESET_BEST)
+        if r.get("near_miss") is not None:
+            return (f"Requirements pass and {pm}={pv} went the right way ({r['near_miss']:+.1%}) but "
+                    f"by less than the margin ({r.get('min_improvement', 0):.1%}), so it is not kept. It "
+                    "stays on record: proxy_eval(op='apply_run', run_id=<this run>) puts it back on the "
+                    "tree, to combine with another small gain and measure together.",
+                    NEXT_RESET_BEST + f", then edit '{proxy_source}' and {NEXT_RUN}")
         if r["feasible"]:
             why = (f"Requirements still pass but {pm}={pv} did not beat the best "
-                   f"({best_val}). This edit is not an improvement — revert to the "
+                   f"({best_val}). This version is not an improvement — revert to the "
                    f"best and try a different approach.")
         else:
             why = ("This change regressed: requirements no longer pass. Revert to "
@@ -332,6 +398,9 @@ def results(proxy_name: str = "") -> dict:
 
     tried = axes_tried(proxy_name)
     prof = read_json(profiling.profile_path(run_dir))
+    # A regression's profile beside the best's says what changed.
+    best_prof = (read_json(profiling.profile_path(os.path.join(opt_session_runs_dir(resolved), best_id)))
+                 if r.get("regressed") is not None and best_id else None)
     counted = harness_counted(final_metrics)
 
     return ok(with_next({
@@ -355,6 +424,9 @@ def results(proxy_name: str = "") -> dict:
         **({"request_progress": follow} if follow else {}),
         # Same reason: where this code spends its time is what picks the next axis.
         **({"where_time_goes": profiling.top(prof)} if prof else {}),
+        **({"where_time_goes_best": profiling.top(best_prof)} if best_prof else {}),
+        **{k: r[k] for k in ("values", "better", "worse", "broken", "regressed", "near_miss",
+                             "bound", "bound_basis", "bound_ratio") if r.get(k) is not None},
         **({"timing_warning": r["timing_warning"]} if r.get("timing_warning") else {}),
         **({"memory_warning": r["memory_warning"]} if r.get("memory_warning") else {}),
         **({"harness_counted": counted} if counted else {}),
@@ -457,6 +529,33 @@ def runs_diff(run_a: str = "", run_b: str = "", proxy_name: str = "") -> dict:
         return err(error, hint="Run proxy_eval(op='run', confirm=True) more times first.")
     return ok(with_next(payload,
                          "proxy_eval(op='results') for the ratchet view across all runs."))
+
+
+def metrics_of(proxy_name: str = "") -> dict:
+    """The catalogue as this session can use it, its spec, and how the spec changed."""
+    from .._lib import metric_catalog, spec as spec_lib
+    from .._lib.layout import spec_history_file
+    from .._lib.store import load_suite
+    cfg = load_opt_config(proxy_name)
+    if not cfg:
+        return ok({"metrics": metric_catalog.of_session({}), "spec": None,
+                   "note": "No session: what each metric needs is said against an empty one."})
+    entry = (load_registry() or {}).get(cfg.get("proxy_name", "")) or {}
+    suite = load_suite(cfg.get("benchmark_name", "")) or {}
+    checked = bool(suite.get("cases")) and all(c.get("reference_name") for c in suite["cases"])
+    history = []
+    try:
+        with open(spec_history_file(cfg.get("proxy_name", "")), encoding="utf-8") as fh:
+            history = [json.loads(line) for line in fh if line.strip()]
+    except (OSError, ValueError):
+        pass
+    unchecked = None if checked else (
+        "Nothing checks this session's solution: a fast but wrong run would be kept. Seal a "
+        "reference for every case (proxy_exec op='benchmark_create') and bound l2_rel.")
+    return ok(with_next({"metrics": metric_catalog.of_session(cfg, suite, entry), "spec": spec_lib.of(cfg),
+                         "history": history, "solution_checked": checked,
+                         **({"warning": unchecked} if unchecked else {})},
+                        "proxy_eval(op='configure', spec=...) changes what it optimises and under what."))
 
 
 def config_get(proxy_name: str = "") -> dict:

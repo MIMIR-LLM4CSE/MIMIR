@@ -192,7 +192,7 @@ _RUN_OUTCOME = {
     "measured_when": {"state": ["done"]},
 }
 
-_EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config", "graph")
+_EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config", "graph", "metrics")
 
 
 # Polled while a run is going: only reading the results records its verdict.
@@ -226,8 +226,11 @@ def proxy_eval_status(
       graph   -> every axis tried and what it measured, across all sessions:
                  which attempts came from the same incumbent (so are independent
                  of each other) and which were rejected. Read it before choosing
-                 what to try next — a rejected axis is an idea already ruled out
-                 on this code, and repeating it costs a full run to learn nothing.
+                 what to try next. A rejected run rules out its version of an idea:
+                 a near miss is a gain to combine, a regression a version to diagnose.
+      metrics -> the metrics a session can optimise or constrain (unit, direction,
+                 noisy or not, what each needs), its spec, how the spec changed and
+                 why, and whether anything checks the solution
 
     Args:
         proxy_name: Session to observe. Defaults to the most-recently
@@ -251,6 +254,8 @@ def proxy_eval_status(
         # No proxy_name: every session, because a fan-out of sub-agents is one session
         # per axis and the picture is only worth anything whole.
         return eval_observe.graph(proxy_name)
+    if op == "metrics":
+        return eval_observe.metrics_of(proxy_name)
     return _unknown_op(op, _EVAL_STATUS_OPS)
 
 
@@ -527,10 +532,11 @@ async def proxy_exec(
 
 
 _EVAL_OPS = ("init", "configure", "run", "profile", "stop", "reset", "reset_to_best",
-             "reset_to_request", "rebaseline", "end")
+             "reset_to_request", "apply_run", "rebaseline", "end")
 # The ops that run the files on disk or write them: refused for another session while a
 # merge holds the workspace on its branch (merge.held_against).
-_EVAL_ON_FILES = ("init", "run", "profile", "reset", "reset_to_best", "reset_to_request", "rebaseline")
+_EVAL_ON_FILES = ("init", "run", "profile", "reset", "reset_to_best", "reset_to_request", "apply_run",
+                  "rebaseline")
 
 # op='run' waits for the run it launched, so the default 120 s tool wall would cut it
 # off mid-measurement. Sits above eval_session's own wait budget, which detaches the
@@ -566,6 +572,8 @@ async def proxy_eval(
     level: str | list[str] = "file",
     focus: str = "",
     request_id: str = "",
+    run_id: str = "",
+    spec: dict | None = None,
     confirm: bool = False,
 ) -> dict:
     """Drive an iterative proxy-optimization session as a monotone ratchet (sensitive).
@@ -587,15 +595,22 @@ async def proxy_eval(
     satisfies every constraint AND improves the primary metric is *accepted* and
     becomes the new best-so-far; a run that regresses (breaks a constraint, or is
     no better) is *rejected* and ``results`` steers you to revert with
-    ``reset_to_best``.  After ``max_stall`` non-improving feasible runs the session
-    reports ``converged``.
+    ``reset_to_best``. A run better on one objective of the spec and worse on another
+    is a ``tradeoff``, judged with report_verdict. After ``max_stall`` non-improving
+    feasible runs the session reports ``converged`` when the best is near the
+    hardware's bound (the spec's ``bound``, else the roofline of the proxy's flops and
+    bytes_moved against its registered peaks); otherwise ``stalled`` first, asking for
+    a review of what limits the code, and ``converged`` after one more streak.
 
     Operations (set ``op``; all require confirm=True):
       init          -> start a session; snapshots the optimize_paths TREE as the
                        baseline (requires: proxy_name, benchmark_name,
                        requirements, proxy_source_path, optimize_paths)
-      configure     -> patch requirements/benchmark_name/python_executable/
-                       max_hours without re-snapshotting
+      configure     -> patch the spec (or requirements), benchmark_name,
+                       python_executable, max_hours without re-snapshotting. Once the
+                       session is measured, a spec change gives spec.reason, kept in
+                       its history; a best that no longer meets the constraints is
+                       retired, the last kept run that does becoming the best
       run           -> build if the registration declares a build_cmd, then launch
                        the run, WAIT for it, and return the verdict with the
                        per-case results inline; errors if one is already active.
@@ -616,7 +631,11 @@ async def proxy_eval(
                        counters of a compiled run: one more run), 'kernel' (one GPU
                        kernel's throughput and what bounds it, under Nsight Compute
                        or rocprofv3: a slow run, as each launch is replayed),
-                       'memory' (where the heap's peak was allocated: a slow run). A
+                       'memory' (where the heap's peak was allocated: a slow run),
+                       'asm' (the instruction mix of a kernel's SASS under Nsight
+                       Compute, or of a function under perf annotate: what the code
+                       spends its instructions on, the calls into slow paths and the
+                       spills; the costliest kernel or function unless `focus`). A
                        list of levels profiles them all in one call, e.g. ['file',
                        'memory'] for time and memory. A run that uses a GPU also has
                        its kernels, copies and idle time traced (`where_time_goes.gpu`).
@@ -629,6 +648,10 @@ async def proxy_eval(
       reset_to_request -> restore every optimize_paths file to the tree the request
                        `request_id` (proxy_request) started from: before each of its
                        variants, so none carries another's edit
+      apply_run     -> put run `run_id`'s own edit (from the tree it was measured
+                       against to the tree it ran) onto the files as they stand: to
+                       combine near misses, then measure them together. All or
+                       nothing: an edit that no longer fits writes nothing
       rebaseline    -> make the tree as it stands the new baseline, archiving the
                        ledger and best-so-far under a timestamp rather than
                        discarding them. For when the HARNESS was wrong and the
@@ -672,7 +695,8 @@ async def proxy_eval(
             as an improvement (default 0.02, i.e. 2%). A FLOOR, not the answer: once
             the baseline has been measured more than once, the spread across its own
             replicates is known and the larger of the two is used.
-        max_stall: Consecutive non-improving feasible runs before 'converged'.
+        max_stall: Consecutive non-improving feasible runs before 'stalled' (far from the
+            bound, or none known) or 'converged' (near it, or after one more streak).
         repeat: How many times each case is measured before its metrics are believed;
             the median is what the ratchet compares, never the best of them. 0
             (default) decides from the metric — 3 for a timing metric, 1 for one
@@ -694,15 +718,30 @@ async def proxy_eval(
             accepted (the baseline and accepted runs always are). The profile is a
             separate execution of the longest case and never part of the measurement.
         level: For op='profile': 'file' (default), 'function', 'line', 'counters',
-            'kernel' or 'memory', or a list of them (e.g. ['file', 'memory']): each is
+            'kernel', 'memory' or 'asm', or a list of them (e.g. ['file', 'memory']): each is
             its own execution where it needs one (a memory or kernel profiler distorts
             time), one sampled run serves file, function and line, and
             `where_time_goes` then has one view per level.
         focus: For op='profile': at level 'function', 'line' or 'memory', the
             workspace file whose functions or lines to show, as `where_time_goes`
             names it; at level 'kernel', the kernel's name, as `where_time_goes.gpu`
-            names it. With a list of levels, it applies to each that takes one.
+            names it; at level 'asm', the kernel's name or the function's (its symbol).
+            With a list of levels, it applies to each that takes one.
         request_id: For op='reset_to_request': the request whose start to restore ("R3").
+        run_id: For op='apply_run': the run whose edit to apply.
+        spec: For op='init' or 'configure': what the session optimises and under what,
+            in place of primary_metric/primary_goal/requirements. {"objectives":
+            [{"metric", "goal"?, "tolerance"?}] (the first the primary; a secondary's
+            tolerance is the relative loss it may take), "constraints": [{"metric",
+            "operator", "threshold"?, "of_baseline"?, "precision_floor"?}] (of_baseline
+            a factor of the baseline's value, the looser of the two holding;
+            precision_floor lets an error to the reference reach what the field's type
+            allows, 1e-5 in float32: a reordered sum is not a wrong one), "directives":
+            [sentences], "declare": [{"metric", "goal", "label"?, "unit"?, "noisy"?}]
+            (the program's own metrics), "bound" and "bound_basis" (the best the
+            hardware allows for the primary, and the calculation behind it), "reason"
+            (required once measured)}. In configure, "change": [{"metric", ...}]
+            patches one entry, "remove": true drops it.
         confirm: Must be True to apply any operation.
     """
     if op not in _EVAL_OPS:
@@ -715,7 +754,8 @@ async def proxy_eval(
 
     if op == "init":
         missing = _missing_args(op, proxy_name=proxy_name, benchmark_name=benchmark_name,
-                                requirements=requirements,
+                                # A spec holds the requirements as its constraints.
+                                requirements=requirements if not spec else spec,
                                 proxy_source_path=proxy_source_path,
                                 optimize_paths=optimize_paths)
         if missing:
@@ -724,10 +764,10 @@ async def proxy_eval(
                                  proxy_source_path, optimize_paths,
                                  python_executable, max_hours,
                                  primary_metric, primary_goal, min_improvement,
-                                 max_stall, convergence, repeat)
+                                 max_stall, convergence, repeat, spec)
     if op == "configure":
         return eval_session.configure(proxy_name, requirements, benchmark_name,
-                                      python_executable, max_hours)
+                                      python_executable, max_hours, spec)
     if op == "run":
         return await eval_session.run_awaited(proxy_name, background=background,
                                               axis=axis, profile=profile)
@@ -739,6 +779,8 @@ async def proxy_eval(
         return eval_session.reset(proxy_name)
     if op == "reset_to_best":
         return eval_session.reset_to_best(proxy_name)
+    if op == "apply_run":
+        return _missing_args(op, run_id=run_id) or eval_session.apply_run(run_id, proxy_name)
     if op == "reset_to_request":
         return _missing_args(op, request_id=request_id) or eval_session.reset_to_request(request_id)
     if op == "rebaseline":

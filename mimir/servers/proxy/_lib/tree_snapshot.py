@@ -278,6 +278,32 @@ def diff(git_dir: str, work_tree: str, a: str, b: str) -> str:
     return _git_diff(git_dir, work_tree, a, b)
 
 
+def apply_patch(git_dir: str, work_tree: str, paths: list[str], a: str, b: str) -> tuple[list[str], str]:
+    """Put the edit from snapshot *a* to snapshot *b* onto the files as they stand.
+
+    ``(files changed, "")``, or ``([], why)`` when it cannot: no git, or a hunk that no longer
+    fits. All or nothing, so a refusal leaves the files as they were.
+    """
+    if not (a and b) or not git_available():
+        return [], "the snapshots are copies, not git commits: there is no patch to take"
+    rels = _rel(work_tree, paths)
+    patch = _git(git_dir, work_tree, "diff", "--binary", a, b, "--", *rels)
+    if patch.returncode != 0:
+        return [], (patch.stderr or "git diff failed").strip()
+    if not patch.stdout.strip():
+        return [], "the run changed none of the tracked files"
+    with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as fh:
+        fh.write(patch.stdout)
+    try:
+        applied = _git(git_dir, work_tree, "apply", "--whitespace=nowarn", fh.name)
+    finally:
+        os.unlink(fh.name)
+    if applied.returncode != 0:
+        return [], (applied.stderr or "git apply failed").strip()
+    files = _git(git_dir, work_tree, "diff", "--name-only", a, b, "--", *rels)
+    return [line for line in files.stdout.splitlines() if line], ""
+
+
 def _copy_dir(git_dir: str, snapshot_id: str) -> str | None:
     """The directory of a copy-backed snapshot, or None for a git one."""
     d = os.path.join(_copy_root(git_dir), snapshot_id) if snapshot_id else ""

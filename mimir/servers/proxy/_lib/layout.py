@@ -48,6 +48,11 @@ def opt_config_file(proxy_name: str) -> str:
     return os.path.join(opt_session_runs_dir(proxy_name), "opt_config.json")
 
 
+def spec_history_file(proxy_name: str) -> str:
+    """How a measured session's spec changed, and why: opt_runs/<proxy_name>/spec_history.jsonl."""
+    return os.path.join(opt_session_runs_dir(proxy_name), "spec_history.jsonl")
+
+
 def merge_file(proxy_name: str) -> str:
     """A merge session's state (its sources, its phase, what it kept): opt_runs/<merge>/merge.json."""
     return os.path.join(opt_session_runs_dir(proxy_name), "merge.json")

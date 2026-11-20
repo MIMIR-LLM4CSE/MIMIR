@@ -191,45 +191,29 @@ class AttachedToEveryRunTests(_Ledgered):
                                side_effect=lambda p: os.path.join(self.tmp, f"{p}.jsonl")):
             return eval_observe.axes_tried(proxy)
 
-    def test_what_worked_and_what_was_ruled_out_both_come_back(self):
+    def test_a_rejection_is_sorted_by_what_its_version_did(self):
+        """A rejected run rules out its version, not its idea: a gain under the margin is kept
+        to combine, a regression to diagnose, the rest is named once."""
         self._write("solver", [
-            {"run_id": "r1", "axis": "baseline", "verdict": "accept",
-             "primary_value": 10.0},
-            {"run_id": "r2", "axis": "unrolling", "verdict": "reject",
-             "best_run_id": "r1"},
-            {"run_id": "r3", "axis": "tiling", "verdict": "accept",
-             "primary_value": 7.0, "best_run_id": "r1"},
+            {"run_id": "r1", "axis": "baseline", "verdict": "accept", "primary_value": 10.0},
+            {"run_id": "r2", "axis": "sentinel", "verdict": "reject", "near_miss": -0.028, "best_run_id": "r1"},
+            {"run_id": "r3", "axis": "32-bit indexing", "verdict": "reject", "regressed": 0.37, "best_run_id": "r1"},
+            {"run_id": "r4", "axis": "unrolling", "verdict": "reject", "best_run_id": "r1"},
+            {"run_id": "r5", "axis": "unrolling", "verdict": "reject", "best_run_id": "r1"},
+            {"run_id": "r6", "verdict": "reject"},
+            {"run_id": "r7", "axis": "tiling", "verdict": "accept", "primary_value": 7.0, "best_run_id": "r1"},
+            {"run_id": "r8", "axis": "wrong at the edge", "verdict": "accept", "primary_value": 6.0,
+             "retired": {"reason": "boundary fixed"}},
         ])
         axes = self._axes()
-        self.assertEqual(axes["tried"], 3)
-        self.assertEqual(axes["rejected"], ["unrolling"])
+        self.assertEqual(axes["tried"], 8)
         self.assertEqual({a["axis"] for a in axes["accepted"]}, {"baseline", "tiling"})
-
-    def test_an_idea_rejected_twice_is_still_one_fact(self):
-        """It is a list the model reads before choosing; the same word three times is
-        three lines of context saying one thing."""
-        self._write("solver", [
-            {"run_id": f"r{i}", "axis": "unrolling", "verdict": "reject",
-             "best_run_id": "r0"} for i in range(3)
-        ])
-        self.assertEqual(self._axes()["rejected"], ["unrolling"])
-
-    def test_a_run_that_named_no_axis_is_counted_but_not_listed(self):
-        """The count is measured; the name is the one thing only the model can supply,
-        and an empty string in the ruled-out list would rule out nothing."""
-        self._write("solver", [
-            {"run_id": "r1", "verdict": "reject"},
-            {"run_id": "r2", "axis": "tiling", "verdict": "reject"},
-        ])
-        axes = self._axes()
-        self.assertEqual(axes["tried"], 2)
-        self.assertEqual(axes["rejected"], ["tiling"])
-
-    def test_it_says_what_the_lists_are_for(self):
-        """Handed to a model with no note, a list of words is decoration."""
-        self._write("solver", [{"run_id": "r1", "axis": "unrolling",
-                                "verdict": "reject"}])
-        self.assertIn("ruled out", self._axes()["note"])
+        self.assertEqual(axes["near_misses"], [{"run_id": "r2", "axis": "sentinel", "gain": -0.028}])
+        self.assertEqual(axes["regressed"], [{"run_id": "r3", "axis": "32-bit indexing", "change": 0.37}])
+        self.assertEqual(axes["not_kept"], ["unrolling"])
+        for said in ("apply_run", "worth finding", "not its idea"):
+            self.assertIn(said, axes["note"])
+        self.assertNotIn("ruled out on this code", axes["note"])
 
     def test_a_session_with_no_runs_yet_attaches_nothing(self):
         """An empty structure on every early result is context spent saying nothing."""

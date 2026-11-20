@@ -445,13 +445,24 @@ def report_verdict(
     says only that repairing it is not the next piece of this work, which stops it counting
     against you as an unfinished task. Use it when reaching a first run would cost a step of
     its own; never to avoid a fix you could make.
+
+    An optimisation run whose verdict is `tradeoff` (it bettered one objective and worsened
+    another) is judged here, by its run id: `pass` makes it the best, `rejected` leaves it;
+    `rejected` on the session's best takes it back (it is wrong, or breaks a directive), and
+    the best before it returns.
     """
     value = (verdict or "").strip().lower()
     if value not in _VERDICT_VALUES:
         return err(f"verdict must be one of {', '.join(_VERDICT_VALUES)} — got '{verdict}'.")
     if not (reason or "").strip():
         return err("reason is required — name what in the output shows the verdict.")
-    return ok({"verdict": value, "reason": reason.strip(), "run": (run or "").strip()})
+    answer = {"verdict": value, "reason": reason.strip(), "run": (run or "").strip()}
+    # A measured run of an optimisation session is judged in its ledger too.
+    from ..proxy import verdicts
+    judged = verdicts.settle(answer["run"], value, answer["reason"])
+    if judged is not None:
+        answer["ratchet"] = judged
+    return ok(answer)
 
 
 if __name__ == "__main__":
