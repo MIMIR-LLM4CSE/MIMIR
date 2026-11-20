@@ -522,8 +522,13 @@ reasoned about. No phrasing makes an inferred root reliable — a bare-name root
 subdirectory — so the prompt states the absolute path and infers nothing.
 
 **The live checklist, and where state may not sit.** `build_system_content` renders the
-checklist into `messages[0]` (agent mode only) and `_sync_checklist` refreshes it there
-whenever the todo file's mtime moves *and* the rebuilt prompt actually differs.
+checklist into `messages[0]` (agent mode only) as the turn starts, and only then. Within the
+turn, the checklist tools reply with the whole list as it now stands (`CHECKLIST_STATE`,
+rendered by `shared/checklist` as the system prompt renders it), and
+`dispatch._pin_checklist` pins the latest such reply, releasing the one before. Rewriting
+`messages[0]` at each tick voided the prompt prefix for every step after it, a full cache
+miss per step ticked; within a turn only the model's own checklist tools write the file
+(a rewind or a conversation switch lands between turns), so the reply is a complete view.
 
 > **The invariant: a block of STATE never occupies the last position of the prompt.**
 
@@ -548,8 +553,8 @@ paths are already in the transcript, and a bare list of them is a pattern the mo
 
 **`rebuild_system_content(agent, active_mode, execution_context)`** is the single answer to
 "what must `messages[0]` be after a rebuild": the mode's prompt plus the folded skill block.
-Five sites rebuild it — mode switch, thinking-rung change, plan→agent handoff, checklist
-refresh, initial build — and before this existed the skill block was silently dropped by
+Four sites rebuild it — mode switch, thinking-rung change, plan→agent handoff, initial
+build — and before this existed the skill block was silently dropped by
 every one of them but the last.
 
 Only the skills the **user** invoked are in that block: every `/<name>` in the query, at
@@ -581,7 +586,10 @@ One set of ids, `execution_context["pinned_call_ids"]`, and three passes that ho
 exists because the tail is where the context budget does its work: `_trim_tool_history`
 evicts whole tool results, `_maybe_compact_intra_query` summarises the middle of the list,
 and `force_fit_to_window` truncates largest-first. All three would carry off a skill body,
-and the model has been told the method is in its context.
+and the model has been told the method is in its context; or the latest checklist reply,
+the only place the model reads the list as ticked within the turn. Two pinners, each moving
+its own pin: `_pin_loaded_skill` (one per skill, `skills_loaded`) and `_pin_checklist` (one
+in all, `PlanState.checklist_call_id`), both through `_move_pin`.
 
 - `_trim_tool_history` skips pinned ids outright, by `tool_call_id` — the same structural key
   as `tool_msg_files`, never a substring scan.

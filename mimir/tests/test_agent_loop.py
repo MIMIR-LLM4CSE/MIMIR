@@ -1289,6 +1289,63 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
         self.assertIsNone(agent.turn.live_messages)
 
 
+class ChecklistTickHoldsThePrefixTests(RunAgentQueryNonInteractiveTests):
+    """A step ticked mid-turn leaves messages[0] as the turn built it: the tick comes back
+    in the checklist tool's reply, and the system message is rebuilt only by the next turn."""
+
+    def test_messages_0_is_identical_at_every_step_of_a_ticking_turn(self) -> None:
+        from mimir.client.prompt.system_prompt import build_system_content
+        d = tempfile.mkdtemp()
+        todo_fp = os.path.join(d, "todo_list.md")
+        with open(todo_fp, "w", encoding="utf-8") as fh:
+            fh.write("- [ ] one\n- [ ] two\n- [ ] three\n")
+        self.addCleanup(lambda: (os.remove(todo_fp), os.rmdir(d)))
+
+        agent = self._query_agent()
+        agent.todo_file = lambda: todo_fp
+
+        async def _system(**kwargs):
+            return build_system_content(active_mode=kwargs.get("active_mode", "agent"),
+                                        tool_owner={}, sensitive_tools=set(), todo_file=todo_fp)
+        agent.build_system_content = _system
+
+        ticks = iter(["- [x] one\n- [ ] two\n- [ ] three\n",
+                      "- [x] one\n- [x] two\n- [ ] three\n",
+                      "- [x] one\n- [x] two\n- [x] three\n"])
+
+        async def _tick(*a, **k):
+            with open(todo_fp, "w", encoding="utf-8") as fh:
+                fh.write(next(ticks))
+
+        async def _noop_async(*a, **k):
+            return None
+
+        backend = ScriptedBackend([
+            {"content": "", "tool_calls": [_tool_call("noop")]},
+            {"content": "", "tool_calls": [_tool_call("noop")]},
+            {"content": "", "tool_calls": [_tool_call("noop")]},
+            {"content": "final answer"},
+        ])
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(loop_base_module, "dispatch_tool_calls", _tick), \
+             patch.object(loop_base_module, "post_dispatch_inject", _noop_async), \
+             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
+             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: []), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            asyncio.run(turn_module.run_agent_query(agent=agent, query="do a thing", max_steps=8))
+
+        systems = [call["messages"][0]["content"] for call in backend.calls]
+        self.assertEqual(len(systems), 4)
+        self.assertEqual(len(set(systems)), 1)
+        self.assertIn("(3 pending", systems[0])
+
+        # The next turn starts from the list as the last one left it.
+        next_turn = asyncio.run(_system(active_mode="agent"))
+        self.assertIn("(0 pending", next_turn)
+
+
 class DrainSteerTests(unittest.TestCase):
     """Unit coverage for ``drain_steer`` — the chat-while-busy injection point."""
 

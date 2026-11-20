@@ -7,11 +7,9 @@ its own (``plan_loop``); switching to it mid-run hands the turn over.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from ..config.limits import NUDGE_MAX_CONSECUTIVE_NOOP
-from ..protocol.event_sink import emit
 from ..guardrails.verification.builtin_check import sweep_builtin_checks
 from ..guardrails.nudges import (
     inject_reminder,
@@ -21,10 +19,7 @@ from ..guardrails.nudges import (
 )
 from ..guardrails.workflow import finalize_incomplete_answer, TERMINATION_STEP_LIMIT
 from ..guardrails.nudges.messages import evidence_handback_message, message
-from .loop_base import (
-    ModeSwitch, StepLoop, TurnContext, drain_steer,
-    rebuild_system_content,
-)
+from .loop_base import ModeSwitch, StepLoop, TurnContext, drain_steer
 from ..guardrails.policy.toollist import tools_for_context
 from ..context.execution_context import ExecutionContext
 from ..core.ports import AgentPort
@@ -45,39 +40,6 @@ def _mode_tools(
         tools=tools,
         tool_caps=agent.tool_caps,
     )
-
-
-async def _sync_checklist(
-    agent: AgentPort,
-    messages: list[dict],
-    active_mode: str,
-    system_content: str,
-    execution_context: ExecutionContext,
-) -> str:
-    """Rewrite messages[0] when the on-disk checklist has changed; return the system content.
-
-    STATE goes in messages[0], never in the last position (docs/CLIENT_DETAILED.md, "The pin").
-    Triggered by the file's mtime (it has several writers), then by a content comparison
-    (the todo server re-saves unchanged text).
-    """
-    todo_fp = execution_context.plan.todo_file_path
-    if not todo_fp:
-        return system_content
-    try:
-        stamp = os.stat(todo_fp).st_mtime_ns
-    except OSError:
-        return system_content  # no checklist on disk — nothing to refresh
-    if stamp == execution_context.plan.checklist_stamp:
-        return system_content
-    execution_context.plan.checklist_stamp = stamp
-    if not (messages and messages[0].get("role") == "system"):
-        return system_content
-    rebuilt = await rebuild_system_content(agent, active_mode, execution_context)
-    if rebuilt == messages[0].get("content"):
-        return system_content  # touched, not changed: the prefix still hits
-    messages[0]["content"] = rebuilt
-    emit({"type": "status", "text": "  ↻ Task checklist changed — system prompt refreshed"})
-    return rebuilt
 
 
 def _turn_may_be_rejected(
@@ -128,15 +90,6 @@ class AgentLoop(StepLoop):
         if phase == "validate":
             return max(1024, base // 2)
         return max(512, base // 4)
-
-    async def refresh_live_settings(self) -> None:
-        await super().refresh_live_settings()
-        # Same reason, same place: a checklist the model ticked off last step is only
-        # visible to it once messages[0] carries it, and the budget must account for
-        # the message it will actually send.
-        self.system_content = await _sync_checklist(
-            self.agent, self.messages, self.mode, self.system_content, self.ec,
-        )
 
     async def run(self) -> str | ModeSwitch:
         budget = self.turn.max_steps

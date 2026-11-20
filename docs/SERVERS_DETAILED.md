@@ -10,7 +10,7 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `mimir/shared/` (beside `servers/`) | What two domains or more use, and the contract with the client ([ARCHITECTURE.md](ARCHITECTURE.md#what-the-client-and-the-servers-share)) | `responses.py`, `capabilities.py`, `approved_roots.py`, `trusted_read_roots.py`, `module_env.py`, `embed.py`, `cpu_facts.py`, `job_script.py`, `schedulers.py`, `cluster_site.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `jobs.py`, `run_channel.py`, `build_progress.py`, `shell_activity.py`, `atomic.py`, `clock.py`, `processes.py`, `launcher.py`, `skill_file.py` |
+| `mimir/shared/` (beside `servers/`) | What two domains or more use, and the contract with the client ([ARCHITECTURE.md](ARCHITECTURE.md#what-the-client-and-the-servers-share)) | `responses.py`, `capabilities.py`, `approved_roots.py`, `trusted_read_roots.py`, `module_env.py`, `embed.py`, `cpu_facts.py`, `job_script.py`, `schedulers.py`, `cluster_site.py`, `shell_paths.py`, `state_paths.py`, `checklist.py`, `extension_paths.py`, `jobs.py`, `run_channel.py`, `build_progress.py`, `shell_activity.py`, `atomic.py`, `clock.py`, `processes.py`, `launcher.py`, `skill_file.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning, delegation & self-knowledge | `server_memory`, `server_todo`, `server_spawn_agent`, `server_mimir_api` |
@@ -343,15 +343,22 @@ tools are grantable, because a child writes them in its own session.
 
 Tools:
 - `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the prose body). No guard refuses a plan for its wording — see [POLICY.md](POLICY.md#why-there-is-no-plan-shape-guard) for why a verb list is the wrong instrument for a refusal
-- `todo_write` — replace the entire checklist with new steps. Takes an optional `depends_on` (one list of prerequisite indices per step), so a plan whose steps are genuinely partially ordered is recorded as the DAG it is instead of being flattened into a line
+- `todo_write` — replace the entire checklist with new steps. Takes an optional `depends_on` (one list of prerequisite indices per step), so a plan whose steps are genuinely partially ordered is recorded as the DAG it is instead of being flattened into a line. Replies with `pending` and `checklist`, the whole list as it now stands
 - `todo_read` — return the current checklist (index, text, done)
 - `todo_read_ready` — split the open steps into `ready` and `blocked` against that DAG (a step is ready once every step it depends on is done)
 - `todo_read_plan` — read the active (or a named) prose plan
 - `todo_list_plans` — browse the session's plan history
 - `todo_delete_plan` — delete one plan from the history
-- `todo_update` — mark one item done/undone. No ordering is enforced here or anywhere else in the server: which step is next is the model's call, and `## Planning & todo` in the system prompt says so — independent steps have no order, a real one is declared through `depends_on`, and the list is rewritten when the work diverges from the plan
+- `todo_update` — mark one item done/undone, or reword it; replies with the item, `pending` and `checklist`. No ordering is enforced here or anywhere else in the server: which step is next is the model's call, and `## Planning & todo` in the system prompt says so — independent steps have no order, a real one is declared through `depends_on`, and the list is rewritten when the work diverges from the plan
 
 Notes:
+- `todo_write`, `todo_read` and `todo_update` declare `CHECKLIST_STATE`: their reply
+  carries the whole checklist, rendered by `shared/checklist.render_checklist` exactly as
+  the system prompt renders it. The system message shows the checklist as the turn started
+  and is not rewritten within it (that would void the prompt prefix for every later step),
+  so this reply is where the model reads each change; the client pins the latest one.
+  The file format, its reading and writing, and the dependency sidecar live in
+  `mimir/shared/checklist.py`, shared with the client.
 - None of these tools is approval-gated: they manage a markdown checklist and prose
   plans, not source files, so they must stay available without a prompt in agent mode.
 - Which of them a read-only mode sees is decided by `toollist.hidden_planning_tools()`:

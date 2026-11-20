@@ -1,19 +1,20 @@
-"""Workstream C: where the task checklist lives, and prompt-prefix stability.
+"""Where the task checklist lives, and prompt-prefix stability.
 
-Appending the checklist as a transient tail message before every model call keeps the
-prefix byte-stable, but puts a block of *state* in the last position before the generation
-prompt — which is what empties turns on a served model (37/108 draws with it, 0/84 without;
-0/40 once the same text sits in messages[0]). These tests hold the checklist to messages[0]
-and hold the rebuild to the moments the checklist actually changed.
+A block of *state* in the last position before the generation prompt empties turns on a
+served model (37/108 draws with it, 0/84 without; 0/40 once the same text sits in
+messages[0]), and rewriting messages[0] mid-turn voids the prompt prefix for every step
+after. So the checklist is rendered into messages[0] as the turn starts, and within the turn
+it comes back in the checklist tool's own reply, pinned.
 """
 from mimir.tests.support.context import build_execution_context
 import asyncio
+import json
 import os
 import tempfile
+import types
 import unittest
 
 from mimir.client.prompt.system_prompt import build_system_content
-from mimir.client.query_engine import agent_loop as m
 from mimir.client.guardrails.policy import toollist as pe
 from mimir.tests.support.golden_caps import build_declared_registry
 import mimir.client.query_engine.loop_base as loop_base_module
@@ -34,120 +35,76 @@ class _FakeAgent:
         )
 
 
-class ChecklistPlacementTests(unittest.TestCase):
-    """messages[0], and nowhere else — least of all the last position."""
+def _todo_file(test: unittest.TestCase, body: str) -> str:
+    d = tempfile.mkdtemp()
+    fp = os.path.join(d, "todo_list.md")
+    with open(fp, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    test.addCleanup(lambda: (os.path.exists(fp) and os.remove(fp), os.rmdir(d)))
+    return fp
 
-    def _todo(self, body: str) -> str:
-        d = tempfile.mkdtemp()
-        fp = os.path.join(d, "todo_list.md")
-        with open(fp, "w", encoding="utf-8") as fh:
-            fh.write(body)
-        self.addCleanup(lambda: (os.path.exists(fp) and os.remove(fp), os.rmdir(d)))
-        return fp
 
-    def _sync(self, agent, messages, ctx, system_content="SYS"):
-        return asyncio.run(
-            m._sync_checklist(agent, messages, "agent", system_content, ctx)
+class ChecklistWithinTurnTests(unittest.TestCase):
+    """The checklist is rendered into messages[0] as the turn starts, and only then.
+
+    Within the turn a change comes back in the checklist tool's own reply, whose latest copy
+    is pinned, so the system message, and the prompt prefix with it, holds for every step.
+    """
+
+    def _system(self, fp: str) -> str:
+        return build_system_content(
+            active_mode="agent", tool_owner={}, sensitive_tools=set(), todo_file=fp,
         )
 
-    def _bump(self, fp: str, seconds: int = 10) -> None:
-        """Move the mtime forward explicitly: two writes in the same test can land on
-        one timestamp, and what is under test is the gate, not the clock."""
-        st = os.stat(fp)
-        os.utime(fp, ns=(st.st_atime_ns, st.st_mtime_ns + seconds * 1_000_000_000))
+    def test_the_turn_starts_with_the_checklist_in_the_system_message(self):
+        out = self._system(_todo_file(self, "- [x] one\n- [ ] two\n"))
+        self.assertIn("Task checklist at the start of this turn (1 pending", out)
+        self.assertIn("[ ] two", out)
 
-    def test_the_checklist_lands_in_messages_0(self):
-        fp = self._todo("- [x] one\n- [ ] two\n")
-        agent = _FakeAgent(fp)
-        messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
-        out = self._sync(agent, messages, build_execution_context(todo_file_path=fp))
-        self.assertIn("Task checklist (1 pending", messages[0]["content"])
-        self.assertIn("[ ] two", messages[0]["content"])
-        self.assertEqual(out, messages[0]["content"])
+    def test_the_reply_renders_the_list_as_the_system_message_does(self):
+        # One rendering, so the model reads the same lines in both places.
+        from mimir.servers.agent_state import server_todo
+        items = [{"index": 0, "text": "one", "done": True},
+                 {"index": 1, "text": "two", "done": False}]
+        reply = server_todo._checklist_reply(items, item=items[0])
+        self.assertEqual(reply["pending"], 1)
+        self.assertIn(reply["checklist"], self._system(_todo_file(self, "- [x] one\n- [ ] two\n")))
 
-    def test_it_appends_nothing_and_reaches_no_other_message(self):
-        # The regression this whole change exists to prevent: a block of state in the
-        # last position before the generation prompt.
-        fp = self._todo("- [ ] two\n")
-        agent = _FakeAgent(fp)
-        messages = [{"role": "system", "content": "SYS"},
-                    {"role": "user", "content": "q"},
-                    {"role": "assistant", "content": "a"},
-                    {"role": "tool", "content": "t"}]
-        self._sync(agent, messages, build_execution_context(todo_file_path=fp))
-        self.assertEqual(len(messages), 4)
-        self.assertEqual(messages[-1]["role"], "tool")
-        for msg in messages[1:]:
-            self.assertNotIn("Task checklist", str(msg.get("content", "")))
+    def _pin(self, ctx, call_id, reply, name="todo_update"):
+        from mimir.client.query_engine import dispatch as dispatch_module
+        agent = types.SimpleNamespace(tool_caps=build_declared_registry())
+        dispatch_module._pin_checklist(agent, name, call_id, reply, ctx)
 
-    def test_an_unchanged_file_is_not_rebuilt(self):
-        fp = self._todo("- [ ] two\n")
-        agent = _FakeAgent(fp)
-        ctx = build_execution_context(todo_file_path=fp)
-        messages = [{"role": "system", "content": "SYS"}]
-        self._sync(agent, messages, ctx)
-        first, builds = messages[0]["content"], agent.builds
-        for _ in range(3):
-            self._sync(agent, messages, ctx)
-        self.assertEqual(messages[0]["content"], first)  # byte-identical prefix
-        self.assertEqual(agent.builds, builds)  # the mtime gate held
+    _OK = json.dumps({"status": "ok", "pending": 1, "checklist": "[x] one\n[ ] two"})
 
-    def test_a_touch_that_changes_nothing_costs_nothing(self):
-        # The todo server re-saves the file even when the text is unchanged (ticking an
-        # item already ticked). The mtime moves; the prompt must not.
-        fp = self._todo("- [x] one\n")
-        agent = _FakeAgent(fp)
-        ctx = build_execution_context(todo_file_path=fp)
-        messages = [{"role": "system", "content": "SYS"}]
-        self._sync(agent, messages, ctx)
-        first = messages[0]["content"]
-        with open(fp, "w", encoding="utf-8") as fh:
-            fh.write("- [x] one\n")
-        self._bump(fp)
-        self._sync(agent, messages, ctx)
-        self.assertIs(messages[0]["content"], first)  # not even reassigned
+    def test_each_reply_takes_the_pin_from_the_last(self):
+        ctx = build_execution_context()
+        self._pin(ctx, "c1", self._OK)
+        self._pin(ctx, "c2", self._OK)
+        self.assertEqual(ctx.bookkeeping.pinned_call_ids, {"c2"})
+        self.assertEqual(ctx.plan.checklist_call_id, "c2")
 
-    def test_a_real_tick_reaches_the_prompt(self):
-        fp = self._todo("- [ ] one\n- [ ] two\n")
-        agent = _FakeAgent(fp)
-        ctx = build_execution_context(todo_file_path=fp)
-        messages = [{"role": "system", "content": "SYS"}]
-        self._sync(agent, messages, ctx)
-        self.assertIn("Task checklist (2 pending", messages[0]["content"])
-        with open(fp, "w", encoding="utf-8") as fh:
-            fh.write("- [x] one\n- [ ] two\n")
-        self._bump(fp)
-        self._sync(agent, messages, ctx)
-        self.assertIn("Task checklist (1 pending", messages[0]["content"])
+    def test_a_failed_update_leaves_the_last_list_pinned(self):
+        ctx = build_execution_context()
+        self._pin(ctx, "c1", self._OK)
+        self._pin(ctx, "c2", json.dumps({"status": "error", "error": "Index 9 out of range"}))
+        self.assertEqual(ctx.bookkeeping.pinned_call_ids, {"c1"})
 
-    def test_the_skill_block_survives_a_rebuild(self):
-        # The skill context is folded into messages[0], not appended as a second system
-        # message, so a bare rebuild would silently drop it.
-        fp = self._todo("- [ ] one\n")
-        agent = _FakeAgent(fp)
-        ctx = build_execution_context(todo_file_path=fp, skill_suffix="\n\nSKILL CONTEXT (SUBORDINATE). xyz")
-        messages = [{"role": "system", "content": "SYS"}]
-        self._sync(agent, messages, ctx)
-        self.assertTrue(messages[0]["content"].endswith("SKILL CONTEXT (SUBORDINATE). xyz"))
-        self.assertIn("Task checklist", messages[0]["content"])
+    def test_a_tool_that_does_not_carry_the_checklist_is_not_pinned(self):
+        ctx = build_execution_context()
+        self._pin(ctx, "c1", self._OK, name="read_file_lines")
+        self.assertEqual(ctx.bookkeeping.pinned_call_ids, set())
 
-    def test_no_checklist_leaves_the_prompt_alone(self):
-        messages = [{"role": "system", "content": "SYS"}]
-        out = self._sync(_FakeAgent(""), messages, build_execution_context())
-        self.assertEqual(messages, [{"role": "system", "content": "SYS"}])
-        self.assertEqual(out, "SYS")
-
-    def test_a_missing_todo_file_is_not_an_error(self):
-        messages = [{"role": "system", "content": "SYS"}]
-        ctx = build_execution_context(todo_file_path="/nonexistent/todo_list.md")
-        out = self._sync(_FakeAgent("/nonexistent/todo_list.md"), messages, ctx)
-        self.assertEqual(out, "SYS")
-        self.assertEqual(messages[0]["content"], "SYS")
+    def test_the_checklist_pin_leaves_a_skill_pin_alone(self):
+        ctx = build_execution_context(skills_loaded={"fix-bug": "s1"}, pinned_call_ids={"s1"})
+        self._pin(ctx, "c1", self._OK)
+        self._pin(ctx, "c2", self._OK)
+        self.assertEqual(ctx.bookkeeping.pinned_call_ids, {"s1", "c2"})
 
 
 class RebuildRuleTests(unittest.TestCase):
     """``messages[0]`` is the mode's prompt plus the folded skill block at every rebuild: mode
-    switch, thinking rung, plan→agent handoff, checklist refresh.
+    switch, thinking rung, plan→agent handoff.
     """
 
     def _agent(self):

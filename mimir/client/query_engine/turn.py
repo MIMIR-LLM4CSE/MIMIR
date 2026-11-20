@@ -7,7 +7,6 @@ the loop of its mode, then through whichever loop the mode is switched to.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from ..context import validate_execution_context
@@ -113,7 +112,7 @@ async def run_agent_query(
 
     system_content = await agent.build_system_content(active_mode=active_mode)
 
-    # Store the active todo file path so _sync_checklist can watch it for changes.
+    # The active checklist file, for the guardrails that read the live checklist.
     execution_context.plan.todo_file_path = agent.todo_file()
 
     # Append the query unless history already ends with it (the WS server appends it, the CLI
@@ -168,17 +167,6 @@ async def run_agent_query(
         execution_context.bookkeeping.skill_suffix = suffix
         for name in invoked:
             emit({"type": "status", "text": f"  \u2299 Skill invoked: {name}"})
-
-    # messages[0] now carries the checklist as it stands at query start; _sync_checklist
-    # rewrites it from here on, and only when the file behind it actually changes. The
-    # mtime is seeded rather than left unset so an unchanged checklist costs nothing on
-    # the first step of every query.
-    _todo_fp = execution_context.plan.todo_file_path
-    if _todo_fp:
-        try:
-            execution_context.plan.checklist_stamp = os.stat(_todo_fp).st_mtime_ns
-        except OSError:
-            pass
 
     turn = TurnContext(
         agent=agent, query=query, messages=messages,

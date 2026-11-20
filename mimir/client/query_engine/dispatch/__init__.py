@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from ...config.limits import IDENTICAL_REPEAT_THRESHOLD, SOFT_REPEAT_THRESHOLD
 from ...config.servers import SKILL_LOAD_TOOL
-from ...tools.capabilities import CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
+from ...tools.capabilities import CHECKLIST_STATE, CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
 from ...context.execution_context import ExecutionContext
 from ...core.ports import DispatchAgent
 from ...protocol.event_sink import emit
@@ -152,6 +152,7 @@ class ToolDispatcher:
             except Exception:
                 tool_msg_files[call.call_id] = []
             _pin_loaded_skill(self.agent, call.name, call.args, call.call_id, result, self.ec)
+            _pin_checklist(self.agent, call.name, call.call_id, result, self.ec)
             self.messages.append({"role": "tool", "tool_call_id": call.call_id, "content": result})
         for call_id, why in admission.skipped:
             tool_msg_files[call_id] = []
@@ -190,10 +191,37 @@ def _pin_loaded_skill(
     if not succeeded:
         return
     loaded: dict = execution_context.bookkeeping.skills_loaded
+    _move_pin(execution_context, loaded.get(skill), call_id)
+    loaded[skill] = call_id
+    emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
+
+
+def _pin_checklist(
+    agent: DispatchAgent,
+    name: str,
+    call_id: str,
+    result: str,
+    execution_context: ExecutionContext,
+) -> None:
+    """Pin the latest successful reply that carries the whole checklist (``CHECKLIST_STATE``).
+
+    The system message shows the checklist as the turn started and is not rewritten within
+    it, so this reply is where the model reads the list as it stands; it must outlast the
+    history budget. Each new one takes the pin from the last.
+    """
+    if not has_cap(name, CHECKLIST_STATE, agent.tool_caps):
+        return
+    succeeded, _summary = summarize_tool_result(name, result, agent.tool_caps)
+    if not succeeded:
+        return
+    plan = execution_context.plan
+    _move_pin(execution_context, plan.checklist_call_id, call_id)
+    plan.checklist_call_id = call_id
+
+
+def _move_pin(execution_context: ExecutionContext, earlier: str | None, call_id: str) -> None:
+    """Pin *call_id*, and release *earlier*, which becomes ordinary history."""
     pinned: set = execution_context.bookkeeping.pinned_call_ids
-    earlier = loaded.get(skill)
     if earlier:
         pinned.discard(earlier)
-    loaded[skill] = call_id
     pinned.add(call_id)
-    emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})

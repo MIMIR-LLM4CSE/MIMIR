@@ -230,8 +230,9 @@ class PlanState:
     plan_written: bool = _spec(lambda: False, (bool,))
     # the active checklist file (set at query start)
     todo_file_path: str = _spec(lambda: "", (str,))
-    # mtime of the checklist the system message renders
-    checklist_stamp: int | None = _spec(lambda: None, (int, _NoneType))
+    # tool_call_id of the pinned reply carrying the checklist as it stands (CHECKLIST_STATE);
+    # carried with the pin it names, so the next one can release it
+    checklist_call_id: str = _spec(lambda: "", (str,), CARRY)
     # the file the last "tick the step" was about
     last_todo_tick_path: str = _spec(lambda: "", (str,))
 

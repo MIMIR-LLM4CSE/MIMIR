@@ -9,7 +9,8 @@ from typing import Callable
 
 from ..runtime import todo_file_for_session
 from ..worker.worker import AgentWorker
-from ....context.todo import load_todo_deps, load_todo_items
+from ....context.todo import load_todo_items
+from .....shared.checklist import read_deps
 from ....session.conversation import Conversation, Conversations
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ class Writer:
         todo_file = todo_file_for_session(conversation.id)
         try:
             record.todos = load_todo_items(todo_file)
-            record.todo_deps = load_todo_deps(todo_file)
+            record.todo_deps = read_deps(todo_file)
         except Exception:
             logger.warning("session %s: its checklist could not be read",
                            conversation.id, exc_info=True)

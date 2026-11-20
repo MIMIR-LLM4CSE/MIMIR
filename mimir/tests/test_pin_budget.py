@@ -133,7 +133,7 @@ class ChecklistSectionTests(unittest.TestCase):
 
     def test_it_renders_the_checklist_with_the_pending_count(self) -> None:
         out = self._prompt("- [x] read the solver\n- [ ] add the binding\n")
-        self.assertIn("Task checklist (1 pending", out)
+        self.assertIn("Task checklist at the start of this turn (1 pending", out)
         self.assertIn("[x] read the solver", out)
         self.assertIn("[ ] add the binding", out)
 
@@ -148,11 +148,11 @@ class ChecklistSectionTests(unittest.TestCase):
     def test_no_checklist_says_so_rather_than_rendering_one(self) -> None:
         out = self._prompt("no items\n")
         self.assertIn("No task checklist yet", out)
-        self.assertNotIn("Task checklist (", out)
+        self.assertNotIn("Task checklist at the start", out)
 
     def test_rendering_is_stable_across_calls(self) -> None:
-        # Byte-stability is what lets _sync_checklist skip the rewrite, and with it the
-        # prefix-cache break, when the file was touched but not changed.
+        # Byte-stability is what lets the next turn's system message reuse the cached
+        # prefix when the checklist did not change.
         path = self._todo("- [ ] a\n- [ ] b\n")
         kw = dict(active_mode="agent", tool_owner={}, sensitive_tools=set(), todo_file=path)
         self.assertEqual(build_system_content(**kw), build_system_content(**kw))

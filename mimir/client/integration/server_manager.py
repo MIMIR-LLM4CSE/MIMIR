@@ -140,14 +140,12 @@ def _description_without_args_block(doc: str, parameters: dict) -> str:
 # The ``doing`` argument every tool takes: the model's own sentence about this call, shown
 # on its row. The dispatcher strips it before execution. Never ``required``, so a
 # validating backend does not refuse a call without it.
+# Sent once per tool, so every word is paid for on every tool of every request.
 _DOING_PROPERTY = {
     "type": "string",
     "description": (
-        "What this particular call does, in under 15 words, as a phrase: \"searching "
-        "for the off-by-one bound\", \"running the row-display tests\", \"submitting "
-        "the job on genoa\". Shown to the user beside the tool while the call runs, so "
-        "it names the concrete thing this call is for — not the tool's category, and "
-        "not a restatement of the arguments."
+        "Shown to the user while the call runs: the concrete thing it is for, under 15 "
+        "words (\"running the row-display tests\")."
     ),
 }
 

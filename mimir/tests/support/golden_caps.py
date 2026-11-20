@@ -122,6 +122,8 @@ EXTERNAL_FETCH_TOOLS = {
 REMOVE_TOOLS = {"delete_file", "env_delete"}
 OVERWRITE_TOOLS = {"write_file"}
 TASK_PLANNING_TOOLS = {"todo_write", "todo_set_plan"}
+# Their reply carries the whole checklist as it stands; the latest one is pinned.
+CHECKLIST_STATE_TOOLS = {"todo_write", "todo_read", "todo_update"}
 JUDGE_TOOLS = {"report_verdict"}
 DELEGATE_TOOLS = {"spawn_agent"}
 # Reserved to the orchestrating agent, never granted to a sub-agent: the plan the user
@@ -258,6 +260,7 @@ GOLDEN = {
     "remove": REMOVE_TOOLS,
     "overwrite": OVERWRITE_TOOLS,
     "task_planning": TASK_PLANNING_TOOLS,
+    "checklist_state": CHECKLIST_STATE_TOOLS,
     "judge": JUDGE_TOOLS,
     "delegate": DELEGATE_TOOLS,
     "main_only": MAIN_ONLY_TOOLS,

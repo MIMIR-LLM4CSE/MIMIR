@@ -9,7 +9,8 @@ import re
 
 
 from mcp.server.fastmcp import FastMCP
-from ...shared.capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
+from ...shared.capabilities import CHECKLIST_STATE, MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
+from ...shared.checklist import read_checklist, read_deps, render_checklist, write_checklist, write_deps
 from ...shared.responses import err, ok
 from ...shared.state_paths import TODO_FILENAME, session_state_dir, state_dir
 from .text_tools import yaml_scalar, yaml_unquote
@@ -132,30 +133,10 @@ mcp = FastMCP(
     log_level="ERROR",
 )
 
-_CHECKBOX_RE = re.compile(r"^- \[([ x])\] (.+)$")
-
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _load() -> list[dict]:
-    todo_file = _get_todo_file()
-    if not os.path.exists(todo_file):
-        return []
-    try:
-        with open(todo_file, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except OSError:
-        return []
-    items: list[dict] = []
-    for line in lines:
-        m = _CHECKBOX_RE.match(line.rstrip("\n"))
-        if m:
-            items.append({
-                "index": len(items),
-                "text": m.group(2),
-                "done": m.group(1) == "x",
-            })
-    return items
+    return read_checklist(_get_todo_file())
 
 
 def _done_counts(items: list[dict]) -> dict[str, int]:
@@ -169,49 +150,17 @@ def _done_counts(items: list[dict]) -> dict[str, int]:
 
 
 def _save(items: list[dict]) -> None:
-    todo_file = _get_todo_file()
-    os.makedirs(os.path.dirname(todo_file), exist_ok=True)
-    with open(todo_file, "w", encoding="utf-8") as f:
-        for it in items:
-            mark = "x" if it.get("done") else " "
-            f.write(f"- [{mark}] {it['text']}\n")
+    write_checklist(_get_todo_file(), items)
 
 
-def _deps_file() -> str:
-    return os.path.join(os.path.dirname(_get_todo_file()), "todo_deps.json")
+def _checklist_reply(items: list[dict], **fields) -> dict:
+    """*fields* plus the whole list as it now stands, rendered as the system message renders it.
 
-
-def _load_deps() -> list[list[int]]:
-    """Return the per-step dependency matrix, or [] if not set."""
-    import json
-    path = _deps_file()
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-    except Exception:
-        pass
-    return []
-
-
-def _save_deps(deps: list[list[int]]) -> None:
-    import json
-    path = _deps_file()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(deps, f)
-
-
-def _delete_deps() -> None:
-    path = _deps_file()
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except OSError:
-        pass
+    The system message shows the checklist as the turn started and is not rewritten within
+    it; this reply is how the model sees each change (CHECKLIST_STATE).
+    """
+    pending = sum(1 for it in items if not it.get("done"))
+    return ok({**fields, "pending": pending, "checklist": render_checklist(items)})
 
 
 # ── tools ─────────────────────────────────────────────────────────────────────
@@ -392,7 +341,7 @@ def todo_delete_plan(name: str) -> dict:
 
 
 @mcp.tool(**tool_caps(kind="todo", label="Writing the checklist",
-                      caps=[TASK_PLANNING], arg_roles={"plan_steps": ["steps"]}))
+                      caps=[TASK_PLANNING, CHECKLIST_STATE], arg_roles={"plan_steps": ["steps"]}))
 def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> dict:
     """Replace the whole todo list with a new ordered list of steps.
 
@@ -416,7 +365,8 @@ def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> d
                     Omit or pass null for a plain sequential list.
 
     Returns:
-        {"status": "ok", "count": <n>, "kept_done": <n carried over>}
+        {"status": "ok", "count": <n>, "kept_done": <n carried over>, "pending": <n>,
+         "checklist": <the whole list, one "[x] step" / "[ ] step" line each>}
     """
     done_before = _done_counts(_load())
     items = []
@@ -427,17 +377,13 @@ def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> d
             done_before[text] -= 1
         items.append({"index": i, "text": text, "done": was_done})
     _save(items)
-    if depends_on is not None:
-        _save_deps(depends_on)
-    else:
-        _delete_deps()
-    return ok({
-        "count": len(items),
-        "kept_done": sum(1 for it in items if it["done"]),
-    })
+    write_deps(_get_todo_file(), depends_on)
+    return _checklist_reply(
+        items, count=len(items), kept_done=sum(1 for it in items if it["done"]),
+    )
 
 
-@mcp.tool(**tool_caps(kind="todo", label="Reading the checklist"))
+@mcp.tool(**tool_caps(kind="todo", label="Reading the checklist", caps=[CHECKLIST_STATE]))
 def todo_read() -> dict:
     """Return the current todo list.
 
@@ -466,7 +412,7 @@ def todo_read_ready() -> dict:
         {"status": "ok", "ready": [...], "blocked": [...], "pending": <n>}
     """
     items = _load()
-    deps = _load_deps()   # list[list[int]], one entry per step index
+    deps = read_deps(_get_todo_file())   # list[list[int]], one entry per step index
 
     ready = []
     blocked = []
@@ -483,7 +429,7 @@ def todo_read_ready() -> dict:
     return ok({"ready": ready, "blocked": blocked, "pending": len(ready) + len(blocked)})
 
 
-@mcp.tool(**tool_caps(kind="todo", label="Updating checklist step {index}"))
+@mcp.tool(**tool_caps(kind="todo", label="Updating checklist step {index}", caps=[CHECKLIST_STATE]))
 def todo_update(index: int, done: bool | None = None, text: str | None = None) -> dict:
     """Update one todo item in place: tick it off, reopen it, and/or reword it.
 
@@ -503,7 +449,8 @@ def todo_update(index: int, done: bool | None = None, text: str | None = None) -
         text:  New wording for this step, or omit to keep the current one.
 
     Returns:
-        {"status": "ok", "item": <updated entry>, "pending": <remaining count>}
+        {"status": "ok", "item": <updated entry>, "pending": <remaining count>,
+         "checklist": <the whole list, one "[x] step" / "[ ] step" line each>}
     """
     items = _load()
     if index < 0 or index >= len(items):
@@ -524,8 +471,7 @@ def todo_update(index: int, done: bool | None = None, text: str | None = None) -
     if done is not None:
         items[index]["done"] = done
     _save(items)
-    pending = sum(1 for it in items if not it.get("done"))
-    return ok({"item": items[index], "pending": pending})
+    return _checklist_reply(items, item=items[index])
 
 
 # ── resource ──────────────────────────────────────────────────────────────────

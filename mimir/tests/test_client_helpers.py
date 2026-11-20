@@ -184,10 +184,12 @@ class ClientHelperTests(unittest.TestCase):
         """
         m = execution_context_module
         # Carried without paths: `pinned_call_ids` (the pinned message is replayed into
-        # the next query), `searched` and `skills_loaded`.
+        # the next query), `searched`, and the two that name a pin: `skills_loaded` and
+        # `checklist_call_id`.
         self.assertEqual(set(m.fields_with(m.CARRY)), {
             "read_files", "delegated_read_files", "existing_paths", "inspected_dirs",
-            "checked_paths", "pinned_call_ids", "searched", "skills_loaded"})
+            "checked_paths", "pinned_call_ids", "searched", "skills_loaded",
+            "checklist_call_id"})
         self.assertEqual(set(m.fields_with(m.FILE_PATH)), {
             "existing_paths", "read_files", "delegated_read_files", "checked_paths",
             "dirty_written_files", "validated_files", "unverifiable_files"})

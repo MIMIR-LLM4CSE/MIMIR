@@ -26,7 +26,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 </style>
 <rect class="bg" width="1155" height="1026"/>
 <text class="head" x="14" y="26">MIMIR dependency map</text>
-<text class="meta" x="14" y="44">65 units · 292 load-time edges · 11 deferred-only · 0 rule breaks · 0 cycles across units</text>
+<text class="meta" x="14" y="44">66 units · 297 load-time edges · 11 deferred-only · 0 rule breaks · 0 cycles across units</text>
 <rect class="band" x="8" y="60" width="966" height="48" rx="4"/>
 <text class="label" x="14" y="82">rank 11</text>
 <text class="label" x="14" y="96">front-ends</text>
@@ -82,16 +82,17 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M562,206 C562,220 485.5,220 485.5,234" stroke-width="2.6"><title>client.agent_core → client.query_engine · 2 import(s)</title></path>
 <path class="edge" d="M562,206 C562,301 562,301 562,396" stroke-width="3"><title>client.agent_core → client.tool_execution · 3 import(s)</title></path>
 <path class="edge" d="M562,206 C562,409 595,409 595,612" stroke-width="2"><title>client.agent_core → client.tools · 1 import(s)</title></path>
-<path class="edge" d="M562,206 C562,500 412.5,500 412.5,794" stroke-width="2"><title>client.agent_core → shared.skill_file · 1 import(s)</title></path>
-<path class="edge" d="M562,206 C562,500 517.5,500 517.5,794" stroke-width="2"><title>client.agent_core → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M562,206 C562,500 506.5,500 506.5,794" stroke-width="2"><title>client.agent_core → shared.skill_file · 1 import(s)</title></path>
+<path class="edge" d="M562,206 C562,500 611.5,500 611.5,794" stroke-width="2"><title>client.agent_core → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M518.5,692 C518.5,723 180.5,723 180.5,754" stroke-width="2"><title>client.config → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M518.5,692 C518.5,723 655.5,723 655.5,754" stroke-width="2"><title>client.config → shared.extension_paths · 1 import(s)</title></path>
-<path class="edge" d="M518.5,692 C518.5,743 517.5,743 517.5,794" stroke-width="2"><title>client.config → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M518.5,692 C518.5,743 791.5,743 791.5,794" stroke-width="2"><title>client.config → shared.user_question · 1 import(s)</title></path>
+<path class="edge" d="M518.5,692 C518.5,723 749.5,723 749.5,754" stroke-width="2"><title>client.config → shared.extension_paths · 1 import(s)</title></path>
+<path class="edge" d="M518.5,692 C518.5,743 611.5,743 611.5,794" stroke-width="2"><title>client.config → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M518.5,692 C518.5,743 885.5,743 885.5,794" stroke-width="2"><title>client.config → shared.user_question · 1 import(s)</title></path>
 <path class="edge" d="M562,584 C562,625 518.5,625 518.5,666" stroke-width="3.6"><title>client.context → client.config · 5 import(s)</title></path>
 <path class="edge" d="M562,584 C562,598 595,598 595,612" stroke-width="2"><title>client.context → client.tools · 1 import(s)</title></path>
 <path class="edge" d="M562,584 C562,669 180.5,669 180.5,754" stroke-width="2"><title>client.context → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M562,584 C562,689 517.5,689 517.5,794" stroke-width="2.6"><title>client.context → shared.state_paths · 2 import(s)</title></path>
+<path class="edge" d="M562,584 C562,669 380,669 380,754" stroke-width="2"><title>client.context → shared.checklist · 1 import(s)</title></path>
+<path class="edge" d="M562,584 C562,689 611.5,689 611.5,794" stroke-width="2.6"><title>client.context → shared.state_paths · 2 import(s)</title></path>
 <path class="edge" d="M562,530 C562,598 518.5,598 518.5,666" stroke-width="3.3"><title>client.core → client.config · 4 import(s)</title></path>
 <path class="edge" d="M562,530 C562,544 562,544 562,558" stroke-width="2.6"><title>client.core → client.context · 2 import(s)</title></path>
 <path class="edge" d="M562,530 C562,571 529,571 529,612" stroke-width="2"><title>client.core → client.llm · 1 import(s)</title></path>
@@ -104,7 +105,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M507.5,368 C507.5,409 605.5,409 605.5,450" stroke-width="2"><title>client.extensions → client.guardrails.policy · 1 import(s)</title></path>
 <path class="edge" d="M507.5,368 C507.5,382 562,382 562,396" stroke-width="2"><title>client.extensions → client.tool_execution · 1 import(s)</title></path>
 <path class="edge" d="M507.5,368 C507.5,561 180.5,561 180.5,754" stroke-width="2"><title>client.extensions → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M507.5,368 C507.5,581 517.5,581 517.5,794" stroke-width="2"><title>client.extensions → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M507.5,368 C507.5,581 611.5,581 611.5,794" stroke-width="2"><title>client.extensions → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M416.5,476 C416.5,571 518.5,571 518.5,666" stroke-width="4.2"><title>client.guardrails.nudges → client.config · 8 import(s)</title></path>
 <path class="edge" d="M416.5,476 C416.5,517 562,517 562,558" stroke-width="4.3"><title>client.guardrails.nudges → client.context · 9 import(s)</title></path>
 <path class="edge" d="M416.5,476 C416.5,490 562,490 562,504" stroke-width="3.6"><title>client.guardrails.nudges → client.core · 5 import(s)</title></path>
@@ -112,16 +113,16 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M416.5,450 C416.5,430 801.5,430 801.5,450" stroke-width="3"><title>client.guardrails.nudges → client.guardrails.workflow · 3 import(s)</title></path>
 <path class="edge" d="M416.5,476 C416.5,571 598.5,571 598.5,666" stroke-width="2"><title>client.guardrails.nudges → client.protocol · 1 import(s)</title></path>
 <path class="edge" d="M416.5,476 C416.5,544 595,544 595,612" stroke-width="2"><title>client.guardrails.nudges → client.tools · 1 import(s)</title></path>
-<path class="edge" d="M416.5,476 C416.5,635 307.5,635 307.5,794" stroke-width="2"><title>client.guardrails.nudges → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M416.5,476 C416.5,635 401.5,635 401.5,794" stroke-width="2"><title>client.guardrails.nudges → shared.shell_paths · 1 import(s)</title></path>
 <path class="edge" d="M511,476 C511,517 562,517 562,558" stroke-width="4.5"><title>client.guardrails.observations → client.context · 13 import(s)</title></path>
 <path class="edge" d="M511,476 C511,490 562,490 562,504" stroke-width="3.3"><title>client.guardrails.observations → client.core · 4 import(s)</title></path>
 <path class="edge" d="M511,450 C511,430 700,430 700,450" stroke-width="3.3"><title>client.guardrails.observations → client.guardrails.verification · 4 import(s)</title></path>
 <path class="edge" d="M511,450 C511,430 801.5,430 801.5,450" stroke-width="3"><title>client.guardrails.observations → client.guardrails.workflow · 3 import(s)</title></path>
 <path class="edge" d="M511,476 C511,571 598.5,571 598.5,666" stroke-width="2.6"><title>client.guardrails.observations → client.protocol · 2 import(s)</title></path>
 <path class="edge" d="M511,476 C511,544 595,544 595,612" stroke-width="4.3"><title>client.guardrails.observations → client.tools · 9 import(s)</title></path>
-<path class="edge" d="M511,476 C511,615 536.5,615 536.5,754" stroke-width="2"><title>client.guardrails.observations → shared.exec_seals · 1 import(s)</title></path>
-<path class="edge" d="M511,476 C511,615 757,615 757,754" stroke-width="2.6"><title>client.guardrails.observations → shared.jobs · 2 import(s)</title></path>
-<path class="edge" d="M511,476 C511,635 307.5,635 307.5,794" stroke-width="2"><title>client.guardrails.observations → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M511,476 C511,615 630.5,615 630.5,754" stroke-width="2"><title>client.guardrails.observations → shared.exec_seals · 1 import(s)</title></path>
+<path class="edge" d="M511,476 C511,615 851,615 851,754" stroke-width="2.6"><title>client.guardrails.observations → shared.jobs · 2 import(s)</title></path>
+<path class="edge" d="M511,476 C511,635 401.5,635 401.5,794" stroke-width="2"><title>client.guardrails.observations → shared.shell_paths · 1 import(s)</title></path>
 <path class="edge" d="M605.5,476 C605.5,571 518.5,571 518.5,666" stroke-width="4.3"><title>client.guardrails.policy → client.config · 9 import(s)</title></path>
 <path class="edge" d="M605.5,476 C605.5,517 562,517 562,558" stroke-width="4.5"><title>client.guardrails.policy → client.context · 12 import(s)</title></path>
 <path class="edge" d="M605.5,476 C605.5,490 562,490 562,504" stroke-width="4.2"><title>client.guardrails.policy → client.core · 8 import(s)</title></path>
@@ -129,36 +130,37 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M605.5,476 C605.5,571 598.5,571 598.5,666" stroke-width="3.8"><title>client.guardrails.policy → client.protocol · 6 import(s)</title></path>
 <path class="edge" d="M605.5,476 C605.5,544 595,544 595,612" stroke-width="4.5"><title>client.guardrails.policy → client.tools · 11 import(s)</title></path>
 <path class="edge" d="M605.5,476 C605.5,615 180.5,615 180.5,754" stroke-width="2"><title>client.guardrails.policy → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M605.5,476 C605.5,615 536.5,615 536.5,754" stroke-width="2"><title>client.guardrails.policy → shared.exec_seals · 1 import(s)</title></path>
+<path class="edge" d="M605.5,476 C605.5,615 630.5,615 630.5,754" stroke-width="2"><title>client.guardrails.policy → shared.exec_seals · 1 import(s)</title></path>
 <path class="edge" d="M605.5,476 C605.5,703 212.5,703 212.5,930" stroke-width="2"><title>client.guardrails.policy → shared.protected_paths · 1 import(s)</title></path>
-<path class="edge" d="M605.5,476 C605.5,635 307.5,635 307.5,794" stroke-width="2.6"><title>client.guardrails.policy → shared.shell_paths · 2 import(s)</title></path>
-<path class="edge" d="M605.5,476 C605.5,635 517.5,635 517.5,794" stroke-width="2"><title>client.guardrails.policy → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M605.5,476 C605.5,635 651,635 651,794" stroke-width="2"><title>client.guardrails.policy → shared.trusted_read_roots · 1 import(s)</title></path>
+<path class="edge" d="M605.5,476 C605.5,635 401.5,635 401.5,794" stroke-width="2.6"><title>client.guardrails.policy → shared.shell_paths · 2 import(s)</title></path>
+<path class="edge" d="M605.5,476 C605.5,635 611.5,635 611.5,794" stroke-width="2"><title>client.guardrails.policy → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M605.5,476 C605.5,635 745,635 745,794" stroke-width="2"><title>client.guardrails.policy → shared.trusted_read_roots · 1 import(s)</title></path>
 <path class="edge" d="M700,476 C700,571 518.5,571 518.5,666" stroke-width="2"><title>client.guardrails.verification → client.config · 1 import(s)</title></path>
 <path class="edge" d="M700,476 C700,517 562,517 562,558" stroke-width="4.2"><title>client.guardrails.verification → client.context · 8 import(s)</title></path>
 <path class="edge" d="M700,450 C700,430 801.5,430 801.5,450" stroke-width="3"><title>client.guardrails.verification → client.guardrails.workflow · 3 import(s)</title></path>
 <path class="edge" d="M700,476 C700,571 598.5,571 598.5,666" stroke-width="2"><title>client.guardrails.verification → client.protocol · 1 import(s)</title></path>
-<path class="edge" d="M700,476 C700,635 307.5,635 307.5,794" stroke-width="2"><title>client.guardrails.verification → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M700,476 C700,635 401.5,635 401.5,794" stroke-width="2"><title>client.guardrails.verification → shared.shell_paths · 1 import(s)</title></path>
 <path class="edge" d="M801.5,476 C801.5,571 518.5,571 518.5,666" stroke-width="2.6"><title>client.guardrails.workflow → client.config · 2 import(s)</title></path>
 <path class="edge" d="M801.5,476 C801.5,517 562,517 562,558" stroke-width="4.3"><title>client.guardrails.workflow → client.context · 9 import(s)</title></path>
-<path class="edge" d="M801.5,476 C801.5,615 536.5,615 536.5,754" stroke-width="2"><title>client.guardrails.workflow → shared.exec_seals · 1 import(s)</title></path>
+<path class="edge" d="M801.5,476 C801.5,615 630.5,615 630.5,754" stroke-width="2"><title>client.guardrails.workflow → shared.exec_seals · 1 import(s)</title></path>
 <path class="edge" d="M612.5,368 C612.5,517 518.5,517 518.5,666" stroke-width="3.3"><title>client.integration → client.config · 4 import(s)</title></path>
 <path class="edge" d="M612.5,368 C612.5,436 562,436 562,504" stroke-width="2"><title>client.integration → client.core · 1 import(s)</title></path>
 <path class="edge" d="M612.5,368 C612.5,517 598.5,517 598.5,666" stroke-width="2.6"><title>client.integration → client.protocol · 2 import(s)</title></path>
 <path class="edge" d="M612.5,368 C612.5,490 595,490 595,612" stroke-width="2"><title>client.integration → client.tools · 1 import(s)</title></path>
-<path class="edge" d="M612.5,368 C612.5,561 833.5,561 833.5,754" stroke-width="2"><title>client.integration → shared.launcher · 1 import(s)</title></path>
+<path class="edge" d="M612.5,368 C612.5,561 927.5,561 927.5,754" stroke-width="2"><title>client.integration → shared.launcher · 1 import(s)</title></path>
 <path class="edge" d="M612.5,368 C612.5,649 331.5,649 331.5,930" stroke-width="2"><title>client.integration → shared.secret_env · 1 import(s)</title></path>
-<path class="edge" d="M612.5,368 C612.5,581 517.5,581 517.5,794" stroke-width="2"><title>client.integration → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M612.5,368 C612.5,581 611.5,581 611.5,794" stroke-width="2"><title>client.integration → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M529,638 C529,652 518.5,652 518.5,666" stroke-width="3.8"><title>client.llm → client.config · 6 import(s)</title></path>
 <path class="edge" d="M529,638 C529,652 598.5,652 598.5,666" stroke-width="3.3"><title>client.llm → client.protocol · 4 import(s)</title></path>
 <path class="edge" d="M529,638 C529,696 180.5,696 180.5,754" stroke-width="2"><title>client.llm → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M529,638 C529,696 453,696 453,754" stroke-width="2"><title>client.llm → shared.embed · 1 import(s)</title></path>
+<path class="edge" d="M529,638 C529,696 547,696 547,754" stroke-width="2"><title>client.llm → shared.embed · 1 import(s)</title></path>
 <path class="edge" d="M562,314 C562,490 518.5,490 518.5,666" stroke-width="3"><title>client.prompt → client.config · 3 import(s)</title></path>
 <path class="edge" d="M562,314 C562,436 562,436 562,558" stroke-width="2"><title>client.prompt → client.context · 1 import(s)</title></path>
 <path class="edge" d="M562,314 C562,328 507.5,328 507.5,342" stroke-width="2"><title>client.prompt → client.extensions · 1 import(s)</title></path>
 <path class="edge" d="M562,314 C562,382 416.5,382 416.5,450" stroke-width="2"><title>client.prompt → client.guardrails.nudges · 1 import(s)</title></path>
-<path class="edge" d="M562,314 C562,554 517.5,554 517.5,794" stroke-width="2"><title>client.prompt → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M598.5,692 C598.5,723 1018,723 1018,754" stroke-width="2"><title>client.protocol → shared.responses · 1 import(s)</title></path>
+<path class="edge" d="M562,314 C562,534 380,534 380,754" stroke-width="2"><title>client.prompt → shared.checklist · 1 import(s)</title></path>
+<path class="edge" d="M562,314 C562,554 611.5,554 611.5,794" stroke-width="2"><title>client.prompt → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M598.5,692 C598.5,743 191,743 191,794" stroke-width="2"><title>client.protocol → shared.responses · 1 import(s)</title></path>
 <path class="edge" d="M485.5,260 C485.5,463 518.5,463 518.5,666" stroke-width="4.5"><title>client.query_engine → client.config · 12 import(s)</title></path>
 <path class="edge" d="M485.5,260 C485.5,409 562,409 562,558" stroke-width="4.3"><title>client.query_engine → client.context · 9 import(s)</title></path>
 <path class="edge" d="M485.5,260 C485.5,382 562,382 562,504" stroke-width="4.2"><title>client.query_engine → client.core · 8 import(s)</title></path>
@@ -167,7 +169,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M485.5,260 C485.5,355 700,355 700,450" stroke-width="3.3"><title>client.query_engine → client.guardrails.verification · 4 import(s)</title></path>
 <path class="edge" d="M485.5,260 C485.5,355 801.5,355 801.5,450" stroke-width="2"><title>client.query_engine → client.guardrails.workflow · 1 import(s)</title></path>
 <path class="edge" d="M485.5,260 C485.5,436 529,436 529,612" stroke-width="3"><title>client.query_engine → client.llm · 3 import(s)</title></path>
-<path class="edge" d="M485.5,260 C485.5,463 598.5,463 598.5,666" stroke-width="4.5"><title>client.query_engine → client.protocol · 15 import(s)</title></path>
+<path class="edge" d="M485.5,260 C485.5,463 598.5,463 598.5,666" stroke-width="4.5"><title>client.query_engine → client.protocol · 14 import(s)</title></path>
 <path class="edge" d="M485.5,234 C485.5,214 587,214 587,234" stroke-width="2"><title>client.query_engine → client.query_engine.dispatch · 1 import(s)</title></path>
 <path class="edge" d="M485.5,260 C485.5,436 595,436 595,612" stroke-width="2.6"><title>client.query_engine → client.tools · 2 import(s)</title></path>
 <path class="edge" d="M587,260 C587,463 518.5,463 518.5,666" stroke-width="3.6"><title>client.query_engine.dispatch → client.config · 5 import(s)</title></path>
@@ -179,11 +181,11 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M587,234 C587,214 663.5,214 663.5,234" stroke-width="2"><title>client.query_engine.dispatch → client.query_engine.jobs · 1 import(s)</title></path>
 <path class="edge" d="M587,260 C587,328 562,328 562,396" stroke-width="2.6"><title>client.query_engine.dispatch → client.tool_execution · 2 import(s)</title></path>
 <path class="edge" d="M587,260 C587,436 595,436 595,612" stroke-width="4.5"><title>client.query_engine.dispatch → client.tools · 11 import(s)</title></path>
-<path class="edge" d="M587,260 C587,507 757,507 757,754" stroke-width="2.6"><title>client.query_engine.dispatch → shared.jobs · 2 import(s)</title></path>
+<path class="edge" d="M587,260 C587,507 851,507 851,754" stroke-width="2.6"><title>client.query_engine.dispatch → shared.jobs · 2 import(s)</title></path>
 <path class="edge" d="M663.5,260 C663.5,382 562,382 562,504" stroke-width="2"><title>client.query_engine.jobs → client.core · 1 import(s)</title></path>
 <path class="edge" d="M663.5,260 C663.5,463 598.5,463 598.5,666" stroke-width="3"><title>client.query_engine.jobs → client.protocol · 3 import(s)</title></path>
 <path class="edge" d="M663.5,260 C663.5,436 595,436 595,612" stroke-width="2"><title>client.query_engine.jobs → client.tools · 1 import(s)</title></path>
-<path class="edge" d="M663.5,260 C663.5,507 757,507 757,754" stroke-width="3.3"><title>client.query_engine.jobs → shared.jobs · 4 import(s)</title></path>
+<path class="edge" d="M663.5,260 C663.5,507 851,507 851,754" stroke-width="3.3"><title>client.query_engine.jobs → shared.jobs · 4 import(s)</title></path>
 <path class="edge" d="M562,152 C562,409 518.5,409 518.5,666" stroke-width="4"><title>client.session → client.config · 7 import(s)</title></path>
 <path class="edge" d="M562,152 C562,355 562,355 562,558" stroke-width="2"><title>client.session → client.context · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,328 562,328 562,504" stroke-width="2"><title>client.session → client.core · 1 import(s)</title></path>
@@ -192,9 +194,9 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M562,152 C562,193 485.5,193 485.5,234" stroke-width="2"><title>client.session → client.query_engine · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,193 663.5,193 663.5,234" stroke-width="2"><title>client.session → client.query_engine.jobs · 1 import(s)</title></path>
 <path class="edge" d="M562,152 C562,453 180.5,453 180.5,754" stroke-width="3"><title>client.session → shared.atomic · 3 import(s)</title></path>
-<path class="edge" d="M562,152 C562,453 757,453 757,754" stroke-width="2"><title>client.session → shared.jobs · 1 import(s)</title></path>
-<path class="edge" d="M562,152 C562,453 924,453 924,754" stroke-width="2"><title>client.session → shared.processes · 1 import(s)</title></path>
-<path class="edge" d="M562,152 C562,473 517.5,473 517.5,794" stroke-width="3"><title>client.session → shared.state_paths · 3 import(s)</title></path>
+<path class="edge" d="M562,152 C562,453 851,453 851,754" stroke-width="2"><title>client.session → shared.jobs · 1 import(s)</title></path>
+<path class="edge" d="M562,152 C562,453 1018,453 1018,754" stroke-width="2"><title>client.session → shared.processes · 1 import(s)</title></path>
+<path class="edge" d="M562,152 C562,473 611.5,473 611.5,794" stroke-width="3"><title>client.session → shared.state_paths · 3 import(s)</title></path>
 <path class="edge" d="M562,422 C562,544 518.5,544 518.5,666" stroke-width="3"><title>client.tool_execution → client.config · 3 import(s)</title></path>
 <path class="edge" d="M562,422 C562,490 562,490 562,558" stroke-width="4.2"><title>client.tool_execution → client.context · 8 import(s)</title></path>
 <path class="edge" d="M562,422 C562,463 562,463 562,504" stroke-width="3.3"><title>client.tool_execution → client.core · 4 import(s)</title></path>
@@ -202,14 +204,14 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M562,422 C562,436 605.5,436 605.5,450" stroke-width="3"><title>client.tool_execution → client.guardrails.policy · 3 import(s)</title></path>
 <path class="edge" d="M562,422 C562,544 598.5,544 598.5,666" stroke-width="3"><title>client.tool_execution → client.protocol · 3 import(s)</title></path>
 <path class="edge" d="M562,422 C562,517 595,517 595,612" stroke-width="3"><title>client.tool_execution → client.tools · 3 import(s)</title></path>
-<path class="edge" d="M562,422 C562,588 757,588 757,754" stroke-width="2"><title>client.tool_execution → shared.jobs · 1 import(s)</title></path>
-<path class="edge" d="M562,422 C562,588 1018,588 1018,754" stroke-width="2"><title>client.tool_execution → shared.responses · 1 import(s)</title></path>
-<path class="edge" d="M562,422 C562,608 517.5,608 517.5,794" stroke-width="2"><title>client.tool_execution → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M562,422 C562,588 851,588 851,754" stroke-width="2"><title>client.tool_execution → shared.jobs · 1 import(s)</title></path>
+<path class="edge" d="M562,422 C562,608 191,608 191,794" stroke-width="2"><title>client.tool_execution → shared.responses · 1 import(s)</title></path>
+<path class="edge" d="M562,422 C562,608 611.5,608 611.5,794" stroke-width="2"><title>client.tool_execution → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M595,638 C595,652 518.5,652 518.5,666" stroke-width="2"><title>client.tools → client.config · 1 import(s)</title></path>
 <path class="edge" d="M595,638 C595,652 598.5,652 598.5,666" stroke-width="3"><title>client.tools → client.protocol · 3 import(s)</title></path>
 <path class="edge" d="M595,638 C595,696 275,696 275,754" stroke-width="2"><title>client.tools → shared.capabilities · 1 import(s)</title></path>
-<path class="edge" d="M595,638 C595,696 757,696 757,754" stroke-width="2"><title>client.tools → shared.jobs · 1 import(s)</title></path>
-<path class="edge" d="M595,638 C595,716 307.5,716 307.5,794" stroke-width="2"><title>client.tools → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M595,638 C595,696 851,696 851,754" stroke-width="2"><title>client.tools → shared.jobs · 1 import(s)</title></path>
+<path class="edge" d="M595,638 C595,716 401.5,716 401.5,794" stroke-width="2"><title>client.tools → shared.shell_paths · 1 import(s)</title></path>
 <path class="edge" d="M246.5,98 C246.5,139 562,139 562,180" stroke-width="2.6"><title>client.ui.cli → client.agent_core · 2 import(s)</title></path>
 <path class="edge" d="M246.5,98 C246.5,382 518.5,382 518.5,666" stroke-width="2.6"><title>client.ui.cli → client.config · 2 import(s)</title></path>
 <path class="edge" d="M246.5,98 C246.5,328 562,328 562,558" stroke-width="2.6"><title>client.ui.cli → client.context · 2 import(s)</title></path>
@@ -227,7 +229,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M316,98 C316,328 562,328 562,558" stroke-width="2"><title>client.ui.ws → client.context · 1 import(s)</title></path>
 <path class="edge" d="M316,98 C316,355 529,355 529,612" stroke-width="2"><title>client.ui.ws → client.llm · 1 import(s)</title></path>
 <path class="edge" d="M316,98 C316,166 485.5,166 485.5,234" stroke-width="2"><title>client.ui.ws → client.query_engine · 1 import(s)</title></path>
-<path class="edge" d="M316,98 C316,446 517.5,446 517.5,794" stroke-width="2"><title>client.ui.ws → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M316,98 C316,446 611.5,446 611.5,794" stroke-width="2"><title>client.ui.ws → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,382 518.5,382 518.5,666" stroke-width="3"><title>client.ui.ws.connection → client.config · 3 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,328 562,328 562,558" stroke-width="3.3"><title>client.ui.ws.connection → client.context · 4 import(s)</title></path>
 <path class="edge" d="M410.5,98 C410.5,382 598.5,382 598.5,666" stroke-width="2.6"><title>client.ui.ws.connection → client.protocol · 2 import(s)</title></path>
@@ -237,7 +239,8 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M410.5,72 C410.5,52 512,52 512,72" stroke-width="4.2"><title>client.ui.ws.connection → client.ui.ws.pool · 8 import(s)</title></path>
 <path class="edge" d="M410.5,72 C410.5,52 602.5,52 602.5,72" stroke-width="2.6"><title>client.ui.ws.connection → client.ui.ws.process · 2 import(s)</title></path>
 <path class="edge" d="M410.5,72 C410.5,52 794,52 794,72" stroke-width="3.3"><title>client.ui.ws.connection → client.ui.ws.worker · 4 import(s)</title></path>
-<path class="edge" d="M410.5,98 C410.5,446 198.5,446 198.5,794" stroke-width="2.6"><title>client.ui.ws.connection → shared.run_channel · 2 import(s)</title></path>
+<path class="edge" d="M410.5,98 C410.5,426 380,426 380,754" stroke-width="2"><title>client.ui.ws.connection → shared.checklist · 1 import(s)</title></path>
+<path class="edge" d="M410.5,98 C410.5,446 292.5,446 292.5,794" stroke-width="2.6"><title>client.ui.ws.connection → shared.run_channel · 2 import(s)</title></path>
 <path class="edge" d="M512,98 C512,328 562,328 562,558" stroke-width="2"><title>client.ui.ws.pool → client.context · 1 import(s)</title></path>
 <path class="edge" d="M512,98 C512,301 562,301 562,504" stroke-width="2"><title>client.ui.ws.pool → client.core · 1 import(s)</title></path>
 <path class="edge" d="M512,98 C512,382 598.5,382 598.5,666" stroke-width="2.6"><title>client.ui.ws.pool → client.protocol · 2 import(s)</title></path>
@@ -246,9 +249,10 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M512,72 C512,52 316,52 316,72" stroke-width="2"><title>client.ui.ws.pool → client.ui.ws · 1 import(s)</title></path>
 <path class="edge" d="M512,72 C512,52 602.5,52 602.5,72" stroke-width="2"><title>client.ui.ws.pool → client.ui.ws.process · 1 import(s)</title></path>
 <path class="edge" d="M512,72 C512,52 794,52 794,72" stroke-width="3.3"><title>client.ui.ws.pool → client.ui.ws.worker · 4 import(s)</title></path>
+<path class="edge" d="M512,98 C512,426 380,426 380,754" stroke-width="2"><title>client.ui.ws.pool → shared.checklist · 1 import(s)</title></path>
 <path class="edge" d="M602.5,98 C602.5,382 518.5,382 518.5,666" stroke-width="2"><title>client.ui.ws.process → client.config · 1 import(s)</title></path>
 <path class="edge" d="M602.5,98 C602.5,426 180.5,426 180.5,754" stroke-width="2"><title>client.ui.ws.process → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M602.5,98 C602.5,426 924,426 924,754" stroke-width="2"><title>client.ui.ws.process → shared.processes · 1 import(s)</title></path>
+<path class="edge" d="M602.5,98 C602.5,426 1018,426 1018,754" stroke-width="2"><title>client.ui.ws.process → shared.processes · 1 import(s)</title></path>
 <path class="edge" d="M700,98 C700,382 518.5,382 518.5,666" stroke-width="2"><title>client.ui.ws.server → client.config · 1 import(s)</title></path>
 <path class="edge" d="M700,98 C700,355 529,355 529,612" stroke-width="2"><title>client.ui.ws.server → client.llm · 1 import(s)</title></path>
 <path class="edge" d="M700,72 C700,52 316,52 316,72" stroke-width="2"><title>client.ui.ws.server → client.ui.ws · 1 import(s)</title></path>
@@ -267,10 +271,10 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M794,98 C794,247 562,247 562,396" stroke-width="2.6"><title>client.ui.ws.worker → client.tool_execution · 2 import(s)</title></path>
 <path class="edge" d="M794,98 C794,355 595,355 595,612" stroke-width="3.3"><title>client.ui.ws.worker → client.tools · 4 import(s)</title></path>
 <path class="edge" d="M794,72 C794,52 316,52 316,72" stroke-width="3.3"><title>client.ui.ws.worker → client.ui.ws · 4 import(s)</title></path>
-<path class="edge" d="M794,98 C794,426 376.5,426 376.5,754" stroke-width="2"><title>client.ui.ws.worker → shared.code_map · 1 import(s)</title></path>
-<path class="edge" d="M794,98 C794,426 453,426 453,754" stroke-width="2"><title>client.ui.ws.worker → shared.embed · 1 import(s)</title></path>
+<path class="edge" d="M794,98 C794,426 470.5,426 470.5,754" stroke-width="2"><title>client.ui.ws.worker → shared.code_map · 1 import(s)</title></path>
+<path class="edge" d="M794,98 C794,426 547,426 547,754" stroke-width="2"><title>client.ui.ws.worker → shared.embed · 1 import(s)</title></path>
 <path class="edge" d="M794,98 C794,514 212.5,514 212.5,930" stroke-width="2"><title>client.ui.ws.worker → shared.protected_paths · 1 import(s)</title></path>
-<path class="edge" d="M794,98 C794,426 1018,426 1018,754" stroke-width="2.6"><title>client.ui.ws.worker → shared.responses · 2 import(s)</title></path>
+<path class="edge" d="M794,98 C794,446 191,446 191,794" stroke-width="2.6"><title>client.ui.ws.worker → shared.responses · 2 import(s)</title></path>
 <path class="edge deferred" d="M874,98 C874,355 529,355 529,612" stroke-width="2"><title>evals → client.llm · 1 import(s)</title></path>
 <path class="edge" d="M874,98 C874,193 562,193 562,288" stroke-width="2"><title>evals → client.prompt · 1 import(s)</title></path>
 <path class="edge" d="M874,72 C874,52 943.5,52 943.5,72" stroke-width="2.6"><title>evals → runner · 2 import(s)</title></path>
@@ -293,84 +297,85 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M1082.5,98 C1082.5,480 209,480 209,862" stroke-width="2"><title>servers.agent_state → shared.approved_roots · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,98 C1082.5,426 180.5,426 180.5,754" stroke-width="3.6"><title>servers.agent_state → shared.atomic · 5 import(s)</title></path>
 <path class="edge" d="M1082.5,98 C1082.5,426 275,426 275,754" stroke-width="3.3"><title>servers.agent_state → shared.capabilities · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,426 380,426 380,754" stroke-width="2"><title>servers.agent_state → shared.checklist · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,98 C1082.5,480 437,480 437,862" stroke-width="2.6"><title>servers.agent_state → shared.clock · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,98 C1082.5,426 453,426 453,754" stroke-width="2"><title>servers.agent_state → shared.embed · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,98 C1082.5,426 655.5,426 655.5,754" stroke-width="2"><title>servers.agent_state → shared.extension_paths · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,98 C1082.5,426 757,426 757,754" stroke-width="2.6"><title>servers.agent_state → shared.jobs · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,426 547,426 547,754" stroke-width="2"><title>servers.agent_state → shared.embed · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,426 749.5,426 749.5,754" stroke-width="2"><title>servers.agent_state → shared.extension_paths · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,426 851,426 851,754" stroke-width="2.6"><title>servers.agent_state → shared.jobs · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,98 C1082.5,514 212.5,514 212.5,930" stroke-width="2"><title>servers.agent_state → shared.protected_paths · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,98 C1082.5,426 1018,426 1018,754" stroke-width="3.6"><title>servers.agent_state → shared.responses · 5 import(s)</title></path>
-<path class="edge" d="M1082.5,98 C1082.5,446 412.5,446 412.5,794" stroke-width="2"><title>servers.agent_state → shared.skill_file · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,98 C1082.5,446 517.5,446 517.5,794" stroke-width="4.5"><title>servers.agent_state → shared.state_paths · 12 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,446 191,446 191,794" stroke-width="3.6"><title>servers.agent_state → shared.responses · 5 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,446 506.5,446 506.5,794" stroke-width="2"><title>servers.agent_state → shared.skill_file · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,98 C1082.5,446 611.5,446 611.5,794" stroke-width="4.5"><title>servers.agent_state → shared.state_paths · 12 import(s)</title></path>
 <path class="edge" d="M1082.5,197 C1082.5,475.5 275,475.5 275,754" stroke-width="3"><title>servers.external → shared.capabilities · 3 import(s)</title></path>
-<path class="edge deferred" d="M1082.5,197 C1082.5,475.5 453,475.5 453,754" stroke-width="2"><title>servers.external → shared.embed · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,197 C1082.5,475.5 1018,475.5 1018,754" stroke-width="3"><title>servers.external → shared.responses · 3 import(s)</title></path>
+<path class="edge deferred" d="M1082.5,197 C1082.5,475.5 547,475.5 547,754" stroke-width="2"><title>servers.external → shared.embed · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,197 C1082.5,495.5 191,495.5 191,794" stroke-width="3"><title>servers.external → shared.responses · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 180.5,525 180.5,754" stroke-width="3"><title>servers.hpc → shared.atomic · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 339,579 339,862" stroke-width="2"><title>servers.hpc → shared.build_progress · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,525 275,525 275,754" stroke-width="3"><title>servers.hpc → shared.capabilities · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 437,579 437,862" stroke-width="3.3"><title>servers.hpc → shared.clock · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 528,579 528,862" stroke-width="4"><title>servers.hpc → shared.cluster_site · 7 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 633,579 633,862" stroke-width="3.3"><title>servers.hpc → shared.cpu_facts · 4 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,525 453,525 453,754" stroke-width="2.6"><title>servers.hpc → shared.embed · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,525 547,525 547,754" stroke-width="2.6"><title>servers.hpc → shared.embed · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 730.5,579 730.5,862" stroke-width="2.6"><title>servers.hpc → shared.job_script · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,525 757,525 757,754" stroke-width="2.6"><title>servers.hpc → shared.jobs · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,525 833.5,525 833.5,754" stroke-width="2"><title>servers.hpc → shared.launcher · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,525 851,525 851,754" stroke-width="2.6"><title>servers.hpc → shared.jobs · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,525 927.5,525 927.5,754" stroke-width="2"><title>servers.hpc → shared.launcher · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 831.5,579 831.5,862" stroke-width="2"><title>servers.hpc → shared.module_env · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,525 1018,525 1018,754" stroke-width="4"><title>servers.hpc → shared.responses · 7 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,545 191,545 191,794" stroke-width="4"><title>servers.hpc → shared.responses · 7 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 932.5,579 932.5,862" stroke-width="2"><title>servers.hpc → shared.schedulers · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,613 331.5,613 331.5,930" stroke-width="2"><title>servers.hpc → shared.secret_env · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,296 C1082.5,579 1048,579 1048,862" stroke-width="2"><title>servers.hpc → shared.shell_activity · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,296 C1082.5,545 517.5,545 517.5,794" stroke-width="3.3"><title>servers.hpc → shared.state_paths · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,296 C1082.5,545 611.5,545 611.5,794" stroke-width="3.3"><title>servers.hpc → shared.state_paths · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,395 C1082.5,574.5 275,574.5 275,754" stroke-width="2"><title>servers.interaction → shared.capabilities · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,395 C1082.5,574.5 1018,574.5 1018,754" stroke-width="2"><title>servers.interaction → shared.responses · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,395 C1082.5,594.5 791.5,594.5 791.5,794" stroke-width="2"><title>servers.interaction → shared.user_question · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,395 C1082.5,594.5 191,594.5 191,794" stroke-width="2"><title>servers.interaction → shared.responses · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,395 C1082.5,594.5 885.5,594.5 885.5,794" stroke-width="2"><title>servers.interaction → shared.user_question · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 180.5,624 180.5,754" stroke-width="4.5"><title>servers.proxy → shared.atomic · 34 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 339,678 339,862" stroke-width="3"><title>servers.proxy → shared.build_progress · 3 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,624 275,624 275,754" stroke-width="2"><title>servers.proxy → shared.capabilities · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 528,678 528,862" stroke-width="2.6"><title>servers.proxy → shared.cluster_site · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 376.5,624 376.5,754" stroke-width="3.6"><title>servers.proxy → shared.code_map · 5 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 470.5,624 470.5,754" stroke-width="3.6"><title>servers.proxy → shared.code_map · 5 import(s)</title></path>
 <path class="edge deferred" d="M1082.5,494 C1082.5,678 633,678 633,862" stroke-width="2.6"><title>servers.proxy → shared.cpu_facts · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 536.5,624 536.5,754" stroke-width="2"><title>servers.proxy → shared.exec_seals · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 630.5,624 630.5,754" stroke-width="2"><title>servers.proxy → shared.exec_seals · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 730.5,678 730.5,862" stroke-width="3"><title>servers.proxy → shared.job_script · 3 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 757,624 757,754" stroke-width="2.6"><title>servers.proxy → shared.jobs · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 833.5,624 833.5,754" stroke-width="3.6"><title>servers.proxy → shared.launcher · 5 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 924,624 924,754" stroke-width="2"><title>servers.proxy → shared.processes · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 851,624 851,754" stroke-width="2.6"><title>servers.proxy → shared.jobs · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 927.5,624 927.5,754" stroke-width="3.6"><title>servers.proxy → shared.launcher · 5 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,624 1018,624 1018,754" stroke-width="2"><title>servers.proxy → shared.processes · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,712 212.5,712 212.5,930" stroke-width="2"><title>servers.proxy → shared.protected_paths · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,624 1018,624 1018,754" stroke-width="3.8"><title>servers.proxy → shared.responses · 6 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,644 191,644 191,794" stroke-width="3.8"><title>servers.proxy → shared.responses · 6 import(s)</title></path>
 <path class="edge" d="M1082.5,494 C1082.5,678 932.5,678 932.5,862" stroke-width="2.6"><title>servers.proxy → shared.schedulers · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,494 C1082.5,644 517.5,644 517.5,794" stroke-width="3.3"><title>servers.proxy → shared.state_paths · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,494 C1082.5,644 611.5,644 611.5,794" stroke-width="3.3"><title>servers.proxy → shared.state_paths · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,593 C1082.5,673.5 275,673.5 275,754" stroke-width="3.3"><title>servers.utilities → shared.capabilities · 4 import(s)</title></path>
-<path class="edge" d="M1082.5,593 C1082.5,673.5 1018,673.5 1018,754" stroke-width="3.3"><title>servers.utilities → shared.responses · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,593 C1082.5,693.5 191,693.5 191,794" stroke-width="3.3"><title>servers.utilities → shared.responses · 4 import(s)</title></path>
 <path class="edge deferred" d="M1082.5,666 C1082.5,580 1082.5,580 1082.5,494" stroke-width="2"><title>servers.workspace → servers.proxy · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 209,777 209,862" stroke-width="3.3"><title>servers.workspace → shared.approved_roots · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 180.5,723 180.5,754" stroke-width="2"><title>servers.workspace → shared.atomic · 1 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 339,777 339,862" stroke-width="2.6"><title>servers.workspace → shared.build_progress · 2 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,723 275,723 275,754" stroke-width="3.3"><title>servers.workspace → shared.capabilities · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 528,777 528,862" stroke-width="2.6"><title>servers.workspace → shared.cluster_site · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,723 376.5,723 376.5,754" stroke-width="2.6"><title>servers.workspace → shared.code_map · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,723 757,723 757,754" stroke-width="3.3"><title>servers.workspace → shared.jobs · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,723 470.5,723 470.5,754" stroke-width="2.6"><title>servers.workspace → shared.code_map · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,723 851,723 851,754" stroke-width="3.3"><title>servers.workspace → shared.jobs · 4 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 831.5,777 831.5,862" stroke-width="2"><title>servers.workspace → shared.module_env · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,723 924,723 924,754" stroke-width="2.6"><title>servers.workspace → shared.processes · 2 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,723 1018,723 1018,754" stroke-width="4.2"><title>servers.workspace → shared.responses · 8 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,723 1018,723 1018,754" stroke-width="2.6"><title>servers.workspace → shared.processes · 2 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,743 191,743 191,794" stroke-width="4.2"><title>servers.workspace → shared.responses · 8 import(s)</title></path>
 <path class="edge" d="M1082.5,692 C1082.5,777 932.5,777 932.5,862" stroke-width="2"><title>servers.workspace → shared.schedulers · 1 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,743 307.5,743 307.5,794" stroke-width="3.3"><title>servers.workspace → shared.shell_paths · 4 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,743 517.5,743 517.5,794" stroke-width="3.8"><title>servers.workspace → shared.state_paths · 6 import(s)</title></path>
-<path class="edge" d="M1082.5,692 C1082.5,743 651,743 651,794" stroke-width="2"><title>servers.workspace → shared.trusted_read_roots · 1 import(s)</title></path>
-<path class="edge" d="M209,862 C209,841 517.5,841 517.5,820" stroke-width="2"><title>shared.approved_roots → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M339,862 C339,841 307.5,841 307.5,820" stroke-width="2"><title>shared.build_progress → shared.shell_paths · 1 import(s)</title></path>
-<path class="edge" d="M528,862 C528,821 757,821 757,780" stroke-width="2"><title>shared.cluster_site → shared.jobs · 1 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,743 401.5,743 401.5,794" stroke-width="3.3"><title>servers.workspace → shared.shell_paths · 4 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,743 611.5,743 611.5,794" stroke-width="3.8"><title>servers.workspace → shared.state_paths · 6 import(s)</title></path>
+<path class="edge" d="M1082.5,692 C1082.5,743 745,743 745,794" stroke-width="2"><title>servers.workspace → shared.trusted_read_roots · 1 import(s)</title></path>
+<path class="edge" d="M209,862 C209,841 611.5,841 611.5,820" stroke-width="2"><title>shared.approved_roots → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M339,862 C339,841 401.5,841 401.5,820" stroke-width="2"><title>shared.build_progress → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M528,862 C528,821 851,821 851,780" stroke-width="2"><title>shared.cluster_site → shared.jobs · 1 import(s)</title></path>
 <path class="edge" d="M528,862 C528,842 932.5,842 932.5,862" stroke-width="2.6"><title>shared.cluster_site → shared.schedulers · 2 import(s)</title></path>
-<path class="edge" d="M528,862 C528,841 307.5,841 307.5,820" stroke-width="2"><title>shared.cluster_site → shared.shell_paths · 1 import(s)</title></path>
-<path class="edge" d="M528,862 C528,841 517.5,841 517.5,820" stroke-width="2"><title>shared.cluster_site → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M536.5,754 C536.5,734 180.5,734 180.5,754" stroke-width="2"><title>shared.exec_seals → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M536.5,780 C536.5,787 517.5,787 517.5,794" stroke-width="2"><title>shared.exec_seals → shared.state_paths · 1 import(s)</title></path>
-<path class="edge" d="M198.5,794 C198.5,787 180.5,787 180.5,780" stroke-width="2"><title>shared.run_channel → shared.atomic · 1 import(s)</title></path>
-<path class="edge" d="M198.5,794 C198.5,787 924,787 924,780" stroke-width="2"><title>shared.run_channel → shared.processes · 1 import(s)</title></path>
-<path class="edge" d="M198.5,794 C198.5,774 517.5,774 517.5,794" stroke-width="2"><title>shared.run_channel → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M528,862 C528,841 401.5,841 401.5,820" stroke-width="2"><title>shared.cluster_site → shared.shell_paths · 1 import(s)</title></path>
+<path class="edge" d="M528,862 C528,841 611.5,841 611.5,820" stroke-width="2"><title>shared.cluster_site → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M630.5,754 C630.5,734 180.5,734 180.5,754" stroke-width="2"><title>shared.exec_seals → shared.atomic · 1 import(s)</title></path>
+<path class="edge" d="M630.5,780 C630.5,787 611.5,787 611.5,794" stroke-width="2"><title>shared.exec_seals → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M292.5,794 C292.5,787 180.5,787 180.5,780" stroke-width="2"><title>shared.run_channel → shared.atomic · 1 import(s)</title></path>
+<path class="edge" d="M292.5,794 C292.5,787 1018,787 1018,780" stroke-width="2"><title>shared.run_channel → shared.processes · 1 import(s)</title></path>
+<path class="edge" d="M292.5,794 C292.5,774 611.5,774 611.5,794" stroke-width="2"><title>shared.run_channel → shared.state_paths · 1 import(s)</title></path>
 <path class="edge" d="M932.5,862 C932.5,842 633,842 633,862" stroke-width="2"><title>shared.schedulers → shared.cpu_facts · 1 import(s)</title></path>
 <path class="edge" d="M932.5,862 C932.5,842 730.5,842 730.5,862" stroke-width="2"><title>shared.schedulers → shared.job_script · 1 import(s)</title></path>
-<path class="edge" d="M1048,862 C1048,821 757,821 757,780" stroke-width="2"><title>shared.shell_activity → shared.jobs · 1 import(s)</title></path>
-<path class="edge" d="M1048,862 C1048,821 924,821 924,780" stroke-width="2"><title>shared.shell_activity → shared.processes · 1 import(s)</title></path>
-<path class="edge" d="M1048,862 C1048,841 517.5,841 517.5,820" stroke-width="2"><title>shared.shell_activity → shared.state_paths · 1 import(s)</title></path>
+<path class="edge" d="M1048,862 C1048,821 851,821 851,780" stroke-width="2"><title>shared.shell_activity → shared.jobs · 1 import(s)</title></path>
+<path class="edge" d="M1048,862 C1048,821 1018,821 1018,780" stroke-width="2"><title>shared.shell_activity → shared.processes · 1 import(s)</title></path>
+<path class="edge" d="M1048,862 C1048,841 611.5,841 611.5,820" stroke-width="2"><title>shared.shell_activity → shared.state_paths · 1 import(s)</title></path>
 </g>
 <g class="node engine"><title>client.agent_core</title><rect x="517.5" y="180" width="89" height="26" rx="4"/><text x="562" y="197" text-anchor="middle">agent_core</text></g>
 <g class="node found"><title>client.config</title><rect x="488" y="666" width="61" height="26" rx="4"/><text x="518.5" y="683" text-anchor="middle">config</text></g>
@@ -414,29 +419,30 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <g class="node shared"><title>shared.atomic — Writing a file so that a reader sees the old content or the new one, never half.</title><rect x="150" y="754" width="61" height="26" rx="4"/><text x="180.5" y="771" text-anchor="middle">atomic</text></g>
 <g class="node shared"><title>shared.build_progress — How far along a build says it is, parsed from its output (never tracked).</title><rect x="280" y="862" width="118" height="26" rx="4"/><text x="339" y="879" text-anchor="middle">build_progress</text></g>
 <g class="node shared"><title>shared.capabilities — The server side of tool capabilities: :func:`tool_caps` declares what a tool means.</title><rect x="223" y="754" width="104" height="26" rx="4"/><text x="275" y="771" text-anchor="middle">capabilities</text></g>
+<g class="node shared"><title>shared.checklist — The task checklist on disk, one format for both ends.</title><rect x="339" y="754" width="82" height="26" rx="4"/><text x="380" y="771" text-anchor="middle">checklist</text></g>
 <g class="node shared"><title>shared.clock — The current time in UTC, in the three forms the servers write.</title><rect x="410" y="862" width="54" height="26" rx="4"/><text x="437" y="879" text-anchor="middle">clock</text></g>
 <g class="node shared"><title>shared.cluster_site — Which batch schedulers (Slurm, LSF) this workspace reaches, learned from successful calls.</title><rect x="476" y="862" width="104" height="26" rx="4"/><text x="528" y="879" text-anchor="middle">cluster_site</text></g>
-<g class="node shared"><title>shared.code_map — A workspace&#x27;s code as a map: its Python, C/C++ and Fortran files, the dependencies between</title><rect x="339" y="754" width="75" height="26" rx="4"/><text x="376.5" y="771" text-anchor="middle">code_map</text></g>
+<g class="node shared"><title>shared.code_map — A workspace&#x27;s code as a map: its Python, C/C++ and Fortran files, the dependencies between</title><rect x="433" y="754" width="75" height="26" rx="4"/><text x="470.5" y="771" text-anchor="middle">code_map</text></g>
 <g class="node shared"><title>shared.cpu_facts — What a machine is, parsed the same way by the platform server, a Slurm probe and the</title><rect x="592" y="862" width="82" height="26" rx="4"/><text x="633" y="879" text-anchor="middle">cpu_facts</text></g>
-<g class="node shared"><title>shared.embed — Backend-aware text embedding, with ``None`` (lexical fallback) on any failure.</title><rect x="426" y="754" width="54" height="26" rx="4"/><text x="453" y="771" text-anchor="middle">embed</text></g>
-<g class="node shared"><title>shared.exec_seals — Files a server seals for a conversation: not to be run directly, only through its tools.</title><rect x="492" y="754" width="89" height="26" rx="4"/><text x="536.5" y="771" text-anchor="middle">exec_seals</text></g>
-<g class="node shared"><title>shared.extension_paths — The user-extension directories under ``.mimir/`` and their resolution order.</title><rect x="593" y="754" width="125" height="26" rx="4"/><text x="655.5" y="771" text-anchor="middle">extension_paths</text></g>
+<g class="node shared"><title>shared.embed — Backend-aware text embedding, with ``None`` (lexical fallback) on any failure.</title><rect x="520" y="754" width="54" height="26" rx="4"/><text x="547" y="771" text-anchor="middle">embed</text></g>
+<g class="node shared"><title>shared.exec_seals — Files a server seals for a conversation: not to be run directly, only through its tools.</title><rect x="586" y="754" width="89" height="26" rx="4"/><text x="630.5" y="771" text-anchor="middle">exec_seals</text></g>
+<g class="node shared"><title>shared.extension_paths — The user-extension directories under ``.mimir/`` and their resolution order.</title><rect x="687" y="754" width="125" height="26" rx="4"/><text x="749.5" y="771" text-anchor="middle">extension_paths</text></g>
 <g class="node shared"><title>shared.job_script — Building blocks of the batch scripts MIMIR submits.</title><rect x="686" y="862" width="89" height="26" rx="4"/><text x="730.5" y="879" text-anchor="middle">job_script</text></g>
-<g class="node shared"><title>shared.jobs — A detached run as the client and every server see it.</title><rect x="730" y="754" width="54" height="26" rx="4"/><text x="757" y="771" text-anchor="middle">jobs</text></g>
-<g class="node shared"><title>shared.launcher — How a bundled server or helper script is started: through ``servers/_launch.py``.</title><rect x="796" y="754" width="75" height="26" rx="4"/><text x="833.5" y="771" text-anchor="middle">launcher</text></g>
+<g class="node shared"><title>shared.jobs — A detached run as the client and every server see it.</title><rect x="824" y="754" width="54" height="26" rx="4"/><text x="851" y="771" text-anchor="middle">jobs</text></g>
+<g class="node shared"><title>shared.launcher — How a bundled server or helper script is started: through ``servers/_launch.py``.</title><rect x="890" y="754" width="75" height="26" rx="4"/><text x="927.5" y="771" text-anchor="middle">launcher</text></g>
 <g class="node shared"><title>shared.module_env — Shared helpers for Environment Modules / Lmod shell initialization.</title><rect x="787" y="862" width="89" height="26" rx="4"/><text x="831.5" y="879" text-anchor="middle">module_env</text></g>
-<g class="node shared"><title>shared.processes — Whether a recorded pid is still the process that was recorded.</title><rect x="883" y="754" width="82" height="26" rx="4"/><text x="924" y="771" text-anchor="middle">processes</text></g>
+<g class="node shared"><title>shared.processes — Whether a recorded pid is still the process that was recorded.</title><rect x="977" y="754" width="82" height="26" rx="4"/><text x="1018" y="771" text-anchor="middle">processes</text></g>
 <g class="node shared"><title>shared.protected_paths — Workspace paths whose contents run later: a write there is asked about like leaving it.</title><rect x="150" y="930" width="125" height="26" rx="4"/><text x="212.5" y="947" text-anchor="middle">protected_paths</text></g>
-<g class="node shared"><title>shared.responses — The shape of every tool answer: ``{&quot;status&quot;: &quot;ok&quot;, ...}`` or ``{&quot;status&quot;: &quot;error&quot;, ...}``.</title><rect x="977" y="754" width="82" height="26" rx="4"/><text x="1018" y="771" text-anchor="middle">responses</text></g>
-<g class="node shared"><title>shared.run_channel — The user&#x27;s channel into a blocking run: two files under ``&lt;session_state_dir&gt;/runs/&lt;channel&gt;/``.</title><rect x="150" y="794" width="97" height="26" rx="4"/><text x="198.5" y="811" text-anchor="middle">run_channel</text></g>
+<g class="node shared"><title>shared.responses — The shape of every tool answer: ``{&quot;status&quot;: &quot;ok&quot;, ...}`` or ``{&quot;status&quot;: &quot;error&quot;, ...}``.</title><rect x="150" y="794" width="82" height="26" rx="4"/><text x="191" y="811" text-anchor="middle">responses</text></g>
+<g class="node shared"><title>shared.run_channel — The user&#x27;s channel into a blocking run: two files under ``&lt;session_state_dir&gt;/runs/&lt;channel&gt;/``.</title><rect x="244" y="794" width="97" height="26" rx="4"/><text x="292.5" y="811" text-anchor="middle">run_channel</text></g>
 <g class="node shared"><title>shared.schedulers — What each batch scheduler MIMIR drives is: its commands, its script header, its words.</title><rect x="888" y="862" width="89" height="26" rx="4"/><text x="932.5" y="879" text-anchor="middle">schedulers</text></g>
 <g class="node shared"><title>shared.secret_env — The environment without its secrets: what a child process is given by default.</title><rect x="287" y="930" width="89" height="26" rx="4"/><text x="331.5" y="947" text-anchor="middle">secret_env</text></g>
 <g class="node shared"><title>shared.shell_activity — When this session&#x27;s shell commands ran: the evidence that a Slurm job submitted outside</title><rect x="989" y="862" width="118" height="26" rx="4"/><text x="1048" y="879" text-anchor="middle">shell_activity</text></g>
-<g class="node shared"><title>shared.shell_paths — How a shell command splits into commands, and which paths its arguments name.</title><rect x="259" y="794" width="97" height="26" rx="4"/><text x="307.5" y="811" text-anchor="middle">shell_paths</text></g>
-<g class="node shared"><title>shared.skill_file — Reading a skill: ``&lt;skills_dir&gt;/&lt;name&gt;/SKILL.md``, front-matter then body.</title><rect x="368" y="794" width="89" height="26" rx="4"/><text x="412.5" y="811" text-anchor="middle">skill_file</text></g>
-<g class="node shared"><title>shared.state_paths — The agent&#x27;s state directories, server-side: one source of truth.</title><rect x="469" y="794" width="97" height="26" rx="4"/><text x="517.5" y="811" text-anchor="middle">state_paths</text></g>
-<g class="node shared"><title>shared.trusted_read_roots — The out-of-workspace roots read without approval: the state dir, where MIMIR keeps its</title><rect x="578" y="794" width="146" height="26" rx="4"/><text x="651" y="811" text-anchor="middle">trusted_read_roots</text></g>
-<g class="node shared"><title>shared.user_question — How long a question put to the user stays open before the agent is told to decide for</title><rect x="736" y="794" width="111" height="26" rx="4"/><text x="791.5" y="811" text-anchor="middle">user_question</text></g>
+<g class="node shared"><title>shared.shell_paths — How a shell command splits into commands, and which paths its arguments name.</title><rect x="353" y="794" width="97" height="26" rx="4"/><text x="401.5" y="811" text-anchor="middle">shell_paths</text></g>
+<g class="node shared"><title>shared.skill_file — Reading a skill: ``&lt;skills_dir&gt;/&lt;name&gt;/SKILL.md``, front-matter then body.</title><rect x="462" y="794" width="89" height="26" rx="4"/><text x="506.5" y="811" text-anchor="middle">skill_file</text></g>
+<g class="node shared"><title>shared.state_paths — The agent&#x27;s state directories, server-side: one source of truth.</title><rect x="563" y="794" width="97" height="26" rx="4"/><text x="611.5" y="811" text-anchor="middle">state_paths</text></g>
+<g class="node shared"><title>shared.trusted_read_roots — The out-of-workspace roots read without approval: the state dir, where MIMIR keeps its</title><rect x="672" y="794" width="146" height="26" rx="4"/><text x="745" y="811" text-anchor="middle">trusted_read_roots</text></g>
+<g class="node shared"><title>shared.user_question — How long a question put to the user stays open before the agent is told to decide for</title><rect x="830" y="794" width="111" height="26" rx="4"/><text x="885.5" y="811" text-anchor="middle">user_question</text></g>
 <g class="node front"><rect x="14" y="976" width="14" height="12" rx="3"/></g>
 <text class="label" x="34" y="986">Front-ends and measurement</text>
 <g class="node engine"><rect x="226.2" y="976" width="14" height="12" rx="3"/></g>

@@ -15,6 +15,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **A ticked step no longer costs the prompt cache.** The system message carries the
+  checklist as the turn starts and is not rewritten within it: each tick rewrote it,
+  so the whole history was processed again at every step ticked. `todo_write`,
+  `todo_update` and `todo_read` reply with the list as it now stands (`checklist`,
+  rendered as the system message renders it), and the latest such reply is pinned
+  against the history budget.
+- **Every tool weighs less.** The `doing` argument every tool takes is described in one
+  line instead of five, about 7 k tokens less on every request with all servers on.
+
 ## [1.18.0] — 2026-11-20
 
 ### Added

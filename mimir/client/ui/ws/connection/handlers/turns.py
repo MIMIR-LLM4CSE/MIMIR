@@ -12,7 +12,8 @@ from .....protocol.messages import reconcile_tool_pairs
 from .....session.conversation import trim_front
 from .....config import paths
 from ......shared import run_channel
-from .....context.todo import load_todo_deps, load_todo_items
+from ......shared.checklist import read_deps
+from .....context.todo import load_todo_items
 from ...runtime import get_backend, todo_file_for_session
 from ...worker.worker import AgentWorker
 from .base import Handlers
@@ -182,7 +183,7 @@ class TurnHandlers(Handlers):
             todo_file = todo_file_for_session(self.screen.session_id)
             record = self.screen.conv.record
             record.todos, record.todo_deps = (load_todo_items(todo_file),
-                                              load_todo_deps(todo_file))
+                                              read_deps(todo_file))
             self.screen.conv.open_checkpoint(message_id, carry)
         self.screen.conv.add_user_message(text, show=True, message_id=message_id or None)
         self.pool.bus.record_client_event(

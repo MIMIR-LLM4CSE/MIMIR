@@ -766,7 +766,7 @@ def apply_run(run_id: str, proxy_name: str = "") -> dict:
         "applied": run_id, "axis": row.get("axis", ""), "files": changed,
         "note": f"{run_id}'s edit ({row.get('axis') or 'no axis'}) is on the files, beside what they held. "
                 "Measure the combination as one run.",
-    }, f"proxy_eval(op='run', axis='combine: ...', confirm=True)"))
+    }, "proxy_eval(op='run', axis='combine: ...', confirm=True)"))
 
 
 def rebaseline(proxy_name: str = "") -> dict:

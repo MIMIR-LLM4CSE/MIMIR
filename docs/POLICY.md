@@ -1266,8 +1266,9 @@ you never started. That is why `## Planning & todo` sits in the core system prom
 than the overridable half — the blocker is a contract about an artifact only that section
 describes, and an application prompt must not be able to delete it.
 
-The checklist must also be *visible* to the model for this to be fair, so `_sync_checklist`
-keeps the copy in the first message current as steps are ticked off.
+The checklist must also be *visible* to the model for this to be fair: the first message
+carries it as the turn starts, and each checklist tool replies with the whole list as it now
+stands, the latest reply pinned against the history budget.
 
 ### The removed output-verdict nudge
 There is no turn-end reminder asking for a verdict: its condition — a completed run nobody

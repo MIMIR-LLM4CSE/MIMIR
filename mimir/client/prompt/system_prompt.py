@@ -9,6 +9,7 @@ from typing import Any
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
 from ..extensions.system_prompt import resolve_system_prompt_file
 from ..context.todo import load_todo_items
+from ...shared.checklist import render_checklist
 from ..config.settings import (
     DEFAULT_SUBAGENT_LEVEL,
     THINKING_DEPTH_AUTO,
@@ -731,11 +732,6 @@ def _render_memory_block(label: str, index_file: str, entries: list[dict]) -> st
     )
 
 
-def _render_checklist(items: list[dict]) -> list[str]:
-    """Render todo items as ``[x] text`` / ``[ ] text`` lines."""
-    return [f"[{'x' if it.get('done') else ' '}] {it['text']}" for it in items]
-
-
 def _capability_sections(*, active_mode: str, tool_owner: dict[str, str],
                          thinking_depth: int, delegation_available: bool,
                          subagent_level: str, skills_index: list[tuple[str, str]] | None,
@@ -844,22 +840,29 @@ def _memory_section(memory_context_file: str, global_memory_context_file: str) -
 
 
 def _checklist_section(todo_file: str, plan_todos: list[str] | None) -> str:
-    """The live checklist in agent mode; the plan's static list when no todo server runs."""
+    """The checklist as the turn starts in agent mode; the plan's static list when no todo server runs.
+
+    Rendered once per turn: within it, each checklist tool's reply carries the list as it
+    then stands, so the system message is never rewritten mid-turn (the prompt prefix holds).
+    """
     if todo_file:
         # Live state from the todo server — takes priority over the static plan_todos.
         items = load_todo_items(todo_file)
         if items:
             pending = sum(1 for it in items if not it.get("done"))
             return _section(
-                f"Task checklist ({pending} pending — the current plan of record for this task. "
-                "Keep it in sync with what you actually do: rewrite it when the approach changes, "
-                "and do not consider a step already done because memory suggests it was):\n"
-                + "\n".join(_render_checklist(items))
+                f"Task checklist at the start of this turn ({pending} pending — the current plan "
+                "of record for this task; within the turn, each reply of the checklist tools "
+                "carries the list as it then stands. Keep it in sync with what you actually do: "
+                "rewrite it when the approach changes, and do not consider a step already done "
+                "because memory suggests it was):\n"
+                + render_checklist(items)
             )
         else:
             return _section(
-                "No task checklist yet. For multi-step tasks, recording the steps before starting "
-                "work is recommended, then marking each one complete as you go."
+                "No task checklist yet at the start of this turn. For multi-step tasks, recording "
+                "the steps before starting work is recommended, then marking each one complete "
+                "as you go."
             )
     elif plan_todos:
         # Fallback: static list from plan output (todo server not registered).

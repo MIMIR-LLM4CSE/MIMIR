@@ -49,6 +49,9 @@ VALIDATE = "validate"
 # One flag for "records a task plan"; the ordered-steps checklist is identified by
 # the `plan_steps` arg-role (which carries the steps), not a separate capability.
 TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or prose rationale)
+CHECKLIST_STATE = "checklist_state"    # its reply carries the whole checklist as it now stands; the
+                                       # latest such reply is pinned, since the system message shows
+                                       # the checklist as the turn started and is not rewritten in it
 
 # --- Verdict and delegation ------------------------------------------------
 # Declared, not derived, so the client finds each channel by capability instead of by
@@ -381,6 +384,6 @@ __all__ = [
     # Reversibility is the dimension a server *declares*; SENSITIVE is derived from it.
     "REVERSIBLE", "RECOVERABLE", "IRREVERSIBLE", "REVERSIBILITY_LEVELS",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
-    "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
+    "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "CHECKLIST_STATE", "JUDGE",
     "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "CODE_MAP", "CODE_MAP_STEPS", "CODE_MAP_MOVES",
 ]
