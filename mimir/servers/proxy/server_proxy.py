@@ -214,7 +214,7 @@ _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config", "graph
 
 
 # Polled while a run is going: only reading the results records its verdict.
-@mcp.tool(**tool_caps(kind="proxy eval", caps=[CODE_MAP_MOVES], label="Proxy eval status: {op}",
+@mcp.tool(**tool_caps(skill="proxy-optimize", kind="proxy eval", caps=[CODE_MAP_MOVES], label="Proxy eval status: {op}",
                       map_moves_when={"arg": "op", "values": ["results"]},
                       run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
@@ -369,7 +369,7 @@ Parameters in detail:
     confirm: Must be True to apply any operation.
 """
 
-@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(skill="proxy-optimize", kind="proxy", caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy manage: {op}"))
 def proxy_manage(
     op: Annotated[str, Field(
@@ -483,7 +483,7 @@ _EXEC_OPS = ("run", "reference", "suite", "benchmark_create", "cancel")
 _EXEC_JOB_TIMEOUT = 1200
 
 
-@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
+@mcp.tool(**tool_caps(skill="proxy-optimize", kind="proxy", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
                       reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy exec: {op}",
                       run_outcome={**_RUN_OUTCOME,
@@ -784,7 +784,7 @@ Parameters in detail:
 _EVAL_RUN_TIMEOUT = 1800
 
 
-@mcp.tool(**tool_caps(kind="proxy eval", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE, CODE_MAP_MOVES],
+@mcp.tool(**tool_caps(skill="proxy-optimize", kind="proxy eval", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE, CODE_MAP_MOVES],
                       reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME,
                       timeout_secs=_EVAL_RUN_TIMEOUT))
@@ -1034,7 +1034,7 @@ Parameters in detail:
     confirm: Must be True to submit.
 """
 
-@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
+@mcp.tool(**tool_caps(skill="proxy-optimize", kind="proxy", caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
                       label="Proxy cluster: {op}",
                       risk_note="Submits Slurm or LSF batch jobs that consume cluster allocation hours."))
 def proxy_cluster(
@@ -1202,7 +1202,7 @@ def proxy_panel_report(proxy_name: str = "") -> dict:
     return panel.report(proxy_name)
 
 
-@mcp.tool(**tool_caps(kind="proxy", caps=[CODE_MAP_MOVES], label="R&D request: {op}",
+@mcp.tool(**tool_caps(skill="proxy-optimize", kind="proxy", caps=[CODE_MAP_MOVES], label="R&D request: {op}",
                       map_moves_when={"arg": "op", "values": ["open", "update"]}))
 def proxy_request(
     op: Annotated[str, Field(
@@ -1324,7 +1324,7 @@ Parameters in detail:
     confirm: Must be True for every operation but plan and report.
 """
 
-@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_MAP_MOVES], reversibility=RECOVERABLE,
+@mcp.tool(**tool_caps(skill="proxy-merge", kind="proxy", caps=[PLAN_BLOCKED, CODE_MAP_MOVES], reversibility=RECOVERABLE,
                       label="Proxy merge: {op}",
                       map_moves_when={"arg": "op", "values": ["start", "next", "resolved", "pause", "drop"]}))
 def proxy_merge(

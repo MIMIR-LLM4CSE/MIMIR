@@ -14,7 +14,10 @@ from typing import Any, Callable
 
 from ...config.limits import IDENTICAL_REPEAT_THRESHOLD, SOFT_REPEAT_THRESHOLD
 from ...config.servers import SKILL_LOAD_TOOL
-from ...tools.capabilities import CHECKLIST_STATE, CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
+from ...tools.capabilities import (
+    CHECKLIST_STATE, CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for, skill_for,
+)
+from ..skill_invocation import joined_skill_block, skill_folded
 from ...context.execution_context import ExecutionContext
 from ...core.ports import DispatchAgent
 from ...protocol.event_sink import emit
@@ -143,6 +146,10 @@ class ToolDispatcher:
     def append_results(self, admission: Any, results: list[str]) -> None:
         """One tool message per call, in order, then the calls not run; records each message's files by id."""
         tool_msg_files: dict = self.ec.bookkeeping.tool_msg_files
+        # Joined before the bound, so a joined skill is held to the same budget as one
+        # the model loads itself.
+        results = [_join_skill(self.agent, call.name, call.call_id, result, self.ec)
+                   for call, result in zip(admission.calls, results)]
         # Bounded BEFORE it is appended: the trim pass exempts the current step, so
         # afterwards only the force-fit backstop could touch it, once already over.
         results = self.bound(results)
@@ -194,6 +201,37 @@ def _pin_loaded_skill(
     _move_pin(execution_context, loaded.get(skill), call_id)
     loaded[skill] = call_id
     emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
+
+
+def _join_skill(
+    agent: DispatchAgent,
+    name: str,
+    call_id: str,
+    result: str,
+    execution_context: ExecutionContext,
+) -> str:
+    """*result*, with the skill its tool declares joined the first time in a conversation.
+
+    In the tail, so the prompt prefix holds; pinned like a loaded skill. Not when already
+    loaded, invoked by the user, switched off or not the model's to load.
+    """
+    skill = skill_for(name, agent.tool_caps)
+    if not skill or skill in execution_context.bookkeeping.skills_loaded:
+        return result
+    if skill_folded(skill, execution_context.bookkeeping.skill_suffix):
+        return result
+    if skill not in dict(agent.model_invocable_skills()):
+        return result
+    content = str((agent.skills.get(skill) or {}).get("content") or "").strip()
+    if not content:
+        return result
+    succeeded, _summary = summarize_tool_result(name, result, agent.tool_caps)
+    if not succeeded:
+        return result
+    _move_pin(execution_context, None, call_id)
+    execution_context.bookkeeping.skills_loaded[skill] = call_id
+    emit({"type": "status", "text": f"  \u2295 Skill joined: {skill}"})
+    return str(result) + joined_skill_block(skill, content)
 
 
 def _pin_checklist(

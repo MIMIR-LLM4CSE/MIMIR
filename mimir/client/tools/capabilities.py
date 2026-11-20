@@ -123,6 +123,9 @@ class ToolCaps:
     # cache, set only when the reader asked for a re-read rather than when a timer did;
     # ``choice_arg`` the one that carries the reader's pick among the section's ``choice``.
     panel: dict[str, Any] | None = None
+    # The skill whose method this tool's work follows, joined to the first successful
+    # reply of such a tool in a conversation. None -> no skill comes with it.
+    skill: str | None = None
 
     def has(self, cap: str) -> bool:
         return cap in self.capabilities
@@ -228,6 +231,7 @@ def _caps_from_meta(name: str, desc: dict[str, Any]) -> ToolCaps:
         map_moves_when=_when(desc.get("map_moves_when")),
         run_outcome=outcome,
         panel=panel,
+        skill=desc.get("skill") if isinstance(desc.get("skill"), str) else None,
     )
 
 
@@ -444,6 +448,12 @@ def fallbacks(name: str, registry: dict[str, ToolCaps] | None = None) -> tuple[s
     return c.fallbacks if c else ()
 
 
+def skill_for(name: str, registry: dict[str, ToolCaps] | None = None) -> str | None:
+    """The skill a tool declares its work follows, if any."""
+    c = _registry(registry).get(name)
+    return c.skill if c else None
+
+
 def readonly_invocation_spec(name: str, registry: dict[str, ToolCaps] | None = None) -> dict[str, Any] | None:
     """A dual-use tool's declared read-only-invocation spec, if it has one."""
     c = _registry(registry).get(name)
@@ -635,6 +645,7 @@ __all__ = [
     "explorer_servers",
     "timeout_for",
     "readonly_invocation_spec",
+    "skill_for",
     "unannotated_live_tools",
     # capability constants
     "READ", "CACHEABLE", "SEARCH", "SEARCH_WITH_PATH", "CANDIDATE_SEARCH",

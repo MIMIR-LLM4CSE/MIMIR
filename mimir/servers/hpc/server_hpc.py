@@ -199,7 +199,7 @@ def _partition_refusal(partition: str, left_out: dict) -> str:
     return f"Partition '{partition}' is not usable by you: {why}." if why else ""
 
 
-@mcp.tool(**tool_caps(kind="slurm"))
+@mcp.tool(**tool_caps(skill="run-on-cluster", kind="slurm"))
 def slurm_partitions(scheduler: str = "", all_partitions: bool = False) -> dict:
     """List the Slurm partitions this user can submit to, and what already waits on each.
 
@@ -362,7 +362,7 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
     return ok(payload)
 
 
-@mcp.tool(**tool_caps(kind="slurm",
+@mcp.tool(**tool_caps(skill="run-on-cluster", kind="slurm",
     caps=[PLAN_BLOCKED, CLUSTER_SUBMIT], reversibility=IRREVERSIBLE, non_batch=True,
     risk_note="requests Slurm resource allocation",
 ))
@@ -544,7 +544,7 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
     return jobs.cancel(job_id, scheduler)
 
 
-@mcp.tool(**tool_caps(kind="slurm",
+@mcp.tool(**tool_caps(skill="run-on-cluster", kind="slurm",
     caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
     risk_note="Submits a Slurm batch job that consumes cluster allocation hours.",
     label="Slurm sbatch submit",
@@ -729,7 +729,7 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
     return node_profiles.submit_probe(host, partition, constraint, nodelist, account)
 
 
-@mcp.tool(**tool_caps(kind="slurm"))
+@mcp.tool(**tool_caps(skill="run-on-cluster", kind="slurm"))
 def slurm_node_profile(partition: str = "", node: str = "",
                        scheduler: str = "") -> dict:
     """What the compute nodes are, as the machines code will be built for and run on.

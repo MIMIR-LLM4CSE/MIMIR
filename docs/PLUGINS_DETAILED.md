@@ -226,6 +226,23 @@ Beside the family, each row carries a one-line description **the model writes pe
 That needs nothing from you: the client adds a `doing` parameter to every tool's schema
 and strips it before your tool is called, so you neither declare it nor receive it.
 
+### The skill your tool's work follows (`skill`)
+
+When your tools serve a method one of the skills describes, name it:
+
+```python
+@mcp.tool(**tool_caps(skill="proxy-optimize", kind="proxy eval", caps=[CODE_EXEC]))
+def evaluate(op: str) -> dict:
+    ...
+```
+
+The first successful reply of such a tool in a conversation comes back with the skill's
+body joined to it, pinned against the history budget like a skill the model loaded, so the
+method is in context whether or not the model thought to load it. It arrives in the tail,
+where it costs the prompt prefix nothing, and only once: not when the skill is already
+loaded, invoked by the user, switched off or reserved to the user. Your tool's description
+can then keep to its contract and leave the method to the skill.
+
 ### Reversibility (and why you never declare `SENSITIVE`)
 
 State **how far your tool's effect can be taken back**; approval-gating follows from it.

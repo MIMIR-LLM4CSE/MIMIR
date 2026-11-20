@@ -187,6 +187,66 @@ class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
         self.assertNotIn("SKILL CONTEXT", out)
 
 
+class JoinedSkillTests(unittest.TestCase):
+    """A tool that declares the skill its work follows brings it with its first successful
+    reply in a conversation: in the tail, pinned like a loaded skill, never twice."""
+
+    _OK = json.dumps({"status": "ok", "verdict": "baseline"})
+
+    def _agent(self, *, enabled=True, invocable=True):
+        skills = {"proxy-optimize": {"content": "METHOD BODY", "description": "d",
+                                     "model_invocable": invocable}}
+        return types.SimpleNamespace(
+            tool_caps=build_declared_registry(), skills=skills,
+            model_invocable_skills=lambda: [
+                (n, m["description"]) for n, m in skills.items()
+                if enabled and m["model_invocable"]],
+        )
+
+    def _join(self, agent, ctx, call_id="c1", result=None, name="proxy_eval"):
+        from mimir.client.query_engine import dispatch as dispatch_module
+        return dispatch_module._join_skill(agent, name, call_id, result or self._OK, ctx)
+
+    def test_the_first_reply_brings_the_skill_pinned(self):
+        ctx = build_execution_context()
+        out = self._join(self._agent(), ctx)
+        self.assertTrue(out.startswith(self._OK))
+        self.assertIn("SKILL CONTEXT (SUBORDINATE): proxy-optimize", out)
+        self.assertTrue(out.endswith("METHOD BODY"))
+        self.assertEqual(ctx.bookkeeping.skills_loaded, {"proxy-optimize": "c1"})
+        self.assertEqual(ctx.bookkeeping.pinned_call_ids, {"c1"})
+
+    def test_it_is_joined_once(self):
+        agent, ctx = self._agent(), build_execution_context()
+        self._join(agent, ctx, "c1")
+        self.assertEqual(self._join(agent, ctx, "c2"), self._OK)
+        self.assertEqual(ctx.bookkeeping.pinned_call_ids, {"c1"})
+
+    def test_a_failed_reply_brings_nothing(self):
+        ctx = build_execution_context()
+        failed = json.dumps({"status": "error", "error": "no session"})
+        self.assertEqual(self._join(self._agent(), ctx, result=failed), failed)
+        self.assertEqual(ctx.bookkeeping.skills_loaded, {})
+
+    def test_a_skill_already_loaded_is_not_joined(self):
+        ctx = build_execution_context(skills_loaded={"proxy-optimize": "s1"})
+        self.assertEqual(self._join(self._agent(), ctx), self._OK)
+
+    def test_a_skill_the_user_invoked_is_not_joined(self):
+        from mimir.client.query_engine.skill_invocation import skill_block
+        ctx = build_execution_context(skill_suffix=skill_block("proxy-optimize", "METHOD BODY"))
+        self.assertEqual(self._join(self._agent(), ctx), self._OK)
+
+    def test_a_skill_switched_off_or_the_users_alone_is_not_joined(self):
+        for agent in (self._agent(enabled=False), self._agent(invocable=False)):
+            ctx = build_execution_context()
+            self.assertEqual(self._join(agent, ctx), self._OK)
+
+    def test_a_tool_that_declares_none_brings_none(self):
+        ctx = build_execution_context()
+        self.assertEqual(self._join(self._agent(), ctx, name="read_file_lines"), self._OK)
+
+
 class PlanModeChecklistTests(unittest.TestCase):
     """The plan-mode prompt carries no checklist section, so nothing to refresh there."""
 

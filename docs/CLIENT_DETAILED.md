@@ -587,9 +587,11 @@ exists because the tail is where the context budget does its work: `_trim_tool_h
 evicts whole tool results, `_maybe_compact_intra_query` summarises the middle of the list,
 and `force_fit_to_window` truncates largest-first. All three would carry off a skill body,
 and the model has been told the method is in its context; or the latest checklist reply,
-the only place the model reads the list as ticked within the turn. Two pinners, each moving
-its own pin: `_pin_loaded_skill` (one per skill, `skills_loaded`) and `_pin_checklist` (one
-in all, `PlanState.checklist_call_id`), both through `_move_pin`.
+the only place the model reads the list as ticked within the turn. Three pinners, each moving
+its own pin: `_pin_loaded_skill` (one per skill, `skills_loaded`), `_join_skill` (the skill
+a tool declares with `skill=`, joined to its first successful reply in the conversation and
+recorded in `skills_loaded` the same way, so a later load moves that pin) and
+`_pin_checklist` (one in all, `PlanState.checklist_call_id`), all through `_move_pin`.
 
 - `_trim_tool_history` skips pinned ids outright, by `tool_call_id` — the same structural key
   as `tool_msg_files`, never a substring scan.

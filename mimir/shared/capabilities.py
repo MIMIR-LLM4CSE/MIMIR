@@ -284,6 +284,7 @@ def build_descriptor(
     map_moves_when: dict[str, Any] | None = None,
     run_outcome: dict[str, Any] | None = None,
     panel: dict[str, Any] | None = None,
+    skill: str | None = None,
 ) -> dict[str, Any]:
     """The ``meta["mimir"]`` descriptor dict (stdlib only, testable without ``mcp``).
 
@@ -305,6 +306,9 @@ def build_descriptor(
         "map_moves_when": _norm_when(map_moves_when),
         "preview": _norm_preview(preview),
         "run_outcome": _norm_run_outcome(run_outcome),
+        # The skill whose method this tool's work follows: the client joins it to the
+        # first successful reply of such a tool in a conversation.
+        "skill": skill.strip() if isinstance(skill, str) and skill.strip() else None,
     }
     return {key: value for key, value in sections.items() if value is not None}
 
@@ -327,6 +331,7 @@ def tool_caps(
     map_moves_when: dict[str, Any] | None = None,
     run_outcome: dict[str, Any] | None = None,
     panel: dict[str, Any] | None = None,
+    skill: str | None = None,
     read_only: bool | None = None,
     destructive: bool | None = None,
 ) -> dict[str, Any]:
@@ -352,6 +357,7 @@ def tool_caps(
         map_moves_when=map_moves_when,
         run_outcome=run_outcome,
         panel=panel,
+        skill=skill,
     )
     kwargs: dict[str, Any] = {"meta": {"mimir": descriptor}}
 

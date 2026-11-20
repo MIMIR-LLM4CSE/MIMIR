@@ -17,6 +17,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - **`proxy_get(op='help')`** returns a proxy tool's reference in full.
+- **A tool brings the method its work follows.** `tool_caps(skill=...)` names a skill;
+  the first successful reply of such a tool in a conversation comes with that skill
+  joined, pinned like a loaded one, unless it is already loaded, invoked, switched off
+  or the user's alone. The proxy tools bring `proxy-optimize` (`proxy_merge`
+  `proxy-merge`), the cluster tools that start work `run-on-cluster`.
 
 ### Changed
 - **A ticked step no longer costs the prompt cache.** The system message carries the
