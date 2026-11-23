@@ -1000,25 +1000,27 @@ to hand back is by definition still calling tools. The five, and the fact that o
   `plan_steps` arg-role. The prose document is the **only** form plan mode produces: the
   ordered checklist is written after the user approves, at the start of execution.
   `toollist.hidden_planning_tools()` decides by capability which writers a read-only mode
-  exposes — **ask** hides both, **plan** hides the checklist tool, plus the document tool
-  while exploring — and `filter_readonly_tool_calls` re-applies the same set at call time,
+  exposes — **ask** hides both, **plan** hides the checklist tool — and
+  `filter_readonly_tool_calls` re-applies the same set at call time,
   so a hallucinated call is answered rather than executed. Hiding a tool is what lets both
   prompts drop the matching prohibition: an absent tool needs no rule and no prompt tokens.
 
   The loop does not re-derive this from tool names: counting the checklist alone would miss
   a plan recorded in prose and send the model back to rewrite a plan it already has.
-- **The explore phase.** Plan mode runs in two phases and the plan-document tool does not
-  exist during the first. On a repo-touching query the document tool is hidden and the nudge
+- **The explore phase.** Plan mode runs in two phases and the plan-document tool records
+  nothing during the first. On a repo-touching query a call to it is refused
+  (`PlanLoop._refuse_plan_document`, with the exploration nudge's own text) and the nudge
   asks for the exploration rather than for the plan. The phase flips the moment
   `plan_evidence_ready(ctx)` holds — `PLAN_EVIDENCE_MIN_FILES_READ` files actually **read**,
-  plus the distinct-signal bar — and the tool list is rebuilt once, a sanctioned
-  prefix-cache break paid for by the tool it unlocks.
+  plus the distinct-signal bar. The tool stays listed throughout: withholding it meant
+  rebuilding the tool list when the phase flipped, and a changed list voids the prompt
+  prefix for every step after.
 
   This replaced an after-the-fact advisory gate that fired *after* the plan was written and
   only appended a nudge: it never stood between the model and a plan written over file
   names. A plan mode that offers the document from turn 1, under a nudge calling the plan
-  mandatory, makes a plan *to explore* the cheapest way out — so the fix withholds the tool
-  rather than policing the plan's wording. Because the arming signal is a broad filter that
+  mandatory, makes a plan *to explore* the cheapest way out — so the fix refuses the tool
+  until code is read rather than policing the plan's wording. Because the arming signal is a broad filter that
   fires for greenfield work no exploration could ground, `PLAN_EXPLORE_MAX_TURNS` unlocks
   the tool regardless and the model is told to state its gaps: plan mode always reaches a
   plan.

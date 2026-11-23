@@ -926,21 +926,24 @@ class RunPlanModeTests(unittest.TestCase):
             m["role"] == "user" and "REJECTED" in m["content"] for m in messages
         ))
 
-    def _explore_phase_run(self, *, backend, query, agent, messages, max_steps=20, reads=()):
-        """Run plan mode recording the ``exploring`` flag the tool list was built with.
+    def _explore_phase_run(self, *, backend, query, agent, messages, max_steps=20, reads=(),
+                           read_on_call=1):
+        """Run plan mode counting how many times its tool list was built.
 
-        ``reads`` are the files the fake dispatch credits on its first call, standing
-        in for the model reading code: what flips the phase is the execution context,
-        exactly as in production.
+        ``reads`` are the files the fake dispatch credits on its ``read_on_call``-th
+        call, standing in for the model reading code: what flips the phase is the
+        execution context, exactly as in production.
         """
-        seen_exploring: list[bool] = []
+        builds: list[int] = []
+        dispatched: list[int] = []
 
-        def _tools(tools, caps, **kw):
-            seen_exploring.append(bool(kw.get("exploring")))
+        def _tools(tools, caps):
+            builds.append(1)
             return []
 
         async def _plan_dispatch(tool_calls, agent_, messages_, execution_context, *, bound):
-            if reads and not execution_context.discovery.read_files:
+            dispatched.append(1)
+            if reads and len(dispatched) >= read_on_call and not execution_context.discovery.read_files:
                 execution_context.discovery.read_files = set(reads)
                 execution_context.discovery.searched = True
             _record_plan_flags(tool_calls, agent_, execution_context)
@@ -960,14 +963,14 @@ class RunPlanModeTests(unittest.TestCase):
                     cb={"think_token_callback": None},
                 )
             )
-        return result, seen_exploring
+        return result, len(builds)
 
-    def test_plan_tool_is_withheld_until_the_code_is_read(self) -> None:
-        # The cause of the "plan to explore" plan: the document tool was offered from
+    def test_plan_tool_waits_until_the_code_is_read(self) -> None:
+        # The cause of the "plan to explore" plan: the document tool was usable from
         # turn 1 under a nudge calling the plan mandatory, so recording a survey
-        # checklist was the cheapest way out. On a repo-touching query the tool is now
-        # withheld until the model has actually read files, and the nudge asks for the
-        # exploration rather than for the plan.
+        # checklist was the cheapest way out. On a repo-touching query the tool now
+        # refuses a plan until the model has actually read files, and the nudge asks for
+        # the exploration rather than for the plan.
         backend = ScriptedBackend([
             {"content": "looking", "tool_calls": [_tool_call("read_file_lines")]},
             {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
@@ -977,19 +980,43 @@ class RunPlanModeTests(unittest.TestCase):
         query = "refactor the solver in the repo"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
 
-        result, seen_exploring = self._explore_phase_run(
+        result, builds = self._explore_phase_run(
             backend=backend, query=query, agent=agent, messages=messages,
             reads=("a.py", "b.py", "c.py"),
         )
 
         self.assertEqual(result, "Here is the plan.")
-        # Turn 1 explores with the document withheld; the reads flip the phase for turn 2.
-        self.assertEqual(seen_exploring, [True, False])
+        # One list for the whole turn: the phase flips without rebuilding it.
+        self.assertEqual(builds, 1)
         explore_at = _reminder_calls(backend, nudge_messages.PLAN_EXPLORE_FIRST)
         record_at = _reminder_calls(backend, nudge_messages.PLAN_TODO_NUDGE_EARLY)
         self.assertTrue(explore_at)
-        # And the record nudge never fired while the tool did not exist.
+        # And the record nudge never fired while the tool refused a plan.
         self.assertTrue(all(r > explore_at[0] for r in record_at))
+        # The same tool list went out at every step.
+        self.assertEqual(len({json.dumps(c["tools"]) for c in backend.calls}), 1)
+
+    def test_a_plan_before_the_reading_is_refused_not_recorded(self) -> None:
+        backend = ScriptedBackend([
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
+            {"content": "looking", "tool_calls": [_tool_call("read_file_lines")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
+            {"content": "Here is the plan."},
+        ])
+        agent = fake_agent(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        query = "refactor the solver in the repo"
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
+
+        result, builds = self._explore_phase_run(
+            backend=backend, query=query, agent=agent, messages=messages,
+            reads=("a.py", "b.py", "c.py"), read_on_call=1,
+        )
+
+        self.assertEqual(result, "Here is the plan.")
+        self.assertEqual(builds, 1)
+        refusals = [m for m in messages if m.get("role") == "tool"
+                    and nudge_messages.PLAN_EXPLORE_FIRST.strip()[:40] in str(m.get("content"))]
+        self.assertEqual(len(refusals), 1)
 
     def test_explore_budget_unlocks_the_plan_tool(self) -> None:
         # Escape hatch: the query signal arming the phase is a broad filter and fires
@@ -1004,13 +1031,13 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
         backend = ScriptedBackend(script)
 
-        result, seen_exploring = self._explore_phase_run(
+        result, builds = self._explore_phase_run(
             backend=backend, query=query, agent=agent, messages=messages,
         )
 
         self.assertEqual(result, "Here is the plan.")
-        # The list is built once per phase, never per turn: one cache break, no more.
-        self.assertEqual(seen_exploring, [True, False])
+        # The list is built once for the turn, whatever the phase: no cache break.
+        self.assertEqual(builds, 1)
         # Once per throttle window, not once per turn: every acting turn used to carry
         # the same text back, and a user turn between every tool result is itself what
         # teaches one-call-per-turn — including ignoring the fan-out this text asks for.
@@ -1056,12 +1083,11 @@ class RunPlanModeTests(unittest.TestCase):
         query = "refactor the solver in the repo"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
 
-        result, seen_exploring = self._explore_phase_run(
+        result, _ = self._explore_phase_run(
             backend=backend, query=query, agent=agent, messages=messages, max_steps=10,
         )
 
         self.assertEqual(result, "Here is the plan.")
-        self.assertFalse(any(seen_exploring))
         self.assertFalse(_reminder_calls(backend, nudge_messages.PLAN_EXPLORE_FIRST))
         self.assertEqual(len(backend.calls), 2)
 

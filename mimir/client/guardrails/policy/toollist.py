@@ -60,34 +60,28 @@ def tools_for_context(
     ]
 
 
-def hidden_planning_tools(mode: str, tool_caps: Any = None, *, exploring: bool = False) -> set[str]:
+def hidden_planning_tools(mode: str, tool_caps: Any = None) -> set[str]:
     """Plan-writing tools *mode* does not expose, by capability.
 
-    Ask hides every ``TASK_PLANNING`` writer; plan hides the checklist (``plan_steps``), and
-    while *exploring* the plan document too. A tool not shown needs no prohibition.
+    Ask hides every ``TASK_PLANNING`` writer; plan hides the checklist (``plan_steps``), the
+    plan document staying listed through the explore phase (refused by ``plan_loop``).
     """
     if mode == "ask":
         return names_with_cap(TASK_PLANNING, tool_caps)
     if mode == "plan":
-        hidden = names_with_arg_role("plan_steps", tool_caps)
-        if exploring:
-            hidden = hidden | names_with_arg_role("plan_title", tool_caps)
-        return hidden
+        return names_with_arg_role("plan_steps", tool_caps)
     return set()
 
 
 def tools_for_readonly_mode(
     tools: list[dict[str, Any]], tool_caps: Any = None, mode: str = "",
-    *, exploring: bool = False,
 ) -> list[dict[str, Any]]:
     """The tools a read-only mode keeps: no ``PLAN_BLOCKED`` tool, no unneeded planning tool.
 
     The dual-use bash tool stays; its exec use is refused at call time
     (``readonly_guard.filter_readonly_tool_calls``).
     """
-    hidden = names_with_cap(PLAN_BLOCKED, tool_caps) | hidden_planning_tools(
-        mode, tool_caps, exploring=exploring,
-    )
+    hidden = names_with_cap(PLAN_BLOCKED, tool_caps) | hidden_planning_tools(mode, tool_caps)
     return [
         tool for tool in tools
         if tool.get("function", {}).get("name") not in hidden
@@ -131,11 +125,11 @@ def grantable_writers(agent: PolicyAgent, granted: dict[str, str] | None = None)
 
 
 def tools_for_plan_mode(
-    tools: list[dict[str, Any]], tool_caps: Any = None, *, exploring: bool = False,
+    tools: list[dict[str, Any]], tool_caps: Any = None,
 ) -> list[dict[str, Any]]:
     """The read-only subset for plan mode. Its own name because plan_loop imports it.
 
-    ``exploring`` withholds the plan-document tool for the explore phase; plan_loop
-    rebuilds the list once when the evidence bar is met.
+    The same for the whole turn: the explore phase refuses the plan-document tool at call
+    time rather than withholding it, since a changed tool list voids the prompt prefix.
     """
-    return tools_for_readonly_mode(tools, tool_caps, mode="plan", exploring=exploring)
+    return tools_for_readonly_mode(tools, tool_caps, mode="plan")

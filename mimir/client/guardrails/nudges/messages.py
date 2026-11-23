@@ -345,9 +345,10 @@ def validation_nudge_message(agent: NudgeAgent, execution_context: ContextView) 
 # sits in one module regardless of which loop fires it.
 
 # Plan-mode user nudges.
-# Explore phase: the plan-document tool is withheld until the code has actually been
-# read, so this nudge asks for the exploration rather than for the plan. Nothing here
-# forbids a plan-to-explore — the tool list does, by not offering the document yet.
+# Explore phase: the plan-document tool refuses a plan until the code has actually been
+# read, so this nudge asks for the exploration rather than for the plan; it is also the
+# refusal a call to that tool gets then. A plan-to-explore cannot be recorded: the call is
+# refused (plan_loop), and the tool stays listed so the prompt prefix holds.
 PLAN_EXPLORE_FIRST = (
     "The plan tool is not available yet: this phase of plan mode is the exploration itself, and the plan is written once it is done. "
     "Use the read-only exploration tools now (search, read, inspect, platform/memory queries) to READ the code this task touches — not just to locate it. "
@@ -366,7 +367,7 @@ PLAN_EXPLORE_DELEGATE = (
 
 
 # Escape hatch: the explore-turn budget is spent and the evidence is still thin. The
-# tool is unlocked regardless — plan mode must always reach a plan — so the plan is
+# tool's refusal ends regardless — plan mode must always reach a plan — so the plan is
 # written over what was found, with its gaps stated rather than papered over.
 PLAN_EXPLORE_BUDGET_SPENT = (
     "You have spent the exploration budget for this task, so the plan tool is now available whatever you found. "

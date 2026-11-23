@@ -887,7 +887,7 @@ def _plan_mode_section(tool_owner: dict[str, str], sensitive_tools: set[str],
         "PHASE 1 — explore. Nothing in your context tells you what has to change. Call the "
         "read-only exploration tools (search, read, inspect, platform/memory "
         "queries) and READ the code this task touches — opening the files and following the symbols, not merely "
-        "listing directories and matching file names. The plan document tool is withheld until you have done so. "
+        "listing directories and matching file names. The plan document tool refuses a plan until you have done so. "
         "Continue until you could name the concrete files and symbols the change touches and say what happens to each.\n"
         + (" " + _text("delegation_clause") + "\n" if delegation_available else "")
         +

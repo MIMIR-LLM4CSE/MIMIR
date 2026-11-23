@@ -371,7 +371,7 @@ Notes:
   tick an existing checklist in any mode.
 - In plan mode the model is expected to record the prose plan document (`todo_set_plan`)
   before the turn ends — but not before it has read the code: on a repo-touching query
-  the client withholds the document tool until the exploration is done (see the plan-mode
+  the client refuses the document tool until the exploration is done (see the plan-mode
   explore phase in `CLIENT_DETAILED.md`), so the plan cannot be a plan *to* explore.
   The ordered steps are recorded only after the user approves the
   plan, at the start of the execution — a checklist written earlier tracks work nobody

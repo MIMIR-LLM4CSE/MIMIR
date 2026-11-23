@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config.limits import PLAN_EXPLORE_MAX_TURNS
 from ..config.models import resolve_enforcement
-from ..tools.capabilities import DELEGATE, arg_role, names_with_cap
+from ..tools.capabilities import DELEGATE, arg_role, names_with_arg_role, names_with_cap
 from ..context.execution_context import ExecutionContext, plan_evidence_ready
 from ..context.signals import query_requires_repo_discovery
 from ..core.ports import AgentPort
@@ -173,9 +173,10 @@ class PlanLoop(StepLoop):
         # Both reset whenever the plan goes back to the drawing board.
         self.post_record_tool_turns = 0
         self.deliver_nudged = False
-        # Explore phase: the plan-document tool is withheld until the model has read the code.
+        # Explore phase: the plan-document tool is refused until the model has read the code.
         # Armed by a broad query signal (context.signals), hence the turn budget; skipped at
-        # enforcement "off".
+        # enforcement "off". Refused at call time, never withheld: the tool list stays the
+        # same for the whole turn, so the prompt prefix holds.
         self.exploring = (query_requires_repo_discovery(turn.query)
                           and resolve_enforcement(self.agent) != "off")
         self.explore_turns = 0
@@ -183,9 +184,7 @@ class PlanLoop(StepLoop):
         self.last_nudged: dict[str, int] = {}
 
     def _plan_tools(self) -> list:
-        return tools_for_plan_mode(
-            self.agent.advertised_tools(), self.agent.tool_caps, exploring=self.exploring,
-        )
+        return tools_for_plan_mode(self.agent.advertised_tools(), self.agent.tool_caps)
 
     def prepare_calls(self, tool_calls: list[Any]) -> list[Any]:
         # Drop hallucinated calls to write/execution tools, keep the dual-use exec tool
@@ -194,6 +193,8 @@ class PlanLoop(StepLoop):
         tool_calls = filter_readonly_tool_calls(
             tool_calls, agent=self.agent, messages=self.messages, mode_label="plan",
         )
+        if self.exploring:
+            tool_calls = self._refuse_plan_document(tool_calls)
         if self.plan_title:
             tool_calls = _pin_plan_title(tool_calls, self.agent, self.plan_title)
         return tool_calls
@@ -293,8 +294,7 @@ class PlanLoop(StepLoop):
         """Flip from exploring to drafting once the evidence is in, or the budget spent.
 
         Plan mode must always reach a plan, so thin evidence unlocks the tool too and
-        the plan states its own gaps. Rebuilding the tool list breaks the prompt prefix
-        once — the phase flips at most once per run, and buys the tool the run needs.
+        the plan states its own gaps. The tool was listed all along; only its refusal ends.
         """
         if not self.exploring:
             return
@@ -308,8 +308,19 @@ class PlanLoop(StepLoop):
                             tagged=False, execution_context=self.ec, step=self.step)
         if self.exploring:
             self.explore_turns += 1
-        else:
-            self.tools = self._plan_tools()
+
+    def _refuse_plan_document(self, tool_calls: list[Any]) -> list[Any]:
+        """The calls minus the plan document's, each refused with what the phase asks for."""
+        document_tools = names_with_arg_role("plan_title", self.agent.tool_caps)
+        kept: list[Any] = []
+        for tc in tool_calls:
+            name = as_dict(as_dict(tc).get("function", {})).get("name", "")
+            if name in document_tools:
+                emit({"type": "status", "text": f"  \u26a0 '{name}' waits for the exploration"})
+                self.messages.append(refusal_reply(tc, message("plan_explore_first")))
+            else:
+                kept.append(tc)
+        return kept
 
     def nudge_toward_plan(self, *, forced: bool) -> None:
         """Push toward what the phase owes (evidence, then the document), throttled after a tool turn.

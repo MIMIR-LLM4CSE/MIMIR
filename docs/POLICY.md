@@ -136,7 +136,7 @@ without it. The parent gets the list back in `blocked_by_mode`.
 | Dual-use shell | full | read-only commands only | read-only commands only |
 | Can edit files | yes | no | no |
 | Guidance nudges | per the table above | `strict` only | none |
-| Explore phase | — | plan tool withheld until code is read | — |
+| Explore phase | — | plan tool refuses a plan until code is read | — |
 
 Plan and ask are the `READONLY_MODES`. Gating is by capability, never by tool name, so a
 new server is covered without a client edit.
@@ -147,8 +147,9 @@ does not capture. **Ask** records nothing, so every `TASK_PLANNING` writer is hi
 there, because the checklist is written *after* the user approves, at the start of
 execution. Withdrawing a tool is what lets the prompt drop the matching "do not write a
 checklist" prohibition — a tool the model cannot see needs no rule, no nudge and no prompt
-tokens. During plan mode's explore phase the document tool is withheld as well, which is
-the phase's whole mechanism.
+tokens. During plan mode's explore phase the document tool refuses a plan at call time,
+which is the phase's whole mechanism; it stays listed, since withdrawing it mid-turn would
+change the tool list and void the prompt prefix.
 
 ---
 
@@ -409,7 +410,7 @@ both the CLI and the WebSocket server, and `/status` shows it.
 **Nothing about safety or correctness is tiered.** Verification nudges, write policy,
 approval, the state guard and plan-blocked tool hiding all run at every level.
 
-The **plan-mode explore phase** is the one non-nudge thing the dial touches. It withholds
+The **plan-mode explore phase** is the one non-nudge thing the dial touches. It refuses
 the plan-document tool until the model has actually read code (`plan_evidence_ready`), so
 a plan written over nothing is unreachable rather than flagged afterwards. `off` disables
 the phase and offers the tool from turn 1. It never leaves a run without a plan: its

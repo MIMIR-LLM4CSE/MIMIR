@@ -249,14 +249,14 @@ class PlanModeToolVisibilityTests(unittest.TestCase):
         ]
         return registry, tools
 
-    def test_explore_phase_withholds_the_plan_document_tool(self):
-        # Plan mode's first phase is the exploration itself. Offering the document tool
-        # there is what let a model answer the "record a plan" pressure with a plan to
-        # explore; withholding it removes the move rather than policing the wording.
+    def test_the_plan_mode_list_keeps_the_document_tool_through_exploration(self):
+        # One list for the whole turn: the explore phase refuses the document tool at call
+        # time (plan_loop) instead of withholding it, since a list rebuilt mid-turn voids
+        # the prompt prefix for every step after.
         registry, tools = self._planning_registry()
         self.assertEqual(
-            {t["function"]["name"] for t in tools_for_plan_mode(tools, registry, exploring=True)},
-            {"grep"},
+            {t["function"]["name"] for t in tools_for_plan_mode(tools, registry)},
+            {"grep", "todo_set_plan"},
         )
 
     def test_each_readonly_mode_hides_the_planning_tools_it_cannot_use(self):

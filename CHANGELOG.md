@@ -30,6 +30,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `todo_update` and `todo_read` reply with the list as it now stands (`checklist`,
   rendered as the system message renders it), and the latest such reply is pinned
   against the history budget.
+- **Plan mode keeps one tool list for the whole turn.** During the explore phase the
+  plan-document tool refuses a plan instead of being withheld, so reaching the drafting
+  phase no longer rebuilds the tool list and voids the prompt cache mid-turn.
 - **Every tool weighs less.** The `doing` argument every tool takes is described in one
   line instead of five, about 7 k tokens less on every request with all servers on.
 - **The long proxy tools are described by their contract.** `proxy_eval`,
