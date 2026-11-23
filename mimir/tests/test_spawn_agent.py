@@ -642,10 +642,13 @@ class ParkedChildBudgetTests(unittest.TestCase):
         self.assertFalse(out["completed"])
         self.assertEqual(out["blocked_by_mode"],
                          [{"action": "Running: make", "needs": "auto"}])
+        # What to do about it comes with it, not from the tool's description.
+        self.assertIn("Tell the user which mode", out["blocked_note"])
 
     def test_a_clean_run_reports_nothing_blocked(self):
         _, result = _run_child(["write_file"], answer="done", approval_mode="auto")
         self.assertEqual(result["blocked_by_mode"], [])
+        self.assertNotIn("blocked_note", result)
         self.assertTrue(result["completed"])
 
 

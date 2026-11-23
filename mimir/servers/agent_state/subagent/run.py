@@ -219,6 +219,7 @@ class ChildRun:
             "files_read": result["files_read"],
             "files_written": result["files_written"],
             "blocked_by_mode": result["blocked_by_mode"],
+            **({"blocked_note": result["blocked_note"]} if result.get("blocked_note") else {}),
             **self._identity(),
             "workspace": result.get("workspace", {}),
             # Runs it left going, under the plural key: the client adopts them for the

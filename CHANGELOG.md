@@ -36,6 +36,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Plan mode keeps one tool list for the whole turn.** During the explore phase the
   plan-document tool refuses a plan instead of being withheld, so reaching the drafting
   phase no longer rebuilds the tool list and voids the prompt cache mid-turn.
+- **`spawn_agent` says what to do with its reply in the reply.** A run the approval mode
+  held back brings `blocked_note`, and a committed copy's `note` asks for the axes to be
+  merged; the description keeps a short account of the fields, about 2 k characters less.
 - **Every tool weighs less.** The `doing` argument every tool takes is described in one
   line instead of five, about 7 k tokens less on every request with all servers on.
 - **The long proxy tools are described by their contract.** `proxy_eval`,

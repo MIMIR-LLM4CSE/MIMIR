@@ -1678,7 +1678,11 @@ Execution model:
   credits as delegated discovery evidence; `files_written` lets a parent coordinating
   concurrent sub-agents detect overlapping edits; `blocked_by_mode` lists the actions the
   child skipped because the user's approval mode does not allow them
-  (`{"action", "needs"}`), and a non-empty list makes `completed` False.
+  (`{"action", "needs"}`), and a non-empty list makes `completed` False and brings
+  `blocked_note`, telling the caller to name the mode to the user rather than retry. What
+  to do with a reply is said in the reply where it applies (`blocked_note`, the
+  workspace's `note`, which also asks for the axes to be merged, with `proxy_merge` once
+  two proxies are back), so the tool's description keeps a short account of the fields.
 - The child runs in the caller's approval mode, read from the request `_meta`
   (`manual` when absent). It never prompts: its stdin is this server's JSON-RPC pipe.
   What the mode does not cover is refused (see POLICY.md).

@@ -134,45 +134,14 @@ async def spawn_agent(
                     tool; refused while the earlier one is still running or is already
                     being continued. ``task`` says what to do next.
     Returns:
-        On success (the sub-agent ran to a result):
-            {"status": "ok", "answer": "…", "completed": bool, "files_read": [...],
-             "files_written": [...], "model": "…"}
-            - ``answer``        — the sub-agent's final answer (primary payload).
-            - ``completed``     — False when the sub-agent ran out of steps or reported
-                                  the task incomplete (the answer is still informative).
-            - ``files_read``    — what the child actually opened, so the evidence it
-                                  gathered is on the record for the caller too.
-            - ``files_written`` — workspace files the sub-agent modified (empty when it
-                                  was granted no writing tool); lets a parent
-                                  coordinating concurrent sub-agents detect overlapping
-                                  edits.
-            - ``blocked_by_mode`` — actions the sub-agent skipped because the user's
-                                  approval mode does not allow them (it cannot ask).
-                                  Each is ``{"action", "needs"}``; when non-empty,
-                                  ``completed`` is False. Tell the user which mode
-                                  would let them run rather than retrying.
-            - ``model``         — the model the sub-agent ran on.
-            - ``tools``         — the tools it actually had.
-            - ``session``       — its own session id. Its todo list and scratchpad live
-                                  there, and they outlive the call: hand it to the next
-                                  sub-agent instead of starting the axis again.
-            - ``workspace``     — empty when it only read, in your own files. When it
-                                  was given a writing or running tool it worked in a
-                                  COPY of the repository: the ``branch`` its work was
-                                  committed to, the ``path`` of that copy, the files it
-                                  changed and a ``diffstat``. The copy is kept either
-                                  way — it holds the build tree the axis paid for — and
-                                  the oldest go when a later sub-agent needs the room;
-                                  what tells a finished axis from an interrupted one is
-                                  ``committed`` and the ``note``, not ``kept``. Read the
-                                  branch, compare the axes, and merge the one you keep
-                                  yourself; optimisation axes measured on proxies you
-                                  merge and measure together with proxy_merge, unasked,
-                                  once two or more are back.
-        On failure (the sub-agent crashed or ran out of time):
-            {"status": "error", "error": "…", "answer": "<partial>", ...}
-            — distinct ``status`` so the orchestrator can branch on failure without
-              string-matching the answer text.
+        {"status": "ok", "answer", "completed", "files_read", "files_written", "model",
+         "tools", "session", "workspace", "blocked_by_mode"}: the sub-agent's final
+        answer; ``completed`` False when it ran out of budget or reported the task
+        unfinished (the answer still informs); ``session``, whose checklist and
+        scratchpad outlive the call (hand it to ``continue_from``); ``workspace`` empty
+        when it only read, else the branch and copy its work is in and a ``note`` saying
+        what to do with it. A crash or a timeout is {"status": "error", "error", "answer":
+        <partial>, ...}.
     """
     grantable = caller.grantable(ctx)
     requested = [str(t).strip() for t in (tools or []) if str(t).strip()]

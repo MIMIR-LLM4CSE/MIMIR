@@ -386,7 +386,7 @@ async def drive_sub_agent(
         or is_incomplete_answer(answer)
         or answer.startswith("Reached the maximum number of steps")
     )
-    return {
+    result = {
         "answer": answer,
         "completed": completed,
         "files_read": files_read,
@@ -394,3 +394,11 @@ async def drive_sub_agent(
         "blocked_by_mode": blocked_by_mode,
         "error": error,
     }
+    if blocked_by_mode:
+        # Said where it applies rather than in the tool's description: a child cannot ask
+        # the user, so the caller is the one to tell them.
+        result["blocked_note"] = (
+            "These actions were skipped because the user's approval mode does not allow "
+            "them, and a sub-agent cannot ask. Tell the user which mode would let them run "
+            "rather than retrying.")
+    return result

@@ -367,7 +367,10 @@ def finish_worktree(wt: dict, task: str, succeeded: bool) -> dict:
         report["note"] = (
             f"Its work is committed on {branch}, and the copy is still at {path}. Git "
             f"refuses to check that branch out anywhere else while the copy holds it, "
-            f"so bring the work over with merge or cherry-pick, not checkout.")
+            f"so bring the work over with merge or cherry-pick, not checkout. Compare the "
+            f"axes and merge the one you keep yourself; axes measured on optimisation "
+            f"proxies are merged and measured together with proxy_merge, unasked, once "
+            f"two or more are back.")
         return report
 
     # Nothing written: the branch is still at the commit it was cut from and carries
