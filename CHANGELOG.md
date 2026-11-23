@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.19.0] — 2026-11-23
+
 ### Added
 - **The cache logs name the tool list.** `anthropic cache:` and `vllm prefix cache:` carry
   `tools=<digest>` of the list as sent, and each server's start-up line what its tools add
