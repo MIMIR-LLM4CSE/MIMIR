@@ -179,7 +179,7 @@ class StopReasonTests(unittest.TestCase):
         backend._get_client = lambda: created
         backend._build_kwargs = lambda *a, **k: {}
         backend._cache_blocks = lambda raw: None
-        with patch.object(anthropic_backend, "_log_cache_usage", lambda f: None):
+        with patch.object(anthropic_backend, "_log_cache_usage", lambda *a: None):
             return backend.chat("m", [{"role": "user", "content": "q"}], [], False,
                                 streaming, {}, token_callback=lambda t: None)
 

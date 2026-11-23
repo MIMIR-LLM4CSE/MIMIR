@@ -246,9 +246,12 @@ knob, unset by default.
 There is no per-model tool cap: every advertised tool is sent to every model. The list
 is therefore constant, which is what lets a server started with `--enable-prefix-caching`
 tokenize it once and reuse it for the rest of the session. Run the client at `INFO` to
-see the hit rate reported per call (`vllm prefix cache: ... hit_rate=...`); a rate stuck
-near zero across the steps of one query means the prefix is being invalidated, or that
-the flag is not on.
+see the hit rate reported per call (`vllm prefix cache: ... hit_rate=... tools=<digest>`;
+`anthropic cache: ...` likewise); a rate stuck near zero across the steps of one query
+means the prefix is being invalidated, or that the flag is not on. `tools` is a digest of
+the tool list as sent: it renders before everything else, so a new digest where the rate
+fell names the cause. Each server's line at start-up says what its tools add to every
+request (`~N tokens per request`).
 
 To see reasoning rendered as a thinking block rather than inline text, start vLLM with
 the matching `--reasoning-parser`.

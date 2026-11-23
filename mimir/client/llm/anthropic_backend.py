@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any
 
-from .base import ChatTurn, LLMBackend, env_positive_int
+from .base import ChatTurn, LLMBackend, env_positive_int, tools_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ def _mark_last_block_cacheable(conv: list[dict]) -> None:
         last["cache_control"] = {"type": "ephemeral"}
 
 
-def _log_cache_usage(final: Any) -> None:
+def _log_cache_usage(final: Any, tools: list[dict] | None = None) -> None:
     """Log prompt-cache hits from a response's ``usage`` (best-effort).
 
     Zero reads across repeated steps means something invalidates the prefix.
@@ -128,9 +128,9 @@ def _log_cache_usage(final: Any) -> None:
     hit_rate = read / prompt_total
     logger.info(
         "anthropic cache: read=%d created=%d fresh=%d prompt_total=%d hit_rate=%.2f "
-        "output=%d",
+        "output=%d tools=%s",
         read, created, fresh, prompt_total, hit_rate,
-        getattr(usage, "output_tokens", 0) or 0,
+        getattr(usage, "output_tokens", 0) or 0, tools_fingerprint(tools),
     )
 
 
@@ -381,7 +381,7 @@ class AnthropicBackend(LLMBackend):
                 turn.reasoning(getattr(block, "thinking", "") or "")
 
         self._cache_blocks(getattr(final, "content", []) or [])
-        _log_cache_usage(final)
+        _log_cache_usage(final, tools)
         # "max_tokens" is the stop reason that matters: a turn cut off mid-sentence,
         # which without it looks exactly like a model that chose to stop.
         turn.stopped(getattr(final, "stop_reason", None))

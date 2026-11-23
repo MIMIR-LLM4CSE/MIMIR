@@ -16,6 +16,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **The cache logs name the tool list.** `anthropic cache:` and `vllm prefix cache:` carry
+  `tools=<digest>` of the list as sent, and each server's start-up line what its tools add
+  to every request.
 - **`proxy_get(op='help')`** returns a proxy tool's reference in full.
 - **A tool brings the method its work follows.** `tool_caps(skill=...)` names a skill;
   the first successful reply of such a tool in a conversation comes with that skill

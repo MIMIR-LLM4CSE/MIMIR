@@ -23,7 +23,7 @@ from ..config import paths
 from ..config.paths import GLOBAL_STATE_DIR, SERVER_BASE
 from ..config.servers import SERVER_SECRETS
 from ...shared.launcher import launch_argv
-from ..config.limits import USER_QUESTION_TIMEOUT_SECS
+from ..config.limits import CHARS_PER_TOKEN, USER_QUESTION_TIMEOUT_SECS
 from ...shared.secret_env import without_secrets
 from ...shared.state_paths import scratch_home
 from ..core.ports import ConnectorAgent
@@ -362,11 +362,15 @@ async def _register_session(*, agent: ConnectorAgent, name: str, session: Any, l
         })
 
     tool_names = registered
+    # What these tools add to every request, as sent: their weight is otherwise invisible.
+    sent = sum(len(json.dumps(t, ensure_ascii=False)) for t in agent.tools[-len(registered):]) \
+        if registered else 0
 
     n_resources = await register_resources(agent=agent, name=name, session=session)
 
     suffix = f", {n_resources} resources" if n_resources else ""
-    print(f"✅ [{name}]  {len(tool_names)} tools{suffix}: {tool_names}")
+    print(f"✅ [{name}]  {len(tool_names)} tools (~{sent // CHARS_PER_TOKEN:,} tokens per request)"
+          f"{suffix}: {tool_names}")
 
 
 async def _handshake(session: Any) -> Any:

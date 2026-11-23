@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from .base import ChatTurn, LLMBackend, PromptTooLongError, env_positive_int
+from .base import ChatTurn, LLMBackend, PromptTooLongError, env_positive_int, tools_fingerprint
 from ..protocol.tool_call import normalize_arguments
 # The assistant↔tool pairing invariant belongs to the history, not to this provider:
 # LLMBackend.chat applies it before every call. Re-applied in
@@ -175,7 +175,7 @@ def _drop_thinking_kwargs(create_kwargs: dict) -> bool:
     return bool(dropped)
 
 
-def _log_cache_usage(usage: Any) -> None:
+def _log_cache_usage(usage: Any, tools: list[dict] | None = None) -> None:
     """Log prefix-cache hits from ``usage.prompt_tokens_details.cached_tokens`` (best-effort).
 
     A rate near zero across steps means a varying prefix or prefix caching not enabled
@@ -190,9 +190,9 @@ def _log_cache_usage(usage: Any) -> None:
         if prompt_total <= 0:
             return
         logger.info(
-            "vllm prefix cache: cached=%d prompt_total=%d hit_rate=%.2f completion=%d",
+            "vllm prefix cache: cached=%d prompt_total=%d hit_rate=%.2f completion=%d tools=%s",
             cached, prompt_total, cached / prompt_total,
-            getattr(usage, "completion_tokens", 0) or 0,
+            getattr(usage, "completion_tokens", 0) or 0, tools_fingerprint(tools),
         )
     except Exception:
         logger.debug("_log_cache_usage: a best-effort step failed and was skipped", exc_info=True)
@@ -632,7 +632,7 @@ class OpenAICompatBackend(LLMBackend):
                 turn.content(msg.content or "")
                 if getattr(msg, "tool_calls", None):
                     turn.tool_calls.extend(_normalize_tool_calls(msg.tool_calls))
-        _log_cache_usage(usage)
+        _log_cache_usage(usage, tools)
         turn.prompt_tokens = self._prompt_tokens(usage)
 
 

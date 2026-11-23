@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -60,6 +61,16 @@ _FINISH_REASONS = {
     "refusal": "content_filter",
     "model_context_window_exceeded": "length",
 }
+
+
+def tools_fingerprint(tools: list[dict] | None) -> str:
+    """A short digest of the tool list as sent, for the cache logs.
+
+    The list renders before everything else in the prompt, so a changed digest beside a
+    hit rate that fell to zero names the cause.
+    """
+    rendered = json.dumps(tools or [], ensure_ascii=False)
+    return hashlib.sha1(rendered.encode("utf-8", "replace")).hexdigest()[:8]
 
 
 def normalize_finish_reason(raw: Any) -> str | None:

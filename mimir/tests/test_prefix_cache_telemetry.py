@@ -56,6 +56,20 @@ class CacheUsageReportTests(unittest.TestCase):
             prompt_tokens_details = None
         self.assertTrue(any("cached=0" in m for m in self._log(_NoDetails())))
 
+    def test_it_names_the_tool_list_sent(self):
+        # The list renders first, so a new digest beside a hit rate fallen to zero says
+        # the list changed; the same list always gives the same digest.
+        from mimir.client.llm.base import tools_fingerprint
+        tools = [{"function": {"name": "grep"}}]
+        lines = []
+        for listed in (tools, tools, tools + [{"function": {"name": "read"}}]):
+            with self.assertLogs(vb.logger, level=logging.INFO) as caught:
+                vb._log_cache_usage(_Usage(1000, 800), listed)
+            lines.append(caught.records[-1].getMessage())
+        self.assertIn(f"tools={tools_fingerprint(tools)}", lines[0])
+        self.assertEqual(lines[0], lines[1])
+        self.assertNotEqual(lines[1], lines[2])
+
     def test_silent_when_nobody_is_listening(self):
         vb.logger.setLevel(logging.WARNING)
         self.addCleanup(vb.logger.setLevel, logging.NOTSET)
