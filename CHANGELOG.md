@@ -15,6 +15,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **SWE-bench and SciCode as benchmarks.** `mimir.evals.benchmarks.swebench:SWEBench` (Lite,
+  Verified, full) runs the agent on the repository at the issue's base commit and grades
+  its diff with SWE-bench's harness; `mimir.evals.benchmarks.scicode:SciCode` has the agent write a
+  problem's sub-steps in `solution.py` and grades each against SciCode's expected values.
+  `pip install -e ".[bench]"` brings what they need.
+- **Batch-graded benchmarks.** A `BatchAdapter` (`collect`, then `grade` over every run at
+  once) plugs into `mimir.runner` beside the run-by-run `BenchmarkAdapter`.
+- **`python -m mimir.evals run`** takes `--adapter-arg KEY=VALUE` for the adapter,
+  `--resume` to carry on an interrupted report, `--keep-workspaces` to leave each task's
+  workspace on disk.
+- **A task's `timeout_secs`** stops its run as Stop does; the workspace is graded as it
+  stands and the run says `timed_out`.
+
+### Changed
+- **The benchmark adapters sit in `mimir.evals.benchmarks`**: the scientific one is now
+  `--adapter mimir.evals.benchmarks.scientific:Scientific`.
+- **The runner removes each task's workspace once graded**, which it left in the temp
+  directory (`keep_workspaces=True` keeps them).
+
 ## [1.19.0] — 2026-11-23
 
 ### Added

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import unittest
 
 from mimir.runner import BenchTask, CheckContext, run_benchmark
@@ -211,6 +212,117 @@ class MeasuresTests(unittest.TestCase):
         measures = _measures(events, _CountingBackend(lambda: None), 0.0)
         self.assertEqual(measures["nudges"], {"todo": 2, "validation": 1})
         self.assertEqual(measures["tool_calls"], 1)
+
+
+class WorkspaceLifetimeTests(unittest.TestCase):
+    def test_a_workspace_goes_once_graded_unless_kept(self) -> None:
+        for keep in (False, True):
+            adapter = _RecordingAdapter()
+            asyncio.run(run_benchmark(adapter, model="dummy", limit=1, keep_workspaces=keep,
+                                      get_backend_override=_scripted_override()))
+            workspace = adapter.seen[0]["workspace"]
+            self.assertEqual(os.path.isdir(workspace), keep)
+            if keep:
+                shutil.rmtree(workspace)
+
+
+class _SlowBackend(ScriptedBackend):
+    """A model call that lasts until the turn is stopped, or ten seconds."""
+
+    def chat(self, *args, cancel_flag=None, **kwargs):
+        if cancel_flag is not None:
+            cancel_flag.wait(10)
+        return super().chat(*args, cancel_flag=cancel_flag, **kwargs)
+
+
+class _TimedAdapter:
+    name = "test_timed"
+
+    def __init__(self) -> None:
+        self.answers: list[str] = []
+
+    def load_tasks(self, limit=None):
+        return [BenchTask(id="slow", query="q", servers=(), max_steps=2, timeout_secs=0.2)]
+
+    async def score(self, task, answer, ctx):
+        self.answers.append(answer)
+        return False, "graded as it stood"
+
+
+class TimeoutTests(unittest.TestCase):
+    def test_a_run_past_its_timeout_is_stopped_and_graded_as_it_stands(self) -> None:
+        adapter, backend = _TimedAdapter(), _SlowBackend([])
+        summary = asyncio.run(run_benchmark(adapter, model="dummy",
+                                            get_backend_override=lambda: backend))
+        result = summary["results"][0]
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(result["detail"], "graded as it stood")
+        self.assertEqual(adapter.answers, [""])
+        self.assertLess(result["elapsed_secs"], 5)
+
+
+class _BatchAdapter:
+    """Two tasks collected from their workspace, graded together; *verdicts* is what grade says."""
+
+    name = "test_batch"
+
+    def __init__(self, verdicts=None, crash: bool = False) -> None:
+        self.verdicts = verdicts
+        self.crash = crash
+        self.batches: list[tuple[str, list[dict]]] = []
+
+    def load_tasks(self, limit=None):
+        def _seed(ws: str) -> None:
+            with open(os.path.join(ws, "work.txt"), "w") as fh:
+                fh.write("seeded")
+
+        return [BenchTask(id=i, query="q", servers=(), max_steps=1, setup=_seed)
+                for i in ("one", "two")]
+
+    async def collect(self, task, answer, ctx):
+        with open(os.path.join(ctx.workspace, "work.txt")) as fh:
+            return {"content": fh.read(), "task": task.id}
+
+    async def grade(self, runs, label):
+        self.batches.append((label, [r.artifact for r in runs]))
+        if self.crash:
+            raise RuntimeError("harness down")
+        return self.verdicts
+
+
+class BatchGradeTests(unittest.TestCase):
+    def test_what_each_workspace_held_is_graded_in_one_batch(self) -> None:
+        adapter = _BatchAdapter({"one": (True, "resolved"), "two": (False, "unresolved")})
+        summary = asyncio.run(run_benchmark(adapter, model="dummy",
+                                            get_backend_override=_scripted_override()))
+        self.assertEqual(len(adapter.batches), 1)
+        label, artifacts = adapter.batches[0]
+        self.assertTrue(label.startswith("test_batch-"))
+        self.assertEqual(artifacts, [{"content": "seeded", "task": "one"},
+                                     {"content": "seeded", "task": "two"}])
+        self.assertEqual([(r["passed"], r["detail"], r["pending"]) for r in summary["results"]],
+                         [(True, "resolved", False), (False, "unresolved", False)])
+        self.assertEqual(summary["pass_rate"], 0.5)
+
+    def test_a_grader_may_skip_a_run(self) -> None:
+        adapter = _BatchAdapter({"one": (False, "no docker", True), "two": (False, "no docker", True)})
+        summary = asyncio.run(run_benchmark(adapter, model="dummy",
+                                            get_backend_override=_scripted_override()))
+        self.assertEqual(summary["skipped"], 2)
+
+    def test_a_run_without_a_verdict_fails_and_says_so(self) -> None:
+        adapter = _BatchAdapter({"one": (True, "resolved")})
+        summary = asyncio.run(run_benchmark(adapter, model="dummy",
+                                            get_backend_override=_scripted_override()))
+        self.assertEqual(summary["results"][1]["detail"], "the grader gave no verdict")
+        self.assertFalse(summary["results"][1]["passed"])
+
+    def test_a_crashed_grade_fails_every_run_with_its_trace(self) -> None:
+        summary = asyncio.run(run_benchmark(_BatchAdapter(crash=True), model="dummy",
+                                            get_backend_override=_scripted_override()))
+        for result in summary["results"]:
+            self.assertEqual(result["detail"], "the grade crashed")
+            self.assertIn("harness down", result["error"])
 
 
 if __name__ == "__main__":

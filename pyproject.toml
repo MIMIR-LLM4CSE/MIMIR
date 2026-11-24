@@ -47,6 +47,10 @@ ray = ["openai>=1.0.0"]
 # The hosted Claude API (`--backend anthropic`).
 anthropic = ["anthropic>=0.100.0"]
 
+# The published benchmarks of `mimir.evals` (SWE-bench, SciCode): their datasets, SciCode's
+# expected values, and SWE-bench's grading harness, which also needs Docker.
+bench = ["datasets>=2.18", "h5py>=3.8", "scipy>=1.10", "swebench>=4"]
+
 # Development / test tooling.
 dev = [
     "pytest>=8.0.0",
@@ -87,7 +91,7 @@ mimir = [
     "client/config/*.json",
     "examples/*.md",
     "examples/**/*.py",
-    "evals/scientific/tasks/**/*",
+    "evals/benchmarks/scientific/tasks/**/*",
     "examples/**/*.md",
 ]
 

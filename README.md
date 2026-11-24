@@ -572,5 +572,31 @@ class MyAdapter:
 summary = await run_benchmark(MyAdapter(), model="<model>", backend="vllm", report_path="run.json")
 ```
 
+A benchmark whose grader runs once over every answer (SWE-bench's harness) is a
+`BatchAdapter` instead: `collect(task, answer, ctx)` keeps what it needs of each workspace
+before it goes, and `grade(runs, label)` returns a verdict per task for the whole batch. A
+task's `timeout_secs` stops its run as Stop does and grades the workspace as it stands.
+
+Two published benchmarks come with adapters, run through `python -m mimir.evals` (each
+`--adapter-arg KEY=VALUE` is a keyword argument of the adapter; `--resume` carries on an
+interrupted report; `pip install -e ".[bench]"` brings their dependencies):
+
+```bash
+# SWE-bench: dataset=lite|verified|full, instances=<id>,<id>, timeout_secs, hints=true
+python -m mimir.evals run --adapter mimir.evals.benchmarks.swebench:SWEBench \
+    --adapter-arg dataset=verified --repeat 1 --model <model> --out swe.json
+# SciCode: data_dir holds test_data.h5 and SciCode's eval/data/*.txt; background=true
+python -m mimir.evals run --adapter mimir.evals.benchmarks.scicode:SciCode \
+    --adapter-arg data_dir=~/SciCode/eval/data --repeat 1 --model <model> --out scicode.json
+```
+
+SWE-bench's workspace holds the repository at its base commit alone (no later commit is
+among its objects); the diff is graded by SWE-bench's own harness, which needs Docker the
+user can reach. Without it the runs are recorded as skipped, the predictions kept under
+`~/.cache/mimir/bench/swebench/runs/<label>/` with the command that grades them. The agent
+does not get the repository's test environment. SciCode's `test_data.h5` is downloaded as
+SciCode's README says; a problem passes when every tested sub-step does, and the detail
+gives the sub-steps passed.
+
 **The engine approves every tool without confirmation — only point it at trusted workloads in
 a sandbox.**

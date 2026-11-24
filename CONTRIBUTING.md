@@ -64,7 +64,7 @@ wording. A change to them is measured before it is made:
    adapter you have:
 
    ```bash
-   python -m mimir.evals run --adapter mimir.evals.scientific:Scientific \
+   python -m mimir.evals run --adapter mimir.evals.benchmarks.scientific:Scientific \
        --variant terse-validation.json --repeat 5 --model <model> --out report.json
    python -m mimir.evals compare report.json
    ```
@@ -75,10 +75,12 @@ wording. A change to them is measured before it is made:
    compared in one run widen every interval (Bonferroni), so that trying five wordings does
    not crown one by luck: try few at a time.
 
-`mimir/evals/scientific/` holds six local tasks on what a generic coding benchmark does
+`mimir/evals/benchmarks/scientific/` holds six local tasks on what a generic coding benchmark does
 not measure — an invariant kept, a tolerance respected, a speed-up claimed no higher than
 measured. Each scorer is itself tested to fail the task as given and pass its reference
-solution. An external benchmark plugs in as a `BenchmarkAdapter` (`mimir/runner/types.py`).
+solution. Two published benchmarks come with adapters, SWE-bench (`mimir.evals.benchmarks.swebench:SWEBench`)
+and SciCode (`mimir.evals.benchmarks.scicode:SciCode`); the README says how to run them. Another
+benchmark plugs in as a `BenchmarkAdapter` or a `BatchAdapter` (`mimir/runner/types.py`).
 
 ## Releasing
 

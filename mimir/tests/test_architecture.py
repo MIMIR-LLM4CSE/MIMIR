@@ -56,7 +56,7 @@ def _python_files(root: Path) -> list[Path]:
 def _mimir_code() -> list[Path]:
     """Every module of MIMIR's own: the client, the servers, shared, the runner and the
     evaluations — not a benchmark's task fixtures, which are the agent's workspaces."""
-    fixtures = EVALS / "scientific" / "tasks"
+    fixtures = EVALS / "benchmarks" / "scientific" / "tasks"
     return [p for root in (CLIENT, SERVERS, SHARED, RUNNER, EVALS) for p in _python_files(root)
             if fixtures not in p.parents]
 

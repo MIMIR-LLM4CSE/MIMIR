@@ -1,11 +1,13 @@
 """The headless run engine: ``run_benchmark`` drives the agent over an adapter's tasks.
 
 Per task: set up its workspace, start the servers there, run a fresh agent with every
-tool approved (trusted workloads only), hand the answer to the adapter's scorer. A
+tool approved (trusted workloads only), hand the answer to the adapter's scorer — or, for
+a ``BatchAdapter``, keep what it collects and grade every run together at the end. A
 failing task is recorded, not fatal; a task missing its toolchain is skipped.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib.util
 import json
@@ -14,7 +16,6 @@ import shutil
 import tempfile
 import time
 import traceback
-from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from mimir.client.extensions import all_servers
@@ -24,27 +25,7 @@ from mimir.client.config import prompt_variants
 from mimir.client.core.ports import AgentHost
 from mimir.client.guardrails.workflow import is_incomplete_answer
 
-from .types import BenchmarkAdapter, BenchTask, CheckContext
-
-
-@dataclass
-class RunResult:
-    task_id: str
-    passed: bool
-    detail: str
-    skipped: bool = False     # toolchain/prereq absent → not run, not counted in pass-rate
-    tool_calls: int = 0       # tool_call events observed
-    events: int = 0           # total structured events emitted (proxy for run length)
-    error: str = ""           # populated when the run itself crashed
-    model_calls: int = 0      # the loop's calls to the model
-    prompt_tokens: int | None = None   # summed as the backend reports them; None: never reported
-    nudges: dict[str, int] = field(default_factory=dict)   # reminders that reached the model
-    incomplete: bool = False  # the answer itself reports the task unfinished
-    elapsed_secs: float = 0.0
-    variant: str = ""         # the prose variant in force ("" for the code's own)
-
-    def as_dict(self) -> dict:
-        return asdict(self)
+from .types import BatchAdapter, BenchmarkAdapter, BenchTask, CheckContext, RunResult
 
 
 class _CountingBackend:
@@ -82,14 +63,30 @@ def _install_auto_approve(agent: MimirAgent) -> None:
     agent.attach(AgentHost(human=Unattended("benchmark-auto-approve")))
 
 
+async def _run_within(agent: MimirAgent, run: Any, limit: float | None) -> tuple[str, bool]:
+    """The answer of *run*, and whether *limit* stopped it first — as Stop does: the cancel
+    flag ends a stream at its next chunk, then the turn is cancelled."""
+    future = asyncio.ensure_future(run)
+    done, _ = await asyncio.wait({future}, timeout=limit)
+    if future in done:
+        return future.result(), False
+    agent.turn.cancel_flag.set()
+    future.cancel()
+    with contextlib.suppress(BaseException):
+        await future
+    return "", True
+
+
 async def run_one(
     task: BenchTask,
-    adapter: BenchmarkAdapter,
+    adapter: BenchmarkAdapter | BatchAdapter,
     model: str,
     get_backend_override: Any | None = None,
     enforcement: str | None = None,
+    keep_workspace: bool = False,
 ) -> RunResult:
-    """Run *task* through a fresh agent and score it with *adapter*."""
+    """Run *task* through a fresh agent and score it with *adapter*; the workspace goes
+    once graded unless *keep_workspace*."""
     # Skip before spending an agent run when a required toolchain is absent.
     missing = [exe for exe in task.requires if shutil.which(exe) is None]
     missing += [m for m in task.modules if importlib.util.find_spec(m) is None]
@@ -129,21 +126,26 @@ async def run_one(
             await agent.connect_servers({n: registry[n] for n in server_names})
             agent.seed_classification_from_caps()
 
-            answer = await agent.run(
+            answer, timed_out = await _run_within(agent, agent.run(
                 task.query,
                 max_steps=task.max_steps,
                 mode=task.mode,
                 event_callback=events.append,
-            )
-            scored = await adapter.score(
-                task, answer, CheckContext(workspace=workspace, agent=agent)
-            )
+            ), task.timeout_secs)
+            ctx = CheckContext(workspace=workspace, agent=agent)
+            if isinstance(adapter, BatchAdapter):
+                artifact = await adapter.collect(task, answer, ctx)
+                return RunResult(task.id, False, "awaiting the batch grade", pending=True,
+                                 artifact=artifact, timed_out=timed_out,
+                                 incomplete=is_incomplete_answer(answer),
+                                 **_measures(events, counter, started))
+            scored = await adapter.score(task, answer, ctx)
         # A scorer may discover *during* the run that a prerequisite it must
         # provide isn't available (e.g. a toolchain it loads itself). It signals
         # that by returning a third element; absent it, the task simply ran.
         passed, detail = scored[0], scored[1]
         skipped = scored[2] if len(scored) > 2 else False
-        return RunResult(task.id, passed, detail, skipped=skipped,
+        return RunResult(task.id, passed, detail, skipped=skipped, timed_out=timed_out,
                          incomplete=is_incomplete_answer(answer), **_measures(events, counter, started))
     except Exception:
         return RunResult(task.id, False, "run crashed", error=traceback.format_exc(),
@@ -152,6 +154,8 @@ async def run_one(
         with contextlib.suppress(Exception):
             await agent.cleanup()
         os.chdir(orig_cwd)
+        if not keep_workspace:
+            shutil.rmtree(workspace, ignore_errors=True)
 
 
 def _measures(events: list[dict], counter: _CountingBackend, started: float) -> dict[str, Any]:
@@ -172,8 +176,38 @@ def _measures(events: list[dict], counter: _CountingBackend, started: float) -> 
     }
 
 
+def use_backend(name: str) -> None:
+    """Make *name* (``vllm``, ``anthropic``…) the backend the next agents call."""
+    os.environ["LLM_BACKEND"] = name
+    from mimir.client.llm.factory import clear_backend_cache
+    clear_backend_cache()
+
+
+async def grade_pending(adapter: BenchmarkAdapter | BatchAdapter, results: list[RunResult],
+                        label: str) -> None:
+    """Settle the pending runs of *results* with one ``grade`` call named *label*."""
+    pending = [r for r in results if r.pending]
+    if not pending or not isinstance(adapter, BatchAdapter):
+        return
+    try:
+        verdicts = await adapter.grade(pending, label)
+    except Exception:
+        verdicts, error = {}, traceback.format_exc()
+    else:
+        error = ""
+    for result in pending:
+        verdict = verdicts.get(result.task_id)
+        if verdict is None:
+            result.detail = "the grade crashed" if error else "the grader gave no verdict"
+            result.error = result.error or error
+        else:
+            result.passed, result.detail = verdict[0], verdict[1]
+            result.skipped = verdict[2] if len(verdict) > 2 else False
+        result.pending = False
+
+
 async def run_benchmark(
-    adapter: BenchmarkAdapter,
+    adapter: BenchmarkAdapter | BatchAdapter,
     *,
     model: str,
     backend: str = "vllm",
@@ -181,24 +215,26 @@ async def run_benchmark(
     limit: int | None = None,
     get_backend_override: Any | None = None,
     enforcement: str | None = None,
+    keep_workspaces: bool = False,
 ) -> dict:
     """Run *adapter*'s tasks; return a summary dict, written to *report_path* if given.
 
     *get_backend_override* injects a backend (CI); *enforcement* fixes the nudge level for
-    every task. The pass rate excludes skipped tasks.
+    every task; *keep_workspaces* leaves each task's workspace on disk. The pass rate
+    excludes skipped tasks.
     """
     if get_backend_override is None:
-        os.environ["LLM_BACKEND"] = backend
-        from mimir.client.llm.factory import clear_backend_cache
-        clear_backend_cache()
+        use_backend(backend)
 
     tasks = adapter.load_tasks(limit)
     started = time.time()
     results: list[RunResult] = []
     for task in tasks:
         results.append(
-            await run_one(task, adapter, model, get_backend_override, enforcement)
+            await run_one(task, adapter, model, get_backend_override, enforcement,
+                          keep_workspace=keep_workspaces)
         )
+    await grade_pending(adapter, results, f"{adapter.name}-{time.strftime('%Y%m%d-%H%M%S')}")
 
     passed = sum(1 for r in results if r.passed)
     skipped = sum(1 for r in results if r.skipped)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 import os
 import tempfile
@@ -29,6 +30,49 @@ class TwoTasks:
         return task.id == "a", f"scored {task.id}"
 
 
+class Configured(TwoTasks):
+    """TwoTasks taking keyword arguments, as ``--adapter-arg`` passes them."""
+
+    made_with: dict = {}
+
+    def __init__(self, **kwargs) -> None:
+        Configured.made_with = kwargs
+
+
+class Batched:
+    """Two tasks graded together; every batch it was given is recorded on the class."""
+
+    name = "batched"
+    batches: list[tuple[str, list[str]]] = []
+
+    def load_tasks(self, limit=None):
+        return [BenchTask(id="a", query="q", servers=(), max_steps=1),
+                BenchTask(id="b", query="q", servers=(), max_steps=1)]
+
+    async def collect(self, task, answer, ctx):
+        return {"patch": f"diff of {task.id}"}
+
+    async def grade(self, runs, label):
+        type(self).batches.append((label, [r.artifact["patch"] for r in runs]))
+        return {r.task_id: (r.task_id == "a", "graded") for r in runs}
+
+
+def _as_loaded(name: str):
+    """The class as ``--adapter`` loads it: pytest may import this file under another name."""
+    return getattr(importlib.import_module("mimir.tests.test_evals"), name)
+
+
+def _args(out: str, **kw) -> argparse.Namespace:
+    return argparse.Namespace(**{"adapter": "mimir.tests.test_evals:TwoTasks", "adapter_arg": [],
+                                 "variant": [], "repeat": 1, "limit": None, "model": "dummy",
+                                 "backend": "vllm", "enforcement": None, "out": out,
+                                 "resume": False, "keep_workspaces": False, **kw})
+
+
+def _scripted():
+    return ScriptedBackend([])
+
+
 def _runs(variant: str, passed: int, n: int) -> list[dict]:
     return [{"task_id": "t", "variant": variant, "passed": i < passed, "skipped": False,
              "tool_calls": 3, "model_calls": 4, "prompt_tokens": None, "nudges": {},
@@ -46,10 +90,7 @@ class RunTests(unittest.TestCase):
 
     def test_every_task_runs_under_every_variant_and_the_report_holds_them(self) -> None:
         out = os.path.join(self.dir, "report.json")
-        args = argparse.Namespace(adapter="mimir.tests.test_evals:TwoTasks", variant=[self.variant],
-                                  repeat=2, limit=None, model="dummy", backend="vllm",
-                                  enforcement=None, out=out)
-        asyncio.run(_run(args, get_backend_override=lambda: ScriptedBackend([])))
+        asyncio.run(_run(_args(out, variant=[self.variant], repeat=2), get_backend_override=_scripted))
         runs = load_runs([out])
         self.assertEqual(len(runs), 8)
         # Interleaved: each task under both variants before the next task.
@@ -60,6 +101,64 @@ class RunTests(unittest.TestCase):
         self.assertIn("| code | 50 % (2/4)", table)
         self.assertIn("**terse** against **code**: +0 points", table)
         self.assertIn("no measurable difference", table)
+
+
+    def test_adapter_args_reach_the_adapter_and_the_report(self) -> None:
+        out = os.path.join(self.dir, "report.json")
+        asyncio.run(_run(_args(out, adapter="mimir.tests.test_evals:Configured",
+                               adapter_arg=["dataset=verified", "instances=a,b"]),
+                         get_backend_override=_scripted))
+        made_with = _as_loaded("Configured").made_with
+        self.assertEqual(made_with, {"dataset": "verified", "instances": "a,b"})
+        with open(out) as fh:
+            self.assertEqual(json.load(fh)["adapter_args"], made_with)
+
+    def test_an_adapter_arg_without_a_value_is_refused(self) -> None:
+        with self.assertRaises(SystemExit):
+            asyncio.run(_run(_args(os.path.join(self.dir, "r.json"), adapter_arg=["dataset"]),
+                             get_backend_override=_scripted))
+
+    def test_a_batch_adapter_is_graded_once_per_repetition_and_variant(self) -> None:
+        batched = _as_loaded("Batched")
+        batched.batches = []
+        out = os.path.join(self.dir, "report.json")
+        asyncio.run(_run(_args(out, adapter="mimir.tests.test_evals:Batched",
+                               variant=[self.variant], repeat=2),
+                         get_backend_override=_scripted))
+        labels = [label for label, _ in batched.batches]
+        self.assertEqual(len(labels), 4)
+        self.assertEqual([lb.split("-")[1:3] for lb in labels],
+                         [["code", "r0"], ["terse", "r0"], ["code", "r1"], ["terse", "r1"]])
+        self.assertEqual(batched.batches[0][1], ["diff of a", "diff of b"])
+        runs = load_runs([out])
+        self.assertFalse(any(r["pending"] for r in runs))
+        self.assertEqual(sum(r["passed"] for r in runs), 4)
+        self.assertEqual(runs[0]["artifact"], {"patch": "diff of a"})
+
+    def test_a_resumed_report_keeps_its_runs_and_grades_what_was_pending(self) -> None:
+        out = os.path.join(self.dir, "report.json")
+        asyncio.run(_run(_args(out, adapter="mimir.tests.test_evals:Batched"),
+                         get_backend_override=_scripted))
+        with open(out) as fh:
+            data = json.load(fh)
+        # Interrupted after the first run, before the batch was graded.
+        first = {**data["runs"][0], "pending": True, "passed": False}
+        data["runs"] = [first]
+        with open(out, "w") as fh:
+            json.dump(data, fh)
+        batched = _as_loaded("Batched")
+        batched.batches = []
+        asyncio.run(_run(_args(out, adapter="mimir.tests.test_evals:Batched", resume=True),
+                         get_backend_override=_scripted))
+        self.assertEqual(batched.batches[0][1], ["diff of a", "diff of b"])
+        runs = load_runs([out])
+        self.assertEqual([(r["task_id"], r["passed"]) for r in runs], [("a", True), ("b", False)])
+
+    def test_a_report_made_with_other_options_is_not_resumed(self) -> None:
+        out = os.path.join(self.dir, "report.json")
+        asyncio.run(_run(_args(out), get_backend_override=_scripted))
+        with self.assertRaises(SystemExit):
+            asyncio.run(_run(_args(out, model="other", resume=True), get_backend_override=_scripted))
 
 
 class CompareTests(unittest.TestCase):

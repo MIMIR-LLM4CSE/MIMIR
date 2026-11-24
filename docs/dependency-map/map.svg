@@ -26,7 +26,7 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 </style>
 <rect class="bg" width="1155" height="1026"/>
 <text class="head" x="14" y="26">MIMIR dependency map</text>
-<text class="meta" x="14" y="44">66 units · 298 load-time edges · 11 deferred-only · 0 rule breaks · 0 cycles across units</text>
+<text class="meta" x="14" y="44">66 units · 298 load-time edges · 10 deferred-only · 0 rule breaks · 0 cycles across units</text>
 <rect class="band" x="8" y="60" width="966" height="48" rx="4"/>
 <text class="label" x="14" y="82">rank 11</text>
 <text class="label" x="14" y="96">front-ends</text>
@@ -276,9 +276,8 @@ text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fi
 <path class="edge" d="M794,98 C794,426 547,426 547,754" stroke-width="2"><title>client.ui.ws.worker → shared.embed · 1 import(s)</title></path>
 <path class="edge" d="M794,98 C794,514 212.5,514 212.5,930" stroke-width="2"><title>client.ui.ws.worker → shared.protected_paths · 1 import(s)</title></path>
 <path class="edge" d="M794,98 C794,446 191,446 191,794" stroke-width="2.6"><title>client.ui.ws.worker → shared.responses · 2 import(s)</title></path>
-<path class="edge deferred" d="M874,98 C874,355 529,355 529,612" stroke-width="2"><title>evals → client.llm · 1 import(s)</title></path>
 <path class="edge" d="M874,98 C874,193 562,193 562,288" stroke-width="2"><title>evals → client.prompt · 1 import(s)</title></path>
-<path class="edge" d="M874,72 C874,52 943.5,52 943.5,72" stroke-width="2.6"><title>evals → runner · 2 import(s)</title></path>
+<path class="edge" d="M874,72 C874,52 943.5,52 943.5,72" stroke-width="3.3"><title>evals → runner · 4 import(s)</title></path>
 <path class="edge" d="M943.5,98 C943.5,139 562,139 562,180" stroke-width="2"><title>runner → client.agent_core · 1 import(s)</title></path>
 <path class="edge" d="M943.5,98 C943.5,382 518.5,382 518.5,666" stroke-width="2"><title>runner → client.config · 1 import(s)</title></path>
 <path class="edge" d="M943.5,98 C943.5,301 562,301 562,504" stroke-width="2.6"><title>runner → client.core · 2 import(s)</title></path>

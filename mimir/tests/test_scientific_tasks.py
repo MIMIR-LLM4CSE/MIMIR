@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import unittest
 
-from mimir.evals.scientific import TASKS_DIR, Scientific, run_check
+from mimir.evals.benchmarks.scientific import TASKS_DIR, Scientific, run_check
 from mimir.runner import CheckContext
 
 # What each solution's answer says: only the speed-up task reads the answer.

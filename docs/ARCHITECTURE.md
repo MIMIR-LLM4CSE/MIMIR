@@ -203,13 +203,18 @@ Beside the client and the servers, two packages drive the agent without a person
 
 - `mimir/runner` runs it unattended over a benchmark's tasks: a fresh agent and workspace
   per task, every tool approved through the host it lends, and what each run cost (model
-  calls, prompt tokens, reminders by category) recorded beside its score. A benchmark plugs
-  in as a `BenchmarkAdapter`.
+  calls, prompt tokens, reminders by category) recorded beside its score, stopped past the
+  task's `timeout_secs` as Stop stops a turn. A benchmark plugs in as a `BenchmarkAdapter`,
+  graded run by run (`score`), or as a `BatchAdapter`, whose grader runs once over every
+  answer: `collect` keeps what it needs of each workspace, `grade` settles the batch.
 - `mimir/evals` repeats a benchmark under prose variants (`prompt/variants`: the prompt's
   sections and the constant messages, reworded by id) and compares the reports with
-  intervals, so a wording is changed on a measured gap. `evals/scientific` is a first-party
-  adapter: local tasks on keeping an invariant, respecting a tolerance and claiming no more
-  than was measured, each scorer itself tested.
+  intervals, so a wording is changed on a measured gap. The adapters sit in
+  `evals/benchmarks`: `scientific`, local tasks of MIMIR's own on keeping an invariant,
+  respecting a tolerance and claiming no more than was measured, each scorer itself
+  tested; `swebench` (a `BatchAdapter`: the diff, graded by SWE-bench's harness in Docker)
+  and `scicode` (each sub-step against SciCode's expected values), published benchmarks
+  whose rows `_hub` loads from Hugging Face.
 
 Both use the client's public names only; nothing in the client or the servers imports them.
 

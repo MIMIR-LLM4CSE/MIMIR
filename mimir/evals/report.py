@@ -29,14 +29,22 @@ def joint_z(comparisons: int) -> float:
 
 
 class Report:
-    """The runs so far, rewritten whole after each: an interrupted benchmark keeps them."""
+    """The runs so far, rewritten whole after each: an interrupted benchmark keeps them.
 
-    def __init__(self, path: str, header: dict[str, Any]) -> None:
+    *runs* are those an earlier, interrupted report already holds, kept as they were.
+    """
+
+    def __init__(self, path: str, header: dict[str, Any],
+                 runs: list[dict[str, Any]] | None = None) -> None:
         self.path = path
-        self.data: dict[str, Any] = {**header, "runs": []}
+        self.data: dict[str, Any] = {**header, "runs": list(runs or [])}
 
     def add(self, run: dict[str, Any]) -> None:
         self.data["runs"].append(run)
+        self.save()
+
+    def save(self) -> None:
+        """Write the report as it stands, the runs added being changed in place since."""
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(self.data, fh, indent=2)
