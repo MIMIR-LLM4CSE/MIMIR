@@ -1,9 +1,9 @@
-"""The intervals against values published with the methods."""
+"""The intervals against values published with the methods, and the exact paired test."""
 from __future__ import annotations
 
 import unittest
 
-from mimir.evals.stats import newcombe, wilson
+from mimir.evals.stats import mcnemar, newcombe, wilson
 
 
 class IntervalTests(unittest.TestCase):
@@ -24,6 +24,18 @@ class IntervalTests(unittest.TestCase):
         self.assertAlmostEqual(gap, 0.2, places=4)
         self.assertAlmostEqual(lo, 0.0524, places=4)
         self.assertAlmostEqual(hi, 0.3339, places=4)
+
+
+class McNemarTests(unittest.TestCase):
+    def test_six_wins_and_no_loss_is_measurable(self) -> None:
+        self.assertAlmostEqual(mcnemar(0, 6), 2 / 64)
+
+    def test_as_many_wins_as_losses_tells_nothing(self) -> None:
+        self.assertEqual(mcnemar(5, 5), 1.0)
+        self.assertEqual(mcnemar(0, 0), 1.0)
+
+    def test_the_test_is_symmetric(self) -> None:
+        self.assertEqual(mcnemar(2, 9), mcnemar(9, 2))
 
 
 if __name__ == "__main__":

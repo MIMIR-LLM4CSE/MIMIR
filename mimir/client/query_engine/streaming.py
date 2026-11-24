@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Any
 
-from ..llm.base import PromptTooLongError
+from ..llm.base import CALL_USAGE_KEYS, PromptTooLongError
 from ..protocol.tool_call import as_dict
 from ..llm.factory import get_backend
 from ..protocol.event_sink import emit
@@ -51,11 +51,11 @@ def process_response(msg: dict, messages: list[dict], thinking: bool, streamed_t
         clean_thinking = msg["thinking"].replace("<think>", "").replace("</think>", "").strip()
         if clean_thinking:
             emit({"type": "thinking", "text": clean_thinking})
-    # `thinking` and `finish_reason` describe the call, not the message: sending
+    # `thinking`, `finish_reason` and the usage describe the call, not the message: sending
     # either back to the provider on the next turn is at best noise and at worst a
     # rejected request. This is the single choke point for all four backends.
     msg_for_history = {k: v for k, v in msg.items()
-                       if k not in ("thinking", "finish_reason")}
+                       if k not in ("thinking", "finish_reason", *CALL_USAGE_KEYS)}
     # Trailing blank lines carry nothing, and replayed they grow: in one poll loop each
     # step copied the previous one and added two more newlines, 22 steps in a row. The
     # history keeps the text, not the ramp.

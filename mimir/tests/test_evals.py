@@ -66,7 +66,8 @@ def _args(out: str, **kw) -> argparse.Namespace:
     return argparse.Namespace(**{"adapter": "mimir.tests.test_evals:TwoTasks", "adapter_arg": [],
                                  "variant": [], "repeat": 1, "limit": None, "model": "dummy",
                                  "backend": "vllm", "enforcement": None, "out": out,
-                                 "resume": False, "keep_workspaces": False, **kw})
+                                 "resume": False, "keep_workspaces": False, "agent": [],
+                                 "meter": None, "meter_log": None, **kw})
 
 
 def _scripted():
@@ -180,6 +181,24 @@ class CompareTests(unittest.TestCase):
         self.assertIn("5 variants are compared with the reference at once", together)
         self.assertIn("joint 95 % interval", together)
         self.assertNotIn("measurably better", together)
+
+    def test_runs_of_the_same_tasks_are_also_compared_pairwise(self) -> None:
+        reference = [{**_runs("code", 0, 1)[0], "task_id": f"t{i}", "repetition": 0}
+                     for i in range(6)]
+        better = [{**r, "variant": "terse", "passed": True} for r in reference]
+        table = compare(reference + better)
+        self.assertIn("Paired over 6 runs of the same tasks: 6 passed only under **terse**", table)
+        self.assertIn("exact McNemar p = 0.031, measurable", table)
+
+    def test_what_each_variant_cost_is_tabled(self) -> None:
+        runs = [{**_runs("code", 1, 1)[0], "prompt_tokens": 1000, "cached_tokens": 750,
+                 "completion_tokens": 50, "peak_prompt_tokens": 600, "answer_secs": 12.0,
+                 "side_calls": {"compaction": 1}, "context_events": {"compact": 1},
+                 "refused": [{"tool": "bash_run"}]}]
+        table = compare(runs)
+        self.assertIn("## Cost per run", table)
+        self.assertIn("| code | 4.0 | 1.0 | 1000.0 | 50.0 | 75 % | 600.0 | 12.0 | 1.0 | 1.0 |",
+                      table)
 
     def test_skipped_runs_are_not_counted(self) -> None:
         runs = _runs("code", 1, 2) + [{**_runs("code", 0, 1)[0], "skipped": True}]

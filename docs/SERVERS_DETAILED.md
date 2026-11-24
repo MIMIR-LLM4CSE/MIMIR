@@ -1115,8 +1115,9 @@ Three bounds on the approval checkpoint, worth knowing before relying on it:
   it is the widest grant available from a single click.
 - **Approving a command is not reviewing the code it runs.** `python solver.py` tells you
   the file name; the agent may have written `solver.py` seconds earlier.
-- **The headless runner auto-approves everything** (`_install_auto_approve` in
-  `runner/engine.py`), so in benchmark/eval runs neither mechanism asks anything. This is
+- **The headless runner auto-approves everything** (`_install_approver` in
+  `runner/engine.py`, unless a task asks for `approval="refuse"`), so in benchmark/eval runs
+  neither mechanism asks anything. This is
   already flagged in the README's engine section — point it at trusted workloads only.
 
 So: the user is in control of *whether* something runs, not of *what it does* once it

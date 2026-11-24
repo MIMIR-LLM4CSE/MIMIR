@@ -1,8 +1,9 @@
 """Intervals for a pass rate and for the gap between two: what one comparison may conclude.
 
-Wilson's score interval for a proportion, and Newcombe's hybrid score interval (his method
-10) for a difference of two independent proportions — both sound at the small counts a
-benchmark run gives, where the normal approximation is not.
+Wilson's score interval for a proportion, Newcombe's hybrid score interval (his method
+10) for a difference of two independent proportions, and McNemar's exact test for two
+conditions run on the same tasks — all sound at the small counts a benchmark run gives,
+where the normal approximation is not.
 """
 from __future__ import annotations
 
@@ -32,3 +33,14 @@ def newcombe(passed_a: int, n_a: int, passed_b: int, n_b: int,
     low = gap - math.sqrt((p_b - lo_b) ** 2 + (hi_a - p_a) ** 2)
     high = gap + math.sqrt((hi_b - p_b) ** 2 + (p_a - lo_a) ** 2)
     return gap, low, high
+
+
+def mcnemar(only_a: int, only_b: int) -> float:
+    """The two-sided exact p-value that two conditions run on the same tasks pass equally
+    often, from the tasks only *a* passed and those only *b* passed (ties tell nothing)."""
+    n = only_a + only_b
+    if n == 0:
+        return 1.0
+    k = min(only_a, only_b)
+    tail = sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n
+    return min(1.0, 2 * tail)

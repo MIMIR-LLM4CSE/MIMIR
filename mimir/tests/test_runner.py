@@ -325,5 +325,89 @@ class BatchGradeTests(unittest.TestCase):
             self.assertIn("harness down", result["error"])
 
 
+class _ProbeAdapter:
+    """One task; its scorer runs *probe(task, ctx)* and keeps what it returns."""
+
+    name = "test_probe"
+
+    def __init__(self, probe, **task_fields) -> None:
+        self.probe = probe
+        self.task_fields = task_fields
+        self.seen = None
+
+    def load_tasks(self, limit=None):
+        return [BenchTask(id="probe", query="q", servers=(), max_steps=2, **self.task_fields)]
+
+    async def score(self, task, answer, ctx):
+        self.seen = self.probe(task, ctx)
+        return True, "probed"
+
+
+class UsageTests(unittest.TestCase):
+    def _run(self, adapter, responses) -> dict:
+        backend = ScriptedBackend(responses)
+        summary = asyncio.run(run_benchmark(adapter, model="dummy",
+                                            get_backend_override=lambda: backend))
+        return summary["results"][0]
+
+    def test_every_call_s_usage_is_summed_and_the_loop_s_prompt_sizes_kept(self) -> None:
+        result = self._run(_ProbeAdapter(lambda t, c: None), [
+            {"role": "assistant", "content": "done", "prompt_tokens": 900,
+             "completion_tokens": 40, "cached_tokens": 600}])
+        self.assertEqual((result["prompt_tokens"], result["completion_tokens"],
+                          result["cached_tokens"]), (900, 40, 600))
+        self.assertEqual(result["prompt_curve"], [900])
+        self.assertEqual(result["peak_prompt_tokens"], 900)
+        self.assertGreaterEqual(result["answer_secs"], 0.0)
+        self.assertLessEqual(result["answer_secs"], result["elapsed_secs"])
+
+    def test_a_compaction_goes_through_the_run_s_backend_as_a_side_call(self) -> None:
+        def compact(task, ctx):
+            return ctx.agent.compact_messages([{"role": "user", "content": "long"},
+                                               {"role": "assistant", "content": "work"}])
+
+        adapter = _ProbeAdapter(compact)
+        result = self._run(adapter, [
+            {"role": "assistant", "content": "done", "prompt_tokens": 500},
+            {"role": "assistant", "content": "the summary", "prompt_tokens": 300}])
+        self.assertIn("the summary", adapter.seen[0]["content"])
+        self.assertEqual(result["model_calls"], 1)
+        self.assertEqual(result["side_calls"], {"compaction": 1})
+        self.assertEqual(result["prompt_tokens"], 800)
+        self.assertEqual(result["prompt_curve"], [500])
+
+    def test_the_context_a_task_asks_for_is_the_agent_s(self) -> None:
+        adapter = _ProbeAdapter(
+            lambda t, c: (c.agent.context_mode, c.agent.max_context_tokens,
+                          c.agent.intra_query_compaction),
+            context_mode="compact", max_context_tokens=16_000, compaction=False)
+        self._run(adapter, [])
+        self.assertEqual(adapter.seen, ("compact", 16_000, False))
+
+    def test_a_refusing_run_denies_and_records_each_request(self) -> None:
+        adapter = _ProbeAdapter(
+            lambda t, c: c.agent.request_tool_approval("bash_run", {"command": "curl x"}),
+            approval="refuse")
+        result = self._run(adapter, [])
+        approved, _ = adapter.seen
+        self.assertFalse(approved)
+        self.assertEqual(result["refused"],
+                         [{"tool": "bash_run", "arguments": {"command": "curl x"}}])
+
+    def test_an_unknown_approval_mode_fails_the_task(self) -> None:
+        result = self._run(_ProbeAdapter(lambda t, c: None, approval="maybe"), [])
+        self.assertEqual(result["detail"], "run crashed")
+        self.assertIn("unknown approval", result["error"])
+
+    def test_context_passes_are_counted_by_kind(self) -> None:
+        from mimir.runner.engine import _CountingBackend, _measures
+        events = [{"type": "status", "text": "x", "context": {"kind": "compact"}},
+                  {"type": "status", "text": "y", "context": {"kind": "trim"}},
+                  {"type": "status", "text": "z", "context": {"kind": "trim"}},
+                  {"type": "status", "text": "plain"}]
+        measures = _measures(events, _CountingBackend(lambda: None), 0.0)
+        self.assertEqual(measures["context_events"], {"compact": 1, "trim": 2})
+
+
 if __name__ == "__main__":
     unittest.main()

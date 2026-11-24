@@ -226,7 +226,8 @@ class StepLoop:
         # Read once: properties of the run. Re-read per step, a mid-run change would
         # move the budget the history was already trimmed against.
         self.context_mode = self.agent.context_mode
-        self.compact_fn = self.agent.compact_messages
+        self.compact_fn = (self.agent.compact_messages
+                           if self.agent.intra_query_compaction else None)
         # An agent may be held below the model's window (a sub-agent is: see
         # server_spawn_agent.SUBAGENT_CONTEXT_TOKENS_*).
         self.context_ceiling = int(self.agent.max_context_tokens or 0) or None
@@ -318,7 +319,8 @@ class StepLoop:
             logger.debug("bound_results: a best-effort step failed and was skipped", exc_info=True)
             return results
         for before, after in cut:
-            emit({"type": "status", "text": (
+            emit({"type": "status", "context": {"kind": "bound", "before": before,
+                                                "after": after}, "text": (
                 f"  \u2702 Context: a tool result of {before:,} tokens was cut to "
                 f"{after:,} to fit the step budget."
             )})

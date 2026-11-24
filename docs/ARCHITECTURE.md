@@ -207,6 +207,9 @@ Beside the client and the servers, two packages drive the agent without a person
   task's `timeout_secs` as Stop stops a turn. A benchmark plugs in as a `BenchmarkAdapter`,
   graded run by run (`score`), or as a `BatchAdapter`, whose grader runs once over every
   answer: `collect` keeps what it needs of each workspace, `grade` settles the batch.
+  A run is measured by the backend it calls (`_CountingBackend`, the loop's steps told
+  from side calls by `llm.base.call_purpose`) and by the `context` the fitting passes put
+  on their `status` events.
 - `mimir/evals` repeats a benchmark under prose variants (`prompt/variants`: the prompt's
   sections and the constant messages, reworded by id) and compares the reports with
   intervals, so a wording is changed on a measured gap. The adapters sit in
@@ -214,7 +217,9 @@ Beside the client and the servers, two packages drive the agent without a person
   respecting a tolerance and claiming no more than was measured, each scorer itself
   tested; `swebench` (a `BatchAdapter`: the diff, graded by SWE-bench's harness in Docker)
   and `scicode` (each sub-step against SciCode's expected values), published benchmarks
-  whose rows `_hub` loads from Hugging Face.
+  whose rows `_hub` loads from Hugging Face. `evals/meter` relays the calls to the served models and
+  records each by the run that made it; `evals/baselines` runs other agents on the same
+  tasks as further conditions of the loop, measured by it.
 
 Both use the client's public names only; nothing in the client or the servers imports them.
 

@@ -80,6 +80,7 @@ from .protocol.tool_result import (
         json_error_payload,
 )
 from .query_engine import run_agent_query
+from .llm.base import side_call
 from .llm.factory import get_backend
 from .query_engine.history import (
         force_fit_to_window,
@@ -188,6 +189,9 @@ class MimirAgent:
         # window and a shorter answer than the model allows.
         self.max_context_tokens: int = 0
         self.max_answer_tokens: int = 0
+        # Whether a query over its budget is summarised mid-run; off, only eviction and
+        # the window backstop fit it (a benchmark's ablation).
+        self.intra_query_compaction: bool = True
         # Context mode: "full" (the default — keep every tool message in history) or
         # "compact" (aggressive compaction, for a small context window).
         self.context_mode: str = "full"
@@ -652,10 +656,11 @@ class MimirAgent:
 
         try:
             # Off the loop: a summary is a whole model call.
-            msg = await asyncio.to_thread(
-                get_backend().chat, self.model, messages, [], False, False, {"temperature": 0.2},
-                token_callback=_discard_token,
-            )
+            with side_call("compaction"):
+                msg = await asyncio.to_thread(
+                    get_backend().chat, self.model, messages, [], False, False,
+                    {"temperature": 0.2}, token_callback=_discard_token,
+                )
         except Exception:
             logger.debug("compact_history: a best-effort step failed and was skipped", exc_info=True)
             return ""
@@ -682,10 +687,11 @@ class MimirAgent:
         if window:
             force_fit_to_window(prompt, int(window * 0.75), tok)
         try:
-            msg = backend.chat(
-                self.model, prompt, [], False, False, {"temperature": 0.2},
-                token_callback=_discard_token,
-            )
+            with side_call("compaction"):
+                msg = backend.chat(
+                    self.model, prompt, [], False, False, {"temperature": 0.2},
+                    token_callback=_discard_token,
+                )
         except Exception:
             logger.debug("compact_messages: a best-effort step failed and was skipped", exc_info=True)
             return middle

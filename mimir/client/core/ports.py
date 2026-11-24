@@ -103,6 +103,7 @@ class AgentSettings(Protocol):
     # Bounds a caller may set (a sub-agent is held below the model's window).
     max_context_tokens: int
     max_answer_tokens: int
+    intra_query_compaction: bool
 
     def apply_setting(self, name: str, value: Any) -> Any: ...
 

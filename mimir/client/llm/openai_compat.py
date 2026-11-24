@@ -523,13 +523,6 @@ class OpenAICompatBackend(LLMBackend):
             return len(tokens)
         raise ValueError("unexpected /tokenize response shape")
 
-    @staticmethod
-    def _prompt_tokens(usage: Any) -> int:
-        """The server's reported prompt size, for the overhead calibration."""
-        if usage is None:
-            return 0
-        return getattr(usage, "prompt_tokens", 0) or 0
-
     def _complete(self, model: str, messages: list[dict], tools: list[dict],
                   thinking: bool, streaming: bool, options: dict, turn: ChatTurn) -> None:
         client = self._client_for(*self._config())
@@ -610,12 +603,10 @@ class OpenAICompatBackend(LLMBackend):
             create_kwargs["max_tokens"] = max(1, int(max_tokens))
 
         if streaming:
-            # A streaming response carries no usage block unless it is asked for. Only
-            # requested when the reader is actually listening, so a server that rejects
-            # the option costs nothing to anyone who is not measuring — and `_create`
-            # retries without it if one does.
-            if logger.isEnabledFor(logging.INFO):
-                create_kwargs["stream_options"] = {"include_usage": True}
+            # A streaming response carries no usage block unless it is asked for; the
+            # calibration and every meter read it. A server that rejects the option is
+            # retried without it once and remembered (`_create`).
+            create_kwargs["stream_options"] = {"include_usage": True}
             usage = _read_stream(_create(client, create_kwargs), turn)
         else:
             response = _create(client, create_kwargs)
@@ -633,7 +624,18 @@ class OpenAICompatBackend(LLMBackend):
                 if getattr(msg, "tool_calls", None):
                     turn.tool_calls.extend(_normalize_tool_calls(msg.tool_calls))
         _log_cache_usage(usage, tools)
-        turn.prompt_tokens = self._prompt_tokens(usage)
+        _record_usage(turn, usage)
+
+
+def _record_usage(turn: ChatTurn, usage: Any) -> None:
+    """Hand *turn* the sizes a ``usage`` block reports: the prompt (for the calibration and
+    the meters), the completion, and the part of the prompt its prefix cache served."""
+    if usage is None:
+        return
+    turn.prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+    turn.completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    turn.cached_tokens = (getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
 
 
 def _read_stream(response: Any, turn: ChatTurn) -> Any:

@@ -97,6 +97,9 @@ class OllamaBackend(LLMBackend):
             # done_reason rides on the response envelope, not on `message`, and is
             # only set on the terminal chunk.
             turn.stopped(_done_reason(chunk))
+            # The count rides on the terminal chunk, like done_reason. Its prompt_eval_count
+            # leaves out what Ollama's cache served, so it is no prompt size.
+            turn.completion_tokens = as_dict(chunk).get("eval_count") or turn.completion_tokens
             msg = as_dict(chunk.get("message", {}))
             turn.content(msg.get("content") or "")
             turn.thinking(msg.get("thinking") or "")

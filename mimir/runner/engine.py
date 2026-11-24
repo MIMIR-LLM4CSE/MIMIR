@@ -16,30 +16,34 @@ import shutil
 import tempfile
 import time
 import traceback
-from typing import Any
+from typing import Any, Callable
 
 from mimir.client.extensions import all_servers
 from mimir.client.agent_core import MimirAgent
-from mimir.client.core.human import Unattended
+from mimir.client.core.human import Refusing, Unattended
 from mimir.client.config import prompt_variants
 from mimir.client.core.ports import AgentHost
 from mimir.client.guardrails.workflow import is_incomplete_answer
+from mimir.client.llm.base import CALL_USAGE_KEYS, call_purpose
 
 from .types import BatchAdapter, BenchmarkAdapter, BenchTask, CheckContext, RunResult
 
 
 class _CountingBackend:
-    """The backend the loop calls, its calls counted and the prompt sizes it reports summed.
+    """The backend every model call of a run goes through, each call's usage recorded.
 
-    Resolved at its first use, inside the run: a backend that cannot be reached fails the
-    task, not the benchmark.
+    The loop's own calls (its steps) are told from side calls such as a compaction by
+    ``call_purpose``. Resolved at its first use, inside the run: a backend that cannot be
+    reached fails the task, not the benchmark.
     """
 
     def __init__(self, get_backend: Any) -> None:
         self._get_backend = get_backend
         self._backend: Any = None
         self.calls = 0
-        self.prompt_tokens: int | None = None
+        self.side_calls: dict[str, int] = {}
+        self.usage: dict[str, int | None] = dict.fromkeys(CALL_USAGE_KEYS)
+        self.prompt_curve: list[int] = []
 
     def _resolved(self) -> Any:
         if self._backend is None:
@@ -48,19 +52,44 @@ class _CountingBackend:
 
     def chat(self, *args: Any, **kwargs: Any) -> Any:
         msg = self._resolved().chat(*args, **kwargs)
-        self.calls += 1
-        reported = msg.get("prompt_tokens") if isinstance(msg, dict) else None
-        if isinstance(reported, int):
-            self.prompt_tokens = (self.prompt_tokens or 0) + reported
+        purpose = call_purpose()
+        if purpose == "loop":
+            self.calls += 1
+        else:
+            self.side_calls[purpose] = self.side_calls.get(purpose, 0) + 1
+        if isinstance(msg, dict):
+            for key in CALL_USAGE_KEYS:
+                reported = msg.get(key)
+                if isinstance(reported, int):
+                    self.usage[key] = (self.usage[key] or 0) + reported
+            if purpose == "loop" and isinstance(msg.get("prompt_tokens"), int):
+                self.prompt_curve.append(msg["prompt_tokens"])
         return msg
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._resolved(), name)
 
 
-def _install_auto_approve(agent: MimirAgent) -> None:
-    """Make the agent approve every tool without prompting (unattended mode)."""
-    agent.attach(AgentHost(human=Unattended("benchmark-auto-approve")))
+def _install_approver(agent: MimirAgent, approval: str) -> Refusing | None:
+    """Lend the agent who answers its approvals: nobody approving all (``auto_all``), or
+    nobody refusing all (``refuse``), returned so its record can be read."""
+    if approval == "auto_all":
+        agent.attach(AgentHost(human=Unattended("benchmark-auto-approve")))
+        return None
+    if approval == "refuse":
+        refusing = Refusing()
+        agent.attach(AgentHost(human=refusing))
+        return refusing
+    raise ValueError(f"unknown approval {approval!r}: auto_all or refuse")
+
+
+def _hold_context(agent: MimirAgent, task: BenchTask) -> None:
+    """Hold the agent to the context *task* asks for."""
+    if task.context_mode is not None:
+        agent.apply_setting("context_mode", task.context_mode)
+    if task.max_context_tokens:
+        agent.max_context_tokens = int(task.max_context_tokens)
+    agent.intra_query_compaction = task.compaction
 
 
 async def _run_within(agent: MimirAgent, run: Any, limit: float | None) -> tuple[str, bool]:
@@ -88,12 +117,9 @@ async def run_one(
     """Run *task* through a fresh agent and score it with *adapter*; the workspace goes
     once graded unless *keep_workspace*."""
     # Skip before spending an agent run when a required toolchain is absent.
-    missing = [exe for exe in task.requires if shutil.which(exe) is None]
-    missing += [m for m in task.modules if importlib.util.find_spec(m) is None]
+    missing = missing_requirements(task)
     if missing:
-        return RunResult(
-            task.id, False, f"skipped: missing {', '.join(missing)}", skipped=True,
-        )
+        return RunResult(task.id, False, f"skipped: missing {', '.join(missing)}", skipped=True)
 
     workspace = tempfile.mkdtemp(prefix=f"bench_{task.id}_")
     if task.setup is not None:
@@ -102,13 +128,18 @@ async def run_one(
     orig_cwd = os.getcwd()
     os.chdir(workspace)  # MCP file/search servers root at the cwd they're spawned in
 
-    # The backend the loop calls — the live one, or a scripted one (model-free CI mode) —
-    # counted on the way through.
+    # The backend every call takes — the live one, or a scripted one (model-free CI mode) —
+    # counted on the way through: the loop's (streaming) and the compaction's (agent_core).
     from unittest.mock import patch
+    import mimir.client.agent_core as agent_core_module
     import mimir.client.query_engine.streaming as streaming_module
     counter = _CountingBackend(get_backend_override or streaming_module.get_backend)
-    backend_patch = patch.object(streaming_module, "get_backend", lambda: counter)
+    backend_patch = contextlib.ExitStack()
+    for module in (streaming_module, agent_core_module):
+        backend_patch.enter_context(patch.object(module, "get_backend", lambda: counter))
     started = time.monotonic()
+    answered: float | None = None
+    refusing: Refusing | None = None
 
     agent = MimirAgent(model=model)
     if enforcement is not None:
@@ -117,7 +148,8 @@ async def run_one(
         agent.apply_setting("enforcement", enforcement)
     try:
         with backend_patch:
-            _install_auto_approve(agent)
+            refusing = _install_approver(agent, task.approval)
+            _hold_context(agent, task)
             registry = all_servers()
             server_names = task.servers if task.servers is not None else tuple(registry)
             for name in server_names:
@@ -132,24 +164,14 @@ async def run_one(
                 mode=task.mode,
                 event_callback=events.append,
             ), task.timeout_secs)
-            ctx = CheckContext(workspace=workspace, agent=agent)
-            if isinstance(adapter, BatchAdapter):
-                artifact = await adapter.collect(task, answer, ctx)
-                return RunResult(task.id, False, "awaiting the batch grade", pending=True,
-                                 artifact=artifact, timed_out=timed_out,
-                                 incomplete=is_incomplete_answer(answer),
-                                 **_measures(events, counter, started))
-            scored = await adapter.score(task, answer, ctx)
-        # A scorer may discover *during* the run that a prerequisite it must
-        # provide isn't available (e.g. a toolchain it loads itself). It signals
-        # that by returning a third element; absent it, the task simply ran.
-        passed, detail = scored[0], scored[1]
-        skipped = scored[2] if len(scored) > 2 else False
-        return RunResult(task.id, passed, detail, skipped=skipped, timed_out=timed_out,
-                         incomplete=is_incomplete_answer(answer), **_measures(events, counter, started))
+            answered = time.monotonic()
+            return await graded_result(
+                adapter, task, answer, CheckContext(workspace=workspace, agent=agent),
+                lambda: _measures(events, counter, started, answered, refusing),
+                timed_out=timed_out, incomplete=is_incomplete_answer(answer))
     except Exception:
         return RunResult(task.id, False, "run crashed", error=traceback.format_exc(),
-                         **_measures(events, counter, started))
+                         **_measures(events, counter, started, answered, refusing))
     finally:
         with contextlib.suppress(Exception):
             await agent.cleanup()
@@ -158,20 +180,55 @@ async def run_one(
             shutil.rmtree(workspace, ignore_errors=True)
 
 
-def _measures(events: list[dict], counter: _CountingBackend, started: float) -> dict[str, Any]:
-    """What a run cost and what it was told, read off its events and its backend."""
+def missing_requirements(task: BenchTask) -> list[str]:
+    """The executables and Python modules *task* needs that this environment lacks."""
+    missing = [exe for exe in task.requires if shutil.which(exe) is None]
+    return missing + [m for m in task.modules if importlib.util.find_spec(m) is None]
+
+
+async def graded_result(adapter: BenchmarkAdapter | BatchAdapter, task: BenchTask,
+                        answer: str, ctx: CheckContext, measures: Callable[[], dict[str, Any]],
+                        **fields: Any) -> RunResult:
+    """*task*'s run, scored by *adapter* — or collected, pending, for a ``BatchAdapter`` —
+    with *measures* taken once the grade is in, so they count it."""
+    if isinstance(adapter, BatchAdapter):
+        artifact = await adapter.collect(task, answer, ctx)
+        return RunResult(task.id, False, "awaiting the batch grade", pending=True,
+                         artifact=artifact, **fields, **measures())
+    scored = await adapter.score(task, answer, ctx)
+    # A scorer that finds a prerequisite it provides itself missing says so with a third
+    # element: the task is skipped, not failed.
+    skipped = scored[2] if len(scored) > 2 else False
+    return RunResult(task.id, scored[0], scored[1], skipped=skipped, **fields, **measures())
+
+
+def _measures(events: list[dict], counter: _CountingBackend, started: float,
+              answered: float | None = None, refusing: Refusing | None = None) -> dict[str, Any]:
+    """What a run cost and what it was told, read off its events, its backend and whoever
+    answered its approvals."""
     nudges: dict[str, int] = {}
+    context: dict[str, int] = {}
     for event in events:
         if event.get("type") == "nudge_injected":
             category = str(event.get("category") or "?")
             nudges[category] = nudges.get(category, 0) + 1
+        elif event.get("type") == "status" and isinstance(event.get("context"), dict):
+            kind = str(event["context"].get("kind") or "?")
+            context[kind] = context.get(kind, 0) + 1
+    now = time.monotonic()
     return {
         "tool_calls": sum(1 for e in events if e.get("type") == "tool_call"),
         "events": len(events),
         "model_calls": counter.calls,
-        "prompt_tokens": counter.prompt_tokens,
+        "side_calls": dict(counter.side_calls),
+        **counter.usage,
+        "prompt_curve": list(counter.prompt_curve),
+        "peak_prompt_tokens": max(counter.prompt_curve, default=None),
+        "context_events": context,
+        "refused": list(refusing.refused) if refusing is not None else [],
         "nudges": nudges,
-        "elapsed_secs": round(time.monotonic() - started, 2),
+        "elapsed_secs": round(now - started, 2),
+        "answer_secs": round((answered if answered is not None else now) - started, 2),
         "variant": prompt_variants.active_name(),
     }
 

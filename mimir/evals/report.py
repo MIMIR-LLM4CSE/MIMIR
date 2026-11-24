@@ -2,8 +2,9 @@
 
 A report is ``{"adapter", "model", "enforcement", "repeat", "runs": [...]}``; each run is a
 ``RunResult`` with the variant it ran under and its repetition. The comparison reads the
-first variant as the reference and states, for each other, whether the gap is measurable,
-its intervals widened for the number of variants compared at once.
+first variant as the reference and states, for each other, whether the gap is measurable
+(intervals widened for the variants compared at once, and McNemar's test over the runs the
+two share), then what each variant cost: steps, tokens, context, time.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from collections import defaultdict
 from statistics import NormalDist
 from typing import Any, Iterable
 
-from .stats import Z95, newcombe, wilson
+from .stats import Z95, mcnemar, newcombe, wilson
 
 REFERENCE = "code"
 # The chance, over all the variants compared at once, that any is called measurably
@@ -72,6 +73,57 @@ def _pct(x: float) -> str:
     return f"{100 * x:.0f} %"
 
 
+def _total(run: dict[str, Any], key: str) -> float | None:
+    value = run.get(key)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _known(values: list[float | None]) -> list[float]:
+    return [v for v in values if v is not None]
+
+
+def _cost_rows(names: list[str], scored: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """What each variant spent per run, on the runs it was scored on."""
+    rows = ["| Variant | Steps | Side calls | Prompt tokens | Completion tokens | Cached "
+            "| Peak context | Answer time (s) | Compactions | Refused |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
+    for v in names:
+        runs = scored[v]
+        prompt = _known([_total(r, "prompt_tokens") for r in runs])
+        cached = _known([_total(r, "cached_tokens") for r in runs])
+        share = (f"{100 * sum(cached) / sum(prompt):.0f} %"
+                 if prompt and cached and sum(prompt) else "—")
+        rows.append(
+            f"| {v} | {_mean([float(r.get('model_calls', 0)) for r in runs])} "
+            f"| {_mean([float(sum((r.get('side_calls') or {}).values())) for r in runs])} "
+            f"| {_mean(prompt)} "
+            f"| {_mean(_known([_total(r, 'completion_tokens') for r in runs]))} "
+            f"| {share} "
+            f"| {_mean(_known([_total(r, 'peak_prompt_tokens') for r in runs]))} "
+            f"| {_mean(_known([_total(r, 'answer_secs') for r in runs]))} "
+            f"| {_mean([float((r.get('context_events') or {}).get('compact', 0)) for r in runs])} "
+            f"| {_mean([float(len(r.get('refused') or [])) for r in runs])} |")
+    return rows
+
+
+def _paired(reference: list[dict[str, Any]], other: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """The runs both variants made of one task at one repetition: ``(pairs, only the
+    reference passed, only the other passed)``."""
+    def key(run: dict[str, Any]) -> tuple[str, int]:
+        return run["task_id"], int(run.get("repetition", 0))
+
+    mine = {key(r): bool(r.get("passed")) for r in reference}
+    pairs = only_ref = only_other = 0
+    for run in other:
+        if key(run) not in mine:
+            continue
+        pairs += 1
+        ref_passed, other_passed = mine[key(run)], bool(run.get("passed"))
+        only_ref += ref_passed and not other_passed
+        only_other += other_passed and not ref_passed
+    return pairs, only_ref, only_other
+
+
 def compare(runs: list[dict[str, Any]]) -> str:
     """A markdown comparison of the variants found in *runs*, the first being the reference."""
     by_variant: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -118,6 +170,14 @@ def compare(runs: list[dict[str, Any]]) -> str:
         level = "95 %" if comparisons <= 1 else "joint 95 %"
         verdicts.append(f"- **{v}** against **{reference}**: {gap * 100:+.0f} points "
                         f"({level} interval {lo * 100:+.0f} to {hi * 100:+.0f}) — {verdict}.")
+        pairs, only_ref, only_other = _paired(scored[reference], scored[v])
+        if pairs:
+            p = mcnemar(only_ref, only_other)
+            alpha = FAMILY_ERROR / max(1, comparisons)
+            verdicts.append(f"  Paired over {pairs} runs of the same tasks: {only_other} passed "
+                            f"only under **{v}**, {only_ref} only under **{reference}** "
+                            f"(exact McNemar p = {p:.3f}"
+                            + (f", measurable at {alpha:.3g})." if p < alpha else ", not measurable)."))
 
     tasks = sorted({r["task_id"] for r in runs})
     per_task = ["| Task | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
@@ -128,6 +188,7 @@ def compare(runs: list[dict[str, Any]]) -> str:
             cells.append(f"{sum(1 for r in mine if r.get('passed'))}/{len(mine)}" if mine else "—")
         per_task.append(f"| {task} | " + " | ".join(cells) + " |")
 
-    return "\n".join(["## Variants", "", *lines, "", "## Verdict", "",
+    return "\n".join(["## Variants", "", *lines, "", "## Cost per run", "",
+                      *_cost_rows(names, scored), "", "## Verdict", "",
                       *(verdicts or ["- Only one variant: nothing to compare."]),
                       "", "## By task", "", *per_task, ""])

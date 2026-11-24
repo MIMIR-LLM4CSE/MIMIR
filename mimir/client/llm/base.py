@@ -7,8 +7,10 @@ import json
 import logging
 import os
 import sys
+import contextlib
+import contextvars
 from abc import ABC
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from ..config.limits import CHARS_PER_TOKEN
 from ..protocol.messages import (
@@ -27,6 +29,31 @@ class PromptTooLongError(ValueError):
     A ``ValueError``, and a type of its own so the retry loop can tell the one failure
     that re-sending cannot fix from a flaky connection: it is not retried.
     """
+
+
+# What a model call reports of itself, beside the message: taken off before the message
+# enters history (``streaming.process_response``).
+CALL_USAGE_KEYS = ("prompt_tokens", "completion_tokens", "cached_tokens")
+
+# Why the current model call is made: "loop" for the agent's own steps, else the name of
+# a side call (``side_call``) such as a compaction, so a meter can tell them apart.
+_call_purpose: contextvars.ContextVar[str] = contextvars.ContextVar("llm_call_purpose",
+                                                                    default="loop")
+
+
+@contextlib.contextmanager
+def side_call(purpose: str) -> Iterator[None]:
+    """Mark the model calls made inside the block as *purpose* (``"compaction"``)."""
+    token = _call_purpose.set(purpose)
+    try:
+        yield
+    finally:
+        _call_purpose.reset(token)
+
+
+def call_purpose() -> str:
+    """Why the model call being made now is made (see :func:`side_call`)."""
+    return _call_purpose.get()
 
 
 # Cap on the per-text token-count cache so a long-running session can't grow it
@@ -120,6 +147,8 @@ class ChatTurn:
         self.tool_calls: list[dict] = []
         self.finish_reason: str | None = None
         self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.cached_tokens = 0     # of prompt_tokens, those the server's prefix cache served
         # Message fields a provider reports beyond the text (``role``, ``name``).
         self.fields: dict[str, Any] = {}
 
@@ -159,8 +188,8 @@ class ChatTurn:
         """The assistant message this call produced.
 
         Keys: ``role``, ``content``, and optionally ``thinking``, ``tool_calls``,
-        ``finish_reason`` and ``prompt_tokens`` (the last two describe the call and are
-        taken off before the message enters history).
+        ``finish_reason`` and the usage the provider reported (``CALL_USAGE_KEYS``), which
+        describe the call and are taken off before the message enters history.
         """
         self.parser.finish()
         if self.parser.content_parts and self._echo:
@@ -174,8 +203,9 @@ class ChatTurn:
             msg["tool_calls"] = self.tool_calls
         if self.finish_reason:
             msg["finish_reason"] = self.finish_reason
-        if self.prompt_tokens > 0:
-            msg["prompt_tokens"] = self.prompt_tokens
+        for key in CALL_USAGE_KEYS:
+            if getattr(self, key) > 0:
+                msg[key] = getattr(self, key)
         return msg
 
 

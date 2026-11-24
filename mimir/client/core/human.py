@@ -65,6 +65,29 @@ class TerminalHuman:
         return {"answers": []}
 
 
+class Refusing:
+    """Nobody, refusing: every tool that asks and every path outside the workspace is
+    denied, and each request is recorded in ``refused`` — a run graded on what it tried."""
+
+    def __init__(self, note: str = "refused: nobody approves in this run") -> None:
+        self.note = note
+        self.refused: list[dict[str, Any]] = []
+
+    def approve_tool(self, agent: Any, tool_name: str, arguments: dict[str, Any],
+                     max_attempts: int = 3) -> tuple[bool, str]:
+        self.refused.append({"tool": tool_name, "arguments": dict(arguments or {})})
+        return False, self.note
+
+    def approve_paths(self, agent: Any, paths: list[str], tool_name: str,
+                      arguments: dict[str, Any] | None = None) -> tuple[bool, bool]:
+        self.refused.append({"tool": tool_name, "paths": list(paths)})
+        return False, False
+
+    def ask(self, agent: Any, questions: list[Any], origin: dict[str, Any] | None = None,
+            timeout_secs: float | None = None) -> dict[str, Any]:
+        return {"answers": []}
+
+
 class Unattended:
     """Nobody: every tool and every path is approved, no question is answered.
 

@@ -213,8 +213,14 @@ def _trim_tool_history(
         if execution_context is not None:
             _forget_read(execution_context, msg, recorded)
 
+    freed = sum(_message_tokens(messages[i], size) for i in to_remove)
     for i in sorted(to_remove, reverse=True):
         del messages[i]
+    if to_remove:
+        emit({"type": "status", "context": {"kind": "trim", "evicted": len(to_remove),
+                                            "freed": freed},
+              "text": (f"  \u2702 Context: {len(to_remove)} older tool result"
+                       f"{'s' if len(to_remove) != 1 else ''} dropped to fit the budget.")})
 
 
 def _carve_out_pinned(
@@ -289,11 +295,20 @@ def _maybe_compact_intra_query(
         summary_messages = compact_fn(middle)
     except Exception:
         logger.debug("_maybe_compact_intra_query: a best-effort step failed and was skipped", exc_info=True)
-        return  # compaction failed — silently continue without it
+        summary_messages = middle
+    if summary_messages is middle:  # the summary failed: continue without it
+        emit({"type": "status", "context": {"kind": "compact", "before": total_size,
+                                            "after": total_size, "summarised": False},
+              "text": "  ⚡ Context: the summary failed; nothing was compacted."})
+        return
 
     # Kept pairs go after the summary: they are the methodology the following steps
     # act on, and the summary stands for the work that happened around them.
     messages[2:-4] = list(summary_messages) + kept
+    after = sum(_message_tokens(m, _size) for m in messages)
+    emit({"type": "status", "context": {"kind": "compact", "before": total_size,
+                                        "after": after, "summarised": True},
+          "text": f"  ⚡ Context: {total_size:,} → {after:,} after the summary."})
     # The task checklist lives in messages[0], which this slice does not touch, so
     # compaction of the middle never disturbs it — nothing to refresh.
 
@@ -628,7 +643,7 @@ def enforce_context_budget(
     # not something to do only under pressure.
     digested = _digest_failed_call_args(messages)
     if digested:
-        emit({"type": "status", "text": (
+        emit({"type": "status", "context": {"kind": "elide", "calls": digested}, "text": (
             f"  \u2702 Context: elided the arguments of {digested} failed tool "
             f"call{'s' if digested != 1 else ''} (the calls did not take effect)."
         )})
@@ -661,7 +676,8 @@ def enforce_context_budget(
         )
         after = sum(_message_tokens(m, token_counter) for m in messages)
         if after < before:
-            emit({"type": "status", "text": (
+            emit({"type": "status", "context": {"kind": "backstop", "before": before,
+                                                "after": after, "fitted": fitted}, "text": (
                 f"  ⚠ Context backstop: truncated ~{before - after} tokens of older "
                 + ("content to fit the model's window."
                    if fitted else "content — the prompt is STILL over the window.")

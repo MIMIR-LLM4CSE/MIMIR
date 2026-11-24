@@ -32,6 +32,15 @@ class BenchTask:
     # Wall-clock limit on the agent's run; past it the run stops as Stop stops it, and the
     # workspace is graded as it stands. ``None``: no limit.
     timeout_secs: float | None = None
+    # The context the run is held to: ``context_mode`` ("full" or "compact", None for the
+    # agent's own), a ceiling below the model's window (``max_context_tokens``, which
+    # brings compaction on sooner), and whether a query over budget is summarised at all.
+    context_mode: str | None = None
+    max_context_tokens: int | None = None
+    compaction: bool = True
+    # Who answers the approvals: "auto_all" approves every tool and path; "refuse" denies
+    # each and records it in ``RunResult.refused``.
+    approval: str = "auto_all"
     # Free-form per-task data the adapter's scorer may need (e.g. expected patch).
     meta: dict[str, Any] = field(default_factory=dict)
 
@@ -53,11 +62,22 @@ class RunResult:
     tool_calls: int = 0       # tool_call events observed
     events: int = 0           # total structured events emitted (proxy for run length)
     error: str = ""           # populated when the run itself crashed
-    model_calls: int = 0      # the loop's calls to the model
-    prompt_tokens: int | None = None   # summed as the backend reports them; None: never reported
+    model_calls: int = 0      # the loop's calls to the model (its steps)
+    side_calls: dict[str, int] = field(default_factory=dict)   # others, by purpose (compaction)
+    # Summed over every call as the backend reports them; None: never reported.
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_tokens: int | None = None   # of prompt_tokens, served by the prefix cache
+    # The prompt size of each loop call, in order: the context used, step by step.
+    prompt_curve: list[int] = field(default_factory=list)
+    peak_prompt_tokens: int | None = None
+    context_events: dict[str, int] = field(default_factory=dict)   # compact, trim, backstop…
+    refused: list[dict[str, Any]] = field(default_factory=list)    # requests denied ("refuse")
+    run_tag: str = ""         # the key the run called the models with, as the meter logs it
     nudges: dict[str, int] = field(default_factory=dict)   # reminders that reached the model
     incomplete: bool = False  # the answer itself reports the task unfinished
-    elapsed_secs: float = 0.0
+    elapsed_secs: float = 0.0  # the run and its grade
+    answer_secs: float = 0.0   # from the query to the final answer
     variant: str = ""         # the prose variant in force ("" for the code's own)
     timed_out: bool = False   # stopped at the task's timeout_secs, graded as it stood
     pending: bool = False     # collected, awaiting a BatchAdapter's grade

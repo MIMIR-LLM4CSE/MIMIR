@@ -28,8 +28,26 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   workspace on disk.
 - **A task's `timeout_secs`** stops its run as Stop does; the workspace is graded as it
   stands and the run says `timed_out`.
+- **What a run cost, in full.** Completion and prefix-cached tokens beside the prompt's,
+  the prompt size of each step and its peak, side calls (a compaction) apart from the
+  loop's steps, the context passes by kind, the time to the final answer. The compare
+  report tables them and adds McNemar's paired test.
+- **A task holds the run to a context and an approver**: `context_mode`,
+  `max_context_tokens`, `compaction=False`, and `approval="refuse"`, which denies and
+  records each request.
+- **The meter** (`python -m mimir.evals.meter`): an OpenAI-compatible relay in front of
+  the served models that records every completion request by the run that made it.
+- **Other agents on the same tasks**: `--agent mini-swe-agent|opencode|copilot`, each run
+  as one more condition, through the meter (`--meter`, `--meter-log`).
+- **The context passes say what they did**: the `status` events of a compaction, an
+  eviction (now announced), a result cut, an elision and the backstop carry a `context`
+  field with their figures.
 
 ### Changed
+- **A streamed request to an OpenAI-compatible server asks for its usage** whatever the log
+  level, so the context bar is calibrated on the server's own count in streaming too.
+- **A compaction's model call goes through the run's backend** in `mimir.runner`; a
+  scripted run no longer reaches the live one when the history is compacted.
 - **The benchmark adapters sit in `mimir.evals.benchmarks`**: the scientific one is now
   `--adapter mimir.evals.benchmarks.scientific:Scientific`.
 - **The runner removes each task's workspace once graded**, which it left in the temp

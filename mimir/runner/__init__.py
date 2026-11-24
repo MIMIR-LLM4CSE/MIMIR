@@ -4,13 +4,17 @@ A fresh agent per task, isolated workspace, every tool approved, no scoring of i
 an integration implements :class:`BenchmarkAdapter` (graded run by run) or
 :class:`BatchAdapter` (graded together) and calls :func:`run_benchmark`.
 """
-from .engine import grade_pending, run_benchmark, run_one, use_backend
+from .engine import (
+    grade_pending, graded_result, missing_requirements, run_benchmark, run_one, use_backend,
+)
 from .types import BatchAdapter, BenchmarkAdapter, BenchTask, CheckContext, RunResult
 
 __all__ = [
     "run_benchmark",
     "run_one",
     "grade_pending",
+    "graded_result",
+    "missing_requirements",
     "use_backend",
     "RunResult",
     "BenchmarkAdapter",

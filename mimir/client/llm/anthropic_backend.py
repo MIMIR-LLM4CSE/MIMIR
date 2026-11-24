@@ -386,3 +386,7 @@ class AnthropicBackend(LLMBackend):
         # which without it looks exactly like a model that chose to stop.
         turn.stopped(getattr(final, "stop_reason", None))
         turn.prompt_tokens = self._prompt_tokens(final)
+        usage = getattr(final, "usage", None)
+        if usage is not None:
+            turn.completion_tokens = getattr(usage, "output_tokens", 0) or 0
+            turn.cached_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0

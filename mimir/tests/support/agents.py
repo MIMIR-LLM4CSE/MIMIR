@@ -42,6 +42,7 @@ def agent_parts() -> dict[str, Any]:
         "backend": "",
         "max_context_tokens": 0,
         "max_answer_tokens": 0,
+        "intra_query_compaction": True,
         "non_interactive": False,
         # No front-end lending a watcher or a steer channel; nobody to ask.
         "host": AgentHost(human=Unattended()),

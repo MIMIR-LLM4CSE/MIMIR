@@ -598,5 +598,32 @@ does not get the repository's test environment. SciCode's `test_data.h5` is down
 SciCode's README says; a problem passes when every tested sub-step does, and the detail
 gives the sub-steps passed.
 
+**Measuring.** Each run records its loop steps (`model_calls`) and side calls (a compaction,
+`side_calls`), the prompt, completion and prefix-cached tokens summed over every call, the
+prompt size of each step (`prompt_curve`, `peak_prompt_tokens`), what the context passes
+did (`context_events`: compactions, evictions, cuts, backstop), and the time to the final
+answer (`answer_secs`). A task can hold the run to a context (`context_mode`,
+`max_context_tokens`, `compaction=False`) and have its approvals refused and recorded
+(`approval="refuse"`, read in `refused`). `python -m mimir.evals compare` tables what each
+condition cost and tests the runs two conditions share pairwise (McNemar).
+
+**Other agents on the same tasks.** `--agent mini-swe-agent|opencode|copilot` runs each as
+one more condition of the loop, at the same model and graded by the same adapter. Their
+calls, and MIMIR's, go through the meter, an OpenAI-compatible relay that records every
+completion request by the key a run is given:
+
+```bash
+python -m mimir.evals.meter serve --upstream http://vllm-host:8000 --log meter.jsonl &
+python -m mimir.evals run --adapter mimir.evals.benchmarks.scientific:Scientific \
+    --agent mini-swe-agent --agent opencode --agent copilot \
+    --meter http://127.0.0.1:8099 --meter-log meter.jsonl --model <model> --out cmp.json
+python -m mimir.evals.meter summary meter.jsonl     # the log totalled per run
+```
+
+`--upstream MODEL=URL` routes a model to its own server. Each agent runs with its
+configuration in a directory of the run's own (its XDG config, data and state); the flags
+used are those the agents document, to check against the installed versions before a
+graded run.
+
 **The engine approves every tool without confirmation — only point it at trusted workloads in
 a sandbox.**

@@ -2279,11 +2279,19 @@ integration**; only the integration knows both.
 - `run_benchmark(...)` — sets the backend, clears the factory singleton, runs every task,
   and builds the JSON summary. `pass_rate` is over **non-skipped** tasks.
   `get_backend_override` injects a backend factory for a model-free CI mode.
-- **Unattended approval**: `_install_auto_approve(agent)` replaces the approval hook with an
-  always-approve shim. Batch mode already auto-approves
-  writes, but non-batch tools (execution, shell) would otherwise block on input, so the shim
-  approves *every* tool. **This runs every tool without confirmation — point the engine only
-  at trusted workloads, in a sandbox.**
+- **Unattended approval**: `_install_approver(agent, task.approval)` lends the agent a host
+  whose human is nobody. `auto_all` (`Unattended`) approves *every* tool and path: without
+  it execution and shell tools would block on input. **This runs every tool without
+  confirmation — point the engine only at trusted workloads, in a sandbox.** `refuse`
+  (`Refusing`) denies each request and records it, read back as `RunResult.refused`.
+- **Measures**: `_CountingBackend` stands in for the backend in both places a call is made
+  (`streaming` for the loop, `agent_core` for a compaction), telling them apart by
+  `llm.base.call_purpose` (`side_call("compaction")`). It sums the usage every call reports
+  (`CALL_USAGE_KEYS`: prompt, completion, prefix-cached tokens) and keeps each loop call's
+  prompt size. `_measures` counts the `status` events whose `context` names a pass of the
+  history's fitting (`compact`, `trim`, `bound`, `elide`, `backstop`).
+- **Context**: `_hold_context` applies a task's `context_mode`, `max_context_tokens` and
+  `compaction` (`agent.intra_query_compaction`; off, `StepLoop.compact_fn` is `None`).
 
 ---
 
